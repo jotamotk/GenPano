@@ -1,42 +1,9 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Build outputs
-dist/
-build/
-*.js.map
-
-# Environment files
+__pycache__/
+*.pyc
+*.pyo
 .env
-.env.local
-.env.*.local
-!.env.example
-
-# Database
-*.db
-*.db-wal
-*.db-shm
-data/
-
-# Logs
-*.log
-logs/
-npm-debug.log*
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.vscode/settings.json
-.idea/
-*.swp
-*.swo
-
-# TypeScript
-*.tsbuildinfo
-
-# Test coverage
-coverage/
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.claude/
