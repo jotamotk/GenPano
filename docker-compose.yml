@@ -1,0 +1,67 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: genpano
+      POSTGRES_USER: genpano
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U genpano"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  backend:
+    image: ${ACR_REGISTRY}/genpano-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: ${ACR_REGISTRY}/genpano-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: >
+      celery -A geo_tracker.tasks.celery_tasks worker
+      --loglevel=info
+      --concurrency=5
+      -Q llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    image: ${ACR_REGISTRY}/genpano-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: celery -A geo_tracker.tasks.celery_tasks beat --loglevel=info
+    env_file: .env
+    depends_on:
+      - redis
+
+  nginx:
+    image: ${ACR_REGISTRY}/genpano-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
