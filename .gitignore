@@ -1,18 +1,15 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Build outputs
-dist/
-build/
-*.js.map
-
-# Environment files
+__pycache__/
+*.pyc
+*.pyo
 .env
 .env.local
 .env.*.local
 !.env.example
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.claude/
 
 # Logs
 *.log
