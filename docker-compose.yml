@@ -23,7 +23,7 @@ services:
       retries: 5
 
   backend:
-    image: ${ACR_REGISTRY}/genpano-backend:${IMAGE_TAG:-latest}
+    image: ${ACR_REGISTRY}/genpano:backend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: .env
     depends_on:
@@ -33,7 +33,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: ${ACR_REGISTRY}/genpano-worker:${IMAGE_TAG:-latest}
+    image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
@@ -48,7 +48,7 @@ services:
         condition: service_healthy
 
   beat:
-    image: ${ACR_REGISTRY}/genpano-worker:${IMAGE_TAG:-latest}
+    image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
     command: celery -A geo_tracker.tasks.celery_tasks beat --loglevel=info
     env_file: .env
@@ -56,7 +56,7 @@ services:
       - redis
 
   nginx:
-    image: ${ACR_REGISTRY}/genpano-frontend:${IMAGE_TAG:-latest}
+    image: ${ACR_REGISTRY}/genpano:frontend-${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "80:80"

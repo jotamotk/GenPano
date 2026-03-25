@@ -21,18 +21,18 @@ jobs:
 
       - name: Build & push frontend
         run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano-frontend:${{ env.IMAGE_TAG }} ./frontend
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano-frontend:${{ env.IMAGE_TAG }}
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:frontend-${{ env.IMAGE_TAG }} ./frontend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:frontend-${{ env.IMAGE_TAG }}
 
       - name: Build & push backend
         run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano-backend:${{ env.IMAGE_TAG }} ./backend
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano-backend:${{ env.IMAGE_TAG }}
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:backend-${{ env.IMAGE_TAG }} ./backend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:backend-${{ env.IMAGE_TAG }}
 
       - name: Build & push worker
         run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano-worker:${{ env.IMAGE_TAG }} ./geo_tracker
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano-worker:${{ env.IMAGE_TAG }}
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
   deploy:
     name: Deploy to Server
