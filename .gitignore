@@ -14,12 +14,6 @@ build/
 .env.*.local
 !.env.example
 
-# Database
-*.db
-*.db-wal
-*.db-shm
-data/
-
 # Logs
 *.log
 logs/
