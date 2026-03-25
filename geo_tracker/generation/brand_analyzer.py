@@ -1,6 +1,6 @@
 """
 品牌分析器
-输入品牌信息 → Claude API → 结构化输出 Topics + Prompts + Competitors
+输入品牌信息 → GLM API → 结构化输出 Topics + Prompts + Competitors
 """
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ import logging
 import os
 from dataclasses import dataclass
 
-import anthropic
+from zhipuai import ZhipuAI
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL   = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
-CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GLM_MODEL   = os.getenv("GLM_MODEL", "glm-5")
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
 
 @dataclass
@@ -91,7 +91,7 @@ ANALYSIS_USER_TEMPLATE = """
 
 class BrandAnalyzer:
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        self.client = ZhipuAI(api_key=ZHIPU_API_KEY)
 
     async def analyze(
         self,
@@ -110,14 +110,26 @@ class BrandAnalyzer:
             target_market=target_market,
         )
 
-        response = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4096,
-            system=ANALYSIS_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
-        )
+        import time
+        for attempt in range(5):
+            try:
+                response = self.client.chat.completions.create(
+                    model=GLM_MODEL,
+                    messages=[
+                        {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                )
+                break
+            except Exception as e:
+                if "429" in str(e) or "1302" in str(e):
+                    wait = 60 * (attempt + 1)
+                    logger.warning(f"GLM 429 rate limit, waiting {wait}s (attempt {attempt+1}/5)…")
+                    time.sleep(wait)
+                else:
+                    raise
 
-        raw = response.content[0].text.strip()
+        raw = response.choices[0].message.content.strip()
 
         # 清理 markdown 代码块（如果有）
         if raw.startswith("```"):

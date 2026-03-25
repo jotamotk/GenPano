@@ -1,6 +1,6 @@
 """
 Fanout 引擎
-Prompt × Profile → 用 Claude 改写成符合该 Profile 口吻的自然 Query
+Prompt × Profile → 用 GLM 改写成符合该 Profile 口吻的自然 Query
 再按 LLM 分配矩阵展开为 Query 记录写入 DB
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-import anthropic
+from zhipuai import ZhipuAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,8 +21,8 @@ from geo_tracker.generation.brand_analyzer import BrandAnalysisResult
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL   = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
-CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GLM_MODEL     = os.getenv("GLM_MODEL", "glm-5")
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
 # 每次批量改写的 prompt 数量（节省 API 调用次数）
 REWRITE_BATCH_SIZE = 10
@@ -102,7 +102,7 @@ class RewriteResult:
 
 class FanoutEngine:
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        self.client = ZhipuAI(api_key=ZHIPU_API_KEY)
 
     # ── 主入口：为一个品牌生成全部 Query ───────────────────────────────────────
 
@@ -187,8 +187,8 @@ class FanoutEngine:
 
                 await db.commit()
 
-            # 礼貌性延迟，避免 Claude API 频率限制
-            await asyncio.sleep(0.3)
+            # 礼貌性延迟，避免 GLM API 频率限制（glm-5 限制较严）
+            await asyncio.sleep(2.0)
 
         return created
 
@@ -203,14 +203,31 @@ class FanoutEngine:
         base_texts = [p.text for p in prompts]
         user_msg   = _build_rewrite_user_msg(profile, base_texts)
 
+        import time
+        response = None
+        for attempt in range(5):
+            try:
+                response = self.client.chat.completions.create(
+                    model=GLM_MODEL,
+                    messages=[
+                        {"role": "system", "content": REWRITE_SYSTEM},
+                        {"role": "user", "content": user_msg},
+                    ],
+                )
+                break
+            except Exception as e:
+                if "429" in str(e) or "1302" in str(e):
+                    wait = 60 * (attempt + 1)
+                    logger.warning(f"GLM 429 rate limit, waiting {wait}s (attempt {attempt+1}/5)…")
+                    time.sleep(wait)
+                else:
+                    raise
+
+        if response is None:
+            raise RuntimeError("GLM API failed after 5 retries")
+
         try:
-            response = self.client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=2048,
-                system=REWRITE_SYSTEM,
-                messages=[{"role": "user", "content": user_msg}],
-            )
-            raw = response.content[0].text.strip()
+            raw = response.choices[0].message.content.strip()
 
             # 清理 markdown
             if raw.startswith("```"):
