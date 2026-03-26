@@ -99,7 +99,7 @@ def execute_query(self, query_id: int) -> dict:
 
 # ─── 批量分发 Pending Queries ─────────────────────────────────────────────────
 
-@app.task
+@app.task(queue="celery")
 def dispatch_batch(limit: int = 50) -> dict:
     """
     扫描 pending queries，分发到 execute_query
@@ -131,7 +131,7 @@ def dispatch_batch(limit: int = 50) -> dict:
 
 # ─── 每日重置账号计数 ─────────────────────────────────────────────────────────
 
-@app.task
+@app.task(queue="celery")
 def reset_daily_counts() -> dict:
     async def _run():
         async with get_async_session() as db:
