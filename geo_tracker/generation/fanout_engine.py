@@ -180,7 +180,7 @@ class FanoutEngine:
                             brand_id=brand_id,
                             query_text=rewrite.query_text,
                             target_llm=llm,
-                            status=QueryStatus.PENDING,
+                            status=QueryStatus.PENDING.value,
                         )
                         db.add(query)
                         created += 1

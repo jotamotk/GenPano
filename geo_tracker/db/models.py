@@ -107,7 +107,7 @@ class Proxy(Base):
     id             = Column(Integer, primary_key=True)
     provider       = Column(String(64))                        # brightdata | oxylabs
     proxy_url      = Column(String(256), unique=True)          # http://user:pass@host:port
-    type           = Column(SAEnum(ProxyType))
+    type           = Column(String(16))
     country        = Column(String(8))
     city           = Column(String(64), nullable=True)
     last_used_at   = Column(DateTime, nullable=True)
@@ -179,7 +179,7 @@ class LLMAccount(Base):
     last_used_at        = Column(DateTime, nullable=True)
     query_count_today   = Column(Integer, default=0)
     daily_limit         = Column(Integer, default=20)
-    status              = Column(SAEnum(AccountStatus), default=AccountStatus.ACTIVE)
+    status              = Column(String(16), default=AccountStatus.ACTIVE.value)
     cooldown_until      = Column(DateTime, nullable=True)
     consecutive_fails   = Column(Integer, default=0)
     created_at          = Column(DateTime, server_default=func.now())
@@ -214,7 +214,7 @@ class Query(Base):
     brand_id     = Column(Integer, ForeignKey("brands.id"))
     query_text   = Column(Text)
     target_llm   = Column(String(64))
-    status       = Column(SAEnum(QueryStatus), default=QueryStatus.PENDING)
+    status       = Column(String(16), default=QueryStatus.PENDING.value)
     retry_count  = Column(Integer, default=0)
     scheduled_at = Column(DateTime, nullable=True)
     executed_at  = Column(DateTime, nullable=True)

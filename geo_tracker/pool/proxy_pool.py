@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu", "wenxin"}
 
 # 各 LLM 对代理类型的要求（仅国际 LLM）
-LLM_PROXY_REQUIREMENTS: dict[str, list[ProxyType]] = {
-    "chatgpt":    [ProxyType.RESIDENTIAL, ProxyType.MOBILE],
-    "gemini":     [ProxyType.RESIDENTIAL, ProxyType.MOBILE],
-    "claude":     [ProxyType.RESIDENTIAL, ProxyType.MOBILE],
-    "grok":       [ProxyType.RESIDENTIAL, ProxyType.MOBILE],
-    "perplexity": [ProxyType.RESIDENTIAL, ProxyType.DATACENTER, ProxyType.MOBILE],
+LLM_PROXY_REQUIREMENTS: dict[str, list[str]] = {
+    "chatgpt":    [ProxyType.RESIDENTIAL.value, ProxyType.MOBILE.value],
+    "gemini":     [ProxyType.RESIDENTIAL.value, ProxyType.MOBILE.value],
+    "claude":     [ProxyType.RESIDENTIAL.value, ProxyType.MOBILE.value],
+    "grok":       [ProxyType.RESIDENTIAL.value, ProxyType.MOBILE.value],
+    "perplexity": [ProxyType.RESIDENTIAL.value, ProxyType.DATACENTER.value, ProxyType.MOBILE.value],
 }
 
 # 代理服务商配置（环境变量）
@@ -72,7 +72,7 @@ class ProxyPool:
             return None
 
         # 国际 LLM：先从数据库池中找
-        allowed_types = LLM_PROXY_REQUIREMENTS.get(llm_name.lower(), list(ProxyType))
+        allowed_types = LLM_PROXY_REQUIREMENTS.get(llm_name.lower(), [t.value for t in ProxyType])
         now = datetime.utcnow()
 
         stmt = (
@@ -122,7 +122,7 @@ class ProxyPool:
             proxy = Proxy(
                 provider     = "clash",
                 proxy_url    = CLASH_PROXY_URL,
-                type         = ProxyType.RESIDENTIAL,
+                type         = ProxyType.RESIDENTIAL.value,
                 country      = country_code or "US",
                 last_used_at = datetime.utcnow(),
             )
@@ -153,7 +153,7 @@ class ProxyPool:
         proxy = Proxy(
             provider      = PROXY_PROVIDER,
             proxy_url     = proxy_url,
-            type          = ProxyType.RESIDENTIAL,
+            type          = ProxyType.RESIDENTIAL.value,
             country       = country_code or "US",
             last_used_at  = datetime.utcnow(),
         )

@@ -44,7 +44,7 @@ class AccountPool:
             .where(
                 and_(
                     LLMAccount.llm_name == llm_name,
-                    LLMAccount.status == AccountStatus.ACTIVE,
+                    LLMAccount.status == AccountStatus.ACTIVE.value,
                     # 冷却已过期 或 从未冷却
                     (LLMAccount.cooldown_until == None) | (LLMAccount.cooldown_until <= now),
                     # 今日配额未满
@@ -105,12 +105,12 @@ class AccountPool:
         account.consecutive_fails += 1
 
         if is_ban or account.consecutive_fails >= MAX_CONSECUTIVE_FAILS:
-            account.status = AccountStatus.BANNED
+            account.status = AccountStatus.BANNED.value
             logger.warning(
                 f"Account id={account_id} BANNED after {account.consecutive_fails} fails"
             )
         elif reason == "rate_limit":
-            account.status = AccountStatus.COOLDOWN
+            account.status = AccountStatus.COOLDOWN.value
             account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
             logger.info(f"Account id={account_id} cooldown until {account.cooldown_until}")
 

@@ -60,10 +60,10 @@ def execute_query(self, query_id: int) -> dict:
     async def _run():
         async with get_async_session() as db:
             query = await db.get(Query, query_id)
-            if not query or query.status == QueryStatus.DONE:
+            if not query or query.status == QueryStatus.DONE.value:
                 return {"skipped": True}
 
-            query.status = QueryStatus.RUNNING
+            query.status = QueryStatus.RUNNING.value
             await db.commit()
 
             account_pool  = AccountPool(db)
@@ -77,12 +77,12 @@ def execute_query(self, query_id: int) -> dict:
 
                 if response:
                     db.add(response)
-                    query.status = QueryStatus.DONE
+                    query.status = QueryStatus.DONE.value
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done"}
                 else:
-                    query.status = QueryStatus.FAILED
+                    query.status = QueryStatus.FAILED.value
                     query.retry_count += 1
                     await db.commit()
                     return {"query_id": query_id, "status": "failed"}
@@ -109,7 +109,7 @@ def dispatch_batch(limit: int = 50) -> dict:
         async with get_async_session() as db:
             result = await db.execute(
                 select(Query)
-                .where(Query.status == QueryStatus.PENDING)
+                .where(Query.status == QueryStatus.PENDING.value)
                 .limit(limit)
             )
             queries = result.scalars().all()
