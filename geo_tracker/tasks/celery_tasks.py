@@ -20,7 +20,7 @@ from geo_tracker.pool.account_pool import AccountPool
 from geo_tracker.pool.proxy_pool import ProxyPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
-from geo_tracker.config import get_async_session, REDIS_URL
+from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,10 @@ def execute_query(self, query_id: int) -> dict:
     执行单条查询
     bind=True 支持 self.retry()
     """
+    task_engine = create_task_engine()
+
     async def _run():
-        async with get_async_session() as db:
+        async with get_task_async_session(task_engine) as db:
             query = await db.get(Query, query_id)
             if not query or query.status == QueryStatus.DONE.value:
                 return {"skipped": True}
@@ -99,18 +101,20 @@ def execute_query(self, query_id: int) -> dict:
         except RuntimeError:
             pass
         # Create new loop and run
-        # Clean up any existing event loop
-    try:
-        loop = asyncio.get_event_loop()
-        if not loop.is_closed():
-            loop.close()
-    except RuntimeError:
-        pass
-    # Create new loop and run
-    return asyncio.run(_run())
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.close()
+        except RuntimeError:
+            pass
+        # Create new loop and run
+        result = asyncio.run(_run())
+        return result
     except Exception as exc:
         logger.exception(f"execute_query {query_id} raised: {exc}")
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+    finally:
+        asyncio.run(task_engine.dispose())
 
 
 # ─── 批量分发 Pending Queries ─────────────────────────────────────────────────
@@ -121,8 +125,10 @@ def dispatch_batch(limit: int = 50) -> dict:
     扫描 pending queries，分发到 execute_query
     limit: 每次最多分发条数，避免瞬间压满队列
     """
+    task_engine = create_task_engine()
+
     async def _run():
-        async with get_async_session() as db:
+        async with get_task_async_session(task_engine) as db:
             result = await db.execute(
                 select(Query)
                 .where(Query.status == QueryStatus.PENDING.value)
@@ -150,15 +156,20 @@ def dispatch_batch(limit: int = 50) -> dict:
     except RuntimeError:
         pass
     # Create new loop and run
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    finally:
+        asyncio.run(task_engine.dispose())
 
 
 # ─── 每日重置账号计数 ─────────────────────────────────────────────────────────
 
 @app.task(queue="celery")
 def reset_daily_counts() -> dict:
+    task_engine = create_task_engine()
+
     async def _run():
-        async with get_async_session() as db:
+        async with get_task_async_session(task_engine) as db:
             pool = AccountPool(db)
             await pool.reset_daily_counts()
             return {"status": "ok"}
@@ -171,4 +182,7 @@ def reset_daily_counts() -> dict:
     except RuntimeError:
         pass
     # Create new loop and run
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    finally:
+        asyncio.run(task_engine.dispose())
