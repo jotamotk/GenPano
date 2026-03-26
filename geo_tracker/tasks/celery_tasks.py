@@ -91,7 +91,23 @@ def execute_query(self, query_id: int) -> dict:
                 await captcha_solver.close()
 
     try:
-        return asyncio.run(_run())
+        # Clean up any existing event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.close()
+        except RuntimeError:
+            pass
+        # Create new loop and run
+        # Clean up any existing event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
+    # Create new loop and run
+    return asyncio.run(_run())
     except Exception as exc:
         logger.exception(f"execute_query {query_id} raised: {exc}")
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
@@ -126,6 +142,14 @@ def dispatch_batch(limit: int = 50) -> dict:
             logger.info(f"Dispatched {dispatched} queries")
             return {"dispatched": dispatched}
 
+    # Clean up any existing event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
+    # Create new loop and run
     return asyncio.run(_run())
 
 
@@ -139,4 +163,12 @@ def reset_daily_counts() -> dict:
             await pool.reset_daily_counts()
             return {"status": "ok"}
 
+    # Clean up any existing event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
+    # Create new loop and run
     return asyncio.run(_run())
