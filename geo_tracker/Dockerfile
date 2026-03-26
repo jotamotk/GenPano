@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# 设置 PYTHONPATH 让 Python 能找到 geo_tracker 模块
+ENV PYTHONPATH=/app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -18,4 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 RUN camoufox fetch
 
-COPY . .
+# 将当前目录内容复制到 /app/geo_tracker/ 下
+# 这样 from geo_tracker.xxx import xxx 就能正常工作
+COPY . ./geo_tracker/
