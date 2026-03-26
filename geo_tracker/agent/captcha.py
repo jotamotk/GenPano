@@ -19,12 +19,16 @@ CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY", "")
 CAPSOLVER_BASE    = "https://api.capsolver.com"
 POLL_INTERVAL     = 3    # 秒
 MAX_WAIT          = 120  # 秒
+CLASH_PROXY_URL   = os.getenv("CLASH_PROXY_URL", "")  # e.g. http://clash:7890
 
 
 class CaptchaSolver:
     def __init__(self, api_key: str = CAPSOLVER_API_KEY):
         self.api_key = api_key
-        self.client  = httpx.AsyncClient(timeout=30)
+        self.client  = httpx.AsyncClient(
+            timeout=30,
+            proxy=CLASH_PROXY_URL if CLASH_PROXY_URL else None,
+        )
 
     async def _create_task(self, task: dict) -> Optional[str]:
         resp = await self.client.post(

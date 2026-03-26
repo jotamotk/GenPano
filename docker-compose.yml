@@ -1,5 +1,13 @@
 services:
 
+  clash:
+    image: ghcr.io/metacubex/mihomo:latest
+    restart: unless-stopped
+    volumes:
+      - ./clash:/root/.config/mihomo:ro
+    ports:
+      - "7890:7890"
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -46,6 +54,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      clash:
+        condition: service_started
 
   beat:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
@@ -54,6 +64,7 @@ services:
     env_file: .env
     depends_on:
       - redis
+      - clash
 
   nginx:
     image: ${ACR_REGISTRY}/genpano:frontend-${IMAGE_TAG:-latest}

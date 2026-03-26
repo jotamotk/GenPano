@@ -1,0 +1,71 @@
+# GEO Tracker 服务器 Clash 配置
+# 海外 LLM 走代理，国内 LLM 直连
+
+mixed-port: 7890
+allow-lan: true          # Docker 容器可通过 clash:7890 访问
+mode: rule
+log-level: warning
+external-controller: '0.0.0.0:9090'
+
+# 自动从订阅 URL 拉取节点（每 24 小时更新一次）
+proxy-providers:
+  ninja-sub:
+    type: http
+    url: "https://dddoge.xyz/dli/H1EGv2qngpcGWVc?clash=1"
+    interval: 86400
+    path: ./proxies/ninja.yaml
+    health-check:
+      enable: true
+      interval: 300
+      url: "http://www.gstatic.com/generate_204"
+
+proxy-groups:
+  - name: "🍃 Proxies"
+    type: url-test
+    use:
+      - ninja-sub
+    url: "http://www.gstatic.com/generate_204"
+    interval: 300
+
+  - name: "🌏 Overseas LLM"
+    type: select
+    proxies:
+      - "🍃 Proxies"
+      - DIRECT
+
+  - name: "🏠 Domestic"
+    type: select
+    proxies:
+      - DIRECT
+
+rules:
+  # ── 国内 LLM（直连）──────────────────────────────────
+  - DOMAIN-SUFFIX,bigmodel.cn,🏠 Domestic          # 智谱 API
+  - DOMAIN-SUFFIX,zhipuai.cn,🏠 Domestic
+  - DOMAIN-SUFFIX,moonshot.cn,🏠 Domestic          # Kimi
+  - DOMAIN-SUFFIX,doubao.com,🏠 Domestic           # 豆包
+  - DOMAIN-SUFFIX,volcengine.com,🏠 Domestic       # 豆包底层
+  - DOMAIN-SUFFIX,deepseek.com,🏠 Domestic         # DeepSeek
+  - DOMAIN-SUFFIX,baidu.com,🏠 Domestic            # 文心
+  - DOMAIN-SUFFIX,baidubce.com,🏠 Domestic
+  - DOMAIN-SUFFIX,chatglm.cn,🏠 Domestic           # 智谱 Web
+  - DOMAIN-SUFFIX,aliyuncs.com,🏠 Domestic         # 通义/阿里云
+
+  # ── 海外 LLM（走代理）────────────────────────────────
+  - DOMAIN-SUFFIX,openai.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,oaistatic.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,chatgpt.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,anthropic.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,claude.ai,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,google.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,gemini.google.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,googleapis.com,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,perplexity.ai,🌏 Overseas LLM
+  - DOMAIN-SUFFIX,x.com,🌏 Overseas LLM            # Grok
+
+  # ── 第三方服务（走代理）──────────────────────────────
+  - DOMAIN-SUFFIX,capsolver.com,🌏 Overseas LLM    # 验证码服务
+
+  # ── 兜底规则 ─────────────────────────────────────────
+  - GEOIP,CN,🏠 Domestic
+  - MATCH,🌏 Overseas LLM

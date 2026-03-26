@@ -33,7 +33,8 @@ LLM_PROXY_REQUIREMENTS: dict[str, list[ProxyType]] = {
 }
 
 # 代理服务商配置（环境变量）
-PROXY_PROVIDER      = os.getenv("PROXY_PROVIDER", "static")  # static | brightdata | oxylabs | smartproxy
+PROXY_PROVIDER      = os.getenv("PROXY_PROVIDER", "static")  # static | clash | brightdata | oxylabs | smartproxy
+CLASH_PROXY_URL     = os.getenv("CLASH_PROXY_URL", "http://clash:7890")
 BRIGHTDATA_USERNAME = os.getenv("BRIGHTDATA_USERNAME", "")
 BRIGHTDATA_PASSWORD = os.getenv("BRIGHTDATA_PASSWORD", "")
 OXAYLABS_USERNAME   = os.getenv("OXYLABS_USERNAME", "")
@@ -115,6 +116,18 @@ class ProxyPool:
         if PROXY_PROVIDER == "static":
             logger.error("未配置动态代理服务商，且静态代理池已空")
             return None
+
+        # Clash 本地代理（服务器上部署的 Clash 容器）
+        if PROXY_PROVIDER == "clash":
+            proxy = Proxy(
+                provider     = "clash",
+                proxy_url    = CLASH_PROXY_URL,
+                type         = ProxyType.RESIDENTIAL,
+                country      = country_code or "US",
+                last_used_at = datetime.utcnow(),
+            )
+            logger.info(f"[动态代理] Clash fallback → {CLASH_PROXY_URL}")
+            return proxy
 
         template = DYNAMIC_PROXY_TEMPLATES.get(PROXY_PROVIDER)
         if not template:
