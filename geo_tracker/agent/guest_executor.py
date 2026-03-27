@@ -25,20 +25,20 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
-        "input_selector":   "#prompt-textarea, [data-testid='prompt-textarea'], textarea",
+        "input_selector":   "#prompt-textarea, [data-testid='prompt-textarea'], textarea, [role='textbox']",
         "submit_key":       "Enter",
-        "response_selector": "[data-message-author-role='assistant'] .markdown, article",
-        "wait_after_submit": 20000,
-        "load_wait":        5000,
+        "response_selector": "[data-message-author-role='assistant'] .markdown, article, [class*='message']",
+        "wait_after_submit": 25000,
+        "load_wait":        8000,
         "requires_login":   False,
     },
     "gemini": {
         "url":              "https://gemini.google.com",
-        "input_selector":   "rich-textarea .ql-editor, textarea, [contenteditable='true']",
+        "input_selector":   "textarea, [contenteditable='true'], [role='textbox'], input[type='text'], rich-textarea",
         "submit_key":       "Enter",
-        "response_selector": "message-content, .response-container, model-response",
-        "wait_after_submit": 20000,
-        "load_wait":        5000,
+        "response_selector": "message-content, .response-container, model-response, [class*='message'], [class*='content']",
+        "wait_after_submit": 25000,
+        "load_wait":        10000,
         "requires_login":   False,
     },
     "perplexity": {
@@ -52,7 +52,7 @@ GUEST_LLM_CONFIG = {
     },
     "kimi": {
         "url":              "https://kimi.moonshot.cn",
-        "input_selector":   ".chat-input-editor",
+        "input_selector":   ".chat-input-editor, textarea, [contenteditable='true']",
         "submit_key":       "Enter",
         "response_selector": "[class*='segment-content'], [class*='message-content'], .chat-message",
         "wait_after_submit": 20000,
@@ -62,7 +62,7 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea",
+        "input_selector":   "textarea, [contenteditable='true']",
         "submit_key":       "Enter",
         "response_selector": "[class*='message'], [class*='content']",
         "wait_after_submit": 20000,
@@ -85,7 +85,7 @@ GUEST_LLM_CONFIG = {
         "response_selector": ".claude-message .prose, [class*='message'], [class*='content']",
         "wait_after_submit": 20000,
         "load_wait":        8000,
-        "requires_login":   True,  # Claude 通常需要登录
+        "requires_login":   True,
     },
     "grok": {
         "url":              "https://x.com/i/grok",
@@ -94,7 +94,7 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-testid='grok-response'] .prose, [class*='message']",
         "wait_after_submit": 20000,
         "load_wait":        8000,
-        "requires_login":   True,  # Grok 需要 X/Twitter 账号
+        "requires_login":   True,
     },
     "zhipu": {
         "url":              "https://chatglm.cn",
@@ -103,7 +103,7 @@ GUEST_LLM_CONFIG = {
         "response_selector": ".chat-message.assistant .content, [class*='message']",
         "wait_after_submit": 20000,
         "load_wait":        8000,
-        "requires_login":   True,  # 智谱通常需要登录
+        "requires_login":   True,
     },
 }
 
@@ -144,66 +144,107 @@ class GuestQueryExecutor:
         if use_proxy:
             logger.info(f"[{llm}] 使用代理: {self.proxy_url}")
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_cfg,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-web-security",
-                ],
-            )
+        page_obj = None
+        browser = None
 
-            try:
+        try:
+            async with async_playwright() as p:
+                logger.info(f"[{llm}] 启动浏览器...")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    proxy=proxy_cfg,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-web-security",
+                        "--disable-features=IsolateOrigins,site-per-process",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                    ],
+                )
+                logger.info(f"[{llm}] 浏览器启动成功")
+
                 context = await browser.new_context(
                     user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
+                        "Chrome/126.0.0.0 Safari/537.36"
                     ),
-                    viewport={"width": 1440, "height": 900},
+                    viewport={"width": 1920, "height": 1080},
                     locale="en-US",
                     ignore_https_errors=True,
+                    bypass_csp=True,
+                    reduced_motion="reduce",
                 )
-                page = await context.new_page()
+                page_obj = await context.new_page()
 
                 # 隐藏 webdriver 特征
-                await page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
+                await page_obj.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                    window.chrome = { runtime: {} };
+                """)
 
                 # 打开页面
                 logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
                 try:
-                    await page.goto(config["url"], wait_until="commit", timeout=90000)
-                    await page.wait_for_timeout(config.get("load_wait", 4000))
-                    logger.info(f"[{llm}] 页面标题: {await page.title()}")
+                    await page_obj.goto(config["url"], wait_until="networkidle", timeout=120000)
+                    await page_obj.wait_for_timeout(config.get("load_wait", 8000))
+                    title = await page_obj.title()
+                    logger.info(f"[{llm}] 页面标题: {title}")
                 except Exception as e:
                     logger.error(f"[{llm}] 页面加载失败: {e}")
+                    if page_obj:
+                        await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
                     return None
 
                 # 尝试找输入框
                 input_el = None
-                for sel in config["input_selector"].split(", "):
+                selectors = [s.strip() for s in config["input_selector"].split(",")]
+                logger.info(f"[{llm}] 尝试选择器: {selectors}")
+
+                for sel in selectors:
+                    if not sel:
+                        continue
                     try:
-                        input_el = await page.wait_for_selector(sel.strip(), timeout=8000, state="visible")
-                        logger.debug(f"[{llm}] 输入框找到: {sel.strip()}")
-                        break
-                    except Exception:
+                        logger.debug(f"[{llm}] 尝试选择器: {sel}")
+                        input_el = await page_obj.wait_for_selector(sel, timeout=10000, state="attached")
+                        if input_el:
+                            # 检查是否可见
+                            is_visible = await input_el.is_visible()
+                            if is_visible:
+                                logger.info(f"[{llm}] 输入框找到且可见: {sel}")
+                                break
+                            else:
+                                logger.debug(f"[{llm}] 选择器找到但不可见: {sel}")
+                                input_el = None
+                    except Exception as e:
+                        logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
                         continue
 
                 if not input_el:
                     logger.error(f"[{llm}] 找不到输入框")
-                    await _save_screenshot(page, query.id, f"{llm}_no_input")
+                    if page_obj:
+                        await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
+                        # 也保存页面内容用于调试
+                        try:
+                            content = await page_obj.content()
+                            content_path = SCREENSHOT_DIR / f"query_{query.id}_{llm}_content.html"
+                            content_path.write_text(content[:50000], encoding='utf-8')
+                            logger.info(f"[{llm}] 页面内容已保存: {content_path}")
+                        except Exception as e:
+                            logger.warning(f"保存页面内容失败: {e}")
                     return None
 
                 # 执行查询
-                resp_text = await self._browser_query(page, config, query.query_text, llm, input_el)
+                resp_text = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
                 if resp_text:
                     # 截图存档
-                    screenshot_path = await _save_screenshot(page, query.id, llm)
+                    screenshot_path = await _save_screenshot(page_obj, query.id, llm)
 
                     return LLMResponse(
                         query_id=query.id,
@@ -215,32 +256,61 @@ class GuestQueryExecutor:
                     )
                 else:
                     logger.error(f"[{llm}] 未能获取响应")
+                    if page_obj:
+                        await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
                     return None
 
-            finally:
-                await browser.close()
+        except Exception as e:
+            logger.exception(f"[{llm}] 执行异常: {e}")
+            if page_obj:
+                try:
+                    await _save_screenshot(page_obj, query.id, f"{llm}_exception")
+                except:
+                    pass
+            return None
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except:
+                    pass
 
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
     ) -> str:
         """在已打开的页面里输入 query，等待响应，抓取文本"""
         if input_el is None:
-            input_el = await page.wait_for_selector(cfg["input_selector"].split(", ")[0], timeout=10000)
-        await input_el.click()
+            input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
+
+        # 点击输入框
+        try:
+            await input_el.click(timeout=5000)
+        except:
+            pass
         await page.wait_for_timeout(500)
 
         # contenteditable div 不支持 fill()，用 Ctrl+A 清空后直接 type()
         if cfg.get("contenteditable"):
-            await page.keyboard.press("Control+a")
-            await page.keyboard.press("Delete")
+            try:
+                await input_el.focus()
+                await page.keyboard.press("Control+a")
+                await page.wait_for_timeout(100)
+                await page.keyboard.press("Delete")
+            except:
+                pass
         else:
-            await input_el.fill("")
-        await page.keyboard.type(query_text, delay=25)
-        await page.wait_for_timeout(500)
+            try:
+                await input_el.fill("")
+            except:
+                pass
+
+        await page.wait_for_timeout(300)
+        await page.keyboard.type(query_text, delay=30)
+        await page.wait_for_timeout(800)
 
         # 提交
         await page.keyboard.press("Enter")
-        logger.debug(f"[{llm_name}] 已提交 Query，等待响应…")
+        logger.info(f"[{llm_name}] 已提交 Query，等待响应…")
 
         # 等待响应生成
         await page.wait_for_timeout(cfg["wait_after_submit"])
@@ -249,13 +319,28 @@ class GuestQueryExecutor:
         try:
             elements = await page.query_selector_all(cfg["response_selector"])
             if elements:
-                texts = [await el.inner_text() for el in elements]
-                return "\n".join(t for t in texts if t.strip())[-5000:]  # 最多保留 5000 字符
-            else:
-                # fallback：取页面主体文本
-                return (await page.inner_text("body"))[:5000]
-        except Exception:
-            return (await page.inner_text("body"))[:5000]
+                texts = []
+                for el in elements:
+                    try:
+                        txt = await el.inner_text()
+                        if txt and txt.strip():
+                            texts.append(txt)
+                    except:
+                        pass
+                if texts:
+                    return "\n".join(texts)[-5000:]
+
+            # fallback：取页面主体文本
+            logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 fallback 提取")
+            body_text = await page.inner_text("body")
+            return body_text[:5000] if body_text else ""
+        except Exception as e:
+            logger.warning(f"[{llm_name}] 提取响应异常: {e}")
+            try:
+                body_text = await page.inner_text("body")
+                return body_text[:5000] if body_text else ""
+            except:
+                return ""
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
@@ -265,6 +350,7 @@ async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optio
         filename = f"query_{query_id}_{suffix}_{timestamp}.png" if suffix else f"query_{query_id}_{timestamp}.png"
         path = SCREENSHOT_DIR / filename
         await page.screenshot(path=str(path), full_page=False)
+        logger.info(f"截图已保存: {path}")
         return path
     except Exception as e:
         logger.warning(f"保存截图失败: {e}")
