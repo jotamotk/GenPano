@@ -191,14 +191,17 @@ class GuestQueryExecutor:
                 # 打开页面
                 logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
                 try:
-                    await page_obj.goto(config["url"], wait_until="networkidle", timeout=120000)
+                    await page_obj.goto(config["url"], wait_until="commit", timeout=90000)
                     await page_obj.wait_for_timeout(config.get("load_wait", 8000))
                     title = await page_obj.title()
                     logger.info(f"[{llm}] 页面标题: {title}")
                 except Exception as e:
                     logger.error(f"[{llm}] 页面加载失败: {e}")
                     if page_obj:
-                        await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
+                        try:
+                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
+                        except:
+                            pass
                     return None
 
                 # 尝试找输入框
