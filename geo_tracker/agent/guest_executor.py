@@ -222,8 +222,9 @@ class GuestQueryExecutor:
                                 logger.info(f"[{llm}] 输入框找到且可见: {sel}")
                                 break
                             else:
-                                logger.debug(f"[{llm}] 选择器找到但不可见: {sel}")
-                                input_el = None
+                                # 对于某些 LLM（如 Gemini），元素可能存在但报告为不可见，仍然尝试使用
+                                logger.info(f"[{llm}] 输入框找到但报告为不可见，仍尝试使用: {sel}")
+                                break
                     except Exception as e:
                         logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
                         continue
