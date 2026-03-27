@@ -7,12 +7,10 @@ mode: rule
 log-level: warning
 external-controller: '0.0.0.0:9090'
 
-# 自动从订阅 URL 拉取节点（每 24 小时更新一次）
+# 使用本地代理文件
 proxy-providers:
   ninja-sub:
-    type: http
-    url: "https://dddoge.xyz/dli/H1EGv2qngpcGWVc?clash=1"
-    interval: 86400
+    type: file
     path: ./proxies/ninja.yaml
     health-check:
       enable: true

@@ -156,6 +156,10 @@ HTML_TEMPLATE = """
                     </select>
                 </div>
                 <div class="filter-group">
+                    <label>Query ID</label>
+                    <input type="number" id="filter-id" placeholder="Query ID">
+                </div>
+                <div class="filter-group">
                     <label>Brand ID</label>
                     <input type="number" id="filter-brand" placeholder="Brand ID">
                 </div>
@@ -231,12 +235,14 @@ HTML_TEMPLATE = """
             const llm = document.getElementById('filter-llm').value;
             const status = document.getElementById('filter-status').value;
             const brand = document.getElementById('filter-brand').value;
+            const queryId = document.getElementById('filter-id').value;
             const limit = parseInt(document.getElementById('filter-limit').value);
 
             const params = new URLSearchParams();
             if (llm) params.append('llm', llm);
             if (status) params.append('status', status);
             if (brand) params.append('brand_id', brand);
+            if (queryId) params.append('id', queryId);
             params.append('limit', limit);
             params.append('offset', (currentPage - 1) * limit);
 
@@ -410,6 +416,7 @@ def queries():
     llm = request.args.get('llm')
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
+    query_id = request.args.get('id')
     limit = int(request.args.get('limit', 50))
     offset = int(request.args.get('offset', 0))
 
@@ -418,6 +425,9 @@ def queries():
         where = []
         params = []
 
+        if query_id:
+            where.append("q.id = %s")
+            params.append(int(query_id))
         if llm:
             where.append("target_llm = %s")
             params.append(llm)
