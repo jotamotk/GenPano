@@ -119,7 +119,7 @@ class GuestQueryExecutor:
         Args:
             proxy_url: 代理 URL，用于访问国际 LLM
         """
-        self.proxy_url = proxy_url or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+        self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -174,11 +174,11 @@ class GuestQueryExecutor:
                 )
 
                 # 打开页面
-                logger.info(f"[{llm}] 打开: {config['url']}")
+                logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
                 try:
-                    await page.goto(config["url"], wait_until="domcontentloaded", timeout=45000)
+                    await page.goto(config["url"], wait_until="commit", timeout=90000)
                     await page.wait_for_timeout(config.get("load_wait", 4000))
-                    logger.debug(f"[{llm}] 页面标题: {await page.title()}")
+                    logger.info(f"[{llm}] 页面标题: {await page.title()}")
                 except Exception as e:
                     logger.error(f"[{llm}] 页面加载失败: {e}")
                     return None
