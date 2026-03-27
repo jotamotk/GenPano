@@ -283,19 +283,24 @@ class GuestQueryExecutor:
                     await page_obj.goto("about:blank", wait_until="commit", timeout=30000)
                     await asyncio.sleep(random_delay(500, 1500))
 
-                    await page_obj.goto(config["url"], wait_until="networkidle", timeout=120000)
+                    # 先尝试用 commit，不等待 networkidle（避免超时）
+                    try:
+                        await page_obj.goto(config["url"], wait_until="commit", timeout=60000)
+                    except Exception:
+                        # 如果 commit 也超时，直接继续尝试找元素
+                        logger.warning(f"[{llm}] 页面加载超时，继续尝试找输入框")
+
+                    # 等待一段时间让页面渲染
                     await asyncio.sleep(config.get("load_wait", 10000) / 1000)
 
-                    title = await page_obj.title()
-                    logger.info(f"[{llm}] 页面标题: {title}")
+                    try:
+                        title = await page_obj.title()
+                        logger.info(f"[{llm}] 页面标题: {title}")
+                    except Exception:
+                        logger.warning(f"[{llm}] 无法获取页面标题")
                 except Exception as e:
-                    logger.error(f"[{llm}] 页面加载失败: {e}")
-                    if page_obj:
-                        try:
-                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
-                        except Exception:
-                            pass
-                    return None
+                    logger.error(f"[{llm}] 页面加载异常: {e}")
+                    # 即使页面加载失败，也继续尝试找输入框（可能部分加载成功）
 
                 input_el = None
                 selectors = [s.strip() for s in config["input_selector"].split(",")]
