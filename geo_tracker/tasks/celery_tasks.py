@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from celery import Celery
 from celery.schedules import crontab
@@ -15,6 +16,7 @@ from sqlalchemy import select
 
 from geo_tracker.agent.captcha import CaptchaSolver
 from geo_tracker.agent.executor import QueryExecutor
+from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG
 from geo_tracker.db.models import Query, QueryStatus, LLMResponse
 from geo_tracker.pool.account_pool import AccountPool
 from geo_tracker.pool.proxy_pool import ProxyPool
@@ -55,6 +57,8 @@ app.conf.update(
 def execute_query(self, query_id: int) -> dict:
     """
     执行单条查询
+    - 优先使用无账号模式 (GuestQueryExecutor)
+    - 如果 LLM 需要登录，再回退到账号模式 (QueryExecutor)
     bind=True 支持 self.retry()
     """
     task_engine = create_task_engine()
@@ -68,6 +72,30 @@ def execute_query(self, query_id: int) -> dict:
             query.status = QueryStatus.RUNNING.value
             await db.commit()
 
+            llm_config = GUEST_LLM_CONFIG.get(query.target_llm, {})
+
+            # 检查是否支持无账号模式
+            if not llm_config.get("requires_login", True):
+                logger.info(f"Query {query_id}: 使用无账号模式执行 {query.target_llm}")
+                try:
+                    # 使用无账号执行器
+                    proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+                    guest_executor = GuestQueryExecutor(proxy_url=proxy_url)
+                    response: LLMResponse | None = await guest_executor.execute(query)
+
+                    if response:
+                        db.add(response)
+                        query.status = QueryStatus.DONE.value
+                        await db.commit()
+                        logger.info(f"Query {query_id} DONE (guest mode), response len={len(response.raw_text)}")
+                        return {"query_id": query_id, "status": "done", "mode": "guest"}
+                    else:
+                        logger.warning(f"Query {query_id} 无账号模式失败，尝试账号模式")
+                except Exception as e:
+                    logger.exception(f"Query {query_id} 无账号模式异常: {e}")
+
+            # 回退到账号模式
+            logger.info(f"Query {query_id}: 使用账号模式执行 {query.target_llm}")
             account_pool  = AccountPool(db)
             proxy_pool    = ProxyPool(db)
             captcha_solver = CaptchaSolver()
@@ -81,8 +109,8 @@ def execute_query(self, query_id: int) -> dict:
                     db.add(response)
                     query.status = QueryStatus.DONE.value
                     await db.commit()
-                    logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
-                    return {"query_id": query_id, "status": "done"}
+                    logger.info(f"Query {query_id} DONE (account mode), response len={len(response.raw_text)}")
+                    return {"query_id": query_id, "status": "done", "mode": "account"}
                 else:
                     query.status = QueryStatus.FAILED.value
                     query.retry_count += 1

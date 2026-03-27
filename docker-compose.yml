@@ -71,8 +71,22 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
+      - query-tool
+
+  query-tool:
+    build: ./query_tool
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:
