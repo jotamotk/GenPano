@@ -1,9 +1,9 @@
 """
-简单的 LLM 响应查询工具
+简单的 LLM 响应查询工具 - 带截图查看功能
 """
 import os
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_from_directory
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -30,6 +30,9 @@ else:
     DB_PORT = "5432"
     DB_NAME = "genpano"
 
+# Screenshot directory - from worker container
+SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "/data/screenshots")
+
 
 def get_db():
     conn = psycopg2.connect(
@@ -47,11 +50,11 @@ HTML_TEMPLATE = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>LLM Response Query</title>
+    <title>LLM Query Monitor</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1400px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         h1 { color: #333; margin-bottom: 20px; }
         .filters { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .filter-row { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; }
@@ -60,9 +63,14 @@ HTML_TEMPLATE = """
         .filter-group select, .filter-group input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; min-width: 150px; }
         button { padding: 8px 20px; background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
         button:hover { background: #4338ca; }
+        button.secondary { background: #6b7280; }
+        button.secondary:hover { background: #4b5563; }
         .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
         .stat-card { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .stat-value { font-size: 28px; font-weight: 700; color: #4f46e5; }
+        .stat-value.failed { color: #dc2626; }
+        .stat-value.pending { color: #d97706; }
+        .stat-value.done { color: #059669; }
         .stat-label { font-size: 12px; color: #666; margin-top: 4px; }
         table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
@@ -72,17 +80,21 @@ HTML_TEMPLATE = """
         .status-done { color: #059669; font-weight: 600; }
         .status-pending { color: #d97706; font-weight: 600; }
         .status-failed { color: #dc2626; font-weight: 600; }
+        .status-running { color: #2563eb; font-weight: 600; }
         .llm-badge { display: inline-block; padding: 2px 8px; background: #e0e7ff; color: #4f46e5; border-radius: 999px; font-size: 12px; font-weight: 600; }
-        .text-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+        .text-preview { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+        .screenshot-link { color: #4f46e5; cursor: pointer; text-decoration: underline; font-size: 12px; }
+        .screenshot-link:hover { color: #4338ca; }
         .pagination { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
         .pagination button { background: white; color: #4f46e5; border: 1px solid #ddd; }
         .pagination button:hover { background: #f5f5f5; }
         .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
         .pagination .active { background: #4f46e5; color: white; border-color: #4f46e5; }
         /* Modal */
-        .modal-backdrop { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-backdrop { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; }
         .modal-backdrop.show { display: flex; align-items: center; justify-content: center; }
-        .modal { background: white; border-radius: 8px; max-width: 900px; max-height: 80vh; width: 90%; overflow: hidden; display: flex; flex-direction: column; }
+        .modal { background: white; border-radius: 8px; max-width: 1200px; max-height: 90vh; width: 95%; overflow: hidden; display: flex; flex-direction: column; }
+        .modal.large { max-width: 1600px; }
         .modal-header { padding: 15px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
         .modal-header h3 { margin: 0; }
         .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #666; padding: 0; width: 30px; height: 30px; }
@@ -92,17 +104,28 @@ HTML_TEMPLATE = """
         .modal-meta-item { background: #f8fafc; padding: 10px 15px; border-radius: 4px; }
         .modal-meta-label { font-size: 12px; color: #666; margin-bottom: 4px; }
         .modal-meta-value { font-weight: 600; color: #333; }
+        .screenshot-img { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px; }
+        .refresh-btn { margin-left: 10px; }
+        .auto-refresh { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+        .auto-refresh label { font-size: 14px; color: #666; display: flex; align-items: center; gap: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>LLM Response Query</h1>
+        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+            <h1>LLM Query Monitor</h1>
+            <button class="secondary refresh-btn" onclick="loadStats(); loadQueries();">Refresh</button>
+            <div class="auto-refresh">
+                <label><input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()"> Auto-refresh (5s)</label>
+            </div>
+        </div>
 
         <div class="stats" id="stats">
             <div class="stat-card"><div class="stat-value" id="total-queries">-</div><div class="stat-label">Total Queries</div></div>
-            <div class="stat-card"><div class="stat-value" id="done-queries">-</div><div class="stat-label">Done</div></div>
-            <div class="stat-card"><div class="stat-value" id="pending-queries">-</div><div class="stat-label">Pending</div></div>
-            <div class="stat-card"><div class="stat-value" id="failed-queries">-</div><div class="stat-label">Failed</div></div>
+            <div class="stat-card"><div class="stat-value done" id="done-queries">-</div><div class="stat-label">Done</div></div>
+            <div class="stat-card"><div class="stat-value pending" id="pending-queries">-</div><div class="stat-label">Pending</div></div>
+            <div class="stat-card"><div class="stat-value" id="running-queries">-</div><div class="stat-label">Running</div></div>
+            <div class="stat-card"><div class="stat-value failed" id="failed-queries">-</div><div class="stat-label">Failed</div></div>
         </div>
 
         <div class="filters">
@@ -128,6 +151,7 @@ HTML_TEMPLATE = """
                         <option value="">All</option>
                         <option value="DONE">Done</option>
                         <option value="PENDING">Pending</option>
+                        <option value="RUNNING">Running</option>
                         <option value="FAILED">Failed</option>
                     </select>
                 </div>
@@ -143,7 +167,7 @@ HTML_TEMPLATE = """
                         <option value="100">100</option>
                     </select>
                 </div>
-                <button onclick="loadQueries()">Search</button>
+                <button onclick="currentPage=1; loadQueries();">Search</button>
             </div>
         </div>
 
@@ -153,10 +177,12 @@ HTML_TEMPLATE = """
                     <th>ID</th>
                     <th>LLM</th>
                     <th>Status</th>
+                    <th>Retry</th>
                     <th>Query</th>
-                    <th>Response</th>
+                    <th>Screenshot</th>
                     <th>Brand</th>
                     <th>Created</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="results-body">
@@ -167,7 +193,7 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="modal-backdrop" id="modal-backdrop" onclick="if(event.target === this) closeModal()">
-        <div class="modal">
+        <div class="modal" id="modal">
             <div class="modal-header">
                 <h3 id="modal-title">Response Details</h3>
                 <button class="modal-close" onclick="closeModal()">&times;</button>
@@ -176,16 +202,28 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div class="modal-backdrop" id="screenshot-modal" onclick="if(event.target === this) closeScreenshotModal()">
+        <div class="modal large" id="screenshot-modal-content">
+            <div class="modal-header">
+                <h3 id="screenshot-modal-title">Screenshot</h3>
+                <button class="modal-close" onclick="closeScreenshotModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="screenshot-modal-body"></div>
+        </div>
+    </div>
+
     <script>
         let currentPage = 1;
         let currentData = [];
+        let autoRefreshInterval = null;
 
         async function loadStats() {
-            const res = await fetch('/query/api/stats');
+            const res = await fetch('./api/stats');
             const data = await res.json();
             document.getElementById('total-queries').textContent = data.total;
             document.getElementById('done-queries').textContent = data.done;
             document.getElementById('pending-queries').textContent = data.pending;
+            document.getElementById('running-queries').textContent = data.running;
             document.getElementById('failed-queries').textContent = data.failed;
         }
 
@@ -202,7 +240,7 @@ HTML_TEMPLATE = """
             params.append('limit', limit);
             params.append('offset', (currentPage - 1) * limit);
 
-            const res = await fetch('/query/api/queries?' + params.toString());
+            const res = await fetch('./api/queries?' + params.toString());
             currentData = await res.json();
             renderTable(currentData);
         }
@@ -214,12 +252,19 @@ HTML_TEMPLATE = """
                     <td>${q.id}</td>
                     <td><span class="llm-badge">${q.target_llm}</span></td>
                     <td><span class="status-${q.status.toLowerCase()}">${q.status}</span></td>
-                    <td class="text-preview" title="${escapeHtml(q.query_text)}">${escapeHtml(q.query_text || '')}</td>
+                    <td>${q.retry_count || 0}</td>
+                    <td class="text-preview" title="${escapeHtml(q.query_text)}" onclick="showResponse(${q.id})">${escapeHtml(q.query_text || '')}</td>
                     <td>
-                        ${q.response ? `<span class="text-preview" onclick="showResponse(${q.id})">${escapeHtml(q.response.substring(0, 100))}...</span>` : '-'}
+                        ${q.screenshot_path ?
+                            `<span class="screenshot-link" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">View Screenshot</span>` :
+                            (q.status === 'FAILED' ? '<span style="color:#999;font-size:12px;">No screenshot</span>' : '-')
+                        }
                     </td>
                     <td>${q.brand_id || '-'}</td>
                     <td>${q.created_at ? new Date(q.created_at).toLocaleString() : '-'}</td>
+                    <td>
+                        <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="showResponse(${q.id})">View</button>
+                    </td>
                 </tr>
             `).join('');
         }
@@ -229,15 +274,20 @@ HTML_TEMPLATE = """
             if (!q) return;
 
             document.getElementById('modal-title').textContent = `Query #${q.id} - ${q.target_llm}`;
+            const statusClass = `status-${q.status.toLowerCase()}`;
             document.getElementById('modal-body').innerHTML = `
                 <div class="modal-meta">
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">Status</div>
-                        <div class="modal-meta-value">${q.status}</div>
+                        <div class="modal-meta-value ${statusClass}">${q.status}</div>
                     </div>
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">LLM</div>
                         <div class="modal-meta-value">${q.target_llm}</div>
+                    </div>
+                    <div class="modal-meta-item">
+                        <div class="modal-meta-label">Retry Count</div>
+                        <div class="modal-meta-value">${q.retry_count || 0}</div>
                     </div>
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">Brand ID</div>
@@ -247,11 +297,31 @@ HTML_TEMPLATE = """
                         <div class="modal-meta-label">Created</div>
                         <div class="modal-meta-value">${q.created_at ? new Date(q.created_at).toLocaleString() : '-'}</div>
                     </div>
+                    ${q.executed_at ? `
+                    <div class="modal-meta-item">
+                        <div class="modal-meta-label">Executed</div>
+                        <div class="modal-meta-value">${new Date(q.executed_at).toLocaleString()}</div>
+                    </div>
+                    ` : ''}
+                    ${q.llm_version ? `
+                    <div class="modal-meta-item">
+                        <div class="modal-meta-label">LLM Version</div>
+                        <div class="modal-meta-value">${q.llm_version}</div>
+                    </div>
+                    ` : ''}
                 </div>
-                <div class="modal-meta-item">
+                <div class="modal-meta-item" style="margin-bottom:15px;">
                     <div class="modal-meta-label">Query</div>
                     <div class="modal-meta-value" style="font-weight: normal;"><pre>${escapeHtml(q.query_text || '')}</pre></div>
                 </div>
+                ${q.screenshot_path ? `
+                <div style="margin-bottom:15px;">
+                    <div class="modal-meta-label" style="margin-bottom:8px;">Screenshot</div>
+                    <span class="screenshot-link" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">View Full Screenshot</span>
+                    <br>
+                    <img src="./api/screenshot?path=${encodeURIComponent(q.screenshot_path)}" class="screenshot-img" style="max-height:300px;cursor:pointer;" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">
+                </div>
+                ` : ''}
                 <div style="margin-top: 20px;">
                     <div class="modal-meta-label" style="margin-bottom: 8px;">Response</div>
                     <pre>${escapeHtml(q.response || '(no response)')}</pre>
@@ -260,8 +330,35 @@ HTML_TEMPLATE = """
             document.getElementById('modal-backdrop').classList.add('show');
         }
 
+        function showScreenshot(path, queryId) {
+            document.getElementById('screenshot-modal-title').textContent = `Screenshot - Query #${queryId}`;
+            document.getElementById('screenshot-modal-body').innerHTML = `
+                <img src="./api/screenshot?path=${encodeURIComponent(path)}" style="max-width:100%;height:auto;">
+            `;
+            document.getElementById('screenshot-modal').classList.add('show');
+        }
+
         function closeModal() {
             document.getElementById('modal-backdrop').classList.remove('show');
+        }
+
+        function closeScreenshotModal() {
+            document.getElementById('screenshot-modal').classList.remove('show');
+        }
+
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('auto-refresh');
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(() => {
+                    loadStats();
+                    loadQueries();
+                }, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
         }
 
         function escapeHtml(text) {
@@ -301,6 +398,7 @@ def stats():
             'total': total,
             'done': stats_dict.get('DONE', 0),
             'pending': stats_dict.get('PENDING', 0),
+            'running': stats_dict.get('RUNNING', 0),
             'failed': stats_dict.get('FAILED', 0)
         })
     finally:
@@ -342,7 +440,11 @@ def queries():
                     q.query_text,
                     q.brand_id,
                     q.created_at,
-                    r.raw_text as response
+                    q.executed_at,
+                    q.retry_count,
+                    r.raw_text as response,
+                    r.screenshot_path,
+                    r.llm_version
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 WHERE {where_clause}
@@ -354,6 +456,19 @@ def queries():
         return jsonify([dict(r) for r in rows])
     finally:
         conn.close()
+
+
+@app.route('/api/screenshot')
+def screenshot():
+    path = request.args.get('path')
+    if not path:
+        return "Path required", 400
+
+    import os
+    filename = os.path.basename(path)
+    directory = os.path.dirname(path) or SCREENSHOT_DIR
+
+    return send_from_directory(directory, filename)
 
 
 if __name__ == '__main__':

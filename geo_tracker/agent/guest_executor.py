@@ -38,7 +38,7 @@ GUEST_LLM_CONFIG = {
         "submit_key":       "Enter",
         "response_selector": "message-content, .response-container, model-response, [class*='message'], [class*='content']",
         "wait_after_submit": 25000,
-        "load_wait":        10000,
+        "load_wait":        25000,
         "requires_login":   False,
     },
     "perplexity": {

@@ -49,6 +49,8 @@ services:
       --concurrency=1
       -Q celery,llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok
     env_file: .env
+    volumes:
+      - screenshots_data:/data/screenshots
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,9 +86,13 @@ services:
       - "5000:5000"
     environment:
       - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
+      - SCREENSHOT_DIR=/data/screenshots
+    volumes:
+      - screenshots_data:/data/screenshots
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  screenshots_data:
