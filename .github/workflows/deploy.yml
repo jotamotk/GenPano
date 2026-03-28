@@ -58,45 +58,38 @@ jobs:
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GEMINI_COOKIES_JSON
           script: |
             cd /opt/genpano
-            
-            # 创建完整的 .env 文件（使用 > 覆盖而非追加）
-            cat > .env << 'ENVEOF'
-            # Docker Registry
+
+            # 创建完整的 .env 文件
+            cat > .env << ENVEOF
             ACR_REGISTRY=${{ secrets.ACR_REGISTRY }}
             IMAGE_TAG=${{ env.IMAGE_TAG }}
-            
-            # Database
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
-            
-            # Redis
             REDIS_URL=redis://redis:6379/0
-            
-            # Proxy
             PROXY_PROVIDER=clash
             CLASH_PROXY_URL=http://clash:7890
-            
-            # Node.js Backend
             PORT=4000
             NODE_ENV=production
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             JWT_EXPIRES_IN=7d
-            
-            # LLM API Keys
             ZHIPU_API_KEY=${{ secrets.ZHIPU_API_KEY }}
             GLM_MODEL=glm-4
             CAPSOLVER_API_KEY=${{ secrets.CAPSOLVER_API_KEY }}
-
-            # LLM Cookies (JSON array, exported from browser)
-            GEMINI_COOKIES_JSON=${{ secrets.GEMINI_COOKIES_JSON }}
             ENVEOF
-            
+
+            # 单独写入 GEMINI_COOKIES_JSON，避免 heredoc 转义问题
+            # 通过 envs 参数从 GitHub Actions 安全传入，不在脚本里直接展开
+            echo "GEMINI_COOKIES_JSON=${GEMINI_COOKIES_JSON}" >> .env
+
             docker compose pull
             docker compose up -d --remove-orphans
             docker image prune -f
