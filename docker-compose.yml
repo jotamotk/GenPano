@@ -80,7 +80,7 @@ services:
       - query-tool
 
   query-tool:
-    build: ./query_tool
+    image: ${ACR_REGISTRY}/genpano:query-tool-${IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "5000:5000"
