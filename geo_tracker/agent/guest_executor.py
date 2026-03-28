@@ -165,6 +165,17 @@ class GuestQueryExecutor:
                         "--disable-features=IsolateOrigins,site-per-process",
                         "--disable-gpu",
                         "--disable-software-rasterizer",
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                        "--disable-default-apps",
+                        "--disable-sync",
+                        "--disable-translate",
+                        "--metrics-recording-only",
+                        "--no-first-run",
+                        "--safebrowsing-disable-auto-update",
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
                     ],
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
