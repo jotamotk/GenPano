@@ -37,12 +37,15 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "rich-textarea .ql-editor, rich-textarea, [contenteditable='true'], textarea",
         "submit_button":    "button.send-button, button[aria-label='Send message'], button[aria-label='Send']",
         "submit_key":       "Enter",
-        "response_selector": "div[class*='response'], div[class*='message'], article, div[role*='article'], .markdown, prose",
-        "wait_after_submit": 45000,
+        # Gemini uses Angular custom elements; try specific tags first, then broad fallbacks
+        "response_selector": "model-response message-content, model-response .response-content, model-response, message-content, .model-response-text, .response-content, div[class*='model-response'], div[class*='response-text'], .markdown, .prose",
+        "wait_after_submit": 60000,
         "load_wait":        15000,
         "requires_login":   False,
         "contenteditable":  True,
         "visit_google_first": False,
+        # Domains that indicate a login redirect (response is invalid if we land here)
+        "login_redirect_domains": ["accounts.google.com", "signin.google.com"],
     },
     "perplexity": {
         "url":              "https://www.perplexity.ai",
@@ -408,35 +411,82 @@ class GuestQueryExecutor:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
-        # 等待响应生成
-        await page.wait_for_timeout(cfg["wait_after_submit"])
+        # 等待响应生成（分段等待，每隔一段检查是否已有内容）
+        wait_total = cfg["wait_after_submit"]
+        wait_interval = 5000  # 每 5 秒检查一次
+        elapsed = 0
+        response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
+
+        while elapsed < wait_total:
+            await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
+            elapsed += wait_interval
+
+            # 检测是否跳转到登录页
+            current_url = page.url
+            login_domains = cfg.get("login_redirect_domains", [])
+            if any(d in current_url for d in login_domains):
+                logger.warning(f"[{llm_name}] 检测到跳转到登录页: {current_url}，中止等待")
+                await _save_screenshot(page, -1, f"{llm_name}_login_redirect")
+                return ""
+
+            # 提前检查是否已有响应内容（避免浪费剩余等待时间）
+            for sel in response_selectors:
+                try:
+                    el = await page.query_selector(sel)
+                    if el:
+                        txt = await el.inner_text()
+                        if txt and len(txt.strip()) > 20:
+                            logger.info(f"[{llm_name}] 响应内容提前就绪（{elapsed}ms），selector: {sel}")
+                            break
+                except Exception:
+                    continue
 
         # 抓取响应文本
         try:
-            elements = await page.query_selector_all(cfg["response_selector"])
-            if elements:
-                texts = []
-                for el in elements:
-                    try:
-                        txt = await el.inner_text()
-                        if txt and txt.strip():
-                            texts.append(txt)
-                    except:
-                        pass
-                if texts:
-                    return "\n".join(texts)[-5000:]
+            # 优先尝试配置的 selectors
+            for sel in response_selectors:
+                try:
+                    elements = await page.query_selector_all(sel)
+                    if elements:
+                        texts = []
+                        for el in elements:
+                            try:
+                                txt = await el.inner_text()
+                                if txt and txt.strip():
+                                    texts.append(txt.strip())
+                            except:
+                                pass
+                        combined = "\n".join(texts)
+                        if len(combined) > 20:
+                            logger.info(f"[{llm_name}] 通过 selector 提取响应: {sel} ({len(combined)} chars)")
+                            return combined[-5000:]
+                except Exception:
+                    continue
 
-            # fallback：取页面主体文本
-            logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 fallback 提取")
-            body_text = await page.inner_text("body")
-            return body_text[:5000] if body_text else ""
+            # fallback：通过 JS 遍历所有文本节点，过滤噪音
+            logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
+            js_text = await page.evaluate("""
+                () => {
+                    const candidates = document.querySelectorAll(
+                        'p, li, [class*="response"], [class*="message"], [class*="content"], article, section'
+                    );
+                    let best = '';
+                    candidates.forEach(el => {
+                        const t = el.innerText || '';
+                        if (t.trim().length > best.length) best = t.trim();
+                    });
+                    return best;
+                }
+            """)
+            if js_text and len(js_text) > 20:
+                logger.info(f"[{llm_name}] JS fallback 提取成功 ({len(js_text)} chars)")
+                return js_text[:5000]
+
+            logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
+            return ""
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
-            try:
-                body_text = await page.inner_text("body")
-                return body_text[:5000] if body_text else ""
-            except:
-                return ""
+            return ""
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
