@@ -181,17 +181,13 @@ class GuestQueryExecutor:
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-blink-features=AutomationControlled",
-                        # Server/Docker rendering fixes
+                        # Docker/headless 稳定性（不禁用软件光栅化，否则无渲染后端会崩溃）
                         "--disable-gpu",
-                        "--disable-software-rasterizer",
+                        "--no-zygote",
+                        "--window-size=1920,1080",
                         "--disable-background-timer-throttling",
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
-                        "--disable-features=TranslateUI,BlinkGenPropertyTrees,VizDisplayCompositor",
-                        "--window-size=1920,1080",
-                        "--force-device-scale-factor=1",
-                        "--hide-scrollbars",
-                        "--mute-audio",
                     ],
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
