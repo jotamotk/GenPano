@@ -161,6 +161,17 @@ class GuestQueryExecutor:
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-blink-features=AutomationControlled",
+                        # Server/Docker rendering fixes
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--disable-features=TranslateUI,BlinkGenPropertyTrees,VizDisplayCompositor",
+                        "--window-size=1920,1080",
+                        "--force-device-scale-factor=1",
+                        "--hide-scrollbars",
+                        "--mute-audio",
                     ],
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
@@ -202,6 +213,16 @@ class GuestQueryExecutor:
                         runtime: { onMessage: {addListener:()=>{},removeListener:()=>{}}, sendMessage:()=>{} },
                         loadTimes: () => ({}), csi: () => ({})
                     };
+                    // Hide headless indicators
+                    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 1});
+                    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+                    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
+                    Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (params) =>
+                        params.name === 'notifications'
+                            ? Promise.resolve({state: Notification.permission})
+                            : originalQuery(params);
                 """)
 
                 # 对于 Gemini，先访问 google.com 建立 cookie
@@ -227,9 +248,32 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
                 try:
                     await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
-                    await page_obj.wait_for_timeout(config.get("load_wait", 8000))
                     title = await page_obj.title()
-                    logger.info(f"[{llm}] 页面标题: {title}")
+                    logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
+
+                    # 优先等待输入框出现，最多等 load_wait 时间，避免固定等待
+                    load_wait = config.get("load_wait", 8000)
+                    input_selectors = [s.strip() for s in config["input_selector"].split(",")]
+                    input_ready = False
+                    try:
+                        for sel in input_selectors:
+                            if not sel:
+                                continue
+                            try:
+                                await page_obj.wait_for_selector(sel, timeout=load_wait, state="attached")
+                                logger.info(f"[{llm}] 输入框就绪（提前完成等待）: {sel}")
+                                input_ready = True
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                    if not input_ready:
+                        # 输入框未就绪时仍等待剩余时间
+                        await page_obj.wait_for_timeout(min(load_wait, 5000))
+
+                    title = await page_obj.title()
+                    logger.info(f"[{llm}] 页面最终标题: {title}")
                 except Exception as e:
                     logger.error(f"[{llm}] 页面加载失败: {e}")
                     if page_obj:
