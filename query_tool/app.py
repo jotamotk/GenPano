@@ -457,7 +457,7 @@ HTML_TEMPLATE = """
                 }
                 el.innerHTML = files.map(f =>
                     '<div style="margin-bottom:4px;">' +
-                    '<span class="html-link" onclick="showHtmlSource(' + JSON.stringify(f.path) + ', ' + JSON.stringify(f.name) + ')">' + escapeHtml(f.name) + '</span>' +
+                    "<span class='html-link' onclick='showHtmlSource(" + JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>" + escapeHtml(f.name) + '</span>' +
                     ' <span style="color:#999;font-size:11px;">(' + (f.size/1024).toFixed(1) + ' KB)</span>' +
                     '</div>'
                 ).join('');
@@ -595,7 +595,7 @@ HTML_TEMPLATE = """
                         '<td style="padding:6px 10px;font-family:monospace;max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.name) + '</td>' +
                         '<td style="padding:6px 10px;white-space:nowrap;">' + kb + ' KB</td>' +
                         '<td style="padding:6px 10px;white-space:nowrap;">' + dt + '</td>' +
-                        '<td style="padding:6px 10px;"><span class="html-link" onclick="showHtmlSource(' + JSON.stringify(f.path) + ', ' + JSON.stringify(f.name) + ')">View Source</span></td>' +
+                        "<td style='padding:6px 10px;'><span class='html-link' onclick='showHtmlSource(" + JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>View Source</span></td>" +
                         '</tr>';
                 }).join('') + '</tbody></table>';
         }
