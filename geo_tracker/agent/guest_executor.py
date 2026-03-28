@@ -181,17 +181,13 @@ class GuestQueryExecutor:
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-blink-features=AutomationControlled",
-                        # Server/Docker rendering fixes
+                        # Docker/headless 稳定性（不禁用软件光栅化，否则无渲染后端会崩溃）
                         "--disable-gpu",
-                        "--disable-software-rasterizer",
+                        "--no-zygote",
+                        "--window-size=1920,1080",
                         "--disable-background-timer-throttling",
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
-                        "--disable-features=TranslateUI,BlinkGenPropertyTrees,VizDisplayCompositor",
-                        "--window-size=1920,1080",
-                        "--force-device-scale-factor=1",
-                        "--hide-scrollbars",
-                        "--mute-audio",
                     ],
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
@@ -394,30 +390,44 @@ class GuestQueryExecutor:
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
-        # 点击输入框
+        # 点击输入框（force=True 绕开可见性检查）
         try:
-            await input_el.click(timeout=5000)
+            await input_el.click(force=True, timeout=5000)
         except:
             pass
         await page.wait_for_timeout(500)
 
-        # contenteditable div 不支持 fill()，用 Ctrl+A 清空后直接 type()
+        # 对于 contenteditable（如 Gemini 的 Quill 编辑器），键盘事件依赖真实 focus
+        # 在 headless 下元素常常报告"不可见"，导致 keyboard.type() 打到 body 而非编辑器
+        # 改用 JS 直接注入文字并触发 Quill/Angular 所需的 input 事件
         if cfg.get("contenteditable"):
-            try:
-                await input_el.focus()
-                await page.keyboard.press("Control+a")
-                await page.wait_for_timeout(100)
-                await page.keyboard.press("Delete")
-            except:
-                pass
+            injected = await page.evaluate("""
+                (text) => {
+                    const editor = document.querySelector('rich-textarea .ql-editor')
+                               || document.querySelector('[contenteditable="true"]');
+                    if (!editor) return false;
+                    editor.focus();
+                    // 清空并写入文字
+                    editor.innerHTML = '';
+                    document.execCommand('insertText', false, text);
+                    // 补发 Angular/Quill 需要的事件
+                    ['input', 'keyup', 'change'].forEach(type => {
+                        editor.dispatchEvent(new Event(type, { bubbles: true }));
+                    });
+                    return editor.innerText.trim().length > 0;
+                }
+            """, query_text)
+            logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
+            # 保存注入后的 HTML，确认文字是否真的进了编辑器
+            await _save_html(page, -1, f"{llm_name}_after_inject")
         else:
             try:
                 await input_el.fill("")
             except:
                 pass
+            await page.wait_for_timeout(300)
+            await page.keyboard.type(query_text, delay=30)
 
-        await page.wait_for_timeout(300)
-        await page.keyboard.type(query_text, delay=30)
         await page.wait_for_timeout(800)
 
         # 提交：优先点击提交按钮，fallback 用 Enter
@@ -509,10 +519,27 @@ class GuestQueryExecutor:
                 return js_text[:5000]
 
             logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
+            # 保存 HTML 供调试，便于分析实际 DOM 结构
+            await _save_html(page, -1, f"{llm_name}_no_response")
             return ""
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
             return ""
+
+
+async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
+    """保存页面 HTML 供调试（比截图更容易分析 DOM 结构）"""
+    try:
+        timestamp = int(datetime.utcnow().timestamp())
+        filename = f"query_{query_id}_{suffix}_{timestamp}.html" if suffix else f"query_{query_id}_{timestamp}.html"
+        path = SCREENSHOT_DIR / filename
+        html = await page.content()
+        path.write_text(html, encoding="utf-8")
+        logger.info(f"HTML 已保存: {path} ({len(html)} bytes)")
+        return path
+    except Exception as e:
+        logger.warning(f"保存 HTML 失败: {e}")
+        return None
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
