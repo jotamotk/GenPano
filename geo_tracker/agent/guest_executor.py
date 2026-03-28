@@ -2,10 +2,12 @@
 无账号浏览器执行器（Guest Mode）
 - 使用 Playwright 直接访问 LLM 网站，无需账号
 - 支持 ChatGPT、Gemini、Perplexity、Kimi、Doubao、DeepSeek 等
+- Gemini 支持通过 GEMINI_COOKIES_JSON 环境变量注入 Google session cookie
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
@@ -20,6 +22,19 @@ logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+# 从环境变量加载各 LLM 的 cookies（JSON 数组格式）
+def _load_cookies_from_env(env_var: str) -> list:
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return []
+    try:
+        cookies = json.loads(raw)
+        logger.info(f"Loaded {len(cookies)} cookies from {env_var}")
+        return cookies
+    except Exception as e:
+        logger.warning(f"Failed to parse {env_var}: {e}")
+        return []
 
 # 各 LLM 的浏览器操作配置（无账号 guest 模式）
 GUEST_LLM_CONFIG = {
@@ -41,7 +56,9 @@ GUEST_LLM_CONFIG = {
         "response_selector": "model-response message-content, model-response .response-content, model-response, message-content, .model-response-text, .response-content, div[class*='model-response'], div[class*='response-text'], .markdown, .prose",
         "wait_after_submit": 60000,
         "load_wait":        15000,
-        "requires_login":   True,   # Gemini 在服务器 IP 上必须有 Google 账号 cookie
+        # requires_login 在运行时动态判断：有 GEMINI_COOKIES_JSON 则 False，否则 True
+        "requires_login":   not bool(os.getenv("GEMINI_COOKIES_JSON", "").strip()),
+        "cookies_env":      "GEMINI_COOKIES_JSON",  # 注入 cookie 用的环境变量名
         "contenteditable":  True,
         "visit_google_first": False,
         # Domains that indicate a login redirect (response is invalid if we land here)
@@ -192,6 +209,15 @@ class GuestQueryExecutor:
                     bypass_csp=True,
                     reduced_motion="reduce",
                 )
+
+                # 注入 LLM 专属 cookies（如 GEMINI_COOKIES_JSON）
+                cookies_env = config.get("cookies_env")
+                if cookies_env:
+                    cookies = _load_cookies_from_env(cookies_env)
+                    if cookies:
+                        await context.add_cookies(cookies)
+                        logger.info(f"[{llm}] 已注入 {len(cookies)} 个 cookies")
+
                 page_obj = await context.new_page()
 
                 # 隐藏自动化特征
