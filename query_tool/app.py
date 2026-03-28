@@ -104,6 +104,13 @@ HTML_TEMPLATE = """
         .text-preview { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
         .screenshot-link { color: #4f46e5; cursor: pointer; text-decoration: underline; font-size: 12px; }
         .screenshot-link:hover { color: #4338ca; }
+        .html-link { color: #059669; cursor: pointer; text-decoration: underline; font-size: 12px; }
+        .html-link:hover { color: #047857; }
+        .html-viewer { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 70vh; overflow-y: auto; }
+        .html-search { display: flex; gap: 8px; margin-bottom: 10px; }
+        .html-search input { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+        .html-search span { font-size: 12px; color: #666; align-self: center; }
+        mark { background: #ff0; color: #000; }
         .pagination { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
         .pagination button { background: white; color: #4f46e5; border: 1px solid #ddd; }
         .pagination button:hover { background: #f5f5f5; }
@@ -238,6 +245,20 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
+        <!-- Debug HTML Files Section -->
+        <div class="card" id="html-files-card">
+            <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleHtmlCard()">
+                <h2 style="margin:0;">Debug HTML Files</h2>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="secondary small" onclick="event.stopPropagation(); loadHtmlFiles();">Refresh</button>
+                    <span id="html-card-toggle" style="font-size:18px; color:#666;">&#9660;</span>
+                </div>
+            </div>
+            <div id="html-files-body" style="margin-top:12px;">
+                <div style="color:#999; font-size:13px;">Loading...</div>
+            </div>
+        </div>
+
         <table>
             <thead>
                 <tr>
@@ -276,6 +297,24 @@ HTML_TEMPLATE = """
                 <button class="modal-close" onclick="closeScreenshotModal()">&times;</button>
             </div>
             <div class="modal-body" id="screenshot-modal-body"></div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="html-modal" onclick="if(event.target === this) closeHtmlModal()">
+        <div class="modal large" style="max-width:1400px;">
+            <div class="modal-header">
+                <h3 id="html-modal-title">HTML Source</h3>
+                <button class="modal-close" onclick="closeHtmlModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="html-search">
+                    <input type="text" id="html-search-input" placeholder="Search in HTML..." oninput="searchHtml(this.value)">
+                    <span id="html-search-count"></span>
+                    <button class="secondary small" onclick="searchHtml(document.getElementById('html-search-input').value)">Find</button>
+                    <button class="secondary small" onclick="document.getElementById('html-search-input').value=''; searchHtml('')">Clear</button>
+                </div>
+                <div class="html-viewer" id="html-viewer-content"></div>
+            </div>
         </div>
     </div>
 
@@ -340,7 +379,7 @@ HTML_TEMPLATE = """
             `).join('');
         }
 
-        function showResponse(id) {
+        async function showResponse(id) {
             const q = currentData.find(x => x.id === id);
             if (!q) return;
 
@@ -402,8 +441,30 @@ HTML_TEMPLATE = """
                     <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
                 </div>
                 ` : ''}
+                <div style="margin-top: 20px;">
+                    <div class="modal-meta-label" style="margin-bottom: 8px;">Debug HTML Files</div>
+                    <div id="modal-html-files">Loading...</div>
+                </div>
             `;
             document.getElementById('modal-backdrop').classList.add('show');
+            // Load HTML files for this query
+            fetch('./api/html_files?query_id=' + q.id).then(r => r.json()).then(files => {
+                const el = document.getElementById('modal-html-files');
+                if (!el) return;
+                if (!files || !files.length) {
+                    el.innerHTML = '<span style="color:#999;font-size:12px;">No HTML files found for this query</span>';
+                    return;
+                }
+                el.innerHTML = files.map(f =>
+                    '<div style="margin-bottom:4px;">' +
+                    '<span class="html-link" onclick="showHtmlSource(' + JSON.stringify(f.path) + ', ' + JSON.stringify(f.name) + ')">' + escapeHtml(f.name) + '</span>' +
+                    ' <span style="color:#999;font-size:11px;">(' + (f.size/1024).toFixed(1) + ' KB)</span>' +
+                    '</div>'
+                ).join('');
+            }).catch(() => {
+                const el = document.getElementById('modal-html-files');
+                if (el) el.innerHTML = '<span style="color:#999;font-size:12px;">Failed to load HTML files</span>';
+            });
         }
 
         function showScreenshot(path, queryId) {
@@ -499,9 +560,103 @@ HTML_TEMPLATE = """
             }
         }
 
+        // ---- HTML Files Viewer ----
+        let htmlCardExpanded = true;
+        let rawHtmlContent = '';
+
+        function toggleHtmlCard() {
+            const body = document.getElementById('html-files-body');
+            const toggle = document.getElementById('html-card-toggle');
+            htmlCardExpanded = !htmlCardExpanded;
+            body.style.display = htmlCardExpanded ? '' : 'none';
+            toggle.innerHTML = htmlCardExpanded ? '&#9660;' : '&#9650;';
+        }
+
+        async function loadHtmlFiles(queryId) {
+            const body = document.getElementById('html-files-body');
+            body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
+            const params = queryId ? '?query_id=' + queryId : '';
+            const res = await fetch('./api/html_files' + params);
+            const files = await res.json();
+            if (!files.length) {
+                body.innerHTML = '<div style="color:#999;font-size:13px;">No HTML debug files found in /data/screenshots</div>';
+                return;
+            }
+            body.innerHTML = '<table style="font-size:13px;width:100%;"><thead><tr>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">File</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Size</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Modified</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Action</th>' +
+                '</tr></thead><tbody>' +
+                files.map(f => {
+                    const kb = (f.size / 1024).toFixed(1);
+                    const dt = new Date(f.mtime * 1000).toLocaleString();
+                    return '<tr>' +
+                        '<td style="padding:6px 10px;font-family:monospace;max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.name) + '</td>' +
+                        '<td style="padding:6px 10px;white-space:nowrap;">' + kb + ' KB</td>' +
+                        '<td style="padding:6px 10px;white-space:nowrap;">' + dt + '</td>' +
+                        '<td style="padding:6px 10px;"><span class="html-link" onclick="showHtmlSource(' + JSON.stringify(f.path) + ', ' + JSON.stringify(f.name) + ')">View Source</span></td>' +
+                        '</tr>';
+                }).join('') + '</tbody></table>';
+        }
+
+        async function showHtmlSource(path, name) {
+            document.getElementById('html-modal-title').textContent = name || path;
+            document.getElementById('html-viewer-content').textContent = 'Loading...';
+            document.getElementById('html-search-input').value = '';
+            document.getElementById('html-search-count').textContent = '';
+            document.getElementById('html-modal').classList.add('show');
+            const res = await fetch('./api/html?path=' + encodeURIComponent(path));
+            if (!res.ok) {
+                rawHtmlContent = 'Error loading file: ' + res.status;
+            } else {
+                rawHtmlContent = await res.text();
+            }
+            document.getElementById('html-viewer-content').textContent = rawHtmlContent;
+        }
+
+        function searchHtml(term) {
+            const viewer = document.getElementById('html-viewer-content');
+            const countEl = document.getElementById('html-search-count');
+            if (!term) {
+                viewer.textContent = rawHtmlContent;
+                countEl.textContent = '';
+                return;
+            }
+            const escaped = term.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+            const regex = new RegExp(escaped, 'gi');
+            const matches = rawHtmlContent.match(regex);
+            const count = matches ? matches.length : 0;
+            countEl.textContent = count + ' match' + (count !== 1 ? 'es' : '');
+            if (count === 0) {
+                viewer.textContent = rawHtmlContent;
+                return;
+            }
+            // Build DOM safely to avoid XSS — split on matches and insert <mark> nodes
+            const parts = rawHtmlContent.split(regex);
+            const matchArr = rawHtmlContent.match(regex) || [];
+            viewer.innerHTML = '';
+            parts.forEach((part, i) => {
+                viewer.appendChild(document.createTextNode(part));
+                if (i < matchArr.length) {
+                    const mark = document.createElement('mark');
+                    mark.textContent = matchArr[i];
+                    viewer.appendChild(mark);
+                }
+            });
+            // Scroll to first match
+            const firstMark = viewer.querySelector('mark');
+            if (firstMark) firstMark.scrollIntoView({ block: 'center' });
+        }
+
+        function closeHtmlModal() {
+            document.getElementById('html-modal').classList.remove('show');
+        }
+
         // Load on page load
         loadStats();
         loadQueries();
+        loadHtmlFiles();
     </script>
 </body>
 </html>
@@ -675,6 +830,50 @@ def screenshot():
     directory = os.path.dirname(path) or SCREENSHOT_DIR
 
     return send_from_directory(directory, filename)
+
+
+@app.route('/api/html_files')
+def html_files():
+    import os
+    query_id = request.args.get('query_id')
+    try:
+        entries = []
+        if os.path.isdir(SCREENSHOT_DIR):
+            for fname in sorted(os.listdir(SCREENSHOT_DIR), reverse=True):
+                if not fname.endswith('.html'):
+                    continue
+                if query_id and f'query_{query_id}_' not in fname and f'query_{query_id}.' not in fname:
+                    continue
+                fpath = os.path.join(SCREENSHOT_DIR, fname)
+                stat = os.stat(fpath)
+                entries.append({
+                    'name': fname,
+                    'path': fpath,
+                    'size': stat.st_size,
+                    'mtime': stat.st_mtime,
+                })
+        return jsonify(entries)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/html')
+def serve_html_source():
+    import os
+    path = request.args.get('path')
+    if not path:
+        return "Path required", 400
+    # Security: only allow files within SCREENSHOT_DIR
+    real_path = os.path.realpath(path)
+    real_dir = os.path.realpath(SCREENSHOT_DIR)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        return "Access denied", 403
+    if not os.path.isfile(real_path):
+        return "File not found", 404
+    with open(real_path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+    from flask import Response
+    return Response(content, mimetype='text/plain; charset=utf-8')
 
 
 if __name__ == '__main__':
