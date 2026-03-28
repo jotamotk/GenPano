@@ -86,9 +86,11 @@ jobs:
             CAPSOLVER_API_KEY=${{ secrets.CAPSOLVER_API_KEY }}
             ENVEOF
 
-            # 单独写入 GEMINI_COOKIES_JSON，避免 heredoc 转义问题
-            # 通过 envs 参数从 GitHub Actions 安全传入，不在脚本里直接展开
-            echo "GEMINI_COOKIES_JSON=${GEMINI_COOKIES_JSON}" >> .env
+            # 单独写入 GEMINI_COOKIES_JSON，用 Python 压缩为单行 JSON 再写入
+            # 避免多行 JSON 导致 docker compose 解析 .env 失败
+            printf '%s' "${GEMINI_COOKIES_JSON}" | python3 -c \
+              "import json,sys; print('GEMINI_COOKIES_JSON=' + json.dumps(json.loads(sys.stdin.read())))" \
+              >> .env
 
             docker compose pull
             docker compose up -d --remove-orphans
