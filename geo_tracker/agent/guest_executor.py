@@ -37,7 +37,7 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "rich-textarea .ql-editor, rich-textarea, [contenteditable='true'], textarea",
         "submit_button":    "button.send-button, button[aria-label='Send message'], button[aria-label='Send']",
         "submit_key":       "Enter",
-        "response_selector": "message-content .markdown, model-response .markdown, .response-content, [class*='response'], [class*='message']",
+        "response_selector": "div[class*='response'], div[class*='message'], article, div[role*='article'], .markdown, prose",
         "wait_after_submit": 45000,
         "load_wait":        15000,
         "requires_login":   False,
