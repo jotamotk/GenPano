@@ -499,21 +499,24 @@ class GuestQueryExecutor:
                 except Exception:
                     continue
 
-            # fallback：通过 JS 遍历所有文本节点，过滤噪音
+            # fallback 1：拼接所有 <p> 标签文本（Gemini 响应通常是多段落）
             logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
-            # 保存失败时的 HTML，用于分析响应 DOM 结构
             await _save_html(page, -1, f"{llm_name}_extract_fail")
             js_text = await page.evaluate("""
                 () => {
-                    const candidates = document.querySelectorAll(
-                        'p, li, [class*="response"], [class*="message"], [class*="content"], article, section'
-                    );
-                    let best = '';
-                    candidates.forEach(el => {
-                        const t = el.innerText || '';
-                        if (t.trim().length > best.length) best = t.trim();
-                    });
-                    return best;
+                    // 拼接所有段落文本
+                    const paras = [...document.querySelectorAll('p, li')];
+                    const paraText = paras
+                        .map(p => (p.innerText || '').trim())
+                        .filter(t => t.length > 5)
+                        .join('\\n');
+                    if (paraText.length > 50) return paraText;
+
+                    // fallback 2：取 body 全部可见文本的后半段（响应在输入框之后）
+                    const bodyText = (document.body.innerText || '').trim();
+                    if (bodyText.length > 100) return bodyText.slice(-4000);
+
+                    return '';
                 }
             """)
             if js_text and len(js_text) > 20:
@@ -521,8 +524,6 @@ class GuestQueryExecutor:
                 return js_text[:5000]
 
             logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
-            # 保存 HTML 供调试，便于分析实际 DOM 结构
-            await _save_html(page, -1, f"{llm_name}_no_response")
             return ""
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
