@@ -91,11 +91,11 @@ GUEST_LLM_CONFIG = {
     },
     "gemini": {
         "url":              "https://gemini.google.com",
-        "input_selector":   "textarea, [contenteditable='true'], [role='textbox'], input[type='text'], rich-textarea",
+        "input_selector":   "textarea, mat-form-field textarea, [class*='mat-input'], [contenteditable='true'], [role='textbox'], input[type='text'], rich-textarea",
         "submit_key":       "Enter",
-        "response_selector": ".response-content, [class*='response'], [class*='message'], [class*='content'], body",
-        "wait_after_submit": 60000,
-        "load_wait":        45000,
+        "response_selector": "[class*='message-content'], [class*='response-content'], [class*='model-response'], .response-content, [class*='response'], [class*='message'], [class*='content'], body",
+        "wait_after_submit": 35000,
+        "load_wait":        10000,
         "requires_login":   False,
     },
     "perplexity": {
@@ -306,23 +306,44 @@ class GuestQueryExecutor:
                 selectors = [s.strip() for s in config["input_selector"].split(",")]
                 logger.info(f"[{llm}] 尝试选择器: {selectors}")
 
+                # 先快速查询所有选择器，不等待
                 for sel in selectors:
                     if not sel:
                         continue
                     try:
-                        logger.debug(f"[{llm}] 尝试选择器: {sel}")
-                        input_el = await page_obj.wait_for_selector(sel, timeout=15000, state="attached")
+                        elements = await page_obj.query_selector_all(sel)
+                        for el in elements:
+                            try:
+                                is_visible = await el.is_visible()
+                                if is_visible:
+                                    logger.info(f"[{llm}] 输入框找到且可见: {sel}")
+                                    input_el = el
+                                    break
+                            except Exception:
+                                # 如果检查可见性失败，仍尝试使用该元素
+                                input_el = el
+                                break
                         if input_el:
-                            is_visible = await input_el.is_visible()
-                            if is_visible:
-                                logger.info(f"[{llm}] 输入框找到且可见: {sel}")
-                                break
-                            else:
-                                logger.info(f"[{llm}] 输入框找到但报告为不可见，仍尝试使用: {sel}")
-                                break
+                            break
                     except Exception as e:
-                        logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
+                        logger.debug(f"[{llm}] 选择器查询失败: {sel} - {e}")
                         continue
+
+                # 如果没找到，再用 wait_for_selector 尝试
+                if not input_el:
+                    logger.info(f"[{llm}] 快速查询未找到，尝试等待...")
+                    for sel in selectors:
+                        if not sel:
+                            continue
+                        try:
+                            logger.debug(f"[{llm}] 等待选择器: {sel}")
+                            input_el = await page_obj.wait_for_selector(sel, timeout=8000, state="attached")
+                            if input_el:
+                                logger.info(f"[{llm}] 输入框找到（等待后）: {sel}")
+                                break
+                        except Exception as e:
+                            logger.debug(f"[{llm}] 等待选择器失败: {sel} - {e}")
+                            continue
 
                 if not input_el:
                     logger.error(f"[{llm}] 找不到输入框")
@@ -406,11 +427,7 @@ class GuestQueryExecutor:
         await page.keyboard.press("Enter")
         logger.info(f"[{llm_name}] 已提交 Query，等待响应…")
 
-        try:
-            await page.wait_for_load_state("networkidle", timeout=30000)
-        except Exception:
-            pass
-
+        # 不等待 networkidle，避免超时
         await asyncio.sleep(cfg["wait_after_submit"] / 1000)
 
         try:
