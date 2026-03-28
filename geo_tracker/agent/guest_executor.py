@@ -501,6 +501,8 @@ class GuestQueryExecutor:
 
             # fallback：通过 JS 遍历所有文本节点，过滤噪音
             logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
+            # 保存失败时的 HTML，用于分析响应 DOM 结构
+            await _save_html(page, -1, f"{llm_name}_extract_fail")
             js_text = await page.evaluate("""
                 () => {
                     const candidates = document.querySelectorAll(
