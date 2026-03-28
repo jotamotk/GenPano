@@ -92,6 +92,9 @@ jobs:
             ZHIPU_API_KEY=${{ secrets.ZHIPU_API_KEY }}
             GLM_MODEL=glm-4
             CAPSOLVER_API_KEY=${{ secrets.CAPSOLVER_API_KEY }}
+
+            # LLM Cookies (JSON array, exported from browser)
+            GEMINI_COOKIES_JSON=${{ secrets.GEMINI_COOKIES_JSON }}
             ENVEOF
             
             docker compose pull

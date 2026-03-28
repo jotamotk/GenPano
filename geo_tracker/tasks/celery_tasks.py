@@ -89,18 +89,21 @@ def execute_query(self, query_id: int) -> dict:
                 guest_executor = GuestQueryExecutor(proxy_url=proxy_url)
                 response: LLMResponse | None = await guest_executor.execute(query)
 
-                if response:
+                # Require a meaningful response (guards against login redirects returning 1 char)
+                MIN_RESPONSE_LEN = 20
+                if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
                     db.add(response)
                     query.status = QueryStatus.DONE.value
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
                 else:
+                    resp_len = len(response.raw_text) if response else 0
                     query.status = QueryStatus.FAILED.value
                     query.retry_count += 1
                     await db.commit()
-                    logger.warning(f"Query {query_id} failed (no response)")
-                    return {"query_id": query_id, "status": "failed"}
+                    logger.warning(f"Query {query_id} failed (response too short: {resp_len} chars, likely login redirect)")
+                    return {"query_id": query_id, "status": "failed", "reason": f"response_too_short:{resp_len}"}
 
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
