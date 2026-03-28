@@ -41,7 +41,7 @@ GUEST_LLM_CONFIG = {
         "response_selector": "model-response message-content, model-response .response-content, model-response, message-content, .model-response-text, .response-content, div[class*='model-response'], div[class*='response-text'], .markdown, .prose",
         "wait_after_submit": 60000,
         "load_wait":        15000,
-        "requires_login":   False,
+        "requires_login":   True,   # Gemini 在服务器 IP 上必须有 Google 账号 cookie
         "contenteditable":  True,
         "visit_google_first": False,
         # Domains that indicate a login redirect (response is invalid if we land here)
