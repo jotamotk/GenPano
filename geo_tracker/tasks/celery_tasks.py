@@ -84,7 +84,8 @@ def execute_query(self, query_id: int) -> dict:
             logger.info(f"Query {query_id}: Using guest mode for {query.target_llm}")
 
             try:
-                proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+                proxy_url = os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+                logger.info(f"Query {query_id}: Using proxy URL: {proxy_url}")
                 guest_executor = GuestQueryExecutor(proxy_url=proxy_url)
                 response: LLMResponse | None = await guest_executor.execute(query)
 
