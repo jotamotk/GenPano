@@ -38,6 +38,11 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
+      - name: Build & push query-tool
+        run: |
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }}
+
   deploy:
     name: Deploy to Server
     runs-on: ubuntu-latest
