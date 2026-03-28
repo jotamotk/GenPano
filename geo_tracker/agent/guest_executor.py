@@ -2,14 +2,12 @@
 无账号浏览器执行器（Guest Mode）
 - 使用 Playwright 直接访问 LLM 网站，无需账号
 - 支持 ChatGPT、Gemini、Perplexity、Kimi、Doubao、DeepSeek 等
-- 反爬虫优化：随机 UA、随机打字、鼠标轨迹、指纹随机化
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import random
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -23,62 +21,7 @@ logger = logging.getLogger(__name__)
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-# 随机 User-Agent 池
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
-
-
-def random_delay(min_ms: int = 50, max_ms: int = 150) -> float:
-    """随机延迟（毫秒转秒）"""
-    return random.uniform(min_ms, max_ms) / 1000
-
-
-def random_type_delay() -> float:
-    """随机打字延迟：20-80ms，模拟人类打字节奏"""
-    base = random.uniform(20, 60)
-    if random.random() < 0.1:
-        base += random.uniform(100, 300)
-    return base / 1000
-
-
-async def human_like_click(page: Page, element):
-    """模拟人类点击：先移动鼠标，再点击"""
-    try:
-        box = await element.bounding_box()
-        if box:
-            start_x = random.randint(0, int(box["x"] + box["width"]))
-            start_y = random.randint(0, int(box["y"] + box["height"]))
-            target_x = box["x"] + box["width"] / 2 + random.uniform(-5, 5)
-            target_y = box["y"] + box["height"] / 2 + random.uniform(-5, 5)
-
-            await page.mouse.move(start_x, start_y)
-            await asyncio.sleep(random_delay(100, 300))
-
-            steps = random.randint(3, 6)
-            for i in range(steps):
-                progress = (i + 1) / steps
-                x = start_x + (target_x - start_x) * progress + random.uniform(-2, 2)
-                y = start_y + (target_y - start_y) * progress + random.uniform(-2, 2)
-                await page.mouse.move(x, y)
-                await asyncio.sleep(random_delay(20, 50))
-
-            await asyncio.sleep(random_delay(100, 200))
-            await page.mouse.click(target_x, target_y)
-        else:
-            await element.click()
-    except Exception:
-        try:
-            await element.click()
-        except Exception:
-            pass
-
-
-# 各 LLM 的浏览器操作配置
+# 各 LLM 的浏览器操作配置（无账号 guest 模式）
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
@@ -86,25 +29,28 @@ GUEST_LLM_CONFIG = {
         "submit_key":       "Enter",
         "response_selector": "[data-message-author-role='assistant'] .markdown, article, [class*='message']",
         "wait_after_submit": 25000,
-        "load_wait":        10000,
+        "load_wait":        8000,
         "requires_login":   False,
     },
     "gemini": {
-        "url":              "https://gemini.google.com",
-        "input_selector":   "textarea, mat-form-field textarea, [class*='mat-input'], [contenteditable='true'], [role='textbox'], input[type='text'], rich-textarea",
+        "url":              "https://gemini.google.com/app",
+        "input_selector":   "rich-textarea .ql-editor, rich-textarea, [contenteditable='true'], textarea",
+        "submit_button":    "button.send-button, button[aria-label='Send message'], button[aria-label='Send']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message-content'], [class*='response-content'], [class*='model-response'], .response-content, [class*='response'], [class*='message'], [class*='content'], body",
-        "wait_after_submit": 35000,
-        "load_wait":        10000,
+        "response_selector": "message-content .markdown, model-response .markdown, .response-content, [class*='response'], [class*='message']",
+        "wait_after_submit": 45000,
+        "load_wait":        15000,
         "requires_login":   False,
+        "contenteditable":  True,
+        "visit_google_first": True,
     },
     "perplexity": {
         "url":              "https://www.perplexity.ai",
         "input_selector":   "textarea, [placeholder*='Ask'], input[type='text']",
         "submit_key":       "Enter",
         "response_selector": ".prose, [class*='answer'], [class*='response']",
-        "wait_after_submit": 20000,
-        "load_wait":        8000,
+        "wait_after_submit": 15000,
+        "load_wait":        4000,
         "requires_login":   False,
     },
     "kimi": {
@@ -112,8 +58,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   ".chat-input-editor, textarea, [contenteditable='true']",
         "submit_key":       "Enter",
         "response_selector": "[class*='segment-content'], [class*='message-content'], .chat-message",
-        "wait_after_submit": 25000,
-        "load_wait":        12000,
+        "wait_after_submit": 20000,
+        "load_wait":        8000,
         "requires_login":   False,
         "contenteditable":  True,
     },
@@ -122,8 +68,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea, [contenteditable='true']",
         "submit_key":       "Enter",
         "response_selector": "[class*='message'], [class*='content']",
-        "wait_after_submit": 25000,
-        "load_wait":        15000,
+        "wait_after_submit": 20000,
+        "load_wait":        10000,
         "requires_login":   False,
     },
     "deepseek": {
@@ -131,8 +77,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea, [contenteditable=true], input[type=text]",
         "submit_key":       "Enter",
         "response_selector": "[class*='message'], [class*='content'], .markdown",
-        "wait_after_submit": 25000,
-        "load_wait":        12000,
+        "wait_after_submit": 20000,
+        "load_wait":        8000,
         "requires_login":   False,
     },
     "claude": {
@@ -140,8 +86,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   '[contenteditable="true"], textarea',
         "submit_key":       "Enter",
         "response_selector": ".claude-message .prose, [class*='message'], [class*='content']",
-        "wait_after_submit": 25000,
-        "load_wait":        12000,
+        "wait_after_submit": 20000,
+        "load_wait":        8000,
         "requires_login":   True,
     },
     "grok": {
@@ -149,8 +95,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea",
         "submit_key":       "Enter",
         "response_selector": "[data-testid='grok-response'] .prose, [class*='message']",
-        "wait_after_submit": 25000,
-        "load_wait":        12000,
+        "wait_after_submit": 20000,
+        "load_wait":        8000,
         "requires_login":   True,
     },
     "zhipu": {
@@ -158,8 +104,8 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea",
         "submit_key":       "Enter",
         "response_selector": ".chat-message.assistant .content, [class*='message']",
-        "wait_after_submit": 25000,
-        "load_wait":        12000,
+        "wait_after_submit": 20000,
+        "load_wait":        8000,
         "requires_login":   True,
     },
 }
@@ -169,18 +115,32 @@ DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 
 
 class GuestQueryExecutor:
-    """无账号查询执行器 - 优化反爬虫版"""
+    """无账号查询执行器"""
 
     def __init__(self, proxy_url: Optional[str] = None):
+        """
+        Args:
+            proxy_url: 代理 URL，用于访问国际 LLM
+        """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
+        """
+        执行单条查询（无账号模式）
+
+        Args:
+            query: Query 对象
+
+        Returns:
+            LLMResponse 对象，如果失败返回 None
+        """
         llm = query.target_llm
         config = GUEST_LLM_CONFIG.get(llm)
         if not config:
             logger.error(f"Unknown LLM: {llm}")
             return None
 
+        # 确定是否使用代理
         use_proxy = self.proxy_url and llm not in DOMESTIC_LLMS
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
 
@@ -193,9 +153,6 @@ class GuestQueryExecutor:
         try:
             async with async_playwright() as p:
                 logger.info(f"[{llm}] 启动浏览器...")
-
-                user_agent = random.choice(USER_AGENTS)
-
                 browser = await p.chromium.launch(
                     headless=True,
                     proxy=proxy_cfg,
@@ -208,147 +165,114 @@ class GuestQueryExecutor:
                         "--disable-features=IsolateOrigins,site-per-process",
                         "--disable-gpu",
                         "--disable-software-rasterizer",
-                        "--disable-infobars",
-                        "--disable-notifications",
-                        "--disable-popup-blocking",
-                        "--disable-save-password-bubble",
-                        "--disable-translate",
-                        "--no-first-run",
-                        "--no-default-browser-check",
                     ],
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
 
-                viewport_width = random.choice([1920, 1920, 1920, 1440, 1536])
-                viewport_height = random.choice([1080, 1080, 1080, 900, 960])
-
                 context = await browser.new_context(
-                    user_agent=user_agent,
-                    viewport={"width": viewport_width, "height": viewport_height},
-                    locale="en-US" if llm not in DOMESTIC_LLMS else "zh-CN",
-                    timezone_id="Asia/Shanghai",
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                    timezone_id="America/New_York",
                     ignore_https_errors=True,
                     bypass_csp=True,
                     reduced_motion="reduce",
-                    permissions=["geolocation"],
-                    color_scheme=random.choice(["light", "dark", "no-preference"]),
                 )
-
-                stealth_js = """
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [
-                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                    ]
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en', 'zh-CN']
-                });
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: () => {},
-                    csi: () => {}
-                };
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) =>
-                    parameters.name === 'notifications'
-                        ? Promise.resolve({ state: Notification.permission })
-                        : originalQuery(parameters);
-                const getParameter = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                    if (parameter === 37445) return 'Intel Inc.';
-                    if (parameter === 37446) return 'Intel Iris OpenGL Engine';
-                    return getParameter.call(this, parameter);
-                };
-                const toDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(...args) {
-                    const result = toDataURL.apply(this, args);
-                    if (result && result.length > 100) {
-                        return result.replace(/.(?=.{0,3}$)/, () => String.fromCharCode(Math.random() * 256));
-                    }
-                    return result;
-                };
-                delete window.__playwright;
-                delete window.__PW_inspect;
-                delete window.__PW_recorder;
-                """
-                await context.add_init_script(stealth_js)
-
                 page_obj = await context.new_page()
 
-                logger.info(f"[{llm}] 打开: {config['url']}")
+                # 隐藏自动化特征
+                await page_obj.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    delete navigator.__proto__.webdriver;
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => {
+                            const p = [
+                                {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer', description:'Portable Document Format'},
+                                {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:''},
+                                {name:'Native Client', filename:'internal-nacl-plugin', description:''}
+                            ];
+                            p.length = 3;
+                            return p;
+                        }
+                    });
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+                    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+                    window.chrome = {
+                        runtime: { onMessage: {addListener:()=>{},removeListener:()=>{}}, sendMessage:()=>{} },
+                        loadTimes: () => ({}), csi: () => ({})
+                    };
+                """)
+
+                # 对于 Gemini，先访问 google.com 建立 cookie
+                if config.get("visit_google_first"):
+                    try:
+                        logger.info(f"[{llm}] 先访问 google.com 建立 cookie...")
+                        await page_obj.goto("https://www.google.com", wait_until="domcontentloaded", timeout=30000)
+                        await page_obj.wait_for_timeout(2000)
+                        # 处理 Google consent 弹窗
+                        for sel in ['button:has-text("Accept all")', 'button:has-text("I agree")', 'button:has-text("Accept")']:
+                            try:
+                                btn = await page_obj.query_selector(sel)
+                                if btn and await btn.is_visible():
+                                    await btn.click()
+                                    await page_obj.wait_for_timeout(2000)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        logger.warning(f"[{llm}] google.com 预访问失败（非致命）: {e}")
+
+                # 打开目标页面
+                logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
                 try:
-                    await page_obj.goto("about:blank", wait_until="commit", timeout=30000)
-                    await asyncio.sleep(random_delay(500, 1500))
-
-                    # 先尝试用 commit，不等待 networkidle（避免超时）
-                    try:
-                        await page_obj.goto(config["url"], wait_until="commit", timeout=60000)
-                    except Exception:
-                        # 如果 commit 也超时，直接继续尝试找元素
-                        logger.warning(f"[{llm}] 页面加载超时，继续尝试找输入框")
-
-                    # 等待一段时间让页面渲染
-                    await asyncio.sleep(config.get("load_wait", 10000) / 1000)
-
-                    try:
-                        title = await page_obj.title()
-                        logger.info(f"[{llm}] 页面标题: {title}")
-                    except Exception:
-                        logger.warning(f"[{llm}] 无法获取页面标题")
+                    await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
+                    await page_obj.wait_for_timeout(config.get("load_wait", 8000))
+                    title = await page_obj.title()
+                    logger.info(f"[{llm}] 页面标题: {title}")
                 except Exception as e:
-                    logger.error(f"[{llm}] 页面加载异常: {e}")
-                    # 即使页面加载失败，也继续尝试找输入框（可能部分加载成功）
+                    logger.error(f"[{llm}] 页面加载失败: {e}")
+                    if page_obj:
+                        try:
+                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
+                        except:
+                            pass
+                    return None
 
+                # 尝试找输入框
                 input_el = None
                 selectors = [s.strip() for s in config["input_selector"].split(",")]
                 logger.info(f"[{llm}] 尝试选择器: {selectors}")
 
-                # 先快速查询所有选择器，不等待
                 for sel in selectors:
                     if not sel:
                         continue
                     try:
-                        elements = await page_obj.query_selector_all(sel)
-                        for el in elements:
-                            try:
-                                is_visible = await el.is_visible()
-                                if is_visible:
-                                    logger.info(f"[{llm}] 输入框找到且可见: {sel}")
-                                    input_el = el
-                                    break
-                            except Exception:
-                                # 如果检查可见性失败，仍尝试使用该元素
-                                input_el = el
-                                break
+                        logger.debug(f"[{llm}] 尝试选择器: {sel}")
+                        input_el = await page_obj.wait_for_selector(sel, timeout=10000, state="attached")
                         if input_el:
-                            break
-                    except Exception as e:
-                        logger.debug(f"[{llm}] 选择器查询失败: {sel} - {e}")
-                        continue
-
-                # 如果没找到，再用 wait_for_selector 尝试
-                if not input_el:
-                    logger.info(f"[{llm}] 快速查询未找到，尝试等待...")
-                    for sel in selectors:
-                        if not sel:
-                            continue
-                        try:
-                            logger.debug(f"[{llm}] 等待选择器: {sel}")
-                            input_el = await page_obj.wait_for_selector(sel, timeout=8000, state="attached")
-                            if input_el:
-                                logger.info(f"[{llm}] 输入框找到（等待后）: {sel}")
+                            # 检查是否可见
+                            is_visible = await input_el.is_visible()
+                            if is_visible:
+                                logger.info(f"[{llm}] 输入框找到且可见: {sel}")
                                 break
-                        except Exception as e:
-                            logger.debug(f"[{llm}] 等待选择器失败: {sel} - {e}")
-                            continue
+                            else:
+                                # 对于某些 LLM（如 Gemini），元素可能存在但报告为不可见，仍然尝试使用
+                                logger.info(f"[{llm}] 输入框找到但报告为不可见，仍尝试使用: {sel}")
+                                break
+                    except Exception as e:
+                        logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
+                        continue
 
                 if not input_el:
                     logger.error(f"[{llm}] 找不到输入框")
                     if page_obj:
                         await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
+                        # 也保存页面内容用于调试
                         try:
                             content = await page_obj.content()
                             content_path = SCREENSHOT_DIR / f"query_{query.id}_{llm}_content.html"
@@ -358,10 +282,13 @@ class GuestQueryExecutor:
                             logger.warning(f"保存页面内容失败: {e}")
                     return None
 
+                # 执行查询
                 resp_text = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
-                if resp_text and len(resp_text.strip()) > 5:
+                if resp_text:
+                    # 截图存档
                     screenshot_path = await _save_screenshot(page_obj, query.id, llm)
+
                     return LLMResponse(
                         query_id=query.id,
                         raw_text=resp_text,
@@ -371,7 +298,7 @@ class GuestQueryExecutor:
                         collected_at=datetime.utcnow(),
                     )
                 else:
-                    logger.error(f"[{llm}] 未能获取有效响应 (resp_len={len(resp_text) if resp_text else 0})")
+                    logger.error(f"[{llm}] 未能获取响应")
                     if page_obj:
                         await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
                     return None
@@ -381,55 +308,70 @@ class GuestQueryExecutor:
             if page_obj:
                 try:
                     await _save_screenshot(page_obj, query.id, f"{llm}_exception")
-                except Exception:
+                except:
                     pass
             return None
         finally:
             if browser:
                 try:
                     await browser.close()
-                except Exception:
+                except:
                     pass
 
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
     ) -> str:
+        """在已打开的页面里输入 query，等待响应，抓取文本"""
         if input_el is None:
-            input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=15000)
+            input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
-        await human_like_click(page, input_el)
-        await asyncio.sleep(random_delay(500, 1500))
+        # 点击输入框
+        try:
+            await input_el.click(timeout=5000)
+        except:
+            pass
+        await page.wait_for_timeout(500)
 
+        # contenteditable div 不支持 fill()，用 Ctrl+A 清空后直接 type()
         if cfg.get("contenteditable"):
             try:
                 await input_el.focus()
-                await asyncio.sleep(random_delay(100, 300))
                 await page.keyboard.press("Control+a")
-                await asyncio.sleep(random_delay(100, 200))
+                await page.wait_for_timeout(100)
                 await page.keyboard.press("Delete")
-                await asyncio.sleep(random_delay(200, 500))
-            except Exception:
+            except:
                 pass
         else:
             try:
                 await input_el.fill("")
-                await asyncio.sleep(random_delay(200, 400))
-            except Exception:
+            except:
                 pass
 
-        for char in query_text:
-            await page.keyboard.type(char, delay=random_type_delay() * 1000)
-            if random.random() < 0.05:
-                await asyncio.sleep(random_delay(200, 500))
+        await page.wait_for_timeout(300)
+        await page.keyboard.type(query_text, delay=30)
+        await page.wait_for_timeout(800)
 
-        await asyncio.sleep(random_delay(500, 1500))
+        # 提交：优先点击提交按钮，fallback 用 Enter
+        submitted = False
+        if cfg.get("submit_button"):
+            for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
+                try:
+                    btn = await page.query_selector(btn_sel)
+                    if btn and await btn.is_visible():
+                        await btn.click()
+                        submitted = True
+                        logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
+                        break
+                except Exception:
+                    continue
+        if not submitted:
+            await page.keyboard.press("Enter")
+            logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
-        await page.keyboard.press("Enter")
-        logger.info(f"[{llm_name}] 已提交 Query，等待响应…")
+        # 等待响应生成
+        await page.wait_for_timeout(cfg["wait_after_submit"])
 
-        # 不等待 networkidle，避免超时
-        await asyncio.sleep(cfg["wait_after_submit"] / 1000)
-
+        # 抓取响应文本
         try:
             elements = await page.query_selector_all(cfg["response_selector"])
             if elements:
@@ -439,11 +381,12 @@ class GuestQueryExecutor:
                         txt = await el.inner_text()
                         if txt and txt.strip():
                             texts.append(txt)
-                    except Exception:
+                    except:
                         pass
                 if texts:
                     return "\n".join(texts)[-5000:]
 
+            # fallback：取页面主体文本
             logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 fallback 提取")
             body_text = await page.inner_text("body")
             return body_text[:5000] if body_text else ""
@@ -452,11 +395,12 @@ class GuestQueryExecutor:
             try:
                 body_text = await page.inner_text("body")
                 return body_text[:5000] if body_text else ""
-            except Exception:
+            except:
                 return ""
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
+    """保存截图"""
     try:
         timestamp = int(datetime.utcnow().timestamp())
         filename = f"query_{query_id}_{suffix}_{timestamp}.png" if suffix else f"query_{query_id}_{timestamp}.png"
