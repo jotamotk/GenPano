@@ -418,6 +418,8 @@ class GuestQueryExecutor:
                 }
             """, query_text)
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
+            # 保存注入后的 HTML，确认文字是否真的进了编辑器
+            await _save_html(page, -1, f"{llm_name}_after_inject")
         else:
             try:
                 await input_el.fill("")
@@ -517,10 +519,27 @@ class GuestQueryExecutor:
                 return js_text[:5000]
 
             logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
+            # 保存 HTML 供调试，便于分析实际 DOM 结构
+            await _save_html(page, -1, f"{llm_name}_no_response")
             return ""
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
             return ""
+
+
+async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
+    """保存页面 HTML 供调试（比截图更容易分析 DOM 结构）"""
+    try:
+        timestamp = int(datetime.utcnow().timestamp())
+        filename = f"query_{query_id}_{suffix}_{timestamp}.html" if suffix else f"query_{query_id}_{timestamp}.html"
+        path = SCREENSHOT_DIR / filename
+        html = await page.content()
+        path.write_text(html, encoding="utf-8")
+        logger.info(f"HTML 已保存: {path} ({len(html)} bytes)")
+        return path
+    except Exception as e:
+        logger.warning(f"保存 HTML 失败: {e}")
+        return None
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
