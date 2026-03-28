@@ -42,7 +42,7 @@ GUEST_LLM_CONFIG = {
         "load_wait":        15000,
         "requires_login":   False,
         "contenteditable":  True,
-        "visit_google_first": True,
+        "visit_google_first": False,
     },
     "perplexity": {
         "url":              "https://www.perplexity.ai",
