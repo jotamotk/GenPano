@@ -1,5 +1,5 @@
 """
-简单的 LLM 响应查询工具 - 带截图查看功能
+简单的 LLM 响应查询工具 - 带截图查看功能 + 手动触发 Query
 """
 import os
 from datetime import datetime
@@ -33,6 +33,17 @@ else:
 # Screenshot directory - from worker container
 SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "/data/screenshots")
 
+# Try to import Celery for task triggering
+HAS_CELERY = False
+try:
+    from celery import Celery
+    from celery.task.control import discard_all
+    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    celery_app = Celery("geo_tracker", broker=REDIS_URL, backend=REDIS_URL)
+    HAS_CELERY = True
+except Exception as e:
+    print(f"Celery not available: {e}")
+
 
 def get_db():
     conn = psycopg2.connect(
@@ -56,15 +67,23 @@ HTML_TEMPLATE = """
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 20px; background: #f5f5f5; }
         .container { max-width: 1600px; margin: 0 auto; }
         h1 { color: #333; margin-bottom: 20px; }
-        .filters { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h2 { color: #333; margin: 20px 0 10px; font-size: 18px; }
+        .card { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .filter-row { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; }
-        .filter-group { display: flex; flex-direction: column; gap: 5px; }
-        .filter-group label { font-size: 12px; color: #666; font-weight: 600; }
-        .filter-group select, .filter-group input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; min-width: 150px; }
+        .form-row { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-start; }
+        .form-group { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 200px; }
+        .form-group label { font-size: 12px; color: #666; font-weight: 600; }
+        .form-group select, .form-group input, .form-group textarea { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 14px; }
+        .form-group textarea { min-height: 80px; resize: vertical; }
         button { padding: 8px 20px; background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
         button:hover { background: #4338ca; }
         button.secondary { background: #6b7280; }
         button.secondary:hover { background: #4b5563; }
+        button.success { background: #059669; }
+        button.success:hover { background: #047857; }
+        button.danger { background: #dc2626; }
+        button.danger:hover { background: #b91c1c; }
+        button.small { padding: 4px 10px; font-size: 12px; }
         .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
         .stat-card { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .stat-value { font-size: 28px; font-weight: 700; color: #4f46e5; }
@@ -108,11 +127,14 @@ HTML_TEMPLATE = """
         .refresh-btn { margin-left: 10px; }
         .auto-refresh { display: flex; align-items: center; gap: 10px; margin-left: auto; }
         .auto-refresh label { font-size: 14px; color: #666; display: flex; align-items: center; gap: 5px; }
+        .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
+        .alert.success { background: #dcfce7; color: #166534; }
+        .alert.error { background: #fee2e2; color: #991b1b; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
             <h1>LLM Query Monitor</h1>
             <button class="secondary refresh-btn" onclick="loadStats(); loadQueries();">Refresh</button>
             <div class="auto-refresh">
@@ -128,9 +150,50 @@ HTML_TEMPLATE = """
             <div class="stat-card"><div class="stat-value failed" id="failed-queries">-</div><div class="stat-label">Failed</div></div>
         </div>
 
-        <div class="filters">
+        <!-- Create New Query Section -->
+        <div class="card">
+            <h2>Create New Query</h2>
+            <div id="create-alert"></div>
+            <form id="create-form" onsubmit="createQuery(event)">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>LLM *</label>
+                        <select id="new-llm" required>
+                            <option value="">Select LLM</option>
+                            <option value="chatgpt">ChatGPT</option>
+                            <option value="gemini" selected>Gemini</option>
+                            <option value="claude">Claude</option>
+                            <option value="perplexity">Perplexity</option>
+                            <option value="grok">Grok</option>
+                            <option value="kimi">Kimi</option>
+                            <option value="doubao">Doubao</option>
+                            <option value="zhipu">Zhipu</option>
+                            <option value="deepseek">DeepSeek</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Brand ID (optional)</label>
+                        <input type="number" id="new-brand" placeholder="Brand ID">
+                    </div>
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <div class="form-group" style="flex: 3;">
+                        <label>Query Text *</label>
+                        <textarea id="new-query" placeholder="Enter your query here..." required></textarea>
+                    </div>
+                </div>
+                <div style="margin-top: 15px; display: flex; gap: 10px;">
+                    <button type="submit" class="success">Create & Queue Query</button>
+                    <button type="button" class="secondary" onclick="fillExample()">Fill Example</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Filters -->
+        <div class="card">
+            <h2>Filters</h2>
             <div class="filter-row">
-                <div class="filter-group">
+                <div class="form-group">
                     <label>LLM</label>
                     <select id="filter-llm">
                         <option value="">All</option>
@@ -145,7 +208,7 @@ HTML_TEMPLATE = """
                         <option value="deepseek">DeepSeek</option>
                     </select>
                 </div>
-                <div class="filter-group">
+                <div class="form-group">
                     <label>Status</label>
                     <select id="filter-status">
                         <option value="">All</option>
@@ -155,15 +218,15 @@ HTML_TEMPLATE = """
                         <option value="FAILED">Failed</option>
                     </select>
                 </div>
-                <div class="filter-group">
+                <div class="form-group">
                     <label>Query ID</label>
                     <input type="number" id="filter-id" placeholder="Query ID">
                 </div>
-                <div class="filter-group">
+                <div class="form-group">
                     <label>Brand ID</label>
                     <input type="number" id="filter-brand" placeholder="Brand ID">
                 </div>
-                <div class="filter-group">
+                <div class="form-group">
                     <label>Limit</label>
                     <select id="filter-limit">
                         <option value="20">20</option>
@@ -269,7 +332,9 @@ HTML_TEMPLATE = """
                     <td>${q.brand_id || '-'}</td>
                     <td>${q.created_at ? new Date(q.created_at).toLocaleString() : '-'}</td>
                     <td>
-                        <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="showResponse(${q.id})">View</button>
+                        <button class="secondary small" onclick="showResponse(${q.id})">View</button>
+                        ${q.status === 'FAILED' || q.status === 'PENDING' ?
+                            `<button class="success small" onclick="retryQuery(${q.id})">Retry</button>` : ''}
                     </td>
                 </tr>
             `).join('');
@@ -332,6 +397,11 @@ HTML_TEMPLATE = """
                     <div class="modal-meta-label" style="margin-bottom: 8px;">Response</div>
                     <pre>${escapeHtml(q.response || '(no response)')}</pre>
                 </div>
+                ${q.status === 'FAILED' || q.status === 'PENDING' ? `
+                <div style="margin-top: 20px;">
+                    <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
+                </div>
+                ` : ''}
             `;
             document.getElementById('modal-backdrop').classList.add('show');
         }
@@ -371,6 +441,62 @@ HTML_TEMPLATE = """
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function fillExample() {
+            document.getElementById('new-llm').value = 'gemini';
+            document.getElementById('new-query').value = 'Hello, please introduce yourself in one sentence.';
+        }
+
+        async function createQuery(event) {
+            event.preventDefault();
+            const alertDiv = document.getElementById('create-alert');
+            alertDiv.innerHTML = '';
+
+            const llm = document.getElementById('new-llm').value;
+            const queryText = document.getElementById('new-query').value;
+            const brandId = document.getElementById('new-brand').value;
+
+            try {
+                const res = await fetch('./api/queries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        target_llm: llm,
+                        query_text: queryText,
+                        brand_id: brandId ? parseInt(brandId) : null
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alertDiv.innerHTML = `<div class="alert success">Query #${data.query_id} created successfully! It has been queued for execution.</div>`;
+                    document.getElementById('create-form').reset();
+                    loadStats();
+                    loadQueries();
+                } else {
+                    alertDiv.innerHTML = `<div class="alert error">Error: ${data.error || 'Unknown error'}</div>`;
+                }
+            } catch (e) {
+                alertDiv.innerHTML = `<div class="alert error">Error: ${e.message}</div>`;
+            }
+        }
+
+        async function retryQuery(queryId) {
+            try {
+                const res = await fetch(`./api/queries/${queryId}/retry`, {
+                    method: 'POST'
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert(`Query #${queryId} has been requeued!`);
+                    loadStats();
+                    loadQueries();
+                } else {
+                    alert(`Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (e) {
+                alert(`Error: ${e.message}`);
+            }
         }
 
         // Load on page load
@@ -468,6 +594,76 @@ def queries():
         conn.close()
 
 
+@app.route('/api/queries', methods=['POST'])
+def create_query():
+    try:
+        data = request.get_json()
+        target_llm = data.get('target_llm')
+        query_text = data.get('query_text')
+        brand_id = data.get('brand_id')
+
+        if not target_llm or not query_text:
+            return jsonify({'success': False, 'error': 'target_llm and query_text are required'})
+
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO queries (target_llm, query_text, brand_id, status, created_at)
+                    VALUES (%s, %s, %s, 'PENDING', NOW())
+                    RETURNING id
+                """, (target_llm, query_text, brand_id))
+                query_id = cur.fetchone()[0]
+            conn.commit()
+
+            # Try to trigger Celery task if available
+            if HAS_CELERY:
+                try:
+                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue=f'llm_{target_llm}')
+                except Exception as e:
+                    print(f"Failed to send Celery task: {e}")
+
+            return jsonify({'success': True, 'query_id': query_id})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/queries/<int:query_id>/retry', methods=['POST'])
+def retry_query(query_id):
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Get the query
+                cur.execute("SELECT id, target_llm, query_text, brand_id FROM queries WHERE id = %s", (query_id,))
+                query = cur.fetchone()
+                if not query:
+                    return jsonify({'success': False, 'error': 'Query not found'})
+
+                # Update status to PENDING
+                cur.execute("""
+                    UPDATE queries
+                    SET status = 'PENDING', retry_count = COALESCE(retry_count, 0) + 1
+                    WHERE id = %s
+                """, (query_id,))
+            conn.commit()
+
+            # Try to trigger Celery task if available
+            if HAS_CELERY:
+                try:
+                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue=f'llm_{query["target_llm"]}')
+                except Exception as e:
+                    print(f"Failed to send Celery task: {e}")
+
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/screenshot')
 def screenshot():
     path = request.args.get('path')
@@ -486,3 +682,4 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         DATABASE_URL = sys.argv[1]
     app.run(host='0.0.0.0', port=5000, debug=True)
+
