@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # 重试配置
 MAX_RETRY_ON_CF_BLOCK = 3                          # Cloudflare 拦截最大重试次数
-CLASH_PROXY_GROUP = "🌏 Overseas LLM"              # Clash 代理组名称
+CLASH_PROXY_GROUP = "🍃 Proxies"                   # Clash 代理组名称（含实际节点）
 CF_CHALLENGE_TITLES = [
     "just a moment", "attention required", "checking your browser",
     "unable to load site", "please wait", "access denied",
