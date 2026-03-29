@@ -4,7 +4,7 @@ services:
     image: ghcr.io/metacubex/mihomo:latest
     restart: unless-stopped
     volumes:
-      - ./clash:/root/.config/mihomo:ro
+      - ./clash:/root/.config/mihomo
     ports:
       - "7890:7890"
 

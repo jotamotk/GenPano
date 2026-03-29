@@ -16,9 +16,22 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, BrowserContext, Page
 
+from geo_tracker.agent.clash_api import (
+    get_current_node,
+    switch_to_next_node,
+    CLASH_API_URL,
+)
 from geo_tracker.db.models import LLMResponse, Query, QueryStatus
 
 logger = logging.getLogger(__name__)
+
+# 重试配置
+MAX_RETRY_ON_CF_BLOCK = 3                          # Cloudflare 拦截最大重试次数
+CLASH_PROXY_GROUP = "🌏 Overseas LLM"              # Clash 代理组名称
+CF_CHALLENGE_TITLES = [
+    "just a moment", "attention required", "checking your browser",
+    "unable to load site", "please wait", "access denied",
+]
 
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -44,7 +57,7 @@ GUEST_LLM_CONFIG = {
         "submit_key":       "Enter",
         "response_selector": "[data-message-author-role='assistant'] .markdown, article, [class*='message']",
         "wait_after_submit": 25000,
-        "load_wait":        8000,
+        "load_wait":        15000,
         "requires_login":   False,
     },
     "gemini": {
@@ -147,6 +160,7 @@ class GuestQueryExecutor:
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
         执行单条查询（无账号模式）
+        遇到 Cloudflare 拦截时自动切换 Clash 代理节点并重试
 
         Args:
             query: Query 对象
@@ -160,8 +174,43 @@ class GuestQueryExecutor:
             logger.error(f"Unknown LLM: {llm}")
             return None
 
-        # 确定是否使用代理
         use_proxy = self.proxy_url and llm not in DOMESTIC_LLMS
+
+        # 国内 LLM 或不使用代理时，直接执行一次，无需重试换节点
+        if not use_proxy:
+            return await self._execute_once(query, config, use_proxy=False)
+
+        # 海外 LLM：支持 Cloudflare 拦截后切换节点重试
+        failed_nodes: set[str] = set()
+
+        for attempt in range(MAX_RETRY_ON_CF_BLOCK):
+            if attempt > 0:
+                new_node = await switch_to_next_node(
+                    CLASH_API_URL, CLASH_PROXY_GROUP, exclude=failed_nodes
+                )
+                if not new_node:
+                    logger.error(f"[{llm}] 没有更多可用代理节点，放弃重试")
+                    break
+                logger.info(f"[{llm}] 第 {attempt + 1} 次重试，已切换到节点: {new_node}")
+
+            result = await self._execute_once(query, config, use_proxy=True)
+            if result is not None:
+                return result
+
+            # 执行失败，记录当前节点
+            current = await get_current_node(CLASH_API_URL, CLASH_PROXY_GROUP)
+            if current:
+                failed_nodes.add(current)
+                logger.warning(f"[{llm}] 节点 {current} 失败，加入黑名单 (已排除 {len(failed_nodes)} 个)")
+
+        logger.error(f"[{llm}] 所有重试均失败")
+        return None
+
+    async def _execute_once(
+        self, query: Query, config: dict, *, use_proxy: bool
+    ) -> Optional[LLMResponse]:
+        """执行一次查询尝试（可能因 Cloudflare 拦截返回 None）"""
+        llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
 
         if use_proxy:
@@ -280,6 +329,25 @@ class GuestQueryExecutor:
                     await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
                     title = await page_obj.title()
                     logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
+
+                    # ── Cloudflare 挑战等待 ──
+                    cf_waited = 0
+                    cf_max_wait = 30000
+                    while cf_waited < cf_max_wait:
+                        page_title = (await page_obj.title() or "").lower()
+                        if any(t in page_title for t in CF_CHALLENGE_TITLES):
+                            logger.info(f"[{llm}] Cloudflare 挑战检测中 (title='{page_title}'), 等待...")
+                            await page_obj.wait_for_timeout(2000)
+                            cf_waited += 2000
+                        else:
+                            if cf_waited > 0:
+                                logger.info(f"[{llm}] Cloudflare 挑战已通过 ({cf_waited}ms)")
+                            break
+
+                    if cf_waited >= cf_max_wait:
+                        logger.warning(f"[{llm}] Cloudflare 挑战未通过 ({cf_max_wait}ms)，将触发换节点重试")
+                        await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                        return None
 
                     # 优先等待输入框出现，最多等 load_wait 时间，避免固定等待
                     load_wait = config.get("load_wait", 8000)
