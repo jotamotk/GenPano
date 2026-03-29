@@ -54,14 +54,23 @@ except Exception as e:
 
 def get_db():
     import psycopg2
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASS,
-        dbname=DB_NAME
-    )
-    return conn
+    import time
+    last_err = None
+    for attempt in range(5):
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASS,
+                dbname=DB_NAME,
+                connect_timeout=5,
+            )
+            return conn
+        except psycopg2.OperationalError as e:
+            last_err = e
+            time.sleep(2 ** attempt)  # 1, 2, 4, 8, 16 秒
+    raise last_err
 
 
 HTML_TEMPLATE = """
