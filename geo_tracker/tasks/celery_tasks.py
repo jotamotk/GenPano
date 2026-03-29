@@ -134,7 +134,15 @@ def dispatch_batch(limit: int = 50) -> dict:
     task_engine = create_task_engine()
 
     async def _run():
+        from sqlalchemy import text as sa_text
         async with get_task_async_session(task_engine) as db:
+            # Debug: raw SQL count to verify DB connectivity and status values
+            raw = await db.execute(
+                sa_text("SELECT status, COUNT(*) as n FROM queries GROUP BY status ORDER BY n DESC LIMIT 10")
+            )
+            status_counts = {r[0]: r[1] for r in raw.fetchall()}
+            logger.info(f"dispatch_batch DB status counts: {status_counts}")
+
             result = await db.execute(
                 select(Query)
                 .where(Query.status == QueryStatus.PENDING.value)
@@ -150,7 +158,7 @@ def dispatch_batch(limit: int = 50) -> dict:
                 )
                 dispatched += 1
 
-            logger.info(f"Dispatched {dispatched} queries")
+            logger.info(f"Dispatched {dispatched} queries (pending_value={QueryStatus.PENDING.value!r})")
             return {"dispatched": dispatched}
 
     try:
