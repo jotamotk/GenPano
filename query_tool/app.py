@@ -1,11 +1,10 @@
 """
-简单的 LLM 响应查询工具 - 带截图查看功能 + 手动触发 Query
+LLM 响应查询工具 - 带手动触发 Query
 """
 import os
+import re
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, Response
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
@@ -14,8 +13,6 @@ DATABASE_URL = os.getenv(
     "postgresql://genpano:genpano2026@localhost:5432/genpano"
 )
 
-# Parse DATABASE_URL
-import re
 match = re.match(r"postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)", DATABASE_URL)
 if match:
     DB_USER = match.group(1)
@@ -30,22 +27,33 @@ else:
     DB_PORT = "5432"
     DB_NAME = "genpano"
 
-# Screenshot directory - from worker container
+# HTML debug files directory
 SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "/data/screenshots")
 
-# Try to import Celery for task triggering
+# Celery setup
 HAS_CELERY = False
+celery_app = None
 try:
     from celery import Celery
-    from celery.task.control import discard_all
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-    celery_app = Celery("geo_tracker", broker=REDIS_URL, backend=REDIS_URL)
+    celery_app = Celery(
+        "geo_tracker",
+        broker=REDIS_URL,
+        backend=REDIS_URL,
+    )
+    celery_app.conf.update(
+        task_serializer="json",
+        accept_content=["json"],
+        result_serializer="json",
+        broker_connection_retry_on_startup=True,
+    )
     HAS_CELERY = True
 except Exception as e:
     print(f"Celery not available: {e}")
 
 
 def get_db():
+    import psycopg2
     conn = psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -96,10 +104,10 @@ HTML_TEMPLATE = """
         th { background: #f8fafc; font-weight: 600; color: #374151; font-size: 13px; }
         td { font-size: 14px; color: #4b5563; }
         tr:hover { background: #f9fafb; }
-        .status-done { color: #059669; font-weight: 600; }
-        .status-pending { color: #d97706; font-weight: 600; }
-        .status-failed { color: #dc2626; font-weight: 600; }
-        .status-running { color: #2563eb; font-weight: 600; }
+        .status-DONE { color: #059669; font-weight: 600; }
+        .status-PENDING { color: #d97706; font-weight: 600; }
+        .status-FAILED { color: #dc2626; font-weight: 600; }
+        .status-RUNNING { color: #2563eb; font-weight: 600; }
         .llm-badge { display: inline-block; padding: 2px 8px; background: #e0e7ff; color: #4f46e5; border-radius: 999px; font-size: 12px; font-weight: 600; }
         .text-preview { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
         .html-link { color: #059669; cursor: pointer; text-decoration: underline; font-size: 12px; }
@@ -109,11 +117,22 @@ HTML_TEMPLATE = """
         .html-search input { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
         .html-search span { font-size: 12px; color: #666; align-self: center; }
         mark { background: #ff0; color: #000; }
-        .pagination { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
-        .pagination button { background: white; color: #4f46e5; border: 1px solid #ddd; }
-        .pagination button:hover { background: #f5f5f5; }
-        .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .pagination .active { background: #4f46e5; color: white; border-color: #4f46e5; }
+        /* Tabs */
+        .tab-container { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .tab-header { padding: 0 20px; border-bottom: 2px solid #e5e7eb; }
+        .tabs { display: flex; gap: 0; }
+        .tab-btn { padding: 12px 24px; background: none; color: #6b7280; border: none; border-bottom: 3px solid transparent; border-radius: 0; cursor: pointer; font-weight: 600; font-size: 15px; margin-bottom: -2px; transition: color 0.15s, border-color 0.15s; }
+        .tab-btn:hover { color: #4f46e5; background: none; }
+        .tab-btn.active { color: #4f46e5; border-bottom-color: #4f46e5; background: none; }
+        .tab-content { padding: 20px; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        /* Pagination */
+        .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 20px; flex-wrap: wrap; }
+        .pagination button { background: white; color: #4f46e5; border: 1px solid #ddd; min-width: 36px; padding: 6px 10px; font-size: 13px; }
+        .pagination button:hover:not(:disabled) { background: #f0f0ff; }
+        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .pagination button.active { background: #4f46e5; color: white; border-color: #4f46e5; }
         /* Modal */
         .modal-backdrop { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; }
         .modal-backdrop.show { display: flex; align-items: center; justify-content: center; }
@@ -128,7 +147,7 @@ HTML_TEMPLATE = """
         .modal-meta-item { background: #f8fafc; padding: 10px 15px; border-radius: 4px; }
         .modal-meta-label { font-size: 12px; color: #666; margin-bottom: 4px; }
         .modal-meta-value { font-weight: 600; color: #333; }
-.refresh-btn { margin-left: 10px; }
+        .refresh-btn { margin-left: 10px; }
         .auto-refresh { display: flex; align-items: center; gap: 10px; margin-left: auto; }
         .auto-refresh label { font-size: 14px; color: #666; display: flex; align-items: center; gap: 5px; }
         .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
@@ -187,7 +206,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 <div style="margin-top: 15px; display: flex; gap: 10px;">
-                    <button type="submit" class="success">Create & Queue Query</button>
+                    <button type="submit" class="success">Create &amp; Queue Query</button>
                     <button type="button" class="secondary" onclick="fillExample()">Fill Example</button>
                 </div>
             </form>
@@ -250,47 +269,51 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Tabs -->
-        <div style="display:flex; gap:0; border-bottom:2px solid #e5e7eb; margin-bottom:20px;">
-            <button id="tab-queries" onclick="switchTab('queries')" style="background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;">Queries</button>
-            <button id="tab-html" onclick="switchTab('html')" style="background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;">Debug HTML Files</button>
-        </div>
-
-        <!-- Queries Tab -->
-        <div id="panel-queries">
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>LLM</th>
-                    <th>Status</th>
-                    <th>Retry</th>
-                    <th>Query</th>
-                    <th>Brand</th>
-                    <th>Created</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="results-body">
-            </tbody>
-        </table>
-        <div class="pagination" id="pagination"></div>
-        </div>
-
-        <!-- Debug HTML Tab -->
-        <div id="panel-html" style="display:none;">
-        <div class="card">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                <h2 style="margin:0;">Debug HTML Files</h2>
-                <button class="secondary small" onclick="loadHtmlFiles()">Refresh</button>
+        <!-- Tabs: Queries / Debug HTML Files -->
+        <div class="tab-container">
+            <div class="tab-header">
+                <div class="tabs">
+                    <button class="tab-btn active" id="tab-queries-btn" onclick="switchTab('queries')">Queries</button>
+                    <button class="tab-btn" id="tab-html-btn" onclick="switchTab('html')">Debug HTML Files</button>
+                </div>
             </div>
-            <div id="html-files-body">
-                <div style="color:#999; font-size:13px;">Loading...</div>
+            <div class="tab-content">
+                <!-- Queries Tab -->
+                <div class="tab-panel active" id="tab-queries">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>LLM</th>
+                                <th>Status</th>
+                                <th>Retry</th>
+                                <th>Query</th>
+                                <th>Brand</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body">
+                        </tbody>
+                    </table>
+                    <div class="pagination" id="pagination"></div>
+                </div>
+
+                <!-- Debug HTML Files Tab -->
+                <div class="tab-panel" id="tab-html">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                        <span style="color:#666;font-size:14px;">HTML debug files from /data/screenshots</span>
+                        <button class="secondary small" onclick="loadHtmlFiles();">Refresh</button>
+                    </div>
+                    <div id="html-files-body">
+                        <div style="color:#999; font-size:13px;">Loading...</div>
+                    </div>
+                </div>
             </div>
-        </div>
         </div>
     </div>
 
+    <!-- Query Detail Modal -->
     <div class="modal-backdrop" id="modal-backdrop" onclick="if(event.target === this) closeModal()">
         <div class="modal" id="modal">
             <div class="modal-header">
@@ -301,7 +324,8 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-<div class="modal-backdrop" id="html-modal" onclick="if(event.target === this) closeHtmlModal()">
+    <!-- HTML Source Modal -->
+    <div class="modal-backdrop" id="html-modal" onclick="if(event.target === this) closeHtmlModal()">
         <div class="modal large" style="max-width:1400px;">
             <div class="modal-header">
                 <h3 id="html-modal-title">HTML Source</h3>
@@ -321,9 +345,21 @@ HTML_TEMPLATE = """
 
     <script>
         let currentPage = 1;
+        let totalCount = 0;
         let currentData = [];
         let autoRefreshInterval = null;
+        let rawHtmlContent = '';
 
+        // ---- Tab switcher ----
+        function switchTab(tab) {
+            document.getElementById('tab-queries').classList.toggle('active', tab === 'queries');
+            document.getElementById('tab-html').classList.toggle('active', tab === 'html');
+            document.getElementById('tab-queries-btn').classList.toggle('active', tab === 'queries');
+            document.getElementById('tab-html-btn').classList.toggle('active', tab === 'html');
+            if (tab === 'html') loadHtmlFiles();
+        }
+
+        // ---- Stats ----
         async function loadStats() {
             const res = await fetch('./api/stats');
             const data = await res.json();
@@ -334,6 +370,7 @@ HTML_TEMPLATE = """
             document.getElementById('failed-queries').textContent = data.failed;
         }
 
+        // ---- Queries ----
         async function loadQueries() {
             const llm = document.getElementById('filter-llm').value;
             const status = document.getElementById('filter-status').value;
@@ -350,28 +387,19 @@ HTML_TEMPLATE = """
             params.append('limit', limit);
             params.append('offset', (currentPage - 1) * limit);
             params.append('sort', sort);
+            params.append('count', '1');
 
             const res = await fetch('./api/queries?' + params.toString());
-            currentData = await res.json();
-            renderTable(currentData);
-            renderPagination(currentData.length, limit);
-        }
-
-        function renderPagination(resultCount, limit) {
-            const pag = document.getElementById('pagination');
-            const hasPrev = currentPage > 1;
-            const hasNext = resultCount === limit;
-            // Show page window: currentPage-2 to currentPage+2
-            const pages = [];
-            for (let p = Math.max(1, currentPage - 2); p <= currentPage + 2; p++) {
-                if (p > 1 || hasNext || currentPage > 1) pages.push(p);
-                if (p === currentPage + 2 && !hasNext) break;
+            const json = await res.json();
+            if (json && json.rows !== undefined) {
+                currentData = json.rows;
+                totalCount = json.total;
+            } else {
+                currentData = json;
+                totalCount = json.length;
             }
-            pag.innerHTML = `
-                <button ${hasPrev ? '' : 'disabled'} onclick="currentPage--; loadQueries();">&laquo; Prev</button>
-                ${pages.map(p => `<button class="${p === currentPage ? 'active' : ''}" onclick="currentPage=${p}; loadQueries();">${p}</button>`).join('')}
-                <button ${hasNext ? '' : 'disabled'} onclick="currentPage++; loadQueries();">Next &raquo;</button>
-            `;
+            renderTable(currentData);
+            renderPagination(limit);
         }
 
         function renderTable(data) {
@@ -382,7 +410,7 @@ HTML_TEMPLATE = """
                 <tr>
                     <td>${q.id}</td>
                     <td><span class="llm-badge">${q.target_llm}</span></td>
-                    <td><span class="status-${statusUp.toLowerCase()}">${statusUp}</span></td>
+                    <td><span class="status-${statusUp}">${statusUp}</span></td>
                     <td>${q.retry_count || 0}</td>
                     <td class="text-preview" title="${escapeHtml(q.query_text)}" onclick="showResponse(${q.id})">${escapeHtml(q.query_text || '')}</td>
                     <td>${q.brand_id || '-'}</td>
@@ -396,17 +424,47 @@ HTML_TEMPLATE = """
             }).join('');
         }
 
+        function renderPagination(limit) {
+            const pag = document.getElementById('pagination');
+            if (!totalCount || totalCount <= limit) {
+                pag.innerHTML = '';
+                return;
+            }
+            const totalPages = Math.ceil(totalCount / limit);
+            const page = currentPage;
+
+            let startPage = Math.max(1, page - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            if (endPage - startPage < 4) {
+                startPage = Math.max(1, endPage - 4);
+            }
+
+            let html = '';
+            html += `<button ${page === 1 ? 'disabled' : ''} onclick="goToPage(${page - 1})">&laquo; Prev</button>`;
+            for (let p = startPage; p <= endPage; p++) {
+                html += `<button class="${p === page ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
+            }
+            html += `<button ${page === totalPages ? 'disabled' : ''} onclick="goToPage(${page + 1})">Next &raquo;</button>`;
+            pag.innerHTML = html;
+        }
+
+        function goToPage(page) {
+            currentPage = page;
+            loadQueries();
+        }
+
         async function showResponse(id) {
             const q = currentData.find(x => x.id === id);
             if (!q) return;
 
+            const statusUp = (q.status || '').toUpperCase();
             document.getElementById('modal-title').textContent = `Query #${q.id} - ${q.target_llm}`;
-            const statusClass = `status-${q.status.toLowerCase()}`;
+            const statusClass = `status-${statusUp}`;
             document.getElementById('modal-body').innerHTML = `
                 <div class="modal-meta">
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">Status</div>
-                        <div class="modal-meta-value ${statusClass}">${q.status}</div>
+                        <div class="modal-meta-value ${statusClass}">${statusUp}</div>
                     </div>
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">LLM</div>
@@ -445,7 +503,7 @@ HTML_TEMPLATE = """
                     <div class="modal-meta-label" style="margin-bottom: 8px;">Response</div>
                     <pre>${escapeHtml(q.response || '(no response)')}</pre>
                 </div>
-                ${q.status === 'FAILED' || q.status === 'PENDING' ? `
+                ${statusUp === 'FAILED' || statusUp === 'PENDING' ? `
                 <div style="margin-top: 20px;">
                     <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
                 </div>
@@ -456,6 +514,7 @@ HTML_TEMPLATE = """
                 </div>
             `;
             document.getElementById('modal-backdrop').classList.add('show');
+
             // Load HTML files for this query
             fetch('./api/html_files?query_id=' + q.id).then(r => r.json()).then(files => {
                 const el = document.getElementById('modal-html-files');
@@ -467,7 +526,7 @@ HTML_TEMPLATE = """
                 el.innerHTML = files.map(f =>
                     '<div style="margin-bottom:4px;">' +
                     "<span class='html-link' onclick='showHtmlSource(" + JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>" + escapeHtml(f.name) + '</span>' +
-                    ' <span style="color:#999;font-size:11px;">(' + (f.size/1024).toFixed(1) + ' KB)</span>' +
+                    ' <span style="color:#999;font-size:11px;">(' + (f.size / 1024).toFixed(1) + ' KB)</span>' +
                     '</div>'
                 ).join('');
             }).catch(() => {
@@ -557,23 +616,7 @@ HTML_TEMPLATE = """
             }
         }
 
-        // ---- Tabs ----
-        function switchTab(tab) {
-            const isQueries = tab === 'queries';
-            document.getElementById('panel-queries').style.display = isQueries ? '' : 'none';
-            document.getElementById('panel-html').style.display = isQueries ? 'none' : '';
-            document.getElementById('tab-queries').style.cssText = isQueries
-                ? 'background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;'
-                : 'background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;';
-            document.getElementById('tab-html').style.cssText = isQueries
-                ? 'background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;'
-                : 'background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;';
-            if (!isQueries) loadHtmlFiles();
-        }
-
         // ---- HTML Files Viewer ----
-        let rawHtmlContent = '';
-
         async function loadHtmlFiles(queryId) {
             const body = document.getElementById('html-files-body');
             body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
@@ -634,7 +677,6 @@ HTML_TEMPLATE = """
                 viewer.textContent = rawHtmlContent;
                 return;
             }
-            // Build DOM safely to avoid XSS — split on matches and insert <mark> nodes
             const parts = rawHtmlContent.split(regex);
             const matchArr = rawHtmlContent.match(regex) || [];
             viewer.innerHTML = '';
@@ -646,7 +688,6 @@ HTML_TEMPLATE = """
                     viewer.appendChild(mark);
                 }
             });
-            // Scroll to first match
             const firstMark = viewer.querySelector('mark');
             if (firstMark) firstMark.scrollIntoView({ block: 'center' });
         }
@@ -673,11 +714,12 @@ def index():
 def stats():
     conn = get_db()
     try:
+        from psycopg2.extras import RealDictCursor
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT status, COUNT(*) as count
+                SELECT UPPER(status) as status, COUNT(*) as count
                 FROM queries
-                GROUP BY status
+                GROUP BY UPPER(status)
             """)
             rows = cur.fetchall()
         stats_dict = {r['status']: r['count'] for r in rows}
@@ -695,12 +737,22 @@ def stats():
 
 @app.route('/api/queries')
 def queries():
+    from psycopg2.extras import RealDictCursor
     llm = request.args.get('llm')
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
     query_id = request.args.get('id')
     limit = int(request.args.get('limit', 50))
     offset = int(request.args.get('offset', 0))
+    sort = request.args.get('sort', 'id_desc')
+    include_count = request.args.get('count', '0') == '1'
+
+    sort_map = {
+        'id_desc': 'q.id DESC',
+        'id_asc': 'q.id ASC',
+        'status': 'UPPER(q.status) ASC, q.id DESC',
+    }
+    order_clause = sort_map.get(sort, 'q.id DESC')
 
     conn = get_db()
     try:
@@ -711,26 +763,27 @@ def queries():
             where.append("q.id = %s")
             params.append(int(query_id))
         if llm:
-            where.append("target_llm = %s")
+            where.append("q.target_llm = %s")
             params.append(llm)
         if status:
-            where.append("UPPER(status) = UPPER(%s)")
+            where.append("UPPER(q.status) = UPPER(%s)")
             params.append(status)
         if brand_id:
-            where.append("brand_id = %s")
+            where.append("q.brand_id = %s")
             params.append(int(brand_id))
 
-        sort = request.args.get('sort', 'id_desc')
-        order_by = {
-            'id_desc': 'q.id DESC',
-            'id_asc': 'q.id ASC',
-            'status': 'q.status ASC, q.id DESC',
-        }.get(sort, 'q.id DESC')
-
         where_clause = " AND ".join(where) if where else "1=1"
-        params.extend([limit, offset])
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if include_count:
+                cur.execute(
+                    f"SELECT COUNT(*) as cnt FROM queries q WHERE {where_clause}",
+                    params
+                )
+                total = cur.fetchone()['cnt']
+            else:
+                total = None
+
             cur.execute(f"""
                 SELECT
                     q.id,
@@ -746,12 +799,15 @@ def queries():
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 WHERE {where_clause}
-                ORDER BY {order_by}
+                ORDER BY {order_clause}
                 LIMIT %s OFFSET %s
-            """, params)
+            """, params + [limit, offset])
             rows = cur.fetchall()
 
-        return jsonify([dict(r) for r in rows])
+        result = [dict(r) for r in rows]
+        if include_count:
+            return jsonify({'rows': result, 'total': total})
+        return jsonify(result)
     finally:
         conn.close()
 
@@ -778,10 +834,13 @@ def create_query():
                 query_id = cur.fetchone()[0]
             conn.commit()
 
-            # Try to trigger Celery task if available
-            if HAS_CELERY:
+            if HAS_CELERY and celery_app is not None:
                 try:
-                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue='celery')
+                    celery_app.send_task(
+                        'geo_tracker.tasks.celery_tasks.execute_query',
+                        args=[query_id],
+                        queue='celery'
+                    )
                 except Exception as e:
                     print(f"Failed to send Celery task: {e}")
 
@@ -795,16 +854,18 @@ def create_query():
 @app.route('/api/queries/<int:query_id>/retry', methods=['POST'])
 def retry_query(query_id):
     try:
+        from psycopg2.extras import RealDictCursor
         conn = get_db()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Get the query
-                cur.execute("SELECT id, target_llm, query_text, brand_id FROM queries WHERE id = %s", (query_id,))
+                cur.execute(
+                    "SELECT id, target_llm, query_text, brand_id FROM queries WHERE id = %s",
+                    (query_id,)
+                )
                 query = cur.fetchone()
                 if not query:
                     return jsonify({'success': False, 'error': 'Query not found'})
 
-                # Update status to PENDING
                 cur.execute("""
                     UPDATE queries
                     SET status = 'PENDING', retry_count = COALESCE(retry_count, 0) + 1
@@ -812,10 +873,13 @@ def retry_query(query_id):
                 """, (query_id,))
             conn.commit()
 
-            # Try to trigger Celery task if available
-            if HAS_CELERY:
+            if HAS_CELERY and celery_app is not None:
                 try:
-                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue='celery')
+                    celery_app.send_task(
+                        'geo_tracker.tasks.celery_tasks.execute_query',
+                        args=[query_id],
+                        queue='celery'
+                    )
                 except Exception as e:
                     print(f"Failed to send Celery task: {e}")
 
@@ -826,10 +890,8 @@ def retry_query(query_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
-
 @app.route('/api/html_files')
 def html_files():
-    import os
     query_id = request.args.get('query_id')
     try:
         entries = []
@@ -854,11 +916,9 @@ def html_files():
 
 @app.route('/api/html')
 def serve_html_source():
-    import os
     path = request.args.get('path')
     if not path:
         return "Path required", 400
-    # Security: only allow files within SCREENSHOT_DIR
     real_path = os.path.realpath(path)
     real_dir = os.path.realpath(SCREENSHOT_DIR)
     if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
@@ -875,4 +935,3 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         DATABASE_URL = sys.argv[1]
     app.run(host='0.0.0.0', port=5000, debug=True)
-
