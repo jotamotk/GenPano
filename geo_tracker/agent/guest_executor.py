@@ -412,7 +412,7 @@ class GuestQueryExecutor:
                     // 方法1: execCommand（旧版 Chrome 可用）
                     editor.innerHTML = '';
                     document.execCommand('insertText', false, text);
-                    if (editor.innerText.trim().length > 0) return true;
+                    if ((editor.textContent || '').trim().length > 0) return true;
 
                     // 方法2: 模拟粘贴事件（Quill 支持）
                     try {
@@ -421,7 +421,7 @@ class GuestQueryExecutor:
                         editor.dispatchEvent(new ClipboardEvent('paste', {
                             clipboardData: dt, bubbles: true, cancelable: true
                         }));
-                        if (editor.innerText.trim().length > 0) return true;
+                        if ((editor.textContent || '').trim().length > 0) return true;
                     } catch(e) {}
 
                     // 方法3: 直接设置 innerHTML + 触发事件（最终兜底）
@@ -431,7 +431,7 @@ class GuestQueryExecutor:
                     ['input', 'keyup', 'change', 'compositionend'].forEach(type => {
                         editor.dispatchEvent(new Event(type, { bubbles: true }));
                     });
-                    return editor.innerText.trim().length > 0;
+                    return (editor.textContent || '').trim().length > 0;
                 }
             """, query_text)
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
@@ -521,16 +521,16 @@ class GuestQueryExecutor:
             await _save_html(page, -1, f"{llm_name}_extract_fail")
             js_text = await page.evaluate("""
                 () => {
-                    // 拼接所有段落文本
+                    // 拼接所有段落文本（用 textContent 不受可见性影响）
                     const paras = [...document.querySelectorAll('p, li')];
                     const paraText = paras
-                        .map(p => (p.innerText || '').trim())
+                        .map(p => (p.textContent || '').trim())
                         .filter(t => t.length > 5)
                         .join('\\n');
                     if (paraText.length > 50) return paraText;
 
-                    // fallback 2：取 body 全部可见文本的后半段（响应在输入框之后）
-                    const bodyText = (document.body.innerText || '').trim();
+                    // fallback 2：取 body 全部文本的后半段
+                    const bodyText = (document.body.textContent || document.body.innerText || '').trim();
                     if (bodyText.length > 100) return bodyText.slice(-4000);
 
                     return '';
