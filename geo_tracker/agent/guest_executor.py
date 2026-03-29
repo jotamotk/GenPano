@@ -403,28 +403,32 @@ class GuestQueryExecutor:
         if cfg.get("contenteditable"):
             injected = await page.evaluate("""
                 (text) => {
-                    // 1. 先尝试普通 querySelector
-                    let editor = document.querySelector('rich-textarea .ql-editor');
-
-                    // 2. rich-textarea 可能用了 Shadow DOM，Playwright 能穿透但原生 JS 不能
-                    if (!editor) {
-                        const rt = document.querySelector('rich-textarea');
-                        if (rt && rt.shadowRoot) {
-                            editor = rt.shadowRoot.querySelector('.ql-editor');
-                        }
-                    }
-
-                    // 3. 兜底：任何 contenteditable
-                    if (!editor) {
-                        editor = document.querySelector('[contenteditable="true"]');
-                    }
-
+                    const editor = document.querySelector('rich-textarea .ql-editor')
+                               || document.querySelector('[contenteditable="true"]');
                     if (!editor) return false;
 
                     editor.focus();
+
+                    // 方法1: execCommand（旧版 Chrome 可用）
                     editor.innerHTML = '';
                     document.execCommand('insertText', false, text);
-                    ['input', 'keyup', 'change'].forEach(type => {
+                    if (editor.innerText.trim().length > 0) return true;
+
+                    // 方法2: 模拟粘贴事件（Quill 支持）
+                    try {
+                        const dt = new DataTransfer();
+                        dt.setData('text/plain', text);
+                        editor.dispatchEvent(new ClipboardEvent('paste', {
+                            clipboardData: dt, bubbles: true, cancelable: true
+                        }));
+                        if (editor.innerText.trim().length > 0) return true;
+                    } catch(e) {}
+
+                    // 方法3: 直接设置 innerHTML + 触发事件（最终兜底）
+                    const escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    editor.innerHTML = '<p>' + escaped + '</p>';
+                    editor.classList.remove('ql-blank');
+                    ['input', 'keyup', 'change', 'compositionend'].forEach(type => {
                         editor.dispatchEvent(new Event(type, { bubbles: true }));
                     });
                     return editor.innerText.trim().length > 0;
