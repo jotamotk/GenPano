@@ -181,8 +181,13 @@ class GuestQueryExecutor:
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-blink-features=AutomationControlled",
-                        # Docker/headless 稳定性（不禁用软件光栅化，否则无渲染后端会崩溃）
+                        # Docker/headless 稳定性:
+                        # --disable-gpu: 关闭 GPU 硬件加速
+                        # --use-gl=swiftshader: 用软件 OpenGL (SwiftShader) 代替 GPU,
+                        #   防止 ChatGPT/WebGL 密集页面因无 GPU 导致 Page crashed
+                        # 注意: 不要加 --disable-software-rasterizer，否则无任何渲染后端会崩溃
                         "--disable-gpu",
+                        "--use-gl=swiftshader",
                         "--no-zygote",
                         "--window-size=1920,1080",
                         "--disable-background-timer-throttling",
