@@ -246,12 +246,16 @@ class GuestQueryExecutor:
                 )
                 logger.info(f"[{llm}] 浏览器启动成功")
 
+                # 获取真实 Chromium 版本号，构造与实际引擎匹配的 UA
+                _tmp_ctx = await browser.new_context()
+                _tmp_page = await _tmp_ctx.new_page()
+                _real_ua = await _tmp_page.evaluate("navigator.userAgent")
+                await _tmp_ctx.close()
+                # 把 HeadlessChrome 替换为 Chrome，伪装成正常浏览器
+                _ua = _real_ua.replace("HeadlessChrome", "Chrome")
+
                 context = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 Safari/537.36"
-                    ),
+                    user_agent=_ua,
                     viewport={"width": 1920, "height": 1080},
                     locale="en-US",
                     timezone_id="America/New_York",
