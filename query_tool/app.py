@@ -828,7 +828,7 @@ def create_query():
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO queries (target_llm, query_text, brand_id, status, created_at)
-                    VALUES (%s, %s, %s, 'PENDING', NOW())
+                    VALUES (%s, %s, %s, 'pending', NOW())
                     RETURNING id
                 """, (target_llm, query_text, brand_id))
                 query_id = cur.fetchone()[0]
@@ -868,7 +868,7 @@ def retry_query(query_id):
 
                 cur.execute("""
                     UPDATE queries
-                    SET status = 'PENDING', retry_count = COALESCE(retry_count, 0) + 1
+                    SET status = 'pending', retry_count = COALESCE(retry_count, 0) + 1
                     WHERE id = %s
                 """, (query_id,))
             conn.commit()
