@@ -45,7 +45,8 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, article, [class*='message']",
         "wait_after_submit": 25000,
         "load_wait":        8000,
-        "requires_login":   False,
+        # Cloudflare 封锁数据中心 IP，无法通过浏览器自动化访问，需住宅代理或 API
+        "requires_login":   True,
     },
     "gemini": {
         "url":              "https://gemini.google.com/app",
