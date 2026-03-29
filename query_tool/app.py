@@ -3,7 +3,7 @@
 """
 import os
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify, send_from_directory
+from flask import Flask, render_template_string, request, jsonify, Response
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -102,8 +102,6 @@ HTML_TEMPLATE = """
         .status-running { color: #2563eb; font-weight: 600; }
         .llm-badge { display: inline-block; padding: 2px 8px; background: #e0e7ff; color: #4f46e5; border-radius: 999px; font-size: 12px; font-weight: 600; }
         .text-preview { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-        .screenshot-link { color: #4f46e5; cursor: pointer; text-decoration: underline; font-size: 12px; }
-        .screenshot-link:hover { color: #4338ca; }
         .html-link { color: #059669; cursor: pointer; text-decoration: underline; font-size: 12px; }
         .html-link:hover { color: #047857; }
         .html-viewer { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 4px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 70vh; overflow-y: auto; }
@@ -130,8 +128,7 @@ HTML_TEMPLATE = """
         .modal-meta-item { background: #f8fafc; padding: 10px 15px; border-radius: 4px; }
         .modal-meta-label { font-size: 12px; color: #666; margin-bottom: 4px; }
         .modal-meta-value { font-weight: 600; color: #333; }
-        .screenshot-img { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px; }
-        .refresh-btn { margin-left: 10px; }
+.refresh-btn { margin-left: 10px; }
         .auto-refresh { display: flex; align-items: center; gap: 10px; margin-left: auto; }
         .auto-refresh label { font-size: 14px; color: #666; display: flex; align-items: center; gap: 5px; }
         .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
@@ -241,24 +238,26 @@ HTML_TEMPLATE = """
                         <option value="100">100</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Sort by</label>
+                    <select id="filter-sort">
+                        <option value="id_desc">ID (newest first)</option>
+                        <option value="id_asc">ID (oldest first)</option>
+                        <option value="status">Status</option>
+                    </select>
+                </div>
                 <button onclick="currentPage=1; loadQueries();">Search</button>
             </div>
         </div>
 
-        <!-- Debug HTML Files Section -->
-        <div class="card" id="html-files-card">
-            <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleHtmlCard()">
-                <h2 style="margin:0;">Debug HTML Files</h2>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <button class="secondary small" onclick="event.stopPropagation(); loadHtmlFiles();">Refresh</button>
-                    <span id="html-card-toggle" style="font-size:18px; color:#666;">&#9660;</span>
-                </div>
-            </div>
-            <div id="html-files-body" style="margin-top:12px;">
-                <div style="color:#999; font-size:13px;">Loading...</div>
-            </div>
+        <!-- Tabs -->
+        <div style="display:flex; gap:0; border-bottom:2px solid #e5e7eb; margin-bottom:20px;">
+            <button id="tab-queries" onclick="switchTab('queries')" style="background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;">Queries</button>
+            <button id="tab-html" onclick="switchTab('html')" style="background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;">Debug HTML Files</button>
         </div>
 
+        <!-- Queries Tab -->
+        <div id="panel-queries">
         <table>
             <thead>
                 <tr>
@@ -267,7 +266,6 @@ HTML_TEMPLATE = """
                     <th>Status</th>
                     <th>Retry</th>
                     <th>Query</th>
-                    <th>Screenshot</th>
                     <th>Brand</th>
                     <th>Created</th>
                     <th>Actions</th>
@@ -276,8 +274,21 @@ HTML_TEMPLATE = """
             <tbody id="results-body">
             </tbody>
         </table>
-
         <div class="pagination" id="pagination"></div>
+        </div>
+
+        <!-- Debug HTML Tab -->
+        <div id="panel-html" style="display:none;">
+        <div class="card">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                <h2 style="margin:0;">Debug HTML Files</h2>
+                <button class="secondary small" onclick="loadHtmlFiles()">Refresh</button>
+            </div>
+            <div id="html-files-body">
+                <div style="color:#999; font-size:13px;">Loading...</div>
+            </div>
+        </div>
+        </div>
     </div>
 
     <div class="modal-backdrop" id="modal-backdrop" onclick="if(event.target === this) closeModal()">
@@ -290,17 +301,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="modal-backdrop" id="screenshot-modal" onclick="if(event.target === this) closeScreenshotModal()">
-        <div class="modal large" id="screenshot-modal-content">
-            <div class="modal-header">
-                <h3 id="screenshot-modal-title">Screenshot</h3>
-                <button class="modal-close" onclick="closeScreenshotModal()">&times;</button>
-            </div>
-            <div class="modal-body" id="screenshot-modal-body"></div>
-        </div>
-    </div>
-
-    <div class="modal-backdrop" id="html-modal" onclick="if(event.target === this) closeHtmlModal()">
+<div class="modal-backdrop" id="html-modal" onclick="if(event.target === this) closeHtmlModal()">
         <div class="modal large" style="max-width:1400px;">
             <div class="modal-header">
                 <h3 id="html-modal-title">HTML Source</h3>
@@ -339,6 +340,7 @@ HTML_TEMPLATE = """
             const brand = document.getElementById('filter-brand').value;
             const queryId = document.getElementById('filter-id').value;
             const limit = parseInt(document.getElementById('filter-limit').value);
+            const sort = document.getElementById('filter-sort').value;
 
             const params = new URLSearchParams();
             if (llm) params.append('llm', llm);
@@ -347,36 +349,51 @@ HTML_TEMPLATE = """
             if (queryId) params.append('id', queryId);
             params.append('limit', limit);
             params.append('offset', (currentPage - 1) * limit);
+            params.append('sort', sort);
 
             const res = await fetch('./api/queries?' + params.toString());
             currentData = await res.json();
             renderTable(currentData);
+            renderPagination(currentData.length, limit);
+        }
+
+        function renderPagination(resultCount, limit) {
+            const pag = document.getElementById('pagination');
+            const hasPrev = currentPage > 1;
+            const hasNext = resultCount === limit;
+            // Show page window: currentPage-2 to currentPage+2
+            const pages = [];
+            for (let p = Math.max(1, currentPage - 2); p <= currentPage + 2; p++) {
+                if (p > 1 || hasNext || currentPage > 1) pages.push(p);
+                if (p === currentPage + 2 && !hasNext) break;
+            }
+            pag.innerHTML = `
+                <button ${hasPrev ? '' : 'disabled'} onclick="currentPage--; loadQueries();">&laquo; Prev</button>
+                ${pages.map(p => `<button class="${p === currentPage ? 'active' : ''}" onclick="currentPage=${p}; loadQueries();">${p}</button>`).join('')}
+                <button ${hasNext ? '' : 'disabled'} onclick="currentPage++; loadQueries();">Next &raquo;</button>
+            `;
         }
 
         function renderTable(data) {
             const tbody = document.getElementById('results-body');
-            tbody.innerHTML = data.map(q => `
+            tbody.innerHTML = data.map(q => {
+                const statusUp = (q.status || '').toUpperCase();
+                return `
                 <tr>
                     <td>${q.id}</td>
                     <td><span class="llm-badge">${q.target_llm}</span></td>
-                    <td><span class="status-${q.status.toLowerCase()}">${q.status}</span></td>
+                    <td><span class="status-${statusUp.toLowerCase()}">${statusUp}</span></td>
                     <td>${q.retry_count || 0}</td>
                     <td class="text-preview" title="${escapeHtml(q.query_text)}" onclick="showResponse(${q.id})">${escapeHtml(q.query_text || '')}</td>
-                    <td>
-                        ${q.screenshot_path ?
-                            `<span class="screenshot-link" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">View Screenshot</span>` :
-                            (q.status === 'FAILED' ? '<span style="color:#999;font-size:12px;">No screenshot</span>' : '-')
-                        }
-                    </td>
                     <td>${q.brand_id || '-'}</td>
                     <td>${q.created_at ? new Date(q.created_at).toLocaleString() : '-'}</td>
                     <td>
                         <button class="secondary small" onclick="showResponse(${q.id})">View</button>
-                        ${q.status === 'FAILED' || q.status === 'PENDING' ?
+                        ${statusUp === 'FAILED' || statusUp === 'PENDING' ?
                             `<button class="success small" onclick="retryQuery(${q.id})">Retry</button>` : ''}
                     </td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         }
 
         async function showResponse(id) {
@@ -424,14 +441,6 @@ HTML_TEMPLATE = """
                     <div class="modal-meta-label">Query</div>
                     <div class="modal-meta-value" style="font-weight: normal;"><pre>${escapeHtml(q.query_text || '')}</pre></div>
                 </div>
-                ${q.screenshot_path ? `
-                <div style="margin-bottom:15px;">
-                    <div class="modal-meta-label" style="margin-bottom:8px;">Screenshot</div>
-                    <span class="screenshot-link" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">View Full Screenshot</span>
-                    <br>
-                    <img src="./api/screenshot?path=${encodeURIComponent(q.screenshot_path)}" class="screenshot-img" style="max-height:300px;cursor:pointer;" onclick="showScreenshot('${q.screenshot_path}', ${q.id})">
-                </div>
-                ` : ''}
                 <div style="margin-top: 20px;">
                     <div class="modal-meta-label" style="margin-bottom: 8px;">Response</div>
                     <pre>${escapeHtml(q.response || '(no response)')}</pre>
@@ -467,20 +476,8 @@ HTML_TEMPLATE = """
             });
         }
 
-        function showScreenshot(path, queryId) {
-            document.getElementById('screenshot-modal-title').textContent = `Screenshot - Query #${queryId}`;
-            document.getElementById('screenshot-modal-body').innerHTML = `
-                <img src="./api/screenshot?path=${encodeURIComponent(path)}" style="max-width:100%;height:auto;">
-            `;
-            document.getElementById('screenshot-modal').classList.add('show');
-        }
-
         function closeModal() {
             document.getElementById('modal-backdrop').classList.remove('show');
-        }
-
-        function closeScreenshotModal() {
-            document.getElementById('screenshot-modal').classList.remove('show');
         }
 
         function toggleAutoRefresh() {
@@ -560,17 +557,22 @@ HTML_TEMPLATE = """
             }
         }
 
-        // ---- HTML Files Viewer ----
-        let htmlCardExpanded = true;
-        let rawHtmlContent = '';
-
-        function toggleHtmlCard() {
-            const body = document.getElementById('html-files-body');
-            const toggle = document.getElementById('html-card-toggle');
-            htmlCardExpanded = !htmlCardExpanded;
-            body.style.display = htmlCardExpanded ? '' : 'none';
-            toggle.innerHTML = htmlCardExpanded ? '&#9660;' : '&#9650;';
+        // ---- Tabs ----
+        function switchTab(tab) {
+            const isQueries = tab === 'queries';
+            document.getElementById('panel-queries').style.display = isQueries ? '' : 'none';
+            document.getElementById('panel-html').style.display = isQueries ? 'none' : '';
+            document.getElementById('tab-queries').style.cssText = isQueries
+                ? 'background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;'
+                : 'background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;';
+            document.getElementById('tab-html').style.cssText = isQueries
+                ? 'background:none;color:#6b7280;border:none;border-bottom:2px solid transparent;padding:10px 24px;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:-2px;'
+                : 'background:none;color:#4f46e5;border:none;border-bottom:2px solid #4f46e5;padding:10px 24px;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:-2px;';
+            if (!isQueries) loadHtmlFiles();
         }
+
+        // ---- HTML Files Viewer ----
+        let rawHtmlContent = '';
 
         async function loadHtmlFiles(queryId) {
             const body = document.getElementById('html-files-body');
@@ -656,7 +658,6 @@ HTML_TEMPLATE = """
         // Load on page load
         loadStats();
         loadQueries();
-        loadHtmlFiles();
     </script>
 </body>
 </html>
@@ -713,11 +714,18 @@ def queries():
             where.append("target_llm = %s")
             params.append(llm)
         if status:
-            where.append("status = %s")
+            where.append("UPPER(status) = UPPER(%s)")
             params.append(status)
         if brand_id:
             where.append("brand_id = %s")
             params.append(int(brand_id))
+
+        sort = request.args.get('sort', 'id_desc')
+        order_by = {
+            'id_desc': 'q.id DESC',
+            'id_asc': 'q.id ASC',
+            'status': 'q.status ASC, q.id DESC',
+        }.get(sort, 'q.id DESC')
 
         where_clause = " AND ".join(where) if where else "1=1"
         params.extend([limit, offset])
@@ -734,12 +742,11 @@ def queries():
                     q.executed_at,
                     q.retry_count,
                     r.raw_text as response,
-                    r.screenshot_path,
                     r.llm_version
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 WHERE {where_clause}
-                ORDER BY q.id DESC
+                ORDER BY {order_by}
                 LIMIT %s OFFSET %s
             """, params)
             rows = cur.fetchall()
@@ -774,7 +781,7 @@ def create_query():
             # Try to trigger Celery task if available
             if HAS_CELERY:
                 try:
-                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue=f'llm_{target_llm}')
+                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue='celery')
                 except Exception as e:
                     print(f"Failed to send Celery task: {e}")
 
@@ -808,7 +815,7 @@ def retry_query(query_id):
             # Try to trigger Celery task if available
             if HAS_CELERY:
                 try:
-                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue=f'llm_{query["target_llm"]}')
+                    celery_app.send_task('geo_tracker.tasks.celery_tasks.execute_query', args=[query_id], queue='celery')
                 except Exception as e:
                     print(f"Failed to send Celery task: {e}")
 
@@ -818,18 +825,6 @@ def retry_query(query_id):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-
-@app.route('/api/screenshot')
-def screenshot():
-    path = request.args.get('path')
-    if not path:
-        return "Path required", 400
-
-    import os
-    filename = os.path.basename(path)
-    directory = os.path.dirname(path) or SCREENSHOT_DIR
-
-    return send_from_directory(directory, filename)
 
 
 @app.route('/api/html_files')
@@ -872,7 +867,6 @@ def serve_html_source():
         return "File not found", 404
     with open(real_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
-    from flask import Response
     return Response(content, mimetype='text/plain; charset=utf-8')
 
 
