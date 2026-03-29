@@ -16,6 +16,7 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, BrowserContext, Page
 
+from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
     get_current_node,
     switch_to_next_node,
@@ -353,9 +354,37 @@ class GuestQueryExecutor:
                             break
 
                     if cf_waited >= cf_max_wait:
-                        logger.warning(f"[{llm}] Cloudflare 挑战未通过 ({cf_max_wait}ms)，将触发换节点重试")
-                        await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
-                        return None
+                        # 尝试用 CapSolver 解决 Turnstile 验证码
+                        if CAPSOLVER_API_KEY:
+                            logger.info(f"[{llm}] Cloudflare 挑战未自动通过，尝试 CapSolver...")
+                            solver = CaptchaSolver()
+                            try:
+                                solved = await detect_and_solve(page_obj, solver)
+                                if solved:
+                                    logger.info(f"[{llm}] CapSolver 解码成功，等待页面跳转...")
+                                    # 等待页面从挑战页跳转到真实页面
+                                    await page_obj.wait_for_timeout(5000)
+                                    new_title = (await page_obj.title() or "").strip().lower()
+                                    if not any(t in new_title for t in CF_CHALLENGE_TITLES):
+                                        logger.info(f"[{llm}] Cloudflare 挑战已通过 (title='{new_title}')")
+                                    else:
+                                        logger.warning(f"[{llm}] CapSolver token 已注入但页面未跳转")
+                                        await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                                        return None
+                                else:
+                                    logger.warning(f"[{llm}] CapSolver 解码失败")
+                                    await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                                    return None
+                            except Exception as e:
+                                logger.error(f"[{llm}] CapSolver 异常: {e}")
+                                await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                                return None
+                            finally:
+                                await solver.close()
+                        else:
+                            logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
+                            await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                            return None
 
                     # 优先等待输入框出现，最多等 load_wait 时间，避免固定等待
                     load_wait = config.get("load_wait", 8000)
