@@ -406,10 +406,23 @@ class GuestQueryExecutor:
         # 在 headless 下元素常常报告"不可见"，导致 keyboard.type() 打到 body 而非编辑器
         # 改用 JS 直接注入文字并触发 Quill/Angular 所需的 input 事件
         if cfg.get("contenteditable"):
+            # 把 LLM 自己的选择器列表传给 JS，避免硬编码 Gemini 的 Quill 选择器
+            input_selectors = [s.strip() for s in cfg.get("input_selector", "").split(",")]
             injected = await page.evaluate("""
-                (text) => {
-                    const editor = document.querySelector('rich-textarea .ql-editor')
-                               || document.querySelector('[contenteditable="true"]');
+                ([text, selectors]) => {
+                    // 依次尝试各选择器，找第一个 contenteditable 元素
+                    let editor = null;
+                    for (const sel of selectors) {
+                        try {
+                            const el = document.querySelector(sel);
+                            if (el && (el.isContentEditable || el.getAttribute('contenteditable') !== null)) {
+                                editor = el;
+                                break;
+                            }
+                        } catch(e) {}
+                    }
+                    // 兜底：任意 contenteditable
+                    if (!editor) editor = document.querySelector('[contenteditable="true"]') || document.querySelector('[contenteditable]');
                     if (!editor) return false;
 
                     editor.focus();
@@ -438,7 +451,7 @@ class GuestQueryExecutor:
                     });
                     return (editor.textContent || '').trim().length > 0;
                 }
-            """, query_text)
+            """, [query_text, input_selectors])
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
             # 保存注入后的 HTML，确认文字是否真的进了编辑器
             await _save_html(page, -1, f"{llm_name}_after_inject")

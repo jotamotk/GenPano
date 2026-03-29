@@ -36,10 +36,11 @@ app.conf.update(
             "task":     "geo_tracker.tasks.celery_tasks.reset_daily_counts",
             "schedule": crontab(hour=0, minute=0),
         },
-        "dispatch-pending-queries": {
-            "task":     "geo_tracker.tasks.celery_tasks.dispatch_batch",
-            "schedule": crontab(minute="*/5"),
-        },
+        # dispatch-pending-queries 已禁用：所有 query 需手动触发
+        # "dispatch-pending-queries": {
+        #     "task":     "geo_tracker.tasks.celery_tasks.dispatch_batch",
+        #     "schedule": crontab(minute="*/5"),
+        # },
     },
 )
 
