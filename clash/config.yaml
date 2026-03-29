@@ -10,8 +10,10 @@ external-controller: '0.0.0.0:9090'
 # 使用本地代理文件
 proxy-providers:
   ninja-sub:
-    type: file
+    type: http
+    url: "https://45.137.180.142/dli/H1EGv2qngpcGWVc?clash=1"
     path: ./proxies/ninja.yaml
+    interval: 3600
     health-check:
       enable: true
       interval: 300
