@@ -331,17 +331,25 @@ class GuestQueryExecutor:
                     logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
 
                     # ── Cloudflare 挑战等待 ──
+                    # 页面刚加载时 title 可能为空，需先等片刻让 title 生效
                     cf_waited = 0
                     cf_max_wait = 30000
+                    # 空标题也视为"未就绪"，等待 title 出现
                     while cf_waited < cf_max_wait:
-                        page_title = (await page_obj.title() or "").lower()
-                        if any(t in page_title for t in CF_CHALLENGE_TITLES):
-                            logger.info(f"[{llm}] Cloudflare 挑战检测中 (title='{page_title}'), 等待...")
+                        page_title = (await page_obj.title() or "").strip().lower()
+                        is_cf = any(t in page_title for t in CF_CHALLENGE_TITLES)
+                        is_empty = len(page_title) == 0
+
+                        if is_cf or (is_empty and cf_waited < 10000):
+                            if is_cf:
+                                logger.info(f"[{llm}] Cloudflare 挑战检测中 (title='{page_title}'), 等待...")
+                            else:
+                                logger.info(f"[{llm}] 页面标题为空，等待加载...")
                             await page_obj.wait_for_timeout(2000)
                             cf_waited += 2000
                         else:
                             if cf_waited > 0:
-                                logger.info(f"[{llm}] Cloudflare 挑战已通过 ({cf_waited}ms)")
+                                logger.info(f"[{llm}] 页面就绪 (title='{page_title}', waited={cf_waited}ms)")
                             break
 
                     if cf_waited >= cf_max_wait:
