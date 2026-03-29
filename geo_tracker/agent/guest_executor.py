@@ -403,14 +403,27 @@ class GuestQueryExecutor:
         if cfg.get("contenteditable"):
             injected = await page.evaluate("""
                 (text) => {
-                    const editor = document.querySelector('rich-textarea .ql-editor')
-                               || document.querySelector('[contenteditable="true"]');
+                    // 1. 先尝试普通 querySelector
+                    let editor = document.querySelector('rich-textarea .ql-editor');
+
+                    // 2. rich-textarea 可能用了 Shadow DOM，Playwright 能穿透但原生 JS 不能
+                    if (!editor) {
+                        const rt = document.querySelector('rich-textarea');
+                        if (rt && rt.shadowRoot) {
+                            editor = rt.shadowRoot.querySelector('.ql-editor');
+                        }
+                    }
+
+                    // 3. 兜底：任何 contenteditable
+                    if (!editor) {
+                        editor = document.querySelector('[contenteditable="true"]');
+                    }
+
                     if (!editor) return false;
+
                     editor.focus();
-                    // 清空并写入文字
                     editor.innerHTML = '';
                     document.execCommand('insertText', false, text);
-                    // 补发 Angular/Quill 需要的事件
                     ['input', 'keyup', 'change'].forEach(type => {
                         editor.dispatchEvent(new Event(type, { bubbles: true }));
                     });
