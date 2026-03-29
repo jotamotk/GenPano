@@ -46,7 +46,7 @@ services:
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
-      --concurrency=1
+      --concurrency=5
       -Q celery,llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok
     env_file: .env
     volumes:
