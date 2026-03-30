@@ -30,10 +30,44 @@ export function isValidEmailFormat(email: string): boolean {
   return /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(email)
 }
 
-// Create mail transporter — uses Ethereal in dev if no SMTP is configured
+// ─── Resend HTTP API helper ──────────────────────────────────────────────────
+
+async function sendViaResend(
+  to: string,
+  subject: string,
+  html: string,
+  from?: string
+): Promise<{ id: string }> {
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) throw new Error('RESEND_API_KEY is not configured')
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: from || process.env.EMAIL_FROM || 'GenPano <onboarding@resend.dev>',
+      to,
+      subject,
+      html,
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Resend API error (${res.status}): ${err}`)
+  }
+
+  return res.json() as Promise<{ id: string }>
+}
+
+// ─── Nodemailer fallback (Ethereal for dev) ──────────────────────────────────
+
 let transporter: nodemailer.Transporter | null = null
 
-export async function getTransporter(): Promise<nodemailer.Transporter> {
+async function getTransporter(): Promise<nodemailer.Transporter> {
   if (transporter) return transporter
 
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
@@ -47,7 +81,6 @@ export async function getTransporter(): Promise<nodemailer.Transporter> {
       },
     })
   } else {
-    // Use Ethereal test account for development
     const testAccount = await nodemailer.createTestAccount()
     transporter = nodemailer.createTransport({
       host: 'smtp.ethereal.email',
@@ -65,21 +98,21 @@ export async function getTransporter(): Promise<nodemailer.Transporter> {
   return transporter
 }
 
+function useResend(): boolean {
+  return !!process.env.RESEND_API_KEY
+}
+
 export async function sendVerificationEmail(
   email: string,
   token: string,
   frontendUrl: string,
   userName?: string
 ): Promise<void> {
-  const t = await getTransporter()
   const link = `${frontendUrl}/setup?token=${token}`
   const displayName = userName || email.split('@')[0]
+  const subject = 'Verify your GenPano account / 验证您的 GenPano 账号'
 
-  const info = await t.sendMail({
-    from: process.env.EMAIL_FROM || '"GenPano" <noreply@genpano.com>',
-    to: email,
-    subject: 'Verify your GenPano account / 验证您的 GenPano 账号',
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -158,9 +191,21 @@ export async function sendVerificationEmail(
 </table>
 </body>
 </html>
-    `,
-  })
+    `
 
+  if (useResend()) {
+    const result = await sendViaResend(email, subject, html)
+    console.log('Verification email sent via Resend, id:', result.id)
+    return
+  }
+
+  const t = await getTransporter()
+  const info = await t.sendMail({
+    from: process.env.EMAIL_FROM || '"GenPano" <noreply@genpano.com>',
+    to: email,
+    subject,
+    html,
+  })
   if (process.env.NODE_ENV !== 'production') {
     console.log('Verification email preview URL:', nodemailer.getTestMessageUrl(info))
   }
@@ -172,15 +217,11 @@ export async function sendPasswordResetEmail(
   frontendUrl: string,
   userName?: string
 ): Promise<void> {
-  const t = await getTransporter()
   const link = `${frontendUrl}/reset-password?token=${token}`
   const displayName = userName || email.split('@')[0]
+  const subject = 'Reset your GenPano password / 重置您的 GenPano 密码'
 
-  const info = await t.sendMail({
-    from: process.env.EMAIL_FROM || '"GenPano" <noreply@genpano.com>',
-    to: email,
-    subject: 'Reset your GenPano password / 重置您的 GenPano 密码',
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -253,9 +294,21 @@ export async function sendPasswordResetEmail(
 </table>
 </body>
 </html>
-    `,
-  })
+    `
 
+  if (useResend()) {
+    const result = await sendViaResend(email, subject, html)
+    console.log('Password reset email sent via Resend, id:', result.id)
+    return
+  }
+
+  const t = await getTransporter()
+  const info = await t.sendMail({
+    from: process.env.EMAIL_FROM || '"GenPano" <noreply@genpano.com>',
+    to: email,
+    subject,
+    html,
+  })
   if (process.env.NODE_ENV !== 'production') {
     console.log('Password reset email preview URL:', nodemailer.getTestMessageUrl(info))
   }
