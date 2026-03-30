@@ -241,7 +241,6 @@ class GuestQueryExecutor:
                     "block_images": False,
                     "os": "windows",
                     "locale": "en-US",
-                    "geoip": True,
                 }
                 if use_proxy:
                     camoufox_kwargs["proxy"] = {"server": self.proxy_url}

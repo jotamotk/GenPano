@@ -612,7 +612,16 @@ HTML_TEMPLATE = """
                 const res = await fetch(`./api/queries/${queryId}/retry`, {
                     method: 'POST'
                 });
-                const data = await res.json();
+                if (!res.ok) {
+                    alert(`Server error: ${res.status} ${res.statusText}`);
+                    return;
+                }
+                const text = await res.text();
+                if (!text) {
+                    alert('Error: Empty response from server');
+                    return;
+                }
+                const data = JSON.parse(text);
                 if (data.success) {
                     alert(`Query #${queryId} has been requeued!`);
                     loadStats();
