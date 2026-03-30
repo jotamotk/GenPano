@@ -63,10 +63,20 @@ GUEST_LLM_CONFIG = {
         "url":              "https://chatgpt.com",
         "input_selector":   "#prompt-textarea, [data-testid='prompt-textarea'], textarea, [role='textbox']",
         "submit_key":       "Enter",
-        "response_selector": "[data-message-author-role='assistant'] .markdown, article, [class*='message']",
+        "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
         "requires_login":   False,
+        "dismiss_selectors": [
+            "button:has-text('Dismiss')",
+            "button:has-text('Stay logged out')",
+            "button:has-text('Reject')",
+            "button:has-text('Decline')",
+            "[aria-label='Close']",
+            "[aria-label='Dismiss']",
+            "button:has-text('No thanks')",
+            "button:has-text('Maybe later')",
+        ],
     },
     "gemini": {
         "url":              "https://gemini.google.com/app",
@@ -405,6 +415,28 @@ class GuestQueryExecutor:
                         logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
                         return None
+
+                # ── 关闭弹窗 (cookie banner, login modal, Google One Tap 等) ──
+                dismiss_sels = config.get("dismiss_selectors", [])
+                if dismiss_sels:
+                    await page_obj.wait_for_timeout(2000)  # 等弹窗渲染
+                    for dsel in dismiss_sels:
+                        try:
+                            btn = await page_obj.query_selector(dsel)
+                            if btn and await btn.is_visible():
+                                await btn.click()
+                                logger.info(f"[{llm}] 关闭弹窗: {dsel}")
+                                await page_obj.wait_for_timeout(1000)
+                        except Exception:
+                            continue
+                    # 关闭 Google One Tap iframe
+                    try:
+                        onetap = await page_obj.query_selector("#credential_picker_container")
+                        if onetap:
+                            await page_obj.evaluate("document.getElementById('credential_picker_container')?.remove()")
+                            logger.info(f"[{llm}] 移除 Google One Tap")
+                    except Exception:
+                        pass
 
                 # 优先等待输入框出现
                 load_wait = config.get("load_wait", 8000)
