@@ -16,6 +16,14 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, BrowserContext, Page
 
+# Camoufox: 反指纹浏览器，海外 LLM 优先使用以绕过 Cloudflare
+try:
+    from camoufox.async_api import AsyncCamoufox
+    HAS_CAMOUFOX = True
+except ImportError:
+    HAS_CAMOUFOX = False
+
+from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
     get_current_node,
     switch_to_next_node,
@@ -218,11 +226,37 @@ class GuestQueryExecutor:
 
         page_obj = None
         browser = None
+        _camoufox_ctx = None
+        _playwright = None
 
         try:
-            async with async_playwright() as p:
-                logger.info(f"[{llm}] 启动浏览器...")
-                browser = await p.chromium.launch(
+            # 海外 LLM 优先用 Camoufox（反指纹，绕过 Cloudflare）
+            use_camoufox = HAS_CAMOUFOX and use_proxy and llm not in DOMESTIC_LLMS
+
+            if use_camoufox:
+                logger.info(f"[{llm}] 启动 Camoufox 浏览器...")
+                camoufox_kwargs = {
+                    "headless": True,
+                    "humanize": True,
+                    "block_images": False,
+                    "os": "windows",
+                    "screen": {"width": 1920, "height": 1080},
+                    "locale": "en-US",
+                    "geoip": True,
+                }
+                if use_proxy:
+                    camoufox_kwargs["proxy"] = {"server": self.proxy_url}
+
+                _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
+                browser = await _camoufox_ctx.__aenter__()
+                logger.info(f"[{llm}] Camoufox 启动成功")
+
+                context = await browser.new_context()
+            else:
+                # 国内 LLM 或无 Camoufox 时用普通 Playwright
+                logger.info(f"[{llm}] 启动 Playwright 浏览器...")
+                _playwright = await async_playwright().start()
+                browser = await _playwright.chromium.launch(
                     headless=True,
                     proxy=proxy_cfg,
                     args=[
@@ -230,11 +264,6 @@ class GuestQueryExecutor:
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-blink-features=AutomationControlled",
-                        # Docker/headless 稳定性:
-                        # --disable-gpu: 关闭 GPU 硬件加速
-                        # --use-gl=swiftshader: 用软件 OpenGL (SwiftShader) 代替 GPU,
-                        #   防止 ChatGPT/WebGL 密集页面因无 GPU 导致 Page crashed
-                        # 注意: 不要加 --disable-software-rasterizer，否则无任何渲染后端会崩溃
                         "--disable-gpu",
                         "--use-gl=swiftshader",
                         "--no-zygote",
@@ -244,7 +273,7 @@ class GuestQueryExecutor:
                         "--disable-renderer-backgrounding",
                     ],
                 )
-                logger.info(f"[{llm}] 浏览器启动成功")
+                logger.info(f"[{llm}] Playwright 启动成功")
 
                 context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080},
@@ -255,19 +284,19 @@ class GuestQueryExecutor:
                     reduced_motion="reduce",
                 )
 
-                # 注入 LLM 专属 cookies（如 GEMINI_COOKIES_JSON）
-                cookies_env = config.get("cookies_env")
-                if cookies_env:
-                    cookies = _load_cookies_from_env(cookies_env)
-                    if cookies:
-                        await context.add_cookies(cookies)
-                        logger.info(f"[{llm}] 已注入 {len(cookies)} 个 cookies")
+            # 注入 LLM 专属 cookies
+            cookies_env = config.get("cookies_env")
+            if cookies_env:
+                cookies = _load_cookies_from_env(cookies_env)
+                if cookies:
+                    await context.add_cookies(cookies)
+                    logger.info(f"[{llm}] 已注入 {len(cookies)} 个 cookies")
 
-                page_obj = await context.new_page()
+            page_obj = await context.new_page()
 
-                # 隐藏自动化特征
+            # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
+            if not use_camoufox:
                 await page_obj.add_init_script("""
-                    // 隐藏 HeadlessChrome 标识（不能用 context user_agent，会导致 Page crashed）
                     const _origUA = navigator.userAgent;
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => _origUA.replace('HeadlessChrome', 'Chrome')
@@ -292,7 +321,6 @@ class GuestQueryExecutor:
                         runtime: { onMessage: {addListener:()=>{},removeListener:()=>{}}, sendMessage:()=>{} },
                         loadTimes: () => ({}), csi: () => ({})
                     };
-                    // Hide headless indicators
                     Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 1});
                     Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                     Object.defineProperty(screen, 'colorDepth', {get: () => 24});
@@ -304,142 +332,167 @@ class GuestQueryExecutor:
                             : originalQuery(params);
                 """)
 
-                # 对于 Gemini，先访问 google.com 建立 cookie
-                if config.get("visit_google_first"):
-                    try:
-                        logger.info(f"[{llm}] 先访问 google.com 建立 cookie...")
-                        await page_obj.goto("https://www.google.com", wait_until="domcontentloaded", timeout=30000)
-                        await page_obj.wait_for_timeout(2000)
-                        # 处理 Google consent 弹窗
-                        for sel in ['button:has-text("Accept all")', 'button:has-text("I agree")', 'button:has-text("Accept")']:
-                            try:
-                                btn = await page_obj.query_selector(sel)
-                                if btn and await btn.is_visible():
-                                    await btn.click()
-                                    await page_obj.wait_for_timeout(2000)
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        logger.warning(f"[{llm}] google.com 预访问失败（非致命）: {e}")
-
-                # 打开目标页面
-                logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
+            # 对于 Gemini，先访问 google.com 建立 cookie
+            if config.get("visit_google_first"):
                 try:
-                    await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
-                    title = await page_obj.title()
-                    logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
+                    logger.info(f"[{llm}] 先访问 google.com 建立 cookie...")
+                    await page_obj.goto("https://www.google.com", wait_until="domcontentloaded", timeout=30000)
+                    await page_obj.wait_for_timeout(2000)
+                    for sel in ['button:has-text("Accept all")', 'button:has-text("I agree")', 'button:has-text("Accept")']:
+                        try:
+                            btn = await page_obj.query_selector(sel)
+                            if btn and await btn.is_visible():
+                                await btn.click()
+                                await page_obj.wait_for_timeout(2000)
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.warning(f"[{llm}] google.com 预访问失败（非致命）: {e}")
 
-                    # ── Cloudflare 挑战等待 ──
-                    cf_waited = 0
-                    cf_max_wait = 30000
-                    while cf_waited < cf_max_wait:
-                        page_title = (await page_obj.title() or "").lower()
-                        if any(t in page_title for t in CF_CHALLENGE_TITLES):
+            # 打开目标页面
+            logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
+            try:
+                await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
+                title = await page_obj.title()
+                logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
+
+                # ── Cloudflare 挑战等待 ──
+                cf_waited = 0
+                cf_max_wait = 30000
+                while cf_waited < cf_max_wait:
+                    page_title = (await page_obj.title() or "").strip().lower()
+                    is_cf = any(t in page_title for t in CF_CHALLENGE_TITLES)
+                    is_empty = len(page_title) == 0
+
+                    if is_cf or (is_empty and cf_waited < 10000):
+                        if is_cf:
                             logger.info(f"[{llm}] Cloudflare 挑战检测中 (title='{page_title}'), 等待...")
-                            await page_obj.wait_for_timeout(2000)
-                            cf_waited += 2000
                         else:
-                            if cf_waited > 0:
-                                logger.info(f"[{llm}] Cloudflare 挑战已通过 ({cf_waited}ms)")
-                            break
+                            logger.info(f"[{llm}] 页面标题为空，等待加载...")
+                        await page_obj.wait_for_timeout(2000)
+                        cf_waited += 2000
+                    else:
+                        if cf_waited > 0:
+                            logger.info(f"[{llm}] 页面就绪 (title='{page_title}', waited={cf_waited}ms)")
+                        break
 
-                    if cf_waited >= cf_max_wait:
-                        logger.warning(f"[{llm}] Cloudflare 挑战未通过 ({cf_max_wait}ms)，将触发换节点重试")
+                if cf_waited >= cf_max_wait:
+                    if CAPSOLVER_API_KEY:
+                        logger.info(f"[{llm}] Cloudflare 挑战未自动通过，尝试 CapSolver...")
+                        solver = CaptchaSolver()
+                        try:
+                            solved = await detect_and_solve(page_obj, solver)
+                            if solved:
+                                logger.info(f"[{llm}] CapSolver 解码成功，等待页面跳转...")
+                                await page_obj.wait_for_timeout(5000)
+                                new_title = (await page_obj.title() or "").strip().lower()
+                                if not any(t in new_title for t in CF_CHALLENGE_TITLES):
+                                    logger.info(f"[{llm}] Cloudflare 挑战已通过 (title='{new_title}')")
+                                else:
+                                    logger.warning(f"[{llm}] CapSolver token 已注入但页面未跳转")
+                                    await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                                    return None
+                            else:
+                                logger.warning(f"[{llm}] CapSolver 解码失败")
+                                await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                                return None
+                        except Exception as e:
+                            logger.error(f"[{llm}] CapSolver 异常: {e}")
+                            await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                            return None
+                        finally:
+                            await solver.close()
+                    else:
+                        logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
                         return None
 
-                    # 优先等待输入框出现，最多等 load_wait 时间，避免固定等待
-                    load_wait = config.get("load_wait", 8000)
-                    input_selectors = [s.strip() for s in config["input_selector"].split(",")]
-                    input_ready = False
+                # 优先等待输入框出现
+                load_wait = config.get("load_wait", 8000)
+                input_selectors = [s.strip() for s in config["input_selector"].split(",")]
+                input_ready = False
+                try:
+                    for sel in input_selectors:
+                        if not sel:
+                            continue
+                        try:
+                            await page_obj.wait_for_selector(sel, timeout=load_wait, state="attached")
+                            logger.info(f"[{llm}] 输入框就绪（提前完成等待）: {sel}")
+                            input_ready = True
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                if not input_ready:
+                    await page_obj.wait_for_timeout(min(load_wait, 5000))
+
+                title = await page_obj.title()
+                logger.info(f"[{llm}] 页面最终标题: {title}")
+            except Exception as e:
+                logger.error(f"[{llm}] 页面加载失败: {e}")
+                if page_obj:
                     try:
-                        for sel in input_selectors:
-                            if not sel:
-                                continue
-                            try:
-                                await page_obj.wait_for_selector(sel, timeout=load_wait, state="attached")
-                                logger.info(f"[{llm}] 输入框就绪（提前完成等待）: {sel}")
-                                input_ready = True
-                                break
-                            except Exception:
-                                continue
-                    except Exception:
+                        await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
+                    except:
                         pass
-                    if not input_ready:
-                        # 输入框未就绪时仍等待剩余时间
-                        await page_obj.wait_for_timeout(min(load_wait, 5000))
+                return None
 
-                    title = await page_obj.title()
-                    logger.info(f"[{llm}] 页面最终标题: {title}")
+            # 尝试找输入框
+            input_el = None
+            selectors = [s.strip() for s in config["input_selector"].split(",")]
+            logger.info(f"[{llm}] 尝试选择器: {selectors}")
+
+            for sel in selectors:
+                if not sel:
+                    continue
+                try:
+                    logger.debug(f"[{llm}] 尝试选择器: {sel}")
+                    input_el = await page_obj.wait_for_selector(sel, timeout=10000, state="attached")
+                    if input_el:
+                        is_visible = await input_el.is_visible()
+                        if is_visible:
+                            logger.info(f"[{llm}] 输入框找到且可见: {sel}")
+                            break
+                        else:
+                            logger.info(f"[{llm}] 输入框找到但报告为不可见，仍尝试使用: {sel}")
+                            break
                 except Exception as e:
-                    logger.error(f"[{llm}] 页面加载失败: {e}")
-                    if page_obj:
-                        try:
-                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
-                        except:
-                            pass
-                    return None
+                    logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
+                    continue
 
-                # 尝试找输入框
-                input_el = None
-                selectors = [s.strip() for s in config["input_selector"].split(",")]
-                logger.info(f"[{llm}] 尝试选择器: {selectors}")
-
-                for sel in selectors:
-                    if not sel:
-                        continue
+            if not input_el:
+                logger.error(f"[{llm}] 找不到输入框")
+                if page_obj:
+                    await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
                     try:
-                        logger.debug(f"[{llm}] 尝试选择器: {sel}")
-                        input_el = await page_obj.wait_for_selector(sel, timeout=10000, state="attached")
-                        if input_el:
-                            # 检查是否可见
-                            is_visible = await input_el.is_visible()
-                            if is_visible:
-                                logger.info(f"[{llm}] 输入框找到且可见: {sel}")
-                                break
-                            else:
-                                # 对于某些 LLM（如 Gemini），元素可能存在但报告为不可见，仍然尝试使用
-                                logger.info(f"[{llm}] 输入框找到但报告为不可见，仍尝试使用: {sel}")
-                                break
+                        content = await page_obj.content()
+                        content_path = SCREENSHOT_DIR / f"query_{query.id}_{llm}_content.html"
+                        content_path.write_text(content[:50000], encoding='utf-8')
+                        logger.info(f"[{llm}] 页面内容已保存: {content_path}")
                     except Exception as e:
-                        logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
-                        continue
+                        logger.warning(f"保存页面内容失败: {e}")
+                return None
 
-                if not input_el:
-                    logger.error(f"[{llm}] 找不到输入框")
-                    if page_obj:
-                        await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
-                        # 也保存页面内容用于调试
-                        try:
-                            content = await page_obj.content()
-                            content_path = SCREENSHOT_DIR / f"query_{query.id}_{llm}_content.html"
-                            content_path.write_text(content[:50000], encoding='utf-8')
-                            logger.info(f"[{llm}] 页面内容已保存: {content_path}")
-                        except Exception as e:
-                            logger.warning(f"保存页面内容失败: {e}")
-                    return None
+            # 执行查询
+            resp_text = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
-                # 执行查询
-                resp_text = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
-
-                if resp_text:
-                    # 截图存档
-                    screenshot_path = await _save_screenshot(page_obj, query.id, llm)
-
-                    return LLMResponse(
-                        query_id=query.id,
-                        raw_text=resp_text,
-                        screenshot_path=str(screenshot_path) if screenshot_path else None,
-                        response_time_ms=0,
-                        llm_version=f"guest_{llm}",
-                        collected_at=datetime.utcnow(),
-                    )
-                else:
-                    logger.error(f"[{llm}] 未能获取响应")
-                    if page_obj:
-                        await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
-                    return None
+            if resp_text:
+                screenshot_path = await _save_screenshot(page_obj, query.id, llm)
+                return LLMResponse(
+                    query_id=query.id,
+                    raw_text=resp_text,
+                    screenshot_path=str(screenshot_path) if screenshot_path else None,
+                    response_time_ms=0,
+                    llm_version=f"{'camoufox' if use_camoufox else 'guest'}_{llm}",
+                    collected_at=datetime.utcnow(),
+                )
+            else:
+                logger.error(f"[{llm}] 未能获取响应")
+                if page_obj:
+                    await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
+                return None
 
         except Exception as e:
             logger.exception(f"[{llm}] 执行异常: {e}")
@@ -453,6 +506,16 @@ class GuestQueryExecutor:
             if browser:
                 try:
                     await browser.close()
+                except:
+                    pass
+            if _camoufox_ctx:
+                try:
+                    await _camoufox_ctx.__aexit__(None, None, None)
+                except:
+                    pass
+            if _playwright:
+                try:
+                    await _playwright.stop()
                 except:
                     pass
 
