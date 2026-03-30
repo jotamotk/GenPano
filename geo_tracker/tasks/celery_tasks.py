@@ -77,7 +77,6 @@ def execute_query(self, query_id: int) -> dict:
             # 检查是否支持无账号模式
             if llm_config.get("requires_login", True):
                 query.status = QueryStatus.FAILED.value
-                query.retry_count += 1
                 await db.commit()
                 logger.warning(f"Query {query_id}: {query.target_llm} requires login, skipping")
                 return {"query_id": query_id, "status": "failed", "reason": "requires_login"}
@@ -101,7 +100,6 @@ def execute_query(self, query_id: int) -> dict:
                 else:
                     resp_len = len(response.raw_text) if response else 0
                     query.status = QueryStatus.FAILED.value
-                    query.retry_count += 1
                     await db.commit()
                     logger.warning(f"Query {query_id} failed (response too short: {resp_len} chars, likely login redirect)")
                     return {"query_id": query_id, "status": "failed", "reason": f"response_too_short:{resp_len}"}
@@ -109,7 +107,6 @@ def execute_query(self, query_id: int) -> dict:
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
                 query.status = QueryStatus.FAILED.value
-                query.retry_count += 1
                 await db.commit()
                 return {"query_id": query_id, "status": "failed", "error": str(e)}
 
