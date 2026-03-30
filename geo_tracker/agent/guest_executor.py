@@ -240,7 +240,6 @@ class GuestQueryExecutor:
                     "humanize": True,
                     "block_images": False,
                     "os": "windows",
-                    "screen": {"width": 1920, "height": 1080},
                     "locale": "en-US",
                     "geoip": True,
                 }
