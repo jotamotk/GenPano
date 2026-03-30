@@ -98,12 +98,14 @@ LLM_CONFIG: dict[str, dict] = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea.input-area",
+        "input_selector":   "textarea.input-area, textarea, [class*='chat-input']",
         "submit_selector":  "button[data-testid='chat_input_send_button']",
-        "response_selector":".bot-message .content",
+        "response_selector":"[class*='receive-message'] [class*='content'], .bot-message .content, [class*='message-content']",
         "wait_for_done":    "button[data-testid='chat_input_send_button']:not([disabled])",
         "response_timeout": 90_000,
         "requires_login":   True,
+        "cookies_env":      "DOUBAO_COOKIES_JSON",
+        "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
     "zhipu": {
         "url":              "https://chatglm.cn",
@@ -160,7 +162,7 @@ class QueryExecutor:
 
         try:
             async with AsyncCamoufox(**camoufox_kwargs) as browser:
-                context: BrowserContext = await _prepare_context(browser, account)
+                context: BrowserContext = await _prepare_context(browser, account, config)
                 page: Page = await context.new_page()
 
                 response_text = await self._run_query(page, config, query.query_text)
@@ -205,6 +207,14 @@ class QueryExecutor:
 
         await page.goto(config["url"], wait_until="domcontentloaded")
         await pre_query_pause()
+
+        # 检测是否跳转到登录页（cookie 过期或无效）
+        login_domains = config.get("login_redirect_domains", [])
+        if login_domains:
+            current_url = page.url
+            if any(d in current_url for d in login_domains):
+                logger.warning(f"Redirected to login page: {current_url}, cookies may be expired")
+                return None
 
         # 检测 & 处理验证码
         captcha_ok = await detect_and_solve(page, self.captcha_solver)
@@ -307,17 +317,32 @@ def _platform_to_os(platform: str) -> str:
     return mapping.get(platform, "windows")
 
 
-async def _prepare_context(browser, account: LLMAccount) -> BrowserContext:
+async def _prepare_context(browser, account: LLMAccount, config: dict = None) -> BrowserContext:
     """创建浏览器上下文，注入已保存的 cookies（免登录）"""
     context = await browser.new_context()
 
+    cookies_loaded = False
     if account.cookies_json:
         try:
             cookies = json.loads(account.cookies_json)
             await context.add_cookies(cookies)
             logger.info(f"Loaded {len(cookies)} cookies for account {account.id}")
+            cookies_loaded = True
         except Exception as e:
             logger.warning(f"Failed to load cookies: {e}")
+
+    # 如果数据库无 cookies，尝试从环境变量加载（适用于豆包等国内 LLM 手动导出 cookie 的场景）
+    if not cookies_loaded and config:
+        cookies_env = config.get("cookies_env")
+        if cookies_env:
+            raw = os.getenv(cookies_env, "").strip()
+            if raw:
+                try:
+                    cookies = json.loads(raw)
+                    await context.add_cookies(cookies)
+                    logger.info(f"Loaded {len(cookies)} cookies from env {cookies_env}")
+                except Exception as e:
+                    logger.warning(f"Failed to load cookies from {cookies_env}: {e}")
 
     return context
 
