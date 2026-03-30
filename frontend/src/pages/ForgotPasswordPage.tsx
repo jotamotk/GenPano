@@ -33,14 +33,14 @@ export default function ForgotPasswordPage() {
   return (
     <AuthLayout>
       <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-2">
+        <h1 className="text-[32px] font-heading font-semibold text-[#1A1A2E] mb-2">
           {t.forgotPassword.title}
         </h1>
         <p className="text-sm text-gray-500">
           {t.forgotPassword.noAccount}{' '}
           <Link
             to="/register"
-            className="text-indigo-600 hover:text-indigo-700 font-medium transition-colors"
+            className="text-primary-500 hover:text-primary-600 hover:underline font-medium transition-colors"
           >
             {t.forgotPassword.signUp}
           </Link>
@@ -65,7 +65,7 @@ export default function ForgotPasswordPage() {
             className={`w-full px-3.5 py-2.5 text-sm rounded-lg border transition-colors outline-none
               ${emailError
                 ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
-                : 'border-gray-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
+                : 'border-gray-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/10'
               } placeholder:text-gray-400 text-gray-900`}
           />
           {emailError && (
@@ -78,8 +78,8 @@ export default function ForgotPasswordPage() {
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full py-2.5 px-4 text-sm font-semibold text-white rounded-lg transition-colors
-            bg-indigo-500 hover:bg-indigo-600 focus:ring-2 focus:ring-indigo-300 focus:outline-none
+          className="w-full h-12 px-4 text-base font-semibold text-white rounded-[10px] transition-colors
+            bg-primary-500 hover:bg-primary-600 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-purple-500/25 active:bg-primary-700 active:translate-y-0 focus:ring-2 focus:ring-primary-100 focus:outline-none
             disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {isLoading ? (

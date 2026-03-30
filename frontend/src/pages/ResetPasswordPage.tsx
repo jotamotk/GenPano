@@ -62,7 +62,7 @@ export default function ResetPasswordPage() {
   return (
     <AuthLayout>
       <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-gray-900">
+        <h1 className="text-[32px] font-heading font-semibold text-[#1A1A2E]">
           {t.resetPassword.title}
         </h1>
       </div>
@@ -92,7 +92,7 @@ export default function ResetPasswordPage() {
               className={`w-full px-3.5 py-2.5 pr-10 text-sm rounded-lg border transition-colors outline-none
                 ${newPasswordError
                   ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
-                  : 'border-gray-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
+                  : 'border-gray-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/10'
                 } placeholder:text-gray-400 text-gray-900`}
             />
             <button
@@ -126,7 +126,7 @@ export default function ResetPasswordPage() {
               className={`w-full px-3.5 py-2.5 pr-10 text-sm rounded-lg border transition-colors outline-none
                 ${confirmPasswordError
                   ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
-                  : 'border-gray-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'
+                  : 'border-gray-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/10'
                 } placeholder:text-gray-400 text-gray-900`}
             />
             <button
@@ -147,8 +147,8 @@ export default function ResetPasswordPage() {
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full py-2.5 px-4 text-sm font-semibold text-white rounded-lg transition-colors
-            bg-indigo-500 hover:bg-indigo-600 focus:ring-2 focus:ring-indigo-300 focus:outline-none
+          className="w-full h-12 px-4 text-base font-semibold text-white rounded-[10px] transition-colors
+            bg-primary-500 hover:bg-primary-600 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-purple-500/25 active:bg-primary-700 active:translate-y-0 focus:ring-2 focus:ring-primary-100 focus:outline-none
             disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {isLoading ? (
