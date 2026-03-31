@@ -449,6 +449,8 @@ HTML_TEMPLATE = """
                         <button class="secondary small" onclick="showResponse(${q.id})">View</button>
                         ${statusUp === 'FAILED' || statusUp === 'PENDING' ?
                             `<button class="success small" onclick="retryQuery(${q.id})">Retry</button>` : ''}
+                        ${statusUp === 'DONE' ?
+                            `<button class="danger small" onclick="markFailed(${q.id})">Mark Failed</button>` : ''}
                     </td>
                 </tr>`;
             }).join('');
@@ -549,6 +551,11 @@ HTML_TEMPLATE = """
                 ${statusUp === 'FAILED' || statusUp === 'PENDING' ? `
                 <div style="margin-top: 20px;">
                     <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
+                </div>
+                ` : ''}
+                ${statusUp === 'DONE' ? `
+                <div style="margin-top: 20px;">
+                    <button class="danger" onclick="markFailed(${q.id}); closeModal();">Mark as Failed</button>
                 </div>
                 ` : ''}
                 <div style="margin-top: 20px;">
@@ -658,6 +665,29 @@ HTML_TEMPLATE = """
                 const data = JSON.parse(text);
                 if (data.success) {
                     alert(`Query #${queryId} has been requeued!`);
+                    loadStats();
+                    loadQueries();
+                } else {
+                    alert(`Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (e) {
+                alert(`Error: ${e.message}`);
+            }
+        }
+
+        async function markFailed(queryId) {
+            if (!confirm(`确定将 Query #${queryId} 标记为 Failed？`)) return;
+            try {
+                const res = await fetch(`./api/queries/${queryId}/mark_failed`, {
+                    method: 'POST'
+                });
+                if (!res.ok) {
+                    alert(`Server error: ${res.status} ${res.statusText}`);
+                    return;
+                }
+                const data = await res.json();
+                if (data.success) {
+                    alert(`Query #${queryId} 已标记为 Failed`);
                     loadStats();
                     loadQueries();
                 } else {
@@ -951,6 +981,27 @@ def retry_query(query_id):
                 except Exception as e:
                     print(f"Failed to send Celery task: {e}")
 
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/queries/<int:query_id>/mark_failed', methods=['POST'])
+def mark_failed(query_id):
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "UPDATE queries SET status = 'failed' WHERE id = %s AND status = 'done'",
+                    (query_id,)
+                )
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Query not found or not in done status'})
+            conn.commit()
             return jsonify({'success': True})
         finally:
             conn.close()
