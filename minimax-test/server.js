@@ -265,12 +265,17 @@ async function processWithMinimax(videoPath, prompt) {
   }
 }
 
+// 全局异常捕获，防止进程崩溃
+process.on('uncaughtException', (err) => {
+  console.error('未捕获异常:', err.message, err.stack);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('未处理Promise拒绝:', err);
+});
+
 app.listen(PORT, () => {
   console.log(`\n========================================`);
   console.log(`Minimax 视频解析测试服务已启动`);
   console.log(`访问: http://localhost:${PORT}`);
   console.log(`========================================\n`);
-  console.log(`使用前请确保:`);
-  console.log(`1. 已运行 npm run collect-cookies 收集登录 cookies`);
-  console.log(`2. cookies.json 文件存在于当前目录\n`);
 });
