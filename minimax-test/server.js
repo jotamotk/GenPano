@@ -24,9 +24,9 @@ const upload = multer({
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 });
 
-// 静态文件
-app.use(express.static(__dirname));
+// 中间件 - json 解析必须在 static 之前
 app.use(express.json({ limit: '10mb' }));
+app.use(express.static(__dirname));
 app.use('/screenshots', express.static(SCREENSHOTS_DIR));
 
 // 主页

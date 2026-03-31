@@ -214,10 +214,19 @@
   </div>
 
   <script>
+    // 安全 JSON 解析 - 如果服务端返回非 JSON，显示原始内容
+    async function safeJson(res) {
+      const text = await res.text();
+      if (!text) throw new Error(`服务端返回空响应 (HTTP ${res.status})`);
+      try { return JSON.parse(text); } catch {
+        throw new Error(`服务端返回非JSON (HTTP ${res.status}): ${text.substring(0, 300)}`);
+      }
+    }
+
     // === Cookie 管理 ===
     async function refreshCookieStatus() {
       const res = await fetch('api/cookies/status');
-      const data = await res.json();
+      const data = await safeJson(res);
       const dot = document.getElementById('cookieDot');
       const txt = document.getElementById('cookieStatusText');
       if (data.exists) {
@@ -253,7 +262,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cookies: json }),
         });
-        const data = await res.json();
+        const data = await safeJson(res);
         if (data.success) {
           st.className = 'status success';
           st.textContent = `保存成功！共 ${data.count} 个 cookie`;
@@ -288,7 +297,7 @@
       fd.append('cookieFile', cookieFile);
       try {
         const res = await fetch('api/cookies/upload', { method: 'POST', body: fd });
-        const data = await res.json();
+        const data = await safeJson(res);
         if (data.success) {
           st.className = 'status success';
           st.textContent = `上传成功！共 ${data.count} 个 cookie`;
@@ -356,7 +365,7 @@
 
       try {
         const response = await fetch('api/process', { method: 'POST', body: formData });
-        const data = await response.json();
+        const data = await safeJson(response);
         if (data.success) {
           status.className = 'status success';
           status.textContent = '解析完成！';
