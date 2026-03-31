@@ -95,7 +95,7 @@ services:
         condition: service_healthy
 
   minimax-test:
-    build: ./minimax-test
+    image: ${ACR_REGISTRY}/genpano:minimax-test-${IMAGE_TAG:-latest}
     restart: unless-stopped
     volumes:
       - minimax_cookies:/app/cookies_store
