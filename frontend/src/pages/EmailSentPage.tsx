@@ -47,8 +47,7 @@ export default function EmailSentPage() {
     <div className="min-h-screen flex">
       {/* Left decorative panel */}
       <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden"
-        style={{ backgroundColor: '#F5EDE5' }}
+        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden bg-brand-beige"
         aria-hidden="true"
       >
         <div className="flex-1 w-full">
@@ -71,10 +70,10 @@ export default function EmailSentPage() {
 
         {/* Centered card */}
         <div className="flex-1 flex items-center justify-center px-6 py-12">
-          <div className="bg-white border border-gray-200 rounded-2xl px-10 py-10 max-w-[420px] w-full mx-auto">
+          <div className="bg-white border border-gray-200 rounded-2xl px-10 py-10 max-w-[420px] w-full mx-auto animate-fade-in">
 
             {/* Green checkmark icon */}
-            <div className="flex justify-center mb-6">
+            <div className="flex justify-center mb-6 animate-scale-in">
               <GreenCheckIcon />
             </div>
 
@@ -96,7 +95,7 @@ export default function EmailSentPage() {
                 <button
                   type="button"
                   onClick={handleEditEmail}
-                  className="text-gray-400 hover:text-indigo-600 transition-colors flex-shrink-0"
+                  className="text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
                   title="修改邮箱"
                 >
                   <PencilIcon />
@@ -108,13 +107,13 @@ export default function EmailSentPage() {
             <p className="text-sm font-medium text-gray-700 mb-3">{nextStepsLabel}</p>
             <div className="space-y-3 mb-6">
               <div className="flex items-start gap-3">
-                <span className="w-6 h-6 rounded-full bg-indigo-500 text-white text-xs flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="w-6 h-6 rounded-full bg-primary-500 text-white text-xs flex items-center justify-center flex-shrink-0 mt-0.5">
                   1
                 </span>
                 <span className="text-sm text-gray-600">{step1}</span>
               </div>
               <div className="flex items-start gap-3">
-                <span className="w-6 h-6 rounded-full bg-indigo-500 text-white text-xs flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="w-6 h-6 rounded-full bg-primary-500 text-white text-xs flex items-center justify-center flex-shrink-0 mt-0.5">
                   2
                 </span>
                 <span className="text-sm text-gray-600">{step2}</span>
@@ -125,8 +124,7 @@ export default function EmailSentPage() {
             <button
               type="button"
               onClick={handleResend}
-              className="w-full py-2.5 px-4 text-sm font-semibold text-white rounded-lg transition-colors
-                bg-indigo-500 hover:bg-indigo-600 focus:ring-2 focus:ring-indigo-300 focus:outline-none"
+              className="w-full h-12 px-4 text-base font-semibold text-white rounded-[10px] transition-all duration-200 bg-primary-500 hover:bg-primary-600 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-purple-500/25 active:bg-primary-700 active:translate-y-0 focus:ring-2 focus:ring-primary-100 focus:outline-none"
             >
               {t.emailSent.resendButton}
             </button>
@@ -140,7 +138,7 @@ export default function EmailSentPage() {
             <div className="text-center mt-3">
               <a
                 href={email ? `mailto:${email}` : '#'}
-                className="text-sm text-indigo-600 hover:text-indigo-700 transition-colors"
+                className="text-sm text-primary-500 hover:text-primary-600 transition-colors"
               >
                 {t.emailSent.viewEmail} 👉
               </a>
@@ -155,10 +153,10 @@ export default function EmailSentPage() {
 function GreenCheckIcon() {
   return (
     <svg className="w-16 h-16" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="32" cy="32" r="30" stroke="#22c55e" strokeWidth="2.5" fill="none" />
+      <circle cx="32" cy="32" r="30" stroke="#10B981" strokeWidth="2.5" fill="none" />
       <path
         d="M20 32l8 8 16-16"
-        stroke="#22c55e"
+        stroke="#10B981"
         strokeWidth="2.5"
         strokeLinecap="round"
         strokeLinejoin="round"

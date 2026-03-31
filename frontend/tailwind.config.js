@@ -7,10 +7,17 @@ export default {
   theme: {
     extend: {
       colors: {
-        'brand-beige': '#F5EDE5',
-        'brand-indigo': '#4F6EF7',
+        'brand-beige': '#F5EDE3',
+        primary: {
+          50: '#F5F3FF',
+          100: '#EDE9FE',
+          500: '#6C5CE7',
+          600: '#5B4BD5',
+          700: '#4A3BC3',
+        },
       },
       fontFamily: {
+        heading: ['Nunito', 'system-ui', '-apple-system', 'sans-serif'],
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
       },
       animation: {
@@ -21,6 +28,8 @@ export default {
         'pulse-soft': 'pulseSoft 3s ease-in-out infinite',
         'orbit': 'orbit 12s linear infinite',
         'orbit-reverse': 'orbit 8s linear infinite reverse',
+        'fade-in': 'fadeIn 300ms ease-out',
+        'scale-in': 'scaleIn 400ms cubic-bezier(0.34, 1.56, 0.64, 1)',
       },
       keyframes: {
         float: {
@@ -38,6 +47,14 @@ export default {
         orbit: {
           '0%': { transform: 'rotate(0deg) translateX(80px) rotate(0deg)' },
           '100%': { transform: 'rotate(360deg) translateX(80px) rotate(-360deg)' },
+        },
+        fadeIn: {
+          from: { opacity: '0', transform: 'translateY(8px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        scaleIn: {
+          from: { opacity: '0', transform: 'scale(0.5)' },
+          to: { opacity: '1', transform: 'scale(1)' },
         },
       },
     },

@@ -158,4 +158,16 @@ async def detect_and_solve(page: Page, solver: CaptchaSolver) -> bool:
             return True
         return False
 
+    # 检测字节跳动/火山引擎验证（豆包使用）
+    bytedance_captcha = await page.query_selector(
+        "[class*='verify'], [class*='captcha'], #captcha-verify, "
+        "[class*='slide-verify'], [class*='slider-verify']"
+    )
+    if bytedance_captcha:
+        logger.warning(
+            "Detected ByteDance/Volcengine captcha (slider/click verification). "
+            "This type cannot be auto-solved. Please refresh cookies via manual login."
+        )
+        return False
+
     return True   # 无验证码，正常通过

@@ -3,6 +3,7 @@
 - 使用 Playwright 直接访问 LLM 网站，无需账号
 - 支持 ChatGPT、Gemini、Perplexity、Kimi、Doubao、DeepSeek 等
 - Gemini 支持通过 GEMINI_COOKIES_JSON 环境变量注入 Google session cookie
+- Doubao 支持通过 DOUBAO_COOKIES_JSON 环境变量注入火山引擎 session cookie
 """
 from __future__ import annotations
 
@@ -118,12 +119,16 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea, [contenteditable='true']",
+        "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message'], [class*='content']",
-        "wait_after_submit": 20000,
+        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content'], [class*='message-content'], [class*='message'][class*='bot']",
+        "wait_after_submit": 25000,
         "load_wait":        10000,
-        "requires_login":   False,
+        # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
+        "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
+        "cookies_env":      "DOUBAO_COOKIES_JSON",
+        # 豆包登录页域名检测
+        "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
     "deepseek": {
         "url":              "https://chat.deepseek.com",
@@ -170,12 +175,14 @@ DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 class GuestQueryExecutor:
     """无账号查询执行器"""
 
-    def __init__(self, proxy_url: Optional[str] = None):
+    def __init__(self, proxy_url: Optional[str] = None, account_cookies: Optional[str] = None):
         """
         Args:
             proxy_url: 代理 URL，用于访问国际 LLM
+            account_cookies: JSON string of cookies from LLMAccount (DB), 优先于环境变量
         """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+        self.account_cookies = account_cookies
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -294,13 +301,23 @@ class GuestQueryExecutor:
                     reduced_motion="reduce",
                 )
 
-            # 注入 LLM 专属 cookies
-            cookies_env = config.get("cookies_env")
-            if cookies_env:
-                cookies = _load_cookies_from_env(cookies_env)
-                if cookies:
-                    await context.add_cookies(cookies)
-                    logger.info(f"[{llm}] 已注入 {len(cookies)} 个 cookies")
+            # 注入 LLM 专属 cookies（优先 DB 账号 cookies，fallback 环境变量）
+            injected_cookies = []
+            if self.account_cookies:
+                try:
+                    injected_cookies = json.loads(self.account_cookies)
+                    logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
+                except Exception as e:
+                    logger.warning(f"[{llm}] 解析 account_cookies 失败: {e}")
+
+            if not injected_cookies:
+                cookies_env = config.get("cookies_env")
+                if cookies_env:
+                    injected_cookies = _load_cookies_from_env(cookies_env)
+
+            if injected_cookies:
+                await context.add_cookies(injected_cookies)
+                logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
             page_obj = await context.new_page()
 
@@ -416,6 +433,37 @@ class GuestQueryExecutor:
                     else:
                         logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                        return None
+
+                # 检测是否被重定向到登录页（cookie 过期或未注入）
+                current_url = page_obj.url
+                login_domains = config.get("login_redirect_domains", [])
+                if any(d in current_url for d in login_domains):
+                    logger.warning(
+                        f"[{llm}] 被重定向到登录页: {current_url}，"
+                        f"请更新 {config.get('cookies_env', '')} 环境变量中的 cookies"
+                    )
+                    await _save_screenshot(page_obj, query.id, f"{llm}_login_redirect")
+                    return None
+
+                # 检测页面内的登录弹窗（豆包等国内 LLM 可能在页面内弹出登录框）
+                login_modal = await page_obj.query_selector(
+                    "[class*='login-modal'], [class*='login-dialog'], "
+                    "[class*='sign-in'], [class*='login-panel'], "
+                    "[class*='passport-container']"
+                )
+                if login_modal:
+                    is_visible = False
+                    try:
+                        is_visible = await login_modal.is_visible()
+                    except Exception:
+                        pass
+                    if is_visible:
+                        logger.warning(
+                            f"[{llm}] 检测到页面内登录弹窗，"
+                            f"请更新 {config.get('cookies_env', '')} 环境变量中的 cookies"
+                        )
+                        await _save_screenshot(page_obj, query.id, f"{llm}_login_modal")
                         return None
 
                 # ── 关闭弹窗 (cookie banner, login modal, Google One Tap 等) ──

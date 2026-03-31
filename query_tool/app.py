@@ -1008,8 +1008,6 @@ def backfill_citations():
     from psycopg2.extras import RealDictCursor
     import re
     import json as json_mod
-    from html.parser import HTMLParser
-
     url_pattern = re.compile(
         r'https?://[^\s<>"\')\]},;]+',
         re.IGNORECASE,
