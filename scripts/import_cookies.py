@@ -1,12 +1,16 @@
 """
-将 auto_register.py 输出的 cookie JSON 文件批量导入到 llm_accounts 表。
+将 cookie JSON 文件批量导入到 llm_accounts 表。
+
+支持两种格式:
+  1. auto_register.py 输出: {"platform": "doubao", "phone": "138xxx", "cookies": [...]}
+  2. EditThisCookie 导出: [{"domain": ".doubao.com", "name": "xxx", "value": "yyy", ...}, ...]
 
 用法:
-    # 导入目录下所有 JSON 文件
+    # 导入 auto_register.py 输出的文件
     python scripts/import_cookies.py ./cookies/
 
-    # 导入单个文件
-    python scripts/import_cookies.py ./cookies/doubao_1234_20260331.json
+    # 导入 EditThisCookie 导出的文件（需指定 --platform）
+    python scripts/import_cookies.py doubao_raw.json --platform doubao
 
     # 试运行（只打印，不写入数据库）
     python scripts/import_cookies.py ./cookies/ --dry-run
@@ -42,10 +46,66 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_cookie_file(filepath: Path) -> dict | None:
+def _convert_editthiscookie(cookies: list[dict]) -> list[dict]:
+    """将 EditThisCookie 格式转换为 Playwright add_cookies 格式"""
+    SAME_SITE_MAP = {
+        "unspecified": "Lax",
+        "no_restriction": "None",
+        "lax": "Lax",
+        "strict": "Strict",
+    }
+    result = []
+    for c in cookies:
+        entry = {
+            "name": c["name"],
+            "value": c["value"],
+            "domain": c["domain"],
+            "path": c.get("path", "/"),
+        }
+        if c.get("expirationDate"):
+            entry["expires"] = c["expirationDate"]
+        if c.get("httpOnly"):
+            entry["httpOnly"] = True
+        if c.get("secure"):
+            entry["secure"] = True
+        same_site = c.get("sameSite", "unspecified")
+        entry["sameSite"] = SAME_SITE_MAP.get(same_site, "Lax")
+        result.append(entry)
+    return result
+
+
+def _is_editthiscookie(data) -> bool:
+    """检测是否为 EditThisCookie 导出格式（JSON 数组，含 storeId/hostOnly）"""
+    return (
+        isinstance(data, list)
+        and len(data) > 0
+        and isinstance(data[0], dict)
+        and ("storeId" in data[0] or "hostOnly" in data[0])
+    )
+
+
+def _guess_platform_from_cookies(cookies: list[dict]) -> str | None:
+    """从 cookie domain 猜测平台名"""
+    domains = {c.get("domain", "") for c in cookies}
+    for d in domains:
+        if "doubao" in d:
+            return "doubao"
+        if "deepseek" in d:
+            return "deepseek"
+        if "gemini" in d or "google" in d:
+            return "gemini"
+        if "kimi" in d or "moonshot" in d:
+            return "kimi"
+        if "chatgpt" in d or "openai" in d:
+            return "chatgpt"
+    return None
+
+
+def load_cookie_file(filepath: Path, default_platform: str | None = None) -> dict | None:
     """
-    读取 auto_register.py 输出的 JSON 文件。
-    期望格式: {"platform": "doubao", "phone": "138xxx", "cookies": [...]}
+    读取 cookie JSON 文件，支持两种格式:
+    1. auto_register.py: {"platform": "doubao", "phone": "138xxx", "cookies": [...]}
+    2. EditThisCookie: [{"domain": "...", "name": "...", "value": "...", ...}, ...]
     """
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
@@ -53,15 +113,32 @@ def load_cookie_file(filepath: Path) -> dict | None:
         logger.warning(f"跳过无法解析的文件 {filepath}: {e}")
         return None
 
-    if "platform" not in data or "cookies" not in data:
-        logger.warning(f"跳过格式不符的文件 {filepath}（缺少 platform 或 cookies 字段）")
-        return None
+    # 格式 1: auto_register.py 输出
+    if isinstance(data, dict) and "platform" in data and "cookies" in data:
+        if not isinstance(data["cookies"], list) or len(data["cookies"]) == 0:
+            logger.warning(f"跳过空 cookies 文件 {filepath}")
+            return None
+        return data
 
-    if not isinstance(data["cookies"], list) or len(data["cookies"]) == 0:
-        logger.warning(f"跳过空 cookies 文件 {filepath}")
-        return None
+    # 格式 2: EditThisCookie 导出
+    if _is_editthiscookie(data):
+        platform = default_platform or _guess_platform_from_cookies(data)
+        if not platform:
+            logger.warning(
+                f"跳过 {filepath}: EditThisCookie 格式但无法识别平台，"
+                f"请使用 --platform 参数指定"
+            )
+            return None
+        cookies = _convert_editthiscookie(data)
+        logger.info(f"EditThisCookie 格式，已转换 {len(cookies)} 个 cookies → {platform}")
+        return {
+            "platform": platform,
+            "phone": filepath.stem,  # 用文件名作为标识
+            "cookies": cookies,
+        }
 
-    return data
+    logger.warning(f"跳过格式不符的文件 {filepath}")
+    return None
 
 
 def collect_files(path: Path) -> list[Path]:
@@ -81,6 +158,7 @@ async def import_cookies(
     files: list[Path],
     daily_limit: int = 20,
     dry_run: bool = False,
+    default_platform: str | None = None,
 ) -> dict:
     """导入 cookie 文件到数据库"""
     engine = create_task_engine()
@@ -91,7 +169,7 @@ async def import_cookies(
     try:
         async with get_task_async_session(engine) as db:
             for filepath in files:
-                data = load_cookie_file(filepath)
+                data = load_cookie_file(filepath, default_platform=default_platform)
                 if not data:
                     skipped += 1
                     continue
@@ -167,6 +245,12 @@ async def main():
         help="新建账号的每日查询限额（默认 20）",
     )
     parser.add_argument(
+        "--platform",
+        type=str,
+        default=None,
+        help="指定平台名（导入 EditThisCookie 格式时使用，如 doubao, deepseek）",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="试运行，只打印操作不写入数据库",
@@ -187,6 +271,7 @@ async def main():
         files,
         daily_limit=args.daily_limit,
         dry_run=args.dry_run,
+        default_platform=args.platform,
     )
 
     print(f"\n完成: 新建 {result['created']}, 更新 {result['updated']}, 跳过 {result['skipped']}")
