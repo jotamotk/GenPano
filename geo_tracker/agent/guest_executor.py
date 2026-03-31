@@ -119,7 +119,7 @@ GUEST_LLM_CONFIG = {
         "url":              "https://www.doubao.com/chat",
         "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content'], [class*='message-content'], [class*='message'][class*='bot'], [class*='content']",
+        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content'], [class*='message-content'], [class*='message'][class*='bot']",
         "wait_after_submit": 25000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
