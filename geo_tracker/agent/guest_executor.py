@@ -506,13 +506,14 @@ class GuestQueryExecutor:
                 return None
 
             # 执行查询
-            resp_text = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
+            resp_text, citations = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
             if resp_text:
                 screenshot_path = await _save_screenshot(page_obj, query.id, llm)
                 return LLMResponse(
                     query_id=query.id,
                     raw_text=resp_text,
+                    citations_json=citations if citations else None,
                     screenshot_path=str(screenshot_path) if screenshot_path else None,
                     response_time_ms=0,
                     llm_version=f"{'camoufox' if use_camoufox else 'guest'}_{llm}",
@@ -549,10 +550,52 @@ class GuestQueryExecutor:
                 except:
                     pass
 
+    async def _extract_citations(self, page: Page, cfg: dict, llm_name: str) -> list:
+        """从响应区域提取引用链接"""
+        citations = []
+        try:
+            response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
+            # 在响应区域内查找所有链接
+            js_citations = await page.evaluate("""
+                (selectors) => {
+                    const citations = [];
+                    const seen = new Set();
+                    for (const sel of selectors) {
+                        try {
+                            const containers = document.querySelectorAll(sel);
+                            for (const container of containers) {
+                                const links = container.querySelectorAll('a[href]');
+                                for (const a of links) {
+                                    const url = a.href;
+                                    if (!url || seen.has(url)) continue;
+                                    // 过滤内部链接和锚点
+                                    if (url.startsWith('javascript:') || url === '#' || url.startsWith('#')) continue;
+                                    if (url.includes('chatgpt.com') || url.includes('gemini.google.com')) continue;
+                                    seen.add(url);
+                                    citations.push({
+                                        url: url,
+                                        title: (a.textContent || '').trim().slice(0, 200),
+                                        index: citations.length + 1
+                                    });
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    return citations;
+                }
+            """, response_selectors)
+            if js_citations:
+                citations = js_citations
+                logger.info(f"[{llm_name}] 提取到 {len(citations)} 个引用链接")
+        except Exception as e:
+            logger.warning(f"[{llm_name}] 引用提取失败: {e}")
+        return citations
+
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
-    ) -> str:
-        """在已打开的页面里输入 query，等待响应，抓取文本"""
+    ) -> tuple:
+        """在已打开的页面里输入 query，等待响应，抓取文本和引用
+        Returns: (response_text, citations_list)"""
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
@@ -674,6 +717,7 @@ class GuestQueryExecutor:
                     continue
 
         # 抓取响应文本
+        resp_text = ""
         try:
             # 优先尝试配置的 selectors
             for sel in response_selectors:
@@ -691,39 +735,41 @@ class GuestQueryExecutor:
                         combined = "\n".join(texts)
                         if len(combined) > 20:
                             logger.info(f"[{llm_name}] 通过 selector 提取响应: {sel} ({len(combined)} chars)")
-                            return combined[-5000:]
+                            resp_text = combined[-5000:]
+                            break
                 except Exception:
                     continue
 
-            # fallback 1：拼接所有 <p> 标签文本（Gemini 响应通常是多段落）
-            logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
-            await _save_html(page, -1, f"{llm_name}_extract_fail")
-            js_text = await page.evaluate("""
-                () => {
-                    // 拼接所有段落文本（用 textContent 不受可见性影响）
-                    const paras = [...document.querySelectorAll('p, li')];
-                    const paraText = paras
-                        .map(p => (p.textContent || '').trim())
-                        .filter(t => t.length > 5)
-                        .join('\\n');
-                    if (paraText.length > 50) return paraText;
+            if not resp_text:
+                # fallback 1：拼接所有 <p> 标签文本
+                logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
+                await _save_html(page, -1, f"{llm_name}_extract_fail")
+                js_text = await page.evaluate("""
+                    () => {
+                        const paras = [...document.querySelectorAll('p, li')];
+                        const paraText = paras
+                            .map(p => (p.textContent || '').trim())
+                            .filter(t => t.length > 5)
+                            .join('\\n');
+                        if (paraText.length > 50) return paraText;
+                        const bodyText = (document.body.textContent || document.body.innerText || '').trim();
+                        if (bodyText.length > 100) return bodyText.slice(-4000);
+                        return '';
+                    }
+                """)
+                if js_text and len(js_text) > 20:
+                    logger.info(f"[{llm_name}] JS fallback 提取成功 ({len(js_text)} chars)")
+                    resp_text = js_text[:5000]
 
-                    // fallback 2：取 body 全部文本的后半段
-                    const bodyText = (document.body.textContent || document.body.innerText || '').trim();
-                    if (bodyText.length > 100) return bodyText.slice(-4000);
+            if not resp_text:
+                logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
 
-                    return '';
-                }
-            """)
-            if js_text and len(js_text) > 20:
-                logger.info(f"[{llm_name}] JS fallback 提取成功 ({len(js_text)} chars)")
-                return js_text[:5000]
-
-            logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
-            return ""
+            # 提取引用链接
+            citations = await self._extract_citations(page, cfg, llm_name)
+            return resp_text, citations
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
-            return ""
+            return "", []
 
 
 async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
