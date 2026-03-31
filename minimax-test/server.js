@@ -99,20 +99,17 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     return res.json({ success: false, error: '缺少 prompt' });
   }
 
-  // 将上传的文件重命名为原始文件名
-  const originalPath = path.join(UPLOADS_DIR, req.file.originalname);
-  fs.renameSync(req.file.path, originalPath);
+  // 直接使用 multer 生成的临时文件路径，避免中文长文件名问题
+  const videoPath = req.file.path;
 
   console.log(`收到视频: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
   console.log(`Prompt: ${prompt.substring(0, 100)}...`);
 
-  let browser;
   try {
-    const result = await processWithMinimax(originalPath, prompt);
+    const result = await processWithMinimax(videoPath, prompt);
     res.json({ success: true, result });
   } catch (err) {
     console.error('处理失败:', err.message);
-    // 尝试截图以便调试
     const screenshotName = `error-${Date.now()}.png`;
     res.json({
       success: false,
@@ -121,7 +118,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     });
   } finally {
     // 清理上传的文件
-    try { fs.unlinkSync(originalPath); } catch {}
+    try { fs.unlinkSync(videoPath); } catch {}
   }
 });
 
