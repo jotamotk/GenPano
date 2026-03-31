@@ -7,7 +7,9 @@ const { chromium } = require('playwright');
 const app = express();
 const PORT = 3099;
 
-const COOKIES_FILE = path.join(__dirname, 'cookies.json');
+// cookies_store is the Docker volume mount; fall back to local dir for dev
+const COOKIES_STORE = fs.existsSync('/app/cookies_store') ? '/app/cookies_store' : __dirname;
+const COOKIES_FILE = path.join(COOKIES_STORE, 'cookies.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const SCREENSHOTS_DIR = path.join(__dirname, 'screenshots');
 
@@ -24,11 +26,50 @@ const upload = multer({
 
 // 静态文件
 app.use(express.static(__dirname));
+app.use(express.json({ limit: '10mb' }));
 app.use('/screenshots', express.static(SCREENSHOTS_DIR));
 
 // 主页
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Cookie 状态查询
+app.get('/api/cookies/status', (req, res) => {
+  if (!fs.existsSync(COOKIES_FILE)) {
+    return res.json({ exists: false });
+  }
+  try {
+    const cookies = JSON.parse(fs.readFileSync(COOKIES_FILE, 'utf-8'));
+    const saved = new Date(fs.statSync(COOKIES_FILE).mtime).toLocaleString('zh-CN');
+    res.json({ exists: true, count: cookies.length, savedAt: saved });
+  } catch {
+    res.json({ exists: false, error: '文件损坏' });
+  }
+});
+
+// Cookie 上传（粘贴 JSON 或上传文件）
+app.post('/api/cookies/upload', upload.single('cookieFile'), (req, res) => {
+  try {
+    let cookies;
+    if (req.file) {
+      // 通过文件上传
+      cookies = JSON.parse(fs.readFileSync(req.file.path, 'utf-8'));
+      fs.unlinkSync(req.file.path);
+    } else if (req.body && req.body.cookies) {
+      // 通过 JSON 文本粘贴
+      cookies = JSON.parse(req.body.cookies);
+    } else {
+      return res.json({ success: false, error: '未收到 cookies 数据' });
+    }
+    if (!Array.isArray(cookies)) {
+      return res.json({ success: false, error: 'Cookies 格式错误，需要是 JSON 数组' });
+    }
+    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
+    res.json({ success: true, count: cookies.length });
+  } catch (err) {
+    res.json({ success: false, error: `解析失败: ${err.message}` });
+  }
 });
 
 // 处理视频上传和 minimax 自动化
@@ -38,7 +79,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
   }
 
   if (!fs.existsSync(COOKIES_FILE)) {
-    return res.json({ success: false, error: '未找到 cookies.json，请先运行 npm run collect-cookies' });
+    return res.json({ success: false, error: '未找到 cookies.json，请先通过页面上方的「Cookie 管理」上传 cookies' });
   }
 
   const prompt = req.body.prompt;
