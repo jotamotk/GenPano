@@ -3,6 +3,7 @@
 - 使用 Playwright 直接访问 LLM 网站，无需账号
 - 支持 ChatGPT、Gemini、Perplexity、Kimi、Doubao、DeepSeek 等
 - Gemini 支持通过 GEMINI_COOKIES_JSON 环境变量注入 Google session cookie
+- Doubao 支持通过 DOUBAO_COOKIES_JSON 环境变量注入火山引擎 session cookie
 """
 from __future__ import annotations
 
@@ -116,12 +117,16 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea, [contenteditable='true']",
+        "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message'], [class*='content']",
-        "wait_after_submit": 20000,
+        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content'], [class*='message-content'], [class*='message'][class*='bot'], [class*='content']",
+        "wait_after_submit": 25000,
         "load_wait":        10000,
-        "requires_login":   False,
+        # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
+        "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
+        "cookies_env":      "DOUBAO_COOKIES_JSON",
+        # 豆包登录页域名检测
+        "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
     "deepseek": {
         "url":              "https://chat.deepseek.com",
@@ -414,6 +419,37 @@ class GuestQueryExecutor:
                     else:
                         logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                        return None
+
+                # 检测是否被重定向到登录页（cookie 过期或未注入）
+                current_url = page_obj.url
+                login_domains = config.get("login_redirect_domains", [])
+                if any(d in current_url for d in login_domains):
+                    logger.warning(
+                        f"[{llm}] 被重定向到登录页: {current_url}，"
+                        f"请更新 {config.get('cookies_env', '')} 环境变量中的 cookies"
+                    )
+                    await _save_screenshot(page_obj, query.id, f"{llm}_login_redirect")
+                    return None
+
+                # 检测页面内的登录弹窗（豆包等国内 LLM 可能在页面内弹出登录框）
+                login_modal = await page_obj.query_selector(
+                    "[class*='login-modal'], [class*='login-dialog'], "
+                    "[class*='sign-in'], [class*='login-panel'], "
+                    "[class*='passport-container']"
+                )
+                if login_modal:
+                    is_visible = False
+                    try:
+                        is_visible = await login_modal.is_visible()
+                    except Exception:
+                        pass
+                    if is_visible:
+                        logger.warning(
+                            f"[{llm}] 检测到页面内登录弹窗，"
+                            f"请更新 {config.get('cookies_env', '')} 环境变量中的 cookies"
+                        )
+                        await _save_screenshot(page_obj, query.id, f"{llm}_login_modal")
                         return None
 
                 # ── 关闭弹窗 (cookie banner, login modal, Google One Tap 等) ──
