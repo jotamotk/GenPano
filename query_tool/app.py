@@ -52,6 +52,24 @@ except Exception as e:
     print(f"Celery not available: {e}")
 
 
+def _ensure_citations_column():
+    """确保 llm_responses 表有 citations_json 列"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS citations_json JSONB
+                """)
+            conn.commit()
+            print("DB migration: citations_json column ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
 def get_db():
     import psycopg2
     import time
@@ -169,6 +187,7 @@ HTML_TEMPLATE = """
         <div style="display: flex; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
             <h1>LLM Query Monitor</h1>
             <button class="secondary refresh-btn" onclick="loadStats(); loadQueries();">Refresh</button>
+            <button class="secondary refresh-btn" onclick="backfillCitations()">Backfill Citations</button>
             <div class="auto-refresh">
                 <label><input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()"> Auto-refresh (5s)</label>
             </div>
@@ -297,6 +316,7 @@ HTML_TEMPLATE = """
                                 <th>Status</th>
                                 <th>Retry</th>
                                 <th>Query</th>
+                                <th>Citations</th>
                                 <th>Brand</th>
                                 <th>Created</th>
                                 <th>Actions</th>
@@ -422,6 +442,7 @@ HTML_TEMPLATE = """
                     <td><span class="status-${statusUp}">${statusUp}</span></td>
                     <td>${q.retry_count || 0}</td>
                     <td class="text-preview" title="${escapeHtml(q.query_text)}" onclick="showResponse(${q.id})">${escapeHtml(q.query_text || '')}</td>
+                    <td>${q.citations && q.citations.length ? q.citations.length : '-'}</td>
                     <td>${q.brand_id || '-'}</td>
                     <td>${q.created_at ? new Date(q.created_at).toLocaleString() : '-'}</td>
                     <td>
@@ -512,6 +533,19 @@ HTML_TEMPLATE = """
                     <div class="modal-meta-label" style="margin-bottom: 8px;">Response</div>
                     <pre>${escapeHtml(q.response || '(no response)')}</pre>
                 </div>
+                ${q.citations && q.citations.length ? `
+                <div style="margin-top: 20px;">
+                    <div class="modal-meta-label" style="margin-bottom: 8px;">Citations (${q.citations.length})</div>
+                    <div style="background:#1e1e2e;border:1px solid #333;border-radius:6px;padding:10px;">
+                        ${q.citations.map((c, i) => `
+                            <div style="margin-bottom:6px;font-size:13px;">
+                                <span style="color:#888;">[${c.index || i+1}]</span>
+                                <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:none;">${escapeHtml(c.title || c.url)}</a>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                ` : ''}
                 ${statusUp === 'FAILED' || statusUp === 'PENDING' ? `
                 <div style="margin-top: 20px;">
                     <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
@@ -625,6 +659,21 @@ HTML_TEMPLATE = """
                 if (data.success) {
                     alert(`Query #${queryId} has been requeued!`);
                     loadStats();
+                    loadQueries();
+                } else {
+                    alert(`Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (e) {
+                alert(`Error: ${e.message}`);
+            }
+        }
+
+        async function backfillCitations() {
+            try {
+                const res = await fetch('./api/backfill_citations', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    alert(`Backfill complete: scanned ${data.scanned} responses, updated ${data.updated} with citations`);
                     loadQueries();
                 } else {
                     alert(`Error: ${data.error || 'Unknown error'}`);
@@ -813,7 +862,8 @@ def queries():
                     q.executed_at,
                     q.retry_count,
                     r.raw_text as response,
-                    r.llm_version
+                    r.llm_version,
+                    r.citations_json as citations
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 WHERE {where_clause}
@@ -946,6 +996,73 @@ def serve_html_source():
     with open(real_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
     return Response(content, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/api/backfill_citations', methods=['POST'])
+def backfill_citations():
+    """从历史 raw_text 中提取 URL 作为 citations，回填到 citations_json"""
+    from psycopg2.extras import RealDictCursor
+    import re
+    url_pattern = re.compile(
+        r'https?://[^\s<>"\')\]},;]+',
+        re.IGNORECASE,
+    )
+    # 不算作 citation 的域名
+    skip_domains = {
+        'chatgpt.com', 'gemini.google.com', 'accounts.google.com',
+        'cdn.oaistatic.com', 'oaiusercontent.com',
+    }
+
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT r.id, r.raw_text
+                    FROM llm_responses r
+                    WHERE r.citations_json IS NULL
+                      AND r.raw_text IS NOT NULL
+                      AND LENGTH(r.raw_text) > 20
+                """)
+                rows = cur.fetchall()
+
+                updated = 0
+                for row in rows:
+                    urls = url_pattern.findall(row['raw_text'])
+                    # 去重、过滤
+                    seen = set()
+                    citations = []
+                    for u in urls:
+                        # 清理尾部标点
+                        u = u.rstrip('.,;:!?)]}')
+                        if u in seen:
+                            continue
+                        if any(d in u for d in skip_domains):
+                            continue
+                        seen.add(u)
+                        citations.append({
+                            'url': u,
+                            'title': '',
+                            'index': len(citations) + 1,
+                        })
+
+                    if citations:
+                        import json as json_mod
+                        cur.execute(
+                            "UPDATE llm_responses SET citations_json = %s WHERE id = %s",
+                            (json_mod.dumps(citations), row['id'])
+                        )
+                        updated += 1
+
+                conn.commit()
+                return jsonify({'success': True, 'scanned': len(rows), 'updated': updated})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+_ensure_citations_column()
 
 
 if __name__ == '__main__':
