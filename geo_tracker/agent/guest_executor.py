@@ -555,38 +555,61 @@ class GuestQueryExecutor:
         citations = []
         try:
             response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
-            # 在响应区域内查找所有链接
+            # 在响应区域内查找所有链接，若无则尝试全页面
             js_citations = await page.evaluate("""
                 (selectors) => {
+                    const skipDomains = [
+                        'chatgpt.com', 'gemini.google.com', 'accounts.google.com',
+                        'cdn.oaistatic.com', 'gstatic.com', 'googleapis.com',
+                        'google.com/gsi', 'statsig', 'sentry', 'intercom',
+                        'cdn-cgi', 'oaiusercontent.com',
+                    ];
+                    function isSkipped(url) {
+                        return skipDomains.some(d => url.includes(d));
+                    }
                     const citations = [];
                     const seen = new Set();
+
+                    function collectFromContainers(containers) {
+                        for (const container of containers) {
+                            const links = container.querySelectorAll('a[href]');
+                            for (const a of links) {
+                                const url = a.href;
+                                if (!url || seen.has(url)) continue;
+                                if (url.startsWith('javascript:') || url === '#' || url.startsWith('#')) continue;
+                                if (!url.startsWith('http')) continue;
+                                if (isSkipped(url)) continue;
+                                seen.add(url);
+                                citations.push({
+                                    url: url,
+                                    title: (a.textContent || '').trim().slice(0, 200),
+                                    index: citations.length + 1
+                                });
+                            }
+                        }
+                    }
+
+                    // 先从响应区域提取
                     for (const sel of selectors) {
                         try {
-                            const containers = document.querySelectorAll(sel);
-                            for (const container of containers) {
-                                const links = container.querySelectorAll('a[href]');
-                                for (const a of links) {
-                                    const url = a.href;
-                                    if (!url || seen.has(url)) continue;
-                                    // 过滤内部链接和锚点
-                                    if (url.startsWith('javascript:') || url === '#' || url.startsWith('#')) continue;
-                                    if (url.includes('chatgpt.com') || url.includes('gemini.google.com')) continue;
-                                    seen.add(url);
-                                    citations.push({
-                                        url: url,
-                                        title: (a.textContent || '').trim().slice(0, 200),
-                                        index: citations.length + 1
-                                    });
-                                }
-                            }
+                            collectFromContainers(document.querySelectorAll(sel));
                         } catch(e) {}
                     }
+
+                    // 若响应区域没有，尝试从 article、main 等语义区域提取
+                    if (citations.length === 0) {
+                        const fallbacks = document.querySelectorAll('article, main, [role="main"]');
+                        collectFromContainers(fallbacks);
+                    }
+
                     return citations;
                 }
             """, response_selectors)
             if js_citations:
                 citations = js_citations
                 logger.info(f"[{llm_name}] 提取到 {len(citations)} 个引用链接")
+            else:
+                logger.info(f"[{llm_name}] 页面无引用链接")
         except Exception as e:
             logger.warning(f"[{llm_name}] 引用提取失败: {e}")
         return citations

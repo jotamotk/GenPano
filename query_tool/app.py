@@ -1000,25 +1000,55 @@ def serve_html_source():
 
 @app.route('/api/backfill_citations', methods=['POST'])
 def backfill_citations():
-    """从历史 raw_text 中提取 URL 作为 citations，回填到 citations_json"""
+    """从历史 raw_text 和保存的 HTML 文件中提取 URL 作为 citations"""
     from psycopg2.extras import RealDictCursor
     import re
+    import json as json_mod
+    from html.parser import HTMLParser
+
     url_pattern = re.compile(
         r'https?://[^\s<>"\')\]},;]+',
         re.IGNORECASE,
     )
-    # 不算作 citation 的域名
+    # href 提取
+    href_pattern = re.compile(
+        r'<a\s[^>]*href=["\']?(https?://[^"\'>\s]+)',
+        re.IGNORECASE,
+    )
     skip_domains = {
         'chatgpt.com', 'gemini.google.com', 'accounts.google.com',
-        'cdn.oaistatic.com', 'oaiusercontent.com',
+        'cdn.oaistatic.com', 'oaiusercontent.com', 'cdn-cgi',
+        'gstatic.com', 'googleapis.com', 'google.com/gsi',
+        'statsig', 'sentry', 'intercom',
     }
+
+    def extract_urls_from_html_file(query_id):
+        """从保存的 HTML debug 文件中提取链接"""
+        urls = []
+        if not os.path.isdir(SCREENSHOT_DIR):
+            return urls
+        for fname in os.listdir(SCREENSHOT_DIR):
+            if not fname.endswith('.html'):
+                continue
+            if f'query_{query_id}_' not in fname:
+                continue
+            if 'extract_fail' in fname or 'content' in fname:
+                # 这些是完整页面 HTML，可以从中提取
+                fpath = os.path.join(SCREENSHOT_DIR, fname)
+                try:
+                    with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
+                        html = f.read()
+                    urls.extend(href_pattern.findall(html))
+                except Exception:
+                    pass
+        return urls
 
     try:
         conn = get_db()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT r.id, r.raw_text
+                    SELECT r.id, r.query_id, r.raw_text
                     FROM llm_responses r
                     WHERE r.citations_json IS NULL
                       AND r.raw_text IS NOT NULL
@@ -1028,12 +1058,14 @@ def backfill_citations():
 
                 updated = 0
                 for row in rows:
-                    urls = url_pattern.findall(row['raw_text'])
-                    # 去重、过滤
+                    # 从 raw_text 提取 URL
+                    all_urls = url_pattern.findall(row['raw_text'] or '')
+                    # 从 HTML 文件提取
+                    all_urls.extend(extract_urls_from_html_file(row['query_id']))
+
                     seen = set()
                     citations = []
-                    for u in urls:
-                        # 清理尾部标点
+                    for u in all_urls:
                         u = u.rstrip('.,;:!?)]}')
                         if u in seen:
                             continue
@@ -1047,7 +1079,6 @@ def backfill_citations():
                         })
 
                     if citations:
-                        import json as json_mod
                         cur.execute(
                             "UPDATE llm_responses SET citations_json = %s WHERE id = %s",
                             (json_mod.dumps(citations), row['id'])
