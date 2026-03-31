@@ -79,6 +79,7 @@ services:
     depends_on:
       - backend
       - query-tool
+      - minimax-test
 
   query-tool:
     image: ${ACR_REGISTRY}/genpano:query-tool-${IMAGE_TAG:-latest}
