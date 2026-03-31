@@ -79,6 +79,7 @@ services:
     depends_on:
       - backend
       - query-tool
+      - minimax-test
 
   query-tool:
     image: ${ACR_REGISTRY}/genpano:query-tool-${IMAGE_TAG:-latest}
@@ -94,6 +95,15 @@ services:
       postgres:
         condition: service_healthy
 
+  minimax-test:
+    image: ${ACR_REGISTRY}/genpano:minimax-test-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    volumes:
+      - minimax_cookies:/app/cookies_store
+      - minimax_screenshots:/app/screenshots
+
 volumes:
   postgres_data:
   screenshots_data:
+  minimax_cookies:
+  minimax_screenshots:

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minimax 视频解析测试</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 40px 20px;
+    }
+    .container { max-width: 700px; width: 100%; }
+    h1 { font-size: 24px; margin-bottom: 30px; color: #fff; text-align: center; }
+    .section {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .section h2 { font-size: 16px; color: #aaa; margin-bottom: 16px; }
+    .upload-area {
+      border: 2px dashed #444;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .upload-area:hover { border-color: #666; }
+    .upload-area.has-file { border-color: #4CAF50; border-style: solid; }
+    .upload-area input { display: none; }
+    .upload-area p { color: #888; font-size: 14px; }
+    .file-name { color: #4CAF50; font-size: 14px; margin-top: 8px; }
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 12px;
+      font-size: 14px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    textarea:focus { outline: none; border-color: #555; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .btn-sm {
+      width: auto;
+      padding: 8px 16px;
+      font-size: 13px;
+      background: #333;
+      display: inline-block;
+    }
+    .btn-sm:hover { background: #444; }
+    .btn-green { background: #16a34a; }
+    .btn-green:hover { background: #15803d; }
+    .status {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+    .status.loading { display: block; background: #1a1a2e; color: #7c8dff; }
+    .status.success { display: block; background: #1a2e1a; color: #4CAF50; }
+    .status.error { display: block; background: #2e1a1a; color: #f44336; }
+    .result-box {
+      margin-top: 20px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px;
+      white-space: pre-wrap;
+      font-size: 14px;
+      max-height: 500px;
+      overflow-y: auto;
+      display: none;
+    }
+    .cookie-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      background: #111;
+      border: 1px solid #333;
+      margin-bottom: 14px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot.ok { background: #4CAF50; }
+    .dot.bad { background: #f44336; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .tab {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      background: #222;
+      border: 1px solid #333;
+      color: #888;
+    }
+    .tab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .hint { font-size: 12px; color: #666; margin-top: 8px; line-height: 1.5; }
+    .video-preview {
+      margin-top: 12px;
+      max-width: 100%;
+      border-radius: 8px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Minimax 视频解析测试</h1>
+
+    <!-- Cookie 管理 -->
+    <div class="section">
+      <h2>0. Cookie 管理</h2>
+      <div class="cookie-status" id="cookieStatus">
+        <div class="dot bad" id="cookieDot"></div>
+        <span id="cookieStatusText">检测中...</span>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" data-tab="paste">粘贴 JSON</div>
+        <div class="tab" data-tab="upload">上传文件</div>
+        <div class="tab" data-tab="guide">如何获取</div>
+      </div>
+
+      <div class="tab-content active" id="tab-paste">
+        <textarea id="cookieJson" placeholder='粘贴 cookies JSON 数组，格式如 [{"name":"...", "value":"..."}]' style="min-height: 80px;"></textarea>
+        <div style="margin-top: 8px;">
+          <button class="btn btn-sm btn-green" id="saveCookieBtn">保存 Cookies</button>
+        </div>
+        <div class="hint">从浏览器 DevTools → Application → Cookies 复制，或用 EditThisCookie 等扩展导出为 JSON</div>
+      </div>
+
+      <div class="tab-content" id="tab-upload">
+        <div class="upload-area" id="cookieUploadArea" style="padding: 20px;">
+          <input type="file" id="cookieFileInput" accept=".json">
+          <p>点击选择 cookies.json 文件</p>
+          <div class="file-name" id="cookieFileName"></div>
+        </div>
+        <div style="margin-top: 8px;">
+          <button class="btn btn-sm btn-green" id="uploadCookieBtn">上传 Cookies</button>
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-guide">
+        <div style="font-size: 13px; color: #aaa; line-height: 1.8;">
+          <b style="color:#fff;">方法1（推荐）：用 EditThisCookie 扩展</b><br>
+          1. Chrome 安装 <code style="color:#7c8dff;">EditThisCookie</code> 扩展<br>
+          2. 打开并登录 <code style="color:#7c8dff;">agent.minimaxi.com</code><br>
+          3. 点击扩展图标 → 导出为 JSON<br>
+          4. 粘贴到「粘贴 JSON」标签页<br><br>
+          <b style="color:#fff;">方法2：浏览器 DevTools</b><br>
+          1. 登录后按 F12 → Application → Cookies → agent.minimaxi.com<br>
+          2. 全选所有行，复制为 JSON（或用脚本：<code style="color:#7c8dff;">document.cookie</code>）<br><br>
+          <b style="color:#fff;">方法3：本地运行收集脚本</b><br>
+          在 Windows 本地执行 <code style="color:#7c8dff;">node collect-cookies.js</code>，<br>
+          会弹出浏览器，登录后自动保存 cookies.json，再通过「上传文件」上传
+        </div>
+      </div>
+
+      <div class="status" id="cookieSaveStatus"></div>
+    </div>
+
+    <!-- 视频上传 -->
+    <div class="section">
+      <h2>1. 上传视频</h2>
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="videoInput" accept="video/*">
+        <p>点击或拖拽视频文件到此处</p>
+        <div class="file-name" id="fileName"></div>
+      </div>
+      <video class="video-preview" id="videoPreview" controls></video>
+    </div>
+
+    <!-- Prompt -->
+    <div class="section">
+      <h2>2. Prompt</h2>
+      <textarea id="promptInput" placeholder="输入发送给 Minimax 的 prompt..."></textarea>
+    </div>
+
+    <button class="btn" id="submitBtn" disabled>开始解析</button>
+
+    <div class="status" id="status"></div>
+    <div class="result-box" id="resultBox"></div>
+  </div>
+
+  <script>
+    // 安全 JSON 解析 - 如果服务端返回非 JSON，显示原始内容
+    async function safeJson(res) {
+      const text = await res.text();
+      if (!text) throw new Error(`服务端返回空响应 (HTTP ${res.status})`);
+      try { return JSON.parse(text); } catch {
+        throw new Error(`服务端返回非JSON (HTTP ${res.status}): ${text.substring(0, 300)}`);
+      }
+    }
+
+    // === Cookie 管理 ===
+    async function refreshCookieStatus() {
+      const res = await fetch('api/cookies/status');
+      const data = await safeJson(res);
+      const dot = document.getElementById('cookieDot');
+      const txt = document.getElementById('cookieStatusText');
+      if (data.exists) {
+        dot.className = 'dot ok';
+        txt.textContent = `Cookies 已就绪（${data.count} 个，保存于 ${data.savedAt}）`;
+      } else {
+        dot.className = 'dot bad';
+        txt.textContent = data.error ? `Cookies 文件损坏: ${data.error}` : '未找到 Cookies，请先上传';
+      }
+    }
+    refreshCookieStatus();
+
+    // Tabs
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    // 粘贴保存
+    document.getElementById('saveCookieBtn').addEventListener('click', async () => {
+      const json = document.getElementById('cookieJson').value.trim();
+      if (!json) return alert('请先粘贴 cookies JSON');
+      const st = document.getElementById('cookieSaveStatus');
+      st.className = 'status loading';
+      st.textContent = '保存中...';
+      try {
+        const res = await fetch('api/cookies/paste', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cookies: json }),
+        });
+        const data = await safeJson(res);
+        if (data.success) {
+          st.className = 'status success';
+          st.textContent = `保存成功！共 ${data.count} 个 cookie`;
+          refreshCookieStatus();
+        } else {
+          st.className = 'status error';
+          st.textContent = `保存失败: ${data.error}`;
+        }
+      } catch (e) {
+        st.className = 'status error';
+        st.textContent = `请求失败: ${e.message}`;
+      }
+    });
+
+    // 文件上传
+    const cookieUploadArea = document.getElementById('cookieUploadArea');
+    const cookieFileInput = document.getElementById('cookieFileInput');
+    let cookieFile = null;
+    cookieUploadArea.addEventListener('click', () => cookieFileInput.click());
+    cookieFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length) {
+        cookieFile = e.target.files[0];
+        document.getElementById('cookieFileName').textContent = cookieFile.name;
+      }
+    });
+    document.getElementById('uploadCookieBtn').addEventListener('click', async () => {
+      if (!cookieFile) return alert('请先选择文件');
+      const st = document.getElementById('cookieSaveStatus');
+      st.className = 'status loading';
+      st.textContent = '上传中...';
+      const fd = new FormData();
+      fd.append('cookieFile', cookieFile);
+      try {
+        const res = await fetch('api/cookies/upload', { method: 'POST', body: fd });
+        const data = await safeJson(res);
+        if (data.success) {
+          st.className = 'status success';
+          st.textContent = `上传成功！共 ${data.count} 个 cookie`;
+          refreshCookieStatus();
+        } else {
+          st.className = 'status error';
+          st.textContent = `上传失败: ${data.error}`;
+        }
+      } catch (e) {
+        st.className = 'status error';
+        st.textContent = `请求失败: ${e.message}`;
+      }
+    });
+
+    // === 视频上传 ===
+    const uploadArea = document.getElementById('uploadArea');
+    const videoInput = document.getElementById('videoInput');
+    const fileName = document.getElementById('fileName');
+    const videoPreview = document.getElementById('videoPreview');
+    const promptInput = document.getElementById('promptInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const status = document.getElementById('status');
+    const resultBox = document.getElementById('resultBox');
+
+    let selectedFile = null;
+
+    uploadArea.addEventListener('click', () => videoInput.click());
+    uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.borderColor = '#666'; });
+    uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = selectedFile ? '#4CAF50' : '#444'; });
+    uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    videoInput.addEventListener('change', (e) => {
+      if (e.target.files.length) handleFile(e.target.files[0]);
+    });
+
+    function handleFile(file) {
+      if (!file.type.startsWith('video/')) { alert('请选择视频文件'); return; }
+      selectedFile = file;
+      fileName.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+      uploadArea.classList.add('has-file');
+      videoPreview.src = URL.createObjectURL(file);
+      videoPreview.style.display = 'block';
+      checkReady();
+    }
+
+    promptInput.addEventListener('input', checkReady);
+    function checkReady() {
+      submitBtn.disabled = !(selectedFile && promptInput.value.trim());
+    }
+
+    // === 提交解析 ===
+    submitBtn.addEventListener('click', async () => {
+      if (!selectedFile || !promptInput.value.trim()) return;
+      submitBtn.disabled = true;
+      status.className = 'status loading';
+      status.textContent = '正在上传视频并处理，请耐心等待（最长3分钟）...';
+      status.style.display = 'block';
+      resultBox.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('video', selectedFile);
+      formData.append('prompt', promptInput.value.trim());
+
+      try {
+        const response = await fetch('api/process', { method: 'POST', body: formData });
+        const data = await safeJson(response);
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '解析完成！';
+          resultBox.textContent = data.result;
+          resultBox.style.display = 'block';
+        } else {
+          status.className = 'status error';
+          status.textContent = `错误: ${data.error}`;
+          if (data.screenshot) {
+            const img = document.createElement('img');
+            img.src = `screenshots/${data.screenshot}`;
+            img.style.cssText = 'max-width:100%;margin-top:12px;border-radius:8px;';
+            resultBox.innerHTML = '';
+            resultBox.appendChild(img);
+            resultBox.style.display = 'block';
+          }
+        }
+      } catch (err) {
+        status.className = 'status error';
+        status.textContent = `请求失败: ${err.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
