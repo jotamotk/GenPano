@@ -216,7 +216,7 @@
   <script>
     // === Cookie 管理 ===
     async function refreshCookieStatus() {
-      const res = await fetch('/api/cookies/status');
+      const res = await fetch('api/cookies/status');
       const data = await res.json();
       const dot = document.getElementById('cookieDot');
       const txt = document.getElementById('cookieStatusText');
@@ -248,7 +248,7 @@
       st.className = 'status loading';
       st.textContent = '保存中...';
       try {
-        const res = await fetch('/api/cookies/upload', {
+        const res = await fetch('api/cookies/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cookies: json }),
@@ -287,7 +287,7 @@
       const fd = new FormData();
       fd.append('cookieFile', cookieFile);
       try {
-        const res = await fetch('/api/cookies/upload', { method: 'POST', body: fd });
+        const res = await fetch('api/cookies/upload', { method: 'POST', body: fd });
         const data = await res.json();
         if (data.success) {
           st.className = 'status success';
@@ -355,7 +355,7 @@
       formData.append('prompt', promptInput.value.trim());
 
       try {
-        const response = await fetch('/api/process', { method: 'POST', body: formData });
+        const response = await fetch('api/process', { method: 'POST', body: formData });
         const data = await response.json();
         if (data.success) {
           status.className = 'status success';
@@ -367,7 +367,7 @@
           status.textContent = `错误: ${data.error}`;
           if (data.screenshot) {
             const img = document.createElement('img');
-            img.src = `/screenshots/${data.screenshot}`;
+            img.src = `screenshots/${data.screenshot}`;
             img.style.cssText = 'max-width:100%;margin-top:12px;border-radius:8px;';
             resultBox.innerHTML = '';
             resultBox.appendChild(img);
