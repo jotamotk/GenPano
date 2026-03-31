@@ -97,8 +97,6 @@ services:
   minimax-test:
     build: ./minimax-test
     restart: unless-stopped
-    ports:
-      - "3099:3099"
     volumes:
       - minimax_cookies:/app/cookies_store
       - minimax_screenshots:/app/screenshots
