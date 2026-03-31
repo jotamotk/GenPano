@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG
 from geo_tracker.db.models import Query, QueryStatus, LLMResponse
+from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
@@ -74,19 +75,43 @@ def execute_query(self, query_id: int) -> dict:
 
             llm_config = GUEST_LLM_CONFIG.get(query.target_llm, {})
 
-            # 检查是否支持无账号模式
+            # 对需要登录的 LLM，从 AccountPool 获取账号 cookies
+            account = None
+            account_cookies = None
+            pool = None
+
             if llm_config.get("requires_login", True):
-                query.status = QueryStatus.FAILED.value
-                await db.commit()
-                logger.warning(f"Query {query_id}: {query.target_llm} requires login, skipping")
-                return {"query_id": query_id, "status": "failed", "reason": "requires_login"}
+                pool = AccountPool(db)
+                account = await pool.acquire(query.target_llm)
+                if account and account.cookies_json:
+                    account_cookies = account.cookies_json
+                    logger.info(
+                        f"Query {query_id}: acquired account id={account.id} "
+                        f"for {query.target_llm}"
+                    )
+                else:
+                    # 无可用账号，设回 PENDING 等下次重试
+                    query.status = QueryStatus.PENDING.value
+                    await db.commit()
+                    logger.warning(
+                        f"Query {query_id}: {query.target_llm} requires login "
+                        f"but no account available, returning to PENDING"
+                    )
+                    return {
+                        "query_id": query_id,
+                        "status": "pending",
+                        "reason": "no_account_available",
+                    }
 
             logger.info(f"Query {query_id}: Using guest mode for {query.target_llm}")
 
             try:
                 proxy_url = os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
                 logger.info(f"Query {query_id}: Using proxy URL: {proxy_url}")
-                guest_executor = GuestQueryExecutor(proxy_url=proxy_url)
+                guest_executor = GuestQueryExecutor(
+                    proxy_url=proxy_url,
+                    account_cookies=account_cookies,
+                )
                 response: LLMResponse | None = await guest_executor.execute(query)
 
                 # Require a meaningful response (guards against login redirects returning 1 char)
@@ -94,12 +119,16 @@ def execute_query(self, query_id: int) -> dict:
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
                     db.add(response)
                     query.status = QueryStatus.DONE.value
+                    if account and pool:
+                        await pool.report_success(account.id)
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
                 else:
                     resp_len = len(response.raw_text) if response else 0
                     query.status = QueryStatus.FAILED.value
+                    if account and pool:
+                        await pool.report_failure(account.id, reason="response_too_short")
                     await db.commit()
                     logger.warning(f"Query {query_id} failed (response too short: {resp_len} chars, likely login redirect)")
                     return {"query_id": query_id, "status": "failed", "reason": f"response_too_short:{resp_len}"}
@@ -107,6 +136,8 @@ def execute_query(self, query_id: int) -> dict:
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
                 query.status = QueryStatus.FAILED.value
+                if account and pool:
+                    await pool.report_failure(account.id, reason="exception")
                 await db.commit()
                 return {"query_id": query_id, "status": "failed", "error": str(e)}
 
@@ -171,5 +202,22 @@ def dispatch_batch(limit: int = 50) -> dict:
 
 @app.task(queue="celery")
 def reset_daily_counts() -> dict:
-    logger.info("reset_daily_counts called (no-op for guest mode)")
-    return {"status": "ok"}
+    """每日 UTC 00:00 重置所有账号的查询计数"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        async with get_task_async_session(task_engine) as db:
+            pool = AccountPool(db)
+            await pool.reset_daily_counts()
+            return {"status": "ok"}
+
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        try:
+            loop.run_until_complete(task_engine.dispose())
+        except:
+            pass
+        loop.close()
