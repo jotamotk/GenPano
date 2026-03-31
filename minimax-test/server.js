@@ -48,20 +48,32 @@ app.get('/api/cookies/status', (req, res) => {
   }
 });
 
-// Cookie 上传（粘贴 JSON 或上传文件）
-app.post('/api/cookies/upload', upload.single('cookieFile'), (req, res) => {
+// Cookie 上传 - 粘贴 JSON
+app.post('/api/cookies/paste', (req, res) => {
   try {
-    let cookies;
-    if (req.file) {
-      // 通过文件上传
-      cookies = JSON.parse(fs.readFileSync(req.file.path, 'utf-8'));
-      fs.unlinkSync(req.file.path);
-    } else if (req.body && req.body.cookies) {
-      // 通过 JSON 文本粘贴
-      cookies = JSON.parse(req.body.cookies);
-    } else {
+    if (!req.body || !req.body.cookies) {
       return res.json({ success: false, error: '未收到 cookies 数据' });
     }
+    let raw = req.body.cookies;
+    let cookies = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!Array.isArray(cookies)) {
+      return res.json({ success: false, error: 'Cookies 格式错误，需要是 JSON 数组' });
+    }
+    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
+    res.json({ success: true, count: cookies.length });
+  } catch (err) {
+    res.json({ success: false, error: `解析失败: ${err.message}` });
+  }
+});
+
+// Cookie 上传 - 文件
+app.post('/api/cookies/upload', upload.single('cookieFile'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.json({ success: false, error: '未收到文件' });
+    }
+    const cookies = JSON.parse(fs.readFileSync(req.file.path, 'utf-8'));
+    fs.unlinkSync(req.file.path);
     if (!Array.isArray(cookies)) {
       return res.json({ success: false, error: 'Cookies 格式错误，需要是 JSON 数组' });
     }

@@ -248,7 +248,7 @@
       st.className = 'status loading';
       st.textContent = '保存中...';
       try {
-        const res = await fetch('api/cookies/upload', {
+        const res = await fetch('api/cookies/paste', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cookies: json }),
