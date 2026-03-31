@@ -94,6 +94,17 @@ services:
       postgres:
         condition: service_healthy
 
+  minimax-test:
+    build: ./minimax-test
+    restart: unless-stopped
+    ports:
+      - "3099:3099"
+    volumes:
+      - minimax_cookies:/app/cookies_store
+      - minimax_screenshots:/app/screenshots
+
 volumes:
   postgres_data:
   screenshots_data:
+  minimax_cookies:
+  minimax_screenshots:
