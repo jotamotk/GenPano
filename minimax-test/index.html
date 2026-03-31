@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minimax 视频解析测试</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 700px;
+      width: 100%;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 30px;
+      color: #fff;
+      text-align: center;
+    }
+    .section {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .section h2 {
+      font-size: 16px;
+      color: #aaa;
+      margin-bottom: 16px;
+    }
+    .upload-area {
+      border: 2px dashed #444;
+      border-radius: 8px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .upload-area:hover { border-color: #666; }
+    .upload-area.has-file { border-color: #4CAF50; border-style: solid; }
+    .upload-area input { display: none; }
+    .upload-area p { color: #888; font-size: 14px; }
+    .file-name { color: #4CAF50; font-size: 14px; margin-top: 8px; }
+    textarea {
+      width: 100%;
+      min-height: 150px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 12px;
+      font-size: 14px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    textarea:focus { outline: none; border-color: #555; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .status {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+    .status.loading { display: block; background: #1a1a2e; color: #7c8dff; }
+    .status.success { display: block; background: #1a2e1a; color: #4CAF50; }
+    .status.error { display: block; background: #2e1a1a; color: #f44336; }
+    .result-box {
+      margin-top: 20px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px;
+      white-space: pre-wrap;
+      font-size: 14px;
+      max-height: 500px;
+      overflow-y: auto;
+      display: none;
+    }
+    .progress-text { font-size: 13px; color: #888; margin-top: 8px; }
+    .video-preview {
+      margin-top: 12px;
+      max-width: 100%;
+      border-radius: 8px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Minimax 视频解析测试</h1>
+
+    <div class="section">
+      <h2>1. 上传视频</h2>
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="videoInput" accept="video/*">
+        <p>点击或拖拽视频文件到此处</p>
+        <div class="file-name" id="fileName"></div>
+      </div>
+      <video class="video-preview" id="videoPreview" controls></video>
+    </div>
+
+    <div class="section">
+      <h2>2. 输入 Prompt</h2>
+      <textarea id="promptInput" placeholder="输入发送给 Minimax 的 prompt..."></textarea>
+    </div>
+
+    <button class="btn" id="submitBtn" disabled>开始解析</button>
+
+    <div class="status" id="status"></div>
+    <div class="progress-text" id="progressText"></div>
+    <div class="result-box" id="resultBox"></div>
+  </div>
+
+  <script>
+    const uploadArea = document.getElementById('uploadArea');
+    const videoInput = document.getElementById('videoInput');
+    const fileName = document.getElementById('fileName');
+    const videoPreview = document.getElementById('videoPreview');
+    const promptInput = document.getElementById('promptInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const status = document.getElementById('status');
+    const progressText = document.getElementById('progressText');
+    const resultBox = document.getElementById('resultBox');
+
+    let selectedFile = null;
+
+    uploadArea.addEventListener('click', () => videoInput.click());
+    uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.style.borderColor = '#666'; });
+    uploadArea.addEventListener('dragleave', () => { uploadArea.style.borderColor = selectedFile ? '#4CAF50' : '#444'; });
+    uploadArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    videoInput.addEventListener('change', (e) => {
+      if (e.target.files.length) handleFile(e.target.files[0]);
+    });
+
+    function handleFile(file) {
+      if (!file.type.startsWith('video/')) {
+        alert('请选择视频文件');
+        return;
+      }
+      selectedFile = file;
+      fileName.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`;
+      uploadArea.classList.add('has-file');
+      videoPreview.src = URL.createObjectURL(file);
+      videoPreview.style.display = 'block';
+      checkReady();
+    }
+
+    promptInput.addEventListener('input', checkReady);
+
+    function checkReady() {
+      submitBtn.disabled = !(selectedFile && promptInput.value.trim());
+    }
+
+    submitBtn.addEventListener('click', async () => {
+      if (!selectedFile || !promptInput.value.trim()) return;
+
+      submitBtn.disabled = true;
+      status.className = 'status loading';
+      status.textContent = '正在上传视频并处理...';
+      status.style.display = 'block';
+      progressText.textContent = '';
+      resultBox.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('video', selectedFile);
+      formData.append('prompt', promptInput.value.trim());
+
+      try {
+        const response = await fetch('/api/process', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          status.className = 'status success';
+          status.textContent = '解析完成!';
+          resultBox.textContent = data.result;
+          resultBox.style.display = 'block';
+        } else {
+          status.className = 'status error';
+          status.textContent = `错误: ${data.error}`;
+          if (data.screenshot) {
+            const img = document.createElement('img');
+            img.src = `/screenshots/${data.screenshot}`;
+            img.style.maxWidth = '100%';
+            img.style.marginTop = '12px';
+            img.style.borderRadius = '8px';
+            resultBox.innerHTML = '';
+            resultBox.appendChild(img);
+            resultBox.style.display = 'block';
+          }
+        }
+      } catch (err) {
+        status.className = 'status error';
+        status.textContent = `请求失败: ${err.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
