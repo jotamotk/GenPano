@@ -232,6 +232,7 @@ class LLMResponse(Base):
     id               = Column(Integer, primary_key=True)
     query_id         = Column(Integer, ForeignKey("queries.id"), unique=True)
     raw_text         = Column(Text)
+    response_html    = Column(Text, nullable=True)    # 响应区域原始 HTML（保留 <a href> 等标签）
     citations_json   = Column(JSON, nullable=True)   # [{url, title, index}]
     response_time_ms = Column(Integer)
     screenshot_path  = Column(String(512), nullable=True)

@@ -66,7 +66,9 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
-        "requires_login":   False,
+        # 有 CHATGPT_COOKIES_JSON 时走登录态（支持 web browsing / citation）
+        "requires_login":   not bool(os.getenv("CHATGPT_COOKIES_JSON", "").strip()),
+        "cookies_env":      "CHATGPT_COOKIES_JSON",
         "dismiss_selectors": [
             "button:has-text('Dismiss')",
             "button:has-text('Stay logged out')",
@@ -506,13 +508,14 @@ class GuestQueryExecutor:
                 return None
 
             # 执行查询
-            resp_text, citations = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
+            resp_text, resp_html, citations = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
             if resp_text:
                 screenshot_path = await _save_screenshot(page_obj, query.id, llm)
                 return LLMResponse(
                     query_id=query.id,
                     raw_text=resp_text,
+                    response_html=resp_html if resp_html else None,
                     citations_json=citations if citations else None,
                     screenshot_path=str(screenshot_path) if screenshot_path else None,
                     response_time_ms=0,
@@ -618,7 +621,7 @@ class GuestQueryExecutor:
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
-        Returns: (response_text, citations_list)"""
+        Returns: (response_text, response_html, citations_list)"""
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
@@ -725,7 +728,7 @@ class GuestQueryExecutor:
             if any(d in current_url for d in login_domains):
                 logger.warning(f"[{llm_name}] 检测到跳转到登录页: {current_url}，中止等待")
                 await _save_screenshot(page, -1, f"{llm_name}_login_redirect")
-                return ""
+                return "", "", []
 
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
             for sel in response_selectors:
@@ -739,8 +742,9 @@ class GuestQueryExecutor:
                 except Exception:
                     continue
 
-        # 抓取响应文本
+        # 抓取响应文本 + HTML
         resp_text = ""
+        resp_html = ""
         try:
             # 优先尝试配置的 selectors
             for sel in response_selectors:
@@ -748,17 +752,23 @@ class GuestQueryExecutor:
                     elements = await page.query_selector_all(sel)
                     if elements:
                         texts = []
+                        htmls = []
                         for el in elements:
                             try:
                                 txt = await el.inner_text()
                                 if txt and txt.strip():
                                     texts.append(txt.strip())
+                                # 同时保存 innerHTML（保留 <a href> 等标签）
+                                html = await el.inner_html()
+                                if html:
+                                    htmls.append(html)
                             except:
                                 pass
                         combined = "\n".join(texts)
                         if len(combined) > 20:
                             logger.info(f"[{llm_name}] 通过 selector 提取响应: {sel} ({len(combined)} chars)")
                             resp_text = combined[-5000:]
+                            resp_html = "\n".join(htmls)[-50000:]  # HTML 保留更多
                             break
                 except Exception:
                     continue
@@ -789,10 +799,10 @@ class GuestQueryExecutor:
 
             # 提取引用链接
             citations = await self._extract_citations(page, cfg, llm_name)
-            return resp_text, citations
+            return resp_text, resp_html, citations
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
-            return "", []
+            return "", "", []
 
 
 async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:

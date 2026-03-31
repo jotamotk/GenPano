@@ -53,7 +53,7 @@ except Exception as e:
 
 
 def _ensure_citations_column():
-    """确保 llm_responses 表有 citations_json 列"""
+    """确保 llm_responses 表有 citations_json 和 response_html 列"""
     try:
         conn = get_db()
         try:
@@ -62,8 +62,12 @@ def _ensure_citations_column():
                     ALTER TABLE llm_responses
                     ADD COLUMN IF NOT EXISTS citations_json JSONB
                 """)
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS response_html TEXT
+                """)
             conn.commit()
-            print("DB migration: citations_json column ensured")
+            print("DB migration: citations_json + response_html columns ensured")
         finally:
             conn.close()
     except Exception as e:
@@ -1048,7 +1052,7 @@ def backfill_citations():
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT r.id, r.query_id, r.raw_text
+                    SELECT r.id, r.query_id, r.raw_text, r.response_html
                     FROM llm_responses r
                     WHERE r.citations_json IS NULL
                       AND r.raw_text IS NOT NULL
@@ -1060,7 +1064,10 @@ def backfill_citations():
                 for row in rows:
                     # 从 raw_text 提取 URL
                     all_urls = url_pattern.findall(row['raw_text'] or '')
-                    # 从 HTML 文件提取
+                    # 优先从 response_html 列提取（比文件更可靠）
+                    if row.get('response_html'):
+                        all_urls.extend(href_pattern.findall(row['response_html']))
+                    # 再从 HTML debug 文件提取
                     all_urls.extend(extract_urls_from_html_file(row['query_id']))
 
                     seen = set()
