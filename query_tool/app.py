@@ -306,6 +306,7 @@ HTML_TEMPLATE = """
             <div class="tab-header">
                 <div class="tabs">
                     <button class="tab-btn active" id="tab-queries-btn" onclick="switchTab('queries')">Queries</button>
+                    <button class="tab-btn" id="tab-accounts-btn" onclick="switchTab('accounts')">Accounts</button>
                     <button class="tab-btn" id="tab-html-btn" onclick="switchTab('html')">Debug HTML Files</button>
                 </div>
             </div>
@@ -330,6 +331,70 @@ HTML_TEMPLATE = """
                         </tbody>
                     </table>
                     <div class="pagination" id="pagination"></div>
+                </div>
+
+                <!-- Accounts Tab -->
+                <div class="tab-panel" id="tab-accounts">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+                        <h3 style="margin:0; font-size:16px; color:#333;">LLM Accounts</h3>
+                        <div style="display:flex; gap:8px;">
+                            <button class="secondary small" onclick="loadAccounts();">Refresh</button>
+                            <button class="success small" onclick="showCookieUpload();">Upload Cookies</button>
+                        </div>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Platform</th>
+                                <th>Phone</th>
+                                <th>Status</th>
+                                <th>Daily Used / Limit</th>
+                                <th>Fails</th>
+                                <th>Cookies</th>
+                                <th>Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accounts-body"></tbody>
+                    </table>
+
+                    <!-- Cookie Upload Form (hidden by default) -->
+                    <div id="cookie-upload-form" style="display:none; margin-top:20px; padding:20px; background:#f9fafb; border-radius:8px; border:1px solid #e5e7eb;">
+                        <h4 style="margin:0 0 12px; font-size:15px;">Upload Cookies</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Platform</label>
+                                <select id="cookie-platform">
+                                    <option value="doubao">Doubao (豆包)</option>
+                                    <option value="deepseek">DeepSeek</option>
+                                    <option value="gemini">Gemini</option>
+                                    <option value="chatgpt">ChatGPT</option>
+                                    <option value="kimi">Kimi</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Account Label (optional)</label>
+                                <input type="text" id="cookie-label" placeholder="e.g. phone number or email">
+                            </div>
+                            <div class="form-group">
+                                <label>Daily Limit</label>
+                                <input type="number" id="cookie-daily-limit" value="20" min="1">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-top:12px;">
+                            <label>Cookies JSON (paste EditThisCookie export or Playwright format)</label>
+                            <textarea id="cookie-json" style="min-height:150px; font-family:monospace; font-size:12px;" placeholder='Paste cookies JSON here...'></textarea>
+                        </div>
+                        <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+                            <label style="cursor:pointer; padding:8px 16px; background:#e5e7eb; border-radius:4px; font-size:13px;">
+                                Or upload .json file
+                                <input type="file" id="cookie-file" accept=".json" style="display:none;" onchange="loadCookieFile(this)">
+                            </label>
+                            <div style="flex:1;"></div>
+                            <button class="secondary" onclick="hideCookieUpload();">Cancel</button>
+                            <button class="success" onclick="submitCookies();">Import</button>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Debug HTML Files Tab -->
@@ -385,11 +450,12 @@ HTML_TEMPLATE = """
 
         // ---- Tab switcher ----
         function switchTab(tab) {
-            document.getElementById('tab-queries').classList.toggle('active', tab === 'queries');
-            document.getElementById('tab-html').classList.toggle('active', tab === 'html');
-            document.getElementById('tab-queries-btn').classList.toggle('active', tab === 'queries');
-            document.getElementById('tab-html-btn').classList.toggle('active', tab === 'html');
+            ['queries', 'accounts', 'html'].forEach(t => {
+                document.getElementById('tab-' + t).classList.toggle('active', tab === t);
+                document.getElementById('tab-' + t + '-btn').classList.toggle('active', tab === t);
+            });
             if (tab === 'html') loadHtmlFiles();
+            if (tab === 'accounts') loadAccounts();
         }
 
         // ---- Stats ----
@@ -453,6 +519,8 @@ HTML_TEMPLATE = """
                         <button class="secondary small" onclick="showResponse(${q.id})">View</button>
                         ${statusUp === 'FAILED' || statusUp === 'PENDING' ?
                             `<button class="success small" onclick="retryQuery(${q.id})">Retry</button>` : ''}
+                        ${statusUp === 'DONE' ?
+                            `<button class="danger small" onclick="markFailed(${q.id})">Mark Failed</button>` : ''}
                     </td>
                 </tr>`;
             }).join('');
@@ -553,6 +621,11 @@ HTML_TEMPLATE = """
                 ${statusUp === 'FAILED' || statusUp === 'PENDING' ? `
                 <div style="margin-top: 20px;">
                     <button class="success" onclick="retryQuery(${q.id}); closeModal();">Retry This Query</button>
+                </div>
+                ` : ''}
+                ${statusUp === 'DONE' ? `
+                <div style="margin-top: 20px;">
+                    <button class="danger" onclick="markFailed(${q.id}); closeModal();">Mark as Failed</button>
                 </div>
                 ` : ''}
                 <div style="margin-top: 20px;">
@@ -669,6 +742,117 @@ HTML_TEMPLATE = """
                 }
             } catch (e) {
                 alert(`Error: ${e.message}`);
+            }
+        }
+
+        async function markFailed(queryId) {
+            if (!confirm(`确定将 Query #${queryId} 标记为 Failed？`)) return;
+            try {
+                const res = await fetch(`./api/queries/${queryId}/mark_failed`, {
+                    method: 'POST'
+                });
+                if (!res.ok) {
+                    alert(`Server error: ${res.status} ${res.statusText}`);
+                    return;
+                }
+                const data = await res.json();
+                if (data.success) {
+                    alert(`Query #${queryId} 已标记为 Failed`);
+                    loadStats();
+                    loadQueries();
+                } else {
+                    alert(`Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (e) {
+                alert(`Error: ${e.message}`);
+            }
+        }
+
+        // ---- Accounts ----
+        async function loadAccounts() {
+            try {
+                const res = await fetch('./api/accounts');
+                const data = await res.json();
+                const body = document.getElementById('accounts-body');
+                if (!data.length) {
+                    body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">No accounts found</td></tr>';
+                    return;
+                }
+                body.innerHTML = data.map(a => {
+                    const statusCls = a.status === 'active' ? 'status-DONE' :
+                                      a.status === 'banned' ? 'status-FAILED' : 'status-PENDING';
+                    const cookieCount = a.cookie_count || 0;
+                    const updated = a.updated_at ? new Date(a.updated_at).toLocaleString() : '-';
+                    return `<tr>
+                        <td>${a.id}</td>
+                        <td><span class="llm-badge">${a.llm_name}</span></td>
+                        <td>${a.phone_number || '-'}</td>
+                        <td><span class="${statusCls}">${a.status.toUpperCase()}</span></td>
+                        <td>${a.daily_used || 0} / ${a.daily_limit || 20}</td>
+                        <td>${a.consecutive_fails || 0}</td>
+                        <td>${cookieCount} cookies</td>
+                        <td>${updated}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                console.error('loadAccounts error:', e);
+            }
+        }
+
+        function showCookieUpload() {
+            document.getElementById('cookie-upload-form').style.display = 'block';
+        }
+        function hideCookieUpload() {
+            document.getElementById('cookie-upload-form').style.display = 'none';
+        }
+
+        function loadCookieFile(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                document.getElementById('cookie-json').value = e.target.result;
+            };
+            reader.readAsText(file);
+        }
+
+        async function submitCookies() {
+            const platform = document.getElementById('cookie-platform').value;
+            const label = document.getElementById('cookie-label').value.trim();
+            const dailyLimit = parseInt(document.getElementById('cookie-daily-limit').value) || 20;
+            const jsonText = document.getElementById('cookie-json').value.trim();
+            if (!jsonText) { alert('Please paste or upload cookies JSON'); return; }
+
+            try {
+                JSON.parse(jsonText);
+            } catch (e) {
+                alert('Invalid JSON: ' + e.message);
+                return;
+            }
+
+            try {
+                const res = await fetch('./api/accounts/import_cookies', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        platform: platform,
+                        label: label,
+                        daily_limit: dailyLimit,
+                        cookies_json: jsonText,
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert(data.message || 'Cookies imported successfully!');
+                    document.getElementById('cookie-json').value = '';
+                    document.getElementById('cookie-label').value = '';
+                    hideCookieUpload();
+                    loadAccounts();
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
             }
         }
 
@@ -958,6 +1142,144 @@ def retry_query(query_id):
             return jsonify({'success': True})
         finally:
             conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/queries/<int:query_id>/mark_failed', methods=['POST'])
+def mark_failed(query_id):
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "UPDATE queries SET status = 'failed' WHERE id = %s AND status = 'done'",
+                    (query_id,)
+                )
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Query not found or not in done status'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/accounts')
+def list_accounts():
+    """列出所有 LLM 账号"""
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, llm_name, phone_number, status,
+                           daily_used, daily_limit, consecutive_fails,
+                           CASE WHEN cookies_json IS NOT NULL AND cookies_json != ''
+                                THEN json_array_length(cookies_json::json)
+                                ELSE 0 END AS cookie_count,
+                           updated_at
+                    FROM llm_accounts
+                    ORDER BY llm_name, id
+                """)
+                rows = cur.fetchall()
+            # Convert datetime for JSON serialization
+            for row in rows:
+                if row.get('updated_at'):
+                    row['updated_at'] = row['updated_at'].isoformat()
+            return jsonify(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/accounts/import_cookies', methods=['POST'])
+def import_cookies_api():
+    """通过 Web UI 导入 cookies 到 llm_accounts"""
+    import json as json_mod
+    try:
+        data = request.get_json()
+        platform = data.get('platform', '').strip()
+        label = data.get('label', '').strip() or 'web_upload'
+        daily_limit = data.get('daily_limit', 20)
+        cookies_raw = data.get('cookies_json', '')
+
+        if not platform:
+            return jsonify({'success': False, 'error': 'Platform is required'})
+
+        cookies = json_mod.loads(cookies_raw)
+
+        # Auto-detect and convert EditThisCookie format
+        SAME_SITE_MAP = {
+            'unspecified': 'Lax', 'no_restriction': 'None',
+            'lax': 'Lax', 'strict': 'Strict',
+        }
+        if (isinstance(cookies, list) and len(cookies) > 0
+                and isinstance(cookies[0], dict)
+                and ('storeId' in cookies[0] or 'hostOnly' in cookies[0])):
+            converted = []
+            for c in cookies:
+                entry = {
+                    'name': c['name'], 'value': c['value'],
+                    'domain': c['domain'], 'path': c.get('path', '/'),
+                }
+                if c.get('expirationDate'):
+                    entry['expires'] = c['expirationDate']
+                if c.get('httpOnly'):
+                    entry['httpOnly'] = True
+                if c.get('secure'):
+                    entry['secure'] = True
+                ss = c.get('sameSite', 'unspecified')
+                entry['sameSite'] = SAME_SITE_MAP.get(ss, 'Lax')
+                converted.append(entry)
+            cookies = converted
+
+        if not isinstance(cookies, list) or len(cookies) == 0:
+            return jsonify({'success': False, 'error': 'No valid cookies found'})
+
+        cookies_json_str = json_mod.dumps(cookies)
+
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Check if account with same platform + label exists
+                cur.execute(
+                    "SELECT id FROM llm_accounts WHERE llm_name = %s AND phone_number = %s",
+                    (platform, label)
+                )
+                existing = cur.fetchone()
+
+                if existing:
+                    cur.execute(
+                        """UPDATE llm_accounts
+                           SET cookies_json = %s, status = 'active',
+                               consecutive_fails = 0, updated_at = NOW()
+                           WHERE id = %s""",
+                        (cookies_json_str, existing['id'])
+                    )
+                    msg = f'Updated account #{existing["id"]} with {len(cookies)} cookies'
+                else:
+                    cur.execute(
+                        """INSERT INTO llm_accounts
+                           (llm_name, email, password_encrypted, phone_number,
+                            cookies_json, daily_limit, status)
+                           VALUES (%s, %s, '', %s, %s, %s, 'active')""",
+                        (platform, f'{label}@{platform}.local', label,
+                         cookies_json_str, daily_limit)
+                    )
+                    msg = f'Created new {platform} account with {len(cookies)} cookies'
+
+            conn.commit()
+            return jsonify({'success': True, 'message': msg})
+        finally:
+            conn.close()
+    except json_mod.JSONDecodeError as e:
+        return jsonify({'success': False, 'error': f'Invalid JSON: {e}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

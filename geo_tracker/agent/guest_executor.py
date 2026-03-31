@@ -121,7 +121,7 @@ GUEST_LLM_CONFIG = {
         "url":              "https://www.doubao.com/chat",
         "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content'], [class*='message-content'], [class*='message'][class*='bot']",
+        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content']",
         "wait_after_submit": 25000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
@@ -465,6 +465,23 @@ class GuestQueryExecutor:
                         )
                         await _save_screenshot(page_obj, query.id, f"{llm}_login_modal")
                         return None
+
+                # 豆包特殊处理：登录页可能不跳转也不弹窗，而是直接在 doubao.com/chat 渲染登录表单
+                # 检测页面内容中是否包含登录相关关键词
+                if llm == "doubao":
+                    try:
+                        body_text = await page_obj.evaluate("document.body?.innerText || ''")
+                        login_keywords = ["登录后免费使用", "用户协议", "隐私政策", "抖音一键登录", "豆包账号服务须知"]
+                        matched = [kw for kw in login_keywords if kw in body_text]
+                        if len(matched) >= 2:
+                            logger.warning(
+                                f"[{llm}] 页面内容检测到登录表单（匹配关键词: {matched}），"
+                                f"cookies 可能已过期，请更新 cookies"
+                            )
+                            await _save_screenshot(page_obj, query.id, f"{llm}_login_page")
+                            return None
+                    except Exception as e:
+                        logger.debug(f"[{llm}] 登录页内容检测异常: {e}")
 
                 # ── 关闭弹窗 (cookie banner, login modal, Google One Tap 等) ──
                 dismiss_sels = config.get("dismiss_selectors", [])
