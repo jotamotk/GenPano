@@ -173,12 +173,14 @@ DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 class GuestQueryExecutor:
     """无账号查询执行器"""
 
-    def __init__(self, proxy_url: Optional[str] = None):
+    def __init__(self, proxy_url: Optional[str] = None, account_cookies: Optional[str] = None):
         """
         Args:
             proxy_url: 代理 URL，用于访问国际 LLM
+            account_cookies: JSON string of cookies from LLMAccount (DB), 优先于环境变量
         """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+        self.account_cookies = account_cookies
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -297,13 +299,23 @@ class GuestQueryExecutor:
                     reduced_motion="reduce",
                 )
 
-            # 注入 LLM 专属 cookies
-            cookies_env = config.get("cookies_env")
-            if cookies_env:
-                cookies = _load_cookies_from_env(cookies_env)
-                if cookies:
-                    await context.add_cookies(cookies)
-                    logger.info(f"[{llm}] 已注入 {len(cookies)} 个 cookies")
+            # 注入 LLM 专属 cookies（优先 DB 账号 cookies，fallback 环境变量）
+            injected_cookies = []
+            if self.account_cookies:
+                try:
+                    injected_cookies = json.loads(self.account_cookies)
+                    logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
+                except Exception as e:
+                    logger.warning(f"[{llm}] 解析 account_cookies 失败: {e}")
+
+            if not injected_cookies:
+                cookies_env = config.get("cookies_env")
+                if cookies_env:
+                    injected_cookies = _load_cookies_from_env(cookies_env)
+
+            if injected_cookies:
+                await context.add_cookies(injected_cookies)
+                logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
             page_obj = await context.new_page()
 
