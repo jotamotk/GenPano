@@ -89,15 +89,33 @@ if len(matched) >= 2:  # 匹配 2 个以上关键词才判定
 
 **浏览器选择**:
 - 海外 LLM（ChatGPT 等）: Camoufox（Firefox 内核，绕 Cloudflare）
-- 国内 LLM（豆包等）: Camoufox 同样可用，提供反指纹保护
+- 国内 LLM（豆包等）: Camoufox 同样可用，且效果明显优于 Playwright
+
+**为什么 Camoufox 比 Playwright 效果好**:
+
+| 维度 | Playwright + JS patch | Camoufox |
+|------|----------------------|----------|
+| 反检测方式 | JS 层覆盖属性（"化妆"） | Firefox 源码级修改（"整容"） |
+| 浏览器指纹 | 只隐藏 `webdriver` 等少数属性，canvas/WebGL/AudioContext 仍暴露自动化特征 | 所有指纹（canvas、WebGL、AudioContext、字体列表）内部一致，不可区分 |
+| 控制协议 | Chrome DevTools Protocol (CDP)，网站可检测 `Runtime.enable` 等痕迹 | Firefox Marionette 协议，反爬系统较少针对 |
+| TLS 指纹 | headless Chrome 的 JA3/JA4 指纹已被大量反爬系统列入黑名单 | Firefox 的 TLS 指纹更干净，不在常见黑名单中 |
+| 人类模拟 | 应用层 `page.mouse.move(steps=10)`，轨迹机械 | `humanize=True` 在引擎层面模拟，轨迹更自然 |
+| 总结 | 适合反爬较弱的站点（Perplexity、DeepSeek） | 适合反爬较强的站点（豆包、ChatGPT + Cloudflare） |
+
+> **实测结论**: 豆包在 Playwright 下频繁触发 session 失效（疑似检测到自动化后加速 cookies 过期），切换 Camoufox 后 cookies 存活时间明显延长。
 
 **关键配置**:
 ```python
-# 国内 LLM 使用中文 locale
-locale = "zh-CN"  # 不要用 en-US
-timezone_id = "Asia/Shanghai"
+# Camoufox 启动参数
+AsyncCamoufox(
+    headless=True,
+    humanize=True,        # 内置人类行为模拟
+    block_images=False,   # 不屏蔽图片，避免指纹异常
+    os="windows",         # 伪装 Windows 系统
+    locale="zh-CN",       # 国内站点用中文
+)
 
-# Playwright 隐藏自动化特征
+# Playwright fallback 时的 stealth（效果不如 Camoufox）
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
 ```
