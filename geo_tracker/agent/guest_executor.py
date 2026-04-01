@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -249,17 +250,20 @@ class GuestQueryExecutor:
         _playwright = None
 
         try:
-            # 海外 LLM 优先用 Camoufox（反指纹，绕过 Cloudflare）
-            use_camoufox = HAS_CAMOUFOX and use_proxy and llm not in DOMESTIC_LLMS
+            # 优先用 Camoufox：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
+            # 豆包等需要 cookies 的国内 LLM 也启用 Camoufox 反指纹
+            needs_stealth = config.get("requires_login") or bool(self.account_cookies)
+            use_camoufox = HAS_CAMOUFOX and (use_proxy or needs_stealth)
 
             if use_camoufox:
                 logger.info(f"[{llm}] 启动 Camoufox 浏览器...")
+                is_domestic = llm in DOMESTIC_LLMS
                 camoufox_kwargs = {
                     "headless": True,
                     "humanize": True,
                     "block_images": False,
                     "os": "windows",
-                    "locale": "en-US",
+                    "locale": "zh-CN" if is_domestic else "en-US",
                 }
                 if use_proxy:
                     camoufox_kwargs["proxy"] = {"server": self.proxy_url}
@@ -292,10 +296,11 @@ class GuestQueryExecutor:
                 )
                 logger.info(f"[{llm}] Playwright 启动成功")
 
+                is_domestic = llm in DOMESTIC_LLMS
                 context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                    timezone_id="America/New_York",
+                    locale="zh-CN" if is_domestic else "en-US",
+                    timezone_id="Asia/Shanghai" if is_domestic else "America/New_York",
                     ignore_https_errors=True,
                     bypass_csp=True,
                     reduced_motion="reduce",
@@ -323,39 +328,40 @@ class GuestQueryExecutor:
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
             if not use_camoufox:
-                await page_obj.add_init_script("""
+                domestic_langs = "['zh-CN', 'zh']" if is_domestic else "['en-US', 'en']"
+                await page_obj.add_init_script(f"""
                     const _origUA = navigator.userAgent;
-                    Object.defineProperty(navigator, 'userAgent', {
+                    Object.defineProperty(navigator, 'userAgent', {{
                         get: () => _origUA.replace('HeadlessChrome', 'Chrome')
-                    });
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    }});
+                    Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
                     delete navigator.__proto__.webdriver;
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
+                    Object.defineProperty(navigator, 'plugins', {{
+                        get: () => {{
                             const p = [
-                                {name:'Chrome PDF Plugin', filename:'internal-pdf-viewer', description:'Portable Document Format'},
-                                {name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:''},
-                                {name:'Native Client', filename:'internal-nacl-plugin', description:''}
+                                {{name:'Chrome PDF Plugin', filename:'internal-pdf-viewer', description:'Portable Document Format'}},
+                                {{name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:''}},
+                                {{name:'Native Client', filename:'internal-nacl-plugin', description:''}}
                             ];
                             p.length = 3;
                             return p;
-                        }
-                    });
-                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-                    window.chrome = {
-                        runtime: { onMessage: {addListener:()=>{},removeListener:()=>{}}, sendMessage:()=>{} },
-                        loadTimes: () => ({}), csi: () => ({})
-                    };
-                    Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 1});
-                    Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-                    Object.defineProperty(screen, 'colorDepth', {get: () => 24});
-                    Object.defineProperty(screen, 'pixelDepth', {get: () => 24});
+                        }}
+                    }});
+                    Object.defineProperty(navigator, 'languages', {{get: () => {domestic_langs}}});
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => 8}});
+                    Object.defineProperty(navigator, 'deviceMemory', {{get: () => 8}});
+                    window.chrome = {{
+                        runtime: {{ onMessage: {{addListener:()=>{{}},removeListener:()=>{{}}}}, sendMessage:()=>{{}} }},
+                        loadTimes: () => ({{}}), csi: () => ({{}})
+                    }};
+                    Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => 1}});
+                    Object.defineProperty(navigator, 'platform', {{get: () => 'Win32'}});
+                    Object.defineProperty(screen, 'colorDepth', {{get: () => 24}});
+                    Object.defineProperty(screen, 'pixelDepth', {{get: () => 24}});
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = (params) =>
                         params.name === 'notifications'
-                            ? Promise.resolve({state: Notification.permission})
+                            ? Promise.resolve({{state: Notification.permission}})
                             : originalQuery(params);
                 """)
 
@@ -690,12 +696,27 @@ class GuestQueryExecutor:
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
+        # 模拟人类行为：随机延迟 + 鼠标移动到输入框
+        await page.wait_for_timeout(random.randint(800, 2000))
+        try:
+            # 先模拟鼠标移动到输入框附近
+            box = await input_el.bounding_box()
+            if box:
+                await page.mouse.move(
+                    box["x"] + box["width"] * random.uniform(0.2, 0.8),
+                    box["y"] + box["height"] * random.uniform(0.2, 0.8),
+                    steps=random.randint(5, 15),
+                )
+                await page.wait_for_timeout(random.randint(200, 500))
+        except Exception:
+            pass
+
         # 点击输入框（force=True 绕开可见性检查）
         try:
             await input_el.click(force=True, timeout=5000)
         except:
             pass
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(random.randint(300, 800))
 
         # 对于 contenteditable（如 Gemini 的 Quill 编辑器），键盘事件依赖真实 focus
         # 在 headless 下元素常常报告"不可见"，导致 keyboard.type() 打到 body 而非编辑器
@@ -755,10 +776,12 @@ class GuestQueryExecutor:
                 await input_el.fill("")
             except:
                 pass
-            await page.wait_for_timeout(300)
-            await page.keyboard.type(query_text, delay=30)
+            await page.wait_for_timeout(random.randint(200, 500))
+            # 模拟人类打字速度（50-120ms/字符）
+            await page.keyboard.type(query_text, delay=random.randint(50, 120))
 
-        await page.wait_for_timeout(800)
+        # 模拟人类"思考"后再提交
+        await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击提交按钮，fallback 用 Enter
         submitted = False

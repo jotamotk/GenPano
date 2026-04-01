@@ -183,6 +183,7 @@ class LLMAccount(Base):
     cooldown_until      = Column(DateTime, nullable=True)
     consecutive_fails   = Column(Integer, default=0)
     created_at          = Column(DateTime, server_default=func.now())
+    cookies_updated_at  = Column(DateTime, nullable=True)  # cookies最后更新/验证时间
 
     proxy_id            = Column(Integer, ForeignKey("proxies.id"), nullable=True)
     profile_id          = Column(Integer, ForeignKey("profiles.id"), nullable=True)

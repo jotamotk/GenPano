@@ -96,23 +96,32 @@ class AccountPool:
     ) -> None:
         """
         记录失败，达到阈值自动封禁
-        reason: rate_limit | ban | captcha_fail | login_fail
+        reason: rate_limit | ban | captcha_fail | login_fail | cookies_expired | response_too_short | exception
+        cookies_expired 不计入 consecutive_fails（只是 cookies 过期，不是账号问题）
         """
         account = await self.db.get(LLMAccount, account_id)
         if not account:
             return
 
-        account.consecutive_fails += 1
-
-        if is_ban or account.consecutive_fails >= MAX_CONSECUTIVE_FAILS:
-            account.status = AccountStatus.BANNED.value
-            logger.warning(
-                f"Account id={account_id} BANNED after {account.consecutive_fails} fails"
-            )
-        elif reason == "rate_limit":
+        # cookies 过期只设 cooldown，不增加失败计数（避免误封）
+        if reason == "cookies_expired":
             account.status = AccountStatus.COOLDOWN.value
             account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
-            logger.info(f"Account id={account_id} cooldown until {account.cooldown_until}")
+            logger.warning(
+                f"Account id={account_id} cookies expired, cooldown until {account.cooldown_until}"
+            )
+        else:
+            account.consecutive_fails += 1
+
+            if is_ban or account.consecutive_fails >= MAX_CONSECUTIVE_FAILS:
+                account.status = AccountStatus.BANNED.value
+                logger.warning(
+                    f"Account id={account_id} BANNED after {account.consecutive_fails} fails"
+                )
+            elif reason == "rate_limit":
+                account.status = AccountStatus.COOLDOWN.value
+                account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
+                logger.info(f"Account id={account_id} cooldown until {account.cooldown_until}")
 
         # 记录轮换日志
         log = AccountRotationLog(account_id=account_id, reason=reason)
@@ -133,4 +142,5 @@ class AccountPool:
         account = await self.db.get(LLMAccount, account_id)
         if account:
             account.cookies_json = cookies_json
+            account.cookies_updated_at = datetime.utcnow()
             await self.db.commit()
