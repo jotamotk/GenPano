@@ -14,8 +14,8 @@ from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import delete as sa_delete, select
 
-from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG
-from geo_tracker.db.models import Query, QueryStatus, LLMResponse
+from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
+from geo_tracker.db.models import Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus
 from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
@@ -36,6 +36,10 @@ app.conf.update(
         "reset-daily-counts": {
             "task":     "geo_tracker.tasks.celery_tasks.reset_daily_counts",
             "schedule": crontab(hour=0, minute=0),
+        },
+        "cookie-keep-alive": {
+            "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
+            "schedule": crontab(hour="*/6", minute=30),  # 每6小时运行一次
         },
         # dispatch-pending-queries 已禁用：所有 query 需手动触发
         # "dispatch-pending-queries": {
@@ -133,11 +137,13 @@ def execute_query(self, query_id: int) -> dict:
                 else:
                     resp_len = len(response.raw_text) if response else 0
                     query.status = QueryStatus.FAILED.value
+                    # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
+                    failure_reason = "cookies_expired" if response is None else "response_too_short"
                     if account_id and pool:
-                        await pool.report_failure(account_id, reason="response_too_short")
+                        await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
-                    logger.warning(f"Query {query_id} failed (response too short: {resp_len} chars, likely login redirect)")
-                    return {"query_id": query_id, "status": "failed", "reason": f"response_too_short:{resp_len}"}
+                    logger.warning(f"Query {query_id} failed ({failure_reason}: {resp_len} chars)")
+                    return {"query_id": query_id, "status": "failed", "reason": f"{failure_reason}:{resp_len}"}
 
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
@@ -227,3 +233,264 @@ def reset_daily_counts() -> dict:
         except:
             pass
         loop.close()
+
+
+@app.task(queue="celery")
+def cookie_keep_alive() -> dict:
+    """
+    定期访问各 LLM 页面保持 cookies 活跃，防止 session 过期。
+    只访问页面、不发送消息，模拟正常用户浏览行为。
+    每 6 小时运行一次（Celery Beat 调度）。
+    """
+    import json as json_mod
+    import random
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        results = {"refreshed": 0, "failed": 0, "skipped": 0, "details": []}
+
+        async with get_task_async_session(task_engine) as db:
+            # 获取所有有 cookies 的活跃账号
+            stmt = select(LLMAccount).where(
+                LLMAccount.status == AccountStatus.ACTIVE.value,
+                LLMAccount.cookies_json != None,
+                LLMAccount.cookies_json != "",
+            )
+            result = await db.execute(stmt)
+            accounts = result.scalars().all()
+
+            if not accounts:
+                logger.info("cookie_keep_alive: no active accounts with cookies")
+                return results
+
+            logger.info(f"cookie_keep_alive: checking {len(accounts)} accounts")
+
+            for account in accounts:
+                llm_name = account.llm_name
+                config = GUEST_LLM_CONFIG.get(llm_name)
+                if not config or not config.get("url"):
+                    results["skipped"] += 1
+                    continue
+
+                try:
+                    proxy_url = (
+                        os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY")
+                        if llm_name not in DOMESTIC_LLMS else None
+                    )
+                    executor = GuestQueryExecutor(
+                        proxy_url=proxy_url,
+                        account_cookies=account.cookies_json,
+                    )
+
+                    refreshed_cookies = await _visit_and_refresh(
+                        executor, config, llm_name
+                    )
+
+                    if refreshed_cookies:
+                        from datetime import datetime as dt
+                        account.cookies_json = json_mod.dumps(refreshed_cookies)
+                        account.cookies_updated_at = dt.utcnow()
+                        await db.commit()
+                        results["refreshed"] += 1
+                        results["details"].append(
+                            f"#{account.id} {llm_name}: refreshed {len(refreshed_cookies)} cookies"
+                        )
+                        logger.info(
+                            f"cookie_keep_alive: #{account.id} {llm_name} refreshed "
+                            f"({len(refreshed_cookies)} cookies)"
+                        )
+                    else:
+                        results["failed"] += 1
+                        results["details"].append(
+                            f"#{account.id} {llm_name}: refresh failed (cookies may be expired)"
+                        )
+                        logger.warning(
+                            f"cookie_keep_alive: #{account.id} {llm_name} refresh failed"
+                        )
+
+                    # 随机间隔，避免同时访问多个平台被检测
+                    await asyncio.sleep(random.uniform(10, 30))
+
+                except Exception as e:
+                    results["failed"] += 1
+                    results["details"].append(f"#{account.id} {llm_name}: error {e}")
+                    logger.exception(
+                        f"cookie_keep_alive: #{account.id} {llm_name} exception: {e}"
+                    )
+
+        return results
+
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        try:
+            loop.run_until_complete(task_engine.dispose())
+        except:
+            pass
+        loop.close()
+
+
+async def _visit_and_refresh(
+    executor: GuestQueryExecutor, config: dict, llm_name: str
+) -> list | None:
+    """
+    仅访问 LLM 页面（不发送消息），检查 cookies 是否有效，
+    返回刷新后的 cookies 列表，失败返回 None。
+    """
+    import json as json_mod
+    import random
+    from playwright.async_api import async_playwright
+
+    try:
+        from camoufox.async_api import AsyncCamoufox
+        has_camoufox = True
+    except ImportError:
+        has_camoufox = False
+
+    use_proxy = executor.proxy_url and llm_name not in DOMESTIC_LLMS
+    needs_stealth = bool(executor.account_cookies)
+    use_camoufox = has_camoufox and (use_proxy or needs_stealth)
+
+    browser = None
+    _camoufox_ctx = None
+    _playwright = None
+
+    try:
+        is_domestic = llm_name in DOMESTIC_LLMS
+
+        if use_camoufox:
+            camoufox_kwargs = {
+                "headless": True,
+                "humanize": True,
+                "block_images": True,
+                "os": "windows",
+                "locale": "zh-CN" if is_domestic else "en-US",
+            }
+            if use_proxy:
+                camoufox_kwargs["proxy"] = {"server": executor.proxy_url}
+
+            _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
+            browser = await _camoufox_ctx.__aenter__()
+            context = await browser.new_context()
+        else:
+            _playwright = await async_playwright().start()
+            browser = await _playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox", "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu", "--no-zygote",
+                ],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                locale="zh-CN" if is_domestic else "en-US",
+                timezone_id="Asia/Shanghai" if is_domestic else "America/New_York",
+            )
+
+        # 注入 cookies
+        cookies = json_mod.loads(executor.account_cookies)
+        await context.add_cookies(cookies)
+
+        page = await context.new_page()
+
+        if not use_camoufox:
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                delete navigator.__proto__.webdriver;
+            """)
+
+        # 访问页面
+        url = config["url"]
+        logger.info(f"cookie_keep_alive: visiting {url} for {llm_name}")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+        # 等待页面加载
+        await page.wait_for_timeout(random.randint(3000, 6000))
+
+        # 检查是否被重定向到登录页
+        current_url = page.url
+        login_domains = config.get("login_redirect_domains", [])
+        if any(d in current_url for d in login_domains):
+            logger.warning(
+                f"cookie_keep_alive: {llm_name} redirected to login: {current_url}"
+            )
+            return None
+
+        # 豆包特殊检测
+        if llm_name == "doubao":
+            body_text = await page.evaluate("document.body?.innerText || ''")
+            login_keywords = [
+                "登录后免费使用", "用户协议", "隐私政策",
+                "抖音一键登录", "豆包账号服务须知",
+                "下载豆包电脑版", "你好，我是豆包",
+            ]
+            matched = [kw for kw in login_keywords if kw in body_text]
+            if len(matched) >= 2:
+                logger.warning(
+                    f"cookie_keep_alive: {llm_name} login page detected "
+                    f"(matched: {matched})"
+                )
+                return None
+
+        # 模拟人类浏览：随机滚动
+        try:
+            await page.mouse.move(
+                random.randint(200, 800), random.randint(200, 500),
+                steps=random.randint(3, 8),
+            )
+            await page.wait_for_timeout(random.randint(1000, 3000))
+            await page.mouse.wheel(0, random.randint(100, 300))
+            await page.wait_for_timeout(random.randint(1000, 2000))
+        except Exception:
+            pass
+
+        # 获取刷新后的 cookies
+        new_cookies = await context.cookies()
+        if new_cookies:
+            refreshed = []
+            for c in new_cookies:
+                entry = {
+                    "name": c["name"],
+                    "value": c["value"],
+                    "domain": c["domain"],
+                    "path": c.get("path", "/"),
+                }
+                if c.get("expires", -1) > 0:
+                    entry["expires"] = c["expires"]
+                if c.get("httpOnly"):
+                    entry["httpOnly"] = True
+                if c.get("secure"):
+                    entry["secure"] = True
+                if c.get("sameSite") and c["sameSite"] != "None":
+                    entry["sameSite"] = c["sameSite"]
+                refreshed.append(entry)
+            logger.info(
+                f"cookie_keep_alive: {llm_name} got {len(refreshed)} cookies after visit"
+            )
+            return refreshed
+
+        return None
+
+    except Exception as e:
+        logger.exception(f"cookie_keep_alive: {llm_name} visit error: {e}")
+        return None
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except:
+                pass
+        if _camoufox_ctx:
+            try:
+                await _camoufox_ctx.__aexit__(None, None, None)
+            except:
+                pass
+        if _playwright:
+            try:
+                await _playwright.stop()
+            except:
+                pass

@@ -66,8 +66,13 @@ def _ensure_citations_column():
                     ALTER TABLE llm_responses
                     ADD COLUMN IF NOT EXISTS response_html TEXT
                 """)
+                # cookies 时间追踪字段
+                cur.execute("""
+                    ALTER TABLE llm_accounts
+                    ADD COLUMN IF NOT EXISTS cookies_updated_at TIMESTAMP
+                """)
             conn.commit()
-            print("DB migration: citations_json + response_html columns ensured")
+            print("DB migration: citations_json + response_html + cookies_updated_at columns ensured")
         finally:
             conn.close()
     except Exception as e:
@@ -352,7 +357,7 @@ HTML_TEMPLATE = """
                                 <th>Daily Used / Limit</th>
                                 <th>Fails</th>
                                 <th>Cookies</th>
-                                <th>Updated</th>
+                                <th>Cookie Age</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -770,20 +775,34 @@ HTML_TEMPLATE = """
         }
 
         // ---- Accounts ----
+        function getCookieAgeInfo(cookiesUpdatedAt) {
+            if (!cookiesUpdatedAt) return { text: 'Unknown', color: '#999', icon: '?' };
+            const now = new Date();
+            const updated = new Date(cookiesUpdatedAt);
+            const hoursAgo = (now - updated) / (1000 * 60 * 60);
+            const daysAgo = hoursAgo / 24;
+
+            if (hoursAgo < 6) return { text: `${Math.round(hoursAgo)}h ago`, color: '#16a34a', icon: '&#9679;' };  // green
+            if (hoursAgo < 24) return { text: `${Math.round(hoursAgo)}h ago`, color: '#f59e0b', icon: '&#9679;' };  // yellow
+            if (daysAgo < 3) return { text: `${Math.round(daysAgo)}d ago`, color: '#f97316', icon: '&#9679;' };  // orange
+            if (daysAgo < 7) return { text: `${Math.round(daysAgo)}d ago`, color: '#ef4444', icon: '&#9888;' };  // red warning
+            return { text: `${Math.round(daysAgo)}d ago`, color: '#dc2626', icon: '&#9888;' };  // red expired
+        }
+
         async function loadAccounts() {
             try {
                 const res = await fetch('./api/accounts');
                 const data = await res.json();
                 const body = document.getElementById('accounts-body');
                 if (!data.length) {
-                    body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">No accounts found</td></tr>';
+                    body.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;">No accounts found</td></tr>';
                     return;
                 }
                 body.innerHTML = data.map(a => {
                     const statusCls = a.status === 'active' ? 'status-DONE' :
                                       a.status === 'banned' ? 'status-FAILED' : 'status-PENDING';
                     const cookieCount = a.cookie_count || 0;
-                    const updated = a.updated_at ? new Date(a.updated_at).toLocaleString() : '-';
+                    const cookieAge = getCookieAgeInfo(a.cookies_updated_at);
                     const toggleLabel = a.status === 'active' ? 'Disable' : 'Enable';
                     const toggleClass = a.status === 'active' ? 'secondary' : 'success';
                     return `<tr>
@@ -794,7 +813,7 @@ HTML_TEMPLATE = """
                         <td>${a.daily_used || 0} / ${a.daily_limit || 20}</td>
                         <td>${a.consecutive_fails || 0}</td>
                         <td>${cookieCount} cookies</td>
-                        <td>${updated}</td>
+                        <td><span style="color:${cookieAge.color}; font-weight:500;" title="Last refreshed: ${a.cookies_updated_at || 'never'}">${cookieAge.icon} ${cookieAge.text}</span></td>
                         <td>
                             <button class="${toggleClass} small" onclick="toggleAccount(${a.id}, '${a.status}')">${toggleLabel}</button>
                             <button class="small" onclick="resetAccountFails(${a.id})">Reset</button>
@@ -1223,6 +1242,7 @@ def list_accounts():
                            CASE WHEN cookies_json IS NOT NULL AND cookies_json != ''
                                 THEN json_array_length(cookies_json::json)
                                 ELSE 0 END AS cookie_count,
+                           cookies_updated_at,
                            created_at AS updated_at
                     FROM llm_accounts
                     ORDER BY llm_name, id
@@ -1232,6 +1252,8 @@ def list_accounts():
             for row in rows:
                 if row.get('updated_at'):
                     row['updated_at'] = row['updated_at'].isoformat()
+                if row.get('cookies_updated_at'):
+                    row['cookies_updated_at'] = row['cookies_updated_at'].isoformat()
             return jsonify(rows)
         finally:
             conn.close()
@@ -1300,7 +1322,8 @@ def import_cookies_api():
                     cur.execute(
                         """UPDATE llm_accounts
                            SET cookies_json = %s, status = 'active',
-                               consecutive_fails = 0
+                               consecutive_fails = 0,
+                               cookies_updated_at = NOW()
                            WHERE id = %s""",
                         (cookies_json_str, existing['id'])
                     )
@@ -1309,8 +1332,8 @@ def import_cookies_api():
                     cur.execute(
                         """INSERT INTO llm_accounts
                            (llm_name, email, password_encrypted, phone_number,
-                            cookies_json, daily_limit, status)
-                           VALUES (%s, %s, '', %s, %s, %s, 'active')""",
+                            cookies_json, daily_limit, status, cookies_updated_at)
+                           VALUES (%s, %s, '', %s, %s, %s, 'active', NOW())""",
                         (platform, f'{label}@{platform}.local', label,
                          cookies_json_str, daily_limit)
                     )
