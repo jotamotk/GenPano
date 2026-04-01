@@ -353,6 +353,7 @@ HTML_TEMPLATE = """
                                 <th>Fails</th>
                                 <th>Cookies</th>
                                 <th>Updated</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="accounts-body"></tbody>
@@ -783,6 +784,8 @@ HTML_TEMPLATE = """
                                       a.status === 'banned' ? 'status-FAILED' : 'status-PENDING';
                     const cookieCount = a.cookie_count || 0;
                     const updated = a.updated_at ? new Date(a.updated_at).toLocaleString() : '-';
+                    const toggleLabel = a.status === 'active' ? 'Disable' : 'Enable';
+                    const toggleClass = a.status === 'active' ? 'secondary' : 'success';
                     return `<tr>
                         <td>${a.id}</td>
                         <td><span class="llm-badge">${a.llm_name}</span></td>
@@ -792,11 +795,49 @@ HTML_TEMPLATE = """
                         <td>${a.consecutive_fails || 0}</td>
                         <td>${cookieCount} cookies</td>
                         <td>${updated}</td>
+                        <td>
+                            <button class="${toggleClass} small" onclick="toggleAccount(${a.id}, '${a.status}')">${toggleLabel}</button>
+                            <button class="small" onclick="resetAccountFails(${a.id})">Reset</button>
+                            <button class="danger small" onclick="deleteAccount(${a.id})">Delete</button>
+                        </td>
                     </tr>`;
                 }).join('');
             } catch (e) {
                 console.error('loadAccounts error:', e);
             }
+        }
+
+        async function toggleAccount(id, currentStatus) {
+            const newStatus = currentStatus === 'active' ? 'banned' : 'active';
+            try {
+                const res = await fetch(`./api/accounts/${id}/status`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({status: newStatus})
+                });
+                const data = await res.json();
+                if (data.success) loadAccounts();
+                else alert('Error: ' + (data.error || 'Unknown'));
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function resetAccountFails(id) {
+            try {
+                const res = await fetch(`./api/accounts/${id}/reset`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) loadAccounts();
+                else alert('Error: ' + (data.error || 'Unknown'));
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        async function deleteAccount(id) {
+            if (!confirm(`确定删除账号 #${id}？此操作不可撤销。`)) return;
+            try {
+                const res = await fetch(`./api/accounts/${id}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) loadAccounts();
+                else alert('Error: ' + (data.error || 'Unknown'));
+            } catch (e) { alert('Error: ' + e.message); }
         }
 
         function showCookieUpload() {
@@ -1177,11 +1218,12 @@ def list_accounts():
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT id, llm_name, phone_number, status,
-                           daily_used, daily_limit, consecutive_fails,
+                           query_count_today AS daily_used, daily_limit,
+                           consecutive_fails,
                            CASE WHEN cookies_json IS NOT NULL AND cookies_json != ''
                                 THEN json_array_length(cookies_json::json)
                                 ELSE 0 END AS cookie_count,
-                           updated_at
+                           created_at AS updated_at
                     FROM llm_accounts
                     ORDER BY llm_name, id
                 """)
@@ -1258,7 +1300,7 @@ def import_cookies_api():
                     cur.execute(
                         """UPDATE llm_accounts
                            SET cookies_json = %s, status = 'active',
-                               consecutive_fails = 0, updated_at = NOW()
+                               consecutive_fails = 0
                            WHERE id = %s""",
                         (cookies_json_str, existing['id'])
                     )
@@ -1280,6 +1322,73 @@ def import_cookies_api():
             conn.close()
     except json_mod.JSONDecodeError as e:
         return jsonify({'success': False, 'error': f'Invalid JSON: {e}'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/accounts/<int:account_id>/status', methods=['POST'])
+def update_account_status(account_id):
+    """启用/禁用账号"""
+    try:
+        data = request.get_json()
+        new_status = data.get('status', 'active')
+        if new_status not in ('active', 'banned', 'cooldown'):
+            return jsonify({'success': False, 'error': 'Invalid status'})
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE llm_accounts SET status = %s WHERE id = %s",
+                    (new_status, account_id)
+                )
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Account not found'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/accounts/<int:account_id>/reset', methods=['POST'])
+def reset_account_fails(account_id):
+    """重置连续失败次数和每日用量"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE llm_accounts
+                       SET consecutive_fails = 0, query_count_today = 0,
+                           status = 'active', cooldown_until = NULL
+                       WHERE id = %s""",
+                    (account_id,)
+                )
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Account not found'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/accounts/<int:account_id>', methods=['DELETE'])
+def delete_account(account_id):
+    """删除账号"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM llm_accounts WHERE id = %s", (account_id,))
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Account not found'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

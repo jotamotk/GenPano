@@ -811,6 +811,9 @@ class GuestQueryExecutor:
         resp_text = ""
         resp_html = ""
         try:
+            # 保存完整页面 HTML 用于调试 selector
+            await _save_html(page, -1, f"{llm_name}_response_page")
+
             # 优先尝试配置的 selectors
             for sel in response_selectors:
                 try:
