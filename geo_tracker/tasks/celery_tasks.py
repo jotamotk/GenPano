@@ -91,6 +91,9 @@ def execute_query(self, query_id: int) -> dict:
                 if account and account.cookies_json:
                     account_cookies = account.cookies_json
                     account_id = account.id
+                    # 记录 query 使用的账号
+                    query.account_id = account_id
+                    await db.commit()
                     logger.info(
                         f"Query {query_id}: acquired account id={account_id} "
                         f"for {query.target_llm}"
