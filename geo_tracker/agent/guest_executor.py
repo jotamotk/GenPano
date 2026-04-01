@@ -121,7 +121,7 @@ GUEST_LLM_CONFIG = {
         "url":              "https://www.doubao.com/chat",
         "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
-        "response_selector": "[class*='receive-message'] [class*='content'], [class*='bot-message'] [class*='content']",
+        "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body",
         "wait_after_submit": 25000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
@@ -853,7 +853,7 @@ class GuestQueryExecutor:
                             .filter(t => t.length > 5)
                             .join('\\n');
                         if (paraText.length > 50) return paraText;
-                        const bodyText = (document.body.textContent || document.body.innerText || '').trim();
+                        const bodyText = (document.body.innerText || '').trim();
                         if (bodyText.length > 100) return bodyText.slice(-4000);
                         return '';
                     }
