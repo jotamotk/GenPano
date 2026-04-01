@@ -351,8 +351,8 @@ async def _visit_and_refresh(
         has_camoufox = False
 
     use_proxy = executor.proxy_url and llm_name not in DOMESTIC_LLMS
-    needs_stealth = bool(executor.account_cookies)
-    use_camoufox = has_camoufox and (use_proxy or needs_stealth)
+    # Camoufox (Firefox) 仅用于海外 LLM，国内 LLM 用 Chromium 兼容性更好
+    use_camoufox = has_camoufox and use_proxy and llm_name not in DOMESTIC_LLMS
 
     browser = None
     _camoufox_ctx = None

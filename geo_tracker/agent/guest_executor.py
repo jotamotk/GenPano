@@ -250,10 +250,9 @@ class GuestQueryExecutor:
         _playwright = None
 
         try:
-            # 优先用 Camoufox：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
-            # 豆包等需要 cookies 的国内 LLM 也启用 Camoufox 反指纹
-            needs_stealth = config.get("requires_login") or bool(self.account_cookies)
-            use_camoufox = HAS_CAMOUFOX and (use_proxy or needs_stealth)
+            # Camoufox（Firefox 内核）仅用于海外 LLM 绕 Cloudflare
+            # 国内 LLM（豆包等）用 Playwright Chromium + 增强反检测，兼容性更好
+            use_camoufox = HAS_CAMOUFOX and use_proxy and llm not in DOMESTIC_LLMS
 
             if use_camoufox:
                 logger.info(f"[{llm}] 启动 Camoufox 浏览器...")
