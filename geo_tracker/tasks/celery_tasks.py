@@ -12,7 +12,7 @@ import os
 
 from celery import Celery
 from celery.schedules import crontab
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG
 from geo_tracker.db.models import Query, QueryStatus, LLMResponse
@@ -77,6 +77,7 @@ def execute_query(self, query_id: int) -> dict:
 
             # 对需要登录的 LLM，从 AccountPool 获取账号 cookies
             account = None
+            account_id = None
             account_cookies = None
             pool = None
 
@@ -85,8 +86,9 @@ def execute_query(self, query_id: int) -> dict:
                 account = await pool.acquire(query.target_llm)
                 if account and account.cookies_json:
                     account_cookies = account.cookies_json
+                    account_id = account.id
                     logger.info(
-                        f"Query {query_id}: acquired account id={account.id} "
+                        f"Query {query_id}: acquired account id={account_id} "
                         f"for {query.target_llm}"
                     )
                 else:
@@ -117,18 +119,22 @@ def execute_query(self, query_id: int) -> dict:
                 # Require a meaningful response (guards against login redirects returning 1 char)
                 MIN_RESPONSE_LEN = 20
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
+                    # 删除旧 response（重试场景），避免唯一约束冲突
+                    await db.execute(
+                        sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
+                    )
                     db.add(response)
                     query.status = QueryStatus.DONE.value
-                    if account and pool:
-                        await pool.report_success(account.id)
+                    if account_id and pool:
+                        await pool.report_success(account_id)
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
                 else:
                     resp_len = len(response.raw_text) if response else 0
                     query.status = QueryStatus.FAILED.value
-                    if account and pool:
-                        await pool.report_failure(account.id, reason="response_too_short")
+                    if account_id and pool:
+                        await pool.report_failure(account_id, reason="response_too_short")
                     await db.commit()
                     logger.warning(f"Query {query_id} failed (response too short: {resp_len} chars, likely login redirect)")
                     return {"query_id": query_id, "status": "failed", "reason": f"response_too_short:{resp_len}"}
@@ -136,8 +142,8 @@ def execute_query(self, query_id: int) -> dict:
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
                 query.status = QueryStatus.FAILED.value
-                if account and pool:
-                    await pool.report_failure(account.id, reason="exception")
+                if account_id and pool:
+                    await pool.report_failure(account_id, reason="exception")
                 await db.commit()
                 return {"query_id": query_id, "status": "failed", "error": str(e)}
 
