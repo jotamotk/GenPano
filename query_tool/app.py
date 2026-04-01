@@ -71,6 +71,11 @@ def _ensure_citations_column():
                     ALTER TABLE llm_accounts
                     ADD COLUMN IF NOT EXISTS cookies_updated_at TIMESTAMP
                 """)
+                # query 关联的账号
+                cur.execute("""
+                    ALTER TABLE queries
+                    ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES llm_accounts(id)
+                """)
             conn.commit()
             print("DB migration: citations_json + response_html + cookies_updated_at columns ensured")
         finally:
@@ -324,6 +329,8 @@ HTML_TEMPLATE = """
                                 <th>ID</th>
                                 <th>LLM</th>
                                 <th>Status</th>
+                                <th>Profile</th>
+                                <th>Account</th>
                                 <th>Retry</th>
                                 <th>Query</th>
                                 <th>Citations</th>
@@ -511,11 +518,19 @@ HTML_TEMPLATE = """
             const tbody = document.getElementById('results-body');
             tbody.innerHTML = data.map(q => {
                 const statusUp = (q.status || '').toUpperCase();
+                const profileInfo = q.profile_name
+                    ? `<span title="ID:${q.profile_id} ${q.profile_location || ''}">${q.profile_name}${q.profile_country ? ' (' + q.profile_country + ')' : ''}</span>`
+                    : '<span style="color:#999;">-</span>';
+                const accountInfo = q.account_id
+                    ? `<span title="Account #${q.account_id}">${q.account_label || '#' + q.account_id}</span>`
+                    : '<span style="color:#999;">-</span>';
                 return `
                 <tr>
                     <td>${q.id}</td>
                     <td><span class="llm-badge">${q.target_llm}</span></td>
                     <td><span class="status-${statusUp}">${statusUp}</span></td>
+                    <td style="font-size:12px;">${profileInfo}</td>
+                    <td style="font-size:12px;">${accountInfo}</td>
                     <td>${q.retry_count || 0}</td>
                     <td class="text-preview" title="${escapeHtml(q.query_text)}" onclick="showResponse(${q.id})">${escapeHtml(q.query_text || '')}</td>
                     <td>${q.citations && q.citations.length ? q.citations.length : '-'}</td>
@@ -585,6 +600,14 @@ HTML_TEMPLATE = """
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">Brand ID</div>
                         <div class="modal-meta-value">${q.brand_id || '-'}</div>
+                    </div>
+                    <div class="modal-meta-item">
+                        <div class="modal-meta-label">Profile</div>
+                        <div class="modal-meta-value">${q.profile_name ? q.profile_name + (q.profile_country ? ' (' + q.profile_country + ')' : '') : '-'}</div>
+                    </div>
+                    <div class="modal-meta-item">
+                        <div class="modal-meta-label">Account</div>
+                        <div class="modal-meta-value">${q.account_id ? (q.account_label || '#' + q.account_id) : '-'}</div>
                     </div>
                     <div class="modal-meta-item">
                         <div class="modal-meta-label">Created</div>
@@ -1106,14 +1129,23 @@ def queries():
                     q.status,
                     q.query_text,
                     q.brand_id,
+                    q.profile_id,
+                    q.account_id,
                     q.created_at,
                     q.executed_at,
                     q.retry_count,
                     r.raw_text as response,
                     r.llm_version,
-                    r.citations_json as citations
+                    r.citations_json as citations,
+                    p.name as profile_name,
+                    p.location as profile_location,
+                    p.country_code as profile_country,
+                    a.phone_number as account_label,
+                    a.llm_name as account_llm
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
+                LEFT JOIN profiles p ON q.profile_id = p.id
+                LEFT JOIN llm_accounts a ON q.account_id = a.id
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT %s OFFSET %s

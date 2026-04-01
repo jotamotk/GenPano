@@ -250,8 +250,7 @@ class GuestQueryExecutor:
         _playwright = None
 
         try:
-            # 优先用 Camoufox：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
-            # 豆包等需要 cookies 的国内 LLM 也启用 Camoufox 反指纹
+            # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
             needs_stealth = config.get("requires_login") or bool(self.account_cookies)
             use_camoufox = HAS_CAMOUFOX and (use_proxy or needs_stealth)
 

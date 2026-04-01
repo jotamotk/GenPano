@@ -213,6 +213,7 @@ class Query(Base):
     prompt_id    = Column(Integer, ForeignKey("prompts.id"))
     profile_id   = Column(Integer, ForeignKey("profiles.id"))
     brand_id     = Column(Integer, ForeignKey("brands.id"))
+    account_id   = Column(Integer, ForeignKey("llm_accounts.id"), nullable=True)  # 执行时分配的账号
     query_text   = Column(Text)
     target_llm   = Column(String(64))
     status       = Column(String(16), default=QueryStatus.PENDING.value)
@@ -221,9 +222,10 @@ class Query(Base):
     executed_at  = Column(DateTime, nullable=True)
     created_at   = Column(DateTime, server_default=func.now())
 
-    profile      = relationship("Profile",  back_populates="queries")
-    prompt       = relationship("Prompt",   back_populates="queries")
-    brand        = relationship("Brand",    back_populates="queries")
+    profile      = relationship("Profile",    back_populates="queries")
+    prompt       = relationship("Prompt",     back_populates="queries")
+    brand        = relationship("Brand",      back_populates="queries")
+    account      = relationship("LLMAccount")
     response     = relationship("LLMResponse", back_populates="query", uselist=False)
 
 
