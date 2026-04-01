@@ -471,7 +471,7 @@ class GuestQueryExecutor:
                 if llm == "doubao":
                     try:
                         body_text = await page_obj.evaluate("document.body?.innerText || ''")
-                        login_keywords = ["登录后免费使用", "用户协议", "隐私政策", "抖音一键登录", "豆包账号服务须知"]
+                        login_keywords = ["登录后免费使用", "用户协议", "隐私政策", "抖音一键登录", "豆包账号服务须知", "下载豆包电脑版", "你好，我是豆包"]
                         matched = [kw for kw in login_keywords if kw in body_text]
                         if len(matched) >= 2:
                             logger.warning(
