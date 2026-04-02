@@ -115,7 +115,8 @@ class BaseSMSLoginHandler(ABC):
 
         Returns:
             {"phone": "138xxx", "cookies": [...]} 成功
-            None 失败
+            {"status": "failed", "reason": "..."} 失败（附带原因）
+            None 异常
         """
         sms_client = None
         browser = None
@@ -123,6 +124,10 @@ class BaseSMSLoginHandler(ABC):
         _playwright = None
         request_id = None
         phone_from_luban = False
+
+        def _fail(reason: str) -> dict:
+            logger.error(f"[{self.platform}] {reason}")
+            return {"status": "failed", "reason": reason}
 
         try:
             sms_client = LubanSMSClient()
@@ -166,10 +171,10 @@ class BaseSMSLoginHandler(ABC):
             # 执行登录流程
             logger.info(f"[{self.platform}] 导航到登录表单...")
             if not await self.navigate_to_login(page):
-                logger.error(f"[{self.platform}] 无法导航到登录表单")
-                return None
+                return _fail("无法导航到登录表单（modal 未弹出）")
 
             # ── 手机号 + 短信验证码循环（收不到短信时换号重试）──
+            last_fail_reason = ""
             for attempt in range(self.MAX_PHONE_RETRIES):
                 if attempt > 0:
                     # 释放上一个收不到短信的号码，获取新号码
@@ -190,17 +195,20 @@ class BaseSMSLoginHandler(ABC):
                     )
                     await page.wait_for_timeout(random.randint(2000, 4000))
                     if not await self.navigate_to_login(page):
-                        logger.error(f"[{self.platform}] 重试时无法导航到登录表单")
+                        last_fail_reason = "重试时无法导航到登录表单"
+                        logger.error(f"[{self.platform}] {last_fail_reason}")
                         continue
 
                 logger.info(f"[{self.platform}] 输入手机号: {phone}")
                 if not await self.input_phone(page, phone):
-                    logger.error(f"[{self.platform}] 无法输入手机号")
+                    last_fail_reason = "无法输入手机号（找不到输入框）"
+                    logger.error(f"[{self.platform}] {last_fail_reason}")
                     continue
 
                 logger.info(f"[{self.platform}] 点击发送验证码...")
                 if not await self.click_send_sms(page):
-                    logger.error(f"[{self.platform}] 无法点击发送验证码")
+                    last_fail_reason = "无法点击发送验证码按钮"
+                    logger.error(f"[{self.platform}] {last_fail_reason}")
                     continue
 
                 # 处理 CAPTCHA
@@ -211,14 +219,14 @@ class BaseSMSLoginHandler(ABC):
                 try:
                     sms_code = await sms_client.get_sms(request_id, timeout=120)
                 except (TimeoutError, RuntimeError) as e:
-                    logger.warning(f"[{self.platform}] 手机号 {phone} 获取验证码失败: {e}")
+                    last_fail_reason = f"手机号 {phone} 获取验证码失败: {e}"
+                    logger.warning(f"[{self.platform}] {last_fail_reason}")
                     continue  # 换下一个号码
 
                 # 收到验证码，继续登录流程
                 logger.info(f"[{self.platform}] 输入验证码: {sms_code}")
                 if not await self.input_code(page, sms_code):
-                    logger.error(f"[{self.platform}] 无法输入验证码")
-                    return None
+                    return _fail("无法输入验证码（找不到验证码输入框）")
 
                 await page.wait_for_timeout(random.randint(500, 1000))
 
@@ -236,10 +244,7 @@ class BaseSMSLoginHandler(ABC):
 
                 # 验证登录成功
                 if not await self.verify_success(page):
-                    logger.error(
-                        f"[{self.platform}] 登录验证失败, URL: {page.url}"
-                    )
-                    return None
+                    return _fail(f"登录验证失败（验证码已提交但未登录成功），URL: {page.url}")
 
                 # 提取 cookies
                 new_cookies = await context.cookies()
@@ -252,18 +257,17 @@ class BaseSMSLoginHandler(ABC):
                 return {"phone": phone, "cookies": cookies_list}
 
             # 所有重试都失败
-            logger.error(
-                f"[{self.platform}] 连续 {self.MAX_PHONE_RETRIES} 个号码"
-                f"都收不到短信，放弃"
+            return _fail(
+                f"连续 {self.MAX_PHONE_RETRIES} 次尝试均失败，"
+                f"最后失败原因: {last_fail_reason}"
             )
-            return None
 
         except Exception as e:
             logger.exception(f"[{self.platform}] 登录异常: {e}")
             # 释放未使用的号码
             if phone_from_luban and request_id and sms_client:
                 await sms_client.release_number(request_id)
-            return None
+            return {"status": "failed", "reason": f"异常: {e}"}
 
         finally:
             if browser:
@@ -388,7 +392,6 @@ class BaseSMSLoginHandler(ABC):
 
     # ── 辅助方法供子类使用 ──────────────────────────────────────────────
 
-    @staticmethod
     @staticmethod
     async def _find_element(page: Page, selectors: list[str]):
         """依次尝试多个选择器，返回第一个匹配的元素。
