@@ -37,16 +37,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
 
     async def navigate_to_login(self, page: Page) -> bool:
         """
-        触发登录 modal 弹出。
-
-        豆包现在允许游客直接访问聊天页，页面上没有明显的"登录"文字按钮。
-        登录入口可能是：
-        1. 右上角无文字的头像/图标按钮
-        2. 某个隐藏的登录链接
-        3. 通过发送消息触发登录弹窗
+        等待页面 SPA 完全渲染，然后点击登录按钮触发 modal。
+        豆包是重型 React SPA，JS 渲染登录按钮需要额外时间。
         """
-        # 先保存页面加载后的状态，便于调试
-        await self._save_debug(page, "page_loaded")
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
         # 检查登录 modal 是否已经弹出
@@ -55,121 +48,56 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             logger.info("[doubao] 登录 modal 已存在")
             return await self._handle_agreement(page)
 
-        # 策略 1: data-testid 选择器
-        login_btn = await page.query_selector("[data-testid='to_login_button']")
-        if login_btn:
-            logger.info("[doubao] 点击 to_login_button")
-            await login_btn.click()
-            await page.wait_for_timeout(2000)
-            if await self._check_modal(page):
-                return await self._handle_agreement(page)
+        # 等待登录按钮渲染出来（SPA 异步渲染，最多等 20 秒）
+        login_btn = None
+        for selector in [
+            "[data-testid='to_login_button']",
+            "button:has-text('登录')",
+        ]:
+            try:
+                logger.info(f"[doubao] 等待登录按钮: {selector}")
+                await page.wait_for_selector(selector, timeout=20000)
+                if ":has-text(" in selector:
+                    loc = page.locator(selector).first
+                    login_btn = await loc.element_handle()
+                else:
+                    login_btn = await page.query_selector(selector)
+                if login_btn:
+                    logger.info(f"[doubao] 找到登录按钮: {selector}")
+                    break
+            except Exception:
+                logger.info(f"[doubao] 选择器超时: {selector}")
+                continue
 
-        # 策略 2: 点击右上角头像/用户区域（空文字按钮或头像图标）
-        # 豆包游客模式下，登录入口是右上角的头像区域
-        clicked = await page.evaluate("""
-            () => {
-                // 查找所有可点击元素中包含"登录"的
-                const allEls = document.querySelectorAll(
-                    'button, [role="button"], a, div[class*="login"], ' +
-                    'div[class*="avatar"], div[class*="user"], span[class*="login"]'
-                );
-                for (const el of allEls) {
-                    const text = (el.textContent || '').trim();
-                    if (text === '登录' || text === '登录/注册' || text === '注册/登录') {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            el.click();
-                            return `clicked_login_text: ${el.tagName}.${el.className.slice(0,50)} "${text}"`;
-                        }
-                    }
-                }
-
-                // 查找头像区域 —— 通常在页面右上角的空文字按钮
-                const buttons = [...document.querySelectorAll('button')];
-                for (const btn of buttons) {
-                    const text = (btn.textContent || '').trim();
-                    const rect = btn.getBoundingClientRect();
-                    // 空文字按钮，在右上角区域（x > 页面宽度一半，y < 100）
-                    if (text === '' && rect.width > 0 && rect.x > window.innerWidth / 2 && rect.y < 100) {
-                        btn.click();
-                        return `clicked_avatar: button at (${Math.round(rect.x)},${Math.round(rect.y)}) ${Math.round(rect.width)}x${Math.round(rect.height)} class="${btn.className.slice(0,80)}"`;
-                    }
-                }
-
-                // 列出所有按钮和链接供调试
-                const debug = buttons.map(b => {
-                    const r = b.getBoundingClientRect();
-                    return `"${(b.textContent||'').trim().slice(0,20)}" pos=(${Math.round(r.x)},${Math.round(r.y)}) ${Math.round(r.width)}x${Math.round(r.height)} class="${(b.className||'').slice(0,40)}"`;
-                });
-                return `no_match. all_buttons=[${debug.join(' | ')}]`;
-            }
-        """)
-        logger.info(f"[doubao] JS 查找结果: {clicked}")
-
-        if clicked and clicked.startswith("clicked"):
-            await page.wait_for_timeout(3000)
-            if await self._check_modal(page):
-                return await self._handle_agreement(page)
-            # 可能点开了用户菜单，查找菜单里的"登录"选项
-            menu_clicked = await page.evaluate("""
+        if not login_btn:
+            # 保存调试信息并用 JS 列出页面上所有可见元素
+            await self._save_debug(page, "no_login_btn")
+            debug_info = await page.evaluate("""
                 () => {
-                    const items = document.querySelectorAll(
-                        '[role="menuitem"], [role="option"], ' +
-                        'div[class*="menu"] a, div[class*="menu"] div, ' +
-                        'div[class*="dropdown"] a, div[class*="popover"] a'
-                    );
-                    for (const el of items) {
-                        const text = (el.textContent || '').trim();
-                        if (text.includes('登录') || text.includes('注册')) {
-                            el.click();
-                            return `clicked_menu_item: "${text}"`;
-                        }
-                    }
-                    return 'no_menu_login';
+                    const items = [...document.querySelectorAll('button, a, [role="button"]')]
+                        .filter(e => e.getBoundingClientRect().width > 0)
+                        .map(e => {
+                            const r = e.getBoundingClientRect();
+                            return `${e.tagName} "${(e.textContent||'').trim().slice(0,30)}" (${Math.round(r.x)},${Math.round(r.y)}) data-testid="${e.getAttribute('data-testid')||''}"`;
+                        });
+                    return items.join('\\n');
                 }
             """)
-            logger.info(f"[doubao] 菜单查找结果: {menu_clicked}")
-            if menu_clicked.startswith("clicked"):
-                await page.wait_for_timeout(2000)
-                if await self._check_modal(page):
-                    return await self._handle_agreement(page)
+            logger.error(f"[doubao] 未找到登录按钮，页面可点击元素:\\n{debug_info}")
+            return False
 
-        # 策略 3: 尝试在聊天框输入内容触发登录弹窗
-        # 有些平台在游客尝试发消息时会弹出登录
-        logger.info("[doubao] 尝试通过发送消息触发登录弹窗")
-        try:
-            textarea = await page.query_selector(
-                "textarea, [contenteditable='true'], "
-                "[data-testid='chat_input_input']"
-            )
-            if textarea:
-                await textarea.click()
-                await page.keyboard.type("hello", delay=100)
-                await page.keyboard.press("Enter")
-                await page.wait_for_timeout(3000)
-                if await self._check_modal(page):
-                    logger.info("[doubao] 发送消息后登录 modal 弹出")
-                    return await self._handle_agreement(page)
-        except Exception as e:
-            logger.warning(f"[doubao] 发消息触发登录失败: {e}")
+        # 点击登录按钮
+        logger.info("[doubao] 点击登录按钮")
+        await login_btn.click()
+        await page.wait_for_timeout(2000)
 
-        # 策略 4: 直接导航到 passport 登录页
-        logger.info("[doubao] 尝试直接跳转到 passport 登录页")
-        try:
-            await page.goto(
-                "https://www.doubao.com/chat/login",
-                wait_until="domcontentloaded", timeout=15000,
-            )
-            await page.wait_for_timeout(3000)
-            if await self._check_modal(page):
-                return await self._handle_agreement(page)
-        except Exception:
-            pass
+        # 等待 modal 出现
+        if not await self._check_modal(page):
+            await self._save_debug(page, "modal_timeout")
+            logger.error("[doubao] 点击登录按钮后 modal 未弹出")
+            return False
 
-        # 所有策略失败
-        await self._save_debug(page, "all_strategies_failed")
-        logger.error("[doubao] 所有登录触发策略均失败")
-        return False
+        return await self._handle_agreement(page)
 
     async def _check_modal(self, page: Page) -> bool:
         """检查登录 modal 是否出现"""
