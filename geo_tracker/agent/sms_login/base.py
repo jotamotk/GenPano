@@ -16,6 +16,10 @@ from typing import Optional
 from playwright.async_api import Page, async_playwright
 
 from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
+from geo_tracker.agent.sms_login.phone_blacklist import (
+    add_to_blacklist,
+    is_blacklisted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,33 @@ class BaseSMSLoginHandler(ABC):
 
     # 最大换号重试次数（收不到短信时换新号码重试）
     MAX_PHONE_RETRIES = 5
+    # 单次取号时最多跳过多少个黑名单号码
+    _MAX_BLACKLIST_SKIP = 20
+
+    async def _get_clean_number(
+        self,
+        sms_client: LubanSMSClient,
+        service_id: str,
+        used_request_ids: list[int],
+    ) -> tuple[str, int]:
+        """
+        获取一个不在黑名单中的手机号。
+        若取到黑名单号码，立即加入 used_request_ids（留待最终统一释放）并重新取号，
+        最多跳过 _MAX_BLACKLIST_SKIP 个黑名单号码。
+        """
+        for _ in range(self._MAX_BLACKLIST_SKIP):
+            phone, request_id = await sms_client.get_number(service_id)
+            if not await is_blacklisted(self.platform, phone):
+                return phone, request_id
+            # 黑名单号码：记录以便最终释放，然后继续取
+            used_request_ids.append(request_id)
+            logger.info(
+                f"[{self.platform}] 手机号 {phone} 在黑名单中，跳过 "
+                f"(request_id={request_id})"
+            )
+        raise RuntimeError(
+            f"连续 {self._MAX_BLACKLIST_SKIP} 个号码均在黑名单中，请检查黑名单或账号余额"
+        )
 
     async def login_or_register(
         self,
@@ -135,8 +166,10 @@ class BaseSMSLoginHandler(ABC):
             sms_client = LubanSMSClient()
             service_id = self.get_service_id()
 
-            # 获取初始手机号
-            phone, request_id = await sms_client.get_number(service_id)
+            # 获取初始手机号（跳过黑名单）
+            phone, request_id = await self._get_clean_number(
+                sms_client, service_id, used_request_ids
+            )
             phone_from_luban = True
             used_request_ids.append(request_id)
             logger.info(
@@ -185,7 +218,9 @@ class BaseSMSLoginHandler(ABC):
                         f"[{self.platform}] 手机号 {phone} 收不到短信，"
                         f"释放并获取新号码 (第{attempt + 1}次尝试)"
                     )
-                    phone, request_id = await sms_client.get_number(service_id)
+                    phone, request_id = await self._get_clean_number(
+                        sms_client, service_id, used_request_ids
+                    )
                     used_request_ids.append(request_id)
                     logger.info(
                         f"[{self.platform}] 新手机号: {phone} "
@@ -224,6 +259,8 @@ class BaseSMSLoginHandler(ABC):
                 except (TimeoutError, RuntimeError) as e:
                     last_fail_reason = f"手机号 {phone} 获取验证码失败: {e}"
                     logger.warning(f"[{self.platform}] {last_fail_reason}")
+                    # 将收不到验证码的号码加入黑名单，避免下次再取到
+                    await add_to_blacklist(self.platform, phone)
                     continue  # 换下一个号码
 
                 # 收到验证码，继续登录流程
