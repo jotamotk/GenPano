@@ -389,13 +389,24 @@ class BaseSMSLoginHandler(ABC):
     # ── 辅助方法供子类使用 ──────────────────────────────────────────────
 
     @staticmethod
+    @staticmethod
     async def _find_element(page: Page, selectors: list[str]):
-        """依次尝试多个选择器，返回第一个匹配的元素"""
+        """依次尝试多个选择器，返回第一个匹配的元素。
+
+        支持 Playwright 扩展伪类（如 :has-text()）——
+        对这类选择器使用 locator API 而非 query_selector。
+        """
         for sel in selectors:
             try:
-                el = await page.query_selector(sel)
-                if el:
-                    return el
+                if ":has-text(" in sel:
+                    # Playwright locator API 支持 :has-text
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        return await loc.element_handle()
+                else:
+                    el = await page.query_selector(sel)
+                    if el:
+                        return el
             except Exception:
                 continue
         return None
