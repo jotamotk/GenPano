@@ -456,8 +456,12 @@ class BaseSMSLoginHandler(ABC):
     async def _type_slowly(
         page: Page, element, text: str, delay: int = 60
     ) -> None:
-        """模拟人类输入"""
-        await element.click()
+        """模拟人类输入（用 focus 代替 click，避免容器 div 拦截 pointer events）"""
+        try:
+            await element.focus()
+        except Exception:
+            # focus 不支持时回退到 JS focus
+            await element.evaluate("el => el.focus()")
         await element.fill("")
         await page.keyboard.type(text, delay=delay)
         await page.wait_for_timeout(random.randint(500, 1000))
