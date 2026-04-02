@@ -98,7 +98,7 @@ class LubanSMSClient:
             if data.get("code") == 0 and data.get("msg"):
                 msg = data["msg"]
                 logger.info(f"收到短信: {msg}")
-                match = re.search(r"\b(\d{4,8})\b", msg)
+                match = re.search(r"(\d{4,8})", msg)
                 if match:
                     code = match.group(1)
                     logger.info(f"提取验证码: {code}")
