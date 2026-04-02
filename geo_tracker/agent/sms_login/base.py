@@ -164,9 +164,9 @@ class BaseSMSLoginHandler(ABC):
             # 访问登录页
             logger.info(f"[{self.platform}] 打开: {self.login_url}")
             await page.goto(
-                self.login_url, wait_until="domcontentloaded", timeout=60000
+                self.login_url, wait_until="load", timeout=60000
             )
-            await page.wait_for_timeout(random.randint(2000, 4000))
+            await page.wait_for_timeout(random.randint(5000, 8000))
 
             # 执行登录流程
             logger.info(f"[{self.platform}] 导航到登录表单...")

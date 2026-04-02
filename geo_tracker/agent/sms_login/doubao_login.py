@@ -37,91 +37,83 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
 
     async def navigate_to_login(self, page: Page) -> bool:
         """
-        点击右上角登录按钮，等待登录 modal 弹出。
-        豆包的登录是页面内 modal，不会跳转到 passport 域名。
+        等待页面 SPA 完全渲染，然后点击登录按钮触发 modal。
+        豆包是重型 React SPA，JS 渲染登录按钮需要额外时间。
         """
-        # 先保存页面加载后的状态，便于调试
-        await self._save_debug(page, "page_loaded")
-
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
         # 检查登录 modal 是否已经弹出
         modal = await page.query_selector("[data-testid='login_content']")
         if modal:
             logger.info("[doubao] 登录 modal 已存在")
-            return True
+            return await self._handle_agreement(page)
 
-        # 策略 1: data-testid 选择器
-        login_btn = await page.query_selector(
-            "[data-testid='to_login_button']"
-        )
-        if login_btn:
-            logger.info("[doubao] 点击 to_login_button")
-            await login_btn.click()
-            await page.wait_for_timeout(2000)
-        else:
-            logger.warning("[doubao] data-testid='to_login_button' 未找到")
+        # 等待登录按钮渲染出来（SPA 异步渲染，最多等 20 秒）
+        login_btn = None
+        for selector in [
+            "[data-testid='to_login_button']",
+            "button:has-text('登录')",
+        ]:
+            try:
+                logger.info(f"[doubao] 等待登录按钮: {selector}")
+                await page.wait_for_selector(selector, timeout=20000)
+                if ":has-text(" in selector:
+                    loc = page.locator(selector).first
+                    login_btn = await loc.element_handle()
+                else:
+                    login_btn = await page.query_selector(selector)
+                if login_btn:
+                    logger.info(f"[doubao] 找到登录按钮: {selector}")
+                    break
+            except Exception:
+                logger.info(f"[doubao] 选择器超时: {selector}")
+                continue
 
-            # 策略 2: 用 JS 在页面内查找所有包含"登录"文字的按钮
-            clicked = await page.evaluate("""
+        if not login_btn:
+            # 保存调试信息并用 JS 列出页面上所有可见元素
+            await self._save_debug(page, "no_login_btn")
+            debug_info = await page.evaluate("""
                 () => {
-                    // 查找所有按钮和可点击元素
-                    const candidates = [
-                        ...document.querySelectorAll('button, [role="button"], a'),
-                    ];
-                    for (const el of candidates) {
-                        const text = (el.textContent || '').trim();
-                        if (text === '登录' || text === '登录/注册') {
-                            // 确保是可见的
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                el.click();
-                                return `clicked: ${el.tagName} "${text}" at (${rect.x},${rect.y})`;
-                            }
-                        }
-                    }
-                    // 列出所有按钮供调试
-                    const allBtns = [...document.querySelectorAll('button')].map(
-                        b => `"${(b.textContent||'').trim().slice(0,30)}" visible=${b.getBoundingClientRect().width > 0}`
-                    );
-                    return `no_match. buttons=[${allBtns.join(', ')}]`;
+                    const items = [...document.querySelectorAll('button, a, [role="button"]')]
+                        .filter(e => e.getBoundingClientRect().width > 0)
+                        .map(e => {
+                            const r = e.getBoundingClientRect();
+                            return `${e.tagName} "${(e.textContent||'').trim().slice(0,30)}" (${Math.round(r.x)},${Math.round(r.y)}) data-testid="${e.getAttribute('data-testid')||''}"`;
+                        });
+                    return items.join('\\n');
                 }
             """)
-            logger.info(f"[doubao] JS 查找登录按钮结果: {clicked}")
-
-            if clicked and clicked.startswith("clicked"):
-                await page.wait_for_timeout(2000)
-            else:
-                # 策略 3: locator 文本匹配
-                try:
-                    loc = page.locator(
-                        "button:has-text('登录'), "
-                        "a:has-text('登录')"
-                    ).first
-                    if await loc.is_visible(timeout=5000):
-                        logger.info("[doubao] 通过 locator 点击登录按钮")
-                        await loc.click()
-                        await page.wait_for_timeout(2000)
-                except Exception as e:
-                    logger.warning(f"[doubao] locator 登录按钮点击失败: {e}")
-
-        # 等待 modal 出现
-        try:
-            await page.wait_for_selector(
-                "[data-testid='login_content']", timeout=10000
-            )
-            logger.info("[doubao] 登录 modal 已弹出")
-        except Exception:
-            # modal 没弹出，保存调试信息
-            await self._save_debug(page, "modal_timeout")
-            logger.error("[doubao] 等待登录 modal 超时")
-
-            # 最后尝试：检查是否被重定向到了 passport 登录页
-            if "passport" in page.url or "login" in page.url:
-                logger.info(f"[doubao] 页面跳转到了: {page.url}，可能是 passport 登录")
+            logger.error(f"[doubao] 未找到登录按钮，页面可点击元素:\\n{debug_info}")
             return False
 
-        # 勾选协议 checkbox（必须勾选才能点下一步）
+        # 点击登录按钮
+        logger.info("[doubao] 点击登录按钮")
+        await login_btn.click()
+        await page.wait_for_timeout(2000)
+
+        # 等待 modal 出现
+        if not await self._check_modal(page):
+            await self._save_debug(page, "modal_timeout")
+            logger.error("[doubao] 点击登录按钮后 modal 未弹出")
+            return False
+
+        return await self._handle_agreement(page)
+
+    async def _check_modal(self, page: Page) -> bool:
+        """检查登录 modal 是否出现"""
+        try:
+            modal = await page.wait_for_selector(
+                "[data-testid='login_content']", timeout=5000
+            )
+            if modal:
+                logger.info("[doubao] 登录 modal 已弹出")
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _handle_agreement(self, page: Page) -> bool:
+        """勾选协议 checkbox"""
         try:
             checkbox = await page.query_selector(
                 "[data-testid='login_agreement_check']"
@@ -134,7 +126,6 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                     await page.wait_for_timeout(500)
         except Exception as e:
             logger.warning(f"[doubao] 勾选协议失败: {e}")
-
         return True
 
     async def _save_debug(self, page: Page, suffix: str) -> None:
