@@ -90,17 +90,31 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             await page.wait_for_timeout(2000)
             return True
 
-        # 尝试点击登录按钮
-        login_btn = await self._find_element(page, [
-            "button:has-text('登录')",
-            "a:has-text('登录')",
-            "[class*='login']",
-            "[class*='sign-in']",
-        ])
-        if login_btn:
-            logger.info("[doubao] 点击登录按钮...")
-            await login_btn.click()
-            await page.wait_for_timeout(3000)
+        # 尝试用 locator（支持 :has-text）点击登录相关按钮
+        login_texts = ["登录", "登录/注册", "立即体验", "开始对话", "免费使用", "开始使用"]
+        for text in login_texts:
+            try:
+                loc = page.get_by_text(text, exact=False).first
+                if await loc.is_visible(timeout=2000):
+                    logger.info(f"[doubao] 点击按钮: '{text}'")
+                    await loc.click()
+                    await page.wait_for_timeout(3000)
+                    break
+            except Exception:
+                continue
+
+        # 也尝试 CSS 选择器 fallback
+        if not any(d in page.url for d in LOGIN_DOMAINS):
+            login_btn = await self._find_element(page, [
+                "[class*='login']",
+                "[class*='sign-in']",
+                "[class*='sign-up']",
+                "[data-testid*='login']",
+            ])
+            if login_btn:
+                logger.info("[doubao] 通过 CSS 选择器点击登录按钮")
+                await login_btn.click()
+                await page.wait_for_timeout(3000)
 
         # 等待跳转到 passport 页面
         try:
@@ -109,21 +123,50 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 timeout=15000,
             )
         except Exception:
-            logger.info(f"[doubao] 当前页面: {page.url}")
+            logger.info(f"[doubao] 等待跳转超时, 当前页面: {page.url}")
+
+        # 如果仍未跳转，直接访问 passport 登录页
+        if not any(d in page.url for d in LOGIN_DOMAINS):
+            logger.info("[doubao] 直接访问 passport 登录页")
+            await page.goto(
+                "https://www.doubao.com/chat/login",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await page.wait_for_timeout(3000)
+
+            # 最后再检查一次
+            if not any(d in page.url for d in LOGIN_DOMAINS):
+                # 再试 passport 直链
+                await page.goto(
+                    "https://passport.volcengine.com/auth/login",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await page.wait_for_timeout(3000)
 
         await page.wait_for_timeout(2000)
 
         # 验证是否到达登录页
-        return any(d in page.url for d in LOGIN_DOMAINS)
+        on_login = any(d in page.url for d in LOGIN_DOMAINS)
+        if not on_login:
+            logger.error(f"[doubao] 导航登录页失败, 最终 URL: {page.url}")
+        return on_login
 
     async def input_phone(self, page: Page, phone: str) -> bool:
         """在 passport 页面输入手机号"""
+        # LubanSMS 返回 +86xxx 格式，passport 页面只需要纯数字
+        clean_phone = phone.lstrip("+")
+        if clean_phone.startswith("86") and len(clean_phone) > 11:
+            clean_phone = clean_phone[2:]
+
         phone_input = await self._find_element(page, self.phone_selectors)
         if not phone_input:
             logger.error("[doubao] 未找到手机号输入框")
             return False
 
-        await self._type_slowly(page, phone_input, phone)
+        logger.info(f"[doubao] 输入手机号: {clean_phone} (原始: {phone})")
+        await self._type_slowly(page, phone_input, clean_phone)
         return True
 
     async def click_send_sms(self, page: Page) -> bool:
