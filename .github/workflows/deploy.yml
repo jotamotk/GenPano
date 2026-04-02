@@ -43,10 +43,6 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }}
 
-      - name: Build & push minimax-test
-        run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:minimax-test-${{ env.IMAGE_TAG }} ./minimax-test
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:minimax-test-${{ env.IMAGE_TAG }}
 
   deploy:
     name: Deploy to Server
