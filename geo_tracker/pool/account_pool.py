@@ -144,3 +144,23 @@ class AccountPool:
             account.cookies_json = cookies_json
             account.cookies_updated_at = datetime.utcnow()
             await self.db.commit()
+
+    async def create_account(
+        self, llm_name: str, phone: str, cookies_json: str
+    ) -> LLMAccount:
+        """注册新账号后创建 DB 记录"""
+        account = LLMAccount(
+            llm_name=llm_name,
+            phone_number=phone,
+            email=f"{phone}@{llm_name}.local",
+            cookies_json=cookies_json,
+            cookies_updated_at=datetime.utcnow(),
+            status=AccountStatus.ACTIVE.value,
+        )
+        self.db.add(account)
+        await self.db.commit()
+        await self.db.refresh(account)
+        logger.info(
+            f"Created new account id={account.id} llm={llm_name} phone={phone}"
+        )
+        return account
