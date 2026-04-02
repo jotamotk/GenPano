@@ -349,9 +349,10 @@ HTML_TEMPLATE = """
                 <div class="tab-panel" id="tab-accounts">
                     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
                         <h3 style="margin:0; font-size:16px; color:#333;">LLM Accounts</h3>
-                        <div style="display:flex; gap:8px;">
+                        <div style="display:flex; gap:8px; align-items:center;">
                             <button class="secondary small" onclick="loadAccounts();">Refresh</button>
                             <button class="success small" onclick="showCookieUpload();">Upload Cookies</button>
+                            <button class="small" style="background:#7c3aed;color:#fff;border:none;" onclick="showSmsRegister();">SMS Register</button>
                         </div>
                     </div>
                     <table>
@@ -407,6 +408,27 @@ HTML_TEMPLATE = """
                             <button class="secondary" onclick="hideCookieUpload();">Cancel</button>
                             <button class="success" onclick="submitCookies();">Import</button>
                         </div>
+                    </div>
+
+                    <!-- SMS Register Form (hidden by default) -->
+                    <div id="sms-register-form" style="display:none; margin-top:20px; padding:20px; background:#f5f3ff; border-radius:8px; border:1px solid #ddd6fe;">
+                        <h4 style="margin:0 0 12px; font-size:15px; color:#7c3aed;">SMS Auto Register / Login</h4>
+                        <div class="form-row" style="align-items:flex-end;">
+                            <div class="form-group">
+                                <label>Platform</label>
+                                <select id="sms-platform">
+                                    <option value="doubao">Doubao</option>
+                                    <option value="deepseek">DeepSeek</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <button style="background:#7c3aed;color:#fff;border:none;padding:8px 20px;border-radius:4px;cursor:pointer;font-size:13px;" onclick="triggerSmsRegister();">Register New Account</button>
+                            </div>
+                            <div class="form-group">
+                                <button class="secondary" onclick="hideSmsRegister();">Cancel</button>
+                            </div>
+                        </div>
+                        <div id="sms-task-status" style="margin-top:12px; display:none; padding:12px; background:#fff; border-radius:6px; border:1px solid #e5e7eb; font-size:13px;"></div>
                     </div>
                 </div>
 
@@ -840,6 +862,7 @@ HTML_TEMPLATE = """
                         <td>
                             <button class="${toggleClass} small" onclick="toggleAccount(${a.id}, '${a.status}')">${toggleLabel}</button>
                             <button class="small" onclick="resetAccountFails(${a.id})">Reset</button>
+                            <button class="small" style="background:#7c3aed;color:#fff;border:none;" onclick="triggerAutoLogin(${a.id})">Auto Login</button>
                             <button class="danger small" onclick="deleteAccount(${a.id})">Delete</button>
                         </td>
                     </tr>`;
@@ -937,6 +960,94 @@ HTML_TEMPLATE = """
             } catch (e) {
                 alert('Error: ' + e.message);
             }
+        }
+
+        // ── SMS Register / Auto Login ──────────────────────────────
+        function showSmsRegister() {
+            document.getElementById('sms-register-form').style.display = 'block';
+        }
+        function hideSmsRegister() {
+            document.getElementById('sms-register-form').style.display = 'none';
+            document.getElementById('sms-task-status').style.display = 'none';
+        }
+
+        async function triggerSmsRegister() {
+            const platform = document.getElementById('sms-platform').value;
+            const statusDiv = document.getElementById('sms-task-status');
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<span style="color:#7c3aed;">Triggering registration for ' + platform + '...</span>';
+            try {
+                const res = await fetch('./api/sms_register', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({platform: platform})
+                });
+                const data = await res.json();
+                if (data.success && data.task_id) {
+                    pollTaskStatus(data.task_id, statusDiv);
+                } else {
+                    statusDiv.innerHTML = '<span style="color:#dc2626;">Error: ' + (data.error || 'Unknown') + '</span>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<span style="color:#dc2626;">Error: ' + e.message + '</span>';
+            }
+        }
+
+        async function triggerAutoLogin(accountId) {
+            if (!confirm('Trigger auto SMS login for account #' + accountId + '?')) return;
+            try {
+                const res = await fetch('./api/accounts/' + accountId + '/auto_login', { method: 'POST' });
+                const data = await res.json();
+                if (data.success && data.task_id) {
+                    alert('Auto login triggered! Task ID: ' + data.task_id + '\\nCheck task status in the SMS Register panel.');
+                    // Show the status panel
+                    document.getElementById('sms-register-form').style.display = 'block';
+                    const statusDiv = document.getElementById('sms-task-status');
+                    statusDiv.style.display = 'block';
+                    statusDiv.innerHTML = '<span style="color:#7c3aed;">Auto login for account #' + accountId + ' started...</span>';
+                    pollTaskStatus(data.task_id, statusDiv);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        function pollTaskStatus(taskId, statusDiv) {
+            let attempts = 0;
+            const maxAttempts = 60; // 3 minutes max (60 * 3s)
+            const interval = setInterval(async () => {
+                attempts++;
+                if (attempts > maxAttempts) {
+                    clearInterval(interval);
+                    statusDiv.innerHTML = '<span style="color:#d97706;">Timeout: task is still running. Check worker logs.</span>';
+                    return;
+                }
+                try {
+                    const res = await fetch('./api/task_status/' + taskId);
+                    const data = await res.json();
+                    if (data.state === 'PENDING' || data.state === 'RECEIVED') {
+                        statusDiv.innerHTML = '<span style="color:#7c3aed;">Waiting for worker to pick up task...</span>';
+                    } else if (data.state === 'STARTED' || data.state === 'RETRY') {
+                        statusDiv.innerHTML = '<span style="color:#2563eb;">Logging in... (SMS verification in progress)</span>';
+                    } else if (data.state === 'SUCCESS') {
+                        clearInterval(interval);
+                        const r = data.result || {};
+                        if (r.status === 'success') {
+                            statusDiv.innerHTML = '<span style="color:#059669;">Login successful! Account #' + (r.account_id || '') + (r.phone ? ' (' + r.phone + ')' : '') + '</span>';
+                        } else {
+                            statusDiv.innerHTML = '<span style="color:#dc2626;">Task completed but login failed: ' + (r.reason || r.status || 'unknown') + '</span>';
+                        }
+                        loadAccounts();
+                    } else if (data.state === 'FAILURE') {
+                        clearInterval(interval);
+                        statusDiv.innerHTML = '<span style="color:#dc2626;">Task failed: ' + (data.error || 'Unknown error') + '</span>';
+                    }
+                } catch (e) {
+                    // Network error, keep polling
+                }
+            }, 3000);
         }
 
         async function backfillCitations() {
@@ -1446,6 +1557,60 @@ def delete_account(account_id):
             conn.close()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/accounts/<int:account_id>/auto_login', methods=['POST'])
+def trigger_auto_login(account_id):
+    """手动触发已有账号的自动重新登录"""
+    if not HAS_CELERY:
+        return jsonify({'success': False, 'error': 'Celery not available'})
+    try:
+        result = celery_app.send_task(
+            'geo_tracker.tasks.celery_tasks.auto_login',
+            kwargs={'account_id': account_id},
+            queue='account_login',
+        )
+        return jsonify({'success': True, 'task_id': result.id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/sms_register', methods=['POST'])
+def trigger_sms_register():
+    """手动触发新账号注册"""
+    if not HAS_CELERY:
+        return jsonify({'success': False, 'error': 'Celery not available'})
+    data = request.get_json(force=True)
+    platform = data.get('platform', 'doubao')
+    try:
+        result = celery_app.send_task(
+            'geo_tracker.tasks.celery_tasks.auto_login',
+            kwargs={'platform': platform, 'new_account': True},
+            queue='account_login',
+        )
+        return jsonify({'success': True, 'task_id': result.id})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/task_status/<task_id>')
+def task_status(task_id):
+    """查询 celery task 执行状态"""
+    if not HAS_CELERY:
+        return jsonify({'state': 'UNKNOWN', 'error': 'Celery not available'})
+    try:
+        result = celery_app.AsyncResult(task_id)
+        response = {
+            'state': result.state,
+            'task_id': task_id,
+        }
+        if result.state == 'SUCCESS':
+            response['result'] = result.result
+        elif result.state == 'FAILURE':
+            response['error'] = str(result.result)
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({'state': 'ERROR', 'error': str(e)})
 
 
 @app.route('/api/html_files')

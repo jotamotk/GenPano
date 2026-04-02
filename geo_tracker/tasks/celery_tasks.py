@@ -3,10 +3,13 @@ Celery 任务定义
 - execute_query: 单条 Query 执行（无账号模式优先）
 - dispatch_batch: 批量分发 pending queries
 - reset_daily_counts: 每日重置账号计数（Beat调度）
+- cookie_keep_alive: 定期访问 LLM 保持 cookies 活跃
+- auto_login: 自动 SMS 登录/注册（独立于 query 执行）
 """
 from __future__ import annotations
 
 import asyncio
+import json as json_mod
 import logging
 import os
 
@@ -106,6 +109,11 @@ def execute_query(self, query_id: int) -> dict:
                         f"Query {query_id}: {query.target_llm} requires login "
                         f"but no account available, returning to PENDING"
                     )
+                    # 触发自动注册新账号
+                    auto_login.apply_async(
+                        kwargs={"platform": query.target_llm, "new_account": True},
+                        queue="account_login",
+                    )
                     return {
                         "query_id": query_id,
                         "status": "pending",
@@ -145,6 +153,12 @@ def execute_query(self, query_id: int) -> dict:
                     if account_id and pool:
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
+                    # 触发自动重新登录
+                    if failure_reason == "cookies_expired" and account_id:
+                        auto_login.apply_async(
+                            kwargs={"account_id": account_id},
+                            queue="account_login",
+                        )
                     logger.warning(f"Query {query_id} failed ({failure_reason}: {resp_len} chars)")
                     return {"query_id": query_id, "status": "failed", "reason": f"{failure_reason}:{resp_len}"}
 
@@ -245,7 +259,6 @@ def cookie_keep_alive() -> dict:
     只访问页面、不发送消息，模拟正常用户浏览行为。
     每 6 小时运行一次（Celery Beat 调度）。
     """
-    import json as json_mod
     import random
 
     loop = asyncio.new_event_loop()
@@ -313,6 +326,11 @@ def cookie_keep_alive() -> dict:
                         logger.warning(
                             f"cookie_keep_alive: #{account.id} {llm_name} refresh failed"
                         )
+                        # 触发自动重新登录
+                        auto_login.apply_async(
+                            kwargs={"account_id": account.id},
+                            queue="account_login",
+                        )
 
                     # 随机间隔，避免同时访问多个平台被检测
                     await asyncio.sleep(random.uniform(10, 30))
@@ -336,6 +354,107 @@ def cookie_keep_alive() -> dict:
         loop.close()
 
 
+@app.task(queue="account_login", bind=True, max_retries=1)
+def auto_login(self, account_id: int = None, platform: str = None, new_account: bool = False) -> dict:
+    """
+    自动 SMS 登录/注册，独立于 query 执行。
+
+    场景 1: account_id 有值 → 已有账号重新登录（用 DB 里的 phone_number）
+    场景 2: new_account=True → 注册新账号（LubanSMS 获取新号码）
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        from geo_tracker.agent.sms_login import get_handler
+
+        async with get_task_async_session(task_engine) as db:
+            pool = AccountPool(db)
+
+            # 场景 1: 已有账号重新登录
+            if account_id:
+                result = await db.execute(
+                    select(LLMAccount).where(LLMAccount.id == account_id)
+                )
+                account = result.scalar_one_or_none()
+                if not account:
+                    return {"status": "error", "reason": f"account {account_id} not found"}
+
+                handler = get_handler(account.llm_name)
+                if not handler:
+                    return {"status": "error", "reason": f"no handler for {account.llm_name}"}
+
+                logger.info(
+                    f"auto_login: re-login account #{account_id} "
+                    f"({account.llm_name}, phone={account.phone_number})"
+                )
+                login_result = await handler.login_or_register(
+                    existing_cookies=account.cookies_json,
+                    phone=account.phone_number,
+                )
+
+                if login_result:
+                    from datetime import datetime as dt
+                    account.cookies_json = json_mod.dumps(login_result["cookies"])
+                    account.cookies_updated_at = dt.utcnow()
+                    account.status = AccountStatus.ACTIVE.value
+                    account.cooldown_until = None
+                    account.consecutive_fails = 0
+                    if login_result.get("phone"):
+                        account.phone_number = login_result["phone"]
+                    await db.commit()
+                    logger.info(f"auto_login: account #{account_id} re-login SUCCESS")
+                    return {"status": "success", "account_id": account_id}
+                else:
+                    logger.warning(f"auto_login: account #{account_id} re-login FAILED")
+                    return {"status": "failed", "account_id": account_id}
+
+            # 场景 2: 注册新账号
+            elif new_account and platform:
+                handler = get_handler(platform)
+                if not handler:
+                    return {"status": "error", "reason": f"no handler for {platform}"}
+
+                logger.info(f"auto_login: registering new {platform} account")
+                login_result = await handler.login_or_register()
+
+                if login_result:
+                    new_account_obj = await pool.create_account(
+                        llm_name=platform,
+                        phone=login_result["phone"],
+                        cookies_json=json_mod.dumps(login_result["cookies"]),
+                    )
+                    logger.info(
+                        f"auto_login: new {platform} account #{new_account_obj.id} "
+                        f"created (phone={login_result['phone']})"
+                    )
+                    return {
+                        "status": "success",
+                        "account_id": new_account_obj.id,
+                        "phone": login_result["phone"],
+                    }
+                else:
+                    logger.warning(f"auto_login: new {platform} registration FAILED")
+                    return {"status": "failed", "platform": platform}
+
+            else:
+                return {"status": "error", "reason": "invalid arguments"}
+
+    try:
+        result = loop.run_until_complete(_run())
+        return result
+    except Exception as exc:
+        logger.exception(f"auto_login exception: {exc}")
+        raise self.retry(exc=exc, countdown=120)
+    finally:
+        try:
+            loop.run_until_complete(task_engine.dispose())
+        except:
+            pass
+        loop.close()
+
+
 async def _visit_and_refresh(
     executor: GuestQueryExecutor, config: dict, llm_name: str
 ) -> list | None:
@@ -343,7 +462,6 @@ async def _visit_and_refresh(
     仅访问 LLM 页面（不发送消息），检查 cookies 是否有效，
     返回刷新后的 cookies 列表，失败返回 None。
     """
-    import json as json_mod
     import random
     from playwright.async_api import async_playwright
 
