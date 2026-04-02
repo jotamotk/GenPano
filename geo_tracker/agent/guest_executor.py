@@ -628,7 +628,15 @@ class GuestQueryExecutor:
         citations = []
         try:
             response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
-            # 在响应区域内查找所有链接，若无则尝试全页面
+
+            # 豆包使用独立的引用面板，需要专门提取
+            if llm_name == "doubao":
+                citations = await self._extract_doubao_citations(page)
+                if citations:
+                    logger.info(f"[{llm_name}] 从引用面板提取到 {len(citations)} 个引用链接")
+                    return citations
+
+            # 通用提取：在响应区域内查找所有链接
             js_citations = await page.evaluate("""
                 (selectors) => {
                     const skipDomains = [
@@ -686,6 +694,64 @@ class GuestQueryExecutor:
         except Exception as e:
             logger.warning(f"[{llm_name}] 引用提取失败: {e}")
         return citations
+
+    async def _extract_doubao_citations(self, page: Page) -> list:
+        """从豆包引用面板提取引用链接。
+
+        豆包的引用不是内嵌在响应正文的 <a> 标签，而是在独立的引用面板中：
+        - 面板: [data-testid="search-reference-ui-v3"]
+        - 每条引用: [data-testid="search-text-item"] 内含 <a href="...">
+        - 标题: .search-item-title-* 类名
+        - 编号: .footer-citation-* 类名
+        """
+        try:
+            citations = await page.evaluate("""
+                () => {
+                    const citations = [];
+                    const seen = new Set();
+
+                    // 从引用面板中提取
+                    const items = document.querySelectorAll('[data-testid="search-text-item"]');
+                    for (const item of items) {
+                        const link = item.querySelector('a[href]');
+                        if (!link) continue;
+                        const url = link.href;
+                        if (!url || !url.startsWith('http') || seen.has(url)) continue;
+                        seen.add(url);
+
+                        // 提取标题（优先用 title class，fallback 到链接文本）
+                        const titleEl = item.querySelector('[class*="search-item-title"]');
+                        const title = titleEl
+                            ? (titleEl.textContent || '').trim()
+                            : (link.textContent || '').trim();
+
+                        // 提取引用编号
+                        const citationEl = item.querySelector('[class*="footer-citation"]');
+                        const citationNum = citationEl
+                            ? parseInt(citationEl.textContent, 10)
+                            : 0;
+
+                        // 提取来源名称
+                        const sourceEl = item.querySelector('[class*="footer-title"]');
+                        const source = sourceEl ? (sourceEl.textContent || '').trim() : '';
+
+                        citations.push({
+                            url: url,
+                            title: (title || '').slice(0, 200),
+                            source: source,
+                            index: citationNum || (citations.length + 1)
+                        });
+                    }
+
+                    // 按引用编号排序
+                    citations.sort((a, b) => a.index - b.index);
+                    return citations;
+                }
+            """)
+            return citations or []
+        except Exception as e:
+            logger.warning(f"[doubao] 引用面板提取失败: {e}")
+            return []
 
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
@@ -859,6 +925,16 @@ class GuestQueryExecutor:
                             logger.info(f"[{llm_name}] 通过 selector 提取响应: {sel} ({len(combined)} chars)")
                             resp_text = combined[-5000:]
                             resp_html = "\n".join(htmls)[-50000:]  # HTML 保留更多
+                            # 豆包：同时保存引用面板 HTML 以便后续 backfill
+                            if llm_name == "doubao":
+                                try:
+                                    ref_panel = await page.query_selector('[data-testid="search-reference-ui-v3"]')
+                                    if ref_panel:
+                                        ref_html = await ref_panel.inner_html()
+                                        if ref_html:
+                                            resp_html += "\n<!-- doubao-references -->\n" + ref_html
+                                except Exception:
+                                    pass
                             break
                 except Exception:
                     continue
@@ -886,6 +962,17 @@ class GuestQueryExecutor:
 
             if not resp_text:
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
+
+            # 豆包引用面板可能在响应完成后异步加载，额外等待
+            if llm_name == "doubao":
+                try:
+                    await page.wait_for_selector(
+                        '[data-testid="search-reference-ui-v3"]',
+                        timeout=8000,
+                    )
+                    await page.wait_for_timeout(1000)
+                except Exception:
+                    logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 
             # 提取引用链接
             citations = await self._extract_citations(page, cfg, llm_name)
