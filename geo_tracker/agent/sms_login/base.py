@@ -95,6 +95,9 @@ class BaseSMSLoginHandler(ABC):
             raise ValueError(f"环境变量 {self.service_id_env} 未设置")
         return sid
 
+    # 最大换号重试次数（收不到短信时换新号码重试）
+    MAX_PHONE_RETRIES = 3
+
     async def login_or_register(
         self,
         existing_cookies: str | None = None,
@@ -102,6 +105,9 @@ class BaseSMSLoginHandler(ABC):
     ) -> dict | None:
         """
         模板方法 — 完整的 SMS 登录/注册流程。
+
+        当手机号收不到短信时，自动释放号码并获取新号码重试，
+        最多重试 MAX_PHONE_RETRIES 次。
 
         Args:
             existing_cookies: 已有的 cookies JSON（用于重新登录）
@@ -122,22 +128,13 @@ class BaseSMSLoginHandler(ABC):
             sms_client = LubanSMSClient()
             service_id = self.get_service_id()
 
-            # 如果没有手机号，从 LubanSMS 获取新的
-            if not phone:
-                phone, request_id = await sms_client.get_number(service_id)
-                phone_from_luban = True
-                logger.info(
-                    f"[{self.platform}] 获取新手机号: {phone} "
-                    f"(request_id={request_id})"
-                )
-            else:
-                # 已有手机号重新登录，也需要 request_id 来接收验证码
-                phone, request_id = await sms_client.get_number(service_id)
-                phone_from_luban = True
-                logger.info(
-                    f"[{self.platform}] 重新登录, 获取号码: {phone} "
-                    f"(request_id={request_id})"
-                )
+            # 获取初始手机号
+            phone, request_id = await sms_client.get_number(service_id)
+            phone_from_luban = True
+            logger.info(
+                f"[{self.platform}] 获取手机号: {phone} "
+                f"(request_id={request_id})"
+            )
 
             # 启动浏览器
             browser, _camoufox_ctx, _playwright, context = await self._launch_browser()
@@ -172,62 +169,94 @@ class BaseSMSLoginHandler(ABC):
                 logger.error(f"[{self.platform}] 无法导航到登录表单")
                 return None
 
-            logger.info(f"[{self.platform}] 输入手机号: {phone}")
-            if not await self.input_phone(page, phone):
-                logger.error(f"[{self.platform}] 无法输入手机号")
-                return None
+            # ── 手机号 + 短信验证码循环（收不到短信时换号重试）──
+            for attempt in range(self.MAX_PHONE_RETRIES):
+                if attempt > 0:
+                    # 释放上一个收不到短信的号码，获取新号码
+                    logger.warning(
+                        f"[{self.platform}] 手机号 {phone} 收不到短信，"
+                        f"释放并获取新号码 (第{attempt + 1}次尝试)"
+                    )
+                    await sms_client.release_number(request_id)
+                    phone, request_id = await sms_client.get_number(service_id)
+                    logger.info(
+                        f"[{self.platform}] 新手机号: {phone} "
+                        f"(request_id={request_id})"
+                    )
 
-            logger.info(f"[{self.platform}] 点击发送验证码...")
-            if not await self.click_send_sms(page):
-                logger.error(f"[{self.platform}] 无法点击发送验证码")
-                return None
+                    # 重新加载登录页（清除上次输入状态）
+                    await page.goto(
+                        self.login_url, wait_until="domcontentloaded", timeout=60000
+                    )
+                    await page.wait_for_timeout(random.randint(2000, 4000))
+                    if not await self.navigate_to_login(page):
+                        logger.error(f"[{self.platform}] 重试时无法导航到登录表单")
+                        continue
 
-            # 处理 CAPTCHA
-            await self._handle_captcha(page)
+                logger.info(f"[{self.platform}] 输入手机号: {phone}")
+                if not await self.input_phone(page, phone):
+                    logger.error(f"[{self.platform}] 无法输入手机号")
+                    continue
 
-            # 等待并获取验证码
-            logger.info(f"[{self.platform}] 等待 SMS 验证码...")
-            try:
-                sms_code = await sms_client.get_sms(request_id, timeout=120)
-            except (TimeoutError, RuntimeError) as e:
-                logger.error(f"[{self.platform}] 获取验证码失败: {e}")
-                return None
+                logger.info(f"[{self.platform}] 点击发送验证码...")
+                if not await self.click_send_sms(page):
+                    logger.error(f"[{self.platform}] 无法点击发送验证码")
+                    continue
 
-            logger.info(f"[{self.platform}] 输入验证码: {sms_code}")
-            if not await self.input_code(page, sms_code):
-                logger.error(f"[{self.platform}] 无法输入验证码")
-                return None
+                # 处理 CAPTCHA
+                await self._handle_captcha(page)
 
-            await page.wait_for_timeout(random.randint(500, 1000))
+                # 等待并获取验证码
+                logger.info(f"[{self.platform}] 等待 SMS 验证码 (尝试 {attempt + 1}/{self.MAX_PHONE_RETRIES})...")
+                try:
+                    sms_code = await sms_client.get_sms(request_id, timeout=120)
+                except (TimeoutError, RuntimeError) as e:
+                    logger.warning(f"[{self.platform}] 手机号 {phone} 获取验证码失败: {e}")
+                    continue  # 换下一个号码
 
-            logger.info(f"[{self.platform}] 提交登录...")
-            if not await self.submit_login(page):
-                logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
-                await page.keyboard.press("Enter")
+                # 收到验证码，继续登录流程
+                logger.info(f"[{self.platform}] 输入验证码: {sms_code}")
+                if not await self.input_code(page, sms_code):
+                    logger.error(f"[{self.platform}] 无法输入验证码")
+                    return None
 
-            # 等待登录完成
-            await page.wait_for_timeout(random.randint(3000, 5000))
+                await page.wait_for_timeout(random.randint(500, 1000))
 
-            # 可能有登录后的 CAPTCHA
-            await self._handle_captcha(page)
-            await page.wait_for_timeout(2000)
+                logger.info(f"[{self.platform}] 提交登录...")
+                if not await self.submit_login(page):
+                    logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
+                    await page.keyboard.press("Enter")
 
-            # 验证登录成功
-            if not await self.verify_success(page):
-                logger.error(
-                    f"[{self.platform}] 登录验证失败, URL: {page.url}"
+                # 等待登录完成
+                await page.wait_for_timeout(random.randint(3000, 5000))
+
+                # 可能有登录后的 CAPTCHA
+                await self._handle_captcha(page)
+                await page.wait_for_timeout(2000)
+
+                # 验证登录成功
+                if not await self.verify_success(page):
+                    logger.error(
+                        f"[{self.platform}] 登录验证失败, URL: {page.url}"
+                    )
+                    return None
+
+                # 提取 cookies
+                new_cookies = await context.cookies()
+                cookies_list = self._format_cookies(new_cookies)
+
+                logger.info(
+                    f"[{self.platform}] 登录成功! "
+                    f"phone={phone}, cookies={len(cookies_list)}"
                 )
-                return None
+                return {"phone": phone, "cookies": cookies_list}
 
-            # 提取 cookies
-            new_cookies = await context.cookies()
-            cookies_list = self._format_cookies(new_cookies)
-
-            logger.info(
-                f"[{self.platform}] 登录成功! "
-                f"phone={phone}, cookies={len(cookies_list)}"
+            # 所有重试都失败
+            logger.error(
+                f"[{self.platform}] 连续 {self.MAX_PHONE_RETRIES} 个号码"
+                f"都收不到短信，放弃"
             )
-            return {"phone": phone, "cookies": cookies_list}
+            return None
 
         except Exception as e:
             logger.exception(f"[{self.platform}] 登录异常: {e}")
