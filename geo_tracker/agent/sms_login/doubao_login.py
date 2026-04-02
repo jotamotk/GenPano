@@ -30,7 +30,7 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 @register("doubao")
 class DoubaoLoginHandler(BaseSMSLoginHandler):
     platform = "doubao"
-    service_id_env = "LUBANSMS_PROJECT_DOUBAO"
+    sms_keyword = "豆包"
     login_url = "https://www.doubao.com/chat"
 
     # ── 抽象方法实现 ────────────────────────────────────────────────────

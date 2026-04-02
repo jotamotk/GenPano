@@ -16,6 +16,10 @@ from typing import Optional
 from playwright.async_api import Page, async_playwright
 
 from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
+from geo_tracker.agent.sms_login.phone_blacklist import (
+    add_to_blacklist,
+    is_blacklisted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +60,12 @@ class BaseSMSLoginHandler(ABC):
 
     子类需要设置的属性：
     - platform: 平台标识 ("doubao", "deepseek", ...)
-    - service_id_env: LubanSMS service_id 的环境变量名
+    - sms_keyword: 短信关键词，用于 getKeywordSms 过滤（如 "豆包"、"抖音"）
     - login_url: 登录入口 URL
     """
 
     platform: str = ""
-    service_id_env: str = ""
+    sms_keyword: str = ""
     login_url: str = ""
 
     @abstractmethod
@@ -88,15 +92,30 @@ class BaseSMSLoginHandler(ABC):
     async def verify_success(self, page: Page) -> bool:
         """验证登录是否成功（如检查聊天输入框）。"""
 
-    def get_service_id(self) -> str:
-        """获取 LubanSMS 对应的 service_id"""
-        sid = os.getenv(self.service_id_env, "")
-        if not sid:
-            raise ValueError(f"环境变量 {self.service_id_env} 未设置")
-        return sid
-
     # 最大换号重试次数（收不到短信时换新号码重试）
-    MAX_PHONE_RETRIES = 3
+    MAX_PHONE_RETRIES = 5
+    # 单次取号时最多跳过多少个黑名单号码
+    _MAX_BLACKLIST_SKIP = 20
+
+    async def _get_clean_number(
+        self,
+        sms_client: LubanSMSClient,
+        used_phones: list[str],
+    ) -> str:
+        """
+        随机获取一个不在黑名单中的手机号。
+        若取到黑名单号码，加入 used_phones（留待最终统一释放）并重新取，
+        最多跳过 _MAX_BLACKLIST_SKIP 个。
+        """
+        for _ in range(self._MAX_BLACKLIST_SKIP):
+            phone = await sms_client.get_keyword_number()
+            if not await is_blacklisted(self.platform, phone):
+                return phone
+            used_phones.append(phone)
+            logger.info(f"[{self.platform}] 手机号 {phone} 在黑名单中，跳过")
+        raise RuntimeError(
+            f"连续 {self._MAX_BLACKLIST_SKIP} 个号码均在黑名单中，请检查黑名单或账号余额"
+        )
 
     async def login_or_register(
         self,
@@ -111,19 +130,24 @@ class BaseSMSLoginHandler(ABC):
 
         Args:
             existing_cookies: 已有的 cookies JSON（用于重新登录）
-            phone: 已有手机号（重新登录场景）；None 时从 LubanSMS 获取新号
+            phone: 已有手机号（重新登录场景）；None 时从 LubanSMS 随机获取新号
 
         Returns:
             {"phone": "138xxx", "cookies": [...]} 成功
             {"status": "failed", "reason": "..."} 失败（附带原因）
-            None 异常
         """
+        if not self.sms_keyword:
+            raise ValueError(
+                f"[{self.platform}] sms_keyword 未设置，无法使用 Keyword API"
+            )
+
         sms_client = None
         browser = None
         _camoufox_ctx = None
         _playwright = None
-        request_id = None
-        phone_from_luban = False
+        # 所有本次申请过的手机号，流程结束后统一释放
+        used_phones: list[str] = []
+        is_relogin = bool(phone)  # True = 已有账号重新登录，False = 新注册
 
         def _fail(reason: str) -> dict:
             logger.error(f"[{self.platform}] {reason}")
@@ -131,15 +155,18 @@ class BaseSMSLoginHandler(ABC):
 
         try:
             sms_client = LubanSMSClient()
-            service_id = self.get_service_id()
 
-            # 获取初始手机号
-            phone, request_id = await sms_client.get_number(service_id)
-            phone_from_luban = True
-            logger.info(
-                f"[{self.platform}] 获取手机号: {phone} "
-                f"(request_id={request_id})"
-            )
+            # ── 获取初始手机号 ──────────────────────────────────────────
+            if is_relogin:
+                # 重新登录：通过 getKeywordNumber(phone=xxx) 复用已有号码
+                phone = await sms_client.get_keyword_number(phone=phone)
+                used_phones.append(phone)
+                logger.info(f"[{self.platform}] 复用手机号: {phone}")
+            else:
+                # 新注册：随机取号，跳过黑名单
+                phone = await self._get_clean_number(sms_client, used_phones)
+                used_phones.append(phone)
+                logger.info(f"[{self.platform}] 获取手机号: {phone}")
 
             # 启动浏览器
             browser, _camoufox_ctx, _playwright, context = await self._launch_browser()
@@ -173,23 +200,23 @@ class BaseSMSLoginHandler(ABC):
             if not await self.navigate_to_login(page):
                 return _fail("无法导航到登录表单（modal 未弹出）")
 
-            # ── 手机号 + 短信验证码循环（收不到短信时换号重试）──
+            # ── 手机号 + 短信验证码循环 ─────────────────────────────────
+            # 重新登录时不换号（号码绑定账号），新注册时收不到短信则换号重试
+            max_attempts = 1 if is_relogin else self.MAX_PHONE_RETRIES
             last_fail_reason = ""
-            for attempt in range(self.MAX_PHONE_RETRIES):
+
+            for attempt in range(max_attempts):
                 if attempt > 0:
-                    # 释放上一个收不到短信的号码，获取新号码
+                    # 新注册换号：旧号已加黑名单，直接取新号
                     logger.warning(
                         f"[{self.platform}] 手机号 {phone} 收不到短信，"
-                        f"释放并获取新号码 (第{attempt + 1}次尝试)"
+                        f"换新号码 (第{attempt + 1}次尝试)"
                     )
-                    await sms_client.release_number(request_id)
-                    phone, request_id = await sms_client.get_number(service_id)
-                    logger.info(
-                        f"[{self.platform}] 新手机号: {phone} "
-                        f"(request_id={request_id})"
-                    )
+                    phone = await self._get_clean_number(sms_client, used_phones)
+                    used_phones.append(phone)
+                    logger.info(f"[{self.platform}] 新手机号: {phone}")
 
-                    # 重新加载登录页（清除上次输入状态）
+                    # 重新加载登录页
                     await page.goto(
                         self.login_url, wait_until="domcontentloaded", timeout=60000
                     )
@@ -215,13 +242,21 @@ class BaseSMSLoginHandler(ABC):
                 await self._handle_captcha(page)
 
                 # 等待并获取验证码
-                logger.info(f"[{self.platform}] 等待 SMS 验证码 (尝试 {attempt + 1}/{self.MAX_PHONE_RETRIES})...")
+                logger.info(
+                    f"[{self.platform}] 等待 SMS 验证码 "
+                    f"(尝试 {attempt + 1}/{max_attempts}, keyword={self.sms_keyword})..."
+                )
                 try:
-                    sms_code = await sms_client.get_sms(request_id, timeout=120)
+                    sms_code = await sms_client.get_keyword_sms(
+                        phone, self.sms_keyword, timeout=120
+                    )
                 except (TimeoutError, RuntimeError) as e:
                     last_fail_reason = f"手机号 {phone} 获取验证码失败: {e}"
                     logger.warning(f"[{self.platform}] {last_fail_reason}")
-                    continue  # 换下一个号码
+                    if not is_relogin:
+                        # 新注册：将收不到短信的号码加黑名单
+                        await add_to_blacklist(self.platform, phone)
+                    continue  # 重新登录只有 1 次，直接失败退出
 
                 # 收到验证码，继续登录流程
                 logger.info(f"[{self.platform}] 输入验证码: {sms_code}")
@@ -258,15 +293,12 @@ class BaseSMSLoginHandler(ABC):
 
             # 所有重试都失败
             return _fail(
-                f"连续 {self.MAX_PHONE_RETRIES} 次尝试均失败，"
+                f"{'重新登录' if is_relogin else f'连续 {max_attempts} 次新注册'}均失败，"
                 f"最后失败原因: {last_fail_reason}"
             )
 
         except Exception as e:
             logger.exception(f"[{self.platform}] 登录异常: {e}")
-            # 释放未使用的号码
-            if phone_from_luban and request_id and sms_client:
-                await sms_client.release_number(request_id)
             return {"status": "failed", "reason": f"异常: {e}"}
 
         finally:
@@ -286,6 +318,12 @@ class BaseSMSLoginHandler(ABC):
                 except Exception:
                     pass
             if sms_client:
+                # 统一释放所有本次申请过的手机号
+                for p in used_phones:
+                    try:
+                        await sms_client.release_keyword_number(p)
+                    except Exception:
+                        pass
                 await sms_client.close()
 
     # ── 内部方法 ────────────────────────────────────────────────────────

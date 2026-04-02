@@ -4,12 +4,17 @@ API 文档: https://lubansms.com/api_docs/
 
 提供临时手机号获取和 SMS 验证码接收功能，
 用于 LLM 平台的自动注册/登录。
+
+使用 Keyword API（getKeywordNumber / getKeywordSms / delKeywordNumber）：
+- 取号时可指定手机号复用（用于已有账号重新登录）
+- 用手机号直接查短信、释放，无 request_id 概念
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import re
 
 import httpx
 
@@ -19,7 +24,7 @@ LUBANSMS_BASE = "https://lubansms.com/v2/api"
 
 
 class LubanSMSClient:
-    """LubanSMS 接码平台 API 封装（异步）"""
+    """LubanSMS 接码平台 Keyword API 封装（异步）"""
 
     def __init__(self, token: str | None = None):
         self.token = token or os.getenv("LUBANSMS_TOKEN", "")
@@ -38,60 +43,73 @@ class LubanSMSClient:
             raise RuntimeError(f"getBalance failed: {data}")
         return data["balance"]
 
-    async def get_number(self, service_id: str) -> tuple[str, int]:
+    async def get_keyword_number(self, phone: str | None = None) -> str:
         """
-        获取临时手机号
+        获取手机号（Keyword API）。
 
         Args:
-            service_id: 平台对应的 service_id（如豆包/抖音）
+            phone: 指定复用的手机号；None 时随机分配新号码
 
         Returns:
-            (phone_number, request_id)
+            手机号字符串
         """
+        params: dict = {"apikey": self.token}
+        if phone:
+            params["phone"] = phone
         resp = await self.client.get(
-            f"{LUBANSMS_BASE}/getNumber",
-            params={"apikey": self.token, "service_id": service_id},
+            f"{LUBANSMS_BASE}/getKeywordNumber",
+            params=params,
         )
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"getNumber failed: {data}")
-        phone = data["number"]
-        request_id = data["request_id"]
-        logger.info(f"获取手机号: {phone} (request_id={request_id})")
-        return phone, request_id
+            raise RuntimeError(f"getKeywordNumber failed: {data}")
+        result_phone = data["phone"]
+        action = f"复用 {phone}" if phone else "随机获取"
+        logger.info(f"获取手机号 ({action}): {result_phone}")
+        return result_phone
 
-    async def get_sms(self, request_id: int, timeout: int = 120) -> str:
+    async def get_keyword_sms(
+        self, phone: str, keyword: str, timeout: int = 120
+    ) -> str:
         """
-        轮询获取 SMS 验证码
+        轮询获取 SMS 验证码（Keyword API）。
 
         Args:
-            request_id: getNumber 返回的 request_id
+            phone: 手机号（由 get_keyword_number 返回）
+            keyword: 短信中包含的关键词（如 "豆包"、"抖音"）
             timeout: 最大等待秒数
 
         Returns:
-            验证码字符串
+            验证码字符串（从短信正文中提取的 4-8 位数字）
 
         Raises:
-            TimeoutError: 超时未收到验证码
-            RuntimeError: 号码已过期或 API 错误
+            TimeoutError: 超时未收到短信
+            RuntimeError: API 错误或无法提取验证码
         """
         waited = 0
         interval = 3
         while waited < timeout:
             resp = await self.client.get(
-                f"{LUBANSMS_BASE}/getSms",
-                params={"apikey": self.token, "request_id": request_id},
+                f"{LUBANSMS_BASE}/getKeywordSms",
+                params={"apikey": self.token, "phone": phone, "keyword": keyword},
             )
             data = resp.json()
 
-            if data.get("msg") == "success" and data.get("sms_code"):
-                code = data["sms_code"]
-                logger.info(f"收到验证码: {code}")
-                return code
+            if data.get("code") == 0 and data.get("msg"):
+                msg = data["msg"]
+                logger.info(f"收到短信: {msg}")
+                match = re.search(r"\b(\d{4,8})\b", msg)
+                if match:
+                    code = match.group(1)
+                    logger.info(f"提取验证码: {code}")
+                    return code
+                raise RuntimeError(f"无法从短信中提取验证码: {msg}")
 
-            if data.get("code") == 400:
-                raise RuntimeError(f"getSms 失败 (号码可能已过期): {data}")
+            # code=400 + "不正确的apikey" 是真正的错误
+            if data.get("code") == 400 and "apikey" in data.get("msg", "").lower():
+                raise RuntimeError(f"getKeywordSms 认证失败: {data}")
 
+            # "尚未收到短信" 继续等待
             await asyncio.sleep(interval)
             waited += interval
             if waited % 15 == 0:
@@ -99,21 +117,17 @@ class LubanSMSClient:
 
         raise TimeoutError(f"等待验证码超时 ({timeout}s)")
 
-    async def release_number(self, request_id: int) -> None:
-        """释放未使用的号码"""
+    async def release_keyword_number(self, phone: str) -> None:
+        """释放手机号（Keyword API）"""
         try:
             resp = await self.client.get(
-                f"{LUBANSMS_BASE}/setStatus",
-                params={
-                    "apikey": self.token,
-                    "request_id": request_id,
-                    "status": "reject",
-                },
+                f"{LUBANSMS_BASE}/delKeywordNumber",
+                params={"apikey": self.token, "phone": phone},
             )
             data = resp.json()
-            logger.info(f"释放号码: {data}")
+            logger.info(f"释放号码: {phone} → {data}")
         except Exception as e:
-            logger.warning(f"释放号码失败: {e}")
+            logger.warning(f"释放号码失败 ({phone}): {e}")
 
     async def close(self) -> None:
         await self.client.aclose()
