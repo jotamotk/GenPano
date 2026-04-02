@@ -394,7 +394,7 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     phone=account.phone_number,
                 )
 
-                if login_result:
+                if login_result and login_result.get("cookies"):
                     from datetime import datetime as dt
                     account.cookies_json = json_mod.dumps(login_result["cookies"])
                     account.cookies_updated_at = dt.utcnow()
@@ -407,8 +407,9 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     logger.info(f"auto_login: account #{account_id} re-login SUCCESS")
                     return {"status": "success", "account_id": account_id}
                 else:
-                    logger.warning(f"auto_login: account #{account_id} re-login FAILED")
-                    return {"status": "failed", "account_id": account_id}
+                    reason = (login_result or {}).get("reason", "unknown")
+                    logger.warning(f"auto_login: account #{account_id} re-login FAILED: {reason}")
+                    return {"status": "failed", "account_id": account_id, "reason": reason}
 
             # 场景 2: 注册新账号
             elif new_account and platform:
@@ -419,7 +420,7 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                 logger.info(f"auto_login: registering new {platform} account")
                 login_result = await handler.login_or_register()
 
-                if login_result:
+                if login_result and login_result.get("cookies"):
                     new_account_obj = await pool.create_account(
                         llm_name=platform,
                         phone=login_result["phone"],
@@ -435,8 +436,9 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                         "phone": login_result["phone"],
                     }
                 else:
-                    logger.warning(f"auto_login: new {platform} registration FAILED")
-                    return {"status": "failed", "platform": platform}
+                    reason = (login_result or {}).get("reason", "unknown")
+                    logger.warning(f"auto_login: new {platform} registration FAILED: {reason}")
+                    return {"status": "failed", "platform": platform, "reason": reason}
 
             else:
                 return {"status": "error", "reason": "invalid arguments"}
