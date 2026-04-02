@@ -96,7 +96,7 @@ class BaseSMSLoginHandler(ABC):
         return sid
 
     # 最大换号重试次数（收不到短信时换新号码重试）
-    MAX_PHONE_RETRIES = 3
+    MAX_PHONE_RETRIES = 5
 
     async def login_or_register(
         self,
@@ -124,6 +124,8 @@ class BaseSMSLoginHandler(ABC):
         _playwright = None
         request_id = None
         phone_from_luban = False
+        # 所有尝试过的号码，最后统一释放
+        used_request_ids: list[int] = []
 
         def _fail(reason: str) -> dict:
             logger.error(f"[{self.platform}] {reason}")
@@ -136,6 +138,7 @@ class BaseSMSLoginHandler(ABC):
             # 获取初始手机号
             phone, request_id = await sms_client.get_number(service_id)
             phone_from_luban = True
+            used_request_ids.append(request_id)
             logger.info(
                 f"[{self.platform}] 获取手机号: {phone} "
                 f"(request_id={request_id})"
@@ -182,8 +185,8 @@ class BaseSMSLoginHandler(ABC):
                         f"[{self.platform}] 手机号 {phone} 收不到短信，"
                         f"释放并获取新号码 (第{attempt + 1}次尝试)"
                     )
-                    await sms_client.release_number(request_id)
                     phone, request_id = await sms_client.get_number(service_id)
+                    used_request_ids.append(request_id)
                     logger.info(
                         f"[{self.platform}] 新手机号: {phone} "
                         f"(request_id={request_id})"
@@ -264,9 +267,6 @@ class BaseSMSLoginHandler(ABC):
 
         except Exception as e:
             logger.exception(f"[{self.platform}] 登录异常: {e}")
-            # 释放未使用的号码
-            if phone_from_luban and request_id and sms_client:
-                await sms_client.release_number(request_id)
             return {"status": "failed", "reason": f"异常: {e}"}
 
         finally:
@@ -286,6 +286,12 @@ class BaseSMSLoginHandler(ABC):
                 except Exception:
                     pass
             if sms_client:
+                # 统一释放所有尝试过的手机号
+                for rid in used_request_ids:
+                    try:
+                        await sms_client.release_number(rid)
+                    except Exception:
+                        pass
                 await sms_client.close()
 
     # ── 内部方法 ────────────────────────────────────────────────────────
