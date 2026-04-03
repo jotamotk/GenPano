@@ -537,18 +537,46 @@ HTML_TEMPLATE = """
                         </form>
                     </div>
 
+                    <!-- Profile Filters -->
+                    <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; align-items:flex-end;">
+                        <div class="form-group" style="min-width:150px; flex:0;">
+                            <label>Segment</label>
+                            <select id="profile-filter-segment" onchange="filterProfiles()">
+                                <option value="">All Segments</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="min-width:120px; flex:0;">
+                            <label>Language</label>
+                            <select id="profile-filter-lang" onchange="filterProfiles()">
+                                <option value="">All</option>
+                                <option value="zh">zh</option>
+                                <option value="en">en</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="min-width:120px; flex:0;">
+                            <label>Device</label>
+                            <select id="profile-filter-device" onchange="filterProfiles()">
+                                <option value="">All</option>
+                                <option value="desktop">Desktop</option>
+                                <option value="mobile">Mobile</option>
+                            </select>
+                        </div>
+                        <span id="profile-count-label" style="font-size:12px; color:#888; padding-bottom:8px;"></span>
+                    </div>
+
                     <table>
                         <thead>
                             <tr>
                                 <th>ID</th>
                                 <th>Name</th>
+                                <th>Segment</th>
                                 <th>Age Range</th>
                                 <th>Location</th>
                                 <th>Country</th>
                                 <th>Profession</th>
                                 <th>Language</th>
                                 <th>Device</th>
-                                <th>Persona Traits</th>
+                                <th>Tone / Verbosity / Style</th>
                                 <th>Queries</th>
                                 <th>Actions</th>
                             </tr>
@@ -556,6 +584,7 @@ HTML_TEMPLATE = """
                         <tbody id="profiles-body">
                         </tbody>
                     </table>
+                    <div class="pagination" id="profiles-pagination"></div>
                 </div>
 
                 <!-- Debug HTML Files Tab -->
@@ -1274,22 +1303,48 @@ HTML_TEMPLATE = """
         }
 
         // ---- Segments ----
+        let segmentsData = [];
+        let segCurrentPage = 1;
+        const segPerPage = 5;
+
         async function loadSegments() {
             const body = document.getElementById('segments-body');
             body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
             try {
                 const res = await fetch('./api/segments');
                 const data = await res.json();
-                if (!data.length) {
+                if (data.error) {
+                    body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error: ' + escapeHtml(data.error) + '</div>';
+                    return;
+                }
+                if (!Array.isArray(data) || !data.length) {
                     body.innerHTML = '<div style="color:#999;font-size:13px;">No segments defined</div>';
                     return;
                 }
-                body.innerHTML = data.map(seg => `
+                segmentsData = data;
+                segCurrentPage = 1;
+                renderSegments();
+            } catch (e) {
+                body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error loading segments: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function renderSegments() {
+            const totalPages = Math.ceil(segmentsData.length / segPerPage);
+            if (segCurrentPage > totalPages) segCurrentPage = totalPages;
+            if (segCurrentPage < 1) segCurrentPage = 1;
+            const start = (segCurrentPage - 1) * segPerPage;
+            const pageData = segmentsData.slice(start, start + segPerPage);
+
+            const body = document.getElementById('segments-body');
+            body.innerHTML = '<div style="margin-bottom:8px;font-size:12px;color:#888;">Showing ' + (start+1) + '-' + (start+pageData.length) + ' of ' + segmentsData.length + ' segments</div>' +
+            pageData.map(seg => `
                     <div style="background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin-bottom:12px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
                             <span style="font-weight:700; font-size:16px; color:#333;">${escapeHtml(seg.name)}</span>
                             <span style="font-size:12px; color:#888; font-family:monospace;">${escapeHtml(seg.id)}</span>
                             <span class="llm-badge">${escapeHtml(seg.language)}</span>
+                            ${seg.profile_count !== undefined ? '<span style="font-size:12px; color:#059669; font-weight:600;">' + seg.profile_count + ' profiles</span>' : ''}
                         </div>
                         <div style="color:#666; font-size:13px; margin-bottom:12px;">${escapeHtml(seg.description)}</div>
                         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; font-size:13px;">
@@ -1357,47 +1412,133 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 `).join('');
-            } catch (e) {
-                body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error loading segments: ' + escapeHtml(e.message) + '</div>';
+
+            // Segment pagination
+            if (segmentsData.length > segPerPage) {
+                const totalPages = Math.ceil(segmentsData.length / segPerPage);
+                let pagHtml = '<div class="pagination" style="margin-top:16px;">';
+                pagHtml += '<button ' + (segCurrentPage === 1 ? 'disabled' : '') + ' onclick="segCurrentPage--; renderSegments();">&laquo; Prev</button>';
+                for (let p = 1; p <= totalPages; p++) {
+                    pagHtml += '<button class="' + (p === segCurrentPage ? 'active' : '') + '" onclick="segCurrentPage=' + p + '; renderSegments();">' + p + '</button>';
+                }
+                pagHtml += '<button ' + (segCurrentPage === totalPages ? 'disabled' : '') + ' onclick="segCurrentPage++; renderSegments();">Next &raquo;</button>';
+                pagHtml += '</div>';
+                body.innerHTML += pagHtml;
             }
         }
 
         // ---- Profiles ----
         let profilesData = [];
+        let profilesFiltered = [];
+        let profCurrentPage = 1;
+        const profPerPage = 20;
 
         async function loadProfiles() {
             try {
                 const res = await fetch('./api/profiles');
                 const data = await res.json();
-                profilesData = data;
-                const body = document.getElementById('profiles-body');
-                if (!data.length) {
-                    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;">No profiles found</td></tr>';
+                if (data.error) {
+                    document.getElementById('profiles-body').innerHTML =
+                        '<tr><td colspan="12" style="text-align:center;color:#dc2626;">Error: ' + escapeHtml(data.error) + '</td></tr>';
                     return;
                 }
-                body.innerHTML = data.map(p => {
-                    const traits = p.persona_traits || {};
-                    const traitStr = [traits.tone, traits.verbosity, traits.search_style].filter(Boolean).join(', ') || '-';
-                    return `<tr>
-                        <td>${p.id}</td>
-                        <td>${escapeHtml(p.name || '-')}</td>
-                        <td>${escapeHtml(p.age_range || '-')}</td>
-                        <td>${escapeHtml(p.location || '-')}</td>
-                        <td>${escapeHtml(p.country_code || '-')}</td>
-                        <td style="font-size:12px;">${escapeHtml(p.profession || '-')}</td>
-                        <td><span class="llm-badge">${escapeHtml(p.language || '-')}</span></td>
-                        <td>${escapeHtml(p.device_type || '-')}</td>
-                        <td style="font-size:12px;" title="${escapeHtml(JSON.stringify(traits))}">${escapeHtml(traitStr)}</td>
-                        <td>${p.query_count || 0}</td>
-                        <td>
-                            <button class="small" onclick="editProfile(${p.id})">Edit</button>
-                            <button class="danger small" onclick="deleteProfile(${p.id})">Delete</button>
-                        </td>
-                    </tr>`;
-                }).join('');
+                profilesData = Array.isArray(data) ? data : [];
+
+                // Populate segment filter dropdown
+                const segFilter = document.getElementById('profile-filter-segment');
+                const currentVal = segFilter.value;
+                const segments = [...new Set(profilesData.map(p => (p.persona_traits || {}).segment_name).filter(Boolean))];
+                segFilter.innerHTML = '<option value="">All Segments</option>' +
+                    segments.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+                segFilter.value = currentVal;
+
+                profCurrentPage = 1;
+                filterProfiles();
             } catch (e) {
                 console.error('loadProfiles error:', e);
+                document.getElementById('profiles-body').innerHTML =
+                    '<tr><td colspan="12" style="text-align:center;color:#dc2626;">Error loading profiles: ' + escapeHtml(e.message) + '</td></tr>';
             }
+        }
+
+        function filterProfiles() {
+            const segFilter = document.getElementById('profile-filter-segment').value;
+            const langFilter = document.getElementById('profile-filter-lang').value;
+            const deviceFilter = document.getElementById('profile-filter-device').value;
+
+            profilesFiltered = profilesData;
+            if (segFilter) {
+                profilesFiltered = profilesFiltered.filter(p => (p.persona_traits || {}).segment_name === segFilter);
+            }
+            if (langFilter) {
+                profilesFiltered = profilesFiltered.filter(p => p.language === langFilter);
+            }
+            if (deviceFilter) {
+                profilesFiltered = profilesFiltered.filter(p => p.device_type === deviceFilter);
+            }
+
+            profCurrentPage = 1;
+            renderProfiles();
+        }
+
+        function renderProfiles() {
+            const data = profilesFiltered;
+            const body = document.getElementById('profiles-body');
+
+            document.getElementById('profile-count-label').textContent =
+                data.length + ' / ' + profilesData.length + ' profiles';
+
+            if (!data.length) {
+                body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#999;">No profiles found</td></tr>';
+                document.getElementById('profiles-pagination').innerHTML = '';
+                return;
+            }
+
+            const totalPages = Math.ceil(data.length / profPerPage);
+            if (profCurrentPage > totalPages) profCurrentPage = totalPages;
+            if (profCurrentPage < 1) profCurrentPage = 1;
+            const start = (profCurrentPage - 1) * profPerPage;
+            const pageData = data.slice(start, start + profPerPage);
+
+            body.innerHTML = pageData.map(p => {
+                const traits = p.persona_traits || {};
+                const segName = traits.segment_name || '-';
+                const traitStr = [traits.tone, traits.verbosity, traits.search_style].filter(Boolean).join(' / ') || '-';
+                return `<tr>
+                    <td>${p.id}</td>
+                    <td>${escapeHtml(p.name || '-')}</td>
+                    <td style="font-size:12px;"><span style="display:inline-block;padding:2px 8px;background:#fef3c7;color:#92400e;border-radius:999px;font-size:11px;">${escapeHtml(segName)}</span></td>
+                    <td>${escapeHtml(p.age_range || '-')}</td>
+                    <td>${escapeHtml(p.location || '-')}</td>
+                    <td>${escapeHtml(p.country_code || '-')}</td>
+                    <td style="font-size:12px;">${escapeHtml(p.profession || '-')}</td>
+                    <td><span class="llm-badge">${escapeHtml(p.language || '-')}</span></td>
+                    <td>${escapeHtml(p.device_type || '-')}</td>
+                    <td style="font-size:12px;" title="${escapeHtml(JSON.stringify(traits))}">${escapeHtml(traitStr)}</td>
+                    <td>${p.query_count || 0}</td>
+                    <td>
+                        <button class="small" onclick="editProfile(${p.id})">Edit</button>
+                        <button class="danger small" onclick="deleteProfile(${p.id})">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            // Pagination
+            const pagEl = document.getElementById('profiles-pagination');
+            if (totalPages <= 1) {
+                pagEl.innerHTML = '';
+                return;
+            }
+            let startPage = Math.max(1, profCurrentPage - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+
+            let html = '<button ' + (profCurrentPage === 1 ? 'disabled' : '') + ' onclick="profCurrentPage--; renderProfiles();">&laquo; Prev</button>';
+            for (let p = startPage; p <= endPage; p++) {
+                html += '<button class="' + (p === profCurrentPage ? 'active' : '') + '" onclick="profCurrentPage=' + p + '; renderProfiles();">' + p + '</button>';
+            }
+            html += '<button ' + (profCurrentPage === totalPages ? 'disabled' : '') + ' onclick="profCurrentPage++; renderProfiles();">Next &raquo;</button>';
+            pagEl.innerHTML = html;
         }
 
         function showProfileForm(profile) {
@@ -2095,7 +2236,8 @@ def backfill_citations():
 
 @app.route('/api/segments')
 def list_segments():
-    """列出所有 Segment 定义（来自 Python 代码）"""
+    """列出所有 Segment 定义（优先从 Python 代码，失败则从 DB profiles 提取）"""
+    # 尝试从 Python 定义导入
     try:
         from geo_tracker.generation.segments.definitions import SEGMENTS
         result = []
@@ -2129,8 +2271,83 @@ def list_segments():
                 ],
             })
         return jsonify(result)
-    except ImportError as e:
-        return jsonify({'error': f'Cannot import segment definitions: {e}'}), 500
+    except ImportError:
+        pass  # Fall through to DB extraction
+
+    # 从数据库 profiles 的 persona_traits 中提取 segment 信息
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT DISTINCT
+                        persona_traits->>'segment_id' AS id,
+                        persona_traits->>'segment_name' AS name,
+                        persona_traits->'target_llms' AS target_llms
+                    FROM profiles
+                    WHERE persona_traits->>'segment_id' IS NOT NULL
+                    ORDER BY persona_traits->>'segment_id'
+                """)
+                seg_rows = cur.fetchall()
+
+                if not seg_rows:
+                    return jsonify([])
+
+                # 对每个 segment 聚合 profile 信息
+                segments = []
+                for seg_row in seg_rows:
+                    seg_id = seg_row['id']
+                    cur.execute("""
+                        SELECT
+                            COUNT(*) AS profile_count,
+                            array_agg(DISTINCT profession) AS professions,
+                            array_agg(DISTINCT age_range) AS age_ranges,
+                            array_agg(DISTINCT location) AS locations,
+                            array_agg(DISTINCT country_code) AS countries,
+                            array_agg(DISTINCT language) AS languages,
+                            array_agg(DISTINCT device_type) AS device_types,
+                            array_agg(DISTINCT persona_traits->>'tone') AS tones,
+                            array_agg(DISTINCT persona_traits->>'verbosity') AS verbosities,
+                            array_agg(DISTINCT persona_traits->>'search_style') AS search_styles
+                        FROM profiles
+                        WHERE persona_traits->>'segment_id' = %s
+                    """, (seg_id,))
+                    agg = cur.fetchone()
+
+                    import json as json_mod
+                    target_llms = seg_row['target_llms']
+                    if isinstance(target_llms, str):
+                        target_llms = json_mod.loads(target_llms)
+
+                    segments.append({
+                        'id': seg_id,
+                        'name': seg_row['name'] or seg_id,
+                        'description': f"从数据库提取 - {agg['profile_count']} 个 profiles",
+                        'language': (agg['languages'] or ['zh'])[0] if agg['languages'] else 'zh',
+                        'target_llms': target_llms or [],
+                        'tone_pool': [t for t in (agg['tones'] or []) if t],
+                        'verbosity_pool': [v for v in (agg['verbosities'] or []) if v],
+                        'search_style_pool': [s for s in (agg['search_styles'] or []) if s],
+                        'add_role_context_rate': 0,
+                        'device_mobile_rate': 0,
+                        'city_tiers': [],
+                        'age_ranges': [
+                            {'label': ar, 'min_age': int(ar.split('-')[0]) if '-' in ar else 0,
+                             'max_age': int(ar.split('-')[1]) if '-' in ar else 0}
+                            for ar in (agg['age_ranges'] or []) if ar and '-' in ar
+                        ],
+                        'role_variants': [
+                            {'label': p, 'profession': p, 'company_size': '', 'income_level': '',
+                             'pain_points': [], 'use_buzzwords': False}
+                            for p in (agg['professions'] or []) if p
+                        ],
+                        'profile_count': agg['profile_count'],
+                    })
+
+                return jsonify(segments)
+        finally:
+            conn.close()
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -2141,21 +2358,40 @@ def list_segments():
 def list_profiles():
     """列出所有 Profile"""
     try:
+        import json as json_mod
         from psycopg2.extras import RealDictCursor
         conn = get_db()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Use subquery for query_count to avoid GROUP BY issues with JSON
                 cur.execute("""
                     SELECT p.id, p.name, p.age_range, p.location, p.country_code,
                            p.profession, p.language, p.device_type, p.persona_traits,
-                           COUNT(q.id) AS query_count
+                           COALESCE(qc.cnt, 0) AS query_count
                     FROM profiles p
-                    LEFT JOIN queries q ON p.id = q.profile_id
-                    GROUP BY p.id
+                    LEFT JOIN (
+                        SELECT profile_id, COUNT(*) AS cnt
+                        FROM queries
+                        GROUP BY profile_id
+                    ) qc ON p.id = qc.profile_id
                     ORDER BY p.id
                 """)
                 rows = cur.fetchall()
-            return jsonify([dict(r) for r in rows])
+
+            result = []
+            for r in rows:
+                row = dict(r)
+                # Ensure persona_traits is a proper dict for JSON serialization
+                if row.get('persona_traits') and isinstance(row['persona_traits'], str):
+                    try:
+                        row['persona_traits'] = json_mod.loads(row['persona_traits'])
+                    except (json_mod.JSONDecodeError, TypeError):
+                        row['persona_traits'] = {}
+                elif not row.get('persona_traits'):
+                    row['persona_traits'] = {}
+                result.append(row)
+
+            return jsonify(result)
         finally:
             conn.close()
     except Exception as e:
