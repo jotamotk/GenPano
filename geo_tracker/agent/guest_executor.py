@@ -346,7 +346,10 @@ class GuestQueryExecutor:
                 # 先导航到目标域名（空页面），才能设置 localStorage
                 target_url = config.get("url", "")
                 if target_url:
-                    await page_obj.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                    try:
+                        await page_obj.goto(target_url, wait_until="commit", timeout=15000)
+                    except Exception:
+                        pass  # 只需要到达域名就够，不需要完全加载
                     await page_obj.evaluate("""
                         (data) => {
                             for (const [key, value] of Object.entries(data)) {
@@ -355,8 +358,7 @@ class GuestQueryExecutor:
                         }
                     """, local_storage_data)
                     logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage")
-                    # 刷新页面让 localStorage 生效
-                    await page_obj.reload(wait_until="domcontentloaded", timeout=30000)
+                    # 不 reload，后续主流程会重新 goto 加载页面
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
             if not use_camoufox:
