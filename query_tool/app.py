@@ -1508,10 +1508,18 @@ def update_account_status(account_id):
         conn = get_db()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE llm_accounts SET status = %s WHERE id = %s",
-                    (new_status, account_id)
-                )
+                if new_status == 'active':
+                    # 启用时清除 cooldown 和失败计数
+                    cur.execute(
+                        "UPDATE llm_accounts SET status = %s, cooldown_until = NULL, "
+                        "consecutive_fails = 0 WHERE id = %s",
+                        (new_status, account_id)
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE llm_accounts SET status = %s WHERE id = %s",
+                        (new_status, account_id)
+                    )
                 if cur.rowcount == 0:
                     return jsonify({'success': False, 'error': 'Account not found'})
             conn.commit()
