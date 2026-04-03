@@ -135,11 +135,12 @@ GUEST_LLM_CONFIG = {
         "url":              "https://chat.deepseek.com",
         "input_selector":   "textarea, [contenteditable=true], input[type=text]",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message'], [class*='content'], .markdown",
-        "wait_after_submit": 20000,
+        "response_selector": ".ds-markdown, [class*='message-content'] .markdown, [class*='message'] .markdown",
+        "wait_after_submit": 60000,
         "load_wait":        8000,
         "requires_login":   True,
         "login_redirect_domains": ["login.deepseek.com"],
+        "stream_check_selector": "[class*='loading'], [class*='stop'], button:has-text('Stop')",
     },
     "claude": {
         "url":              "https://claude.ai",
@@ -919,16 +920,35 @@ class GuestQueryExecutor:
                 return "", "", []
 
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
+            has_response = False
             for sel in response_selectors:
                 try:
                     el = await page.query_selector(sel)
                     if el:
                         txt = await el.inner_text()
                         if txt and len(txt.strip()) > 20:
-                            logger.info(f"[{llm_name}] 响应内容提前就绪（{elapsed}ms），selector: {sel}")
+                            has_response = True
                             break
                 except Exception:
                     continue
+
+            if has_response:
+                # 检查是否仍在流式输出（有 loading/stop 按钮说明还在生成）
+                stream_sel = cfg.get("stream_check_selector", "")
+                still_streaming = False
+                if stream_sel:
+                    try:
+                        stream_el = await page.query_selector(stream_sel)
+                        if stream_el and await stream_el.is_visible():
+                            still_streaming = True
+                    except Exception:
+                        pass
+
+                if still_streaming:
+                    logger.info(f"[{llm_name}] 检测到响应但仍在流式输出（{elapsed}ms），继续等待...")
+                else:
+                    logger.info(f"[{llm_name}] 响应内容就绪（{elapsed}ms）")
+                    break
 
         # 抓取响应文本 + HTML
         resp_text = ""
