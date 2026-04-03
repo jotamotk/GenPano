@@ -32,7 +32,7 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 @register("deepseek")
 class DeepseekLoginHandler(BaseSMSLoginHandler):
     platform = "deepseek"
-    sms_keyword = "DeepSeek"  # LubanSMS 过滤关键词，如不匹配可改为 "深度求索"
+    sms_keyword = "深度求索"
     login_url = "https://chat.deepseek.com"
 
     # ── 抽象方法实现 ────────────────────────────────────────────────────
