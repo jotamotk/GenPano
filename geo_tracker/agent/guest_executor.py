@@ -306,12 +306,27 @@ class GuestQueryExecutor:
                     reduced_motion="reduce",
                 )
 
-            # 注入 LLM 专属 cookies（优先 DB 账号 cookies，fallback 环境变量）
+            # 注入 LLM 专属 cookies + localStorage
+            # 支持两种格式:
+            #   旧格式: [cookie1, cookie2, ...]  (纯 cookies 数组)
+            #   新格式: {"cookies": [...], "localStorage": {"key": "val", ...}}
             injected_cookies = []
+            local_storage_data = {}
             if self.account_cookies:
                 try:
-                    injected_cookies = json.loads(self.account_cookies)
-                    logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
+                    parsed = json.loads(self.account_cookies)
+                    if isinstance(parsed, dict) and "cookies" in parsed:
+                        # 新格式: cookies + localStorage
+                        injected_cookies = parsed.get("cookies", [])
+                        local_storage_data = parsed.get("localStorage", {})
+                        logger.info(
+                            f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个) "
+                            f"+ localStorage ({len(local_storage_data)} 项)"
+                        )
+                    elif isinstance(parsed, list):
+                        # 旧格式: 纯 cookies 数组
+                        injected_cookies = parsed
+                        logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
                 except Exception as e:
                     logger.warning(f"[{llm}] 解析 account_cookies 失败: {e}")
 
@@ -325,6 +340,23 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
             page_obj = await context.new_page()
+
+            # 注入 localStorage（必须在页面打开后、导航前）
+            if local_storage_data:
+                # 先导航到目标域名（空页面），才能设置 localStorage
+                target_url = config.get("url", "")
+                if target_url:
+                    await page_obj.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                    await page_obj.evaluate("""
+                        (data) => {
+                            for (const [key, value] of Object.entries(data)) {
+                                localStorage.setItem(key, value);
+                            }
+                        }
+                    """, local_storage_data)
+                    logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage")
+                    # 刷新页面让 localStorage 生效
+                    await page_obj.reload(wait_until="domcontentloaded", timeout=30000)
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
             if not use_camoufox:

@@ -403,7 +403,14 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="form-group" style="margin-top:12px;">
                             <label>Cookies JSON (paste EditThisCookie export or Playwright format)</label>
-                            <textarea id="cookie-json" style="min-height:150px; font-family:monospace; font-size:12px;" placeholder='Paste cookies JSON here...'></textarea>
+                            <textarea id="cookie-json" style="min-height:120px; font-family:monospace; font-size:12px;" placeholder='Paste cookies JSON here...'></textarea>
+                        </div>
+                        <div class="form-group" style="margin-top:8px;">
+                            <label>localStorage JSON <span style="color:#999;">(optional, for DeepSeek etc.)</span></label>
+                            <textarea id="local-storage-json" style="min-height:60px; font-family:monospace; font-size:12px;" placeholder='{"userToken": "...", ...}'></textarea>
+                            <div style="font-size:11px; color:#888; margin-top:4px;">
+                                DeepSeek: F12 Console → JSON.stringify({userToken: localStorage.getItem("userToken")})
+                            </div>
                         </div>
                         <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
                             <label style="cursor:pointer; padding:8px 16px; background:#e5e7eb; border-radius:4px; font-size:13px;">
@@ -1093,6 +1100,8 @@ HTML_TEMPLATE = """
                 return;
             }
 
+            const localStorageText = document.getElementById('local-storage-json').value.trim();
+
             try {
                 const res = await fetch('./api/accounts/import_cookies', {
                     method: 'POST',
@@ -1102,6 +1111,7 @@ HTML_TEMPLATE = """
                         label: label,
                         daily_limit: dailyLimit,
                         cookies_json: jsonText,
+                        local_storage: localStorageText || '',
                     })
                 });
                 const data = await res.json();
@@ -1109,6 +1119,7 @@ HTML_TEMPLATE = """
                     alert(data.message || 'Cookies imported successfully!');
                     document.getElementById('cookie-json').value = '';
                     document.getElementById('cookie-label').value = '';
+                    document.getElementById('local-storage-json').value = '';
                     hideCookieUpload();
                     loadAccounts();
                 } else {
@@ -1897,11 +1908,10 @@ def import_cookies_api():
         label = data.get('label', '').strip() or 'web_upload'
         daily_limit = data.get('daily_limit', 20)
         cookies_raw = data.get('cookies_json', '')
+        local_storage_raw = data.get('local_storage', '')
 
         if not platform:
             return jsonify({'success': False, 'error': 'Platform is required'})
-
-        cookies = json_mod.loads(cookies_raw)
 
         # Auto-detect and convert EditThisCookie format
         SAME_SITE_MAP = {
@@ -1936,7 +1946,23 @@ def import_cookies_api():
         if not isinstance(cookies, list) or len(cookies) == 0:
             return jsonify({'success': False, 'error': 'No valid cookies found'})
 
-        cookies_json_str = json_mod.dumps(cookies)
+        # 如果有 localStorage 数据，打包为新格式
+        local_storage = {}
+        if local_storage_raw:
+            try:
+                local_storage = json_mod.loads(local_storage_raw)
+                if not isinstance(local_storage, dict):
+                    local_storage = {}
+            except Exception:
+                local_storage = {}
+
+        if local_storage:
+            cookies_json_str = json_mod.dumps({
+                "cookies": cookies,
+                "localStorage": local_storage,
+            })
+        else:
+            cookies_json_str = json_mod.dumps(cookies)
 
         from psycopg2.extras import RealDictCursor
         conn = get_db()
