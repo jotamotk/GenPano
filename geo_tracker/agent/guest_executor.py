@@ -138,7 +138,8 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[class*='message'], [class*='content'], .markdown",
         "wait_after_submit": 20000,
         "load_wait":        8000,
-        "requires_login":   False,
+        "requires_login":   True,
+        "login_redirect_domains": ["login.deepseek.com"],
     },
     "claude": {
         "url":              "https://claude.ai",
