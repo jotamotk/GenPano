@@ -107,6 +107,18 @@ LLM_CONFIG: dict[str, dict] = {
         "cookies_env":      "DOUBAO_COOKIES_JSON",
         "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
+    "deepseek": {
+        "url":              "https://chat.deepseek.com",
+        "input_selector":   "textarea, [contenteditable='true']",
+        "submit_selector":  "button[class*='send'], button[aria-label*='Send'], button[aria-label*='send']",
+        "response_selector":".ds-markdown, [class*='message-content'] .markdown, [class*='message'] .markdown",
+        "wait_for_done":    "textarea:not([disabled])",
+        "stream_cursor_selector": "[class*='loading'], [class*='typing']",
+        "response_timeout": 90_000,
+        "requires_login":   True,
+        "cookies_env":      "DEEPSEEK_COOKIES_JSON",
+        "login_redirect_domains": ["login.deepseek.com"],
+    },
     "zhipu": {
         "url":              "https://chatglm.cn",
         "input_selector":   "textarea",
