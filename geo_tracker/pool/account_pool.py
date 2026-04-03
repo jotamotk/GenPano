@@ -103,12 +103,13 @@ class AccountPool:
         if not account:
             return
 
-        # cookies 过期只设 cooldown，不增加失败计数（避免误封）
-        if reason == "cookies_expired":
+        # cookies 过期 / 响应太短 只设 cooldown，不增加失败计数（避免误封）
+        # 这些通常是平台侧或网络问题，不是账号本身的问题
+        if reason in ("cookies_expired", "response_too_short"):
             account.status = AccountStatus.COOLDOWN.value
             account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
             logger.warning(
-                f"Account id={account_id} cookies expired, cooldown until {account.cooldown_until}"
+                f"Account id={account_id} {reason}, cooldown until {account.cooldown_until}"
             )
         else:
             account.consecutive_fails += 1

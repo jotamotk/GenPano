@@ -109,4 +109,13 @@ jobs:
 
             docker compose pull
             docker compose up -d --remove-orphans --force-recreate
-            docker image prune -f
+
+            # 清理 Docker 垃圾释放磁盘空间
+            # 1. 删除所有未被使用的镜像（不只是 dangling）
+            docker image prune -af --filter "until=72h"
+            # 2. 清理构建缓存
+            docker builder prune -af --keep-storage=2GB
+            # 3. 清理无主的 volume（排除正在使用的）
+            docker volume prune -f
+            # 4. 显示清理后的磁盘使用情况
+            df -h / && docker system df

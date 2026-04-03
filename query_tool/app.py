@@ -3,8 +3,12 @@ LLM 响应查询工具 - 带手动触发 Query
 """
 import os
 import re
+import sys
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, Response
+
+# Add parent directory to path so we can import geo_tracker
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 app = Flask(__name__)
 
@@ -317,6 +321,8 @@ HTML_TEMPLATE = """
                 <div class="tabs">
                     <button class="tab-btn active" id="tab-queries-btn" onclick="switchTab('queries')">Queries</button>
                     <button class="tab-btn" id="tab-accounts-btn" onclick="switchTab('accounts')">Accounts</button>
+                    <button class="tab-btn" id="tab-segments-btn" onclick="switchTab('segments')">Segments</button>
+                    <button class="tab-btn" id="tab-profiles-btn" onclick="switchTab('profiles')">Profiles</button>
                     <button class="tab-btn" id="tab-html-btn" onclick="switchTab('html')">Debug HTML Files</button>
                 </div>
             </div>
@@ -439,6 +445,155 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
+                <!-- Segments Tab -->
+                <div class="tab-panel" id="tab-segments">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+                        <h3 style="margin:0; font-size:16px; color:#333;">Segment Definitions</h3>
+                        <button class="secondary small" onclick="loadSegments();">Refresh</button>
+                    </div>
+                    <div id="segments-body">
+                        <div style="color:#999; font-size:13px;">Loading...</div>
+                    </div>
+                </div>
+
+                <!-- Profiles Tab -->
+                <div class="tab-panel" id="tab-profiles">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+                        <h3 style="margin:0; font-size:16px; color:#333;">User Profiles</h3>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button class="secondary small" onclick="loadProfiles();">Refresh</button>
+                            <button class="success small" onclick="showProfileForm();">+ New Profile</button>
+                        </div>
+                    </div>
+
+                    <!-- Profile Create/Edit Form (hidden by default) -->
+                    <div id="profile-form-container" style="display:none; margin-bottom:20px; padding:20px; background:#f9fafb; border-radius:8px; border:1px solid #e5e7eb;">
+                        <h4 style="margin:0 0 12px; font-size:15px;" id="profile-form-title">Create New Profile</h4>
+                        <div id="profile-alert"></div>
+                        <form id="profile-form" onsubmit="submitProfile(event)">
+                            <input type="hidden" id="profile-edit-id">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Name *</label>
+                                    <input type="text" id="profile-name" placeholder="e.g. 张明" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Age Range</label>
+                                    <input type="text" id="profile-age-range" placeholder="e.g. 25-34">
+                                </div>
+                                <div class="form-group">
+                                    <label>Location</label>
+                                    <input type="text" id="profile-location" placeholder="e.g. Shanghai">
+                                </div>
+                                <div class="form-group">
+                                    <label>Country Code</label>
+                                    <input type="text" id="profile-country" placeholder="e.g. CN" maxlength="8">
+                                </div>
+                            </div>
+                            <div class="form-row" style="margin-top:10px;">
+                                <div class="form-group">
+                                    <label>Profession</label>
+                                    <input type="text" id="profile-profession" placeholder="e.g. Software Engineer">
+                                </div>
+                                <div class="form-group">
+                                    <label>Language</label>
+                                    <select id="profile-language">
+                                        <option value="zh">Chinese (zh)</option>
+                                        <option value="en">English (en)</option>
+                                        <option value="zh_en">Bilingual (zh_en)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Device Type</label>
+                                    <select id="profile-device">
+                                        <option value="desktop">Desktop</option>
+                                        <option value="mobile">Mobile</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row" style="margin-top:10px;">
+                                <div class="form-group">
+                                    <label>Tone</label>
+                                    <select id="profile-tone">
+                                        <option value="casual">Casual</option>
+                                        <option value="semi_formal">Semi-formal</option>
+                                        <option value="formal">Formal</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Verbosity</label>
+                                    <select id="profile-verbosity">
+                                        <option value="short">Short</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="long">Long</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Search Style</label>
+                                    <select id="profile-search-style">
+                                        <option value="solution_oriented">Solution Oriented</option>
+                                        <option value="comparison">Comparison</option>
+                                        <option value="exploratory">Exploratory</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div style="margin-top:15px; display:flex; gap:10px;">
+                                <button type="submit" class="success">Save Profile</button>
+                                <button type="button" class="secondary" onclick="hideProfileForm();">Cancel</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Profile Filters -->
+                    <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; align-items:flex-end;">
+                        <div class="form-group" style="min-width:150px; flex:0;">
+                            <label>Segment</label>
+                            <select id="profile-filter-segment" onchange="filterProfiles()">
+                                <option value="">All Segments</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="min-width:120px; flex:0;">
+                            <label>Language</label>
+                            <select id="profile-filter-lang" onchange="filterProfiles()">
+                                <option value="">All</option>
+                                <option value="zh">zh</option>
+                                <option value="en">en</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="min-width:120px; flex:0;">
+                            <label>Device</label>
+                            <select id="profile-filter-device" onchange="filterProfiles()">
+                                <option value="">All</option>
+                                <option value="desktop">Desktop</option>
+                                <option value="mobile">Mobile</option>
+                            </select>
+                        </div>
+                        <span id="profile-count-label" style="font-size:12px; color:#888; padding-bottom:8px;"></span>
+                    </div>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Segment</th>
+                                <th>Age Range</th>
+                                <th>Location</th>
+                                <th>Country</th>
+                                <th>Profession</th>
+                                <th>Language</th>
+                                <th>Device</th>
+                                <th>Tone / Verbosity / Style</th>
+                                <th>Queries</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="profiles-body">
+                        </tbody>
+                    </table>
+                    <div class="pagination" id="profiles-pagination"></div>
+                </div>
+
                 <!-- Debug HTML Files Tab -->
                 <div class="tab-panel" id="tab-html">
                     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
@@ -492,12 +647,14 @@ HTML_TEMPLATE = """
 
         // ---- Tab switcher ----
         function switchTab(tab) {
-            ['queries', 'accounts', 'html'].forEach(t => {
+            ['queries', 'accounts', 'segments', 'profiles', 'html'].forEach(t => {
                 document.getElementById('tab-' + t).classList.toggle('active', tab === t);
                 document.getElementById('tab-' + t + '-btn').classList.toggle('active', tab === t);
             });
             if (tab === 'html') loadHtmlFiles();
             if (tab === 'accounts') loadAccounts();
+            if (tab === 'segments') loadSegments();
+            if (tab === 'profiles') loadProfiles();
         }
 
         // ---- Stats ----
@@ -1171,6 +1328,332 @@ HTML_TEMPLATE = """
             document.getElementById('html-modal').classList.remove('show');
         }
 
+        // ---- Segments ----
+        let segmentsData = [];
+        let segCurrentPage = 1;
+        const segPerPage = 5;
+
+        async function loadSegments() {
+            const body = document.getElementById('segments-body');
+            body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
+            try {
+                const res = await fetch('./api/segments');
+                const data = await res.json();
+                if (data.error) {
+                    body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error: ' + escapeHtml(data.error) + '</div>';
+                    return;
+                }
+                if (!Array.isArray(data) || !data.length) {
+                    body.innerHTML = '<div style="color:#999;font-size:13px;">No segments defined</div>';
+                    return;
+                }
+                segmentsData = data;
+                segCurrentPage = 1;
+                renderSegments();
+            } catch (e) {
+                body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error loading segments: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function renderSegments() {
+            const totalPages = Math.ceil(segmentsData.length / segPerPage);
+            if (segCurrentPage > totalPages) segCurrentPage = totalPages;
+            if (segCurrentPage < 1) segCurrentPage = 1;
+            const start = (segCurrentPage - 1) * segPerPage;
+            const pageData = segmentsData.slice(start, start + segPerPage);
+
+            const body = document.getElementById('segments-body');
+            body.innerHTML = '<div style="margin-bottom:8px;font-size:12px;color:#888;">Showing ' + (start+1) + '-' + (start+pageData.length) + ' of ' + segmentsData.length + ' segments</div>' +
+            pageData.map(seg => `
+                    <div style="background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin-bottom:12px;">
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+                            <span style="font-weight:700; font-size:16px; color:#333;">${escapeHtml(seg.name)}</span>
+                            <span style="font-size:12px; color:#888; font-family:monospace;">${escapeHtml(seg.id)}</span>
+                            <span class="llm-badge">${escapeHtml(seg.language)}</span>
+                            ${seg.profile_count !== undefined ? '<span style="font-size:12px; color:#059669; font-weight:600;">' + seg.profile_count + ' profiles</span>' : ''}
+                        </div>
+                        <div style="color:#666; font-size:13px; margin-bottom:12px;">${escapeHtml(seg.description)}</div>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; font-size:13px;">
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Target LLMs</div>
+                                <div>${seg.target_llms.map(l => '<span class="llm-badge" style="margin:2px;">' + escapeHtml(l) + '</span>').join(' ')}</div>
+                            </div>
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Tone</div>
+                                <div style="color:#333;">${seg.tone_pool.join(', ')}</div>
+                            </div>
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Verbosity</div>
+                                <div style="color:#333;">${seg.verbosity_pool.join(', ')}</div>
+                            </div>
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Search Style</div>
+                                <div style="color:#333;">${seg.search_style_pool.join(', ')}</div>
+                            </div>
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Role Context Rate</div>
+                                <div style="color:#333;">${(seg.add_role_context_rate * 100).toFixed(0)}%</div>
+                            </div>
+                            <div style="background:#f8fafc; padding:8px 12px; border-radius:4px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:4px;">Mobile Rate</div>
+                                <div style="color:#333;">${(seg.device_mobile_rate * 100).toFixed(0)}%</div>
+                            </div>
+                        </div>
+                        <div style="margin-top:10px; display:flex; gap:16px; flex-wrap:wrap;">
+                            <div style="flex:1; min-width:250px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:6px;">Age Ranges (${seg.age_ranges.length})</div>
+                                <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                                    ${seg.age_ranges.map(a => '<span style="display:inline-block;padding:2px 8px;background:#e0e7ff;color:#4f46e5;border-radius:999px;font-size:12px;">' + a.min_age + '-' + a.max_age + '</span>').join('')}
+                                </div>
+                            </div>
+                            <div style="flex:1; min-width:250px;">
+                                <div style="color:#888; font-size:11px; margin-bottom:6px;">City Tiers (${seg.city_tiers.length})</div>
+                                <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                                    ${seg.city_tiers.map(c => '<span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:999px;font-size:12px;">' + escapeHtml(c) + '</span>').join('')}
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-top:10px;">
+                            <div style="color:#888; font-size:11px; margin-bottom:6px;">Role Variants (${seg.role_variants.length})</div>
+                            <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                                <thead>
+                                    <tr style="background:#f8fafc;">
+                                        <th style="padding:4px 8px; text-align:left; font-weight:600; color:#666;">Role</th>
+                                        <th style="padding:4px 8px; text-align:left; font-weight:600; color:#666;">Profession</th>
+                                        <th style="padding:4px 8px; text-align:left; font-weight:600; color:#666;">Company Size</th>
+                                        <th style="padding:4px 8px; text-align:left; font-weight:600; color:#666;">Income</th>
+                                        <th style="padding:4px 8px; text-align:left; font-weight:600; color:#666;">Pain Points</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${seg.role_variants.map(rv => '<tr style="border-top:1px solid #eee;">' +
+                                        '<td style="padding:4px 8px;">' + escapeHtml(rv.label) + '</td>' +
+                                        '<td style="padding:4px 8px;">' + escapeHtml(rv.profession) + '</td>' +
+                                        '<td style="padding:4px 8px;">' + escapeHtml(rv.company_size) + '</td>' +
+                                        '<td style="padding:4px 8px;">' + escapeHtml(rv.income_level) + '</td>' +
+                                        '<td style="padding:4px 8px;">' + rv.pain_points.map(p => escapeHtml(p)).join(', ') + '</td>' +
+                                    '</tr>').join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `).join('');
+
+            // Segment pagination
+            if (segmentsData.length > segPerPage) {
+                const totalPages = Math.ceil(segmentsData.length / segPerPage);
+                let pagHtml = '<div class="pagination" style="margin-top:16px;">';
+                pagHtml += '<button ' + (segCurrentPage === 1 ? 'disabled' : '') + ' onclick="segCurrentPage--; renderSegments();">&laquo; Prev</button>';
+                for (let p = 1; p <= totalPages; p++) {
+                    pagHtml += '<button class="' + (p === segCurrentPage ? 'active' : '') + '" onclick="segCurrentPage=' + p + '; renderSegments();">' + p + '</button>';
+                }
+                pagHtml += '<button ' + (segCurrentPage === totalPages ? 'disabled' : '') + ' onclick="segCurrentPage++; renderSegments();">Next &raquo;</button>';
+                pagHtml += '</div>';
+                body.innerHTML += pagHtml;
+            }
+        }
+
+        // ---- Profiles ----
+        let profilesData = [];
+        let profilesFiltered = [];
+        let profCurrentPage = 1;
+        const profPerPage = 20;
+
+        async function loadProfiles() {
+            try {
+                const res = await fetch('./api/profiles');
+                const data = await res.json();
+                if (data.error) {
+                    document.getElementById('profiles-body').innerHTML =
+                        '<tr><td colspan="12" style="text-align:center;color:#dc2626;">Error: ' + escapeHtml(data.error) + '</td></tr>';
+                    return;
+                }
+                profilesData = Array.isArray(data) ? data : [];
+
+                // Populate segment filter dropdown
+                const segFilter = document.getElementById('profile-filter-segment');
+                const currentVal = segFilter.value;
+                const segments = [...new Set(profilesData.map(p => (p.persona_traits || {}).segment_name).filter(Boolean))];
+                segFilter.innerHTML = '<option value="">All Segments</option>' +
+                    segments.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+                segFilter.value = currentVal;
+
+                profCurrentPage = 1;
+                filterProfiles();
+            } catch (e) {
+                console.error('loadProfiles error:', e);
+                document.getElementById('profiles-body').innerHTML =
+                    '<tr><td colspan="12" style="text-align:center;color:#dc2626;">Error loading profiles: ' + escapeHtml(e.message) + '</td></tr>';
+            }
+        }
+
+        function filterProfiles() {
+            const segFilter = document.getElementById('profile-filter-segment').value;
+            const langFilter = document.getElementById('profile-filter-lang').value;
+            const deviceFilter = document.getElementById('profile-filter-device').value;
+
+            profilesFiltered = profilesData;
+            if (segFilter) {
+                profilesFiltered = profilesFiltered.filter(p => (p.persona_traits || {}).segment_name === segFilter);
+            }
+            if (langFilter) {
+                profilesFiltered = profilesFiltered.filter(p => p.language === langFilter);
+            }
+            if (deviceFilter) {
+                profilesFiltered = profilesFiltered.filter(p => p.device_type === deviceFilter);
+            }
+
+            profCurrentPage = 1;
+            renderProfiles();
+        }
+
+        function renderProfiles() {
+            const data = profilesFiltered;
+            const body = document.getElementById('profiles-body');
+
+            document.getElementById('profile-count-label').textContent =
+                data.length + ' / ' + profilesData.length + ' profiles';
+
+            if (!data.length) {
+                body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#999;">No profiles found</td></tr>';
+                document.getElementById('profiles-pagination').innerHTML = '';
+                return;
+            }
+
+            const totalPages = Math.ceil(data.length / profPerPage);
+            if (profCurrentPage > totalPages) profCurrentPage = totalPages;
+            if (profCurrentPage < 1) profCurrentPage = 1;
+            const start = (profCurrentPage - 1) * profPerPage;
+            const pageData = data.slice(start, start + profPerPage);
+
+            body.innerHTML = pageData.map(p => {
+                const traits = p.persona_traits || {};
+                const segName = traits.segment_name || '-';
+                const traitStr = [traits.tone, traits.verbosity, traits.search_style].filter(Boolean).join(' / ') || '-';
+                return `<tr>
+                    <td>${p.id}</td>
+                    <td>${escapeHtml(p.name || '-')}</td>
+                    <td style="font-size:12px;"><span style="display:inline-block;padding:2px 8px;background:#fef3c7;color:#92400e;border-radius:999px;font-size:11px;">${escapeHtml(segName)}</span></td>
+                    <td>${escapeHtml(p.age_range || '-')}</td>
+                    <td>${escapeHtml(p.location || '-')}</td>
+                    <td>${escapeHtml(p.country_code || '-')}</td>
+                    <td style="font-size:12px;">${escapeHtml(p.profession || '-')}</td>
+                    <td><span class="llm-badge">${escapeHtml(p.language || '-')}</span></td>
+                    <td>${escapeHtml(p.device_type || '-')}</td>
+                    <td style="font-size:12px;" title="${escapeHtml(JSON.stringify(traits))}">${escapeHtml(traitStr)}</td>
+                    <td>${p.query_count || 0}</td>
+                    <td>
+                        <button class="small" onclick="editProfile(${p.id})">Edit</button>
+                        <button class="danger small" onclick="deleteProfile(${p.id})">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('');
+
+            // Pagination
+            const pagEl = document.getElementById('profiles-pagination');
+            if (totalPages <= 1) {
+                pagEl.innerHTML = '';
+                return;
+            }
+            let startPage = Math.max(1, profCurrentPage - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+
+            let html = '<button ' + (profCurrentPage === 1 ? 'disabled' : '') + ' onclick="profCurrentPage--; renderProfiles();">&laquo; Prev</button>';
+            for (let p = startPage; p <= endPage; p++) {
+                html += '<button class="' + (p === profCurrentPage ? 'active' : '') + '" onclick="profCurrentPage=' + p + '; renderProfiles();">' + p + '</button>';
+            }
+            html += '<button ' + (profCurrentPage === totalPages ? 'disabled' : '') + ' onclick="profCurrentPage++; renderProfiles();">Next &raquo;</button>';
+            pagEl.innerHTML = html;
+        }
+
+        function showProfileForm(profile) {
+            document.getElementById('profile-form-container').style.display = 'block';
+            document.getElementById('profile-alert').innerHTML = '';
+            if (profile) {
+                document.getElementById('profile-form-title').textContent = 'Edit Profile #' + profile.id;
+                document.getElementById('profile-edit-id').value = profile.id;
+                document.getElementById('profile-name').value = profile.name || '';
+                document.getElementById('profile-age-range').value = profile.age_range || '';
+                document.getElementById('profile-location').value = profile.location || '';
+                document.getElementById('profile-country').value = profile.country_code || '';
+                document.getElementById('profile-profession').value = profile.profession || '';
+                document.getElementById('profile-language').value = profile.language || 'zh';
+                document.getElementById('profile-device').value = profile.device_type || 'desktop';
+                const traits = profile.persona_traits || {};
+                document.getElementById('profile-tone').value = traits.tone || 'casual';
+                document.getElementById('profile-verbosity').value = traits.verbosity || 'medium';
+                document.getElementById('profile-search-style').value = traits.search_style || 'solution_oriented';
+            } else {
+                document.getElementById('profile-form-title').textContent = 'Create New Profile';
+                document.getElementById('profile-edit-id').value = '';
+                document.getElementById('profile-form').reset();
+            }
+        }
+
+        function hideProfileForm() {
+            document.getElementById('profile-form-container').style.display = 'none';
+        }
+
+        function editProfile(id) {
+            const profile = profilesData.find(p => p.id === id);
+            if (profile) showProfileForm(profile);
+        }
+
+        async function submitProfile(event) {
+            event.preventDefault();
+            const alertDiv = document.getElementById('profile-alert');
+            alertDiv.innerHTML = '';
+
+            const editId = document.getElementById('profile-edit-id').value;
+            const payload = {
+                name: document.getElementById('profile-name').value,
+                age_range: document.getElementById('profile-age-range').value,
+                location: document.getElementById('profile-location').value,
+                country_code: document.getElementById('profile-country').value,
+                profession: document.getElementById('profile-profession').value,
+                language: document.getElementById('profile-language').value,
+                device_type: document.getElementById('profile-device').value,
+                persona_traits: {
+                    tone: document.getElementById('profile-tone').value,
+                    verbosity: document.getElementById('profile-verbosity').value,
+                    search_style: document.getElementById('profile-search-style').value,
+                }
+            };
+
+            try {
+                const url = editId ? './api/profiles/' + editId : './api/profiles';
+                const method = editId ? 'PUT' : 'POST';
+                const res = await fetch(url, {
+                    method: method,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alertDiv.innerHTML = '<div class="alert success">' + (editId ? 'Profile updated!' : 'Profile created!') + '</div>';
+                    hideProfileForm();
+                    loadProfiles();
+                } else {
+                    alertDiv.innerHTML = '<div class="alert error">Error: ' + (data.error || 'Unknown') + '</div>';
+                }
+            } catch (e) {
+                alertDiv.innerHTML = '<div class="alert error">Error: ' + e.message + '</div>';
+            }
+        }
+
+        async function deleteProfile(id) {
+            if (!confirm('Delete profile #' + id + '? This cannot be undone.')) return;
+            try {
+                const res = await fetch('./api/profiles/' + id, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) loadProfiles();
+                else alert('Error: ' + (data.error || 'Unknown'));
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
         // Load on page load
         loadStats();
         loadQueries();
@@ -1819,6 +2302,279 @@ def backfill_citations():
             conn.close()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ─── Segments API ─────────────────────────────────────────────────────────────
+
+@app.route('/api/segments')
+def list_segments():
+    """列出所有 Segment 定义（优先从 Python 代码，失败则从 DB profiles 提取）"""
+    # 尝试从 Python 定义导入
+    try:
+        from geo_tracker.generation.segments.definitions import SEGMENTS
+        result = []
+        for seg in SEGMENTS:
+            result.append({
+                'id': seg.id,
+                'name': seg.name,
+                'description': seg.description,
+                'language': seg.language,
+                'target_llms': seg.target_llms,
+                'tone_pool': list(seg.tone_pool),
+                'verbosity_pool': list(seg.verbosity_pool),
+                'search_style_pool': list(seg.search_style_pool),
+                'add_role_context_rate': seg.add_role_context_rate,
+                'device_mobile_rate': seg.device_mobile_rate,
+                'city_tiers': seg.city_tiers,
+                'age_ranges': [
+                    {'label': a.label, 'min_age': a.min_age, 'max_age': a.max_age}
+                    for a in seg.age_ranges
+                ],
+                'role_variants': [
+                    {
+                        'label': rv.label,
+                        'profession': rv.profession,
+                        'company_size': rv.company_size,
+                        'income_level': rv.income_level,
+                        'pain_points': rv.pain_points,
+                        'use_buzzwords': rv.use_buzzwords,
+                    }
+                    for rv in seg.role_variants
+                ],
+            })
+        return jsonify(result)
+    except ImportError:
+        pass  # Fall through to DB extraction
+
+    # 从数据库 profiles 的 persona_traits 中提取 segment 信息
+    try:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT DISTINCT
+                        persona_traits->>'segment_id' AS id,
+                        persona_traits->>'segment_name' AS name,
+                        persona_traits->'target_llms' AS target_llms
+                    FROM profiles
+                    WHERE persona_traits->>'segment_id' IS NOT NULL
+                    ORDER BY persona_traits->>'segment_id'
+                """)
+                seg_rows = cur.fetchall()
+
+                if not seg_rows:
+                    return jsonify([])
+
+                # 对每个 segment 聚合 profile 信息
+                segments = []
+                for seg_row in seg_rows:
+                    seg_id = seg_row['id']
+                    cur.execute("""
+                        SELECT
+                            COUNT(*) AS profile_count,
+                            array_agg(DISTINCT profession) AS professions,
+                            array_agg(DISTINCT age_range) AS age_ranges,
+                            array_agg(DISTINCT location) AS locations,
+                            array_agg(DISTINCT country_code) AS countries,
+                            array_agg(DISTINCT language) AS languages,
+                            array_agg(DISTINCT device_type) AS device_types,
+                            array_agg(DISTINCT persona_traits->>'tone') AS tones,
+                            array_agg(DISTINCT persona_traits->>'verbosity') AS verbosities,
+                            array_agg(DISTINCT persona_traits->>'search_style') AS search_styles
+                        FROM profiles
+                        WHERE persona_traits->>'segment_id' = %s
+                    """, (seg_id,))
+                    agg = cur.fetchone()
+
+                    import json as json_mod
+                    target_llms = seg_row['target_llms']
+                    if isinstance(target_llms, str):
+                        target_llms = json_mod.loads(target_llms)
+
+                    segments.append({
+                        'id': seg_id,
+                        'name': seg_row['name'] or seg_id,
+                        'description': f"从数据库提取 - {agg['profile_count']} 个 profiles",
+                        'language': (agg['languages'] or ['zh'])[0] if agg['languages'] else 'zh',
+                        'target_llms': target_llms or [],
+                        'tone_pool': [t for t in (agg['tones'] or []) if t],
+                        'verbosity_pool': [v for v in (agg['verbosities'] or []) if v],
+                        'search_style_pool': [s for s in (agg['search_styles'] or []) if s],
+                        'add_role_context_rate': 0,
+                        'device_mobile_rate': 0,
+                        'city_tiers': [],
+                        'age_ranges': [
+                            {'label': ar, 'min_age': int(ar.split('-')[0]) if '-' in ar else 0,
+                             'max_age': int(ar.split('-')[1]) if '-' in ar else 0}
+                            for ar in (agg['age_ranges'] or []) if ar and '-' in ar
+                        ],
+                        'role_variants': [
+                            {'label': p, 'profession': p, 'company_size': '', 'income_level': '',
+                             'pain_points': [], 'use_buzzwords': False}
+                            for p in (agg['professions'] or []) if p
+                        ],
+                        'profile_count': agg['profile_count'],
+                    })
+
+                return jsonify(segments)
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── Profiles API ────────────────────────────────────────────────────────────
+
+@app.route('/api/profiles')
+def list_profiles():
+    """列出所有 Profile"""
+    try:
+        import json as json_mod
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Use subquery for query_count to avoid GROUP BY issues with JSON
+                cur.execute("""
+                    SELECT p.id, p.name, p.age_range, p.location, p.country_code,
+                           p.profession, p.language, p.device_type, p.persona_traits,
+                           COALESCE(qc.cnt, 0) AS query_count
+                    FROM profiles p
+                    LEFT JOIN (
+                        SELECT profile_id, COUNT(*) AS cnt
+                        FROM queries
+                        GROUP BY profile_id
+                    ) qc ON p.id = qc.profile_id
+                    ORDER BY p.id
+                """)
+                rows = cur.fetchall()
+
+            result = []
+            for r in rows:
+                row = dict(r)
+                # Ensure persona_traits is a proper dict for JSON serialization
+                if row.get('persona_traits') and isinstance(row['persona_traits'], str):
+                    try:
+                        row['persona_traits'] = json_mod.loads(row['persona_traits'])
+                    except (json_mod.JSONDecodeError, TypeError):
+                        row['persona_traits'] = {}
+                elif not row.get('persona_traits'):
+                    row['persona_traits'] = {}
+                result.append(row)
+
+            return jsonify(result)
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/profiles', methods=['POST'])
+def create_profile():
+    """创建新 Profile"""
+    try:
+        import json as json_mod
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({'success': False, 'error': 'Name is required'})
+
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO profiles (name, age_range, location, country_code,
+                                         profession, language, device_type, persona_traits)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    name,
+                    data.get('age_range', ''),
+                    data.get('location', ''),
+                    data.get('country_code', ''),
+                    data.get('profession', ''),
+                    data.get('language', 'zh'),
+                    data.get('device_type', 'desktop'),
+                    json_mod.dumps(data.get('persona_traits', {})),
+                ))
+                profile_id = cur.fetchone()[0]
+            conn.commit()
+            return jsonify({'success': True, 'profile_id': profile_id})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/profiles/<int:profile_id>', methods=['PUT'])
+def update_profile(profile_id):
+    """更新 Profile"""
+    try:
+        import json as json_mod
+        data = request.get_json()
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({'success': False, 'error': 'Name is required'})
+
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE profiles
+                    SET name = %s, age_range = %s, location = %s, country_code = %s,
+                        profession = %s, language = %s, device_type = %s, persona_traits = %s
+                    WHERE id = %s
+                """, (
+                    name,
+                    data.get('age_range', ''),
+                    data.get('location', ''),
+                    data.get('country_code', ''),
+                    data.get('profession', ''),
+                    data.get('language', 'zh'),
+                    data.get('device_type', 'desktop'),
+                    json_mod.dumps(data.get('persona_traits', {})),
+                    profile_id,
+                ))
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Profile not found'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
+def delete_profile(profile_id):
+    """删除 Profile"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                # Check if profile has associated queries
+                cur.execute("SELECT COUNT(*) FROM queries WHERE profile_id = %s", (profile_id,))
+                query_count = cur.fetchone()[0]
+                if query_count > 0:
+                    # Nullify profile_id in queries rather than blocking delete
+                    cur.execute("UPDATE queries SET profile_id = NULL WHERE profile_id = %s", (profile_id,))
+
+                # Delete associated browser profile first
+                cur.execute("DELETE FROM browser_profiles WHERE profile_id = %s", (profile_id,))
+
+                # Nullify profile_id in llm_accounts
+                cur.execute("UPDATE llm_accounts SET profile_id = NULL WHERE profile_id = %s", (profile_id,))
+
+                cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+                if cur.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Profile not found'})
+            conn.commit()
+            return jsonify({'success': True})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 _ensure_citations_column()
