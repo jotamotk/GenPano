@@ -1,0 +1,50 @@
+name: Docker Cleanup
+
+on:
+  schedule:
+    # 每天凌晨 3 点 (UTC+8) 执行清理
+    - cron: '0 19 * * *'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  cleanup:
+    name: Clean Docker on Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Docker cleanup via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "=== 清理前磁盘使用 ==="
+            df -h /
+            docker system df
+
+            cd /opt/genpano
+
+            # 获取当前正在运行的镜像列表，避免误删
+            RUNNING_IMAGES=$(docker compose ps -q | xargs -r docker inspect --format='{{.Image}}' | sort -u)
+            echo "=== 当前运行中的镜像 ==="
+            echo "$RUNNING_IMAGES"
+
+            # 1. 清理已停止的容器
+            docker container prune -f
+
+            # 2. 删除超过 24 小时的未使用镜像
+            docker image prune -af --filter "until=24h"
+
+            # 3. 清理构建缓存，保留 2GB
+            docker builder prune -af --keep-storage=2GB
+
+            # 4. 清理未使用的网络
+            docker network prune -f
+
+            # 5. 清理无主 volume（不会删除 compose 中声明的命名 volume）
+            docker volume prune -f
+
+            echo "=== 清理后磁盘使用 ==="
+            df -h /
+            docker system df
