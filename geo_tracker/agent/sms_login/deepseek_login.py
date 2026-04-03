@@ -310,20 +310,40 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         has_captcha = await page.evaluate("""
             () => {
                 // Cloudflare iframe
-                if (document.querySelector('iframe[src*="challenges.cloudflare.com"]'))
-                    return 'cloudflare_iframe';
+                const cfIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+                if (cfIframe) return 'cloudflare_iframe|' + cfIframe.src;
+
                 // Turnstile widget
-                if (document.querySelector('[data-sitekey]'))
-                    return 'turnstile_widget';
+                const tw = document.querySelector('[data-sitekey]');
+                if (tw) return 'turnstile_widget|' + tw.getAttribute('data-sitekey');
+
                 // 5s 盾
                 if (document.title.includes('Just a moment'))
-                    return 'challenge_page';
-                // 通用 CAPTCHA 弹窗
-                const el = document.querySelector(
-                    '[class*="captcha"]:not([class*="secsdk"]), '
-                    + 'iframe[src*="captcha"], [class*="geetest"]'
+                    return 'challenge_page|' + document.title;
+
+                // 任何 iframe（验证码通常在 iframe 中）
+                const iframes = [...document.querySelectorAll('iframe')];
+                const captchaIframe = iframes.find(f =>
+                    f.src && (f.src.includes('captcha') || f.src.includes('challenge')
+                    || f.src.includes('turnstile') || f.src.includes('cloudflare')
+                    || f.src.includes('verify'))
                 );
-                if (el && el.offsetParent) return 'generic_captcha';
+                if (captchaIframe) return 'captcha_iframe|' + captchaIframe.src;
+
+                // 通用 CAPTCHA 弹窗 — 收集详细信息用于诊断
+                const captchaEl = document.querySelector(
+                    '[class*="captcha"]:not([class*="secsdk"]), '
+                    + '[class*="geetest"], [class*="verify-wrap"], '
+                    + '[class*="shield"], [class*="firewall"]'
+                );
+                if (captchaEl && captchaEl.offsetParent) {
+                    const info = captchaEl.tagName + '.' + captchaEl.className.slice(0, 100);
+                    // 查找内部 iframe
+                    const innerIframe = captchaEl.querySelector('iframe');
+                    if (innerIframe) return 'generic_with_iframe|' + info + '|' + innerIframe.src;
+                    return 'generic_captcha|' + info;
+                }
+
                 return null;
             }
         """)
@@ -332,16 +352,31 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.info("[deepseek] 未检测到验证码")
             return
 
-        logger.info(f"[deepseek] 检测到验证码类型: {has_captcha}")
-        await self._save_debug(page, f"captcha_{has_captcha}")
+        # 解析检测结果: "type|detail"
+        captcha_type = has_captcha.split("|")[0]
+        captcha_detail = "|".join(has_captcha.split("|")[1:]) if "|" in has_captcha else ""
+        logger.info(f"[deepseek] 检测到验证码: type={captcha_type}, detail={captcha_detail}")
+        await self._save_debug(page, f"captcha_{captcha_type}")
 
-        # ── 策略1: 提取 sitekey 用 Turnstile 求解 ──
         from geo_tracker.agent.captcha import (
             _extract_turnstile_sitekey,
             inject_turnstile_token,
         )
 
-        site_key = await _extract_turnstile_sitekey(page)
+        # ── 策略1: 如果检测到 iframe，尝试从 iframe src 提取 sitekey ──
+        site_key = None
+        if captcha_detail and ("turnstile" in captcha_detail or "cloudflare" in captcha_detail):
+            # 从 iframe URL 参数提取 sitekey
+            import re as _re
+            m = _re.search(r'[?&](?:sitekey|k)=([^&]+)', captcha_detail)
+            if m:
+                site_key = m.group(1)
+                logger.info(f"[deepseek] 从 iframe URL 提取 sitekey={site_key}")
+
+        # 也用通用提取器
+        if not site_key:
+            site_key = await _extract_turnstile_sitekey(page)
+
         if site_key:
             logger.info(f"[deepseek] Turnstile sitekey={site_key}，调用 CapSolver...")
             token = await _solver.solve_turnstile(page.url, site_key)
@@ -352,39 +387,48 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
                 return
             logger.warning("[deepseek] Turnstile 求解失败")
 
-        # ── 策略2: Cloudflare Challenge (不需要 sitekey) ──
-        if has_captcha in ("cloudflare_iframe", "challenge_page", "generic_captcha"):
-            logger.info("[deepseek] 尝试 Cloudflare Challenge 求解...")
-            solution = await _solver.solve_cloudflare_challenge(page.url)
-            if solution:
-                cf_clearance = (solution.get("cookies") or {}).get("cf_clearance")
-                token = solution.get("token")
-                if cf_clearance:
-                    domain = page.url.split("//")[-1].split("/")[0]
-                    await page.context.add_cookies([{
-                        "name": "cf_clearance",
-                        "value": cf_clearance,
-                        "domain": f".{domain}",
-                        "path": "/",
-                    }])
-                    logger.info("[deepseek] Challenge 求解成功，已注入 cf_clearance")
-                    await page.reload()
-                    await page.wait_for_timeout(random.randint(3000, 5000))
-                    return
-                if token:
-                    await inject_turnstile_token(page, token)
-                    logger.info("[deepseek] Challenge 求解成功，已注入 token")
-                    await page.wait_for_timeout(random.randint(2000, 3000))
-                    return
-            logger.warning("[deepseek] Challenge 求解失败")
+        # ── 策略2: Cloudflare Challenge (需要 proxy) ──
+        if captcha_type in ("cloudflare_iframe", "challenge_page", "captcha_iframe"):
+            proxy = os.getenv("CLASH_PROXY_URL", "")
+            if proxy:
+                logger.info(f"[deepseek] 尝试 Cloudflare Challenge 求解 (proxy={proxy})...")
+                solution = await _solver.solve_cloudflare_challenge(
+                    page.url, proxy=proxy
+                )
+                if solution:
+                    cf_clearance = (solution.get("cookies") or {}).get("cf_clearance")
+                    token = solution.get("token")
+                    if cf_clearance:
+                        domain = page.url.split("//")[-1].split("/")[0]
+                        await page.context.add_cookies([{
+                            "name": "cf_clearance",
+                            "value": cf_clearance,
+                            "domain": f".{domain}",
+                            "path": "/",
+                        }])
+                        logger.info("[deepseek] Challenge 求解成功，已注入 cf_clearance")
+                        await page.reload()
+                        await page.wait_for_timeout(random.randint(3000, 5000))
+                        return
+                    if token:
+                        await inject_turnstile_token(page, token)
+                        logger.info("[deepseek] Challenge 求解成功，已注入 token")
+                        await page.wait_for_timeout(random.randint(2000, 3000))
+                        return
+                logger.warning("[deepseek] Challenge 求解失败")
+            else:
+                logger.warning("[deepseek] 跳过 Challenge 求解（未配置代理）")
 
-        # ── 策略3: 通用 detect_and_solve fallback ──
-        logger.info("[deepseek] 尝试通用 detect_and_solve...")
-        solved = await detect_and_solve(page, _solver)
-        if solved:
-            logger.info("[deepseek] 通用求解成功")
-            await page.wait_for_timeout(random.randint(2000, 3000))
-            return
+        # ── 策略3: generic_captcha — 尝试直接用 Turnstile ProxyLess ──
+        if captcha_type in ("generic_captcha", "generic_with_iframe"):
+            logger.info("[deepseek] generic 类型，尝试 Turnstile ProxyLess (用页面 URL 作为 key)...")
+            # 枚举页面中所有 iframe 的 src 以辅助诊断
+            all_iframes = await page.evaluate("""
+                () => [...document.querySelectorAll('iframe')]
+                    .map(f => f.src || '(empty)')
+                    .join(' | ')
+            """)
+            logger.info(f"[deepseek] 页面 iframes: {all_iframes}")
 
         # ── 最终 fallback: 等待消失 ──
         logger.warning("[deepseek] 所有求解策略失败，等待消失...")

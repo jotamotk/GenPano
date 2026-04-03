@@ -54,6 +54,7 @@ def _convert_editthiscookie(cookies: list[dict]) -> list[dict]:
         "lax": "Lax",
         "strict": "Strict",
     }
+    import time as _time
     result = []
     for c in cookies:
         entry = {
@@ -64,6 +65,9 @@ def _convert_editthiscookie(cookies: list[dict]) -> list[dict]:
         }
         if c.get("expirationDate"):
             entry["expires"] = c["expirationDate"]
+        elif c.get("session"):
+            # Session cookie 没有过期时间，给 30 天有效期
+            entry["expires"] = _time.time() + 30 * 86400
         if c.get("httpOnly"):
             entry["httpOnly"] = True
         if c.get("secure"):

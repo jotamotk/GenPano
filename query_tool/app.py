@@ -1911,6 +1911,7 @@ def import_cookies_api():
         if (isinstance(cookies, list) and len(cookies) > 0
                 and isinstance(cookies[0], dict)
                 and ('storeId' in cookies[0] or 'hostOnly' in cookies[0])):
+            import time as _time
             converted = []
             for c in cookies:
                 entry = {
@@ -1919,6 +1920,10 @@ def import_cookies_api():
                 }
                 if c.get('expirationDate'):
                     entry['expires'] = c['expirationDate']
+                elif c.get('session'):
+                    # Session cookie 没有过期时间，给它 30 天有效期
+                    # 避免 Playwright 注入后立即过期
+                    entry['expires'] = _time.time() + 30 * 86400
                 if c.get('httpOnly'):
                     entry['httpOnly'] = True
                 if c.get('secure'):
