@@ -584,6 +584,7 @@ HTML_TEMPLATE = """
                         <tbody id="profiles-body">
                         </tbody>
                     </table>
+                    <div class="pagination" id="profiles-pagination"></div>
                 </div>
 
                 <!-- Debug HTML Files Tab -->
@@ -1302,17 +1303,42 @@ HTML_TEMPLATE = """
         }
 
         // ---- Segments ----
+        let segmentsData = [];
+        let segCurrentPage = 1;
+        const segPerPage = 5;
+
         async function loadSegments() {
             const body = document.getElementById('segments-body');
             body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
             try {
                 const res = await fetch('./api/segments');
                 const data = await res.json();
-                if (!data.length) {
+                if (data.error) {
+                    body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error: ' + escapeHtml(data.error) + '</div>';
+                    return;
+                }
+                if (!Array.isArray(data) || !data.length) {
                     body.innerHTML = '<div style="color:#999;font-size:13px;">No segments defined</div>';
                     return;
                 }
-                body.innerHTML = data.map(seg => `
+                segmentsData = data;
+                segCurrentPage = 1;
+                renderSegments();
+            } catch (e) {
+                body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error loading segments: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function renderSegments() {
+            const totalPages = Math.ceil(segmentsData.length / segPerPage);
+            if (segCurrentPage > totalPages) segCurrentPage = totalPages;
+            if (segCurrentPage < 1) segCurrentPage = 1;
+            const start = (segCurrentPage - 1) * segPerPage;
+            const pageData = segmentsData.slice(start, start + segPerPage);
+
+            const body = document.getElementById('segments-body');
+            body.innerHTML = '<div style="margin-bottom:8px;font-size:12px;color:#888;">Showing ' + (start+1) + '-' + (start+pageData.length) + ' of ' + segmentsData.length + ' segments</div>' +
+            pageData.map(seg => `
                     <div style="background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin-bottom:12px;">
                         <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
                             <span style="font-weight:700; font-size:16px; color:#333;">${escapeHtml(seg.name)}</span>
@@ -1386,28 +1412,47 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 `).join('');
-            } catch (e) {
-                body.innerHTML = '<div style="color:#dc2626;font-size:13px;">Error loading segments: ' + escapeHtml(e.message) + '</div>';
+
+            // Segment pagination
+            if (segmentsData.length > segPerPage) {
+                const totalPages = Math.ceil(segmentsData.length / segPerPage);
+                let pagHtml = '<div class="pagination" style="margin-top:16px;">';
+                pagHtml += '<button ' + (segCurrentPage === 1 ? 'disabled' : '') + ' onclick="segCurrentPage--; renderSegments();">&laquo; Prev</button>';
+                for (let p = 1; p <= totalPages; p++) {
+                    pagHtml += '<button class="' + (p === segCurrentPage ? 'active' : '') + '" onclick="segCurrentPage=' + p + '; renderSegments();">' + p + '</button>';
+                }
+                pagHtml += '<button ' + (segCurrentPage === totalPages ? 'disabled' : '') + ' onclick="segCurrentPage++; renderSegments();">Next &raquo;</button>';
+                pagHtml += '</div>';
+                body.innerHTML += pagHtml;
             }
         }
 
         // ---- Profiles ----
         let profilesData = [];
+        let profilesFiltered = [];
+        let profCurrentPage = 1;
+        const profPerPage = 20;
 
         async function loadProfiles() {
             try {
                 const res = await fetch('./api/profiles');
                 const data = await res.json();
-                profilesData = data;
+                if (data.error) {
+                    document.getElementById('profiles-body').innerHTML =
+                        '<tr><td colspan="12" style="text-align:center;color:#dc2626;">Error: ' + escapeHtml(data.error) + '</td></tr>';
+                    return;
+                }
+                profilesData = Array.isArray(data) ? data : [];
 
                 // Populate segment filter dropdown
                 const segFilter = document.getElementById('profile-filter-segment');
                 const currentVal = segFilter.value;
-                const segments = [...new Set(data.map(p => (p.persona_traits || {}).segment_name).filter(Boolean))];
+                const segments = [...new Set(profilesData.map(p => (p.persona_traits || {}).segment_name).filter(Boolean))];
                 segFilter.innerHTML = '<option value="">All Segments</option>' +
                     segments.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
                 segFilter.value = currentVal;
 
+                profCurrentPage = 1;
                 filterProfiles();
             } catch (e) {
                 console.error('loadProfiles error:', e);
@@ -1421,30 +1466,41 @@ HTML_TEMPLATE = """
             const langFilter = document.getElementById('profile-filter-lang').value;
             const deviceFilter = document.getElementById('profile-filter-device').value;
 
-            let filtered = profilesData;
+            profilesFiltered = profilesData;
             if (segFilter) {
-                filtered = filtered.filter(p => (p.persona_traits || {}).segment_name === segFilter);
+                profilesFiltered = profilesFiltered.filter(p => (p.persona_traits || {}).segment_name === segFilter);
             }
             if (langFilter) {
-                filtered = filtered.filter(p => p.language === langFilter);
+                profilesFiltered = profilesFiltered.filter(p => p.language === langFilter);
             }
             if (deviceFilter) {
-                filtered = filtered.filter(p => p.device_type === deviceFilter);
+                profilesFiltered = profilesFiltered.filter(p => p.device_type === deviceFilter);
             }
 
-            document.getElementById('profile-count-label').textContent =
-                filtered.length + ' / ' + profilesData.length + ' profiles';
-
-            renderProfiles(filtered);
+            profCurrentPage = 1;
+            renderProfiles();
         }
 
-        function renderProfiles(data) {
+        function renderProfiles() {
+            const data = profilesFiltered;
             const body = document.getElementById('profiles-body');
+
+            document.getElementById('profile-count-label').textContent =
+                data.length + ' / ' + profilesData.length + ' profiles';
+
             if (!data.length) {
                 body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#999;">No profiles found</td></tr>';
+                document.getElementById('profiles-pagination').innerHTML = '';
                 return;
             }
-            body.innerHTML = data.map(p => {
+
+            const totalPages = Math.ceil(data.length / profPerPage);
+            if (profCurrentPage > totalPages) profCurrentPage = totalPages;
+            if (profCurrentPage < 1) profCurrentPage = 1;
+            const start = (profCurrentPage - 1) * profPerPage;
+            const pageData = data.slice(start, start + profPerPage);
+
+            body.innerHTML = pageData.map(p => {
                 const traits = p.persona_traits || {};
                 const segName = traits.segment_name || '-';
                 const traitStr = [traits.tone, traits.verbosity, traits.search_style].filter(Boolean).join(' / ') || '-';
@@ -1466,6 +1522,23 @@ HTML_TEMPLATE = """
                     </td>
                 </tr>`;
             }).join('');
+
+            // Pagination
+            const pagEl = document.getElementById('profiles-pagination');
+            if (totalPages <= 1) {
+                pagEl.innerHTML = '';
+                return;
+            }
+            let startPage = Math.max(1, profCurrentPage - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+
+            let html = '<button ' + (profCurrentPage === 1 ? 'disabled' : '') + ' onclick="profCurrentPage--; renderProfiles();">&laquo; Prev</button>';
+            for (let p = startPage; p <= endPage; p++) {
+                html += '<button class="' + (p === profCurrentPage ? 'active' : '') + '" onclick="profCurrentPage=' + p + '; renderProfiles();">' + p + '</button>';
+            }
+            html += '<button ' + (profCurrentPage === totalPages ? 'disabled' : '') + ' onclick="profCurrentPage++; renderProfiles();">Next &raquo;</button>';
+            pagEl.innerHTML = html;
         }
 
         function showProfileForm(profile) {
