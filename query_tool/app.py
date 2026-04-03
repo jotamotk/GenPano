@@ -1100,7 +1100,8 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            const localStorageText = document.getElementById('local-storage-json').value.trim();
+            const lsEl = document.getElementById('local-storage-json');
+            const localStorageText = lsEl ? lsEl.value.trim() : '';
 
             try {
                 const res = await fetch('./api/accounts/import_cookies', {
@@ -1987,6 +1988,8 @@ def import_cookies_api():
                         (cookies_json_str, existing['id'])
                     )
                     msg = f'Updated account #{existing["id"]} with {len(cookies)} cookies'
+                    if local_storage:
+                        msg += f' + {len(local_storage)} localStorage items'
                 else:
                     cur.execute(
                         """INSERT INTO llm_accounts
@@ -1997,6 +2000,8 @@ def import_cookies_api():
                          cookies_json_str, daily_limit)
                     )
                     msg = f'Created new {platform} account with {len(cookies)} cookies'
+                    if local_storage:
+                        msg += f' + {len(local_storage)} localStorage items'
 
             conn.commit()
             return jsonify({'success': True, 'message': msg})
