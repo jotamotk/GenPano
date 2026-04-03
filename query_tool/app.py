@@ -1913,6 +1913,8 @@ def import_cookies_api():
         if not platform:
             return jsonify({'success': False, 'error': 'Platform is required'})
 
+        cookies = json_mod.loads(cookies_raw)
+
         # Auto-detect and convert EditThisCookie format
         SAME_SITE_MAP = {
             'unspecified': 'Lax', 'no_restriction': 'None',
