@@ -308,7 +308,18 @@ def cookie_keep_alive() -> dict:
 
                     if refreshed_cookies:
                         from datetime import datetime as dt
-                        account.cookies_json = json_mod.dumps(refreshed_cookies)
+                        # 保留 localStorage 数据（新格式）
+                        try:
+                            old_data = json_mod.loads(account.cookies_json)
+                            if isinstance(old_data, dict) and "localStorage" in old_data:
+                                account.cookies_json = json_mod.dumps({
+                                    "cookies": refreshed_cookies,
+                                    "localStorage": old_data["localStorage"],
+                                })
+                            else:
+                                account.cookies_json = json_mod.dumps(refreshed_cookies)
+                        except Exception:
+                            account.cookies_json = json_mod.dumps(refreshed_cookies)
                         account.cookies_updated_at = dt.utcnow()
                         await db.commit()
                         results["refreshed"] += 1
