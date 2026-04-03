@@ -109,11 +109,12 @@ def execute_query(self, query_id: int) -> dict:
                         f"Query {query_id}: {query.target_llm} requires login "
                         f"but no account available, returning to PENDING"
                     )
-                    # 触发自动注册新账号
-                    auto_login.apply_async(
-                        kwargs={"platform": query.target_llm, "new_account": True},
-                        queue="account_login",
-                    )
+                    # deepseek 的 CAPTCHA 暂无法自动求解，跳过自动注册
+                    if query.target_llm != "deepseek":
+                        auto_login.apply_async(
+                            kwargs={"platform": query.target_llm, "new_account": True},
+                            queue="account_login",
+                        )
                     return {
                         "query_id": query_id,
                         "status": "pending",
@@ -153,8 +154,8 @@ def execute_query(self, query_id: int) -> dict:
                     if account_id and pool:
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
-                    # 触发自动重新登录
-                    if failure_reason == "cookies_expired" and account_id:
+                    # 触发自动重新登录（deepseek 暂跳过，CAPTCHA 无法自动求解）
+                    if failure_reason == "cookies_expired" and account_id and query.target_llm != "deepseek":
                         auto_login.apply_async(
                             kwargs={"account_id": account_id},
                             queue="account_login",
