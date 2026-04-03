@@ -422,9 +422,11 @@ async def detect_and_solve(page: Page, solver: CaptchaSolver) -> bool:
         return False
 
     # ── 6. 字节跳动/火山引擎验证（豆包使用）──────────────────────────────
+    #    使用更精确的选择器，避免误匹配 Cloudflare 等其他验证码
     bytedance_captcha = await page.query_selector(
-        "[class*='verify'], [class*='captcha'], #captcha-verify, "
-        "[class*='slide-verify'], [class*='slider-verify'], [class*='secsdk']"
+        "#captcha-verify, [class*='secsdk'], [class*='slide-verify'], "
+        "[class*='slider-verify'], [class*='bytedance-captcha'], "
+        "[class*='volcengine-captcha']"
     )
     if bytedance_captcha:
         logger.warning(
@@ -432,6 +434,31 @@ async def detect_and_solve(page: Page, solver: CaptchaSolver) -> bool:
             "CapSolver 暂不支持此类型，请手动刷新 cookies"
         )
         return False
+
+    # ── 7. 未知类型：检测通用 CAPTCHA 元素 ───────────────────────────────
+    #    宽泛选择器放在最后，避免误判
+    unknown_captcha = await page.query_selector(
+        "[class*='captcha']:not([class*='cf-']), "
+        "iframe[src*='captcha']"
+    )
+    if unknown_captcha:
+        visible = await page.evaluate(
+            "(el) => !!el.offsetParent", unknown_captcha
+        )
+        if visible:
+            logger.warning(
+                "[capsolver] 检测到未识别的验证码类型，尝试 Cloudflare Turnstile..."
+            )
+            # 最后尝试一次 Turnstile（可能 sitekey 在 iframe 内部）
+            site_key = await _extract_turnstile_sitekey(page)
+            if site_key:
+                token = await solver.solve_turnstile(url, site_key)
+                if token:
+                    await inject_turnstile_token(page, token)
+                    await page.wait_for_timeout(2000)
+                    return True
+            logger.warning("[capsolver] 未识别的验证码类型，无法自动求解")
+            return False
 
     return True   # 无验证码，正常通过
 

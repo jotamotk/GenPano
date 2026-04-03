@@ -294,36 +294,104 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
     async def _handle_captcha(self, page: Page) -> None:
         """
         检测并处理 DeepSeek 的人机验证（Cloudflare Turnstile/Challenge）。
-        使用通用 CapSolver 模块自动求解。
+        DeepSeek 使用 Cloudflare 验证，按优先级尝试：
+        1. 提取 sitekey → CapSolver Turnstile 求解
+        2. 无 sitekey → CapSolver Cloudflare Challenge 求解
+        3. 都失败 → 等待消失
         """
         await self._save_debug(page, "captcha_before")
 
-        # 使用通用 detect_and_solve 自动检测类型并求解
-        if _solver.enabled:
-            logger.info("[deepseek] 调用 CapSolver 自动求解验证码...")
-            solved = await detect_and_solve(page, _solver)
-            if solved:
-                logger.info("[deepseek] CapSolver 验证码求解成功")
-                await page.wait_for_timeout(random.randint(2000, 3000))
-                return
-            logger.warning("[deepseek] CapSolver 求解失败，尝试等待自动消失")
-        else:
+        if not _solver.enabled:
             logger.warning("[deepseek] CAPSOLVER_API_KEY 未配置，无法自动求解")
-
-        # Fallback: 检测 CAPTCHA 弹窗并尝试关闭
-        captcha = await self._find_element(page, [
-            "[class*='captcha']",
-            "[class*='verify']",
-            "iframe[src*='captcha']",
-            "iframe[src*='challenges.cloudflare.com']",
-            "[class*='geetest']",
-        ])
-        if not captcha:
+            await self._wait_captcha_dismiss(page)
             return
 
-        logger.warning("[deepseek] 检测到人机验证弹窗")
-        await self._save_debug(page, "captcha_detected")
+        # ── 检测验证码是否存在 ──
+        has_captcha = await page.evaluate("""
+            () => {
+                // Cloudflare iframe
+                if (document.querySelector('iframe[src*="challenges.cloudflare.com"]'))
+                    return 'cloudflare_iframe';
+                // Turnstile widget
+                if (document.querySelector('[data-sitekey]'))
+                    return 'turnstile_widget';
+                // 5s 盾
+                if (document.title.includes('Just a moment'))
+                    return 'challenge_page';
+                // 通用 CAPTCHA 弹窗
+                const el = document.querySelector(
+                    '[class*="captcha"]:not([class*="secsdk"]), '
+                    + 'iframe[src*="captcha"], [class*="geetest"]'
+                );
+                if (el && el.offsetParent) return 'generic_captcha';
+                return null;
+            }
+        """)
 
+        if not has_captcha:
+            logger.info("[deepseek] 未检测到验证码")
+            return
+
+        logger.info(f"[deepseek] 检测到验证码类型: {has_captcha}")
+        await self._save_debug(page, f"captcha_{has_captcha}")
+
+        # ── 策略1: 提取 sitekey 用 Turnstile 求解 ──
+        from geo_tracker.agent.captcha import (
+            _extract_turnstile_sitekey,
+            inject_turnstile_token,
+        )
+
+        site_key = await _extract_turnstile_sitekey(page)
+        if site_key:
+            logger.info(f"[deepseek] Turnstile sitekey={site_key}，调用 CapSolver...")
+            token = await _solver.solve_turnstile(page.url, site_key)
+            if token:
+                await inject_turnstile_token(page, token)
+                logger.info("[deepseek] Turnstile 求解成功，已注入 token")
+                await page.wait_for_timeout(random.randint(2000, 3000))
+                return
+            logger.warning("[deepseek] Turnstile 求解失败")
+
+        # ── 策略2: Cloudflare Challenge (不需要 sitekey) ──
+        if has_captcha in ("cloudflare_iframe", "challenge_page", "generic_captcha"):
+            logger.info("[deepseek] 尝试 Cloudflare Challenge 求解...")
+            solution = await _solver.solve_cloudflare_challenge(page.url)
+            if solution:
+                cf_clearance = (solution.get("cookies") or {}).get("cf_clearance")
+                token = solution.get("token")
+                if cf_clearance:
+                    domain = page.url.split("//")[-1].split("/")[0]
+                    await page.context.add_cookies([{
+                        "name": "cf_clearance",
+                        "value": cf_clearance,
+                        "domain": f".{domain}",
+                        "path": "/",
+                    }])
+                    logger.info("[deepseek] Challenge 求解成功，已注入 cf_clearance")
+                    await page.reload()
+                    await page.wait_for_timeout(random.randint(3000, 5000))
+                    return
+                if token:
+                    await inject_turnstile_token(page, token)
+                    logger.info("[deepseek] Challenge 求解成功，已注入 token")
+                    await page.wait_for_timeout(random.randint(2000, 3000))
+                    return
+            logger.warning("[deepseek] Challenge 求解失败")
+
+        # ── 策略3: 通用 detect_and_solve fallback ──
+        logger.info("[deepseek] 尝试通用 detect_and_solve...")
+        solved = await detect_and_solve(page, _solver)
+        if solved:
+            logger.info("[deepseek] 通用求解成功")
+            await page.wait_for_timeout(random.randint(2000, 3000))
+            return
+
+        # ── 最终 fallback: 等待消失 ──
+        logger.warning("[deepseek] 所有求解策略失败，等待消失...")
+        await self._wait_captcha_dismiss(page)
+
+    async def _wait_captcha_dismiss(self, page: Page) -> None:
+        """等待验证码弹窗自动消失或尝试关闭"""
         # 尝试关闭验证码弹窗
         close_btn = await self._find_element(page, [
             "[class*='captcha'] [class*='close']",
@@ -336,14 +404,12 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             await page.wait_for_timeout(random.randint(2000, 3000))
             return
 
-        # 等待验证码消失（可能自动超时关闭）
         logger.warning("[deepseek] 等待验证码弹窗消失...")
         try:
             await page.wait_for_function(
                 """() => {
                     const els = document.querySelectorAll(
-                        '[class*="captcha"], [class*="verify"], '
-                        + 'iframe[src*="challenges.cloudflare.com"]'
+                        '[class*="captcha"], iframe[src*="challenges.cloudflare.com"]'
                     );
                     return [...els].every(el => !el.offsetParent);
                 }""",
