@@ -123,7 +123,7 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
         "submit_key":       "Enter",
         "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body",
-        "wait_after_submit": 25000,
+        "wait_after_submit": 60000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
         "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
@@ -883,7 +883,28 @@ class GuestQueryExecutor:
                 await _save_screenshot(page, -1, f"{llm_name}_login_redirect")
                 return "", "", []
 
+            # 检查是否仍在生成中（豆包"深度思考"等状态）
+            still_generating = False
+            if llm_name == "doubao":
+                try:
+                    generating = await page.evaluate("""
+                        () => {
+                            const body = document.body.innerText || '';
+                            // 豆包生成中的标志
+                            const signs = ['深度思考', '正在搜索', '正在思考', '正在生成'];
+                            const has_sign = signs.some(s => body.includes(s));
+                            // 检查是否有 receive_message（已有回复）
+                            const has_resp = document.querySelector("[data-testid='receive_message']");
+                            // 有生成标志且无完整回复 → 仍在生成
+                            return has_sign && !has_resp;
+                        }
+                    """)
+                    still_generating = bool(generating)
+                except Exception:
+                    pass
+
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
+            resp_ready = False
             for sel in response_selectors:
                 try:
                     el = await page.query_selector(sel)
@@ -891,9 +912,13 @@ class GuestQueryExecutor:
                         txt = await el.inner_text()
                         if txt and len(txt.strip()) > 20:
                             logger.info(f"[{llm_name}] 响应内容提前就绪（{elapsed}ms），selector: {sel}")
+                            resp_ready = True
                             break
                 except Exception:
                     continue
+
+            if resp_ready and not still_generating:
+                break
 
         # 抓取响应文本 + HTML
         resp_text = ""
@@ -945,12 +970,37 @@ class GuestQueryExecutor:
                 await _save_html(page, -1, f"{llm_name}_extract_fail")
                 js_text = await page.evaluate("""
                     () => {
-                        const paras = [...document.querySelectorAll('p, li')];
+                        // 排除侧边栏/导航区域
+                        const excludeSelectors = [
+                            'nav', 'aside', '[class*="sidebar"]', '[class*="side-bar"]',
+                            '[class*="history"]', '[class*="conversation-list"]',
+                            '[data-testid="conversation_list"]', '[class*="nav"]',
+                        ];
+                        const excludeEls = new Set();
+                        for (const sel of excludeSelectors) {
+                            try {
+                                document.querySelectorAll(sel).forEach(el => excludeEls.add(el));
+                            } catch(e) {}
+                        }
+                        function isExcluded(el) {
+                            for (const ex of excludeEls) {
+                                if (ex.contains(el)) return true;
+                            }
+                            return false;
+                        }
+                        const paras = [...document.querySelectorAll('p, li')].filter(p => !isExcluded(p));
                         const paraText = paras
                             .map(p => (p.textContent || '').trim())
                             .filter(t => t.length > 5)
                             .join('\\n');
                         if (paraText.length > 50) return paraText;
+
+                        // body fallback：移除侧边栏后取 main/article 区域
+                        const main = document.querySelector('main, [role="main"], article');
+                        if (main) {
+                            const mainText = (main.innerText || '').trim();
+                            if (mainText.length > 100) return mainText.slice(-4000);
+                        }
                         const bodyText = (document.body.innerText || '').trim();
                         if (bodyText.length > 100) return bodyText.slice(-4000);
                         return '';
