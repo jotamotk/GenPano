@@ -1892,7 +1892,12 @@ def list_accounts():
                            query_count_today AS daily_used, daily_limit,
                            consecutive_fails,
                            CASE WHEN cookies_json IS NOT NULL AND cookies_json != ''
-                                THEN json_array_length(cookies_json::json)
+                                THEN CASE
+                                    WHEN cookies_json::text LIKE '[%'
+                                    THEN json_array_length(cookies_json::json)
+                                    WHEN cookies_json::text LIKE '{%'
+                                    THEN json_array_length((cookies_json::json->'cookies'))
+                                    ELSE 0 END
                                 ELSE 0 END AS cookie_count,
                            cookies_updated_at,
                            created_at AS updated_at
