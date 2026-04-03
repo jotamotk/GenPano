@@ -2,27 +2,33 @@
 DeepSeek (chat.deepseek.com) SMS 登录处理器
 
 登录流程：
-1. 打开 chat.deepseek.com
+1. 打开 chat.deepseek.com 首页，模拟浏览行为
 2. 点击登录按钮
 3. 切换到手机号登录（默认可能是邮箱）
 4. 输入手机号 → 点击获取验证码
 5. 处理 CAPTCHA（如有）
 6. 输入验证码 → 提交登录
 7. 验证聊天界面出现
+
+反风控策略：
+- 先访问首页模拟浏览（随机滚动+停留），再进入登录页
+- 所有点击前先用贝塞尔曲线移动鼠标到元素附近
+- 打字速度随机化，模拟真人节奏
+- 操作间添加充足的随机延迟
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
 import time
 from pathlib import Path
 
-from playwright.async_api import Page
+from playwright.async_api import Page, ElementHandle
 
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
-from geo_tracker.agent.slider_captcha import solve_slider_captcha
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +46,15 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
     async def navigate_to_login(self, page: Page) -> bool:
         """
-        点击登录按钮，弹出登录表单，并切换到手机号登录 Tab。
-        DeepSeek 可能默认显示邮箱登录，需要显式切换。
+        模拟真人浏览行为后，点击登录按钮并切换到手机号 Tab。
         """
         logger.info(f"[deepseek] 当前 URL: {page.url}")
 
-        # 检查是否已经在登录/注册页面
-        if "login" in page.url or "auth" in page.url:
+        # ── 模拟真人浏览行为（降低风控触发）──
+        await self._simulate_browsing(page)
+
+        # 检查是否已经在登录页面（DeepSeek 可能直接跳转到 sign_in）
+        if "sign_in" in page.url or "login" in page.url:
             logger.info("[deepseek] 已在登录页面")
             return await self._switch_to_phone_tab(page)
 
@@ -81,14 +89,16 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             return False
 
         logger.info("[deepseek] 点击登录按钮")
-        await login_btn.click()
-        await page.wait_for_timeout(random.randint(2000, 3000))
+        await self._human_click(page, login_btn)
+        await page.wait_for_timeout(random.randint(2500, 4000))
 
-        # 切换到手机号登录
         return await self._switch_to_phone_tab(page)
 
     async def _switch_to_phone_tab(self, page: Page) -> bool:
-        """切换到手机号登录 Tab（DeepSeek 可能默认邮箱登录）"""
+        """切换到手机号登录 Tab"""
+        # 先停顿一下，像真人在看页面
+        await page.wait_for_timeout(random.randint(1000, 2000))
+
         phone_tab = await self._find_element(page, [
             "div:has-text('手机号')",
             "span:has-text('手机号')",
@@ -101,13 +111,11 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         ])
         if phone_tab:
             logger.info("[deepseek] 切换到手机号登录 Tab")
-            await phone_tab.click()
-            await page.wait_for_timeout(random.randint(800, 1500))
+            await self._human_click(page, phone_tab)
+            await page.wait_for_timeout(random.randint(1000, 2000))
         else:
-            # 可能已经在手机号登录页面，或不需要切换
             logger.info("[deepseek] 未找到手机号 Tab（可能已在手机号模式）")
 
-        # 处理用户协议 checkbox（如有）
         await self._handle_agreement(page)
         return True
 
@@ -125,13 +133,12 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
                 if not checked:
                     logger.info("[deepseek] 勾选用户协议")
                     await checkbox.click()
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(random.randint(300, 600))
         except Exception as e:
             logger.warning(f"[deepseek] 勾选协议失败（可能不存在）: {e}")
 
     async def input_phone(self, page: Page, phone: str) -> bool:
-        """输入手机号"""
-        # LubanSMS 返回 +86xxx 格式，去掉前缀
+        """输入手机号（模拟真人打字节奏）"""
         clean_phone = phone.lstrip("+")
         if clean_phone.startswith("86") and len(clean_phone) > 11:
             clean_phone = clean_phone[2:]
@@ -152,7 +159,13 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             return False
 
         logger.info(f"[deepseek] 输入手机号: {clean_phone} (原始: {phone})")
-        await self._type_slowly(page, phone_input, clean_phone)
+        # 先点击输入框
+        await self._human_click(page, phone_input)
+        await page.wait_for_timeout(random.randint(300, 600))
+        # 用慢速打字
+        await self._type_slowly(page, phone_input, clean_phone, delay=random.randint(80, 150))
+        # 输入完后停顿，像真人在检查号码
+        await page.wait_for_timeout(random.randint(1500, 3000))
         return True
 
     async def click_send_sms(self, page: Page) -> bool:
@@ -175,8 +188,8 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             return False
 
         logger.info("[deepseek] 点击获取验证码")
-        await sms_btn.click()
-        await page.wait_for_timeout(random.randint(2000, 3000))
+        await self._human_click(page, sms_btn)
+        await page.wait_for_timeout(random.randint(3000, 5000))
 
         # 处理可能出现的 CAPTCHA
         await self._handle_captcha(page)
@@ -192,7 +205,6 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             "input[type='number']",
         ])
 
-        # Fallback: 找到所有 input，排除手机号输入框，取第二个
         if not code_input:
             inputs = await page.query_selector_all(
                 "input[type='text'], input[type='tel'], input[type='number']"
@@ -207,7 +219,9 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             return False
 
         logger.info(f"[deepseek] 输入验证码: {code}")
-        await self._type_slowly(page, code_input, code)
+        await self._human_click(page, code_input)
+        await page.wait_for_timeout(random.randint(200, 500))
+        await self._type_slowly(page, code_input, code, delay=random.randint(100, 180))
         return True
 
     async def submit_login(self, page: Page) -> bool:
@@ -226,20 +240,16 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
         if submit_btn:
             logger.info("[deepseek] 点击提交按钮")
-            await submit_btn.click()
+            await self._human_click(page, submit_btn)
             return True
 
         logger.warning("[deepseek] 未找到提交按钮")
         return False
 
     async def verify_success(self, page: Page) -> bool:
-        """
-        验证登录是否成功。
-        成功后应进入聊天界面，检查 textarea 或 chat input 出现。
-        """
+        """验证登录是否成功"""
         await page.wait_for_timeout(5000)
 
-        # 检查聊天输入框
         chat_input = await self._find_element(page, [
             "textarea",
             "[contenteditable='true']",
@@ -250,10 +260,7 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.info("[deepseek] 登录成功，聊天输入框已出现")
             return True
 
-        # 再等一会，SPA 可能需要额外加载时间
         await page.wait_for_timeout(5000)
-
-        # 处理可能的登录后 CAPTCHA
         await self._handle_captcha(page)
         await page.wait_for_timeout(2000)
 
@@ -267,7 +274,6 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.info("[deepseek] 登录成功（延迟检测）")
             return True
 
-        # 检查是否有登录按钮消失（说明已登录）
         login_btn = await self._find_element(page, [
             "button:has-text('Log In')",
             "button:has-text('登录')",
@@ -280,23 +286,130 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         logger.error(f"[deepseek] 登录验证失败, URL: {page.url}")
         return False
 
-    # ── 覆盖基类 CAPTCHA 处理 ─────────────────────────────────────────────
+    # ── CAPTCHA 处理 ──────────────────────────────────────────────────────
 
     async def _handle_captcha(self, page: Page) -> None:
         """
-        覆盖基类方法：使用本地滑块求解器处理 DeepSeek 的验证码，
-        不依赖第三方打码服务。
+        检测并处理 DeepSeek 的 3D 图形点选验证码。
+        当前无法自动求解，保存截图后等待其消失（用户可手动干预）。
         """
-        # 先保存截图以便调试
-        await self._save_debug(page, "captcha_before")
+        # 检测 CAPTCHA 弹窗
+        captcha = await self._find_element(page, [
+            "[class*='captcha']",
+            "[class*='verify']",
+            "iframe[src*='captcha']",
+            "[class*='geetest']",
+        ])
+        if not captcha:
+            return
 
-        solved = await solve_slider_captcha(page, max_attempts=3)
-        if solved:
-            logger.info("[deepseek] CAPTCHA 处理完成")
-        else:
-            logger.warning("[deepseek] 滑块验证码求解失败，等待自动恢复...")
-            # 降级到基类行为（等待自动消失）
-            await super()._handle_captcha(page)
+        logger.warning("[deepseek] 检测到人机验证弹窗")
+        await self._save_debug(page, "captcha_detected")
+
+        # 尝试关闭验证码弹窗（点 X），让下次重试时可能不再触发
+        close_btn = await self._find_element(page, [
+            "[class*='captcha'] [class*='close']",
+            "[class*='verify'] [class*='close']",
+            "[class*='captcha'] button:has-text('×')",
+        ])
+        if close_btn:
+            logger.info("[deepseek] 尝试关闭验证码弹窗")
+            await close_btn.click()
+            await page.wait_for_timeout(random.randint(2000, 3000))
+            return
+
+        # 等待验证码消失（可能自动超时关闭）
+        logger.warning("[deepseek] 等待验证码弹窗消失...")
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const els = document.querySelectorAll('[class*="captcha"], [class*="verify"]');
+                    return [...els].every(el => !el.offsetParent);
+                }""",
+                timeout=15000,
+            )
+            logger.info("[deepseek] 验证码弹窗已消失")
+        except Exception:
+            logger.warning("[deepseek] 验证码弹窗未消失，继续...")
+
+    # ── 拟人行为方法 ──────────────────────────────────────────────────────
+
+    async def _simulate_browsing(self, page: Page) -> None:
+        """
+        模拟真人浏览行为：随机鼠标移动、滚动、停留。
+        在执行登录操作前调用，降低被识别为自动化的概率。
+        """
+        vp = page.viewport_size or {"width": 1920, "height": 1080}
+
+        # 随机移动鼠标 2-3 次
+        for _ in range(random.randint(2, 3)):
+            target_x = random.randint(100, vp["width"] - 100)
+            target_y = random.randint(100, vp["height"] - 100)
+            await self._bezier_move(page, target_x, target_y)
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+
+        # 小幅滚动
+        scroll_amount = random.randint(100, 300)
+        await page.mouse.wheel(0, scroll_amount)
+        await asyncio.sleep(random.uniform(1.0, 2.5))
+
+        # 偶尔回滚
+        if random.random() < 0.4:
+            await page.mouse.wheel(0, -random.randint(50, 150))
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        # 停留阅读
+        await asyncio.sleep(random.uniform(2.0, 4.0))
+
+    async def _human_click(self, page: Page, element: ElementHandle) -> None:
+        """
+        模拟真人点击：先移动鼠标到元素位置（贝塞尔曲线），
+        短暂停顿后点击。
+        """
+        try:
+            box = await element.bounding_box()
+            if box:
+                # 目标点在元素范围内随机偏移（不总是正中心）
+                target_x = box["x"] + box["width"] * random.uniform(0.3, 0.7)
+                target_y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+                await self._bezier_move(page, target_x, target_y)
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+                await page.mouse.click(target_x, target_y)
+            else:
+                await element.click()
+        except Exception:
+            await element.click()
+
+    async def _bezier_move(
+        self, page: Page, target_x: float, target_y: float
+    ) -> None:
+        """贝塞尔曲线鼠标移动（自然弧线轨迹）"""
+        vp = page.viewport_size or {"width": 1920, "height": 1080}
+
+        # 起点：屏幕中间附近随机位置
+        start_x = random.uniform(vp["width"] * 0.2, vp["width"] * 0.8)
+        start_y = random.uniform(vp["height"] * 0.2, vp["height"] * 0.8)
+
+        # 两个控制点（产生自然弯曲）
+        cp1_x = start_x + random.uniform(-150, 150)
+        cp1_y = start_y + random.uniform(-150, 150)
+        cp2_x = target_x + random.uniform(-80, 80)
+        cp2_y = target_y + random.uniform(-80, 80)
+
+        steps = random.randint(18, 30)
+        for i in range(steps + 1):
+            t = i / steps
+            # 三次贝塞尔插值
+            x = ((1 - t) ** 3 * start_x
+                 + 3 * (1 - t) ** 2 * t * cp1_x
+                 + 3 * (1 - t) * t ** 2 * cp2_x
+                 + t ** 3 * target_x)
+            y = ((1 - t) ** 3 * start_y
+                 + 3 * (1 - t) ** 2 * t * cp1_y
+                 + 3 * (1 - t) * t ** 2 * cp2_y
+                 + t ** 3 * target_y)
+            await page.mouse.move(x, y)
+            await asyncio.sleep(random.uniform(0.008, 0.025))
 
     # ── 辅助方法 ────────────────────────────────────────────────────────
 
