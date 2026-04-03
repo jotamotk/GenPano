@@ -943,7 +943,8 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            const localStorageText = document.getElementById('local-storage-json').value.trim();
+            const lsEl = document.getElementById('local-storage-json');
+            const localStorageText = lsEl ? lsEl.value.trim() : '';
 
             try {
                 const res = await fetch('./api/accounts/import_cookies', {
