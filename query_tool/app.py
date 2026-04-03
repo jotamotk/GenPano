@@ -944,7 +944,20 @@ HTML_TEMPLATE = """
             }
 
             const lsEl = document.getElementById('local-storage-json');
-            const localStorageText = lsEl ? lsEl.value.trim() : '';
+            let localStorageText = lsEl ? lsEl.value.trim() : '';
+            if (localStorageText) {
+                try {
+                    const parsed = JSON.parse(localStorageText);
+                    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+                        alert('localStorage JSON must be an object like {"userToken": "..."}');
+                        return;
+                    }
+                    localStorageText = JSON.stringify(parsed);  // normalize
+                } catch (e) {
+                    alert('localStorage JSON is invalid: ' + e.message);
+                    return;
+                }
+            }
 
             try {
                 const res = await fetch('./api/accounts/import_cookies', {
@@ -963,7 +976,8 @@ HTML_TEMPLATE = """
                     alert(data.message || 'Cookies imported successfully!');
                     document.getElementById('cookie-json').value = '';
                     document.getElementById('cookie-label').value = '';
-                    document.getElementById('local-storage-json').value = '';
+                    if (document.getElementById('local-storage-json'))
+                        document.getElementById('local-storage-json').value = '';
                     hideCookieUpload();
                     loadAccounts();
                 } else {
@@ -1427,6 +1441,13 @@ def import_cookies_api():
         daily_limit = data.get('daily_limit', 20)
         cookies_raw = data.get('cookies_json', '')
         local_storage_raw = data.get('local_storage', '')
+
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            f"import_cookies: platform={platform}, label={label}, "
+            f"cookies_raw_len={len(cookies_raw)}, local_storage_raw_len={len(local_storage_raw)}, "
+            f"local_storage_raw={local_storage_raw[:200] if local_storage_raw else '(empty)'}"
+        )
 
         if not platform:
             return jsonify({'success': False, 'error': 'Platform is required'})
