@@ -42,7 +42,7 @@ app.conf.update(
         },
         "cookie-keep-alive": {
             "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
-            "schedule": crontab(hour="*/6", minute=30),  # 每6小时运行一次
+            "schedule": crontab(hour="*/2", minute=30),  # 每2小时保活（DeepSeek session 较短）
         },
         # dispatch-pending-queries 已禁用：所有 query 需手动触发
         # "dispatch-pending-queries": {
