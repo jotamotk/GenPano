@@ -22,6 +22,7 @@ from playwright.async_api import Page
 
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
+from geo_tracker.agent.slider_captcha import solve_slider_captcha
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +279,24 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         await self._save_debug(page, "verify_failed")
         logger.error(f"[deepseek] 登录验证失败, URL: {page.url}")
         return False
+
+    # ── 覆盖基类 CAPTCHA 处理 ─────────────────────────────────────────────
+
+    async def _handle_captcha(self, page: Page) -> None:
+        """
+        覆盖基类方法：使用本地滑块求解器处理 DeepSeek 的验证码，
+        不依赖第三方打码服务。
+        """
+        # 先保存截图以便调试
+        await self._save_debug(page, "captcha_before")
+
+        solved = await solve_slider_captcha(page, max_attempts=3)
+        if solved:
+            logger.info("[deepseek] CAPTCHA 处理完成")
+        else:
+            logger.warning("[deepseek] 滑块验证码求解失败，等待自动恢复...")
+            # 降级到基类行为（等待自动消失）
+            await super()._handle_captcha(page)
 
     # ── 辅助方法 ────────────────────────────────────────────────────────
 
