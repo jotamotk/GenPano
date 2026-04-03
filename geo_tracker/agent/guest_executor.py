@@ -135,11 +135,12 @@ GUEST_LLM_CONFIG = {
         "url":              "https://chat.deepseek.com",
         "input_selector":   "textarea, [contenteditable=true], input[type=text]",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message'], [class*='content'], .markdown",
-        "wait_after_submit": 20000,
+        "response_selector": ".ds-markdown, [class*='message-content'] .markdown, [class*='message'] .markdown",
+        "wait_after_submit": 60000,
         "load_wait":        8000,
         "requires_login":   True,
         "login_redirect_domains": ["login.deepseek.com"],
+        "stream_check_selector": "[class*='loading'], [class*='stop'], button:has-text('Stop')",
     },
     "claude": {
         "url":              "https://claude.ai",
@@ -946,14 +947,29 @@ class GuestQueryExecutor:
                     if el:
                         txt = await el.inner_text()
                         if txt and len(txt.strip()) > 20:
-                            logger.info(f"[{llm_name}] 响应内容提前就绪（{elapsed}ms），selector: {sel}")
                             resp_ready = True
                             break
                 except Exception:
                     continue
 
-            if resp_ready and not still_generating:
-                break
+            if resp_ready:
+                # 检查是否仍在流式输出
+                # 方式1: stream_check_selector（loading/stop 按钮）
+                stream_sel = cfg.get("stream_check_selector", "")
+                still_streaming = False
+                if stream_sel:
+                    try:
+                        stream_el = await page.query_selector(stream_sel)
+                        if stream_el and await stream_el.is_visible():
+                            still_streaming = True
+                    except Exception:
+                        pass
+
+                if still_streaming or still_generating:
+                    logger.info(f"[{llm_name}] 检测到响应但仍在生成中（{elapsed}ms），继续等待...")
+                else:
+                    logger.info(f"[{llm_name}] 响应内容就绪（{elapsed}ms）")
+                    break
 
         # 抓取响应文本 + HTML
         resp_text = ""
