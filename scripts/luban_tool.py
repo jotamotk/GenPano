@@ -41,7 +41,7 @@ except ImportError:
     sys.exit(1)
 
 LUBANSMS_BASE = "https://lubansms.com/v2/api"
-TOKEN = os.getenv("LUBANSMS_TOKEN", "")
+TOKEN = os.getenv("LUBANSMS_TOKEN", "YOUR_LUBANSMS_TOKEN_HERE")
 
 # ─── 同步 API 封装 ──────────────────────────────────────────────────────────
 
