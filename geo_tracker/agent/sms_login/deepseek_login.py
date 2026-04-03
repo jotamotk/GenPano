@@ -27,10 +27,13 @@ from pathlib import Path
 
 from playwright.async_api import Page, ElementHandle
 
+from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
 
 logger = logging.getLogger(__name__)
+
+_solver = CaptchaSolver()
 
 DEBUG_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
@@ -290,14 +293,29 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
     async def _handle_captcha(self, page: Page) -> None:
         """
-        检测并处理 DeepSeek 的 3D 图形点选验证码。
-        当前无法自动求解，保存截图后等待其消失（用户可手动干预）。
+        检测并处理 DeepSeek 的人机验证（Cloudflare Turnstile/Challenge）。
+        使用通用 CapSolver 模块自动求解。
         """
-        # 检测 CAPTCHA 弹窗
+        await self._save_debug(page, "captcha_before")
+
+        # 使用通用 detect_and_solve 自动检测类型并求解
+        if _solver.enabled:
+            logger.info("[deepseek] 调用 CapSolver 自动求解验证码...")
+            solved = await detect_and_solve(page, _solver)
+            if solved:
+                logger.info("[deepseek] CapSolver 验证码求解成功")
+                await page.wait_for_timeout(random.randint(2000, 3000))
+                return
+            logger.warning("[deepseek] CapSolver 求解失败，尝试等待自动消失")
+        else:
+            logger.warning("[deepseek] CAPSOLVER_API_KEY 未配置，无法自动求解")
+
+        # Fallback: 检测 CAPTCHA 弹窗并尝试关闭
         captcha = await self._find_element(page, [
             "[class*='captcha']",
             "[class*='verify']",
             "iframe[src*='captcha']",
+            "iframe[src*='challenges.cloudflare.com']",
             "[class*='geetest']",
         ])
         if not captcha:
@@ -306,7 +324,7 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         logger.warning("[deepseek] 检测到人机验证弹窗")
         await self._save_debug(page, "captcha_detected")
 
-        # 尝试关闭验证码弹窗（点 X），让下次重试时可能不再触发
+        # 尝试关闭验证码弹窗
         close_btn = await self._find_element(page, [
             "[class*='captcha'] [class*='close']",
             "[class*='verify'] [class*='close']",
@@ -323,10 +341,13 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         try:
             await page.wait_for_function(
                 """() => {
-                    const els = document.querySelectorAll('[class*="captcha"], [class*="verify"]');
+                    const els = document.querySelectorAll(
+                        '[class*="captcha"], [class*="verify"], '
+                        + 'iframe[src*="challenges.cloudflare.com"]'
+                    );
                     return [...els].every(el => !el.offsetParent);
                 }""",
-                timeout=15000,
+                timeout=20000,
             )
             logger.info("[deepseek] 验证码弹窗已消失")
         except Exception:
