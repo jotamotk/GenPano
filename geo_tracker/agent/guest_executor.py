@@ -513,9 +513,21 @@ class GuestQueryExecutor:
                             logger.warning(f"[{llm}] session 刷新无响应")
                             return None
 
-                        # 刷新后重新导航到主页
+                        # 刷新后关闭旧页面，开新页面（清除客户端缓存的 expired 状态）
+                        logger.info(f"[{llm}] session 刷新完成，重新打开新页面...")
+                        await page_obj.close()
+                        page_obj = await context.new_page()
                         await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
                         await page_obj.wait_for_timeout(3000)
+                        # 新页面再过一次 CF
+                        cf_waited2 = 0
+                        while cf_waited2 < 15000:
+                            pt = (await page_obj.title() or "").strip().lower()
+                            if any(t in pt for t in CF_CHALLENGE_TITLES) or (not pt and cf_waited2 < 5000):
+                                await page_obj.wait_for_timeout(2000)
+                                cf_waited2 += 2000
+                            else:
+                                break
                     except Exception as e:
                         logger.warning(f"[{llm}] session 刷新异常: {e}")
                         await _save_screenshot(page_obj, query.id, f"{llm}_session_exception")
@@ -590,37 +602,6 @@ class GuestQueryExecutor:
                             logger.info(f"[{llm}] 移除 Google One Tap")
                     except Exception:
                         pass
-
-                # ── ChatGPT: 检测 "session expired" 弹窗并处理 ──
-                if llm == "chatgpt" and injected_cookies:
-                    try:
-                        page_text = await page_obj.evaluate("document.body?.innerText || ''")
-                        if "your session has expired" in page_text.lower() or "please log in again" in page_text.lower():
-                            logger.warning(f"[{llm}] 页面加载后检测到 session expired 弹窗")
-                            # 尝试点击 "Log in" 按钮重新认证
-                            login_btn = await page_obj.query_selector(
-                                "button:has-text('Log in'), a:has-text('Log in'), "
-                                "button:has-text('log in'), a:has-text('log in')"
-                            )
-                            if login_btn:
-                                await login_btn.click()
-                                logger.info(f"[{llm}] 点击 Log in 按钮，等待重新认证...")
-                                await page_obj.wait_for_timeout(5000)
-                                # 检查是否回到了 ChatGPT 主页
-                                new_url = page_obj.url
-                                new_text = await page_obj.evaluate("document.body?.innerText || ''")
-                                if "your session has expired" not in new_text.lower():
-                                    logger.info(f"[{llm}] 重新认证成功，当前 URL: {new_url}")
-                                else:
-                                    logger.warning(f"[{llm}] 重新认证失败，cookie 无法恢复 session")
-                                    await _save_screenshot(page_obj, query.id, f"{llm}_session_expired_final")
-                                    return None
-                            else:
-                                logger.warning(f"[{llm}] session expired 但找不到 Log in 按钮")
-                                await _save_screenshot(page_obj, query.id, f"{llm}_session_expired_no_btn")
-                                return None
-                    except Exception as e:
-                        logger.debug(f"[{llm}] session expired 检测异常: {e}")
 
                 # 优先等待输入框出现
                 load_wait = config.get("load_wait", 8000)
