@@ -138,7 +138,39 @@ def execute_query(self, query_id: int) -> dict:
 
                 # Require a meaningful response (guards against login redirects returning 1 char)
                 MIN_RESPONSE_LEN = 20
+                # 检测无效响应（登录页、session 过期等 UI 文字）
+                INVALID_RESPONSE_MARKERS = [
+                    "your session has expired",
+                    "please log in again",
+                    "log in to continue",
+                    "sign in to continue",
+                    "where should we begin",
+                    "skip to content\nnew chat",
+                ]
+
+                def _is_invalid_response(text: str) -> str | None:
+                    """返回匹配的无效标记，或 None"""
+                    lower = text.lower()
+                    for marker in INVALID_RESPONSE_MARKERS:
+                        if marker in lower:
+                            return marker
+                    return None
+
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
+                    invalid_marker = _is_invalid_response(response.raw_text)
+                    if invalid_marker:
+                        # 响应内容是登录页/过期页，不是 AI 回答
+                        query.status = QueryStatus.FAILED.value
+                        failure_reason = "cookies_expired"
+                        if account_id and pool:
+                            await pool.report_failure(account_id, reason=failure_reason)
+                        await db.commit()
+                        logger.warning(
+                            f"Query {query_id} failed: response contains '{invalid_marker}', "
+                            f"cookie expired for account {account_id}"
+                        )
+                        return {"query_id": query_id, "status": "failed", "reason": failure_reason}
+
                     # 删除旧 response（重试场景），避免唯一约束冲突
                     await db.execute(
                         sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
