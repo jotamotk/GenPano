@@ -101,12 +101,12 @@ def execute_query(self, query_id: int) -> dict:
                     f"for {query.target_llm}"
                 )
             elif requires_login:
-                # 必须登录但无可用账号，设回 PENDING 等下次重试
-                query.status = QueryStatus.PENDING.value
+                # 必须登录但无可用账号 → 标记 FAILED（不再设回 pending 避免无限循环）
+                query.status = QueryStatus.FAILED.value
                 await db.commit()
                 logger.warning(
                     f"Query {query_id}: {query.target_llm} requires login "
-                    f"but no account available, returning to PENDING"
+                    f"but no account available, marking FAILED"
                 )
                 if query.target_llm != "deepseek":
                     auto_login.apply_async(
@@ -115,7 +115,7 @@ def execute_query(self, query_id: int) -> dict:
                     )
                 return {
                     "query_id": query_id,
-                    "status": "pending",
+                    "status": "failed",
                     "reason": "no_account_available",
                 }
             else:

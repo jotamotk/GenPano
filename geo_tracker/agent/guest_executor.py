@@ -68,9 +68,8 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
-        # ChatGPT guest 模式可用，有 cookie 时自动增强（web browsing / citation）
-        # 不设 requires_login，避免无账号时卡在 pending
-        "requires_login":   False,
+        # ChatGPT 有账号模式：确保登录态以获取精准 GEO 数据和 citation
+        "requires_login":   True,
         "cookies_env":      "CHATGPT_COOKIES_JSON",
         "dismiss_selectors": [
             "button:has-text('Dismiss')",
@@ -447,11 +446,11 @@ class GuestQueryExecutor:
                 except Exception as e:
                     logger.warning(f"[{llm}] session 刷新异常: {e}")
 
-                # session 刷新失败 → 清除过期 cookie，fallback 到 guest 模式
+                # session 刷新失败 → cookie 已过期，直接返回 None 让上层标记 failed
                 if not session_ok:
-                    logger.warning(f"[{llm}] session 已过期，清除 cookie 回退到 guest 模式")
-                    await context.clear_cookies()
-                    await page_obj.wait_for_timeout(500)
+                    logger.warning(f"[{llm}] session 已过期，cookie 无效，中止执行")
+                    await _save_screenshot(page_obj, query.id, f"{llm}_session_expired")
+                    return None
 
             # 打开目标页面
             logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
