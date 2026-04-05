@@ -141,11 +141,7 @@ def execute_query(self, query_id: int) -> dict:
                 # 检测无效响应（登录页、session 过期等 UI 文字）
                 INVALID_RESPONSE_MARKERS = [
                     "your session has expired",
-                    "please log in again",
-                    "log in to continue",
-                    "sign in to continue",
-                    "where should we begin",
-                    "skip to content\nnew chat",
+                    "please log in again to continue using the app",
                 ]
 
                 def _is_invalid_response(text: str) -> str | None:
