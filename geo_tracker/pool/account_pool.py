@@ -45,6 +45,9 @@ class AccountPool:
                 and_(
                     LLMAccount.llm_name == llm_name,
                     LLMAccount.status == AccountStatus.ACTIVE.value,
+                    # 必须有 cookies
+                    LLMAccount.cookies_json != None,
+                    LLMAccount.cookies_json != "",
                     # 冷却已过期 或 从未冷却
                     (LLMAccount.cooldown_until == None) | (LLMAccount.cooldown_until <= now),
                     # 今日配额未满
