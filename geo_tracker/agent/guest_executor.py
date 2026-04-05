@@ -136,11 +136,11 @@ GUEST_LLM_CONFIG = {
         "input_selector":   "textarea, [contenteditable=true], input[type=text]",
         "submit_key":       "Enter",
         "response_selector": ".ds-markdown, [class*='message-content'] .markdown, [class*='message'] .markdown",
-        "wait_after_submit": 60000,
+        "wait_after_submit": 90000,
         "load_wait":        8000,
         "requires_login":   True,
         "login_redirect_domains": ["login.deepseek.com"],
-        "stream_check_selector": "[class*='loading'], [class*='stop'], button:has-text('Stop')",
+        "stream_check_selector": "[class*='loading'], [class*='ds-loading'], .ds-icon-stop, button:has-text('Stop'), button:has-text('停止')",
     },
     "claude": {
         "url":              "https://claude.ai",
@@ -907,6 +907,10 @@ class GuestQueryExecutor:
         elapsed = 0
         response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
 
+        prev_resp_len = 0       # 上一轮检测到的响应文本长度
+        stable_rounds = 0       # 文本长度连续不变的轮数
+        STABLE_THRESHOLD = 2    # 连续 N 轮不变才认为生成完毕
+
         while elapsed < wait_total:
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
             elapsed += wait_interval
@@ -941,6 +945,7 @@ class GuestQueryExecutor:
 
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
             resp_ready = False
+            current_resp_len = 0
             for sel in response_selectors:
                 try:
                     el = await page.query_selector(sel)
@@ -948,6 +953,7 @@ class GuestQueryExecutor:
                         txt = await el.inner_text()
                         if txt and len(txt.strip()) > 20:
                             resp_ready = True
+                            current_resp_len = len(txt.strip())
                             break
                 except Exception:
                     continue
@@ -965,10 +971,25 @@ class GuestQueryExecutor:
                     except Exception:
                         pass
 
-                if still_streaming or still_generating:
-                    logger.info(f"[{llm_name}] 检测到响应但仍在生成中（{elapsed}ms），继续等待...")
+                # 方式2: 文本长度稳定性检测（连续 N 轮长度不变 → 完成）
+                if current_resp_len > prev_resp_len:
+                    stable_rounds = 0
+                    logger.info(
+                        f"[{llm_name}] 响应仍在增长（{elapsed}ms, {current_resp_len} chars）"
+                    )
                 else:
-                    logger.info(f"[{llm_name}] 响应内容就绪（{elapsed}ms）")
+                    stable_rounds += 1
+
+                prev_resp_len = current_resp_len
+
+                if still_streaming or still_generating:
+                    stable_rounds = 0  # 有明确的生成指示符时重置稳定计数
+                    logger.info(f"[{llm_name}] 检测到响应但仍在生成中（{elapsed}ms），继续等待...")
+                elif stable_rounds >= STABLE_THRESHOLD:
+                    logger.info(
+                        f"[{llm_name}] 响应内容就绪（{elapsed}ms, {current_resp_len} chars, "
+                        f"连续 {stable_rounds} 轮稳定）"
+                    )
                     break
 
         # 抓取响应文本 + HTML
