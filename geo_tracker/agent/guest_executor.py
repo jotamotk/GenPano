@@ -418,6 +418,32 @@ class GuestQueryExecutor:
                 except Exception as e:
                     logger.warning(f"[{llm}] google.com 预访问失败（非致命）: {e}")
 
+            # ── ChatGPT: 刷新 session token（cookie 中的 session token 有效期短，需要先刷新）──
+            if llm == "chatgpt" and injected_cookies:
+                try:
+                    logger.info(f"[{llm}] 刷新 session token...")
+                    resp = await page_obj.goto(
+                        "https://chatgpt.com/api/auth/session",
+                        wait_until="domcontentloaded", timeout=30000
+                    )
+                    if resp and resp.ok:
+                        body = await page_obj.inner_text("body")
+                        try:
+                            session_data = json.loads(body)
+                            if session_data.get("accessToken"):
+                                logger.info(f"[{llm}] session 刷新成功，用户: {session_data.get('user', {}).get('email', 'unknown')}")
+                            elif session_data.get("error"):
+                                logger.warning(f"[{llm}] session 刷新失败: {session_data.get('error')}")
+                            else:
+                                logger.warning(f"[{llm}] session 响应无 accessToken: {body[:200]}")
+                        except json.JSONDecodeError:
+                            logger.warning(f"[{llm}] session 响应非 JSON: {body[:200]}")
+                    else:
+                        status = resp.status if resp else "no response"
+                        logger.warning(f"[{llm}] session 刷新 HTTP 错误: {status}")
+                except Exception as e:
+                    logger.warning(f"[{llm}] session 刷新异常（非致命）: {e}")
+
             # 打开目标页面
             logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
             try:
