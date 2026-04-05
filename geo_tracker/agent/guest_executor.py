@@ -68,8 +68,9 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
-        # 有 CHATGPT_COOKIES_JSON 时走登录态（支持 web browsing / citation）
-        "requires_login":   not bool(os.getenv("CHATGPT_COOKIES_JSON", "").strip()),
+        # ChatGPT guest 模式可用，有 cookie 时自动增强（web browsing / citation）
+        # 不设 requires_login，避免无账号时卡在 pending
+        "requires_login":   False,
         "cookies_env":      "CHATGPT_COOKIES_JSON",
         "dismiss_selectors": [
             "button:has-text('Dismiss')",
@@ -419,6 +420,7 @@ class GuestQueryExecutor:
                     logger.warning(f"[{llm}] google.com 预访问失败（非致命）: {e}")
 
             # ── ChatGPT: 刷新 session token（cookie 中的 session token 有效期短，需要先刷新）──
+            session_ok = False
             if llm == "chatgpt" and injected_cookies:
                 try:
                     logger.info(f"[{llm}] 刷新 session token...")
@@ -431,6 +433,7 @@ class GuestQueryExecutor:
                         try:
                             session_data = json.loads(body)
                             if session_data.get("accessToken"):
+                                session_ok = True
                                 logger.info(f"[{llm}] session 刷新成功，用户: {session_data.get('user', {}).get('email', 'unknown')}")
                             elif session_data.get("error"):
                                 logger.warning(f"[{llm}] session 刷新失败: {session_data.get('error')}")
@@ -442,7 +445,13 @@ class GuestQueryExecutor:
                         status = resp.status if resp else "no response"
                         logger.warning(f"[{llm}] session 刷新 HTTP 错误: {status}")
                 except Exception as e:
-                    logger.warning(f"[{llm}] session 刷新异常（非致命）: {e}")
+                    logger.warning(f"[{llm}] session 刷新异常: {e}")
+
+                # session 刷新失败 → 清除过期 cookie，fallback 到 guest 模式
+                if not session_ok:
+                    logger.warning(f"[{llm}] session 已过期，清除 cookie 回退到 guest 模式")
+                    await context.clear_cookies()
+                    await page_obj.wait_for_timeout(500)
 
             # 打开目标页面
             logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
