@@ -13,7 +13,8 @@ import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
-_TTL_SECONDS = 86400  # 24 小时
+_TTL_SECONDS = 86400  # 24 小时（默认）
+_TTL_PERMANENT = 86400 * 365  # 1 年（永久拉黑）
 _KEY_PREFIX = "sms_blacklist"
 # 单次取号时最多跳过多少个黑名单号码
 _MAX_SKIP = 20
@@ -23,13 +24,21 @@ def _key(platform: str, phone: str) -> str:
     return f"{_KEY_PREFIX}:{platform}:{phone}"
 
 
-async def add_to_blacklist(platform: str, phone: str) -> None:
-    """将手机号加入黑名单（24h 有效期）"""
+async def add_to_blacklist(
+    platform: str, phone: str, reason: str = "", permanent: bool = False,
+) -> None:
+    """将手机号加入黑名单。permanent=True 则永久拉黑（1年），否则 24h。"""
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     client = aioredis.from_url(redis_url, decode_responses=True)
     try:
-        await client.set(_key(platform, phone), "1", ex=_TTL_SECONDS)
-        logger.info(f"[{platform}] 手机号 {phone} 已加入黑名单 (TTL=24h)")
+        ttl = _TTL_PERMANENT if permanent else _TTL_SECONDS
+        value = reason or "1"
+        await client.set(_key(platform, phone), value, ex=ttl)
+        ttl_desc = "永久" if permanent else "24h"
+        logger.info(
+            f"[{platform}] 手机号 {phone} 已加入黑名单 (TTL={ttl_desc})"
+            + (f", 原因: {reason}" if reason else "")
+        )
     except Exception as e:
         logger.warning(f"[{platform}] 写入黑名单失败: {e}")
     finally:
