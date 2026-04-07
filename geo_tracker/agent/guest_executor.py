@@ -588,6 +588,16 @@ class GuestQueryExecutor:
                         pass
                 return None
 
+            # 页面加载后检查是否被重定向到登录页
+            current_url = page_obj.url
+            login_domains = config.get("login_redirect_domains", [])
+            if any(d in current_url for d in login_domains):
+                logger.warning(f"[{llm}] 页面加载后仍在登录页: {current_url}，cookies/token 已失效")
+                await _save_screenshot(page_obj, query.id, f"{llm}_login_after_load")
+                if self.account_cookies:
+                    return None  # 让上层标记 cookies_expired
+                return None
+
             # 尝试找输入框
             input_el = None
             selectors = [s.strip() for s in config["input_selector"].split(",")]
