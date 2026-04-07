@@ -371,6 +371,13 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
         await self._save_debug(page, "verify_failed")
         logger.error(f"[deepseek] 登录验证失败, URL: {page.url}")
+
+        # 检测是否是设备环境错误（号码不干净）
+        page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+        if "device environment" in page_text.lower() or "设备环境" in page_text:
+            logger.warning("[deepseek] 检测到设备环境错误，标记号码为脏号")
+            return "device_env_error"
+
         return False
 
     # ── CAPTCHA 处理 ──────────────────────────────────────────────────────
