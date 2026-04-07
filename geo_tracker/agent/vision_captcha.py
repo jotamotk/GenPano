@@ -197,31 +197,29 @@ def _call_vision_model(image_base64: str, prompt_text: str, img_width: float, im
     user_prompt = f"指令：{prompt_text}\n\n请找到目标物体并返回其中心点坐标。"
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=ARK_MODEL,
-            messages=[
+            input=[
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}",
-                            },
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{image_base64}",
                         },
                         {
-                            "type": "text",
+                            "type": "input_text",
                             "text": user_prompt,
                         },
                     ],
                 },
             ],
             temperature=0.1,
-            max_tokens=100,
+            max_output_tokens=100,
         )
 
-        content = response.choices[0].message.content.strip()
+        content = response.output_text.strip()
         logger.info(f"[vision_captcha] 模型返回: {content}")
 
         # 提取 JSON
