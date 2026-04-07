@@ -342,8 +342,10 @@ class BaseSMSLoginHandler(ABC):
                     toast_error = await self._detect_error_toast(page)
                     if toast_error:
                         logger.warning(f"[{self.platform}] toast 错误: {toast_error}")
-                        if any(kw in toast_error.lower() for kw in [
-                            "device environment", "risk_device", "设备环境"
+                        if any(kw in toast_error for kw in [
+                            "device environment", "risk_device",
+                            "设备环境", "环境异常", "运行环境",
+                            "Device Environment", "RISK_DEVICE",
                         ]):
                             device_env_error = True
 

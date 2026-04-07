@@ -373,9 +373,12 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         logger.error(f"[deepseek] 登录验证失败, URL: {page.url}")
 
         # 检测是否是设备环境错误（号码不干净）
+        # 中文: "当前设备运行环境异常，请尝试更换环境"
+        # 英文: "Current device environment error. Please try a different environment."
         page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-        if "device environment" in page_text.lower() or "设备环境" in page_text:
-            logger.warning("[deepseek] 检测到设备环境错误，标记号码为脏号")
+        if any(kw in page_text for kw in ["环境异常", "运行环境", "设备环境"]) or \
+           "device environment" in page_text.lower():
+            logger.warning(f"[deepseek] 检测到设备环境错误，标记号码为脏号")
             return "device_env_error"
 
         return False
