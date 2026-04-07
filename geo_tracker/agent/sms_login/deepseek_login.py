@@ -309,6 +309,16 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         # ── 检测验证码是否存在 ──
         has_captcha = await page.evaluate("""
             () => {
+                // 数美 (Shumei) 验证码 — DeepSeek 实际使用的验证码
+                const shumei = document.querySelector(
+                    '.shumei_captcha_wrapper, #sm-captcha'
+                );
+                if (shumei && shumei.offsetParent !== null) {
+                    const tips = document.querySelector('.shumei_captcha_slide_tips');
+                    const prompt = tips ? tips.textContent.trim() : '';
+                    return 'shumei_captcha|' + prompt;
+                }
+
                 // Cloudflare iframe
                 const cfIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
                 if (cfIframe) return 'cloudflare_iframe|' + cfIframe.src;
@@ -357,6 +367,22 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         captcha_detail = "|".join(has_captcha.split("|")[1:]) if "|" in has_captcha else ""
         logger.info(f"[deepseek] 检测到验证码: type={captcha_type}, detail={captcha_detail}")
         await self._save_debug(page, f"captcha_{captcha_type}")
+
+        # ── 策略 0: 数美验证码 — 使用视觉模型求解（最高优先级）──
+        if captcha_type == "shumei_captcha":
+            try:
+                from geo_tracker.agent.vision_captcha import solve_vision_captcha
+                logger.info(f"[deepseek] 数美验证码，调用视觉模型求解 (题目: {captcha_detail})")
+                solved = await solve_vision_captcha(page, max_retries=3)
+                if solved:
+                    logger.info("[deepseek] 数美验证码求解成功")
+                    await page.wait_for_timeout(random.randint(1000, 2000))
+                    return
+                logger.warning("[deepseek] 数美验证码求解失败")
+            except Exception as e:
+                logger.warning(f"[deepseek] 视觉求解异常: {e}")
+            await self._wait_captcha_dismiss(page)
+            return
 
         from geo_tracker.agent.captcha import (
             _extract_turnstile_sitekey,
