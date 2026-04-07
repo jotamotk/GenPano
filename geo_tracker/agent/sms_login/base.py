@@ -265,7 +265,7 @@ class BaseSMSLoginHandler(ABC):
                     logger.warning(f"[{self.platform}] {last_fail_reason}")
                     if not is_relogin:
                         # 新注册：将收不到短信的号码加黑名单
-                        await add_to_blacklist(self.platform, phone)
+                        await add_to_blacklist(self.platform, phone, reason="sms_timeout")
                     continue  # 重新登录只有 1 次，直接失败退出
 
                 # 收到验证码，继续登录流程
@@ -353,7 +353,7 @@ class BaseSMSLoginHandler(ABC):
                     logger.warning(
                         f"[{self.platform}] 手机号 {phone} 设备环境错误，加入黑名单并换号"
                     )
-                    await add_to_blacklist(self.platform, phone)
+                    await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
                     last_fail_reason = f"手机号 {phone} 设备环境错误"
                     continue
 
@@ -368,7 +368,7 @@ class BaseSMSLoginHandler(ABC):
                         f"[{self.platform}] 设备环境错误 (verify阶段)，"
                         f"手机号 {phone} 不干净，加入黑名单并换号"
                     )
-                    await add_to_blacklist(self.platform, phone)
+                    await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
                     last_fail_reason = f"手机号 {phone} 设备环境错误"
                     continue
                 if not verify_result:
