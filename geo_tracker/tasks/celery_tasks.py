@@ -576,9 +576,16 @@ async def _visit_and_refresh(
                 timezone_id="Asia/Shanghai" if is_domestic else "America/New_York",
             )
 
-        # 注入 cookies
-        cookies = json_mod.loads(executor.account_cookies)
-        await context.add_cookies(cookies)
+        # 注入 cookies（支持新旧两种格式）
+        parsed = json_mod.loads(executor.account_cookies)
+        if isinstance(parsed, dict) and "cookies" in parsed:
+            cookies = parsed["cookies"]
+        elif isinstance(parsed, list):
+            cookies = parsed
+        else:
+            cookies = []
+        if cookies:
+            await context.add_cookies(cookies)
 
         page = await context.new_page()
 
