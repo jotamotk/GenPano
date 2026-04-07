@@ -293,13 +293,48 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
     async def _handle_captcha(self, page: Page) -> None:
         """
-        检测并处理 DeepSeek 的人机验证（Cloudflare Turnstile/Challenge）。
-        DeepSeek 使用 Cloudflare 验证，按优先级尝试：
+        检测并处理 DeepSeek 的人机验证。
+        按优先级：
+        0. 数美 (Shumei) 3D 空间点选验证码 → 视觉模型求解
         1. 提取 sitekey → CapSolver Turnstile 求解
         2. 无 sitekey → CapSolver Cloudflare Challenge 求解
-        3. 都失败 → 等待消失
+        3. 视觉模型通用求解
+        4. 等待消失
         """
         await self._save_debug(page, "captcha_before")
+
+        # ── 策略0 (最高优先级): 数美 (Shumei) 验证码 ──
+        shumei_info = await page.evaluate("""
+            () => {
+                const shumei = document.querySelector('.shumei_captcha_wrapper, #sm-captcha');
+                if (shumei && shumei.offsetParent !== null) {
+                    // 提取题目文字
+                    const tipEl = shumei.querySelector('.shumei_captcha_slide_tips, [class*="tips"]');
+                    const prompt = tipEl ? (tipEl.textContent || '').trim() : '';
+                    return 'shumei_captcha|' + prompt;
+                }
+                return null;
+            }
+        """)
+
+        if shumei_info:
+            captcha_type = shumei_info.split("|")[0]
+            captcha_detail = "|".join(shumei_info.split("|")[1:]) if "|" in shumei_info else ""
+            logger.info(f"[deepseek] 检测到验证码: type={captcha_type}, detail={captcha_detail}")
+            await self._save_debug(page, f"captcha_{captcha_type}")
+            logger.info(f"[deepseek] 数美验证码，调用视觉模型求解 (题目: {captcha_detail})")
+            try:
+                from geo_tracker.agent.vision_captcha import solve_vision_captcha
+                solved = await solve_vision_captcha(page, max_retries=3)
+                if solved:
+                    logger.info("[deepseek] 数美验证码求解成功")
+                    await page.wait_for_timeout(random.randint(1000, 2000))
+                    return
+            except Exception as e:
+                logger.warning(f"[deepseek] 数美验证码求解异常: {e}")
+            logger.warning("[deepseek] 数美验证码求解失败")
+            await self._wait_captcha_dismiss(page)
+            return
 
         if not _solver.enabled:
             logger.warning("[deepseek] CAPSOLVER_API_KEY 未配置，无法自动求解")
