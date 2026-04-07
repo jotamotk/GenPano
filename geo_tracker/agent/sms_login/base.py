@@ -35,6 +35,8 @@ DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 
 # CAPTCHA 检测选择器（字节跳动/通用）
 CAPTCHA_SELECTORS = [
+    ".shumei_captcha_wrapper",
+    "#sm-captcha",
     "[class*='verify']",
     "[class*='captcha']",
     "#captcha-verify",

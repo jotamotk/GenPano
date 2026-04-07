@@ -84,7 +84,39 @@ async def detect_vision_captcha(page: Page) -> Optional[dict]:
     # 检测验证码容器
     result = await page.evaluate("""
         () => {
-            // 检测包含 3D 图形验证码的弹窗
+            // ── 优先检测数美 (Shumei) 验证码 ──
+            const shumei = document.querySelector('.shumei_captcha_wrapper, #sm-captcha');
+            if (shumei && shumei.offsetParent !== null) {
+                // 数美背景图片
+                const bgImg = shumei.querySelector('.shumei_captcha_loaded_img_bg, img');
+                if (bgImg) {
+                    const rect = bgImg.getBoundingClientRect();
+                    if (rect.width >= 50 && rect.height >= 50) {
+                        // 提取题目
+                        const tipEl = shumei.querySelector(
+                            '.shumei_captcha_slide_tips, [class*="tips"], [class*="title"]'
+                        );
+                        let prompt = tipEl ? (tipEl.textContent || '').trim() : '';
+                        if (!prompt) {
+                            // fallback: 容器内所有文本
+                            const text = shumei.innerText || '';
+                            const lines = text.split('\\n').filter(l => l.trim().length > 5);
+                            prompt = lines[0] || text.slice(0, 200);
+                        }
+                        return {
+                            found: true,
+                            prompt: prompt.trim(),
+                            imgRect: {
+                                x: rect.x, y: rect.y,
+                                width: rect.width, height: rect.height
+                            },
+                            containerClass: 'shumei_captcha',
+                        };
+                    }
+                }
+            }
+
+            // ── 通用检测 ──
             const selectors = [
                 '[class*="captcha"]',
                 '[class*="verify"]',
@@ -94,18 +126,15 @@ async def detect_vision_captcha(page: Page) -> Optional[dict]:
             for (const sel of selectors) {
                 const els = document.querySelectorAll(sel);
                 for (const el of els) {
-                    if (!el.offsetParent) continue;  // 不可见
-                    // 必须包含图片
+                    if (!el.offsetParent) continue;
                     const img = el.querySelector('img');
                     if (!img) continue;
-                    // 必须有文字提示（题目）
                     const text = el.innerText || '';
                     if (text.length < 5) continue;
 
                     const rect = img.getBoundingClientRect();
                     if (rect.width < 50 || rect.height < 50) continue;
 
-                    // 尝试提取题目文字（通常在图片下方或上方）
                     let prompt = '';
                     const tipEls = el.querySelectorAll(
                         '[class*="tip"], [class*="title"], [class*="prompt"], '
@@ -119,7 +148,6 @@ async def detect_vision_captcha(page: Page) -> Optional[dict]:
                         }
                     }
                     if (!prompt) {
-                        // fallback: 用容器的全部文本
                         const lines = text.split('\\n').filter(l => l.trim().length > 10);
                         prompt = lines[lines.length - 1] || text.slice(0, 200);
                     }
@@ -320,6 +348,7 @@ async def solve_vision_captcha(page: Page, max_retries: int = 3) -> bool:
 async def _click_refresh(page: Page) -> None:
     """点击验证码刷新按钮（换一题）"""
     refresh_selectors = [
+        ".shumei_captcha_img_refresh_btn",  # 数美刷新按钮
         "[class*='captcha'] [class*='refresh']",
         "[class*='captcha'] [class*='reload']",
         "[class*='verify'] [class*='refresh']",
