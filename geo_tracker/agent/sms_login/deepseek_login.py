@@ -419,7 +419,19 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             else:
                 logger.warning("[deepseek] 跳过 Challenge 求解（未配置代理）")
 
-        # ── 策略3: generic_captcha — 尝试直接用 Turnstile ProxyLess ──
+        # ── 策略3: 视觉模型求解（3D 图形点选验证码）──
+        try:
+            from geo_tracker.agent.vision_captcha import solve_vision_captcha
+            logger.info("[deepseek] 尝试视觉模型求解验证码...")
+            solved = await solve_vision_captcha(page, max_retries=3)
+            if solved:
+                logger.info("[deepseek] 视觉验证码求解成功")
+                await page.wait_for_timeout(random.randint(1000, 2000))
+                return
+        except Exception as e:
+            logger.warning(f"[deepseek] 视觉验证码求解异常: {e}")
+
+        # ── 策略4: generic_captcha — 尝试直接用 Turnstile ProxyLess ──
         if captcha_type in ("generic_captcha", "generic_with_iframe"):
             logger.info("[deepseek] generic 类型，尝试 Turnstile ProxyLess (用页面 URL 作为 key)...")
             # 枚举页面中所有 iframe 的 src 以辅助诊断
