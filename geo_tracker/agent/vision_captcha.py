@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ── 火山引擎 Ark API 配置 ──────────────────────────────────────────────────
 ARK_API_KEY = os.getenv("ARK_API_KEY", "")
 ARK_BASE_URL = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-ARK_MODEL = os.getenv("ARK_MODEL", "9424814b-d44b-4e17-8b68-37ed6b564620")
+ARK_MODEL = os.getenv("ARK_MODEL", "doubao-seed-2-0-pro-260215")
 
 # 验证码区域选择器（DeepSeek 3D 图形验证码）
 CAPTCHA_CONTAINER_SELECTORS = [
