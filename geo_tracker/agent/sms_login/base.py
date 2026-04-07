@@ -280,8 +280,21 @@ class BaseSMSLoginHandler(ABC):
                     logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
                     await page.keyboard.press("Enter")
 
-                # 等待登录完成
+                # 等待登录完成，同时检测错误 toast
                 await page.wait_for_timeout(random.randint(3000, 5000))
+
+                # 检测 "device environment error" 等错误 toast（toast 很快消失，要早检测）
+                toast_error = await self._detect_error_toast(page)
+                if toast_error:
+                    logger.warning(f"[{self.platform}] 提交后检测到错误: {toast_error}")
+                    if "device" in toast_error.lower() and "environment" in toast_error.lower():
+                        logger.warning(
+                            f"[{self.platform}] 设备环境错误，"
+                            f"手机号 {phone} 不干净，加入黑名单并换号"
+                        )
+                        await add_to_blacklist(self.platform, phone)
+                        last_fail_reason = f"手机号 {phone} 设备环境错误: {toast_error}"
+                        continue
 
                 # 可能有登录后的 CAPTCHA
                 await self._handle_captcha(page)
@@ -290,9 +303,8 @@ class BaseSMSLoginHandler(ABC):
                 # 验证登录成功
                 verify_result = await self.verify_success(page)
                 if verify_result == "device_env_error":
-                    # 设备环境错误 = 号码不干净，换号重试
                     logger.warning(
-                        f"[{self.platform}] 设备环境错误 (device environment error)，"
+                        f"[{self.platform}] 设备环境错误 (verify阶段)，"
                         f"手机号 {phone} 不干净，加入黑名单并换号"
                     )
                     await add_to_blacklist(self.platform, phone)
@@ -421,6 +433,33 @@ class BaseSMSLoginHandler(ABC):
             Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
             Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         """)
+
+    async def _detect_error_toast(self, page: Page) -> Optional[str]:
+        """检测页面上的错误 toast/提示，返回错误文本或 None。"""
+        try:
+            error_text = await page.evaluate("""
+                () => {
+                    const sels = [
+                        '.ds-toast', '[class*="toast"]', '[class*="Toast"]',
+                        '[class*="message-error"]', '[class*="error-message"]',
+                        '[role="alert"]', '.ant-message-error',
+                        '[class*="notice"]', '[class*="notification"]',
+                    ];
+                    for (const sel of sels) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const text = (el.textContent || '').trim();
+                            if (text && el.offsetParent !== null) {
+                                return text.slice(0, 300);
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            return error_text
+        except Exception:
+            return None
 
     async def _handle_captcha(self, page: Page) -> None:
         """检测并处理 CAPTCHA。优先使用视觉模型求解，降级为等待消失。"""
