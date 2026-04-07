@@ -139,7 +139,7 @@ GUEST_LLM_CONFIG = {
         "wait_after_submit": 90000,
         "load_wait":        8000,
         "requires_login":   True,
-        "login_redirect_domains": ["login.deepseek.com"],
+        "login_redirect_domains": ["login.deepseek.com", "deepseek.com/sign_in"],
         "stream_check_selector": "[class*='loading'], [class*='ds-loading'], .ds-icon-stop, button:has-text('Stop'), button:has-text('停止')",
     },
     "claude": {
