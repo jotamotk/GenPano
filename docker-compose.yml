@@ -90,6 +90,7 @@ services:
       - SCREENSHOT_DIR=/data/screenshots
     volumes:
       - screenshots_data:/data/screenshots
+      - ./query_tool/app.py:/app/app.py:ro
     depends_on:
       postgres:
         condition: service_healthy
