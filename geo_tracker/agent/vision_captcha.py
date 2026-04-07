@@ -181,26 +181,22 @@ def _call_vision_model(image_base64: str, prompt_text: str, img_width: float, im
     if not client:
         return None
 
-    system_prompt = """你是一个验证码识别助手。用户会给你一张包含多个 3D 几何体的图片，以及一个指令要求你点击特定的物体。
-
-请分析图片中所有物体的颜色、形状和大小，然后找到符合指令描述的目标物体。
-
-你必须以 JSON 格式返回目标物体中心点的坐标，格式为：
-{"x": 0.XX, "y": 0.XX}
-
-其中 x 和 y 是相对于图片宽高的归一化坐标（0-1 范围）。
-- x=0 表示图片最左边，x=1 表示最右边
-- y=0 表示图片最上边，y=1 表示最下边
-
-只返回 JSON，不要其他文字。"""
+    instructions = (
+        "你是一个验证码识别助手。用户会给你一张包含多个 3D 几何体的图片，以及一个指令要求你点击特定的物体。"
+        "请分析图片中所有物体的颜色、形状和大小，然后找到符合指令描述的目标物体。"
+        "你必须以 JSON 格式返回目标物体中心点的坐标，格式为：{\"x\": 0.XX, \"y\": 0.XX}。"
+        "其中 x 和 y 是相对于图片宽高的归一化坐标（0-1 范围）。"
+        "x=0 表示图片最左边，x=1 表示最右边；y=0 表示图片最上边，y=1 表示最下边。"
+        "只返回 JSON，不要其他文字。"
+    )
 
     user_prompt = f"指令：{prompt_text}\n\n请找到目标物体并返回其中心点坐标。"
 
     try:
         response = client.responses.create(
             model=ARK_MODEL,
+            instructions=instructions,
             input=[
-                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
@@ -215,8 +211,6 @@ def _call_vision_model(image_base64: str, prompt_text: str, img_width: float, im
                     ],
                 },
             ],
-            temperature=0.1,
-            max_output_tokens=100,
         )
 
         content = response.output_text.strip()
