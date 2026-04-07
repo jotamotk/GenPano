@@ -405,6 +405,22 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
     场景 1: account_id 有值 → 已有账号重新登录（用 DB 里的 phone_number）
     场景 2: new_account=True → 注册新账号（LubanSMS 获取新号码）
     """
+    # 在任务入口就打印明确的场景标识
+    if new_account and platform:
+        logger.info(
+            f"auto_login: ▶ 场景=新账号注册, platform={platform} "
+            f"(将通过 LubanSMS 取新号码)"
+        )
+    elif account_id:
+        logger.info(
+            f"auto_login: ▶ 场景=已有账号重新登录, account_id={account_id}"
+        )
+    else:
+        logger.warning(
+            f"auto_login: ▶ 参数异常: account_id={account_id}, "
+            f"platform={platform}, new_account={new_account}"
+        )
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     task_engine = create_task_engine()
@@ -469,8 +485,15 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                 if not handler:
                     return {"status": "error", "reason": f"no handler for {platform}"}
 
-                logger.info(f"auto_login: registering new {platform} account")
+                logger.info(f"auto_login: [新注册] 开始 {platform} 新账号注册流程...")
                 login_result = await handler.login_or_register()
+                logger.info(
+                    f"auto_login: [新注册] login_or_register 返回: "
+                    f"status={login_result.get('status') if login_result else 'None'}, "
+                    f"has_cookies={bool(login_result and login_result.get('cookies'))}, "
+                    f"phone={login_result.get('phone') if login_result else 'N/A'}, "
+                    f"reason={login_result.get('reason') if login_result else 'N/A'}"
+                )
 
                 if login_result and login_result.get("cookies"):
                     # 打包 cookies + localStorage（如有）为新格式
