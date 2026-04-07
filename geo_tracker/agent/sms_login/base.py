@@ -285,11 +285,32 @@ class BaseSMSLoginHandler(ABC):
                 new_cookies = await context.cookies()
                 cookies_list = self._format_cookies(new_cookies)
 
+                # 提取 localStorage（DeepSeek 需要 userToken）
+                local_storage = {}
+                try:
+                    local_storage = await page.evaluate("""
+                        () => {
+                            const keys = ['userToken'];
+                            const result = {};
+                            for (const k of keys) {
+                                const v = localStorage.getItem(k);
+                                if (v) result[k] = v;
+                            }
+                            return result;
+                        }
+                    """)
+                except Exception as e:
+                    logger.debug(f"[{self.platform}] 提取 localStorage 失败: {e}")
+
                 logger.info(
                     f"[{self.platform}] 登录成功! "
                     f"phone={phone}, cookies={len(cookies_list)}"
+                    + (f", localStorage={len(local_storage)} 项" if local_storage else "")
                 )
-                return {"phone": phone, "cookies": cookies_list}
+                result = {"phone": phone, "cookies": cookies_list}
+                if local_storage:
+                    result["localStorage"] = local_storage
+                return result
 
             # 所有重试都失败
             return _fail(
@@ -382,7 +403,7 @@ class BaseSMSLoginHandler(ABC):
         """)
 
     async def _handle_captcha(self, page: Page) -> None:
-        """检测并处理 CAPTCHA。当前 ByteDance 验证码无法自动解决。"""
+        """检测并处理 CAPTCHA。优先使用视觉模型求解，降级为等待消失。"""
         selector = ", ".join(CAPTCHA_SELECTORS)
         captcha_el = await page.query_selector(selector)
         if captcha_el:
@@ -394,8 +415,20 @@ class BaseSMSLoginHandler(ABC):
 
             if is_visible:
                 logger.warning(
-                    f"[{self.platform}] 检测到 CAPTCHA，等待自动消失..."
+                    f"[{self.platform}] 检测到 CAPTCHA，尝试视觉模型求解..."
                 )
+                # 优先尝试视觉模型求解
+                try:
+                    from geo_tracker.agent.vision_captcha import solve_vision_captcha
+                    solved = await solve_vision_captcha(page, max_retries=3)
+                    if solved:
+                        logger.info(f"[{self.platform}] 视觉验证码求解成功")
+                        return
+                except Exception as e:
+                    logger.warning(f"[{self.platform}] 视觉求解异常: {e}")
+
+                # 降级：等待验证码自动消失
+                logger.info(f"[{self.platform}] 视觉求解未成功，等待消失...")
                 try:
                     await page.wait_for_selector(
                         selector, state="hidden", timeout=30000
