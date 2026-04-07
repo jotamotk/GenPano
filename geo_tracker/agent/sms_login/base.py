@@ -33,7 +33,7 @@ except ImportError:
 # 国内 LLM 直连不走代理
 DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 
-# CAPTCHA 检测选择器（字节跳动/通用）
+# CAPTCHA 检测选择器（数美/字节跳动/通用）
 CAPTCHA_SELECTORS = [
     ".shumei_captcha_wrapper",
     "#sm-captcha",

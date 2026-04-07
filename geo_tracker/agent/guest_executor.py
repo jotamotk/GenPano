@@ -68,8 +68,8 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
-        # 有 CHATGPT_COOKIES_JSON 时走登录态（支持 web browsing / citation）
-        "requires_login":   not bool(os.getenv("CHATGPT_COOKIES_JSON", "").strip()),
+        # ChatGPT 有账号模式：确保登录态以获取精准 GEO 数据和 citation
+        "requires_login":   True,
         "cookies_env":      "CHATGPT_COOKIES_JSON",
         "dismiss_selectors": [
             "button:has-text('Dismiss')",
@@ -485,6 +485,63 @@ class GuestQueryExecutor:
                     else:
                         logger.warning(f"[{llm}] Cloudflare 挑战未通过且无 CAPSOLVER_API_KEY，换节点重试")
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
+                        return None
+
+                # ── ChatGPT: Cloudflare 通过后刷新 session token ──
+                if llm == "chatgpt" and injected_cookies:
+                    try:
+                        logger.info(f"[{llm}] CF 已通过，刷新 session token...")
+                        resp = await page_obj.goto(
+                            "https://chatgpt.com/api/auth/session",
+                            wait_until="domcontentloaded", timeout=30000
+                        )
+                        if resp:
+                            body = await page_obj.inner_text("body")
+                            logger.info(f"[{llm}] session endpoint HTTP {resp.status}, body: {body[:300]}")
+                            if resp.ok:
+                                try:
+                                    session_data = json.loads(body)
+                                    if session_data.get("accessToken"):
+                                        logger.info(
+                                            f"[{llm}] session 刷新成功，"
+                                            f"用户: {session_data.get('user', {}).get('email', 'unknown')}, "
+                                            f"expires: {session_data.get('expires', 'unknown')}"
+                                        )
+                                    else:
+                                        logger.warning(f"[{llm}] session 响应无 accessToken，cookie 可能已过期")
+                                        await _save_screenshot(page_obj, query.id, f"{llm}_session_no_token")
+                                        return None
+                                except json.JSONDecodeError:
+                                    # 可能返回了 CF 挑战页面 HTML
+                                    logger.warning(f"[{llm}] session 响应非 JSON（可能是 CF 页面）: {body[:200]}")
+                                    await _save_screenshot(page_obj, query.id, f"{llm}_session_cf_block")
+                                    return None
+                            else:
+                                logger.warning(f"[{llm}] session 刷新 HTTP {resp.status}")
+                                await _save_screenshot(page_obj, query.id, f"{llm}_session_http_error")
+                                return None
+                        else:
+                            logger.warning(f"[{llm}] session 刷新无响应")
+                            return None
+
+                        # 刷新后关闭旧页面，开新页面（清除客户端缓存的 expired 状态）
+                        logger.info(f"[{llm}] session 刷新完成，重新打开新页面...")
+                        await page_obj.close()
+                        page_obj = await context.new_page()
+                        await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
+                        await page_obj.wait_for_timeout(3000)
+                        # 新页面再过一次 CF
+                        cf_waited2 = 0
+                        while cf_waited2 < 15000:
+                            pt = (await page_obj.title() or "").strip().lower()
+                            if any(t in pt for t in CF_CHALLENGE_TITLES) or (not pt and cf_waited2 < 5000):
+                                await page_obj.wait_for_timeout(2000)
+                                cf_waited2 += 2000
+                            else:
+                                break
+                    except Exception as e:
+                        logger.warning(f"[{llm}] session 刷新异常: {e}")
+                        await _save_screenshot(page_obj, query.id, f"{llm}_session_exception")
                         return None
 
                 # 检测是否被重定向到登录页（cookie 过期或未注入）

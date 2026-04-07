@@ -82,46 +82,49 @@ def execute_query(self, query_id: int) -> dict:
 
             llm_config = GUEST_LLM_CONFIG.get(query.target_llm, {})
 
-            # 对需要登录的 LLM，从 AccountPool 获取账号 cookies
+            # 从 AccountPool 获取账号 cookies
             account = None
             account_id = None
             account_cookies = None
             pool = None
+            requires_login = llm_config.get("requires_login", True)
 
-            if llm_config.get("requires_login", True):
-                pool = AccountPool(db)
-                account = await pool.acquire(query.target_llm)
-                if account and account.cookies_json:
-                    account_cookies = account.cookies_json
-                    account_id = account.id
-                    # 记录 query 使用的账号
-                    query.account_id = account_id
-                    await db.commit()
-                    logger.info(
-                        f"Query {query_id}: acquired account id={account_id} "
-                        f"for {query.target_llm}"
-                    )
-                else:
-                    # 无可用账号，设回 PENDING 等下次重试
-                    query.status = QueryStatus.PENDING.value
-                    await db.commit()
-                    logger.warning(
-                        f"Query {query_id}: {query.target_llm} requires login "
-                        f"but no account available, returning to PENDING"
-                    )
-                    # deepseek 的 CAPTCHA 暂无法自动求解，跳过自动注册
-                    if query.target_llm != "deepseek":
-                        auto_login.apply_async(
-                            kwargs={"platform": query.target_llm, "new_account": True},
-                            queue="account_login",
-                        )
-                    return {
-                        "query_id": query_id,
-                        "status": "pending",
-                        "reason": "no_account_available",
-                    }
+            pool = AccountPool(db)
+            account = await pool.acquire(query.target_llm)
+            if account and account.cookies_json:
+                account_cookies = account.cookies_json
+                account_id = account.id
+                query.account_id = account_id
+                await db.commit()
+                logger.info(
+                    f"Query {query_id}: acquired account id={account_id} "
+                    f"for {query.target_llm}"
+                )
+            elif requires_login:
+                # 必须登录但无可用账号 → 标记 FAILED（不再设回 pending 避免无限循环）
+                query.status = QueryStatus.FAILED.value
+                await db.commit()
+                logger.warning(
+                    f"Query {query_id}: {query.target_llm} requires login "
+                    f"but no account available, marking FAILED"
+                )
+                auto_login.apply_async(
+                    kwargs={"platform": query.target_llm, "new_account": True},
+                    queue="account_login",
+                )
+                return {
+                    "query_id": query_id,
+                    "status": "failed",
+                    "reason": "no_account_available",
+                }
+            else:
+                # 不需要登录（guest 可用），无 cookie 也继续
+                logger.info(
+                    f"Query {query_id}: no account for {query.target_llm}, "
+                    f"proceeding with guest mode"
+                )
 
-            logger.info(f"Query {query_id}: Using guest mode for {query.target_llm}")
+            logger.info(f"Query {query_id}: Using {'account' if account_cookies else 'guest'} mode for {query.target_llm}")
 
             try:
                 proxy_url = os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
@@ -134,7 +137,35 @@ def execute_query(self, query_id: int) -> dict:
 
                 # Require a meaningful response (guards against login redirects returning 1 char)
                 MIN_RESPONSE_LEN = 20
+                # 检测无效响应（登录页、session 过期等 UI 文字）
+                INVALID_RESPONSE_MARKERS = [
+                    "your session has expired",
+                    "please log in again to continue using the app",
+                ]
+
+                def _is_invalid_response(text: str) -> str | None:
+                    """返回匹配的无效标记，或 None"""
+                    lower = text.lower()
+                    for marker in INVALID_RESPONSE_MARKERS:
+                        if marker in lower:
+                            return marker
+                    return None
+
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
+                    invalid_marker = _is_invalid_response(response.raw_text)
+                    if invalid_marker:
+                        # 响应内容是登录页/过期页，不是 AI 回答
+                        query.status = QueryStatus.FAILED.value
+                        failure_reason = "cookies_expired"
+                        if account_id and pool:
+                            await pool.report_failure(account_id, reason=failure_reason)
+                        await db.commit()
+                        logger.warning(
+                            f"Query {query_id} failed: response contains '{invalid_marker}', "
+                            f"cookie expired for account {account_id}"
+                        )
+                        return {"query_id": query_id, "status": "failed", "reason": failure_reason}
+
                     # 删除旧 response（重试场景），避免唯一约束冲突
                     await db.execute(
                         sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
@@ -154,8 +185,8 @@ def execute_query(self, query_id: int) -> dict:
                     if account_id and pool:
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
-                    # 触发自动重新登录（deepseek 暂跳过，CAPTCHA 无法自动求解）
-                    if failure_reason == "cookies_expired" and account_id and query.target_llm != "deepseek":
+                    # 触发自动重新登录
+                    if failure_reason == "cookies_expired" and account_id:
                         auto_login.apply_async(
                             kwargs={"account_id": account_id},
                             queue="account_login",
