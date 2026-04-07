@@ -440,7 +440,16 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
 
                 if login_result and login_result.get("cookies"):
                     from datetime import datetime as dt
-                    account.cookies_json = json_mod.dumps(login_result["cookies"])
+                    # 打包 cookies + localStorage（如有）为新格式
+                    cookies_data = login_result["cookies"]
+                    local_storage = login_result.get("localStorage", {})
+                    if local_storage:
+                        account.cookies_json = json_mod.dumps({
+                            "cookies": cookies_data,
+                            "localStorage": local_storage,
+                        })
+                    else:
+                        account.cookies_json = json_mod.dumps(cookies_data)
                     account.cookies_updated_at = dt.utcnow()
                     account.status = AccountStatus.ACTIVE.value
                     account.cooldown_until = None
@@ -465,10 +474,20 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                 login_result = await handler.login_or_register()
 
                 if login_result and login_result.get("cookies"):
+                    # 打包 cookies + localStorage（如有）为新格式
+                    cookies_data = login_result["cookies"]
+                    local_storage = login_result.get("localStorage", {})
+                    if local_storage:
+                        cookies_json_str = json_mod.dumps({
+                            "cookies": cookies_data,
+                            "localStorage": local_storage,
+                        })
+                    else:
+                        cookies_json_str = json_mod.dumps(cookies_data)
                     new_account_obj = await pool.create_account(
                         llm_name=platform,
                         phone=login_result["phone"],
-                        cookies_json=json_mod.dumps(login_result["cookies"]),
+                        cookies_json=cookies_json_str,
                     )
                     logger.info(
                         f"auto_login: new {platform} account #{new_account_obj.id} "

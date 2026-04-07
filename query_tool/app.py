@@ -1103,6 +1103,12 @@ HTML_TEMPLATE = """
             const lsEl = document.getElementById('local-storage-json');
             let localStorageText = lsEl ? lsEl.value.trim() : '';
             if (localStorageText) {
+                // 清理常见格式问题：去掉首尾单引号、反引号
+                localStorageText = localStorageText.replace(/^['`]+|['`]+$/g, '').trim();
+                // 将单引号 key/value 替换为双引号（简单场景）
+                if (localStorageText.includes("'") && !localStorageText.includes('"')) {
+                    localStorageText = localStorageText.replace(/'/g, '"');
+                }
                 try {
                     const parsed = JSON.parse(localStorageText);
                     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1111,7 +1117,7 @@ HTML_TEMPLATE = """
                     }
                     localStorageText = JSON.stringify(parsed);  // normalize
                 } catch (e) {
-                    alert('localStorage JSON is invalid: ' + e.message);
+                    alert('localStorage JSON is invalid: ' + e.message + '\n\nExpected format:\n{"userToken": "..."}');
                     return;
                 }
             }
