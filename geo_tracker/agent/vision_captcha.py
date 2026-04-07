@@ -267,10 +267,30 @@ async def solve_vision_captcha(page: Page, max_retries: int = 3) -> bool:
         img_rect = captcha_info["imgRect"]
         prompt_text = captcha_info["prompt"]
 
-        # 2. 截图验证码图片
+        logger.info(
+            f"[vision_captcha] 人机验证详情: "
+            f"题目='{prompt_text}', "
+            f"图片区域=({img_rect['x']:.0f},{img_rect['y']:.0f}) "
+            f"{img_rect['width']:.0f}x{img_rect['height']:.0f}, "
+            f"容器class='{captcha_info.get('containerClass', '')}'"
+        )
+
+        # 2. 截图验证码图片（同时保存到磁盘用于调试）
         image_b64 = await _screenshot_captcha_image(page, img_rect)
         if not image_b64:
             continue
+
+        # 保存验证码截图用于调试
+        try:
+            import time
+            from pathlib import Path
+            screenshot_dir = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            captcha_path = screenshot_dir / f"captcha_vision_{int(time.time())}_{attempt}.png"
+            captcha_path.write_bytes(base64.b64decode(image_b64))
+            logger.info(f"[vision_captcha] 验证码截图已保存: {captcha_path}")
+        except Exception:
+            pass
 
         # 3. 调用视觉模型（同步调用，在线程池中执行避免阻塞事件循环）
         coords = await asyncio.get_event_loop().run_in_executor(
