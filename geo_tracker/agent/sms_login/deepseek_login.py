@@ -229,6 +229,9 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
     async def submit_login(self, page: Page) -> bool:
         """点击登录/注册提交按钮"""
+        # 先截图记录提交前状态
+        await self._save_debug(page, "before_submit")
+
         submit_btn = await self._find_element(page, [
             "button:has-text('登录')",
             "button:has-text('注册')",
@@ -242,8 +245,25 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         ])
 
         if submit_btn:
-            logger.info("[deepseek] 点击提交按钮")
+            # 记录按钮信息
+            btn_info = await page.evaluate("""
+                (btn) => {
+                    return {
+                        tag: btn.tagName,
+                        text: (btn.textContent || '').trim().slice(0, 50),
+                        disabled: btn.disabled,
+                        className: btn.className.slice(0, 100),
+                        rect: btn.getBoundingClientRect().toJSON(),
+                    };
+                }
+            """, submit_btn)
+            logger.info(f"[deepseek] 点击提交按钮: {btn_info}")
             await self._human_click(page, submit_btn)
+
+            # 等待并观察 URL 变化
+            await page.wait_for_timeout(3000)
+            logger.info(f"[deepseek] 提交后 3s URL: {page.url}")
+            await self._save_debug(page, "after_submit_3s")
             return True
 
         logger.warning("[deepseek] 未找到提交按钮")
@@ -251,6 +271,43 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
     async def verify_success(self, page: Page) -> bool:
         """验证登录是否成功"""
+        logger.info(f"[deepseek] verify_success: 当前 URL={page.url}")
+
+        # 检查页面上的错误提示
+        error_info = await page.evaluate("""
+            () => {
+                // 常见错误提示元素
+                const errorSels = [
+                    '.ds-toast', '[class*="toast"]', '[class*="error"]',
+                    '[class*="alert"]', '[class*="message"]', '[class*="notice"]',
+                    '[class*="tip"]:not([class*="captcha"])',
+                    '[role="alert"]',
+                ];
+                const errors = [];
+                for (const sel of errorSels) {
+                    const els = document.querySelectorAll(sel);
+                    for (const el of els) {
+                        const text = (el.textContent || '').trim();
+                        if (text && el.offsetParent !== null) {
+                            errors.push(sel + ': ' + text.slice(0, 200));
+                        }
+                    }
+                }
+                // 页面标题
+                const title = document.title;
+                // URL
+                const url = location.href;
+                // 页面可见文本（前500字）
+                const bodyText = document.body ? document.body.innerText.slice(0, 500) : '';
+                return { errors, title, url, bodyText };
+            }
+        """)
+        logger.info(f"[deepseek] verify_success 页面信息: title='{error_info.get('title')}', url={error_info.get('url')}")
+        if error_info.get('errors'):
+            for err in error_info['errors']:
+                logger.warning(f"[deepseek] 页面错误提示: {err}")
+        logger.debug(f"[deepseek] 页面文本: {error_info.get('bodyText', '')[:300]}")
+
         await page.wait_for_timeout(5000)
 
         chat_input = await self._find_element(page, [
@@ -263,9 +320,36 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.info("[deepseek] 登录成功，聊天输入框已出现")
             return True
 
+        logger.info(f"[deepseek] 第一次检测未找到聊天输入框，等待再检测... URL={page.url}")
         await page.wait_for_timeout(5000)
         await self._handle_captcha(page)
         await page.wait_for_timeout(2000)
+
+        # 再次检查错误提示
+        error_info2 = await page.evaluate("""
+            () => {
+                const errorSels = [
+                    '.ds-toast', '[class*="toast"]', '[class*="error"]',
+                    '[class*="alert"]', '[class*="message"]', '[class*="notice"]',
+                    '[role="alert"]',
+                ];
+                const errors = [];
+                for (const sel of errorSels) {
+                    const els = document.querySelectorAll(sel);
+                    for (const el of els) {
+                        const text = (el.textContent || '').trim();
+                        if (text && el.offsetParent !== null) {
+                            errors.push(sel + ': ' + text.slice(0, 200));
+                        }
+                    }
+                }
+                return { errors, url: location.href, title: document.title };
+            }
+        """)
+        logger.info(f"[deepseek] 第二次检测: URL={error_info2.get('url')}, title='{error_info2.get('title')}'")
+        if error_info2.get('errors'):
+            for err in error_info2['errors']:
+                logger.warning(f"[deepseek] 页面错误提示(2): {err}")
 
         chat_input = await self._find_element(page, [
             "textarea",
@@ -287,6 +371,13 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
 
         await self._save_debug(page, "verify_failed")
         logger.error(f"[deepseek] 登录验证失败, URL: {page.url}")
+
+        # 检测是否是设备环境错误（号码不干净）
+        page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+        if "device environment" in page_text.lower() or "设备环境" in page_text:
+            logger.warning("[deepseek] 检测到设备环境错误，标记号码为脏号")
+            return "device_env_error"
+
         return False
 
     # ── CAPTCHA 处理 ──────────────────────────────────────────────────────

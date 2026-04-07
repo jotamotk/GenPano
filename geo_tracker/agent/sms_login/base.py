@@ -288,7 +288,17 @@ class BaseSMSLoginHandler(ABC):
                 await page.wait_for_timeout(2000)
 
                 # 验证登录成功
-                if not await self.verify_success(page):
+                verify_result = await self.verify_success(page)
+                if verify_result == "device_env_error":
+                    # 设备环境错误 = 号码不干净，换号重试
+                    logger.warning(
+                        f"[{self.platform}] 设备环境错误 (device environment error)，"
+                        f"手机号 {phone} 不干净，加入黑名单并换号"
+                    )
+                    await add_to_blacklist(self.platform, phone)
+                    last_fail_reason = f"手机号 {phone} 设备环境错误"
+                    continue
+                if not verify_result:
                     return _fail(f"登录验证失败（验证码已提交但未登录成功），URL: {page.url}")
 
                 # 提取 cookies
