@@ -275,6 +275,36 @@ class BaseSMSLoginHandler(ABC):
 
                 await page.wait_for_timeout(random.randint(500, 1000))
 
+                # 开启网络响应监听（比 toast 更可靠，不会消失）
+                api_errors = []
+
+                async def _capture_api_error(response):
+                    try:
+                        if response.status >= 400 or (
+                            response.url and any(
+                                kw in response.url for kw in
+                                ["login", "send_code", "sms", "verify", "auth", "register"]
+                            )
+                        ):
+                            try:
+                                body = await response.text()
+                            except Exception:
+                                body = ""
+                            if body:
+                                api_errors.append({
+                                    "url": response.url,
+                                    "status": response.status,
+                                    "body": body[:500],
+                                })
+                                logger.info(
+                                    f"[{self.platform}] API响应: "
+                                    f"{response.status} {response.url.split('?')[0]} → {body[:200]}"
+                                )
+                    except Exception:
+                        pass
+
+                page.on("response", _capture_api_error)
+
                 logger.info(f"[{self.platform}] 提交登录...")
                 if not await self.submit_login(page):
                     logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
@@ -283,6 +313,48 @@ class BaseSMSLoginHandler(ABC):
                 # 等待登录完成
                 await page.wait_for_timeout(random.randint(3000, 5000))
 
+                # 停止监听
+                page.remove_listener("response", _capture_api_error)
+
+                # 检查捕获到的 API 错误
+                # DeepSeek login_by_mobile_sms 返回:
+                # {"code":0,"data":{"biz_code":11,"biz_msg":"RISK_DEVICE_DETECTED",...}}
+                device_env_error = False
+                for err in api_errors:
+                    body_lower = err["body"].lower()
+                    if "risk_device_detected" in body_lower:
+                        logger.warning(
+                            f"[{self.platform}] API返回 RISK_DEVICE_DETECTED: "
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
+                        )
+                        device_env_error = True
+                        break
+                    if "device" in body_lower and "environment" in body_lower:
+                        logger.warning(
+                            f"[{self.platform}] API返回设备环境错误: "
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
+                        )
+                        device_env_error = True
+                        break
+
+                # 兜底：检查 toast DOM
+                if not device_env_error:
+                    toast_error = await self._detect_error_toast(page)
+                    if toast_error:
+                        logger.warning(f"[{self.platform}] toast 错误: {toast_error}")
+                        if any(kw in toast_error.lower() for kw in [
+                            "device environment", "risk_device", "设备环境"
+                        ]):
+                            device_env_error = True
+
+                if device_env_error:
+                    logger.warning(
+                        f"[{self.platform}] 手机号 {phone} 设备环境错误，加入黑名单并换号"
+                    )
+                    await add_to_blacklist(self.platform, phone)
+                    last_fail_reason = f"手机号 {phone} 设备环境错误"
+                    continue
+
                 # 可能有登录后的 CAPTCHA
                 await self._handle_captcha(page)
                 await page.wait_for_timeout(2000)
@@ -290,9 +362,8 @@ class BaseSMSLoginHandler(ABC):
                 # 验证登录成功
                 verify_result = await self.verify_success(page)
                 if verify_result == "device_env_error":
-                    # 设备环境错误 = 号码不干净，换号重试
                     logger.warning(
-                        f"[{self.platform}] 设备环境错误 (device environment error)，"
+                        f"[{self.platform}] 设备环境错误 (verify阶段)，"
                         f"手机号 {phone} 不干净，加入黑名单并换号"
                     )
                     await add_to_blacklist(self.platform, phone)
@@ -421,6 +492,33 @@ class BaseSMSLoginHandler(ABC):
             Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
             Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         """)
+
+    async def _detect_error_toast(self, page: Page) -> Optional[str]:
+        """检测页面上的错误 toast/提示，返回错误文本或 None。"""
+        try:
+            error_text = await page.evaluate("""
+                () => {
+                    const sels = [
+                        '.ds-toast', '[class*="toast"]', '[class*="Toast"]',
+                        '[class*="message-error"]', '[class*="error-message"]',
+                        '[role="alert"]', '.ant-message-error',
+                        '[class*="notice"]', '[class*="notification"]',
+                    ];
+                    for (const sel of sels) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const text = (el.textContent || '').trim();
+                            if (text && el.offsetParent !== null) {
+                                return text.slice(0, 300);
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            return error_text
+        except Exception:
+            return None
 
     async def _handle_captcha(self, page: Page) -> None:
         """检测并处理 CAPTCHA。优先使用视觉模型求解，降级为等待消失。"""
