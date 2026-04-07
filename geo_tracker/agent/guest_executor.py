@@ -139,7 +139,7 @@ GUEST_LLM_CONFIG = {
         "wait_after_submit": 90000,
         "load_wait":        8000,
         "requires_login":   True,
-        "login_redirect_domains": ["login.deepseek.com"],
+        "login_redirect_domains": ["login.deepseek.com", "deepseek.com/sign_in"],
         "stream_check_selector": "[class*='loading'], [class*='ds-loading'], .ds-icon-stop, button:has-text('Stop'), button:has-text('停止')",
     },
     "claude": {
@@ -354,11 +354,22 @@ class GuestQueryExecutor:
                     await page_obj.evaluate("""
                         (data) => {
                             for (const [key, value] of Object.entries(data)) {
-                                localStorage.setItem(key, value);
+                                localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value) : value);
                             }
                         }
                     """, local_storage_data)
-                    logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage")
+                    # 验证注入结果
+                    verify = await page_obj.evaluate("""
+                        (keys) => {
+                            const result = {};
+                            for (const k of keys) {
+                                const v = localStorage.getItem(k);
+                                result[k] = v ? v.substring(0, 80) + (v.length > 80 ? '...' : '') : null;
+                            }
+                            return result;
+                        }
+                    """, list(local_storage_data.keys()))
+                    logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage, 验证: {verify}")
                     # 不 reload，后续主流程会重新 goto 加载页面
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
