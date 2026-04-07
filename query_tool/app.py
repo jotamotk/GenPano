@@ -1117,7 +1117,7 @@ HTML_TEMPLATE = """
                     }
                     localStorageText = JSON.stringify(parsed);  // normalize
                 } catch (e) {
-                    alert('localStorage JSON is invalid: ' + e.message + '\n\nExpected format:\n{"userToken": "..."}');
+                    alert('localStorage JSON is invalid: ' + e.message + '\\n\\nExpected format:\\n{"userToken": "..."}')
                     return;
                 }
             }
