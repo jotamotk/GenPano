@@ -317,13 +317,22 @@ class BaseSMSLoginHandler(ABC):
                 page.remove_listener("response", _capture_api_error)
 
                 # 检查捕获到的 API 错误
+                # DeepSeek login_by_mobile_sms 返回:
+                # {"code":0,"data":{"biz_code":11,"biz_msg":"RISK_DEVICE_DETECTED",...}}
                 device_env_error = False
                 for err in api_errors:
                     body_lower = err["body"].lower()
+                    if "risk_device_detected" in body_lower:
+                        logger.warning(
+                            f"[{self.platform}] API返回 RISK_DEVICE_DETECTED: "
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
+                        )
+                        device_env_error = True
+                        break
                     if "device" in body_lower and "environment" in body_lower:
                         logger.warning(
                             f"[{self.platform}] API返回设备环境错误: "
-                            f"{err['status']} {err['url']} → {err['body'][:200]}"
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
                         )
                         device_env_error = True
                         break
@@ -332,8 +341,10 @@ class BaseSMSLoginHandler(ABC):
                 if not device_env_error:
                     toast_error = await self._detect_error_toast(page)
                     if toast_error:
-                        logger.warning(f"[{self.platform}] 提交后 toast 错误: {toast_error}")
-                        if "device" in toast_error.lower() and "environment" in toast_error.lower():
+                        logger.warning(f"[{self.platform}] toast 错误: {toast_error}")
+                        if any(kw in toast_error.lower() for kw in [
+                            "device environment", "risk_device", "设备环境"
+                        ]):
                             device_env_error = True
 
                 if device_env_error:
