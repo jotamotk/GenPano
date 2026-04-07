@@ -174,11 +174,19 @@ class BaseSMSLoginHandler(ABC):
             # 注入已有 cookies（可能帮助跳过部分登录步骤）
             if existing_cookies:
                 try:
-                    cookies = json.loads(existing_cookies)
-                    await context.add_cookies(cookies)
-                    logger.info(
-                        f"[{self.platform}] 注入 {len(cookies)} 个已有 cookies"
-                    )
+                    parsed = json.loads(existing_cookies)
+                    # 支持新格式 {"cookies": [...], "localStorage": {...}}
+                    if isinstance(parsed, dict) and "cookies" in parsed:
+                        cookies = parsed["cookies"]
+                    elif isinstance(parsed, list):
+                        cookies = parsed
+                    else:
+                        cookies = []
+                    if cookies:
+                        await context.add_cookies(cookies)
+                        logger.info(
+                            f"[{self.platform}] 注入 {len(cookies)} 个已有 cookies"
+                        )
                 except Exception as e:
                     logger.warning(f"[{self.platform}] 注入 cookies 失败: {e}")
 
