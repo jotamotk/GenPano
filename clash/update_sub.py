@@ -463,10 +463,15 @@ def update_once(sub_url: str, raw_sub_file: str, provider_file: str,
             replaced = replace_proxy_servers(proxies, resolved)
             print(f"  ✓ 已替换 {replaced} 个节点的域名为 IP")
 
-        # 对于未解析的域名，使用 NINJA_RELAY_IP 作为 hosts 映射 fallback
+        # 对于未解析的域名，使用 NINJA_RELAY_IP 直接替换域名为 IP
         unresolved = extract_cname_hosts(proxies)  # 替换后仍含 cnameip.xyz 的
         if unresolved and relay_ip:
-            print(f"  还有 {len(unresolved)} 个域名未解析，使用 NINJA_RELAY_IP={relay_ip} 作为 hosts 映射")
+            print(f"  还有 {len(unresolved)} 个域名未解析，使用 NINJA_RELAY_IP={relay_ip} 直接替换")
+            # 直接替换代理配置中的域名为 IP（比 hosts 映射更可靠）
+            relay_resolved = {domain: relay_ip for domain in unresolved}
+            replaced = replace_proxy_servers(proxies, relay_resolved)
+            print(f"  ✓ 已替换 {replaced} 个节点的域名为 {relay_ip}")
+            # 同时写入 hosts 映射作为双重保障
             patch_config_hosts(config_dir, unresolved, relay_ip)
             hosts_updated = True
         elif unresolved:
