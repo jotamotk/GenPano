@@ -12,7 +12,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-CLASH_API_URL = os.getenv("CLASH_API_URL", "http://clash:9090")
+CLASH_API_URL = os.getenv("CLASH_API_URL", "http://host.docker.internal:9097")
 
 
 async def get_proxy_group(api_url: str, group_name: str) -> Optional[dict]:
