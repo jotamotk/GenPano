@@ -85,6 +85,7 @@ REDIS_URL=redis://redis:6379/0
 PROXY_PROVIDER=clash
 CLASH_PROXY_URL=http://host.docker.internal:6789
 CLASH_API_URL=http://host.docker.internal:9098
+CLASH_PROXY_GROUP=💬 Ai平台
 PORT=4000
 NODE_ENV=production
 JWT_SECRET=${{ secrets.JWT_SECRET }}
