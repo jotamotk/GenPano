@@ -120,7 +120,8 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
+        "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
+        "submit_button":    "button[data-testid='chat_input_send_button']",
         "submit_key":       "Enter",
         "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body",
         "wait_after_submit": 60000,
@@ -1019,6 +1020,38 @@ class GuestQueryExecutor:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
+        # 验证提交成功：检查发送的消息是否出现在页面上
+        if llm_name == "doubao":
+            try:
+                await page.wait_for_selector(
+                    '[data-testid="send_message"]',
+                    timeout=5000,
+                )
+                logger.info(f"[{llm_name}] 已确认消息发送成功")
+            except Exception:
+                logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
+                # 重试：先点击输入框确保焦点，再用 Enter
+                try:
+                    input_retry = await page.query_selector(
+                        "[data-testid='chat_input_input'], textarea"
+                    )
+                    if input_retry:
+                        await input_retry.click(force=True)
+                        await page.wait_for_timeout(300)
+                    await page.keyboard.press("Enter")
+                    logger.info(f"[{llm_name}] 重试 Enter 提交")
+                    try:
+                        await page.wait_for_selector(
+                            '[data-testid="send_message"]',
+                            timeout=5000,
+                        )
+                        logger.info(f"[{llm_name}] 重试后消息发送成功")
+                    except Exception:
+                        logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
+                        await _save_html(page, -1, f"{llm_name}_submit_failed")
+                except Exception as e:
+                    logger.warning(f"[{llm_name}] 重试提交异常: {e}")
+
         # 等待响应生成（分段等待，每隔一段检查是否已有内容）
         wait_total = cfg["wait_after_submit"]
         wait_interval = 5000  # 每 5 秒检查一次
@@ -1202,6 +1235,19 @@ class GuestQueryExecutor:
 
             if not resp_text:
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
+
+            # 豆包：检测是否误抓了首页内容（而非真正的 AI 响应）
+            if llm_name == "doubao" and resp_text:
+                homepage_indicators = ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"]
+                matched_indicators = [kw for kw in homepage_indicators if kw in resp_text]
+                if len(matched_indicators) >= 2:
+                    logger.warning(
+                        f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
+                        f"（匹配首页关键词: {matched_indicators}），丢弃"
+                    )
+                    await _save_html(page, -1, f"{llm_name}_homepage_content")
+                    resp_text = ""
+                    resp_html = ""
 
             # 豆包引用面板可能在响应完成后异步加载，额外等待
             if llm_name == "doubao":
