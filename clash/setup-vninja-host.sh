@@ -1,0 +1,146 @@
+#!/bin/bash
+# V-Ninja 宿主机安装脚本
+# 在服务器上运行，安装 V-Ninja 及其依赖，配置 systemd 自启动
+#
+# 用法:
+#   sudo bash setup-vninja-host.sh /path/to/V-Ninja_2.3.1_amd64.deb
+#
+# 前提条件:
+#   - Ubuntu/Debian 系统
+#   - 已有 V-Ninja .deb 安装包
+#   - 已有 DOGESS 订阅文件 (raw_sub.yaml)
+
+set -e
+
+DEB_FILE="${1:-/opt/genpano/V-Ninja_2.3.1_amd64.deb}"
+VNINJA_DATA_DIR="/root/.local/share/io.github.clash-verge-ninja.clash-verge-ninja"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "═══════════════════════════════════════════════════"
+echo "  V-Ninja 宿主机安装脚本"
+echo "═══════════════════════════════════════════════════"
+
+# 1. 检查 .deb 文件
+if [ ! -f "$DEB_FILE" ]; then
+    echo "✗ 未找到 V-Ninja 安装包: $DEB_FILE"
+    echo "  用法: $0 /path/to/V-Ninja_xxx_amd64.deb"
+    exit 1
+fi
+echo "✓ 安装包: $DEB_FILE"
+
+# 2. 安装 V-Ninja .deb
+echo ""
+echo "── 安装 V-Ninja ──────────────────────────────────"
+dpkg -i "$DEB_FILE" 2>/dev/null || true
+apt-get install -f -y --no-install-recommends
+
+# 3. 安装 GUI 依赖 (V-Ninja 是 Tauri 应用，需要 WebKit)
+echo ""
+echo "── 安装 GUI 依赖 ─────────────────────────────────"
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    xvfb \
+    libwebkit2gtk-4.0-37 \
+    libgtk-3-0 \
+    libayatana-appindicator3-1 \
+    libjavascriptcoregtk-4.0-18 \
+    dbus-x11
+echo "✓ GUI 依赖安装完成"
+
+# 4. 验证二进制文件
+echo ""
+echo "── 验证安装 ──────────────────────────────────────"
+for bin in v-ninja clash-ninja clash-ninja-service ninja-mihomo; do
+    if command -v "$bin" &>/dev/null; then
+        echo "  ✓ $bin: $(which $bin)"
+    else
+        echo "  ✗ $bin: 未找到"
+    fi
+done
+
+# 5. 创建 V-Ninja 数据目录和配置
+echo ""
+echo "── 配置 V-Ninja ─────────────────────────────────"
+mkdir -p "$VNINJA_DATA_DIR/profiles"
+
+# 创建 verge.yaml (V-Ninja 设置: 开放局域网访问，Docker 容器需要)
+cat > "$VNINJA_DATA_DIR/verge.yaml" << 'YAML'
+# V-Ninja 设置
+# allow_lan: true 使 ninja-mihomo 监听 0.0.0.0，Docker 容器可访问
+mixed_port: 6789
+allow_lan: true
+clash_core: ninja-mihomo
+YAML
+echo "  ✓ verge.yaml (mixed_port=6789, allow_lan=true)"
+
+# 检查是否已有订阅配置
+if [ -f "$VNINJA_DATA_DIR/profiles.yaml" ]; then
+    echo "  ✓ profiles.yaml 已存在（保留现有配置）"
+else
+    echo "  ⚠ profiles.yaml 不存在"
+    echo "    请手动配置订阅或复制 raw_sub.yaml 到 profiles 目录"
+    echo "    参考: 将 raw_sub.yaml 复制为 profiles/<随机ID>.yaml"
+    echo "    并在 profiles.yaml 中注册该 profile"
+fi
+
+# 6. 安装 systemd 服务
+echo ""
+echo "── 安装 systemd 服务 ─────────────────────────────"
+cp "$SCRIPT_DIR/vninja.service" /etc/systemd/system/vninja.service
+systemctl daemon-reload
+systemctl enable vninja
+echo "  ✓ vninja.service 已安装并启用"
+
+# 7. 启动服务
+echo ""
+echo "── 启动 V-Ninja ─────────────────────────────────"
+systemctl start vninja
+sleep 3
+
+if systemctl is-active --quiet vninja; then
+    echo "  ✓ V-Ninja 服务已启动"
+else
+    echo "  ⚠ V-Ninja 启动可能需要更长时间"
+    echo "  查看日志: journalctl -u vninja -f"
+fi
+
+# 8. 等待代理端口就绪
+echo ""
+echo "── 等待代理端口 ─────────────────────────────────"
+for i in $(seq 1 15); do
+    if curl -s --max-time 2 http://127.0.0.1:6789 >/dev/null 2>&1 || \
+       netstat -tlnp 2>/dev/null | grep -q ":6789 " || \
+       ss -tlnp 2>/dev/null | grep -q ":6789 "; then
+        echo "  ✓ 代理端口 6789 已就绪"
+        break
+    fi
+    echo "  等待中... ($i/15)"
+    sleep 2
+done
+
+# 9. 测试代理
+echo ""
+echo "── 测试代理连通性 ─────────────────────────────────"
+HTTP_CODE=$(curl -x http://127.0.0.1:6789 -s --max-time 15 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "  ✓ 代理测试成功 (Google: HTTP $HTTP_CODE)"
+elif [ "$HTTP_CODE" != "000" ]; then
+    echo "  ~ 代理有响应 (Google: HTTP $HTTP_CODE)，可能需要等待节点健康检查"
+else
+    echo "  ⚠ 代理暂时无法连接，可能需要等待节点上线"
+    echo "  手动测试: curl -x http://127.0.0.1:6789 https://www.google.com"
+fi
+
+echo ""
+echo "═══════════════════════════════════════════════════"
+echo "  安装完成！"
+echo ""
+echo "  代理地址: http://0.0.0.0:6789"
+echo "  API 地址: http://127.0.0.1:9097"
+echo ""
+echo "  Docker 容器通过 host.docker.internal:6789 访问代理"
+echo "  管理命令:"
+echo "    systemctl status vninja    # 查看状态"
+echo "    systemctl restart vninja   # 重启服务"
+echo "    journalctl -u vninja -f    # 查看日志"
+echo "═══════════════════════════════════════════════════"

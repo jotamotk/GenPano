@@ -83,7 +83,8 @@ jobs:
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
             PROXY_PROVIDER=clash
-            CLASH_PROXY_URL=http://clash:7890
+            CLASH_PROXY_URL=http://host.docker.internal:6789
+            CLASH_API_URL=http://host.docker.internal:9097
             PORT=4000
             NODE_ENV=production
             JWT_SECRET=${{ secrets.JWT_SECRET }}
@@ -96,8 +97,6 @@ jobs:
             ARK_API_KEY=${{ secrets.ARK_API_KEY }}
             ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
             ARK_MODEL=doubao-seed-2-0-pro-260215
-            CLASH_SUB_URL=${{ secrets.CLASH_SUB_URL }}
-            NINJA_RELAY_IP=${{ secrets.NINJA_RELAY_IP }}
             ENVEOF
 
             # 单独写入 cookies JSON，用 Python 压缩为单行 JSON 再写入
@@ -110,6 +109,14 @@ jobs:
               printf '%s' "${DOUBAO_COOKIES_JSON}" | python3 -c \
                 "import json,sys; print('DOUBAO_COOKIES_JSON=' + json.dumps(json.loads(sys.stdin.read())))" \
                 >> .env
+            fi
+
+            # 确保 V-Ninja 代理服务正在运行（宿主机 systemd 服务）
+            if systemctl is-active --quiet vninja; then
+              echo "✓ V-Ninja 代理服务正在运行"
+            else
+              echo "⚠ V-Ninja 未运行，尝试启动..."
+              systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
             fi
 
             docker compose pull
