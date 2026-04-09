@@ -280,13 +280,13 @@ def resolve_cname_domains(proxies: list, sub_url: str = "") -> dict:
             if ip:
                 print(f"    ✓ {domain} → {ip} (DOH Cloudflare)")
 
-        # 方法3: DOH - Google
+        # 方法3: DOH - Google (用 IP 避免 hostname 解析问题)
         if not ip:
-            ip = resolve_domain_doh(domain, "https://dns.google/resolve")
+            ip = resolve_domain_doh(domain, "https://8.8.8.8/resolve")
             if ip:
                 print(f"    ✓ {domain} → {ip} (DOH Google)")
 
-        # 方法4: DOH - AliDNS
+        # 方法4: DOH - AliDNS (中国 DNS，可能无法解析 cnameip.xyz)
         if not ip:
             ip = resolve_domain_doh(domain, "https://dns.alidns.com/resolve")
             if ip:

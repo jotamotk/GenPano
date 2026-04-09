@@ -21,12 +21,12 @@ dns:
     - tls://1.0.0.1:853
     - tls://dns.google:853
   # 代理节点域名专用解析（cnameip.xyz 等）
-  # 如果标准 DNS 无法解析，会 fallback 到 hosts 段的 IP 映射
+  # cnameip.xyz 通过 CNAME 跳转到 home7788.xyz (Cloudflare)，中国 DNS 无法解析
+  # 必须用海外 DOH（HTTPS 加密，不会被 DNS 污染）
   proxy-server-nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
     - https://doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
-    - 223.5.5.5
-    - 119.29.29.29
 
 # 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）
 proxy-providers:
