@@ -96,6 +96,7 @@ jobs:
             ARK_API_KEY=${{ secrets.ARK_API_KEY }}
             ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
             ARK_MODEL=doubao-seed-2-0-pro-260215
+            CLASH_SUB_URL=${{ secrets.CLASH_SUB_URL }}
             ENVEOF
 
             # 单独写入 cookies JSON，用 Python 压缩为单行 JSON 再写入
