@@ -88,6 +88,212 @@ def _ensure_citations_column():
         print(f"DB migration warning (non-fatal): {e}")
 
 
+def _ensure_analyzer_tables():
+    """确保 Analyzer 数据层的表和字段存在（PR #104）"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                # ── 现有表新增字段 ──
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(16) DEFAULT 'pending'
+                """)
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMP
+                """)
+                cur.execute("""
+                    ALTER TABLE brands
+                    ADD COLUMN IF NOT EXISTS aliases JSONB
+                """)
+                cur.execute("""
+                    ALTER TABLE competitors
+                    ADD COLUMN IF NOT EXISTS aliases JSONB
+                """)
+                cur.execute("""
+                    ALTER TABLE prompts
+                    ADD COLUMN IF NOT EXISTS tags JSONB
+                """)
+
+                # ── 新建分析表 ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brand_mentions (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        brand_id INTEGER REFERENCES brands(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        product_name VARCHAR(256),
+                        is_target BOOLEAN DEFAULT FALSE,
+                        position_type VARCHAR(32),
+                        position_rank INTEGER,
+                        detail_level VARCHAR(16),
+                        sentiment VARCHAR(16),
+                        sentiment_score FLOAT,
+                        context_snippet TEXT,
+                        mention_count INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        CONSTRAINT uq_mention_response_brand UNIQUE (response_id, brand_name)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS sentiment_drivers (
+                        id SERIAL PRIMARY KEY,
+                        mention_id INTEGER NOT NULL REFERENCES brand_mentions(id),
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        driver_text VARCHAR(512) NOT NULL,
+                        polarity VARCHAR(8) NOT NULL,
+                        category VARCHAR(64),
+                        strength FLOAT DEFAULT 0.5,
+                        source_quote TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS citation_sources (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        mention_id INTEGER REFERENCES brand_mentions(id),
+                        url VARCHAR(2048) NOT NULL,
+                        domain VARCHAR(256),
+                        title VARCHAR(512),
+                        citation_index INTEGER,
+                        source_type VARCHAR(32),
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS response_analyses (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER UNIQUE REFERENCES llm_responses(id),
+                        dimension_industry VARCHAR(128),
+                        dimension_company VARCHAR(128),
+                        dimension_product VARCHAR(128),
+                        dimension_category VARCHAR(128),
+                        total_brands_mentioned INTEGER DEFAULT 0,
+                        target_brand_mentioned BOOLEAN DEFAULT FALSE,
+                        target_brand_position VARCHAR(32),
+                        target_brand_rank INTEGER,
+                        target_brand_sentiment VARCHAR(16),
+                        target_brand_detail VARCHAR(16),
+                        visibility_score FLOAT DEFAULT 0.0,
+                        sentiment_score FLOAT DEFAULT 0.0,
+                        sov_score FLOAT DEFAULT 0.0,
+                        citation_score FLOAT DEFAULT 0.0,
+                        geo_score FLOAT DEFAULT 0.0,
+                        analyzed_at TIMESTAMP DEFAULT NOW(),
+                        analyzer_model VARCHAR(64),
+                        raw_analysis_json JSONB
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS product_feature_mentions (
+                        id SERIAL PRIMARY KEY,
+                        analysis_id INTEGER NOT NULL REFERENCES response_analyses(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        product_name VARCHAR(256) NOT NULL,
+                        feature_name VARCHAR(128) NOT NULL,
+                        feature_sentiment VARCHAR(16),
+                        context_snippet TEXT,
+                        scenario VARCHAR(128),
+                        price_positioning VARCHAR(32),
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS geo_score_daily (
+                        id SERIAL PRIMARY KEY,
+                        brand_id INTEGER NOT NULL REFERENCES brands(id),
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        intent VARCHAR(64),
+                        language VARCHAR(8),
+                        total_queries INTEGER DEFAULT 0,
+                        mention_count INTEGER DEFAULT 0,
+                        mention_rate FLOAT DEFAULT 0.0,
+                        avg_position_rank FLOAT,
+                        first_place_count INTEGER DEFAULT 0,
+                        first_place_rate FLOAT DEFAULT 0.0,
+                        positive_rate FLOAT DEFAULT 0.0,
+                        negative_rate FLOAT DEFAULT 0.0,
+                        avg_sentiment_score FLOAT DEFAULT 0.0,
+                        citation_rate FLOAT DEFAULT 0.0,
+                        avg_sov FLOAT DEFAULT 0.0,
+                        avg_visibility FLOAT DEFAULT 0.0,
+                        avg_sentiment FLOAT DEFAULT 0.0,
+                        avg_sov_score FLOAT DEFAULT 0.0,
+                        avg_citation_score FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        industry VARCHAR(128),
+                        industry_rank INTEGER,
+                        industry_sov_pct FLOAT,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_geo_daily_dims UNIQUE (brand_id, date, target_llm, intent, language)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS industry_benchmark_daily (
+                        id SERIAL PRIMARY KEY,
+                        industry VARCHAR(128) NOT NULL,
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        total_brands INTEGER DEFAULT 0,
+                        total_queries INTEGER DEFAULT 0,
+                        avg_mention_rate FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        avg_sentiment FLOAT DEFAULT 0.0,
+                        score_p25 FLOAT,
+                        score_p50 FLOAT,
+                        score_p75 FLOAT,
+                        top_brands_json JSONB,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_industry_daily UNIQUE (industry, date, target_llm)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS product_score_daily (
+                        id SERIAL PRIMARY KEY,
+                        brand_id INTEGER NOT NULL REFERENCES brands(id),
+                        product_name VARCHAR(256) NOT NULL,
+                        category VARCHAR(128),
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        total_queries INTEGER DEFAULT 0,
+                        mention_count INTEGER DEFAULT 0,
+                        mention_rate FLOAT DEFAULT 0.0,
+                        avg_position_rank FLOAT,
+                        first_place_count INTEGER DEFAULT 0,
+                        first_place_rate FLOAT DEFAULT 0.0,
+                        avg_sentiment_score FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        category_sov_pct FLOAT,
+                        category_rank INTEGER,
+                        comparison_wins INTEGER DEFAULT 0,
+                        comparison_total INTEGER DEFAULT 0,
+                        win_rate FLOAT DEFAULT 0.0,
+                        top_features_json JSONB,
+                        top_scenarios_json JSONB,
+                        price_positioning VARCHAR(32),
+                        price_positioning_json JSONB,
+                        top_drivers_json JSONB,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_product_daily UNIQUE (brand_id, product_name, date, target_llm)
+                    )
+                """)
+            conn.commit()
+            print("DB migration: analyzer tables ensured (brand_mentions, sentiment_drivers, "
+                  "citation_sources, response_analyses, product_feature_mentions, "
+                  "geo_score_daily, industry_benchmark_daily, product_score_daily)")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
 def get_db():
     import psycopg2
     import time
@@ -2584,6 +2790,7 @@ def delete_profile(profile_id):
 
 
 _ensure_citations_column()
+_ensure_analyzer_tables()
 
 
 if __name__ == '__main__':
