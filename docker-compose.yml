@@ -1,10 +1,12 @@
 services:
 
   clash:
-    image: ghcr.io/metacubex/mihomo:latest
+    image: ubuntu:22.04
     restart: unless-stopped
+    entrypoint: ["/usr/bin/ninja-mihomo", "-d", "/root/.config/mihomo"]
     volumes:
       - ./clash:/root/.config/mihomo
+      - ./clash/ninja-mihomo:/usr/bin/ninja-mihomo:ro
     ports:
       - "7890:7890"
 
