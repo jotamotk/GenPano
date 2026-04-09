@@ -18,7 +18,10 @@ from celery.schedules import crontab
 from sqlalchemy import delete as sa_delete, select
 
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
-from geo_tracker.db.models import Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus
+from geo_tracker.db.models import (
+    Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus,
+    AnalysisStatus, Brand, Competitor, Prompt,
+)
 from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
@@ -28,6 +31,24 @@ logger = logging.getLogger(__name__)
 
 app = Celery("geo_tracker", broker=REDIS_URL, backend=REDIS_URL)
 
+_beat_schedule = {
+    "reset-daily-counts": {
+        "task":     "geo_tracker.tasks.celery_tasks.reset_daily_counts",
+        "schedule": crontab(hour=0, minute=0),
+    },
+    "cookie-keep-alive": {
+        "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
+        "schedule": crontab(hour="*/2", minute=30),
+    },
+}
+
+# Auto-schedule daily analysis in production (opt-in via env var)
+if os.getenv("ANALYZER_AUTO_SCHEDULE", "false").lower() == "true":
+    _beat_schedule["daily-analysis"] = {
+        "task":     "geo_tracker.tasks.celery_tasks.run_daily_analysis",
+        "schedule": crontab(hour=2, minute=0),
+    }
+
 app.conf.update(
     task_serializer   = "json",
     result_serializer = "json",
@@ -35,20 +56,11 @@ app.conf.update(
     task_max_retries  = 3,
     task_default_retry_delay = 60,
     worker_concurrency = 2,
-    beat_schedule = {
-        "reset-daily-counts": {
-            "task":     "geo_tracker.tasks.celery_tasks.reset_daily_counts",
-            "schedule": crontab(hour=0, minute=0),
-        },
-        "cookie-keep-alive": {
-            "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
-            "schedule": crontab(hour="*/2", minute=30),  # 每2小时保活（DeepSeek session 较短）
-        },
-        # dispatch-pending-queries 已禁用：所有 query 需手动触发
-        # "dispatch-pending-queries": {
-        #     "task":     "geo_tracker.tasks.celery_tasks.dispatch_batch",
-        #     "schedule": crontab(minute="*/5"),
-        # },
+    beat_schedule = _beat_schedule,
+    task_routes = {
+        "geo_tracker.tasks.celery_tasks.analyze_response": {"queue": "analysis"},
+        "geo_tracker.tasks.celery_tasks.run_daily_analysis": {"queue": "analysis"},
+        "geo_tracker.tasks.celery_tasks.aggregate_daily_scores": {"queue": "analysis"},
     },
 )
 
@@ -518,6 +530,129 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
             pass
         loop.close()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Analysis Tasks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.task(bind=True, max_retries=2, queue="analysis")
+def analyze_response(self, response_id: int) -> dict:
+    """Run the 4-stage analysis pipeline on a single LLMResponse."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        from geo_tracker.analyzer.cli import analyze_single_response
+
+        async with get_task_async_session(task_engine) as db:
+            resp = await db.get(LLMResponse, response_id)
+            if not resp:
+                return {"skipped": True, "reason": "response_not_found"}
+
+            if resp.analysis_status == AnalysisStatus.DONE.value:
+                return {"skipped": True, "reason": "already_analyzed"}
+
+            query = await db.get(Query, resp.query_id)
+            brand = await db.get(Brand, query.brand_id)
+
+            comp_result = await db.execute(
+                select(Competitor).where(Competitor.brand_id == brand.id)
+            )
+            competitors = comp_result.scalars().all()
+
+            intent = "non_brand"
+            if query.prompt_id:
+                prompt = await db.get(Prompt, query.prompt_id)
+                if prompt and prompt.intent:
+                    intent = prompt.intent
+
+            return await analyze_single_response(
+                db, resp, brand, competitors, intent,
+            )
+
+    try:
+        return loop.run_until_complete(_run())
+    except Exception as exc:
+        logger.exception(f"analyze_response {response_id} raised: {exc}")
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+    finally:
+        try:
+            loop.run_until_complete(task_engine.dispose())
+        except Exception:
+            pass
+        loop.close()
+
+
+@app.task(queue="analysis")
+def run_daily_analysis(date_str: str = None, brand_id: int = None) -> dict:
+    """
+    每日分析主入口：分析当天所有 PENDING 响应，然后聚合。
+
+    Args:
+        date_str: YYYY-MM-DD，默认今天
+        brand_id: 指定品牌，None = 所有品牌
+    """
+    from datetime import datetime as dt
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def _run():
+        from geo_tracker.analyzer.cli import run_daily
+        if not date_str:
+            d = dt.utcnow().strftime("%Y-%m-%d")
+        else:
+            d = date_str
+        await run_daily(d, brand_id)
+        return {"status": "done", "date": d, "brand_id": brand_id}
+
+    try:
+        return loop.run_until_complete(_run())
+    except Exception as exc:
+        logger.exception(f"run_daily_analysis failed: {exc}")
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        loop.close()
+
+
+@app.task(queue="analysis")
+def aggregate_daily_scores(date_str: str = None, brand_id: int = None) -> dict:
+    """
+    每日聚合三张表（UPSERT）：
+    1. GEOScoreDaily — 品牌级聚合
+    2. IndustryBenchmarkDaily — 行业基准聚合
+    3. ProductScoreDaily — 产品级聚合
+    """
+    from datetime import datetime as dt
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        from geo_tracker.analyzer.aggregator import Aggregator
+
+        date = dt.strptime(date_str, "%Y-%m-%d") if date_str else dt.utcnow()
+        async with get_task_async_session(task_engine) as db:
+            aggregator = Aggregator(db)
+            stats = await aggregator.aggregate_daily(date, brand_id)
+            return {"status": "done", "stats": stats}
+
+    try:
+        return loop.run_until_complete(_run())
+    except Exception as exc:
+        logger.exception(f"aggregate_daily_scores failed: {exc}")
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        try:
+            loop.run_until_complete(task_engine.dispose())
+        except Exception:
+            pass
+        loop.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def _visit_and_refresh(
     executor: GuestQueryExecutor, config: dict, llm_name: str
