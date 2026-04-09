@@ -8,8 +8,11 @@
   1. 从 CLASH_SUB_URL 下载订阅（自动模式）
   2. 从 RAW_SUB_FILE 读取本地文件（手动模式，下载失败时 fallback）
 
-对于 Ninja 代理节点（使用 cnameip.xyz 域名），自动生成 hosts 映射
-写入 Clash 配置文件，解决 Docker 环境无法解析 CNAME 域名的问题。
+对于 Ninja 代理节点（使用 cnameip.xyz 域名），会尝试解析真实 IP 并替换：
+  1. 尝试 Python DNS 解析
+  2. 尝试 DNS-over-HTTPS（Google/Cloudflare）
+  3. 尝试直连订阅服务器 DNS
+  4. Fallback: 使用 NINJA_RELAY_IP 生成 hosts 映射
 
 环境变量:
   CLASH_SUB_URL     - 订阅链接（可选，下载失败会 fallback 到本地文件）
@@ -18,13 +21,15 @@
   PROVIDER_FILE     - 输出文件路径（默认 /data/proxies/ninja.yaml）
   CLASH_API         - Clash API 地址（默认 http://clash:9090）
   CLASH_CONFIG_DIR  - Clash 配置目录（默认 /data/clash）
-  NINJA_RELAY_IP    - Ninja CNAME 域名的 relay IP（默认空，不生成 hosts）
+  NINJA_RELAY_IP    - Ninja CNAME 域名的 relay IP（fallback，默认空）
 """
 
 import json
 import os
 import re
+import socket
 import ssl
+import struct
 import sys
 import time
 import urllib.request
@@ -130,6 +135,199 @@ def extract_cname_hosts(proxies: list) -> list:
             if "cnameip.xyz" in server:
                 hosts.add(server)
     return sorted(hosts)
+
+
+def resolve_domain_python(domain: str) -> str:
+    """尝试用 Python socket 解析域名"""
+    try:
+        result = socket.getaddrinfo(domain, None, socket.AF_INET)
+        if result:
+            return result[0][4][0]
+    except (socket.gaierror, OSError):
+        pass
+    return ""
+
+
+def resolve_domain_doh(domain: str, doh_url: str = "https://1.1.1.1/dns-query") -> str:
+    """通过 DNS-over-HTTPS 解析域名（Cloudflare/Google）"""
+    try:
+        url = f"{doh_url}?name={domain}&type=A"
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/dns-json",
+            "User-Agent": "curl/7.68"
+        })
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            answers = data.get("Answer", [])
+            for a in answers:
+                if a.get("type") == 1:  # A record
+                    return a["data"]
+                if a.get("type") == 5:  # CNAME - follow it
+                    cname_target = a["data"].rstrip(".")
+                    # Try to resolve the CNAME target
+                    for a2 in answers:
+                        if a2.get("type") == 1 and a2.get("name", "").rstrip(".") == cname_target:
+                            return a2["data"]
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_domain_udp(domain: str, dns_server: str, port: int = 53, timeout: int = 5) -> str:
+    """直接发送 UDP DNS 查询到指定 DNS 服务器"""
+    try:
+        # 构建 DNS A 记录查询包
+        txn_id = os.urandom(2)
+        flags = b'\x01\x00'  # standard query, recursion desired
+        counts = struct.pack('>HHHH', 1, 0, 0, 0)  # 1 question
+        # 编码域名
+        qname = b''
+        for part in domain.split('.'):
+            qname += bytes([len(part)]) + part.encode('ascii')
+        qname += b'\x00'
+        qtype = struct.pack('>H', 1)   # A record
+        qclass = struct.pack('>H', 1)  # IN class
+        query = txn_id + flags + counts + qname + qtype + qclass
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(query, (dns_server, port))
+        data, _ = sock.recvfrom(512)
+        sock.close()
+
+        # 解析响应
+        if len(data) < 12:
+            return ""
+        ancount = struct.unpack('>H', data[6:8])[0]
+        if ancount == 0:
+            return ""
+
+        # 跳过 header (12 bytes) + question section
+        offset = 12
+        while offset < len(data) and data[offset] != 0:
+            offset += data[offset] + 1
+        offset += 5  # null byte + qtype(2) + qclass(2)
+
+        # 解析 answer records
+        for _ in range(ancount):
+            if offset >= len(data):
+                break
+            # 跳过 name (可能是指针)
+            if data[offset] & 0xC0 == 0xC0:
+                offset += 2
+            else:
+                while offset < len(data) and data[offset] != 0:
+                    offset += data[offset] + 1
+                offset += 1
+            if offset + 10 > len(data):
+                break
+            rtype = struct.unpack('>H', data[offset:offset+2])[0]
+            rdlen = struct.unpack('>H', data[offset+8:offset+10])[0]
+            offset += 10
+            if rtype == 1 and rdlen == 4:  # A record
+                ip = '.'.join(str(b) for b in data[offset:offset+4])
+                return ip
+            offset += rdlen
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_cname_domains(proxies: list, sub_url: str = "") -> dict:
+    """尝试解析所有 cnameip.xyz 域名为真实 IP
+
+    返回 {domain: ip} 字典。使用多种方法尝试：
+    1. Python socket（系统 DNS）
+    2. DOH（Google/Cloudflare）
+    3. 直连订阅服务器的 DNS（如果从 URL 能提取 IP）
+    """
+    domains = set()
+    for p in proxies:
+        if isinstance(p, dict):
+            server = p.get("server", "")
+            if "cnameip.xyz" in server:
+                domains.add(server)
+
+    if not domains:
+        return {}
+
+    print(f"  发现 {len(domains)} 个 cnameip.xyz 域名，尝试解析...")
+    resolved = {}
+
+    # 从订阅 URL 提取服务器 IP（用于直连 DNS 查询）
+    sub_server_ip = ""
+    if sub_url:
+        import re
+        match = re.search(r'https?://([0-9.]+)', sub_url)
+        if match:
+            sub_server_ip = match.group(1)
+
+    for domain in sorted(domains):
+        ip = ""
+
+        # 方法1: Python socket
+        if not ip:
+            ip = resolve_domain_python(domain)
+            if ip:
+                print(f"    ✓ {domain} → {ip} (system DNS)")
+
+        # 方法2: DOH - Cloudflare
+        if not ip:
+            ip = resolve_domain_doh(domain, "https://1.1.1.1/dns-query")
+            if ip:
+                print(f"    ✓ {domain} → {ip} (DOH Cloudflare)")
+
+        # 方法3: DOH - Google
+        if not ip:
+            ip = resolve_domain_doh(domain, "https://dns.google/resolve")
+            if ip:
+                print(f"    ✓ {domain} → {ip} (DOH Google)")
+
+        # 方法4: DOH - AliDNS
+        if not ip:
+            ip = resolve_domain_doh(domain, "https://dns.alidns.com/resolve")
+            if ip:
+                print(f"    ✓ {domain} → {ip} (DOH AliDNS)")
+
+        # 方法5: 直连订阅服务器 DNS（DOGESS 可能自建 DNS）
+        if not ip and sub_server_ip:
+            ip = resolve_domain_udp(domain, sub_server_ip)
+            if ip:
+                print(f"    ✓ {domain} → {ip} (sub server DNS @ {sub_server_ip})")
+
+        # 方法6: 尝试常见公共 DNS
+        if not ip:
+            for dns_ip in ["8.8.8.8", "1.1.1.1", "208.67.222.222"]:
+                ip = resolve_domain_udp(domain, dns_ip)
+                if ip:
+                    print(f"    ✓ {domain} → {ip} (UDP DNS @ {dns_ip})")
+                    break
+
+        if ip:
+            resolved[domain] = ip
+        else:
+            print(f"    ✗ {domain} → 无法解析")
+
+    print(f"  DNS 解析结果: {len(resolved)}/{len(domains)} 成功")
+    return resolved
+
+
+def replace_proxy_servers(proxies: list, resolved: dict) -> int:
+    """将代理节点中的 cnameip.xyz 域名替换为已解析的 IP
+
+    返回替换数量。直接修改 proxies 列表中的 dict。
+    """
+    count = 0
+    for p in proxies:
+        if isinstance(p, dict):
+            server = p.get("server", "")
+            if server in resolved:
+                p["server"] = resolved[server]
+                count += 1
+    return count
 
 
 def patch_config_hosts(config_dir: str, cname_hosts: list, relay_ip: str):
@@ -257,21 +455,30 @@ def update_once(sub_url: str, raw_sub_file: str, provider_file: str,
     else:
         print(f"  提取到 {len(proxies)} 行代理配置")
 
+    # 尝试解析 cnameip.xyz 域名为真实 IP（模拟 V-Ninja GUI 行为）
+    hosts_updated = False
+    if isinstance(proxies[0], dict):
+        resolved = resolve_cname_domains(proxies, sub_url)
+        if resolved:
+            replaced = replace_proxy_servers(proxies, resolved)
+            print(f"  ✓ 已替换 {replaced} 个节点的域名为 IP")
+
+        # 对于未解析的域名，使用 NINJA_RELAY_IP 作为 hosts 映射 fallback
+        unresolved = extract_cname_hosts(proxies)  # 替换后仍含 cnameip.xyz 的
+        if unresolved and relay_ip:
+            print(f"  还有 {len(unresolved)} 个域名未解析，使用 NINJA_RELAY_IP={relay_ip} 作为 hosts 映射")
+            patch_config_hosts(config_dir, unresolved, relay_ip)
+            hosts_updated = True
+        elif unresolved:
+            print(f"  ⚠ 还有 {len(unresolved)} 个 cnameip.xyz 域名未解析且 NINJA_RELAY_IP 未设置")
+            print(f"    请设置 NINJA_RELAY_IP 环境变量，或在服务器上手动配置 hosts")
+
     # 写入 provider 文件
     os.makedirs(os.path.dirname(provider_file), exist_ok=True)
     yaml_content = dump_proxies_yaml(proxies)
     with open(provider_file, "w", encoding="utf-8") as f:
         f.write(yaml_content)
     print(f"  ✓ 已写入 {provider_file}")
-
-    # 处理 cnameip.xyz hosts 映射
-    hosts_updated = False
-    if isinstance(proxies[0], dict) and relay_ip:
-        cname_hosts = extract_cname_hosts(proxies)
-        if cname_hosts:
-            print(f"  发现 {len(cname_hosts)} 个 cnameip.xyz 域名，生成 hosts 映射")
-            patch_config_hosts(config_dir, cname_hosts, relay_ip)
-            hosts_updated = True
 
     # 通知 Clash 重新加载
     if hosts_updated:
