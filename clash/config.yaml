@@ -7,6 +7,18 @@ mode: rule
 log-level: warning
 external-controller: '0.0.0.0:9090'
 
+# DNS 配置（Docker 内部 DNS 无法解析代理节点域名，必须用外部 DNS）
+dns:
+  enable: true
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback:
+    - 8.8.8.8
+    - 8.8.4.4
+    - tls://1.0.0.1:853
+    - tls://dns.google:853
+
 # 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）
 proxy-providers:
   ninja-sub:
