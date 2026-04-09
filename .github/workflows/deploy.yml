@@ -84,7 +84,7 @@ jobs:
             REDIS_URL=redis://redis:6379/0
             PROXY_PROVIDER=clash
             CLASH_PROXY_URL=http://host.docker.internal:6789
-            CLASH_API_URL=http://host.docker.internal:9097
+            CLASH_API_URL=http://host.docker.internal:9098
             PORT=4000
             NODE_ENV=production
             JWT_SECRET=${{ secrets.JWT_SECRET }}
@@ -118,13 +118,20 @@ jobs:
             cp /opt/genpano/clash/vninja.service /etc/systemd/system/vninja.service
             systemctl daemon-reload
 
+            # 确保 socat 已安装（API 端口转发需要）
+            which socat >/dev/null 2>&1 || apt-get install -y -qq socat
+
             if systemctl is-active --quiet vninja; then
               echo "✓ V-Ninja 代理服务正在运行"
-              # 确保 allow-lan 已开启
+              # 确保 allow-lan 和 API 转发
               curl -s -X PATCH http://127.0.0.1:9097/configs \
                 -H "Content-Type: application/json" \
                 -H "Authorization: Bearer set-your-secret" \
                 -d '{"allow-lan": true}' || true
+              # 确保 socat API 转发在运行
+              if ! pgrep -f "socat.*TCP-LISTEN:9098" >/dev/null; then
+                socat TCP-LISTEN:9098,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9097 &
+              fi
             else
               echo "⚠ V-Ninja 未运行，尝试启动..."
               systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
