@@ -813,7 +813,7 @@ class GuestQueryExecutor:
         """从豆包引用面板提取引用链接。
 
         豆包的引用不是内嵌在响应正文的 <a> 标签，而是在独立的引用面板中：
-        - 面板: [data-testid="search-reference-ui-v3"]
+        - 触发按钮: [data-testid="search-reference-ui-v3"]（需先点击展开）
         - 每条引用: [data-testid="search-text-item"] 内含 <a href="...">
         - 标题: .search-item-title-* 类名
         - 编号: .footer-citation-* 类名
@@ -824,7 +824,7 @@ class GuestQueryExecutor:
                     const citations = [];
                     const seen = new Set();
 
-                    // 从引用面板中提取
+                    // 策略1：从展开的引用面板中提取（search-text-item）
                     const items = document.querySelectorAll('[data-testid="search-text-item"]');
                     for (const item of items) {
                         const link = item.querySelector('a[href]');
@@ -857,15 +857,55 @@ class GuestQueryExecutor:
                         });
                     }
 
+                    // 策略2：如果 search-text-item 未找到，尝试从弹出面板中的所有链接提取
+                    // 豆包的弹出面板可能使用 popover / dialog / drawer 等容器
+                    if (citations.length === 0) {
+                        const panelSelectors = [
+                            '[data-testid*="search-reference"] a[href]',
+                            '[class*="reference-panel"] a[href]',
+                            '[class*="search-panel"] a[href]',
+                            '[class*="citation-panel"] a[href]',
+                            // popover / drawer 容器内的链接
+                            '[data-radix-popper-content-wrapper] a[href]',
+                            '[role="dialog"] a[href]',
+                        ];
+                        for (const sel of panelSelectors) {
+                            try {
+                                const links = document.querySelectorAll(sel);
+                                for (const link of links) {
+                                    const url = link.href;
+                                    if (!url || !url.startsWith('http') || seen.has(url)) continue;
+                                    // 过滤掉豆包自身的链接
+                                    if (url.includes('doubao.com') || url.includes('bytedance.com')) continue;
+                                    seen.add(url);
+                                    citations.push({
+                                        url: url,
+                                        title: (link.textContent || '').trim().slice(0, 200),
+                                        source: '',
+                                        index: citations.length + 1
+                                    });
+                                }
+                            } catch(e) {}
+                        }
+                    }
+
                     // 按引用编号排序
                     citations.sort((a, b) => a.index - b.index);
                     return citations;
                 }
             """)
+
             return citations or []
         except Exception as e:
             logger.warning(f"[doubao] 引用面板提取失败: {e}")
             return []
+        finally:
+            # 关闭引用面板（按 Escape），避免影响后续操作
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
 
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
@@ -1166,11 +1206,23 @@ class GuestQueryExecutor:
             # 豆包引用面板可能在响应完成后异步加载，额外等待
             if llm_name == "doubao":
                 try:
-                    await page.wait_for_selector(
+                    ref_btn = await page.wait_for_selector(
                         '[data-testid="search-reference-ui-v3"]',
                         timeout=8000,
                     )
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(500)
+                    # 引用按钮需要点击才能展开面板，展开后才有 search-text-item
+                    if ref_btn:
+                        await ref_btn.click()
+                        logger.debug("[doubao] 已点击引用面板按钮，等待展开")
+                        try:
+                            await page.wait_for_selector(
+                                '[data-testid="search-text-item"]',
+                                timeout=5000,
+                            )
+                            await page.wait_for_timeout(800)
+                        except Exception:
+                            logger.debug("[doubao] 引用面板展开后未找到 search-text-item")
                 except Exception:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 
