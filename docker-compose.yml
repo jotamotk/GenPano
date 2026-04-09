@@ -16,12 +16,16 @@ services:
     command: sh -c "pip install -q pyyaml && python /app/update_sub.py"
     environment:
       - CLASH_SUB_URL=${CLASH_SUB_URL}
+      - RAW_SUB_FILE=/data/clash/raw_sub.yaml
       - UPDATE_INTERVAL=3600
       - PROVIDER_FILE=/data/proxies/ninja.yaml
       - CLASH_API=http://clash:9090
+      - CLASH_CONFIG_DIR=/data/clash
+      - NINJA_RELAY_IP=${NINJA_RELAY_IP:-}
     volumes:
       - ./clash/update_sub.py:/app/update_sub.py:ro
       - ./clash/proxies:/data/proxies
+      - ./clash:/data/clash
     depends_on:
       - clash
 
