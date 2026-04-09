@@ -44,7 +44,8 @@ apt-get install -y --no-install-recommends \
     libgtk-3-0 \
     libayatana-appindicator3-1 \
     libjavascriptcoregtk-4.0-18 \
-    dbus-x11
+    dbus-x11 \
+    socat
 echo "✓ GUI 依赖安装完成"
 
 # 4. 验证二进制文件
