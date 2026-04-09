@@ -13,6 +13,7 @@
 
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.request
@@ -93,8 +94,12 @@ def dump_proxies_yaml(proxies: list) -> str:
 
 def download_subscription(url: str, timeout: int = 30) -> str:
     """下载订阅内容"""
-    req = urllib.request.Request(url, headers={"User-Agent": "ClashForAndroid/2.5.12"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": "V-Ninja/2.3.1"})
+    # 跳过 SSL 验证（Ninja 订阅服务器可能使用自签名证书）
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return resp.read().decode("utf-8")
 
 

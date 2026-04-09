@@ -13,7 +13,7 @@ services:
   clash-sub-updater:
     image: python:3.11-alpine
     restart: unless-stopped
-    command: python /app/update_sub.py
+    command: sh -c "pip install -q pyyaml && python /app/update_sub.py"
     environment:
       - CLASH_SUB_URL=${CLASH_SUB_URL}
       - UPDATE_INTERVAL=3600
