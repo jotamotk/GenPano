@@ -50,7 +50,7 @@ echo "✓ GUI 依赖安装完成"
 # 4. 验证二进制文件
 echo ""
 echo "── 验证安装 ──────────────────────────────────────"
-for bin in v-ninja clash-ninja clash-ninja-service ninja-mihomo; do
+for bin in clash-ninja clash-ninja-service ninja-mihomo; do
     if command -v "$bin" &>/dev/null; then
         echo "  ✓ $bin: $(which $bin)"
     else
@@ -63,59 +63,44 @@ echo ""
 echo "── 配置 V-Ninja ─────────────────────────────────"
 mkdir -p "$VNINJA_DATA_DIR/profiles"
 
-# 创建 verge.yaml (V-Ninja 设置: 开放局域网访问，Docker 容器需要)
-cat > "$VNINJA_DATA_DIR/verge.yaml" << 'YAML'
-# V-Ninja 设置
-# allow_lan: true 使 ninja-mihomo 监听 0.0.0.0，Docker 容器可访问
-mixed_port: 6789
-allow_lan: true
-clash_core: ninja-mihomo
-YAML
-echo "  ✓ verge.yaml (mixed_port=6789, allow_lan=true)"
-
 # 检查是否已有订阅配置
 if [ -f "$VNINJA_DATA_DIR/profiles.yaml" ]; then
     echo "  ✓ profiles.yaml 已存在（保留现有配置）"
 else
     echo "  ⚠ profiles.yaml 不存在"
     echo "    请手动配置订阅或复制 raw_sub.yaml 到 profiles 目录"
-    echo "    参考: 将 raw_sub.yaml 复制为 profiles/<随机ID>.yaml"
-    echo "    并在 profiles.yaml 中注册该 profile"
 fi
 
-# 6. 安装 systemd 服务
+# 6. 安装 allow-lan 脚本和 systemd 服务
 echo ""
 echo "── 安装 systemd 服务 ─────────────────────────────"
+cp "$SCRIPT_DIR/vninja-allow-lan.sh" /usr/local/bin/vninja-allow-lan.sh
+chmod +x /usr/local/bin/vninja-allow-lan.sh
 cp "$SCRIPT_DIR/vninja.service" /etc/systemd/system/vninja.service
 systemctl daemon-reload
 systemctl enable vninja
 echo "  ✓ vninja.service 已安装并启用"
+echo "  ✓ vninja-allow-lan.sh 已安装"
 
-# 7. 启动服务
+# 7. 停止旧进程并启动服务
 echo ""
 echo "── 启动 V-Ninja ─────────────────────────────────"
+pkill -f clash-ninja 2>/dev/null || true
+pkill -f ninja-mihomo 2>/dev/null || true
+sleep 2
 systemctl start vninja
-sleep 3
 
-if systemctl is-active --quiet vninja; then
-    echo "  ✓ V-Ninja 服务已启动"
-else
-    echo "  ⚠ V-Ninja 启动可能需要更长时间"
-    echo "  查看日志: journalctl -u vninja -f"
-fi
-
-# 8. 等待代理端口就绪
+# 8. 等待代理端口就绪（含 allow-lan 生效时间）
 echo ""
 echo "── 等待代理端口 ─────────────────────────────────"
-for i in $(seq 1 15); do
-    if curl -s --max-time 2 http://127.0.0.1:6789 >/dev/null 2>&1 || \
-       netstat -tlnp 2>/dev/null | grep -q ":6789 " || \
-       ss -tlnp 2>/dev/null | grep -q ":6789 "; then
-        echo "  ✓ 代理端口 6789 已就绪"
+for i in $(seq 1 25); do
+    if netstat -tlnp 2>/dev/null | grep -q ":::6789 " || \
+       ss -tlnp 2>/dev/null | grep -q ":::6789 "; then
+        echo "  ✓ 代理端口 6789 已就绪 (0.0.0.0)"
         break
     fi
-    echo "  等待中... ($i/15)"
-    sleep 2
+    echo "  等待中... ($i/25)"
+    sleep 3
 done
 
 # 9. 测试代理

@@ -112,8 +112,19 @@ jobs:
             fi
 
             # 确保 V-Ninja 代理服务正在运行（宿主机 systemd 服务）
+            # 更新 allow-lan 脚本和 systemd 服务文件
+            cp /opt/genpano/clash/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh
+            chmod +x /usr/local/bin/vninja-allow-lan.sh
+            cp /opt/genpano/clash/vninja.service /etc/systemd/system/vninja.service
+            systemctl daemon-reload
+
             if systemctl is-active --quiet vninja; then
               echo "✓ V-Ninja 代理服务正在运行"
+              # 确保 allow-lan 已开启
+              curl -s -X PATCH http://127.0.0.1:9097/configs \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer set-your-secret" \
+                -d '{"allow-lan": true}' || true
             else
               echo "⚠ V-Ninja 未运行，尝试启动..."
               systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
