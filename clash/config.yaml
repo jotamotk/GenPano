@@ -7,13 +7,11 @@ mode: rule
 log-level: warning
 external-controller: '0.0.0.0:9090'
 
-# 使用本地代理文件
+# 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）
 proxy-providers:
   ninja-sub:
-    type: http
-    url: "https://45.137.180.142/dli/H1EGv2qngpcGWVc?clash=1"
+    type: file
     path: ./proxies/ninja.yaml
-    interval: 3600
     health-check:
       enable: true
       interval: 300
