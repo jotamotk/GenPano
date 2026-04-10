@@ -126,15 +126,23 @@ class LLMAnalyzer:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                response_format={"type": "json_object"},
             )
 
-            raw_text = completion.choices[0].message.content
-            raw_json = json.loads(raw_text)
+            raw_text = completion.choices[0].message.content or ""
+            # Strip markdown code fences if present (```json ... ```)
+            stripped = raw_text.strip()
+            if stripped.startswith("```"):
+                # Remove opening fence (```json or ```)
+                first_newline = stripped.index("\n")
+                stripped = stripped[first_newline + 1:]
+                # Remove closing fence
+                if stripped.endswith("```"):
+                    stripped = stripped[:-3].strip()
+            raw_json = json.loads(stripped)
             return self._parse_result(raw_json)
 
         except json.JSONDecodeError as e:
-            logger.warning(f"LLM returned invalid JSON: {e}")
+            logger.warning(f"LLM returned invalid JSON: {e}\nRaw: {raw_text[:500]}")
             return LLMAnalysisResult()
         except Exception as e:
             logger.exception(f"LLM analysis failed: {e}")
