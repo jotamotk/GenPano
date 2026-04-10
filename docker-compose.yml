@@ -46,7 +46,7 @@ services:
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
       --concurrency=5
-      -Q celery,llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok,account_login
+      -Q celery,llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok,account_login,analysis
     env_file: .env
     volumes:
       - screenshots_data:/data/screenshots
