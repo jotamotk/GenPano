@@ -24,7 +24,6 @@ from geo_tracker.db.models import (
     Query, ResponseAnalysis, SentimentDriver,
 )
 from geo_tracker.analyzer.brand_detector import BrandDetector
-from geo_tracker.analyzer.sentiment_analyzer import SentimentAnalyzer
 from geo_tracker.analyzer.llm_analyzer import LLMAnalyzer
 from geo_tracker.analyzer.citation_mapper import CitationMapper
 from geo_tracker.analyzer.geo_scorer import GEOScorer
@@ -44,9 +43,8 @@ async def analyze_single_response(
     competitors: list[Competitor],
     intent: str,
 ) -> dict:
-    """Run the 4-stage analysis pipeline on a single LLMResponse."""
+    """Run the 3-stage analysis pipeline on a single LLMResponse."""
     detector = BrandDetector()
-    sentiment_analyzer = SentimentAnalyzer()
     llm_analyzer = LLMAnalyzer()
     citation_mapper = CitationMapper()
 
@@ -85,20 +83,7 @@ async def analyze_single_response(
             f"{[d.brand_name for d in detected]}"
         )
 
-        # Stage 2: Sentiment analysis on context snippets
-        snippets = []
-        snippet_map = []  # (brand_idx, snippet_idx)
-        for i, d in enumerate(detected):
-            for j, snippet in enumerate(d.context_snippets):
-                snippets.append(snippet)
-                snippet_map.append((i, j))
-
-        sentiment_results = []
-        if snippets:
-            sentiment_results = await sentiment_analyzer.analyze_batch(snippets)
-        logger.info(f"  Stage 2: analyzed sentiment for {len(snippets)} snippets")
-
-        # Stage 3: LLM analysis
+        # Stage 2: LLM analysis (includes sentiment)
         llm_result = await llm_analyzer.analyze(
             response_text=response.raw_text,
             detected_brands=detected,
@@ -108,15 +93,15 @@ async def analyze_single_response(
             competitors=[c.name for c in competitors],
         )
         logger.info(
-            f"  Stage 3: LLM found {len(llm_result.brands)} brands, "
+            f"  Stage 2: LLM found {len(llm_result.brands)} brands, "
             f"dimension={llm_result.dimension.industry}"
         )
 
-        # Stage 4: Citation mapping
+        # Stage 3: Citation mapping
         citation_mappings = citation_mapper.map_citations(
             response.citations_json, detected, brand,
         )
-        logger.info(f"  Stage 4: mapped {len(citation_mappings)} citations")
+        logger.info(f"  Stage 3: mapped {len(citation_mappings)} citations")
 
         # ── Write results to DB ──
 
@@ -126,12 +111,6 @@ async def analyze_single_response(
         for b in llm_result.brands:
             key = (b.brand_name.lower(), (b.product_name or "").lower())
             llm_brands[key] = b
-
-        # Build sentiment lookup for detected brands
-        detected_sentiments = {}
-        for idx, (bi, _si) in enumerate(snippet_map):
-            if idx < len(sentiment_results) and bi not in detected_sentiments:
-                detected_sentiments[bi] = sentiment_results[idx]
 
         # Create BrandMention records — one per (brand, product) from LLM
         total_mentions = 0
@@ -150,10 +129,6 @@ async def analyze_single_response(
             if not matching_llm:
                 # No LLM match — create a brand-only mention
                 matching_llm = [(None, None)]
-
-            sent = detected_sentiments.get(di)
-            brand_sentiment = sent.sentiment if sent else "neutral"
-            brand_sentiment_score = sent.score if sent else 0.0
 
             for key, llm_brand in matching_llm:
                 if key:
@@ -174,8 +149,12 @@ async def analyze_single_response(
                     detail_level=(
                         llm_brand.detail_level if llm_brand else "passing"
                     ),
-                    sentiment=brand_sentiment,
-                    sentiment_score=brand_sentiment_score,
+                    sentiment=(
+                        llm_brand.sentiment if llm_brand else "neutral"
+                    ),
+                    sentiment_score=(
+                        llm_brand.sentiment_score if llm_brand else 0.0
+                    ),
                     context_snippet=(
                         d.context_snippets[0] if d.context_snippets else None
                     ),

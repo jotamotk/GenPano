@@ -48,6 +48,8 @@ class BrandAnalysis:
     position_type: str = "mentioned_only"
     position_rank: int | None = None
     detail_level: str = "passing"
+    sentiment: str = "neutral"           # positive | neutral | negative
+    sentiment_score: float = 0.0         # -1.0 ~ 1.0
     sentiment_drivers: list[DriverResult] = field(default_factory=list)
     product_features: list[ProductFeatureResult] = field(default_factory=list)
 
@@ -180,6 +182,8 @@ class LLMAnalyzer:
                 position_type=b.get("position_type", "mentioned_only"),
                 position_rank=b.get("position_rank"),
                 detail_level=b.get("detail_level", "passing"),
+                sentiment=b.get("sentiment", "neutral"),
+                sentiment_score=float(b.get("sentiment_score", 0.0)),
                 sentiment_drivers=drivers,
                 product_features=features,
             ))

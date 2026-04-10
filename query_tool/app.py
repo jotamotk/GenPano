@@ -493,12 +493,7 @@ HTML_TEMPLATE = """
                             <option value="">Select LLM</option>
                             <option value="chatgpt">ChatGPT</option>
                             <option value="gemini" selected>Gemini</option>
-                            <option value="claude">Claude</option>
-                            <option value="perplexity">Perplexity</option>
-                            <option value="grok">Grok</option>
-                            <option value="kimi">Kimi</option>
                             <option value="doubao">Doubao</option>
-                            <option value="zhipu">Zhipu</option>
                             <option value="deepseek">DeepSeek</option>
                         </select>
                     </div>
@@ -530,12 +525,7 @@ HTML_TEMPLATE = """
                         <option value="">All</option>
                         <option value="chatgpt">ChatGPT</option>
                         <option value="gemini">Gemini</option>
-                        <option value="claude">Claude</option>
-                        <option value="perplexity">Perplexity</option>
-                        <option value="grok">Grok</option>
-                        <option value="kimi">Kimi</option>
                         <option value="doubao">Doubao</option>
-                        <option value="zhipu">Zhipu</option>
                         <option value="deepseek">DeepSeek</option>
                     </select>
                 </div>
@@ -652,10 +642,10 @@ HTML_TEMPLATE = """
                                 <label>Platform</label>
                                 <select id="cookie-platform">
                                     <option value="doubao">Doubao (豆包)</option>
-                                    <option value="deepseek">DeepSeek</option>
-                                    <option value="gemini">Gemini</option>
                                     <option value="chatgpt">ChatGPT</option>
-                                    <option value="kimi">Kimi</option>
+                                    <option value="gemini">Gemini</option>
+                                    <option value="doubao">Doubao</option>
+                                    <option value="deepseek">DeepSeek</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -888,8 +878,12 @@ HTML_TEMPLATE = """
                                 <select id="f-llm"><option value="">All</option></select>
                             </div>
                             <div class="form-group">
-                                <label>Date</label>
-                                <input type="date" id="f-date">
+                                <label>From</label>
+                                <input type="date" id="f-date-from">
+                            </div>
+                            <div class="form-group">
+                                <label>To</label>
+                                <input type="date" id="f-date-to">
                             </div>
                             <button onclick="loadAnalyzerResponses()">Filter</button>
                         </div>
@@ -2092,11 +2086,13 @@ HTML_TEMPLATE = """
             const status = document.getElementById('f-status').value;
             const brand = document.getElementById('f-brand').value;
             const llm = document.getElementById('f-llm').value;
-            const date = document.getElementById('f-date').value;
+            const dateFrom = document.getElementById('f-date-from').value;
+            const dateTo = document.getElementById('f-date-to').value;
             if (status) p.set('status', status);
             if (brand) p.set('brand_id', brand);
             if (llm) p.set('llm', llm);
-            if (date) p.set('date', date);
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
 
             const r = await fetch('./api/analyzer/responses?' + p.toString());
             const d = await r.json();
@@ -2127,7 +2123,10 @@ HTML_TEMPLATE = """
                     <td>${r.total_brands_mentioned ?? '-'}</td>
                     <td>${r.target_brand_mentioned ? sentimentBadge(r.target_brand_sentiment) : badge('No','neutral')}</td>
                     <td class="text-muted">${r.collected_at ? r.collected_at.substring(0,10) : '-'}</td>
-                    <td><button class="small" onclick="toggleDetail(${r.response_id},this)">Detail</button></td>
+                    <td>
+                        <button class="small" onclick="toggleDetail(${r.response_id},this)">Detail</button>
+                        <button class="small" style="margin-left:4px;background:#7c3aed;color:#fff;" onclick="rerunAnalysis(${r.response_id},this)">Rerun</button>
+                    </td>
                 </tr>
                 <tr id="detail-${r.response_id}" style="display:none"><td colspan="13"><div class="detail-panel" id="dp-${r.response_id}">Loading...</div></td></tr>`;
             });
@@ -2215,6 +2214,20 @@ HTML_TEMPLATE = """
                 ${d.raw_text ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw Response Text</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+escapeHtml(d.raw_text)+'</pre></details>' : ''}
                 ${d.raw_analysis_json ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw LLM JSON</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+JSON.stringify(d.raw_analysis_json,null,2)+'</pre></details>' : ''}
             `;
+        }
+
+        async function rerunAnalysis(rid, btn) {
+            if (!confirm('Re-analyze response #' + rid + '?')) return;
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const r = await fetch('./api/analyzer/rerun/' + rid, {method: 'POST'});
+                const d = await r.json();
+                if (d.error) { alert('Error: ' + d.error); }
+                else { alert('Queued: ' + (d.task_id || 'ok')); }
+            } catch(e) { alert('Failed: ' + e); }
+            btn.disabled = false;
+            btn.textContent = 'Rerun';
         }
 
         async function loadDaily() {
@@ -3281,7 +3294,8 @@ def analyzer_responses():
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
     llm = request.args.get('llm')
-    date = request.args.get('date')
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
     limit = min(int(request.args.get('limit', 30)), 100)
     offset = int(request.args.get('offset', 0))
 
@@ -3299,9 +3313,12 @@ def analyzer_responses():
         if llm:
             where.append("q.target_llm = %s")
             params.append(llm)
-        if date:
-            where.append("lr.collected_at::date = %s")
-            params.append(date)
+        if date_from:
+            where.append("lr.collected_at::date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("lr.collected_at::date <= %s")
+            params.append(date_to)
 
         where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -3518,6 +3535,36 @@ def analyzer_trigger():
             return jsonify({'success': False, 'error': f'Celery error: {e}'})
     else:
         return jsonify({'success': False, 'error': 'Celery not available. Use CLI: python -m geo_tracker.analyzer.cli run-daily --date ' + date_str})
+
+
+@app.route('/api/analyzer/rerun/<int:response_id>', methods=['POST'])
+def analyzer_rerun_single(response_id):
+    """Reset a single response to pending and queue analysis."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE llm_responses SET analysis_status = 'pending' WHERE id = %s",
+                (response_id,),
+            )
+            if cur.rowcount == 0:
+                return jsonify({'error': 'Response not found'})
+        conn.commit()
+    finally:
+        conn.close()
+
+    if HAS_CELERY and celery_app:
+        try:
+            task = celery_app.send_task(
+                'geo_tracker.tasks.celery_tasks.analyze_response',
+                args=[response_id],
+                queue='analysis',
+            )
+            return jsonify({'success': True, 'task_id': task.id})
+        except Exception as e:
+            return jsonify({'error': f'Celery error: {e}'})
+    else:
+        return jsonify({'error': 'Celery not available'})
 
 
 _ensure_citations_column()
