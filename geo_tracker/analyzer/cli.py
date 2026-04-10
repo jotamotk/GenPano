@@ -98,90 +98,122 @@ async def analyze_single_response(
         # ── Write results to DB ──
 
         # Build brand analysis lookup from LLM result
-        llm_brands = {b.brand_name.lower(): b for b in llm_result.brands}
+        # Key: (brand_name_lower, product_name) to support multiple products per brand
+        llm_brands = {}
+        for b in llm_result.brands:
+            key = (b.brand_name.lower(), (b.product_name or "").lower())
+            llm_brands[key] = b
 
-        # Create BrandMention records
+        # Build sentiment lookup for detected brands
+        detected_sentiments = {}
+        for idx, (bi, _si) in enumerate(snippet_map):
+            if idx < len(sentiment_results) and bi not in detected_sentiments:
+                detected_sentiments[bi] = sentiment_results[idx]
+
+        # Create BrandMention records — one per (brand, product) from LLM
         total_mentions = 0
-        target_mention = None
+        target_mentions = []   # all mentions where is_target=True
+        all_mentions = []
+        processed_llm_keys = set()
 
-        for d in detected:
-            llm_brand = llm_brands.get(d.brand_name.lower())
+        # First pass: match detected brands with LLM results
+        for di, d in enumerate(detected):
+            # Find ALL LLM entries for this brand (may have multiple products)
+            matching_llm = [
+                (k, b) for k, b in llm_brands.items()
+                if k[0] == d.brand_name.lower()
+            ]
 
-            # Get sentiment for this brand (use first snippet's sentiment)
-            brand_sentiment = "neutral"
-            brand_sentiment_score = 0.0
-            for idx, (bi, si) in enumerate(snippet_map):
-                if bi == detected.index(d) and idx < len(sentiment_results):
-                    brand_sentiment = sentiment_results[idx].sentiment
-                    brand_sentiment_score = sentiment_results[idx].score
-                    break
+            if not matching_llm:
+                # No LLM match — create a brand-only mention
+                matching_llm = [(None, None)]
 
-            mention = BrandMention(
-                response_id=response.id,
-                brand_id=d.brand_id,
-                brand_name=d.brand_name,
-                product_name=llm_brand.product_name if llm_brand else None,
-                is_target=d.is_target,
-                position_type=llm_brand.position_type if llm_brand else "mentioned_only",
-                position_rank=llm_brand.position_rank if llm_brand else None,
-                detail_level=llm_brand.detail_level if llm_brand else "passing",
-                sentiment=brand_sentiment,
-                sentiment_score=brand_sentiment_score,
-                context_snippet=d.context_snippets[0] if d.context_snippets else None,
-                mention_count=d.mention_count,
-            )
-            session.add(mention)
-            await session.flush()  # Get mention.id for drivers
+            sent = detected_sentiments.get(di)
+            brand_sentiment = sent.sentiment if sent else "neutral"
+            brand_sentiment_score = sent.score if sent else 0.0
 
-            total_mentions += d.mention_count
+            for key, llm_brand in matching_llm:
+                if key:
+                    processed_llm_keys.add(key)
 
-            if d.is_target:
-                target_mention = mention
-
-            # Create SentimentDriver records
-            if llm_brand:
-                for driver in llm_brand.sentiment_drivers:
-                    session.add(SentimentDriver(
-                        mention_id=mention.id,
-                        response_id=response.id,
-                        brand_name=d.brand_name,
-                        driver_text=driver.driver_text,
-                        polarity=driver.polarity,
-                        category=driver.category,
-                        strength=driver.strength,
-                        source_quote=driver.source_quote,
-                    ))
-
-        # Also add brands found by LLM but not by rule-based detector
-        for llm_brand in llm_result.brands:
-            if llm_brand.brand_name.lower() not in {d.brand_name.lower() for d in detected}:
                 mention = BrandMention(
                     response_id=response.id,
-                    brand_name=llm_brand.brand_name,
-                    product_name=llm_brand.product_name,
-                    is_target=False,
-                    position_type=llm_brand.position_type,
-                    position_rank=llm_brand.position_rank,
-                    detail_level=llm_brand.detail_level,
-                    sentiment="neutral",
-                    sentiment_score=0.0,
-                    mention_count=1,
+                    brand_id=d.brand_id,
+                    brand_name=d.brand_name,
+                    product_name=llm_brand.product_name if llm_brand else None,
+                    is_target=d.is_target,
+                    position_type=(
+                        llm_brand.position_type if llm_brand else "mentioned_only"
+                    ),
+                    position_rank=(
+                        llm_brand.position_rank if llm_brand else None
+                    ),
+                    detail_level=(
+                        llm_brand.detail_level if llm_brand else "passing"
+                    ),
+                    sentiment=brand_sentiment,
+                    sentiment_score=brand_sentiment_score,
+                    context_snippet=(
+                        d.context_snippets[0] if d.context_snippets else None
+                    ),
+                    mention_count=d.mention_count,
                 )
                 session.add(mention)
                 await session.flush()
-                total_mentions += 1
 
-                for driver in llm_brand.sentiment_drivers:
-                    session.add(SentimentDriver(
-                        mention_id=mention.id,
-                        response_id=response.id,
-                        brand_name=llm_brand.brand_name,
-                        driver_text=driver.driver_text,
-                        polarity=driver.polarity,
-                        category=driver.category,
-                        strength=driver.strength,
-                        source_quote=driver.source_quote,
-                    ))
+                total_mentions += d.mention_count
+                all_mentions.append(mention)
+
+                if d.is_target:
+                    target_mentions.append(mention)
+
+                # Create SentimentDriver records for each product entry
+                if llm_brand:
+                    for driver in llm_brand.sentiment_drivers:
+                        session.add(SentimentDriver(
+                            mention_id=mention.id,
+                            response_id=response.id,
+                            brand_name=d.brand_name,
+                            driver_text=driver.driver_text,
+                            polarity=driver.polarity,
+                            category=driver.category,
+                            strength=driver.strength,
+                            source_quote=driver.source_quote,
+                        ))
+
+        # Second pass: add LLM-only brands/products not matched above
+        for key, llm_brand in llm_brands.items():
+            if key in processed_llm_keys:
+                continue
+
+            mention = BrandMention(
+                response_id=response.id,
+                brand_name=llm_brand.brand_name,
+                product_name=llm_brand.product_name,
+                is_target=False,
+                position_type=llm_brand.position_type,
+                position_rank=llm_brand.position_rank,
+                detail_level=llm_brand.detail_level,
+                sentiment="neutral",
+                sentiment_score=0.0,
+                mention_count=1,
+            )
+            session.add(mention)
+            await session.flush()
+            total_mentions += 1
+            all_mentions.append(mention)
+
+            for driver in llm_brand.sentiment_drivers:
+                session.add(SentimentDriver(
+                    mention_id=mention.id,
+                    response_id=response.id,
+                    brand_name=llm_brand.brand_name,
+                    driver_text=driver.driver_text,
+                    polarity=driver.polarity,
+                    category=driver.category,
+                    strength=driver.strength,
+                    source_quote=driver.source_quote,
+                ))
 
         # Create CitationSource records
         has_official = False
@@ -198,21 +230,43 @@ async def analyze_single_response(
             ))
 
         # Calculate GEO Score
+        # Use the best target mention (highest position) for scoring
         target_mention_count = sum(
-            d.mention_count for d in detected if d.is_target
+            m.mention_count for m in target_mentions
         )
+        best_target = None
+        if target_mentions:
+            # Pick the best-positioned target mention
+            position_priority = {
+                "first_recommendation": 0, "comparison_winner": 1,
+                "listed": 2, "mentioned_only": 3, "comparison_loser": 4,
+            }
+            best_target = min(
+                target_mentions,
+                key=lambda m: (
+                    position_priority.get(m.position_type, 99),
+                    m.position_rank or 999,
+                ),
+            )
+
+        # mention_rate_pct: target brand's share of all mentions in this response
+        mention_rate_pct = (
+            (target_mention_count / total_mentions * 100)
+            if total_mentions > 0 and best_target else 0.0
+        )
+
         visibility = GEOScorer.calc_visibility(
-            is_mentioned=target_mention is not None,
-            position_type=target_mention.position_type if target_mention else None,
-            position_rank=target_mention.position_rank if target_mention else None,
-            mention_rate_pct=100.0 if target_mention else 0.0,
+            is_mentioned=best_target is not None,
+            position_type=best_target.position_type if best_target else None,
+            position_rank=best_target.position_rank if best_target else None,
+            mention_rate_pct=mention_rate_pct,
         )
         sentiment_score = GEOScorer.calc_sentiment(
             raw_sentiment_score=(
-                target_mention.sentiment_score if target_mention else 0.0
+                best_target.sentiment_score if best_target else 0.0
             ),
             detail_level=(
-                target_mention.detail_level if target_mention else None
+                best_target.detail_level if best_target else None
             ),
         )
         sov_score = GEOScorer.calc_sov(target_mention_count, total_mentions)
@@ -230,22 +284,19 @@ async def analyze_single_response(
             dimension_company=llm_result.dimension.company,
             dimension_product=llm_result.dimension.product,
             dimension_category=llm_result.dimension.category,
-            total_brands_mentioned=len(detected) + len([
-                b for b in llm_result.brands
-                if b.brand_name.lower() not in {d.brand_name.lower() for d in detected}
-            ]),
-            target_brand_mentioned=target_mention is not None,
+            total_brands_mentioned=len(all_mentions),
+            target_brand_mentioned=best_target is not None,
             target_brand_position=(
-                target_mention.position_type if target_mention else None
+                best_target.position_type if best_target else None
             ),
             target_brand_rank=(
-                target_mention.position_rank if target_mention else None
+                best_target.position_rank if best_target else None
             ),
             target_brand_sentiment=(
-                target_mention.sentiment if target_mention else None
+                best_target.sentiment if best_target else None
             ),
             target_brand_detail=(
-                target_mention.detail_level if target_mention else None
+                best_target.detail_level if best_target else None
             ),
             visibility_score=round(visibility, 2),
             sentiment_score=round(sentiment_score, 2),
@@ -261,11 +312,11 @@ async def analyze_single_response(
         # Create ProductFeatureMention records from LLM result
         for llm_brand in llm_result.brands:
             for feat in llm_brand.product_features:
-                if llm_brand.product_name and feat.feature_name:
+                if feat.feature_name:
                     session.add(ProductFeatureMention(
                         analysis_id=analysis.id,
                         brand_name=llm_brand.brand_name,
-                        product_name=llm_brand.product_name,
+                        product_name=llm_brand.product_name or llm_brand.brand_name,
                         feature_name=feat.feature_name,
                         feature_sentiment=feat.feature_sentiment,
                         context_snippet=feat.context_snippet,
@@ -282,8 +333,8 @@ async def analyze_single_response(
             "response_id": response.id,
             "status": "done",
             "geo_score": geo_score,
-            "brands_found": len(detected),
-            "target_mentioned": target_mention is not None,
+            "brands_found": len(all_mentions),
+            "target_mentioned": best_target is not None,
         }
 
     except Exception as e:

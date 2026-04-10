@@ -303,7 +303,10 @@ class BrandMention(Base):
                                    cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("response_id", "brand_name", name="uq_mention_response_brand"),
+        UniqueConstraint(
+            "response_id", "brand_name", "product_name",
+            name="uq_mention_response_brand_product",
+        ),
     )
 
 

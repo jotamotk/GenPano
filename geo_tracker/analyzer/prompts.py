@@ -14,6 +14,8 @@ ANALYSIS_SYSTEM = (
     "1. 验证并补全品牌检测结果\n"
     "2. 分析品牌在AI回答中的位置、详细度和情感驱动因子\n"
     "3. 提取产品特性、推荐场景和价格定位感知\n"
+    "重要：同一品牌的不同产品必须分开输出为单独的 brands 条目。\n"
+    "重要：每个品牌/产品的 sentiment_drivers 必须详细列出所有正面和负面驱动因子。\n"
     "严格按JSON输出，不要添加任何解释文字。"
 )
 
@@ -34,22 +36,28 @@ ANALYSIS_USER = """\
 3. **分析**每个确认品牌的位置、详细度和情感驱动因子
 4. **提取**每个产品的特性/卖点、推荐场景和AI对其价格定位的感知
 
+**关键规则**:
+- **同一品牌的不同产品必须分别输出**：如回答提到"Nike Air Max 90"和"Nike Pegasus"，必须输出两条 brands 条目（brand_name 都是"Nike"，product_name 分别是"Air Max 90"和"Pegasus"）
+- 如果仅提及品牌而没有具体产品，product_name 设为 null
+- **sentiment_drivers 必须全面**：列出AI回答中该品牌/产品的所有正面和负面评价因素，包括功能特性、价格、体验、品牌形象等各方面。每个 driver 需要附带原文引用（source_quote）
+- **product_features 必须全面**：列出AI回答中提到的该产品的所有特性、卖点、场景和价格感知
+
 输出JSON（严格遵循此格式）：
 {{
   "brands": [
     {{
-      "brand_name": "品牌名",
+      "brand_name": "品牌名（统一为标准名称）",
       "product_name": "具体产品名（如有），如 Air Max 90、iPhone 16。仅提及品牌则为null",
       "position_type": "first_recommendation|listed|mentioned_only|comparison_winner|comparison_loser",
       "position_rank": 1,
       "detail_level": "detailed|brief|passing",
       "sentiment_drivers": [
         {{
-          "driver_text": "简短描述（如：零糖配方健康）",
+          "driver_text": "简短描述该评价因素（如：零糖配方健康、价格偏高、缓震性能出色）",
           "polarity": "positive|negative",
           "category": "product_feature|price|ux|brand_image|channel|service|innovation|other",
           "strength": 0.8,
-          "source_quote": "AI原文中支撑此driver的句子"
+          "source_quote": "AI原文中支撑此driver的完整句子"
         }}
       ],
       "product_features": [

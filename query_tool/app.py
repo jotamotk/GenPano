@@ -133,7 +133,7 @@ def _ensure_analyzer_tables():
                         context_snippet TEXT,
                         mention_count INTEGER DEFAULT 1,
                         created_at TIMESTAMP DEFAULT NOW(),
-                        CONSTRAINT uq_mention_response_brand UNIQUE (response_id, brand_name)
+                        CONSTRAINT uq_mention_response_brand_product UNIQUE (response_id, brand_name, product_name)
                     )
                 """)
                 cur.execute("""
@@ -284,6 +284,28 @@ def _ensure_analyzer_tables():
                         CONSTRAINT uq_product_daily UNIQUE (brand_id, product_name, date, target_llm)
                     )
                 """)
+                # ── Migrate unique constraint: (response_id, brand_name) → (response_id, brand_name, product_name) ──
+                cur.execute("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.table_constraints
+                            WHERE constraint_name = 'uq_mention_response_brand'
+                              AND table_name = 'brand_mentions'
+                        ) THEN
+                            ALTER TABLE brand_mentions DROP CONSTRAINT uq_mention_response_brand;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.table_constraints
+                            WHERE constraint_name = 'uq_mention_response_brand_product'
+                              AND table_name = 'brand_mentions'
+                        ) THEN
+                            ALTER TABLE brand_mentions ADD CONSTRAINT uq_mention_response_brand_product
+                                UNIQUE (response_id, brand_name, product_name);
+                        END IF;
+                    END $$
+                """)
+
             conn.commit()
             print("DB migration: analyzer tables ensured (brand_mentions, sentiment_drivers, "
                   "citation_sources, response_analyses, product_feature_mentions, "
