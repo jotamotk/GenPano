@@ -1,0 +1,27 @@
+# V-Ninja (ninja-mihomo) 代理服务 - systemd unit
+#
+# 安装步骤:
+#   1. 先运行 setup-vninja-host.sh 安装依赖
+#   2. cp vninja.service /etc/systemd/system/
+#   3. systemctl daemon-reload
+#   4. systemctl enable --now vninja
+#
+# V-Ninja 是 Tauri GUI 应用，需要虚拟显示 (xvfb-run) 运行
+# ninja-mihomo 通过 clash-ninja-service 管理生命周期
+
+[Unit]
+Description=V-Ninja Proxy (ninja-mihomo via xvfb)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24 -nolisten tcp" /usr/bin/clash-ninja
+ExecStartPost=/usr/local/bin/vninja-allow-lan.sh
+Restart=on-failure
+RestartSec=10
+Environment=HOME=/root
+Environment=XDG_DATA_HOME=/root/.local/share
+
+[Install]
+WantedBy=multi-user.target

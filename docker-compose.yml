@@ -1,29 +1,8 @@
 services:
 
-  clash:
-    image: ubuntu:22.04
-    restart: unless-stopped
-    entrypoint: ["/usr/bin/ninja-mihomo", "-d", "/root/.config/mihomo"]
-    volumes:
-      - ./clash:/root/.config/mihomo
-      - ./clash/ninja-mihomo:/usr/bin/ninja-mihomo:ro
-    ports:
-      - "7890:7890"
-
-  clash-sub-updater:
-    image: python:3.11-alpine
-    restart: unless-stopped
-    command: sh -c "pip install -q pyyaml && python /app/update_sub.py"
-    environment:
-      - CLASH_SUB_URL=${CLASH_SUB_URL}
-      - UPDATE_INTERVAL=3600
-      - PROVIDER_FILE=/data/proxies/ninja.yaml
-      - CLASH_API=http://clash:9090
-    volumes:
-      - ./clash/update_sub.py:/app/update_sub.py:ro
-      - ./clash/proxies:/data/proxies
-    depends_on:
-      - clash
+  # V-Ninja (ninja-mihomo) 运行在宿主机上，不在 Docker 内
+  # Docker 容器通过 host.docker.internal 访问宿主机代理
+  # 设置方法见 clash/setup-vninja-host.sh
 
   postgres:
     image: postgres:16-alpine
@@ -61,6 +40,8 @@ services:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
     shm_size: '2gb'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
@@ -74,17 +55,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      clash:
-        condition: service_started
 
   beat:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: celery -A geo_tracker.tasks.celery_tasks beat --loglevel=info
     env_file: .env
     depends_on:
       - redis
-      - clash
 
   nginx:
     image: ${ACR_REGISTRY}/genpano:frontend-${IMAGE_TAG:-latest}
