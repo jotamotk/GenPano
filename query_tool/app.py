@@ -493,12 +493,7 @@ HTML_TEMPLATE = """
                             <option value="">Select LLM</option>
                             <option value="chatgpt">ChatGPT</option>
                             <option value="gemini" selected>Gemini</option>
-                            <option value="claude">Claude</option>
-                            <option value="perplexity">Perplexity</option>
-                            <option value="grok">Grok</option>
-                            <option value="kimi">Kimi</option>
                             <option value="doubao">Doubao</option>
-                            <option value="zhipu">Zhipu</option>
                             <option value="deepseek">DeepSeek</option>
                         </select>
                     </div>
@@ -530,12 +525,7 @@ HTML_TEMPLATE = """
                         <option value="">All</option>
                         <option value="chatgpt">ChatGPT</option>
                         <option value="gemini">Gemini</option>
-                        <option value="claude">Claude</option>
-                        <option value="perplexity">Perplexity</option>
-                        <option value="grok">Grok</option>
-                        <option value="kimi">Kimi</option>
                         <option value="doubao">Doubao</option>
-                        <option value="zhipu">Zhipu</option>
                         <option value="deepseek">DeepSeek</option>
                     </select>
                 </div>
@@ -652,10 +642,10 @@ HTML_TEMPLATE = """
                                 <label>Platform</label>
                                 <select id="cookie-platform">
                                     <option value="doubao">Doubao (豆包)</option>
-                                    <option value="deepseek">DeepSeek</option>
-                                    <option value="gemini">Gemini</option>
                                     <option value="chatgpt">ChatGPT</option>
-                                    <option value="kimi">Kimi</option>
+                                    <option value="gemini">Gemini</option>
+                                    <option value="doubao">Doubao</option>
+                                    <option value="deepseek">DeepSeek</option>
                                 </select>
                             </div>
                             <div class="form-group">
