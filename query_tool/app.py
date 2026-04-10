@@ -878,8 +878,12 @@ HTML_TEMPLATE = """
                                 <select id="f-llm"><option value="">All</option></select>
                             </div>
                             <div class="form-group">
-                                <label>Date</label>
-                                <input type="date" id="f-date">
+                                <label>From</label>
+                                <input type="date" id="f-date-from">
+                            </div>
+                            <div class="form-group">
+                                <label>To</label>
+                                <input type="date" id="f-date-to">
                             </div>
                             <button onclick="loadAnalyzerResponses()">Filter</button>
                         </div>
@@ -2082,11 +2086,13 @@ HTML_TEMPLATE = """
             const status = document.getElementById('f-status').value;
             const brand = document.getElementById('f-brand').value;
             const llm = document.getElementById('f-llm').value;
-            const date = document.getElementById('f-date').value;
+            const dateFrom = document.getElementById('f-date-from').value;
+            const dateTo = document.getElementById('f-date-to').value;
             if (status) p.set('status', status);
             if (brand) p.set('brand_id', brand);
             if (llm) p.set('llm', llm);
-            if (date) p.set('date', date);
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
 
             const r = await fetch('./api/analyzer/responses?' + p.toString());
             const d = await r.json();
@@ -3288,7 +3294,8 @@ def analyzer_responses():
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
     llm = request.args.get('llm')
-    date = request.args.get('date')
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
     limit = min(int(request.args.get('limit', 30)), 100)
     offset = int(request.args.get('offset', 0))
 
@@ -3306,9 +3313,12 @@ def analyzer_responses():
         if llm:
             where.append("q.target_llm = %s")
             params.append(llm)
-        if date:
-            where.append("lr.collected_at::date = %s")
-            params.append(date)
+        if date_from:
+            where.append("lr.collected_at::date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("lr.collected_at::date <= %s")
+            params.append(date_to)
 
         where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
