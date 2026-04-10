@@ -2127,7 +2127,10 @@ HTML_TEMPLATE = """
                     <td>${r.total_brands_mentioned ?? '-'}</td>
                     <td>${r.target_brand_mentioned ? sentimentBadge(r.target_brand_sentiment) : badge('No','neutral')}</td>
                     <td class="text-muted">${r.collected_at ? r.collected_at.substring(0,10) : '-'}</td>
-                    <td><button class="small" onclick="toggleDetail(${r.response_id},this)">Detail</button></td>
+                    <td>
+                        <button class="small" onclick="toggleDetail(${r.response_id},this)">Detail</button>
+                        <button class="small" style="margin-left:4px;background:#7c3aed;color:#fff;" onclick="rerunAnalysis(${r.response_id},this)">Rerun</button>
+                    </td>
                 </tr>
                 <tr id="detail-${r.response_id}" style="display:none"><td colspan="13"><div class="detail-panel" id="dp-${r.response_id}">Loading...</div></td></tr>`;
             });
@@ -2215,6 +2218,20 @@ HTML_TEMPLATE = """
                 ${d.raw_text ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw Response Text</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+escapeHtml(d.raw_text)+'</pre></details>' : ''}
                 ${d.raw_analysis_json ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw LLM JSON</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+JSON.stringify(d.raw_analysis_json,null,2)+'</pre></details>' : ''}
             `;
+        }
+
+        async function rerunAnalysis(rid, btn) {
+            if (!confirm('Re-analyze response #' + rid + '?')) return;
+            btn.disabled = true;
+            btn.textContent = '...';
+            try {
+                const r = await fetch('./api/analyzer/rerun/' + rid, {method: 'POST'});
+                const d = await r.json();
+                if (d.error) { alert('Error: ' + d.error); }
+                else { alert('Queued: ' + (d.task_id || 'ok')); }
+            } catch(e) { alert('Failed: ' + e); }
+            btn.disabled = false;
+            btn.textContent = 'Rerun';
         }
 
         async function loadDaily() {
@@ -3518,6 +3535,36 @@ def analyzer_trigger():
             return jsonify({'success': False, 'error': f'Celery error: {e}'})
     else:
         return jsonify({'success': False, 'error': 'Celery not available. Use CLI: python -m geo_tracker.analyzer.cli run-daily --date ' + date_str})
+
+
+@app.route('/api/analyzer/rerun/<int:response_id>', methods=['POST'])
+def analyzer_rerun_single(response_id):
+    """Reset a single response to pending and queue analysis."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE llm_responses SET analysis_status = 'pending' WHERE id = %s",
+                (response_id,),
+            )
+            if cur.rowcount == 0:
+                return jsonify({'error': 'Response not found'})
+        conn.commit()
+    finally:
+        conn.close()
+
+    if HAS_CELERY and celery_app:
+        try:
+            task = celery_app.send_task(
+                'geo_tracker.tasks.celery_tasks.analyze_response',
+                args=[response_id],
+                queue='analysis',
+            )
+            return jsonify({'success': True, 'task_id': task.id})
+        except Exception as e:
+            return jsonify({'error': f'Celery error: {e}'})
+    else:
+        return jsonify({'error': 'Celery not available'})
 
 
 _ensure_citations_column()
