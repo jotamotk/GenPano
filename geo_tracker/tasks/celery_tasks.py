@@ -537,7 +537,8 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
 
 @app.task(bind=True, max_retries=2, queue="analysis")
 def analyze_response(self, response_id: int) -> dict:
-    """Run the 4-stage analysis pipeline on a single LLMResponse."""
+    """Run the 3-stage analysis pipeline on a single LLMResponse."""
+    logger.info(f"analyze_response started for response_id={response_id}")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     task_engine = create_task_engine()

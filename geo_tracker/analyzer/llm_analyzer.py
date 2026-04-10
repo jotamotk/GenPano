@@ -79,6 +79,7 @@ class LLMAnalyzer:
                 "ARK_BASE_URL",
                 "https://ark.cn-beijing.volces.com/api/v3",
             ),
+            timeout=60.0,
         )
         self.model = os.getenv("ARK_MODEL", "doubao-pro-32k")
 
