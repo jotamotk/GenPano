@@ -2876,7 +2876,7 @@ ANALYZER_TEMPLATE = """
 </head>
 <body>
 <div class="container">
-    <div class="nav"><a href="/">&#8592; Query Monitor</a></div>
+    <div class="nav"><a href="./">&#8592; Query Monitor</a></div>
     <h1>GEN Analyzer Debug <small>analysis pipeline monitor</small></h1>
 
     <div id="stats" class="stats" style="margin-top:20px;"></div>
@@ -3003,7 +3003,7 @@ async function api(url) {
 }
 
 async function loadStats() {
-    const d = await api('/api/analyzer/stats');
+    const d = await api('./api/analyzer/stats');
     document.getElementById('stats').innerHTML = `
         <div class="stat-card"><div class="stat-value">${d.total}</div><div class="stat-label">Total Responses</div></div>
         <div class="stat-card"><div class="stat-value done">${d.done}</div><div class="stat-label">Analyzed</div></div>
@@ -3015,7 +3015,7 @@ async function loadStats() {
 }
 
 async function loadBrands() {
-    const d = await api('/api/analyzer/brands');
+    const d = await api('./api/analyzer/brands');
     ['f-brand','d-brand','t-brand'].forEach(id => {
         const sel = document.getElementById(id);
         const first = sel.options[0];
@@ -3026,7 +3026,7 @@ async function loadBrands() {
 }
 
 async function loadLLMs() {
-    const d = await api('/api/analyzer/llms');
+    const d = await api('./api/analyzer/llms');
     ['f-llm','d-llm'].forEach(id => {
         const sel = document.getElementById(id);
         const first = sel.options[0];
@@ -3052,7 +3052,7 @@ async function loadResponses(page) {
     if (llm) p.set('llm', llm);
     if (date) p.set('date', date);
 
-    const d = await api('/api/analyzer/responses?' + p.toString());
+    const d = await api('./api/analyzer/responses?' + p.toString());
     document.getElementById('page-info').textContent = `Page ${page+1} (${d.length} results)`;
 
     if (!d.length) {
@@ -3094,7 +3094,7 @@ async function toggleDetail(rid, btn) {
     row.style.display = '';
     const dp = document.getElementById('dp-' + rid);
     dp.innerHTML = 'Loading...';
-    const d = await api('/api/analyzer/response/' + rid);
+    const d = await api('./api/analyzer/response/' + rid);
     if (d.error) { dp.innerHTML = '<div class="text-muted">' + d.error + '</div>'; return; }
 
     let mentionsHtml = '';
@@ -3166,7 +3166,7 @@ async function loadDaily() {
     if (llm) p.set('llm', llm);
     p.set('days', days);
 
-    const d = await api('/api/analyzer/daily?' + p.toString());
+    const d = await api('./api/analyzer/daily?' + p.toString());
     if (!d.length) {
         document.getElementById('daily-table').innerHTML = '<div class="empty-state">No daily data</div>';
         return;
@@ -3201,7 +3201,7 @@ async function triggerAnalysis(action) {
     const div = document.getElementById('trigger-result');
     div.innerHTML = '<div class="text-muted">Triggering...</div>';
 
-    const r = await fetch('/api/analyzer/trigger', {
+    const r = await fetch('./api/analyzer/trigger', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({action, date, brand_id: brand ? parseInt(brand) : null})
