@@ -320,7 +320,7 @@ HTML_TEMPLATE = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>LLM Query Monitor</title>
+    <title>GEN Pipeline</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 20px; background: #f5f5f5; }
@@ -404,12 +404,45 @@ HTML_TEMPLATE = """
         .alert { padding: 12px 16px; border-radius: 4px; margin-bottom: 15px; }
         .alert.success { background: #dcfce7; color: #166534; }
         .alert.error { background: #fee2e2; color: #991b1b; }
+        /* Analyzer styles */
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .badge-done { background: #d1fae5; color: #059669; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-failed { background: #fee2e2; color: #dc2626; }
+        .badge-running { background: #dbeafe; color: #2563eb; }
+        .badge-positive { background: #d1fae5; color: #059669; }
+        .badge-negative { background: #fee2e2; color: #dc2626; }
+        .badge-neutral { background: #f3f4f6; color: #6b7280; }
+        .score-bar { display: inline-block; height: 8px; border-radius: 4px; background: #e5e7eb; width: 80px; vertical-align: middle; }
+        .score-fill { height: 100%; border-radius: 4px; }
+        .score-high .score-fill { background: #059669; }
+        .score-mid .score-fill { background: #d97706; }
+        .score-low .score-fill { background: #dc2626; }
+        .geo-score { font-size: 18px; font-weight: 700; }
+        .geo-score.high { color: #059669; }
+        .geo-score.mid { color: #d97706; }
+        .geo-score.low { color: #dc2626; }
+        .detail-panel { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px; padding: 15px; margin: 10px 0; }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
+        .detail-section { background: white; padding: 12px; border-radius: 6px; border: 1px solid #e5e7eb; }
+        .detail-section h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
+        .mention-item { padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+        .mention-item:last-child { border-bottom: none; }
+        .driver-tag { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; font-size: 11px; }
+        .driver-pos { background: #d1fae5; color: #059669; }
+        .driver-neg { background: #fee2e2; color: #dc2626; }
+        .sub-scores { display: flex; gap: 12px; flex-wrap: wrap; }
+        .sub-score { text-align: center; }
+        .sub-score-value { font-size: 14px; font-weight: 700; }
+        .sub-score-label { font-size: 10px; color: #9ca3af; }
+        .text-muted { color: #9ca3af; font-size: 12px; }
+        .empty-state { text-align: center; padding: 40px; color: #9ca3af; }
     </style>
 </head>
 <body>
     <div class="container">
         <div style="display: flex; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
-            <h1>LLM Query Monitor</h1>
+            <h1>GEN Pipeline <small style="font-size:14px;color:#888;font-weight:normal;">query & analysis monitor</small></h1>
             <button class="secondary refresh-btn" onclick="loadStats(); loadQueries();">Refresh</button>
             <button class="secondary refresh-btn" onclick="backfillCitations()">Backfill Citations</button>
             <div class="auto-refresh">
@@ -417,13 +450,14 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <div class="stats" id="stats">
+        <div class="stats" id="tracker-stats">
             <div class="stat-card"><div class="stat-value" id="total-queries">-</div><div class="stat-label">Total Queries</div></div>
             <div class="stat-card"><div class="stat-value done" id="done-queries">-</div><div class="stat-label">Done</div></div>
             <div class="stat-card"><div class="stat-value pending" id="pending-queries">-</div><div class="stat-label">Pending</div></div>
             <div class="stat-card"><div class="stat-value" id="running-queries">-</div><div class="stat-label">Running</div></div>
             <div class="stat-card"><div class="stat-value failed" id="failed-queries">-</div><div class="stat-label">Failed</div></div>
         </div>
+        <div id="analyzer-stats" class="stats" style="display:none;"></div>
 
         <!-- Create New Query Section -->
         <div class="card">
@@ -529,7 +563,11 @@ HTML_TEMPLATE = """
                     <button class="tab-btn" id="tab-accounts-btn" onclick="switchTab('accounts')">Accounts</button>
                     <button class="tab-btn" id="tab-segments-btn" onclick="switchTab('segments')">Segments</button>
                     <button class="tab-btn" id="tab-profiles-btn" onclick="switchTab('profiles')">Profiles</button>
-                    <button class="tab-btn" id="tab-html-btn" onclick="switchTab('html')">Debug HTML Files</button>
+                    <button class="tab-btn" id="tab-html-btn" onclick="switchTab('html')">Debug HTML</button>
+                    <span style="border-left:2px solid #ddd; margin:0 8px; height:24px;"></span>
+                    <button class="tab-btn" id="tab-analyzer-btn" onclick="switchTab('analyzer')" style="color:#7c3aed;">Analyzer</button>
+                    <button class="tab-btn" id="tab-daily-btn" onclick="switchTab('daily')" style="color:#7c3aed;">Daily GEO</button>
+                    <button class="tab-btn" id="tab-trigger-btn" onclick="switchTab('trigger')" style="color:#7c3aed;">Trigger</button>
                 </div>
             </div>
             <div class="tab-content">
@@ -810,6 +848,86 @@ HTML_TEMPLATE = """
                         <div style="color:#999; font-size:13px;">Loading...</div>
                     </div>
                 </div>
+
+                <!-- Analyzer Responses Tab -->
+                <div class="tab-panel" id="tab-analyzer">
+                    <div class="card">
+                        <div class="filter-row" style="margin-bottom:15px;">
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select id="f-status"><option value="">All</option><option value="done">Done</option><option value="pending">Pending</option><option value="running">Running</option><option value="failed">Failed</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Brand</label>
+                                <select id="f-brand"><option value="">All</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>LLM</label>
+                                <select id="f-llm"><option value="">All</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Date</label>
+                                <input type="date" id="f-date">
+                            </div>
+                            <button onclick="loadAnalyzerResponses()">Filter</button>
+                        </div>
+                        <div id="responses-table"></div>
+                        <div style="margin-top:10px;display:flex;gap:10px;">
+                            <button class="small" onclick="loadAnalyzerResponses(analyzerCurrentPage-1)">&#8592; Prev</button>
+                            <span id="page-info" class="text-muted" style="line-height:28px;"></span>
+                            <button class="small" onclick="loadAnalyzerResponses(analyzerCurrentPage+1)">Next &#8594;</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Daily GEO Tab -->
+                <div class="tab-panel" id="tab-daily">
+                    <div class="card">
+                        <div class="filter-row" style="margin-bottom:15px;">
+                            <div class="form-group">
+                                <label>Brand</label>
+                                <select id="d-brand"><option value="">All</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>LLM</label>
+                                <select id="d-llm"><option value="">All</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Days</label>
+                                <select id="d-days"><option value="7">7</option><option value="14">14</option><option value="30" selected>30</option></select>
+                            </div>
+                            <button onclick="loadDaily()">Filter</button>
+                        </div>
+                        <div id="daily-table"></div>
+                    </div>
+                </div>
+
+                <!-- Trigger Analysis Tab -->
+                <div class="tab-panel" id="tab-trigger">
+                    <div class="card">
+                        <h2>Trigger Analysis</h2>
+                        <p class="text-muted" style="margin-bottom:15px;">Run the analysis pipeline on pending responses for a given date.</p>
+                        <div class="filter-row">
+                            <div class="form-group">
+                                <label>Date</label>
+                                <input type="date" id="t-date">
+                            </div>
+                            <div class="form-group">
+                                <label>Brand (optional)</label>
+                                <select id="t-brand"><option value="">All Brands</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Action</label>
+                                <div style="display:flex;gap:8px;">
+                                    <button class="success" onclick="triggerAnalysis('analyze')">Run Analysis</button>
+                                    <button onclick="triggerAnalysis('aggregate')">Aggregate Only</button>
+                                    <button class="danger" onclick="triggerAnalysis('reanalyze')">Re-analyze</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="trigger-result" style="margin-top:15px;"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -853,14 +971,22 @@ HTML_TEMPLATE = """
 
         // ---- Tab switcher ----
         function switchTab(tab) {
-            ['queries', 'accounts', 'segments', 'profiles', 'html'].forEach(t => {
+            ['queries', 'accounts', 'segments', 'profiles', 'html', 'analyzer', 'daily', 'trigger'].forEach(t => {
                 document.getElementById('tab-' + t).classList.toggle('active', tab === t);
                 document.getElementById('tab-' + t + '-btn').classList.toggle('active', tab === t);
             });
+            // Tracker tabs
             if (tab === 'html') loadHtmlFiles();
             if (tab === 'accounts') loadAccounts();
             if (tab === 'segments') loadSegments();
             if (tab === 'profiles') loadProfiles();
+            // Analyzer tabs
+            const isAnalyzer = ['analyzer', 'daily', 'trigger'].includes(tab);
+            document.getElementById('tracker-stats').style.display = isAnalyzer ? 'none' : 'flex';
+            document.getElementById('analyzer-stats').style.display = isAnalyzer ? 'flex' : 'none';
+            if (tab === 'analyzer') { loadAnalyzerStats(); loadAnalyzerResponses(0); }
+            if (tab === 'daily') { loadAnalyzerStats(); loadDaily(); }
+            if (tab === 'trigger') loadAnalyzerStats();
         }
 
         // ---- Stats ----
@@ -1869,6 +1995,271 @@ HTML_TEMPLATE = """
         // Load on page load
         loadStats();
         loadQueries();
+
+        // ---- Analyzer functions ----
+        let analyzerCurrentPage = 0;
+        const ANALYZER_PAGE_SIZE = 30;
+
+        function scoreClass(v) { return v >= 60 ? 'high' : v >= 35 ? 'mid' : 'low'; }
+        function scoreBar(v, max=100) {
+            const cls = scoreClass(v);
+            return `<span class="score-bar score-${cls}"><span class="score-fill" style="width:${Math.min(v/max*100,100)}%"></span></span> ${v.toFixed(1)}`;
+        }
+        function badge(text, cls) { return `<span class="badge badge-${cls}">${text}</span>`; }
+        function statusBadge(s) {
+            const m = {done:'done',pending:'pending',failed:'failed',running:'running'};
+            return badge(s, m[s] || 'neutral');
+        }
+        function sentimentBadge(s) {
+            const m = {positive:'positive',negative:'negative',neutral:'neutral'};
+            return badge(s || '-', m[s] || 'neutral');
+        }
+
+        async function loadAnalyzerStats() {
+            try {
+                const r = await fetch('./api/analyzer/stats');
+                const d = await r.json();
+                document.getElementById('analyzer-stats').innerHTML = `
+                    <div class="stat-card"><div class="stat-value">${d.total}</div><div class="stat-label">Total Responses</div></div>
+                    <div class="stat-card"><div class="stat-value done">${d.done}</div><div class="stat-label">Analyzed</div></div>
+                    <div class="stat-card"><div class="stat-value pending">${d.pending}</div><div class="stat-label">Pending</div></div>
+                    <div class="stat-card"><div class="stat-value failed">${d.failed}</div><div class="stat-label">Failed</div></div>
+                    <div class="stat-card"><div class="stat-value" style="color:#7c3aed;">${d.avg_geo_score != null ? d.avg_geo_score.toFixed(1) : '-'}</div><div class="stat-label">Avg GEO Score</div></div>
+                    <div class="stat-card"><div class="stat-value">${d.total_brands_tracked}</div><div class="stat-label">Brands Tracked</div></div>
+                `;
+            } catch(e) { console.error('loadAnalyzerStats:', e); }
+        }
+
+        async function loadBrands() {
+            try {
+                const r = await fetch('./api/analyzer/brands');
+                const d = await r.json();
+                ['f-brand','d-brand','t-brand'].forEach(id => {
+                    const sel = document.getElementById(id);
+                    if (!sel) return;
+                    const first = sel.options[0];
+                    sel.innerHTML = '';
+                    sel.appendChild(first);
+                    d.forEach(b => { const o = document.createElement('option'); o.value = b.id; o.textContent = b.name; sel.appendChild(o); });
+                });
+            } catch(e) { console.error('loadBrands:', e); }
+        }
+
+        async function loadLLMs() {
+            try {
+                const r = await fetch('./api/analyzer/llms');
+                const d = await r.json();
+                ['f-llm','d-llm'].forEach(id => {
+                    const sel = document.getElementById(id);
+                    if (!sel) return;
+                    const first = sel.options[0];
+                    sel.innerHTML = '';
+                    sel.appendChild(first);
+                    d.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; sel.appendChild(o); });
+                });
+            } catch(e) { console.error('loadLLMs:', e); }
+        }
+
+        async function loadAnalyzerResponses(page) {
+            if (page === undefined) page = 0;
+            if (page < 0) page = 0;
+            analyzerCurrentPage = page;
+            const p = new URLSearchParams();
+            p.set('limit', ANALYZER_PAGE_SIZE);
+            p.set('offset', page * ANALYZER_PAGE_SIZE);
+            const status = document.getElementById('f-status').value;
+            const brand = document.getElementById('f-brand').value;
+            const llm = document.getElementById('f-llm').value;
+            const date = document.getElementById('f-date').value;
+            if (status) p.set('status', status);
+            if (brand) p.set('brand_id', brand);
+            if (llm) p.set('llm', llm);
+            if (date) p.set('date', date);
+
+            const r = await fetch('./api/analyzer/responses?' + p.toString());
+            const d = await r.json();
+            document.getElementById('page-info').textContent = `Page ${page+1} (${d.length} results)`;
+
+            if (!d.length) {
+                document.getElementById('responses-table').innerHTML = '<div class="empty-state">No responses found</div>';
+                return;
+            }
+
+            let html = `<table><thead><tr>
+                <th>ID</th><th>Brand</th><th>LLM</th><th>Status</th>
+                <th>GEO Score</th><th>Visibility</th><th>Sentiment</th><th>SOV</th><th>Citations</th>
+                <th>Brands</th><th>Target</th><th>Date</th><th></th>
+            </tr></thead><tbody>`;
+            d.forEach(r => {
+                const geo = r.geo_score != null ? `<span class="geo-score ${scoreClass(r.geo_score)}">${r.geo_score.toFixed(1)}</span>` : '-';
+                html += `<tr>
+                    <td>${r.response_id}</td>
+                    <td>${r.brand_name || '-'}</td>
+                    <td>${r.target_llm || '-'}</td>
+                    <td>${statusBadge(r.analysis_status)}</td>
+                    <td>${geo}</td>
+                    <td>${r.visibility_score != null ? scoreBar(r.visibility_score) : '-'}</td>
+                    <td>${r.sentiment_score != null ? scoreBar(r.sentiment_score) : '-'}</td>
+                    <td>${r.sov_score != null ? scoreBar(r.sov_score) : '-'}</td>
+                    <td>${r.citation_score != null ? scoreBar(r.citation_score) : '-'}</td>
+                    <td>${r.total_brands_mentioned ?? '-'}</td>
+                    <td>${r.target_brand_mentioned ? sentimentBadge(r.target_brand_sentiment) : badge('No','neutral')}</td>
+                    <td class="text-muted">${r.collected_at ? r.collected_at.substring(0,10) : '-'}</td>
+                    <td><button class="small" onclick="toggleDetail(${r.response_id},this)">Detail</button></td>
+                </tr>
+                <tr id="detail-${r.response_id}" style="display:none"><td colspan="13"><div class="detail-panel" id="dp-${r.response_id}">Loading...</div></td></tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('responses-table').innerHTML = html;
+        }
+
+        async function toggleDetail(rid, btn) {
+            const row = document.getElementById('detail-' + rid);
+            if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+            row.style.display = '';
+            const dp = document.getElementById('dp-' + rid);
+            dp.innerHTML = 'Loading...';
+            const r = await fetch('./api/analyzer/response/' + rid);
+            const d = await r.json();
+
+            if (d.no_analysis) {
+                dp.innerHTML = `
+                    <div style="color:#d97706;font-weight:600;margin-bottom:10px;">Not analyzed yet (status: ${d.analysis_status || 'pending'})</div>
+                    ${d.query_text ? '<div class="detail-section"><h4>Query</h4><div>'+escapeHtml(d.query_text)+'</div></div>' : ''}
+                    ${d.raw_text ? '<details open style="margin-top:10px;"><summary style="cursor:pointer;font-weight:600;">Raw Response Text</summary><pre style="font-size:11px;max-height:400px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+escapeHtml(d.raw_text)+'</pre></details>' : '<div class="text-muted">No response text available</div>'}
+                `;
+                return;
+            }
+
+            if (d.error) { dp.innerHTML = '<div class="text-muted">' + d.error + '</div>'; return; }
+
+            let mentionsHtml = '';
+            if (d.mentions && d.mentions.length) {
+                mentionsHtml = d.mentions.map(m => `
+                    <div class="mention-item">
+                        <strong>${m.brand_name}</strong>${m.product_name ? ' / '+m.product_name : ''}
+                        ${m.is_target ? badge('TARGET','done') : ''}
+                        ${badge(m.position_type || '-', 'neutral')}
+                        ${m.position_rank ? '#'+m.position_rank : ''}
+                        ${sentimentBadge(m.sentiment)}
+                        <span class="text-muted">(score: ${m.sentiment_score?.toFixed(2) ?? '-'}, mentions: ${m.mention_count})</span>
+                        ${m.drivers && m.drivers.length ? '<div style="margin-top:4px;">' + m.drivers.map(dr =>
+                            `<span class="driver-tag ${dr.polarity==='positive'?'driver-pos':'driver-neg'}">${dr.driver_text}</span>`
+                        ).join('') + '</div>' : ''}
+                        ${m.context_snippet ? '<div class="text-muted" style="margin-top:4px;font-style:italic;">"'+m.context_snippet.substring(0,150)+'..."</div>' : ''}
+                    </div>
+                `).join('');
+            } else {
+                mentionsHtml = '<div class="text-muted">No brand mentions</div>';
+            }
+
+            let citationsHtml = '';
+            if (d.citations && d.citations.length) {
+                citationsHtml = d.citations.map(c =>
+                    `<div style="padding:4px 0;"><a href="${c.url}" target="_blank">${c.domain || c.url}</a> ${badge(c.source_type||'other','neutral')} <span class="text-muted">${c.title||''}</span></div>`
+                ).join('');
+            } else {
+                citationsHtml = '<div class="text-muted">No citations</div>';
+            }
+
+            let featuresHtml = '';
+            if (d.features && d.features.length) {
+                featuresHtml = d.features.map(f =>
+                    `<div style="padding:4px 0;">${f.brand_name}/${f.product_name}: <strong>${f.feature_name}</strong> ${sentimentBadge(f.feature_sentiment)} ${f.scenario ? badge(f.scenario,'neutral') : ''} ${f.price_positioning ? badge(f.price_positioning,'neutral') : ''}</div>`
+                ).join('');
+            }
+
+            dp.innerHTML = `
+                <div class="detail-grid">
+                    <div class="detail-section">
+                        <h4>Dimensions</h4>
+                        <div>Industry: <strong>${d.dimension_industry || '-'}</strong></div>
+                        <div>Company: <strong>${d.dimension_company || '-'}</strong></div>
+                        <div>Product: <strong>${d.dimension_product || '-'}</strong></div>
+                        <div>Category: <strong>${d.dimension_category || '-'}</strong></div>
+                        <div class="text-muted" style="margin-top:8px;">Model: ${d.analyzer_model || '-'}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h4>Brand Mentions (${d.mentions ? d.mentions.length : 0})</h4>
+                        ${mentionsHtml}
+                    </div>
+                    <div class="detail-section">
+                        <h4>Citations (${d.citations ? d.citations.length : 0})</h4>
+                        ${citationsHtml}
+                    </div>
+                    ${featuresHtml ? '<div class="detail-section"><h4>Product Features</h4>'+featuresHtml+'</div>' : ''}
+                </div>
+                ${d.query_text ? '<div class="detail-section" style="margin-top:10px;"><h4>Query</h4><div>'+escapeHtml(d.query_text)+'</div></div>' : ''}
+                ${d.raw_text ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw Response Text</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+escapeHtml(d.raw_text)+'</pre></details>' : ''}
+                ${d.raw_analysis_json ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw LLM JSON</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+JSON.stringify(d.raw_analysis_json,null,2)+'</pre></details>' : ''}
+            `;
+        }
+
+        async function loadDaily() {
+            const p = new URLSearchParams();
+            const brand = document.getElementById('d-brand').value;
+            const llm = document.getElementById('d-llm').value;
+            const days = document.getElementById('d-days').value;
+            if (brand) p.set('brand_id', brand);
+            if (llm) p.set('llm', llm);
+            p.set('days', days);
+
+            const r = await fetch('./api/analyzer/daily?' + p.toString());
+            const d = await r.json();
+            if (!d.length) {
+                document.getElementById('daily-table').innerHTML = '<div class="empty-state">No daily data</div>';
+                return;
+            }
+            let html = `<table><thead><tr>
+                <th>Date</th><th>Brand</th><th>LLM</th><th>GEO Score</th>
+                <th>Queries</th><th>Mention Rate</th><th>1st Place</th>
+                <th>Sentiment</th><th>SOV</th><th>Industry Rank</th>
+            </tr></thead><tbody>`;
+            d.forEach(r => {
+                html += `<tr>
+                    <td>${r.date ? r.date.substring(0,10) : '-'}</td>
+                    <td>${r.brand_name || '-'}</td>
+                    <td>${r.target_llm || '<em>all</em>'}</td>
+                    <td><span class="geo-score ${scoreClass(r.avg_geo_score)}">${r.avg_geo_score.toFixed(1)}</span></td>
+                    <td>${r.total_queries}</td>
+                    <td>${(r.mention_rate*100).toFixed(1)}%</td>
+                    <td>${(r.first_place_rate*100).toFixed(1)}%</td>
+                    <td>${r.avg_sentiment_score.toFixed(2)}</td>
+                    <td>${r.industry_sov_pct != null ? r.industry_sov_pct.toFixed(1)+'%' : '-'}</td>
+                    <td>${r.industry_rank || '-'}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('daily-table').innerHTML = html;
+        }
+
+        async function triggerAnalysis(action) {
+            const date = document.getElementById('t-date').value;
+            if (!date) { alert('Please select a date'); return; }
+            const brand = document.getElementById('t-brand').value;
+            const div = document.getElementById('trigger-result');
+            div.innerHTML = '<div class="text-muted">Triggering...</div>';
+
+            const r = await fetch('./api/analyzer/trigger', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action, date, brand_id: brand ? parseInt(brand) : null})
+            });
+            const d = await r.json();
+            if (d.success) {
+                div.innerHTML = '<div style="color:#059669;font-weight:600;">Triggered: ' + (d.task_id || d.message || 'OK') + '</div>';
+                setTimeout(loadAnalyzerStats, 3000);
+            } else {
+                div.innerHTML = '<div style="color:#dc2626;">Error: ' + (d.error || 'Unknown') + '</div>';
+            }
+        }
+
+        // Pre-load analyzer filter options
+        loadBrands();
+        loadLLMs();
+        // Set default trigger date
+        const tDateEl = document.getElementById('t-date');
+        if (tDateEl) tDateEl.value = new Date().toISOString().split('T')[0];
     </script>
 </body>
 </html>
@@ -2789,447 +3180,8 @@ def delete_profile(profile_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Analyzer Debug Page
-# ═══════════════════════════════════════════════════════════════════════════════
 
-ANALYZER_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>GEN Analyzer Debug</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 20px; background: #f5f5f5; }
-        .container { max-width: 1600px; margin: 0 auto; }
-        h1 { color: #333; margin-bottom: 6px; }
-        h1 small { font-size: 14px; color: #888; font-weight: normal; }
-        h2 { color: #333; margin: 20px 0 10px; font-size: 18px; }
-        a { color: #4f46e5; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .nav { margin-bottom: 20px; font-size: 14px; color: #666; }
-        .card { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .stats { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
-        .stat-card { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-width: 140px; }
-        .stat-value { font-size: 28px; font-weight: 700; color: #4f46e5; }
-        .stat-value.done { color: #059669; }
-        .stat-value.pending { color: #d97706; }
-        .stat-value.failed { color: #dc2626; }
-        .stat-value.score { color: #7c3aed; }
-        .stat-label { font-size: 12px; color: #666; margin-top: 4px; }
-        .filter-row { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 15px; }
-        .form-group { display: flex; flex-direction: column; gap: 5px; }
-        .form-group label { font-size: 12px; color: #666; font-weight: 600; }
-        .form-group select, .form-group input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-        button { padding: 8px 20px; background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px; }
-        button:hover { background: #4338ca; }
-        button.success { background: #059669; }
-        button.success:hover { background: #047857; }
-        button.danger { background: #dc2626; }
-        button.small { padding: 4px 10px; font-size: 12px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
-        th { background: #f8fafc; font-weight: 600; color: #374151; }
-        tr:hover { background: #f9fafb; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-        .badge-done { background: #d1fae5; color: #059669; }
-        .badge-pending { background: #fef3c7; color: #d97706; }
-        .badge-failed { background: #fee2e2; color: #dc2626; }
-        .badge-running { background: #dbeafe; color: #2563eb; }
-        .badge-positive { background: #d1fae5; color: #059669; }
-        .badge-negative { background: #fee2e2; color: #dc2626; }
-        .badge-neutral { background: #f3f4f6; color: #6b7280; }
-        .score-bar { display: inline-block; height: 8px; border-radius: 4px; background: #e5e7eb; width: 80px; vertical-align: middle; }
-        .score-fill { height: 100%; border-radius: 4px; }
-        .score-high .score-fill { background: #059669; }
-        .score-mid .score-fill { background: #d97706; }
-        .score-low .score-fill { background: #dc2626; }
-        .geo-score { font-size: 18px; font-weight: 700; }
-        .geo-score.high { color: #059669; }
-        .geo-score.mid { color: #d97706; }
-        .geo-score.low { color: #dc2626; }
-        .detail-panel { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px; padding: 15px; margin: 10px 0; display: none; }
-        .detail-panel.open { display: block; }
-        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
-        .detail-section { background: white; padding: 12px; border-radius: 6px; border: 1px solid #e5e7eb; }
-        .detail-section h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
-        .mention-item { padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
-        .mention-item:last-child { border-bottom: none; }
-        .driver-tag { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; font-size: 11px; }
-        .driver-pos { background: #d1fae5; color: #059669; }
-        .driver-neg { background: #fee2e2; color: #dc2626; }
-        .text-muted { color: #9ca3af; font-size: 12px; }
-        .text-preview { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .empty-state { text-align: center; padding: 40px; color: #9ca3af; }
-        .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb; }
-        .tab { padding: 10px 20px; cursor: pointer; font-weight: 600; color: #6b7280; border-bottom: 2px solid transparent; margin-bottom: -2px; }
-        .tab.active { color: #4f46e5; border-bottom-color: #4f46e5; }
-        .tab:hover { color: #4338ca; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        .sub-scores { display: flex; gap: 12px; flex-wrap: wrap; }
-        .sub-score { text-align: center; }
-        .sub-score-value { font-size: 14px; font-weight: 700; }
-        .sub-score-label { font-size: 10px; color: #9ca3af; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <div class="nav"><a href="./">&#8592; Query Monitor</a></div>
-    <h1>GEN Analyzer Debug <small>analysis pipeline monitor</small></h1>
-
-    <div id="stats" class="stats" style="margin-top:20px;"></div>
-
-    <div class="tabs">
-        <div class="tab active" data-tab="responses">Analyzed Responses</div>
-        <div class="tab" data-tab="daily">Daily GEO Scores</div>
-        <div class="tab" data-tab="trigger">Trigger Analysis</div>
-    </div>
-
-    <!-- Responses Tab -->
-    <div id="tab-responses" class="tab-content active">
-        <div class="card">
-            <div class="filter-row">
-                <div class="form-group">
-                    <label>Status</label>
-                    <select id="f-status"><option value="">All</option><option value="done">Done</option><option value="pending">Pending</option><option value="running">Running</option><option value="failed">Failed</option></select>
-                </div>
-                <div class="form-group">
-                    <label>Brand</label>
-                    <select id="f-brand"><option value="">All</option></select>
-                </div>
-                <div class="form-group">
-                    <label>LLM</label>
-                    <select id="f-llm"><option value="">All</option></select>
-                </div>
-                <div class="form-group">
-                    <label>Date</label>
-                    <input type="date" id="f-date">
-                </div>
-                <button onclick="loadResponses()">Filter</button>
-            </div>
-            <div id="responses-table"></div>
-            <div style="margin-top:10px;display:flex;gap:10px;">
-                <button class="small" onclick="loadResponses(currentPage-1)">&#8592; Prev</button>
-                <span id="page-info" class="text-muted" style="line-height:28px;"></span>
-                <button class="small" onclick="loadResponses(currentPage+1)">Next &#8594;</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Daily Tab -->
-    <div id="tab-daily" class="tab-content">
-        <div class="card">
-            <div class="filter-row">
-                <div class="form-group">
-                    <label>Brand</label>
-                    <select id="d-brand"><option value="">All</option></select>
-                </div>
-                <div class="form-group">
-                    <label>LLM</label>
-                    <select id="d-llm"><option value="">All</option></select>
-                </div>
-                <div class="form-group">
-                    <label>Days</label>
-                    <select id="d-days"><option value="7">7</option><option value="14">14</option><option value="30" selected>30</option></select>
-                </div>
-                <button onclick="loadDaily()">Filter</button>
-            </div>
-            <div id="daily-table"></div>
-        </div>
-    </div>
-
-    <!-- Trigger Tab -->
-    <div id="tab-trigger" class="tab-content">
-        <div class="card">
-            <h2>Trigger Analysis</h2>
-            <p class="text-muted" style="margin-bottom:15px;">Run the analysis pipeline on pending responses for a given date.</p>
-            <div class="filter-row">
-                <div class="form-group">
-                    <label>Date</label>
-                    <input type="date" id="t-date">
-                </div>
-                <div class="form-group">
-                    <label>Brand (optional)</label>
-                    <select id="t-brand"><option value="">All Brands</option></select>
-                </div>
-                <div class="form-group">
-                    <label>Action</label>
-                    <div style="display:flex;gap:8px;">
-                        <button class="success" onclick="triggerAnalysis('analyze')">Run Analysis</button>
-                        <button onclick="triggerAnalysis('aggregate')">Aggregate Only</button>
-                        <button class="danger" onclick="triggerAnalysis('reanalyze')">Re-analyze</button>
-                    </div>
-                </div>
-            </div>
-            <div id="trigger-result" style="margin-top:15px;"></div>
-        </div>
-    </div>
-</div>
-
-<script>
-let currentPage = 0;
-const PAGE_SIZE = 30;
-
-// Tab switching
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-    });
-});
-
-function scoreClass(v) { return v >= 60 ? 'high' : v >= 35 ? 'mid' : 'low'; }
-function scoreBar(v, max=100) {
-    const cls = scoreClass(v);
-    return `<span class="score-bar score-${cls}"><span class="score-fill" style="width:${Math.min(v/max*100,100)}%"></span></span> ${v.toFixed(1)}`;
-}
-function badge(text, cls) { return `<span class="badge badge-${cls}">${text}</span>`; }
-function statusBadge(s) {
-    const m = {done:'done',pending:'pending',failed:'failed',running:'running'};
-    return badge(s, m[s] || 'neutral');
-}
-function sentimentBadge(s) {
-    const m = {positive:'positive',negative:'negative',neutral:'neutral'};
-    return badge(s || '-', m[s] || 'neutral');
-}
-
-async function api(url) {
-    const r = await fetch(url);
-    return r.json();
-}
-
-async function loadStats() {
-    const d = await api('./api/analyzer/stats');
-    document.getElementById('stats').innerHTML = `
-        <div class="stat-card"><div class="stat-value">${d.total}</div><div class="stat-label">Total Responses</div></div>
-        <div class="stat-card"><div class="stat-value done">${d.done}</div><div class="stat-label">Analyzed</div></div>
-        <div class="stat-card"><div class="stat-value pending">${d.pending}</div><div class="stat-label">Pending</div></div>
-        <div class="stat-card"><div class="stat-value failed">${d.failed}</div><div class="stat-label">Failed</div></div>
-        <div class="stat-card"><div class="stat-value score">${d.avg_geo_score != null ? d.avg_geo_score.toFixed(1) : '-'}</div><div class="stat-label">Avg GEO Score</div></div>
-        <div class="stat-card"><div class="stat-value">${d.total_brands_tracked}</div><div class="stat-label">Brands Tracked</div></div>
-    `;
-}
-
-async function loadBrands() {
-    const d = await api('./api/analyzer/brands');
-    ['f-brand','d-brand','t-brand'].forEach(id => {
-        const sel = document.getElementById(id);
-        const first = sel.options[0];
-        sel.innerHTML = '';
-        sel.appendChild(first);
-        d.forEach(b => { const o = document.createElement('option'); o.value = b.id; o.textContent = b.name; sel.appendChild(o); });
-    });
-}
-
-async function loadLLMs() {
-    const d = await api('./api/analyzer/llms');
-    ['f-llm','d-llm'].forEach(id => {
-        const sel = document.getElementById(id);
-        const first = sel.options[0];
-        sel.innerHTML = '';
-        sel.appendChild(first);
-        d.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; sel.appendChild(o); });
-    });
-}
-
-async function loadResponses(page) {
-    if (page === undefined) page = 0;
-    if (page < 0) page = 0;
-    currentPage = page;
-    const p = new URLSearchParams();
-    p.set('limit', PAGE_SIZE);
-    p.set('offset', page * PAGE_SIZE);
-    const status = document.getElementById('f-status').value;
-    const brand = document.getElementById('f-brand').value;
-    const llm = document.getElementById('f-llm').value;
-    const date = document.getElementById('f-date').value;
-    if (status) p.set('status', status);
-    if (brand) p.set('brand_id', brand);
-    if (llm) p.set('llm', llm);
-    if (date) p.set('date', date);
-
-    const d = await api('./api/analyzer/responses?' + p.toString());
-    document.getElementById('page-info').textContent = `Page ${page+1} (${d.length} results)`;
-
-    if (!d.length) {
-        document.getElementById('responses-table').innerHTML = '<div class="empty-state">No responses found</div>';
-        return;
-    }
-
-    let html = `<table><thead><tr>
-        <th>ID</th><th>Brand</th><th>LLM</th><th>Status</th>
-        <th>GEO Score</th><th>Visibility</th><th>Sentiment</th><th>SOV</th><th>Citations</th>
-        <th>Brands</th><th>Target</th><th>Date</th><th></th>
-    </tr></thead><tbody>`;
-    d.forEach(r => {
-        const geo = r.geo_score != null ? `<span class="geo-score ${scoreClass(r.geo_score)}">${r.geo_score.toFixed(1)}</span>` : '-';
-        html += `<tr>
-            <td>${r.response_id}</td>
-            <td>${r.brand_name || '-'}</td>
-            <td>${r.target_llm || '-'}</td>
-            <td>${statusBadge(r.analysis_status)}</td>
-            <td>${geo}</td>
-            <td>${r.visibility_score != null ? scoreBar(r.visibility_score) : '-'}</td>
-            <td>${r.sentiment_score != null ? scoreBar(r.sentiment_score) : '-'}</td>
-            <td>${r.sov_score != null ? scoreBar(r.sov_score) : '-'}</td>
-            <td>${r.citation_score != null ? scoreBar(r.citation_score) : '-'}</td>
-            <td>${r.total_brands_mentioned ?? '-'}</td>
-            <td>${r.target_brand_mentioned ? sentimentBadge(r.target_brand_sentiment) : badge('No','neutral')}</td>
-            <td class="text-muted">${r.collected_at ? r.collected_at.substring(0,10) : '-'}</td>
-            <td>${r.analysis_status === 'done' ? '<button class="small" onclick="toggleDetail('+r.response_id+',this)">Detail</button>' : ''}</td>
-        </tr>
-        <tr id="detail-${r.response_id}" style="display:none"><td colspan="13"><div class="detail-panel open" id="dp-${r.response_id}">Loading...</div></td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('responses-table').innerHTML = html;
-}
-
-async function toggleDetail(rid, btn) {
-    const row = document.getElementById('detail-' + rid);
-    if (row.style.display !== 'none') { row.style.display = 'none'; return; }
-    row.style.display = '';
-    const dp = document.getElementById('dp-' + rid);
-    dp.innerHTML = 'Loading...';
-    const d = await api('./api/analyzer/response/' + rid);
-    if (d.error) { dp.innerHTML = '<div class="text-muted">' + d.error + '</div>'; return; }
-
-    let mentionsHtml = '';
-    if (d.mentions && d.mentions.length) {
-        mentionsHtml = d.mentions.map(m => `
-            <div class="mention-item">
-                <strong>${m.brand_name}</strong>${m.product_name ? ' / '+m.product_name : ''}
-                ${m.is_target ? badge('TARGET','done') : ''}
-                ${badge(m.position_type || '-', 'neutral')}
-                ${m.position_rank ? '#'+m.position_rank : ''}
-                ${sentimentBadge(m.sentiment)}
-                <span class="text-muted">(score: ${m.sentiment_score?.toFixed(2) ?? '-'}, mentions: ${m.mention_count})</span>
-                ${m.drivers && m.drivers.length ? '<div style="margin-top:4px;">' + m.drivers.map(dr =>
-                    `<span class="driver-tag ${dr.polarity==='positive'?'driver-pos':'driver-neg'}">${dr.driver_text}</span>`
-                ).join('') + '</div>' : ''}
-                ${m.context_snippet ? '<div class="text-muted" style="margin-top:4px;font-style:italic;">"'+m.context_snippet.substring(0,150)+'..."</div>' : ''}
-            </div>
-        `).join('');
-    } else {
-        mentionsHtml = '<div class="text-muted">No brand mentions</div>';
-    }
-
-    let citationsHtml = '';
-    if (d.citations && d.citations.length) {
-        citationsHtml = d.citations.map(c =>
-            `<div style="padding:4px 0;"><a href="${c.url}" target="_blank">${c.domain || c.url}</a> ${badge(c.source_type||'other','neutral')} <span class="text-muted">${c.title||''}</span></div>`
-        ).join('');
-    } else {
-        citationsHtml = '<div class="text-muted">No citations</div>';
-    }
-
-    let featuresHtml = '';
-    if (d.features && d.features.length) {
-        featuresHtml = d.features.map(f =>
-            `<div style="padding:4px 0;">${f.brand_name}/${f.product_name}: <strong>${f.feature_name}</strong> ${sentimentBadge(f.feature_sentiment)} ${f.scenario ? badge(f.scenario,'neutral') : ''} ${f.price_positioning ? badge(f.price_positioning,'neutral') : ''}</div>`
-        ).join('');
-    }
-
-    dp.innerHTML = `
-        <div class="detail-grid">
-            <div class="detail-section">
-                <h4>Dimensions</h4>
-                <div>Industry: <strong>${d.dimension_industry || '-'}</strong></div>
-                <div>Company: <strong>${d.dimension_company || '-'}</strong></div>
-                <div>Product: <strong>${d.dimension_product || '-'}</strong></div>
-                <div>Category: <strong>${d.dimension_category || '-'}</strong></div>
-                <div class="text-muted" style="margin-top:8px;">Model: ${d.analyzer_model || '-'}</div>
-            </div>
-            <div class="detail-section">
-                <h4>Brand Mentions (${d.mentions ? d.mentions.length : 0})</h4>
-                ${mentionsHtml}
-            </div>
-            <div class="detail-section">
-                <h4>Citations (${d.citations ? d.citations.length : 0})</h4>
-                ${citationsHtml}
-            </div>
-            ${featuresHtml ? '<div class="detail-section"><h4>Product Features</h4>'+featuresHtml+'</div>' : ''}
-        </div>
-        ${d.raw_analysis_json ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw LLM JSON</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+JSON.stringify(d.raw_analysis_json,null,2)+'</pre></details>' : ''}
-    `;
-}
-
-async function loadDaily() {
-    const p = new URLSearchParams();
-    const brand = document.getElementById('d-brand').value;
-    const llm = document.getElementById('d-llm').value;
-    const days = document.getElementById('d-days').value;
-    if (brand) p.set('brand_id', brand);
-    if (llm) p.set('llm', llm);
-    p.set('days', days);
-
-    const d = await api('./api/analyzer/daily?' + p.toString());
-    if (!d.length) {
-        document.getElementById('daily-table').innerHTML = '<div class="empty-state">No daily data</div>';
-        return;
-    }
-    let html = `<table><thead><tr>
-        <th>Date</th><th>Brand</th><th>LLM</th><th>GEO Score</th>
-        <th>Queries</th><th>Mention Rate</th><th>1st Place</th>
-        <th>Sentiment</th><th>SOV</th><th>Industry Rank</th>
-    </tr></thead><tbody>`;
-    d.forEach(r => {
-        html += `<tr>
-            <td>${r.date ? r.date.substring(0,10) : '-'}</td>
-            <td>${r.brand_name || '-'}</td>
-            <td>${r.target_llm || '<em>all</em>'}</td>
-            <td><span class="geo-score ${scoreClass(r.avg_geo_score)}">${r.avg_geo_score.toFixed(1)}</span></td>
-            <td>${r.total_queries}</td>
-            <td>${(r.mention_rate*100).toFixed(1)}%</td>
-            <td>${(r.first_place_rate*100).toFixed(1)}%</td>
-            <td>${r.avg_sentiment_score.toFixed(2)}</td>
-            <td>${r.industry_sov_pct != null ? r.industry_sov_pct.toFixed(1)+'%' : '-'}</td>
-            <td>${r.industry_rank || '-'}</td>
-        </tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('daily-table').innerHTML = html;
-}
-
-async function triggerAnalysis(action) {
-    const date = document.getElementById('t-date').value;
-    if (!date) { alert('Please select a date'); return; }
-    const brand = document.getElementById('t-brand').value;
-    const div = document.getElementById('trigger-result');
-    div.innerHTML = '<div class="text-muted">Triggering...</div>';
-
-    const r = await fetch('./api/analyzer/trigger', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action, date, brand_id: brand ? parseInt(brand) : null})
-    });
-    const d = await r.json();
-    if (d.success) {
-        div.innerHTML = '<div style="color:#059669;font-weight:600;">Triggered: ' + (d.task_id || d.message || 'OK') + '</div>';
-        setTimeout(loadStats, 3000);
-    } else {
-        div.innerHTML = '<div style="color:#dc2626;">Error: ' + (d.error || 'Unknown') + '</div>';
-    }
-}
-
-// Init
-document.getElementById('t-date').value = new Date().toISOString().split('T')[0];
-loadStats();
-loadBrands();
-loadLLMs();
-loadResponses(0);
-</script>
-</body>
-</html>
-"""
-
-
-@app.route('/analyzer')
-def analyzer_page():
-    return render_template_string(ANALYZER_TEMPLATE)
+# Old ANALYZER_TEMPLATE and /analyzer route removed -- merged into main page as tabs
 
 
 @app.route('/api/analyzer/stats')
@@ -3370,8 +3322,31 @@ def analyzer_response_detail(response_id):
                 SELECT * FROM response_analyses WHERE response_id = %s
             """, (response_id,))
             analysis = cur.fetchone()
+
+            # Always fetch raw response data
+            cur.execute("""
+                SELECT lr.raw_text, lr.analysis_status, lr.collected_at,
+                       q.query_text, q.target_llm, b.name AS brand_name
+                FROM llm_responses lr
+                JOIN queries q ON q.id = lr.query_id
+                LEFT JOIN brands b ON b.id = q.brand_id
+                WHERE lr.id = %s
+            """, (response_id,))
+            raw_resp = cur.fetchone()
+
             if not analysis:
-                return jsonify({'error': 'No analysis found for this response'})
+                if not raw_resp:
+                    return jsonify({'error': 'Response not found'})
+                result = dict(raw_resp)
+                if result.get('collected_at'):
+                    result['collected_at'] = result['collected_at'].isoformat()
+                if result.get('raw_text') and len(result['raw_text']) > 3000:
+                    result['raw_text'] = result['raw_text'][:3000]
+                result['no_analysis'] = True
+                result['mentions'] = []
+                result['citations'] = []
+                result['features'] = []
+                return jsonify(result)
 
             # Brand mentions + drivers
             cur.execute("""
@@ -3406,9 +3381,15 @@ def analyzer_response_detail(response_id):
         result = dict(analysis)
         if result.get('analyzed_at'):
             result['analyzed_at'] = result['analyzed_at'].isoformat()
+        if result.get('created_at'):
+            result['created_at'] = result['created_at'].isoformat()
         result['mentions'] = mentions
         result['citations'] = citations
         result['features'] = features
+        if raw_resp:
+            result['query_text'] = raw_resp.get('query_text')
+            raw_text = raw_resp.get('raw_text')
+            result['raw_text'] = raw_text[:3000] if raw_text and len(raw_text) > 3000 else raw_text
         return jsonify(result)
     finally:
         conn.close()
