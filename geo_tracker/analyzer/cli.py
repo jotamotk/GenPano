@@ -15,7 +15,7 @@ import logging
 import sys
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
@@ -49,6 +49,29 @@ async def analyze_single_response(
     sentiment_analyzer = SentimentAnalyzer()
     llm_analyzer = LLMAnalyzer()
     citation_mapper = CitationMapper()
+
+    # Clean up any old analysis data for this response (supports re-analysis)
+    old_analysis = (await session.execute(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
+    )).scalar_one_or_none()
+    if old_analysis:
+        await session.execute(
+            delete(ProductFeatureMention).where(
+                ProductFeatureMention.analysis_id == old_analysis.id
+            )
+        )
+        await session.execute(
+            delete(ResponseAnalysis).where(
+                ResponseAnalysis.response_id == response.id
+            )
+        )
+    # Delete old mentions (cascade deletes sentiment_drivers)
+    await session.execute(
+        delete(CitationSource).where(CitationSource.response_id == response.id)
+    )
+    await session.execute(
+        delete(BrandMention).where(BrandMention.response_id == response.id)
+    )
 
     # Mark as running
     response.analysis_status = AnalysisStatus.RUNNING.value
@@ -338,9 +361,13 @@ async def analyze_single_response(
         }
 
     except Exception as e:
-        response.analysis_status = AnalysisStatus.FAILED.value
-        await session.commit()
         logger.exception(f"Analysis failed for response {response.id}: {e}")
+        try:
+            await session.rollback()
+            response.analysis_status = AnalysisStatus.FAILED.value
+            await session.commit()
+        except Exception:
+            logger.warning(f"Could not mark response {response.id} as failed")
         return {"response_id": response.id, "status": "failed", "error": str(e)}
 
 
@@ -371,29 +398,40 @@ async def run_daily(date_str: str, brand_id: int | None = None) -> None:
             + (f" (brand_id={brand_id})" if brand_id else "")
         )
 
+        done = 0
+        failed = 0
         for i, resp in enumerate(responses):
             logger.info(f"Analyzing response {i+1}/{len(responses)} (id={resp.id})")
+            try:
+                # Load related data
+                query = await session.get(Query, resp.query_id)
+                brand = await session.get(Brand, query.brand_id)
 
-            # Load related data
-            query = await session.get(Query, resp.query_id)
-            brand = await session.get(Brand, query.brand_id)
+                comp_result = await session.execute(
+                    select(Competitor).where(Competitor.brand_id == brand.id)
+                )
+                competitors = comp_result.scalars().all()
 
-            comp_result = await session.execute(
-                select(Competitor).where(Competitor.brand_id == brand.id)
-            )
-            competitors = comp_result.scalars().all()
+                # Get intent from prompt
+                intent = "non_brand"
+                if query.prompt_id:
+                    prompt = await session.get(Prompt, query.prompt_id)
+                    if prompt and prompt.intent:
+                        intent = prompt.intent
 
-            # Get intent from prompt
-            intent = "non_brand"
-            if query.prompt_id:
-                prompt = await session.get(Prompt, query.prompt_id)
-                if prompt and prompt.intent:
-                    intent = prompt.intent
+                result = await analyze_single_response(
+                    session, resp, brand, competitors, intent,
+                )
+                logger.info(f"  Result: {result}")
+                if result.get("status") == "done":
+                    done += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                logger.exception(f"  Unexpected error for response {resp.id}: {e}")
+                failed += 1
 
-            result = await analyze_single_response(
-                session, resp, brand, competitors, intent,
-            )
-            logger.info(f"  Result: {result}")
+        logger.info(f"Analysis complete: {done} done, {failed} failed out of {len(responses)}")
 
         # Aggregate
         logger.info("Running daily aggregation...")
