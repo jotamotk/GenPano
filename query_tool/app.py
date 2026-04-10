@@ -88,6 +88,212 @@ def _ensure_citations_column():
         print(f"DB migration warning (non-fatal): {e}")
 
 
+def _ensure_analyzer_tables():
+    """确保 Analyzer 数据层的表和字段存在（PR #104）"""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                # ── 现有表新增字段 ──
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(16) DEFAULT 'pending'
+                """)
+                cur.execute("""
+                    ALTER TABLE llm_responses
+                    ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMP
+                """)
+                cur.execute("""
+                    ALTER TABLE brands
+                    ADD COLUMN IF NOT EXISTS aliases JSONB
+                """)
+                cur.execute("""
+                    ALTER TABLE competitors
+                    ADD COLUMN IF NOT EXISTS aliases JSONB
+                """)
+                cur.execute("""
+                    ALTER TABLE prompts
+                    ADD COLUMN IF NOT EXISTS tags JSONB
+                """)
+
+                # ── 新建分析表 ──
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brand_mentions (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        brand_id INTEGER REFERENCES brands(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        product_name VARCHAR(256),
+                        is_target BOOLEAN DEFAULT FALSE,
+                        position_type VARCHAR(32),
+                        position_rank INTEGER,
+                        detail_level VARCHAR(16),
+                        sentiment VARCHAR(16),
+                        sentiment_score FLOAT,
+                        context_snippet TEXT,
+                        mention_count INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        CONSTRAINT uq_mention_response_brand UNIQUE (response_id, brand_name)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS sentiment_drivers (
+                        id SERIAL PRIMARY KEY,
+                        mention_id INTEGER NOT NULL REFERENCES brand_mentions(id),
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        driver_text VARCHAR(512) NOT NULL,
+                        polarity VARCHAR(8) NOT NULL,
+                        category VARCHAR(64),
+                        strength FLOAT DEFAULT 0.5,
+                        source_quote TEXT,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS citation_sources (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER NOT NULL REFERENCES llm_responses(id),
+                        mention_id INTEGER REFERENCES brand_mentions(id),
+                        url VARCHAR(2048) NOT NULL,
+                        domain VARCHAR(256),
+                        title VARCHAR(512),
+                        citation_index INTEGER,
+                        source_type VARCHAR(32),
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS response_analyses (
+                        id SERIAL PRIMARY KEY,
+                        response_id INTEGER UNIQUE REFERENCES llm_responses(id),
+                        dimension_industry VARCHAR(128),
+                        dimension_company VARCHAR(128),
+                        dimension_product VARCHAR(128),
+                        dimension_category VARCHAR(128),
+                        total_brands_mentioned INTEGER DEFAULT 0,
+                        target_brand_mentioned BOOLEAN DEFAULT FALSE,
+                        target_brand_position VARCHAR(32),
+                        target_brand_rank INTEGER,
+                        target_brand_sentiment VARCHAR(16),
+                        target_brand_detail VARCHAR(16),
+                        visibility_score FLOAT DEFAULT 0.0,
+                        sentiment_score FLOAT DEFAULT 0.0,
+                        sov_score FLOAT DEFAULT 0.0,
+                        citation_score FLOAT DEFAULT 0.0,
+                        geo_score FLOAT DEFAULT 0.0,
+                        analyzed_at TIMESTAMP DEFAULT NOW(),
+                        analyzer_model VARCHAR(64),
+                        raw_analysis_json JSONB
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS product_feature_mentions (
+                        id SERIAL PRIMARY KEY,
+                        analysis_id INTEGER NOT NULL REFERENCES response_analyses(id),
+                        brand_name VARCHAR(256) NOT NULL,
+                        product_name VARCHAR(256) NOT NULL,
+                        feature_name VARCHAR(128) NOT NULL,
+                        feature_sentiment VARCHAR(16),
+                        context_snippet TEXT,
+                        scenario VARCHAR(128),
+                        price_positioning VARCHAR(32),
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS geo_score_daily (
+                        id SERIAL PRIMARY KEY,
+                        brand_id INTEGER NOT NULL REFERENCES brands(id),
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        intent VARCHAR(64),
+                        language VARCHAR(8),
+                        total_queries INTEGER DEFAULT 0,
+                        mention_count INTEGER DEFAULT 0,
+                        mention_rate FLOAT DEFAULT 0.0,
+                        avg_position_rank FLOAT,
+                        first_place_count INTEGER DEFAULT 0,
+                        first_place_rate FLOAT DEFAULT 0.0,
+                        positive_rate FLOAT DEFAULT 0.0,
+                        negative_rate FLOAT DEFAULT 0.0,
+                        avg_sentiment_score FLOAT DEFAULT 0.0,
+                        citation_rate FLOAT DEFAULT 0.0,
+                        avg_sov FLOAT DEFAULT 0.0,
+                        avg_visibility FLOAT DEFAULT 0.0,
+                        avg_sentiment FLOAT DEFAULT 0.0,
+                        avg_sov_score FLOAT DEFAULT 0.0,
+                        avg_citation_score FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        industry VARCHAR(128),
+                        industry_rank INTEGER,
+                        industry_sov_pct FLOAT,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_geo_daily_dims UNIQUE (brand_id, date, target_llm, intent, language)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS industry_benchmark_daily (
+                        id SERIAL PRIMARY KEY,
+                        industry VARCHAR(128) NOT NULL,
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        total_brands INTEGER DEFAULT 0,
+                        total_queries INTEGER DEFAULT 0,
+                        avg_mention_rate FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        avg_sentiment FLOAT DEFAULT 0.0,
+                        score_p25 FLOAT,
+                        score_p50 FLOAT,
+                        score_p75 FLOAT,
+                        top_brands_json JSONB,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_industry_daily UNIQUE (industry, date, target_llm)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS product_score_daily (
+                        id SERIAL PRIMARY KEY,
+                        brand_id INTEGER NOT NULL REFERENCES brands(id),
+                        product_name VARCHAR(256) NOT NULL,
+                        category VARCHAR(128),
+                        date TIMESTAMP NOT NULL,
+                        target_llm VARCHAR(64),
+                        total_queries INTEGER DEFAULT 0,
+                        mention_count INTEGER DEFAULT 0,
+                        mention_rate FLOAT DEFAULT 0.0,
+                        avg_position_rank FLOAT,
+                        first_place_count INTEGER DEFAULT 0,
+                        first_place_rate FLOAT DEFAULT 0.0,
+                        avg_sentiment_score FLOAT DEFAULT 0.0,
+                        avg_geo_score FLOAT DEFAULT 0.0,
+                        category_sov_pct FLOAT,
+                        category_rank INTEGER,
+                        comparison_wins INTEGER DEFAULT 0,
+                        comparison_total INTEGER DEFAULT 0,
+                        win_rate FLOAT DEFAULT 0.0,
+                        top_features_json JSONB,
+                        top_scenarios_json JSONB,
+                        price_positioning VARCHAR(32),
+                        price_positioning_json JSONB,
+                        top_drivers_json JSONB,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_product_daily UNIQUE (brand_id, product_name, date, target_llm)
+                    )
+                """)
+            conn.commit()
+            print("DB migration: analyzer tables ensured (brand_mentions, sentiment_drivers, "
+                  "citation_sources, response_analyses, product_feature_mentions, "
+                  "geo_score_daily, industry_benchmark_daily, product_score_daily)")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
 def get_db():
     import psycopg2
     import time
@@ -2583,7 +2789,736 @@ def delete_profile(profile_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Analyzer Debug Page
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ANALYZER_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>GEN Analyzer Debug</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { color: #333; margin-bottom: 6px; }
+        h1 small { font-size: 14px; color: #888; font-weight: normal; }
+        h2 { color: #333; margin: 20px 0 10px; font-size: 18px; }
+        a { color: #4f46e5; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .nav { margin-bottom: 20px; font-size: 14px; color: #666; }
+        .card { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stats { display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }
+        .stat-card { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-width: 140px; }
+        .stat-value { font-size: 28px; font-weight: 700; color: #4f46e5; }
+        .stat-value.done { color: #059669; }
+        .stat-value.pending { color: #d97706; }
+        .stat-value.failed { color: #dc2626; }
+        .stat-value.score { color: #7c3aed; }
+        .stat-label { font-size: 12px; color: #666; margin-top: 4px; }
+        .filter-row { display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 15px; }
+        .form-group { display: flex; flex-direction: column; gap: 5px; }
+        .form-group label { font-size: 12px; color: #666; font-weight: 600; }
+        .form-group select, .form-group input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        button { padding: 8px 20px; background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px; }
+        button:hover { background: #4338ca; }
+        button.success { background: #059669; }
+        button.success:hover { background: #047857; }
+        button.danger { background: #dc2626; }
+        button.small { padding: 4px 10px; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
+        th { background: #f8fafc; font-weight: 600; color: #374151; }
+        tr:hover { background: #f9fafb; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .badge-done { background: #d1fae5; color: #059669; }
+        .badge-pending { background: #fef3c7; color: #d97706; }
+        .badge-failed { background: #fee2e2; color: #dc2626; }
+        .badge-running { background: #dbeafe; color: #2563eb; }
+        .badge-positive { background: #d1fae5; color: #059669; }
+        .badge-negative { background: #fee2e2; color: #dc2626; }
+        .badge-neutral { background: #f3f4f6; color: #6b7280; }
+        .score-bar { display: inline-block; height: 8px; border-radius: 4px; background: #e5e7eb; width: 80px; vertical-align: middle; }
+        .score-fill { height: 100%; border-radius: 4px; }
+        .score-high .score-fill { background: #059669; }
+        .score-mid .score-fill { background: #d97706; }
+        .score-low .score-fill { background: #dc2626; }
+        .geo-score { font-size: 18px; font-weight: 700; }
+        .geo-score.high { color: #059669; }
+        .geo-score.mid { color: #d97706; }
+        .geo-score.low { color: #dc2626; }
+        .detail-panel { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px; padding: 15px; margin: 10px 0; display: none; }
+        .detail-panel.open { display: block; }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }
+        .detail-section { background: white; padding: 12px; border-radius: 6px; border: 1px solid #e5e7eb; }
+        .detail-section h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
+        .mention-item { padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+        .mention-item:last-child { border-bottom: none; }
+        .driver-tag { display: inline-block; padding: 2px 6px; margin: 2px; border-radius: 4px; font-size: 11px; }
+        .driver-pos { background: #d1fae5; color: #059669; }
+        .driver-neg { background: #fee2e2; color: #dc2626; }
+        .text-muted { color: #9ca3af; font-size: 12px; }
+        .text-preview { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .empty-state { text-align: center; padding: 40px; color: #9ca3af; }
+        .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #e5e7eb; }
+        .tab { padding: 10px 20px; cursor: pointer; font-weight: 600; color: #6b7280; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+        .tab.active { color: #4f46e5; border-bottom-color: #4f46e5; }
+        .tab:hover { color: #4338ca; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .sub-scores { display: flex; gap: 12px; flex-wrap: wrap; }
+        .sub-score { text-align: center; }
+        .sub-score-value { font-size: 14px; font-weight: 700; }
+        .sub-score-label { font-size: 10px; color: #9ca3af; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="nav"><a href="./">&#8592; Query Monitor</a></div>
+    <h1>GEN Analyzer Debug <small>analysis pipeline monitor</small></h1>
+
+    <div id="stats" class="stats" style="margin-top:20px;"></div>
+
+    <div class="tabs">
+        <div class="tab active" data-tab="responses">Analyzed Responses</div>
+        <div class="tab" data-tab="daily">Daily GEO Scores</div>
+        <div class="tab" data-tab="trigger">Trigger Analysis</div>
+    </div>
+
+    <!-- Responses Tab -->
+    <div id="tab-responses" class="tab-content active">
+        <div class="card">
+            <div class="filter-row">
+                <div class="form-group">
+                    <label>Status</label>
+                    <select id="f-status"><option value="">All</option><option value="done">Done</option><option value="pending">Pending</option><option value="running">Running</option><option value="failed">Failed</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Brand</label>
+                    <select id="f-brand"><option value="">All</option></select>
+                </div>
+                <div class="form-group">
+                    <label>LLM</label>
+                    <select id="f-llm"><option value="">All</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="f-date">
+                </div>
+                <button onclick="loadResponses()">Filter</button>
+            </div>
+            <div id="responses-table"></div>
+            <div style="margin-top:10px;display:flex;gap:10px;">
+                <button class="small" onclick="loadResponses(currentPage-1)">&#8592; Prev</button>
+                <span id="page-info" class="text-muted" style="line-height:28px;"></span>
+                <button class="small" onclick="loadResponses(currentPage+1)">Next &#8594;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Daily Tab -->
+    <div id="tab-daily" class="tab-content">
+        <div class="card">
+            <div class="filter-row">
+                <div class="form-group">
+                    <label>Brand</label>
+                    <select id="d-brand"><option value="">All</option></select>
+                </div>
+                <div class="form-group">
+                    <label>LLM</label>
+                    <select id="d-llm"><option value="">All</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Days</label>
+                    <select id="d-days"><option value="7">7</option><option value="14">14</option><option value="30" selected>30</option></select>
+                </div>
+                <button onclick="loadDaily()">Filter</button>
+            </div>
+            <div id="daily-table"></div>
+        </div>
+    </div>
+
+    <!-- Trigger Tab -->
+    <div id="tab-trigger" class="tab-content">
+        <div class="card">
+            <h2>Trigger Analysis</h2>
+            <p class="text-muted" style="margin-bottom:15px;">Run the analysis pipeline on pending responses for a given date.</p>
+            <div class="filter-row">
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="t-date">
+                </div>
+                <div class="form-group">
+                    <label>Brand (optional)</label>
+                    <select id="t-brand"><option value="">All Brands</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Action</label>
+                    <div style="display:flex;gap:8px;">
+                        <button class="success" onclick="triggerAnalysis('analyze')">Run Analysis</button>
+                        <button onclick="triggerAnalysis('aggregate')">Aggregate Only</button>
+                        <button class="danger" onclick="triggerAnalysis('reanalyze')">Re-analyze</button>
+                    </div>
+                </div>
+            </div>
+            <div id="trigger-result" style="margin-top:15px;"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentPage = 0;
+const PAGE_SIZE = 30;
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+});
+
+function scoreClass(v) { return v >= 60 ? 'high' : v >= 35 ? 'mid' : 'low'; }
+function scoreBar(v, max=100) {
+    const cls = scoreClass(v);
+    return `<span class="score-bar score-${cls}"><span class="score-fill" style="width:${Math.min(v/max*100,100)}%"></span></span> ${v.toFixed(1)}`;
+}
+function badge(text, cls) { return `<span class="badge badge-${cls}">${text}</span>`; }
+function statusBadge(s) {
+    const m = {done:'done',pending:'pending',failed:'failed',running:'running'};
+    return badge(s, m[s] || 'neutral');
+}
+function sentimentBadge(s) {
+    const m = {positive:'positive',negative:'negative',neutral:'neutral'};
+    return badge(s || '-', m[s] || 'neutral');
+}
+
+async function api(url) {
+    const r = await fetch(url);
+    return r.json();
+}
+
+async function loadStats() {
+    const d = await api('./api/analyzer/stats');
+    document.getElementById('stats').innerHTML = `
+        <div class="stat-card"><div class="stat-value">${d.total}</div><div class="stat-label">Total Responses</div></div>
+        <div class="stat-card"><div class="stat-value done">${d.done}</div><div class="stat-label">Analyzed</div></div>
+        <div class="stat-card"><div class="stat-value pending">${d.pending}</div><div class="stat-label">Pending</div></div>
+        <div class="stat-card"><div class="stat-value failed">${d.failed}</div><div class="stat-label">Failed</div></div>
+        <div class="stat-card"><div class="stat-value score">${d.avg_geo_score != null ? d.avg_geo_score.toFixed(1) : '-'}</div><div class="stat-label">Avg GEO Score</div></div>
+        <div class="stat-card"><div class="stat-value">${d.total_brands_tracked}</div><div class="stat-label">Brands Tracked</div></div>
+    `;
+}
+
+async function loadBrands() {
+    const d = await api('./api/analyzer/brands');
+    ['f-brand','d-brand','t-brand'].forEach(id => {
+        const sel = document.getElementById(id);
+        const first = sel.options[0];
+        sel.innerHTML = '';
+        sel.appendChild(first);
+        d.forEach(b => { const o = document.createElement('option'); o.value = b.id; o.textContent = b.name; sel.appendChild(o); });
+    });
+}
+
+async function loadLLMs() {
+    const d = await api('./api/analyzer/llms');
+    ['f-llm','d-llm'].forEach(id => {
+        const sel = document.getElementById(id);
+        const first = sel.options[0];
+        sel.innerHTML = '';
+        sel.appendChild(first);
+        d.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; sel.appendChild(o); });
+    });
+}
+
+async function loadResponses(page) {
+    if (page === undefined) page = 0;
+    if (page < 0) page = 0;
+    currentPage = page;
+    const p = new URLSearchParams();
+    p.set('limit', PAGE_SIZE);
+    p.set('offset', page * PAGE_SIZE);
+    const status = document.getElementById('f-status').value;
+    const brand = document.getElementById('f-brand').value;
+    const llm = document.getElementById('f-llm').value;
+    const date = document.getElementById('f-date').value;
+    if (status) p.set('status', status);
+    if (brand) p.set('brand_id', brand);
+    if (llm) p.set('llm', llm);
+    if (date) p.set('date', date);
+
+    const d = await api('./api/analyzer/responses?' + p.toString());
+    document.getElementById('page-info').textContent = `Page ${page+1} (${d.length} results)`;
+
+    if (!d.length) {
+        document.getElementById('responses-table').innerHTML = '<div class="empty-state">No responses found</div>';
+        return;
+    }
+
+    let html = `<table><thead><tr>
+        <th>ID</th><th>Brand</th><th>LLM</th><th>Status</th>
+        <th>GEO Score</th><th>Visibility</th><th>Sentiment</th><th>SOV</th><th>Citations</th>
+        <th>Brands</th><th>Target</th><th>Date</th><th></th>
+    </tr></thead><tbody>`;
+    d.forEach(r => {
+        const geo = r.geo_score != null ? `<span class="geo-score ${scoreClass(r.geo_score)}">${r.geo_score.toFixed(1)}</span>` : '-';
+        html += `<tr>
+            <td>${r.response_id}</td>
+            <td>${r.brand_name || '-'}</td>
+            <td>${r.target_llm || '-'}</td>
+            <td>${statusBadge(r.analysis_status)}</td>
+            <td>${geo}</td>
+            <td>${r.visibility_score != null ? scoreBar(r.visibility_score) : '-'}</td>
+            <td>${r.sentiment_score != null ? scoreBar(r.sentiment_score) : '-'}</td>
+            <td>${r.sov_score != null ? scoreBar(r.sov_score) : '-'}</td>
+            <td>${r.citation_score != null ? scoreBar(r.citation_score) : '-'}</td>
+            <td>${r.total_brands_mentioned ?? '-'}</td>
+            <td>${r.target_brand_mentioned ? sentimentBadge(r.target_brand_sentiment) : badge('No','neutral')}</td>
+            <td class="text-muted">${r.collected_at ? r.collected_at.substring(0,10) : '-'}</td>
+            <td>${r.analysis_status === 'done' ? '<button class="small" onclick="toggleDetail('+r.response_id+',this)">Detail</button>' : ''}</td>
+        </tr>
+        <tr id="detail-${r.response_id}" style="display:none"><td colspan="13"><div class="detail-panel open" id="dp-${r.response_id}">Loading...</div></td></tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('responses-table').innerHTML = html;
+}
+
+async function toggleDetail(rid, btn) {
+    const row = document.getElementById('detail-' + rid);
+    if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+    row.style.display = '';
+    const dp = document.getElementById('dp-' + rid);
+    dp.innerHTML = 'Loading...';
+    const d = await api('./api/analyzer/response/' + rid);
+    if (d.error) { dp.innerHTML = '<div class="text-muted">' + d.error + '</div>'; return; }
+
+    let mentionsHtml = '';
+    if (d.mentions && d.mentions.length) {
+        mentionsHtml = d.mentions.map(m => `
+            <div class="mention-item">
+                <strong>${m.brand_name}</strong>${m.product_name ? ' / '+m.product_name : ''}
+                ${m.is_target ? badge('TARGET','done') : ''}
+                ${badge(m.position_type || '-', 'neutral')}
+                ${m.position_rank ? '#'+m.position_rank : ''}
+                ${sentimentBadge(m.sentiment)}
+                <span class="text-muted">(score: ${m.sentiment_score?.toFixed(2) ?? '-'}, mentions: ${m.mention_count})</span>
+                ${m.drivers && m.drivers.length ? '<div style="margin-top:4px;">' + m.drivers.map(dr =>
+                    `<span class="driver-tag ${dr.polarity==='positive'?'driver-pos':'driver-neg'}">${dr.driver_text}</span>`
+                ).join('') + '</div>' : ''}
+                ${m.context_snippet ? '<div class="text-muted" style="margin-top:4px;font-style:italic;">"'+m.context_snippet.substring(0,150)+'..."</div>' : ''}
+            </div>
+        `).join('');
+    } else {
+        mentionsHtml = '<div class="text-muted">No brand mentions</div>';
+    }
+
+    let citationsHtml = '';
+    if (d.citations && d.citations.length) {
+        citationsHtml = d.citations.map(c =>
+            `<div style="padding:4px 0;"><a href="${c.url}" target="_blank">${c.domain || c.url}</a> ${badge(c.source_type||'other','neutral')} <span class="text-muted">${c.title||''}</span></div>`
+        ).join('');
+    } else {
+        citationsHtml = '<div class="text-muted">No citations</div>';
+    }
+
+    let featuresHtml = '';
+    if (d.features && d.features.length) {
+        featuresHtml = d.features.map(f =>
+            `<div style="padding:4px 0;">${f.brand_name}/${f.product_name}: <strong>${f.feature_name}</strong> ${sentimentBadge(f.feature_sentiment)} ${f.scenario ? badge(f.scenario,'neutral') : ''} ${f.price_positioning ? badge(f.price_positioning,'neutral') : ''}</div>`
+        ).join('');
+    }
+
+    dp.innerHTML = `
+        <div class="detail-grid">
+            <div class="detail-section">
+                <h4>Dimensions</h4>
+                <div>Industry: <strong>${d.dimension_industry || '-'}</strong></div>
+                <div>Company: <strong>${d.dimension_company || '-'}</strong></div>
+                <div>Product: <strong>${d.dimension_product || '-'}</strong></div>
+                <div>Category: <strong>${d.dimension_category || '-'}</strong></div>
+                <div class="text-muted" style="margin-top:8px;">Model: ${d.analyzer_model || '-'}</div>
+            </div>
+            <div class="detail-section">
+                <h4>Brand Mentions (${d.mentions ? d.mentions.length : 0})</h4>
+                ${mentionsHtml}
+            </div>
+            <div class="detail-section">
+                <h4>Citations (${d.citations ? d.citations.length : 0})</h4>
+                ${citationsHtml}
+            </div>
+            ${featuresHtml ? '<div class="detail-section"><h4>Product Features</h4>'+featuresHtml+'</div>' : ''}
+        </div>
+        ${d.raw_analysis_json ? '<details style="margin-top:10px;"><summary class="text-muted" style="cursor:pointer;">Raw LLM JSON</summary><pre style="font-size:11px;max-height:300px;overflow:auto;background:#f1f5f9;padding:10px;border-radius:4px;margin-top:5px;">'+JSON.stringify(d.raw_analysis_json,null,2)+'</pre></details>' : ''}
+    `;
+}
+
+async function loadDaily() {
+    const p = new URLSearchParams();
+    const brand = document.getElementById('d-brand').value;
+    const llm = document.getElementById('d-llm').value;
+    const days = document.getElementById('d-days').value;
+    if (brand) p.set('brand_id', brand);
+    if (llm) p.set('llm', llm);
+    p.set('days', days);
+
+    const d = await api('./api/analyzer/daily?' + p.toString());
+    if (!d.length) {
+        document.getElementById('daily-table').innerHTML = '<div class="empty-state">No daily data</div>';
+        return;
+    }
+    let html = `<table><thead><tr>
+        <th>Date</th><th>Brand</th><th>LLM</th><th>GEO Score</th>
+        <th>Queries</th><th>Mention Rate</th><th>1st Place</th>
+        <th>Sentiment</th><th>SOV</th><th>Industry Rank</th>
+    </tr></thead><tbody>`;
+    d.forEach(r => {
+        html += `<tr>
+            <td>${r.date ? r.date.substring(0,10) : '-'}</td>
+            <td>${r.brand_name || '-'}</td>
+            <td>${r.target_llm || '<em>all</em>'}</td>
+            <td><span class="geo-score ${scoreClass(r.avg_geo_score)}">${r.avg_geo_score.toFixed(1)}</span></td>
+            <td>${r.total_queries}</td>
+            <td>${(r.mention_rate*100).toFixed(1)}%</td>
+            <td>${(r.first_place_rate*100).toFixed(1)}%</td>
+            <td>${r.avg_sentiment_score.toFixed(2)}</td>
+            <td>${r.industry_sov_pct != null ? r.industry_sov_pct.toFixed(1)+'%' : '-'}</td>
+            <td>${r.industry_rank || '-'}</td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('daily-table').innerHTML = html;
+}
+
+async function triggerAnalysis(action) {
+    const date = document.getElementById('t-date').value;
+    if (!date) { alert('Please select a date'); return; }
+    const brand = document.getElementById('t-brand').value;
+    const div = document.getElementById('trigger-result');
+    div.innerHTML = '<div class="text-muted">Triggering...</div>';
+
+    const r = await fetch('./api/analyzer/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, date, brand_id: brand ? parseInt(brand) : null})
+    });
+    const d = await r.json();
+    if (d.success) {
+        div.innerHTML = '<div style="color:#059669;font-weight:600;">Triggered: ' + (d.task_id || d.message || 'OK') + '</div>';
+        setTimeout(loadStats, 3000);
+    } else {
+        div.innerHTML = '<div style="color:#dc2626;">Error: ' + (d.error || 'Unknown') + '</div>';
+    }
+}
+
+// Init
+document.getElementById('t-date').value = new Date().toISOString().split('T')[0];
+loadStats();
+loadBrands();
+loadLLMs();
+loadResponses(0);
+</script>
+</body>
+</html>
+"""
+
+
+@app.route('/analyzer')
+def analyzer_page():
+    return render_template_string(ANALYZER_TEMPLATE)
+
+
+@app.route('/api/analyzer/stats')
+def analyzer_stats():
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE analysis_status = 'done') AS done,
+                    COUNT(*) FILTER (WHERE analysis_status = 'pending') AS pending,
+                    COUNT(*) FILTER (WHERE analysis_status = 'running') AS running,
+                    COUNT(*) FILTER (WHERE analysis_status = 'failed') AS failed
+                FROM llm_responses
+            """)
+            row = cur.fetchone()
+
+            avg_geo = None
+            try:
+                cur.execute("SELECT AVG(geo_score) FROM response_analyses WHERE geo_score > 0")
+                r = cur.fetchone()
+                if r and r['avg'] is not None:
+                    avg_geo = float(r['avg'])
+            except Exception:
+                pass
+
+            brands = 0
+            try:
+                cur.execute("SELECT COUNT(*) FROM brands")
+                brands = cur.fetchone()['count']
+            except Exception:
+                pass
+
+        return jsonify({
+            'total': row['total'],
+            'done': row['done'],
+            'pending': row['pending'],
+            'running': row['running'],
+            'failed': row['failed'],
+            'avg_geo_score': avg_geo,
+            'total_brands_tracked': brands,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/brands')
+def analyzer_brands():
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, name FROM brands ORDER BY name")
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/llms')
+def analyzer_llms():
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT target_llm FROM queries WHERE target_llm IS NOT NULL ORDER BY target_llm")
+            return jsonify([r[0] for r in cur.fetchall()])
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/responses')
+def analyzer_responses():
+    from psycopg2.extras import RealDictCursor
+    status = request.args.get('status')
+    brand_id = request.args.get('brand_id')
+    llm = request.args.get('llm')
+    date = request.args.get('date')
+    limit = min(int(request.args.get('limit', 30)), 100)
+    offset = int(request.args.get('offset', 0))
+
+    conn = get_db()
+    try:
+        where = []
+        params = []
+
+        if status:
+            where.append("lr.analysis_status = %s")
+            params.append(status)
+        if brand_id:
+            where.append("q.brand_id = %s")
+            params.append(int(brand_id))
+        if llm:
+            where.append("q.target_llm = %s")
+            params.append(llm)
+        if date:
+            where.append("lr.collected_at::date = %s")
+            params.append(date)
+
+        where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT lr.id AS response_id, lr.analysis_status, lr.collected_at,
+                       q.target_llm, b.name AS brand_name,
+                       ra.geo_score, ra.visibility_score, ra.sentiment_score,
+                       ra.sov_score, ra.citation_score,
+                       ra.total_brands_mentioned, ra.target_brand_mentioned,
+                       ra.target_brand_sentiment
+                FROM llm_responses lr
+                JOIN queries q ON q.id = lr.query_id
+                LEFT JOIN brands b ON b.id = q.brand_id
+                LEFT JOIN response_analyses ra ON ra.response_id = lr.id
+                {where_clause}
+                ORDER BY lr.id DESC
+                LIMIT %s OFFSET %s
+            """, params + [limit, offset])
+            rows = cur.fetchall()
+
+        # Convert datetime to string for JSON
+        for r in rows:
+            if r.get('collected_at'):
+                r['collected_at'] = r['collected_at'].isoformat()
+
+        return jsonify(rows)
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/response/<int:response_id>')
+def analyzer_response_detail(response_id):
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Analysis summary
+            cur.execute("""
+                SELECT * FROM response_analyses WHERE response_id = %s
+            """, (response_id,))
+            analysis = cur.fetchone()
+            if not analysis:
+                return jsonify({'error': 'No analysis found for this response'})
+
+            # Brand mentions + drivers
+            cur.execute("""
+                SELECT * FROM brand_mentions WHERE response_id = %s ORDER BY is_target DESC, mention_count DESC
+            """, (response_id,))
+            mentions = cur.fetchall()
+
+            for m in mentions:
+                cur.execute("""
+                    SELECT driver_text, polarity, category, strength, source_quote
+                    FROM sentiment_drivers WHERE mention_id = %s ORDER BY strength DESC
+                """, (m['id'],))
+                m['drivers'] = cur.fetchall()
+                if m.get('created_at'):
+                    m['created_at'] = m['created_at'].isoformat()
+
+            # Citations
+            cur.execute("""
+                SELECT url, domain, title, citation_index, source_type
+                FROM citation_sources WHERE response_id = %s ORDER BY citation_index
+            """, (response_id,))
+            citations = cur.fetchall()
+
+            # Product features
+            cur.execute("""
+                SELECT brand_name, product_name, feature_name, feature_sentiment,
+                       context_snippet, scenario, price_positioning
+                FROM product_feature_mentions WHERE analysis_id = %s
+            """, (analysis['id'],))
+            features = cur.fetchall()
+
+        result = dict(analysis)
+        if result.get('analyzed_at'):
+            result['analyzed_at'] = result['analyzed_at'].isoformat()
+        result['mentions'] = mentions
+        result['citations'] = citations
+        result['features'] = features
+        return jsonify(result)
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/daily')
+def analyzer_daily():
+    from psycopg2.extras import RealDictCursor
+    brand_id = request.args.get('brand_id')
+    llm = request.args.get('llm')
+    days = min(int(request.args.get('days', 30)), 90)
+
+    conn = get_db()
+    try:
+        where = ["gd.intent IS NULL", "gd.language IS NULL"]
+        params = []
+
+        if brand_id:
+            where.append("gd.brand_id = %s")
+            params.append(int(brand_id))
+        if llm:
+            where.append("gd.target_llm = %s")
+            params.append(llm)
+        else:
+            where.append("gd.target_llm IS NULL")
+
+        where.append("gd.date >= NOW() - INTERVAL '%s days'")
+        params.append(days)
+
+        where_clause = "WHERE " + " AND ".join(where)
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT gd.*, b.name AS brand_name
+                FROM geo_score_daily gd
+                JOIN brands b ON b.id = gd.brand_id
+                {where_clause}
+                ORDER BY gd.date DESC, gd.avg_geo_score DESC
+                LIMIT 200
+            """, params)
+            rows = cur.fetchall()
+
+        for r in rows:
+            if r.get('date'):
+                r['date'] = r['date'].isoformat()
+            if r.get('created_at'):
+                r['created_at'] = r['created_at'].isoformat()
+            if r.get('updated_at'):
+                r['updated_at'] = r['updated_at'].isoformat()
+        return jsonify(rows)
+    finally:
+        conn.close()
+
+
+@app.route('/api/analyzer/trigger', methods=['POST'])
+def analyzer_trigger():
+    data = request.json or {}
+    action = data.get('action', 'analyze')
+    date_str = data.get('date')
+    brand_id = data.get('brand_id')
+
+    if not date_str:
+        return jsonify({'success': False, 'error': 'date is required'})
+
+    # Try Celery first
+    if HAS_CELERY and celery_app:
+        try:
+            if action == 'analyze':
+                task = celery_app.send_task(
+                    'geo_tracker.tasks.celery_tasks.run_daily_analysis',
+                    kwargs={'date_str': date_str, 'brand_id': brand_id},
+                    queue='analysis',
+                )
+                return jsonify({'success': True, 'task_id': task.id, 'message': f'Analysis queued for {date_str}'})
+            elif action == 'aggregate':
+                task = celery_app.send_task(
+                    'geo_tracker.tasks.celery_tasks.aggregate_daily_scores',
+                    kwargs={'date_str': date_str, 'brand_id': brand_id},
+                    queue='analysis',
+                )
+                return jsonify({'success': True, 'task_id': task.id, 'message': f'Aggregation queued for {date_str}'})
+            elif action == 'reanalyze':
+                # Reset status first
+                conn = get_db()
+                try:
+                    with conn.cursor() as cur:
+                        sql = """
+                            UPDATE llm_responses SET analysis_status = 'pending'
+                            WHERE collected_at::date = %s AND analysis_status IN ('done', 'failed')
+                        """
+                        cur.execute(sql, (date_str,))
+                        reset_count = cur.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+                # Then trigger analysis
+                task = celery_app.send_task(
+                    'geo_tracker.tasks.celery_tasks.run_daily_analysis',
+                    kwargs={'date_str': date_str, 'brand_id': brand_id},
+                    queue='analysis',
+                )
+                return jsonify({'success': True, 'task_id': task.id, 'message': f'Reset {reset_count} responses, analysis queued'})
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Celery error: {e}'})
+    else:
+        return jsonify({'success': False, 'error': 'Celery not available. Use CLI: python -m geo_tracker.analyzer.cli run-daily --date ' + date_str})
+
+
 _ensure_citations_column()
+_ensure_analyzer_tables()
 
 
 if __name__ == '__main__':
