@@ -56,6 +56,21 @@ services:
       redis:
         condition: service_healthy
 
+  worker-analysis:
+    image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: >
+      celery -A geo_tracker.tasks.celery_tasks worker
+      --loglevel=info
+      --concurrency=4
+      -Q analysis
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   beat:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
