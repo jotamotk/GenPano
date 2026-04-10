@@ -15,6 +15,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+import httpx
 from openai import AsyncOpenAI
 
 from geo_tracker.analyzer.brand_detector import DetectedBrand
@@ -73,12 +74,17 @@ class LLMAnalyzer:
     """豆包大模型做结构化分析"""
 
     def __init__(self):
+        # trust_env=False ensures httpx ignores HTTP_PROXY/HTTPS_PROXY env vars,
+        # preventing domestic ARK API calls from being routed through the overseas
+        # proxy used for LLM scraping (Clash/V-Ninja).
         self.client = AsyncOpenAI(
             api_key=os.getenv("ARK_API_KEY", ""),
             base_url=os.getenv(
                 "ARK_BASE_URL",
                 "https://ark.cn-beijing.volces.com/api/v3",
             ),
+            timeout=60.0,
+            http_client=httpx.AsyncClient(trust_env=False),
         )
         self.model = os.getenv("ARK_MODEL", "doubao-pro-32k")
 
