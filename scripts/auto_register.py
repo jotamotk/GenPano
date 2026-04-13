@@ -1,8 +1,13 @@
 """
 自动注册豆包 & DeepSeek 账号 + Cookie 提取
 
-使用 LubanSMS 接码平台获取手机号和验证码，
+使用 LubanSMS Keyword API 获取手机号和验证码，
 通过 Playwright 自动完成注册/登录流程，提取 cookies 保存为 JSON。
+
+Keyword API 相比 Service ID API 的优势：
+    - 取号时可通过 phone 参数复用同一号码（便于账号 cookies 过期后重新登录）
+    - 用手机号本身做短信收码索引，无 request_id 概念
+    - 释放后仍保留在用户池中，可通过 getKeywordNumber(phone=xxx) 再次取回
 
 用法:
     python scripts/auto_register.py --platform doubao --count 1
@@ -11,9 +16,7 @@
     python scripts/auto_register.py --platform doubao --count 2 --output ./my_cookies/
 
 环境变量:
-    LUBANSMS_TOKEN            LubanSMS API token (必需)
-    LUBANSMS_PROJECT_DOUBAO   豆包对应的 service_id (--platform doubao 时必需)
-    LUBANSMS_PROJECT_DEEPSEEK DeepSeek 对应的 service_id (--platform deepseek 时必需)
+    LUBANSMS_TOKEN   LubanSMS API token (必需)
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -44,7 +48,7 @@ LUBANSMS_BASE = "https://lubansms.com/v2/api"
 
 
 class LubanSMSClient:
-    """LubanSMS 接码平台 API 封装"""
+    """LubanSMS 接码平台 Keyword API 封装"""
 
     def __init__(self, token: str):
         self.token = token
@@ -59,47 +63,72 @@ class LubanSMSClient:
             raise RuntimeError(f"getBalance failed: {data}")
         return data["balance"]
 
-    async def get_number(self, service_id: str) -> tuple[str, int]:
+    async def get_keyword_number(self, phone: Optional[str] = None) -> str:
         """
-        获取手机号
-        返回: (phone_number, request_id)
+        获取手机号（Keyword API）。
+
+        Args:
+            phone: 指定复用的手机号；None 时随机分配新号码
+
+        Returns:
+            手机号字符串
         """
+        params: dict = {"apikey": self.token}
+        if phone:
+            params["phone"] = phone
         resp = await self.client.get(
-            f"{LUBANSMS_BASE}/getNumber",
-            params={"apikey": self.token, "service_id": service_id},
+            f"{LUBANSMS_BASE}/getKeywordNumber", params=params
         )
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"getNumber failed: {data}")
-        phone = data["number"]
-        request_id = data["request_id"]
-        logger.info(f"获取手机号: {phone} (request_id={request_id})")
-        return phone, request_id
+            raise RuntimeError(f"getKeywordNumber failed: {data}")
+        result_phone = data["phone"]
+        action = f"复用 {phone}" if phone else "随机获取"
+        logger.info(f"获取手机号 ({action}): {result_phone}")
+        return result_phone
 
-    async def get_sms(self, request_id: int, timeout: int = 120) -> str:
+    async def get_keyword_sms(
+        self, phone: str, keyword: str, timeout: int = 120
+    ) -> str:
         """
-        轮询获取短信验证码
-        timeout: 最大等待秒数
-        返回: 验证码字符串
+        轮询获取 SMS 验证码（Keyword API）。
+
+        Args:
+            phone: 手机号（由 get_keyword_number 返回）
+            keyword: 短信中包含的关键词（如 "豆包"、"DeepSeek"）
+            timeout: 最大等待秒数
+
+        Returns:
+            验证码字符串（从短信正文中提取的 4-8 位数字）
         """
         waited = 0
         interval = 3
         while waited < timeout:
             resp = await self.client.get(
-                f"{LUBANSMS_BASE}/getSms",
-                params={"apikey": self.token, "request_id": request_id},
+                f"{LUBANSMS_BASE}/getKeywordSms",
+                params={
+                    "apikey": self.token,
+                    "phone": phone,
+                    "keyword": keyword,
+                },
             )
             data = resp.json()
 
-            if data.get("msg") == "success" and data.get("sms_code"):
-                code = data["sms_code"]
-                logger.info(f"收到验证码: {code}")
-                return code
+            if data.get("code") == 0 and data.get("msg"):
+                msg = data["msg"]
+                logger.info(f"收到短信: {msg}")
+                match = re.search(r"(\d{4,8})", msg)
+                if match:
+                    code = match.group(1)
+                    logger.info(f"提取验证码: {code}")
+                    return code
+                raise RuntimeError(f"无法从短信中提取验证码: {msg}")
 
-            if data.get("code") == 400:
-                raise RuntimeError(f"getSms 失败 (号码可能已过期): {data}")
+            # code=400 + "不正确的apikey" 是真正的错误
+            if data.get("code") == 400 and "apikey" in data.get("msg", "").lower():
+                raise RuntimeError(f"getKeywordSms 认证失败: {data}")
 
-            # 继续等待
+            # "尚未收到短信" 继续等待
             await asyncio.sleep(interval)
             waited += interval
             if waited % 15 == 0:
@@ -107,21 +136,17 @@ class LubanSMSClient:
 
         raise TimeoutError(f"等待验证码超时 ({timeout}s)")
 
-    async def release_number(self, request_id: int) -> None:
-        """释放号码（未收到短信时使用）"""
+    async def release_keyword_number(self, phone: str) -> None:
+        """释放号码（Keyword API）"""
         try:
             resp = await self.client.get(
-                f"{LUBANSMS_BASE}/setStatus",
-                params={
-                    "apikey": self.token,
-                    "request_id": request_id,
-                    "status": "reject",
-                },
+                f"{LUBANSMS_BASE}/delKeywordNumber",
+                params={"apikey": self.token, "phone": phone},
             )
             data = resp.json()
-            logger.info(f"释放号码: {data}")
+            logger.info(f"释放号码: {phone} → {data}")
         except Exception as e:
-            logger.warning(f"释放号码失败: {e}")
+            logger.warning(f"释放号码失败 ({phone}): {e}")
 
     async def close(self):
         await self.client.aclose()
@@ -134,13 +159,14 @@ class PlatformRegistrar(ABC):
     """平台注册器基类"""
 
     platform_name: str = ""
+    sms_keyword: str = ""  # getKeywordSms 过滤用的短信关键词
 
     def __init__(self, page: Page, sms_client: LubanSMSClient):
         self.page = page
         self.sms_client = sms_client
 
     @abstractmethod
-    async def register(self, phone: str, request_id: int) -> bool:
+    async def register(self, phone: str) -> bool:
         """
         执行注册/登录流程
         返回 True 表示成功（页面已进入聊天界面）
@@ -199,8 +225,9 @@ class DoubaoRegistrar(PlatformRegistrar):
     """
 
     platform_name = "doubao"
+    sms_keyword = "豆包"
 
-    async def register(self, phone: str, request_id: int) -> bool:
+    async def register(self, phone: str) -> bool:
         page = self.page
 
         # 1. 打开豆包
@@ -265,7 +292,9 @@ class DoubaoRegistrar(PlatformRegistrar):
         # 7. 等待并填入验证码
         logger.info("等待接收验证码...")
         try:
-            sms_code = await self.sms_client.get_sms(request_id, timeout=120)
+            sms_code = await self.sms_client.get_keyword_sms(
+                phone, self.sms_keyword, timeout=120
+            )
         except (TimeoutError, RuntimeError) as e:
             logger.error(f"获取验证码失败: {e}")
             return False
@@ -409,8 +438,9 @@ class DeepSeekRegistrar(PlatformRegistrar):
     """
 
     platform_name = "deepseek"
+    sms_keyword = "DeepSeek"
 
-    async def register(self, phone: str, request_id: int) -> bool:
+    async def register(self, phone: str) -> bool:
         page = self.page
 
         # 1. 打开 DeepSeek
@@ -470,7 +500,9 @@ class DeepSeekRegistrar(PlatformRegistrar):
         # 7. 等待并填入验证码
         logger.info("等待接收验证码...")
         try:
-            sms_code = await self.sms_client.get_sms(request_id, timeout=120)
+            sms_code = await self.sms_client.get_keyword_sms(
+                phone, self.sms_keyword, timeout=120
+            )
         except (TimeoutError, RuntimeError) as e:
             logger.error(f"获取验证码失败: {e}")
             return False
@@ -598,11 +630,6 @@ REGISTRARS = {
     "deepseek": DeepSeekRegistrar,
 }
 
-SERVICE_ID_ENV = {
-    "doubao": "LUBANSMS_PROJECT_DOUBAO",
-    "deepseek": "LUBANSMS_PROJECT_DEEPSEEK",
-}
-
 
 # ─── Cookie 提取 & 保存 ───────────────────────────────────────────────────────
 
@@ -647,17 +674,15 @@ async def extract_and_save_cookies(
 async def register_one(
     platform: str,
     sms_client: LubanSMSClient,
-    service_id: str,
     output_dir: Path,
     headless: bool = False,
 ) -> Optional[Path]:
     """注册单个账号，返回 cookies 文件路径"""
-    phone = None
-    request_id = None
+    phone: Optional[str] = None
 
     try:
-        # 1. 获取手机号
-        phone, request_id = await sms_client.get_number(service_id)
+        # 1. 获取手机号（Keyword API 随机取号）
+        phone = await sms_client.get_keyword_number()
 
         # 2. 启动浏览器
         async with async_playwright() as p:
@@ -679,7 +704,7 @@ async def register_one(
             registrar_cls = REGISTRARS[platform]
             registrar = registrar_cls(page, sms_client)
 
-            success = await registrar.register(phone, request_id)
+            success = await registrar.register(phone)
 
             if success:
                 # 4. 提取 cookies
@@ -695,10 +720,12 @@ async def register_one(
 
     except Exception as e:
         logger.exception(f"注册异常: {e}")
-        # 释放号码
-        if request_id:
-            await sms_client.release_number(request_id)
         return None
+    finally:
+        # 无论成功失败都释放（号码仍在用户池中，后续可通过
+        # getKeywordNumber(phone=xxx) 再次取回用于重新登录）
+        if phone:
+            await sms_client.release_keyword_number(phone)
 
 
 async def main():
@@ -734,12 +761,6 @@ async def main():
         print("错误: 请设置 LUBANSMS_TOKEN 环境变量")
         sys.exit(1)
 
-    service_id_env = SERVICE_ID_ENV[args.platform]
-    service_id = os.getenv(service_id_env)
-    if not service_id:
-        print(f"错误: 请设置 {service_id_env} 环境变量 (LubanSMS 项目 ID)")
-        sys.exit(1)
-
     # 创建输出目录
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -762,7 +783,6 @@ async def main():
             filepath = await register_one(
                 platform=args.platform,
                 sms_client=sms_client,
-                service_id=service_id,
                 output_dir=output_dir,
                 headless=args.headless,
             )

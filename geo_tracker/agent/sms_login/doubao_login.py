@@ -39,6 +39,11 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         """
         等待页面 SPA 完全渲染，然后点击登录按钮触发 modal。
         豆包是重型 React SPA，JS 渲染登录按钮需要额外时间。
+
+        策略：
+        1. 优先等 data-testid 匹配的按钮
+        2. 若 data-testid 未出现 / 点击后 modal 未弹，枚举所有 "登录" 文本候选
+        3. 逐个点击，直到 modal 出现
         """
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
@@ -48,29 +53,23 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             logger.info("[doubao] 登录 modal 已存在")
             return await self._handle_agreement(page)
 
-        # 等待登录按钮渲染出来（SPA 异步渲染，最多等 20 秒）
-        login_btn = None
-        for selector in [
-            "[data-testid='to_login_button']",
-            "button:has-text('登录')",
-        ]:
-            try:
-                logger.info(f"[doubao] 等待登录按钮: {selector}")
-                await page.wait_for_selector(selector, timeout=20000)
-                if ":has-text(" in selector:
-                    loc = page.locator(selector).first
-                    login_btn = await loc.element_handle()
-                else:
-                    login_btn = await page.query_selector(selector)
-                if login_btn:
-                    logger.info(f"[doubao] 找到登录按钮: {selector}")
-                    break
-            except Exception:
-                logger.info(f"[doubao] 选择器超时: {selector}")
-                continue
+        # 先等页面稳定（等任何"登录"字样的可点击元素出现即可）
+        try:
+            await page.wait_for_selector(
+                "[data-testid='to_login_button'], "
+                "[data-testid='login_button'], "
+                "[data-testid='header_login_button'], "
+                "button:has-text('登录'), a:has-text('登录'), "
+                "[role='button']:has-text('登录')",
+                timeout=20000,
+            )
+        except Exception:
+            logger.info("[doubao] 20s 内未检测到任何 '登录' 元素，继续尝试枚举")
 
-        if not login_btn:
-            # 保存调试信息并用 JS 列出页面上所有可见元素
+        # 收集所有候选登录按钮（按优先级排序）
+        candidates = await self._collect_login_candidates(page)
+
+        if not candidates:
             await self._save_debug(page, "no_login_btn")
             debug_info = await page.evaluate("""
                 () => {
@@ -83,21 +82,107 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                     return items.join('\\n');
                 }
             """)
-            logger.error(f"[doubao] 未找到登录按钮，页面可点击元素:\\n{debug_info}")
+            logger.error(f"[doubao] 未找到登录按钮候选，页面可点击元素:\n{debug_info}")
             return False
 
-        # 点击登录按钮
-        logger.info("[doubao] 点击登录按钮")
-        await login_btn.click()
-        await page.wait_for_timeout(2000)
+        logger.info(f"[doubao] 收集到 {len(candidates)} 个候选登录按钮")
 
-        # 等待 modal 出现
-        if not await self._check_modal(page):
-            await self._save_debug(page, "modal_timeout")
-            logger.error("[doubao] 点击登录按钮后 modal 未弹出")
-            return False
+        # 逐个点击直到 modal 出现
+        for idx, (label, btn) in enumerate(candidates, 1):
+            logger.info(f"[doubao] 尝试候选 {idx}/{len(candidates)}: {label}")
+            try:
+                await btn.click(timeout=5000)
+            except Exception as e:
+                logger.warning(f"[doubao] 点击 {label} 失败: {e}")
+                continue
 
-        return await self._handle_agreement(page)
+            if await self._check_modal(page):
+                logger.info(f"[doubao] 候选 {idx} ({label}) 触发 modal 成功")
+                return await self._handle_agreement(page)
+
+            logger.info(f"[doubao] 候选 {idx} 点击后 modal 未弹，尝试下一个")
+
+        # 所有候选均失败
+        await self._save_debug(page, "modal_timeout")
+        logger.error("[doubao] 所有候选登录按钮均未能触发 modal")
+        return False
+
+    async def _collect_login_candidates(self, page: Page) -> list[tuple[str, object]]:
+        """
+        收集所有"可能是登录入口"的可见元素，按优先级返回 (label, handle) 列表。
+
+        优先级：data-testid > 精确文本 "登录" / "登录/注册" > 包含 "登录" 的短文本
+        并按 (y, x) 坐标排序——通常登录按钮在右上角。
+        """
+        seen_keys: set[str] = set()
+        results: list[tuple[str, object, int, int]] = []  # (label, el, priority, y)
+
+        async def _add(label: str, el, priority: int) -> None:
+            if el is None:
+                return
+            try:
+                if not await el.is_visible():
+                    return
+                box = await el.bounding_box()
+                if not box or box["width"] == 0 or box["height"] == 0:
+                    return
+                y = int(box["y"])
+                # 基于 outerHTML 片段去重
+                key = await el.evaluate(
+                    "e => (e.outerHTML || '').slice(0, 200)"
+                )
+                if key in seen_keys:
+                    return
+                seen_keys.add(key)
+                results.append((label, el, priority, y))
+            except Exception:
+                pass
+
+        # Priority 0: 明确的 data-testid
+        for tid in ("to_login_button", "login_button", "header_login_button"):
+            el = await page.query_selector(f"[data-testid='{tid}']")
+            await _add(f"data-testid={tid}", el, 0)
+
+        # Priority 1: 精确文本匹配（避免 "登录后查看..." 之类长文本）
+        exact_texts = ["登录", "登录/注册", "登录 / 注册", "立即登录", "去登录"]
+        for text in exact_texts:
+            try:
+                loc = page.locator(
+                    f"button:text-is('{text}'), "
+                    f"a:text-is('{text}'), "
+                    f"[role='button']:text-is('{text}')"
+                )
+                count = await loc.count()
+                for i in range(count):
+                    el = await loc.nth(i).element_handle()
+                    await _add(f"text-is={text!r}[{i}]", el, 1)
+            except Exception:
+                continue
+
+        # Priority 2: 包含 "登录" 的短文本（< 10 字符，排除 "登录后查看更多" 之类）
+        try:
+            loc = page.locator(
+                "button:has-text('登录'), a:has-text('登录'), "
+                "[role='button']:has-text('登录')"
+            )
+            count = await loc.count()
+            for i in range(count):
+                el = await loc.nth(i).element_handle()
+                if not el:
+                    continue
+                try:
+                    text = (await el.text_content() or "").strip()
+                    if len(text) > 10:
+                        continue
+                except Exception:
+                    continue
+                await _add(f"has-text=登录[{i}] ({text!r})", el, 2)
+        except Exception:
+            pass
+
+        # 排序：先按优先级，再按 y 坐标（顶部优先——登录按钮通常在右上角）
+        results.sort(key=lambda t: (t[2], t[3]))
+        return [(label, el) for label, el, _, _ in results]
 
     async def _check_modal(self, page: Page) -> bool:
         """检查登录 modal 是否出现"""
