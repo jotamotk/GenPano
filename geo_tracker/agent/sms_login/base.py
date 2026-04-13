@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import random
+import re
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -149,7 +150,15 @@ class BaseSMSLoginHandler(ABC):
         _playwright = None
         # 所有本次申请过的手机号，流程结束后统一释放
         used_phones: list[str] = []
-        is_relogin = bool(phone)  # True = 已有账号重新登录，False = 新注册
+        # 手机号是否为有效 11 位数字（web_upload 等占位符跳过 SMS 登录）
+        is_valid_phone = bool(phone) and bool(re.fullmatch(r"\d{11}", phone or ""))
+        is_relogin = is_valid_phone  # 只有合法手机号才走重登录流程
+
+        if phone and not is_valid_phone:
+            logger.warning(
+                f"[{self.platform}] 传入的 phone='{phone}' 非 11 位数字，"
+                f"降级为新注册流程"
+            )
 
         def _fail(reason: str) -> dict:
             logger.error(f"[{self.platform}] {reason}")
@@ -161,9 +170,19 @@ class BaseSMSLoginHandler(ABC):
             # ── 获取初始手机号 ──────────────────────────────────────────
             if is_relogin:
                 # 重新登录：通过 getKeywordNumber(phone=xxx) 复用已有号码
-                phone = await sms_client.get_keyword_number(phone=phone)
-                used_phones.append(phone)
-                logger.info(f"[{self.platform}] 复用手机号: {phone}")
+                try:
+                    phone = await sms_client.get_keyword_number(phone=phone)
+                    used_phones.append(phone)
+                    logger.info(f"[{self.platform}] 复用手机号: {phone}")
+                except RuntimeError as e:
+                    # 号码不在线 / 通道无此号码等：降级为随机取新号
+                    logger.warning(
+                        f"[{self.platform}] 复用手机号失败 ({e})，降级为随机取号"
+                    )
+                    is_relogin = False
+                    phone = await self._get_clean_number(sms_client, used_phones)
+                    used_phones.append(phone)
+                    logger.info(f"[{self.platform}] 获取新手机号: {phone}")
             else:
                 # 新注册：随机取号，跳过黑名单
                 phone = await self._get_clean_number(sms_client, used_phones)
