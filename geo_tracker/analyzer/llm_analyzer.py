@@ -83,7 +83,8 @@ class LLMAnalyzer:
                 "ARK_BASE_URL",
                 "https://ark.cn-beijing.volces.com/api/v3",
             ),
-            timeout=60.0,
+            timeout=180.0,
+            max_retries=1,
             http_client=httpx.AsyncClient(trust_env=False),
         )
         self.model = os.getenv("ARK_MODEL", "doubao-pro-32k")
@@ -127,6 +128,10 @@ class LLMAnalyzer:
         )
 
         try:
+            logger.info(
+                f"Calling ARK API: model={self.model}, "
+                f"response_len={len(response_text)}, prompt_len={len(prompt)}"
+            )
             completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -135,6 +140,7 @@ class LLMAnalyzer:
                 ],
                 temperature=0.1,
             )
+            logger.info(f"ARK API returned in time, tokens={completion.usage}")
 
             raw_text = completion.choices[0].message.content or ""
             # Strip markdown code fences if present (```json ... ```)
