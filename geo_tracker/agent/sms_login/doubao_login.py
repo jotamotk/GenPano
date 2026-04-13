@@ -335,20 +335,111 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         return await self._login_form_ready(page)
 
     async def _handle_agreement(self, page: Page) -> bool:
-        """勾选协议 checkbox"""
+        """
+        勾选 "已阅读并同意" checkbox。
+
+        豆包新版内联表单的 checkbox 不再是 testid=login_agreement_check，
+        需要通过多种方式定位：testid / role / 旁边文本 "已阅读并同意" 等。
+        """
+        checkbox = await self._find_agreement_checkbox(page)
+        if not checkbox:
+            logger.warning("[doubao] 未找到协议 checkbox（可能已默认勾选）")
+            return True
+
         try:
-            checkbox = await page.query_selector(
-                "[data-testid='login_agreement_check']"
+            # 判断是否已勾选：优先看 data-state / aria-checked / checked 属性
+            state = await checkbox.get_attribute("data-state")
+            aria_checked = await checkbox.get_attribute("aria-checked")
+            is_checked_attr = await checkbox.get_attribute("checked")
+            # class 里常出现 "checked" / "active"
+            cls = (await checkbox.get_attribute("class")) or ""
+
+            already = (
+                state == "checked"
+                or aria_checked == "true"
+                or is_checked_attr is not None
+                or "checked" in cls.lower()
+                or "active" in cls.lower()
             )
-            if checkbox:
-                state = await checkbox.get_attribute("data-state")
-                if state != "checked":
-                    logger.info("[doubao] 勾选用户协议")
-                    await checkbox.click()
-                    await page.wait_for_timeout(500)
+
+            if already:
+                logger.info("[doubao] 协议已勾选，跳过")
+                return True
+
+            logger.info("[doubao] 勾选用户协议")
+            try:
+                await checkbox.click()
+            except Exception as e:
+                logger.warning(f"[doubao] 常规点击 checkbox 失败: {e}，尝试 JS click")
+                await checkbox.evaluate("el => el.click()")
+            await page.wait_for_timeout(500)
         except Exception as e:
             logger.warning(f"[doubao] 勾选协议失败: {e}")
         return True
+
+    async def _find_agreement_checkbox(self, page: Page):
+        """多策略定位 '已阅读并同意' checkbox。"""
+        # 1) 明确 testid
+        for sel in [
+            "[data-testid='login_agreement_check']",
+            "[data-testid*='agreement']",
+            "[data-testid*='protocol']",
+        ]:
+            el = await page.query_selector(sel)
+            if el:
+                try:
+                    if await el.is_visible():
+                        return el
+                except Exception:
+                    return el
+
+        # 2) 文本 "已阅读并同意" 附近的 checkbox / role=checkbox
+        text_selectors = [
+            "label:has-text('已阅读并同意') input[type='checkbox']",
+            "label:has-text('已阅读并同意')",
+            "*:has-text('已阅读并同意') >> input[type='checkbox']",
+            "[role='checkbox']:near(:text('已阅读并同意'))",
+        ]
+        for sel in text_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return await loc.element_handle()
+            except Exception:
+                continue
+
+        # 3) JS 兜底：找 "已阅读并同意" 文本附近的可点击 checkbox 元素
+        try:
+            handle = await page.evaluate_handle(
+                """
+                () => {
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    let node;
+                    while ((node = walker.nextNode())) {
+                        const t = (node.textContent || '').trim();
+                        if (t.includes('已阅读') && t.includes('同意')) {
+                            // 向上找最近的包含 checkbox 的容器
+                            let el = node.parentElement;
+                            for (let i = 0; i < 6 && el; i++, el = el.parentElement) {
+                                const cb = el.querySelector(
+                                    'input[type="checkbox"], [role="checkbox"], '
+                                    + '.semi-checkbox, [class*="checkbox" i]'
+                                );
+                                if (cb && cb.getBoundingClientRect().width > 0) return cb;
+                            }
+                        }
+                    }
+                    return null;
+                }
+                """
+            )
+            as_element = handle.as_element() if handle else None
+            if as_element:
+                return as_element
+        except Exception:
+            pass
+
+        return None
 
     async def _save_debug(self, page: Page, suffix: str) -> None:
         """保存截图、HTML 和关键页面状态用于调试"""
@@ -487,6 +578,10 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
           - 某些实验组为 role=button 的 div
         这里用多轮轮询 + 多 selector，并在失败前 dump 页面调试信息。
         """
+        # 点击下一步前，先确保 "已阅读并同意" 协议 checkbox 已勾选，
+        # 否则按钮会一直是 disabled 状态
+        await self._handle_agreement(page)
+
         next_btn = None
         # 按钮可能在手机号校验通过后才变 enabled，做几轮轮询
         for attempt in range(6):
