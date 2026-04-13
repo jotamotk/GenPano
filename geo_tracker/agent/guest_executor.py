@@ -121,11 +121,13 @@ GUEST_LLM_CONFIG = {
     "doubao": {
         "url":              "https://www.doubao.com/chat",
         "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
-        # 豆包 2026 版 UI 不再使用 data-testid，需要多 selector + JS fallback 兜底
-        "submit_button":    "button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
+        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 Tailwind/业务 class name：
+        #   .send-btn-wrapper（空输入时 wrapper 被加 !hidden）
+        #   button[class*='send-msg-btn']（disabled 态 class: bg-g-send-msg-btn-disabled-bg）
+        "submit_button":    "button[class*='send-msg-btn']:not([disabled]), .send-btn-wrapper:not([class*='\\!hidden']) button, button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
         "submit_key":       "Enter",
-        # receive_message testid 已移除；保留旧 selector + flow-markdown-body / message 类名作为 fallback
-        "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
+        # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
+        "response_selector": ".flow-markdown-body, [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
         "wait_after_submit": 60000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
@@ -1008,12 +1010,33 @@ class GuestQueryExecutor:
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
         async def _find_submit_button_js():
-            """豆包新 UI 无 testid，通过位置 + 图标找 send 按钮。"""
+            """豆包新 UI 无 testid，通过稳定 class + 位置 + 图标找 send 按钮。"""
             return await page.evaluate_handle(
                 """
                 () => {
-                    // 优先：aria-label / title 含 send/发送
                     const all = [...document.querySelectorAll('button, [role="button"]')];
+
+                    // 最优先：按 class 匹配（稳定的 Tailwind/业务类名）
+                    const byClass = all.find(b => {
+                        if (b.disabled || b.getAttribute('data-disabled') === 'true') return false;
+                        const cls = b.className || '';
+                        if (typeof cls !== 'string') return false;
+                        // disabled 态会是 bg-g-send-msg-btn-disabled-bg，跳过
+                        if (/send-msg-btn-disabled-bg/.test(cls)) return false;
+                        return /send-msg-btn/.test(cls);
+                    });
+                    if (byClass) return byClass;
+
+                    // 其次：.send-btn-wrapper（不含 !hidden）内的 button
+                    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
+                    for (const w of wrappers) {
+                        const wcls = w.className || '';
+                        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
+                        const b = w.querySelector('button');
+                        if (b && !b.disabled && b.getAttribute('data-disabled') !== 'true') return b;
+                    }
+
+                    // 然后：aria-label / title 含 send/发送
                     const byAria = all.find(b => {
                         if (b.disabled) return false;
                         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -1092,8 +1115,9 @@ class GuestQueryExecutor:
                             if (v.trim().length === 0 && queryText.length > 0) return true;
                         }
                         // 3) 页面某个气泡类元素包含 query 文本
+                        //    豆包 2026 稳定 class: send-msg-bubble-bg（用户消息气泡）
                         const candidates = document.querySelectorAll(
-                            '[class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"]'
+                            '[class*="send-msg-bubble-bg"], [class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"], [class*="message-list"]'
                         );
                         const needle = queryText.slice(0, 20).trim();
                         for (const el of candidates) {
