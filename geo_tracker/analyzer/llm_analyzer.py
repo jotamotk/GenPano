@@ -18,6 +18,12 @@ from dataclasses import dataclass, field
 import httpx
 from openai import AsyncOpenAI
 
+try:
+    from json_repair import repair_json
+    HAS_JSON_REPAIR = True
+except ImportError:
+    HAS_JSON_REPAIR = False
+
 from geo_tracker.analyzer.brand_detector import DetectedBrand
 from geo_tracker.analyzer.prompts import ANALYSIS_SYSTEM, ANALYSIS_USER
 
@@ -83,7 +89,7 @@ class LLMAnalyzer:
                 "ARK_BASE_URL",
                 "https://ark.cn-beijing.volces.com/api/v3",
             ),
-            timeout=180.0,
+            timeout=600.0,
             max_retries=1,
             http_client=httpx.AsyncClient(trust_env=False),
         )
@@ -152,7 +158,21 @@ class LLMAnalyzer:
                 # Remove closing fence
                 if stripped.endswith("```"):
                     stripped = stripped[:-3].strip()
-            raw_json = json.loads(stripped)
+
+            try:
+                raw_json = json.loads(stripped)
+            except json.JSONDecodeError as e:
+                # Fall back to json_repair for malformed LLM output
+                # (unescaped quotes, trailing commas, truncated JSON, etc.)
+                if HAS_JSON_REPAIR:
+                    logger.warning(
+                        f"Strict JSON parse failed ({e}), attempting json_repair..."
+                    )
+                    repaired = repair_json(stripped)
+                    raw_json = json.loads(repaired)
+                    logger.info("json_repair recovered the JSON successfully")
+                else:
+                    raise
             return self._parse_result(raw_json)
 
         except json.JSONDecodeError as e:
