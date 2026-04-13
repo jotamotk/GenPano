@@ -37,25 +37,33 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
 
     async def navigate_to_login(self, page: Page) -> bool:
         """
-        等待页面 SPA 完全渲染，然后点击登录按钮触发 modal。
-        豆包是重型 React SPA，JS 渲染登录按钮需要额外时间。
+        等待页面 SPA 完全渲染，然后准备好登录表单。
+        豆包 2026 版已不再弹 modal —— 登录表单（+86 输入框 + 下一步）直接
+        内联渲染在 /chat 页面底部，所以我们要先检测表单是否已 ready，
+        只有未 ready 时才去点 "登录" 按钮触发。
 
         策略：
-        1. 优先等 data-testid 匹配的按钮
-        2. 若 data-testid 未出现 / 点击后 modal 未弹，枚举所有 "登录" 文本候选
-        3. 逐个点击，直到 modal 出现
+        1. 先检测内联登录表单（phone input）是否已经可见 → 直接返回
+        2. 否则等 data-testid / 登录文本元素出现
+        3. 枚举所有 "登录" 候选，逐个点击，每次点击后再检测表单是否 ready
         """
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
-        # 检查登录 modal 是否已经弹出
+        # Step 0: 登录表单可能已经内联渲染 —— 先检查 phone input 是否可用
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 登录表单已就绪（内联渲染，无需点击按钮）")
+            return await self._handle_agreement(page)
+
+        # 兼容旧版：检查 modal 容器
         modal = await page.query_selector("[data-testid='login_content']")
         if modal:
             logger.info("[doubao] 登录 modal 已存在")
             return await self._handle_agreement(page)
 
-        # 先等页面稳定（等任何"登录"字样的可点击元素出现即可）
+        # 先等页面稳定（等任何"登录"字样的可点击元素或 phone input 出现）
         try:
             await page.wait_for_selector(
+                "[data-testid='login_phone_number_input'], "
                 "[data-testid='to_login_button'], "
                 "[data-testid='login_button'], "
                 "[data-testid='header_login_button'], "
@@ -65,6 +73,11 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             )
         except Exception:
             logger.info("[doubao] 20s 内未检测到任何 '登录' 元素，继续尝试枚举")
+
+        # 等 SPA 可能把 phone input 延迟渲染出来
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 等待后登录表单已就绪（内联）")
+            return await self._handle_agreement(page)
 
         # 收集所有候选登录按钮（按优先级排序）
         candidates = await self._collect_login_candidates(page)
@@ -121,9 +134,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 logger.warning(f"[doubao] 点击 {label} 失败: {e}")
                 continue
 
-            # 1) modal 成功弹出 → 完成
+            # 1) 登录表单就绪（modal 或内联 phone input）→ 完成
             if await self._check_modal(page):
-                logger.info(f"[doubao] {label} 触发 modal 成功")
+                logger.info(f"[doubao] {label} 触发登录表单成功")
                 return await self._handle_agreement(page)
 
             # 2) 没弹 modal：检查是否导致页面导航 / SPA 路由变化 / DOM 重置
@@ -153,9 +166,13 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             else:
                 logger.info(f"[doubao] {label} 点击无效（页面未变），尝试下一个")
 
-        # 所有候选均失败
+        # 所有候选均失败 —— 最后再尝试一次检测内联表单
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 候选点击完毕后发现内联登录表单已就绪")
+            return await self._handle_agreement(page)
+
         await self._save_debug(page, "modal_timeout")
-        logger.error("[doubao] 所有候选登录按钮均未能触发 modal")
+        logger.error("[doubao] 所有候选登录按钮均未能就绪登录表单")
         return False
 
     async def _dom_reset(self, page: Page) -> bool:
@@ -268,8 +285,42 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         results.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
         return [(r[4], r[5], r[6]) for r in results]
 
+    async def _login_form_ready(self, page: Page) -> bool:
+        """
+        检查登录表单（phone input + 下一步按钮）是否已经可交互。
+        豆包新版把登录 UI 直接内联渲染在 /chat 页面，没有 modal 容器。
+        """
+        try:
+            # 首选 data-testid，fallback 到常见占位符 / 输入模式
+            phone_input = await page.query_selector(
+                "[data-testid='login_phone_number_input'], "
+                "input[placeholder*='手机'], "
+                "input[inputmode='decimal'][maxlength='11'], "
+                "input[maxlength='11'][type='text']"
+            )
+            if not phone_input:
+                return False
+            if not await phone_input.is_visible():
+                return False
+            box = await phone_input.bounding_box()
+            if not box or box["width"] < 20 or box["height"] < 10:
+                return False
+            return True
+        except Exception:
+            return False
+
     async def _check_modal(self, page: Page) -> bool:
-        """检查登录 modal 是否出现"""
+        """
+        检查登录 UI 是否就绪 —— 兼容两种形态：
+        1. 旧版：data-testid='login_content' modal 弹出
+        2. 新版：内联 phone input 已可见
+        """
+        # 新版内联形态先快速检查一次（无需等待）
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 登录表单已就绪（内联）")
+            return True
+
+        # 旧版 modal，等待最多 5s
         try:
             modal = await page.wait_for_selector(
                 "[data-testid='login_content']", timeout=5000
@@ -279,7 +330,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 return True
         except Exception:
             pass
-        return False
+
+        # 5s 内 modal 未现，再查一次内联表单
+        return await self._login_form_ready(page)
 
     async def _handle_agreement(self, page: Page) -> bool:
         """勾选协议 checkbox"""
