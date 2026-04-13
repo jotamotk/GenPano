@@ -335,20 +335,119 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         return await self._login_form_ready(page)
 
     async def _handle_agreement(self, page: Page) -> bool:
-        """勾选协议 checkbox"""
+        """
+        勾选 "已阅读并同意" checkbox。
+
+        豆包新版内联表单的 checkbox 不再是 testid=login_agreement_check，
+        需要通过多种方式定位：testid / role / 旁边文本 "已阅读并同意" 等。
+        """
+        checkbox = await self._find_agreement_checkbox(page)
+        if not checkbox:
+            logger.warning("[doubao] 未找到协议 checkbox（可能已默认勾选）")
+            return True
+
         try:
-            checkbox = await page.query_selector(
-                "[data-testid='login_agreement_check']"
+            # 判断是否已勾选：优先看 data-state / aria-checked / checked 属性
+            state = await checkbox.get_attribute("data-state")
+            aria_checked = await checkbox.get_attribute("aria-checked")
+            is_checked_attr = await checkbox.get_attribute("checked")
+            # class 里常出现 "checked" / "active"
+            cls = (await checkbox.get_attribute("class")) or ""
+
+            already = (
+                state == "checked"
+                or aria_checked == "true"
+                or is_checked_attr is not None
+                or "checked" in cls.lower()
+                or "active" in cls.lower()
             )
-            if checkbox:
-                state = await checkbox.get_attribute("data-state")
-                if state != "checked":
-                    logger.info("[doubao] 勾选用户协议")
-                    await checkbox.click()
-                    await page.wait_for_timeout(500)
+
+            if already:
+                logger.info("[doubao] 协议已勾选，跳过")
+                return True
+
+            logger.info("[doubao] 勾选用户协议")
+            try:
+                await checkbox.click()
+            except Exception as e:
+                logger.warning(f"[doubao] 常规点击 checkbox 失败: {e}，尝试 JS click")
+                await checkbox.evaluate("el => el.click()")
+            await page.wait_for_timeout(500)
         except Exception as e:
             logger.warning(f"[doubao] 勾选协议失败: {e}")
         return True
+
+    async def _find_agreement_checkbox(self, page: Page):
+        """多策略定位 '已阅读并同意' checkbox。"""
+        # 1) 明确 testid
+        for sel in [
+            "[data-testid='login_agreement_check']",
+            "[data-testid*='agreement']",
+            "[data-testid*='protocol']",
+        ]:
+            el = await page.query_selector(sel)
+            if el:
+                try:
+                    if await el.is_visible():
+                        return el
+                except Exception:
+                    return el
+
+        # 2) 文本 "已阅读并同意" 附近的 checkbox / role=checkbox
+        # 注意：豆包 2026 用的是 <button role="checkbox" data-slot="checkbox">
+        # 并非真正的 <input type="checkbox">，所以要先找 role / data-slot
+        text_selectors = [
+            "label:has-text('已阅读并同意') [data-slot='checkbox']",
+            "label:has-text('已阅读并同意') [role='checkbox']",
+            "label:has-text('已阅读并同意') button[role='checkbox']",
+            "label:has-text('已阅读并同意') input[type='checkbox']",
+            "[data-slot='checkbox']",
+            "button[role='checkbox']",
+            "[role='checkbox']",
+            "*:has-text('已阅读并同意') >> [data-slot='checkbox']",
+            "*:has-text('已阅读并同意') >> [role='checkbox']",
+            "*:has-text('已阅读并同意') >> input[type='checkbox']",
+        ]
+        for sel in text_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return await loc.element_handle()
+            except Exception:
+                continue
+
+        # 3) JS 兜底：找 "已阅读并同意" 文本附近的可点击 checkbox 元素
+        try:
+            handle = await page.evaluate_handle(
+                """
+                () => {
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    let node;
+                    while ((node = walker.nextNode())) {
+                        const t = (node.textContent || '').trim();
+                        if (t.includes('已阅读') && t.includes('同意')) {
+                            // 向上找最近的包含 checkbox 的容器
+                            let el = node.parentElement;
+                            for (let i = 0; i < 6 && el; i++, el = el.parentElement) {
+                                const cb = el.querySelector(
+                                    'input[type="checkbox"], [role="checkbox"], '
+                                    + '.semi-checkbox, [class*="checkbox" i]'
+                                );
+                                if (cb && cb.getBoundingClientRect().width > 0) return cb;
+                            }
+                        }
+                    }
+                    return null;
+                }
+                """
+            )
+            as_element = handle.as_element() if handle else None
+            if as_element:
+                return as_element
+        except Exception:
+            pass
+
+        return None
 
     async def _save_debug(self, page: Page, suffix: str) -> None:
         """保存截图、HTML 和关键页面状态用于调试"""
@@ -480,33 +579,165 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         """
         点击"下一步"按钮发送验证码。
         豆包的流程是：输入手机号 → 点下一步 → 发送验证码到手机。
+
+        2026 版按钮有多种可能形态：
+          - [data-testid='login_next_button']
+          - <button> 文本为 "下一步" / "发送验证码" / "获取验证码"
+          - 某些实验组为 role=button 的 div
+        这里用多轮轮询 + 多 selector，并在失败前 dump 页面调试信息。
         """
-        # 点击 "下一步" 按钮
-        next_btn = await page.query_selector(
-            "[data-testid='login_next_button']"
-        )
-        if next_btn:
-            # 检查按钮是否可用（需要先勾选协议）
-            disabled = await next_btn.get_attribute("disabled")
-            if disabled is not None:
-                logger.warning("[doubao] 下一步按钮不可用，尝试重新勾选协议")
-                checkbox = await page.query_selector(
-                    "[data-testid='login_agreement_check']"
+        # 点击下一步前，先确保 "已阅读并同意" 协议 checkbox 已勾选，
+        # 否则按钮会一直是 disabled 状态
+        await self._handle_agreement(page)
+
+        next_btn = None
+        # 按钮可能在手机号校验通过后才变 enabled，做几轮轮询
+        for attempt in range(6):
+            next_btn = await self._find_next_button(page)
+            if next_btn:
+                break
+            await page.wait_for_timeout(500)
+
+        if not next_btn:
+            logger.warning("[doubao] 未找到下一步按钮")
+            await self._dump_buttons(page, "no_next_button")
+            await self._save_debug(page, "no_next_button")
+            return False
+
+        # 检查按钮是否可用（需要先勾选协议）
+        async def _is_disabled(btn) -> bool:
+            try:
+                disabled_attr = await btn.get_attribute("disabled")
+                data_disabled = await btn.get_attribute("data-disabled")
+                aria_disabled = await btn.get_attribute("aria-disabled")
+                cls = (await btn.get_attribute("class")) or ""
+                return (
+                    disabled_attr is not None
+                    or data_disabled == "true"
+                    or aria_disabled == "true"
+                    or "disabled" in cls.lower()
+                    or "cursor-not-allowed" in cls.lower()
                 )
-                if checkbox:
-                    await checkbox.click()
-                    await page.wait_for_timeout(500)
+            except Exception:
+                return False
 
-            logger.info("[doubao] 点击下一步按钮")
+        is_disabled = await _is_disabled(next_btn)
+
+        if is_disabled:
+            logger.warning("[doubao] 下一步按钮不可用，尝试重新勾选协议")
+            await self._handle_agreement(page)
+            # 等待按钮 enable（最多 ~3s）
+            for _ in range(6):
+                await page.wait_for_timeout(500)
+                refreshed = await self._find_next_button(page)
+                if refreshed:
+                    next_btn = refreshed
+                if not await _is_disabled(next_btn):
+                    is_disabled = False
+                    break
+            if is_disabled:
+                logger.warning(
+                    "[doubao] 下一步按钮仍 disabled，强制尝试点击"
+                )
+
+        logger.info("[doubao] 点击下一步按钮")
+        try:
             await next_btn.click()
-            await page.wait_for_timeout(random.randint(2000, 3000))
+        except Exception as e:
+            logger.warning(f"[doubao] 常规点击失败: {e}，尝试 JS click")
+            try:
+                await next_btn.evaluate("el => el.click()")
+            except Exception as e2:
+                logger.error(f"[doubao] JS click 亦失败: {e2}")
+                await self._save_debug(page, "next_click_failed")
+                return False
+        await page.wait_for_timeout(random.randint(2000, 3000))
 
-            # 处理可能出现的 CAPTCHA
-            await self._handle_captcha(page)
-            return True
+        # 处理可能出现的 CAPTCHA
+        await self._handle_captcha(page)
+        return True
 
-        logger.warning("[doubao] 未找到下一步按钮")
-        return False
+    async def _find_next_button(self, page: Page):
+        """寻找"下一步 / 发送验证码"按钮。优先 testid，其次文本匹配。"""
+        # 1) 明确的 testid
+        el = await page.query_selector("[data-testid='login_next_button']")
+        if el:
+            try:
+                if await el.is_visible():
+                    return el
+            except Exception:
+                return el
+
+        # 2) Playwright :has-text + role=button
+        text_selectors = [
+            "button:has-text('下一步')",
+            "button:has-text('发送验证码')",
+            "button:has-text('获取验证码')",
+            "button:has-text('发送短信')",
+            "[role='button']:has-text('下一步')",
+            "[role='button']:has-text('发送验证码')",
+            "[role='button']:has-text('获取验证码')",
+        ]
+        for sel in text_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    return await loc.element_handle()
+            except Exception:
+                continue
+
+        # 3) 兜底：遍历所有 button / role=button，按文本匹配
+        try:
+            handle = await page.evaluate_handle(
+                """
+                () => {
+                    const re = /(下一步|发送验证码|获取验证码|发送短信)/;
+                    const nodes = [...document.querySelectorAll('button, [role="button"]')];
+                    for (const n of nodes) {
+                        const txt = (n.textContent || '').trim();
+                        const r = n.getBoundingClientRect();
+                        if (re.test(txt) && r.width > 0 && r.height > 0) return n;
+                    }
+                    return null;
+                }
+                """
+            )
+            as_element = handle.as_element() if handle else None
+            if as_element:
+                return as_element
+        except Exception:
+            pass
+
+        return None
+
+    async def _dump_buttons(self, page: Page, label: str) -> None:
+        """把当前页面上所有可见按钮的文本/testid 打到日志，方便远程排查。"""
+        try:
+            btns = await page.evaluate(
+                """
+                () => [...document.querySelectorAll('button, [role="button"]')]
+                    .map(e => {
+                        const r = e.getBoundingClientRect();
+                        return {
+                            text: (e.textContent || '').trim().slice(0, 30),
+                            testid: e.getAttribute('data-testid') || '',
+                            disabled: e.hasAttribute('disabled') || e.getAttribute('aria-disabled') === 'true' || e.getAttribute('data-disabled') === 'true',
+                            visible: r.width > 0 && r.height > 0,
+                            x: Math.round(r.x), y: Math.round(r.y),
+                        };
+                    })
+                    .filter(b => b.visible)
+                    .slice(0, 30)
+                """
+            )
+            logger.warning(f"[doubao] [{label}] 可见按钮 {len(btns)} 个:")
+            for b in btns:
+                logger.warning(
+                    f"[doubao]   '{b['text']}' testid='{b['testid']}' "
+                    f"disabled={b['disabled']} @ ({b['x']},{b['y']})"
+                )
+        except Exception as e:
+            logger.warning(f"[doubao] dump buttons 失败: {e}")
 
     async def input_code(self, page: Page, code: str) -> bool:
         """输入 SMS 验证码"""
