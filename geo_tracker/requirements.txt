@@ -21,6 +21,7 @@ Pillow>=10.0           # 滑块验证码缺口检测（本地图像分析）
 # 工具
 python-dotenv>=1.0
 pydantic-settings>=2.0
+json-repair>=0.25       # 容错解析 LLM 返回的脏 JSON
 
 # 测试
 pytest>=8.0
