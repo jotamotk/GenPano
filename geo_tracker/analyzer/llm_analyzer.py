@@ -89,7 +89,7 @@ class LLMAnalyzer:
                 "ARK_BASE_URL",
                 "https://ark.cn-beijing.volces.com/api/v3",
             ),
-            timeout=180.0,
+            timeout=600.0,
             max_retries=1,
             http_client=httpx.AsyncClient(trust_env=False),
         )
