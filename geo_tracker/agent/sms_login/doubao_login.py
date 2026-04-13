@@ -37,25 +37,33 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
 
     async def navigate_to_login(self, page: Page) -> bool:
         """
-        等待页面 SPA 完全渲染，然后点击登录按钮触发 modal。
-        豆包是重型 React SPA，JS 渲染登录按钮需要额外时间。
+        等待页面 SPA 完全渲染，然后准备好登录表单。
+        豆包 2026 版已不再弹 modal —— 登录表单（+86 输入框 + 下一步）直接
+        内联渲染在 /chat 页面底部，所以我们要先检测表单是否已 ready，
+        只有未 ready 时才去点 "登录" 按钮触发。
 
         策略：
-        1. 优先等 data-testid 匹配的按钮
-        2. 若 data-testid 未出现 / 点击后 modal 未弹，枚举所有 "登录" 文本候选
-        3. 逐个点击，直到 modal 出现
+        1. 先检测内联登录表单（phone input）是否已经可见 → 直接返回
+        2. 否则等 data-testid / 登录文本元素出现
+        3. 枚举所有 "登录" 候选，逐个点击，每次点击后再检测表单是否 ready
         """
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
-        # 检查登录 modal 是否已经弹出
+        # Step 0: 登录表单可能已经内联渲染 —— 先检查 phone input 是否可用
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 登录表单已就绪（内联渲染，无需点击按钮）")
+            return await self._handle_agreement(page)
+
+        # 兼容旧版：检查 modal 容器
         modal = await page.query_selector("[data-testid='login_content']")
         if modal:
             logger.info("[doubao] 登录 modal 已存在")
             return await self._handle_agreement(page)
 
-        # 先等页面稳定（等任何"登录"字样的可点击元素出现即可）
+        # 先等页面稳定（等任何"登录"字样的可点击元素或 phone input 出现）
         try:
             await page.wait_for_selector(
+                "[data-testid='login_phone_number_input'], "
                 "[data-testid='to_login_button'], "
                 "[data-testid='login_button'], "
                 "[data-testid='header_login_button'], "
@@ -65,6 +73,11 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             )
         except Exception:
             logger.info("[doubao] 20s 内未检测到任何 '登录' 元素，继续尝试枚举")
+
+        # 等 SPA 可能把 phone input 延迟渲染出来
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 等待后登录表单已就绪（内联）")
+            return await self._handle_agreement(page)
 
         # 收集所有候选登录按钮（按优先级排序）
         candidates = await self._collect_login_candidates(page)
@@ -121,9 +134,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 logger.warning(f"[doubao] 点击 {label} 失败: {e}")
                 continue
 
-            # 1) modal 成功弹出 → 完成
+            # 1) 登录表单就绪（modal 或内联 phone input）→ 完成
             if await self._check_modal(page):
-                logger.info(f"[doubao] {label} 触发 modal 成功")
+                logger.info(f"[doubao] {label} 触发登录表单成功")
                 return await self._handle_agreement(page)
 
             # 2) 没弹 modal：检查是否导致页面导航 / SPA 路由变化 / DOM 重置
@@ -153,9 +166,13 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             else:
                 logger.info(f"[doubao] {label} 点击无效（页面未变），尝试下一个")
 
-        # 所有候选均失败
+        # 所有候选均失败 —— 最后再尝试一次检测内联表单
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 候选点击完毕后发现内联登录表单已就绪")
+            return await self._handle_agreement(page)
+
         await self._save_debug(page, "modal_timeout")
-        logger.error("[doubao] 所有候选登录按钮均未能触发 modal")
+        logger.error("[doubao] 所有候选登录按钮均未能就绪登录表单")
         return False
 
     async def _dom_reset(self, page: Page) -> bool:
@@ -268,8 +285,42 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         results.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
         return [(r[4], r[5], r[6]) for r in results]
 
+    async def _login_form_ready(self, page: Page) -> bool:
+        """
+        检查登录表单（phone input + 下一步按钮）是否已经可交互。
+        豆包新版把登录 UI 直接内联渲染在 /chat 页面，没有 modal 容器。
+        """
+        try:
+            # 首选 data-testid，fallback 到常见占位符 / 输入模式
+            phone_input = await page.query_selector(
+                "[data-testid='login_phone_number_input'], "
+                "input[placeholder*='手机'], "
+                "input[inputmode='decimal'][maxlength='11'], "
+                "input[maxlength='11'][type='text']"
+            )
+            if not phone_input:
+                return False
+            if not await phone_input.is_visible():
+                return False
+            box = await phone_input.bounding_box()
+            if not box or box["width"] < 20 or box["height"] < 10:
+                return False
+            return True
+        except Exception:
+            return False
+
     async def _check_modal(self, page: Page) -> bool:
-        """检查登录 modal 是否出现"""
+        """
+        检查登录 UI 是否就绪 —— 兼容两种形态：
+        1. 旧版：data-testid='login_content' modal 弹出
+        2. 新版：内联 phone input 已可见
+        """
+        # 新版内联形态先快速检查一次（无需等待）
+        if await self._login_form_ready(page):
+            logger.info("[doubao] 登录表单已就绪（内联）")
+            return True
+
+        # 旧版 modal，等待最多 5s
         try:
             modal = await page.wait_for_selector(
                 "[data-testid='login_content']", timeout=5000
@@ -279,7 +330,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 return True
         except Exception:
             pass
-        return False
+
+        # 5s 内 modal 未现，再查一次内联表单
+        return await self._login_form_ready(page)
 
     async def _handle_agreement(self, page: Page) -> bool:
         """勾选协议 checkbox"""
@@ -329,11 +382,71 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             screenshot_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.png"
             await page.screenshot(path=str(screenshot_path), full_page=False)
             logger.info(f"[doubao] 截图已保存: {screenshot_path}")
-            # 保存 HTML
+
+            # 保存 body HTML（跳过 head 大脚本 chunk，只留渲染后的 DOM）
+            try:
+                body_html = await page.evaluate(
+                    "() => document.body ? document.body.outerHTML : ''"
+                )
+            except Exception:
+                body_html = ""
             html_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.html"
-            html = await page.content()
-            html_path.write_text(html[:200000], encoding="utf-8")
-            logger.info(f"[doubao] HTML 已保存: {html_path} ({len(html)} bytes)")
+            html_path.write_text(body_html[:400000], encoding="utf-8")
+            logger.info(
+                f"[doubao] body HTML 已保存: {html_path} ({len(body_html)} bytes)"
+            )
+
+            # 额外抓取：所有 input / 候选登录容器 / 含 '登录' 或 '手机' 字样的块
+            try:
+                snippet = await page.evaluate("""
+                    () => {
+                        const pick = el => {
+                            const r = el.getBoundingClientRect();
+                            return {
+                                tag: el.tagName,
+                                id: el.id || '',
+                                cls: (el.className || '').toString().slice(0, 80),
+                                testid: el.getAttribute('data-testid') || '',
+                                placeholder: el.getAttribute('placeholder') || '',
+                                type: el.getAttribute('type') || '',
+                                name: el.getAttribute('name') || '',
+                                inputmode: el.getAttribute('inputmode') || '',
+                                maxlength: el.getAttribute('maxlength') || '',
+                                text: (el.textContent || '').trim().slice(0, 60),
+                                rect: [Math.round(r.x), Math.round(r.y),
+                                       Math.round(r.width), Math.round(r.height)],
+                                visible: r.width > 0 && r.height > 0,
+                            };
+                        };
+                        const inputs = [...document.querySelectorAll('input, textarea')]
+                            .map(pick);
+                        const testids = [...document.querySelectorAll('[data-testid]')]
+                            .filter(e => /login|phone|mobile|sms|verify|agreement|next/i
+                                .test(e.getAttribute('data-testid') || ''))
+                            .map(pick);
+                        const buttons = [...document.querySelectorAll('button, [role="button"]')]
+                            .filter(e => /登录|下一步|发送|获取验证码|确认/.test(e.textContent || ''))
+                            .map(pick);
+                        return {inputs, testids, buttons};
+                    }
+                """)
+                import json
+                snippet_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.snapshot.json"
+                snippet_path.write_text(
+                    json.dumps(snippet, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    f"[doubao] DOM 快照已保存: {snippet_path} "
+                    f"(inputs={len(snippet.get('inputs',[]))} "
+                    f"testids={len(snippet.get('testids',[]))} "
+                    f"buttons={len(snippet.get('buttons',[]))})"
+                )
+                # 把关键信息直接打到日志里，方便不取文件也能看
+                logger.info(f"[doubao] inputs: {snippet.get('inputs')!r}")
+                logger.info(f"[doubao] login-related testids: {snippet.get('testids')!r}")
+            except Exception as e:
+                logger.warning(f"[doubao] 抓取 DOM 快照失败: {e}")
         except Exception as e:
             logger.warning(f"[doubao] 保存调试信息失败: {e}")
 

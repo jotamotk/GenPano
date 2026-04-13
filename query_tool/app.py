@@ -852,13 +852,30 @@ HTML_TEMPLATE = """
 
                 <!-- Debug HTML Files Tab -->
                 <div class="tab-panel" id="tab-html">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                        <span style="color:#666;font-size:14px;">HTML debug files from /data/screenshots</span>
-                        <button class="secondary small" onclick="loadHtmlFiles();">Refresh</button>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+                        <span style="color:#666;font-size:14px;">Debug artifacts (HTML / Screenshots / JSON snapshots) from /data/screenshots, newest first</span>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <label style="font-size:13px;color:#666;">Filter:</label>
+                            <select id="html-filter-type" onchange="htmlFilesCurrentPage=1; loadHtmlFiles();" style="padding:4px 8px;font-size:13px;">
+                                <option value="all">All</option>
+                                <option value="html">HTML</option>
+                                <option value="image">Images</option>
+                                <option value="json">JSON</option>
+                            </select>
+                            <label style="font-size:13px;color:#666;">Per page:</label>
+                            <select id="html-per-page" onchange="htmlFilesCurrentPage=1; loadHtmlFiles();" style="padding:4px 8px;font-size:13px;">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                            <button class="secondary small" onclick="loadHtmlFiles();">Refresh</button>
+                        </div>
                     </div>
                     <div id="html-files-body">
                         <div style="color:#999; font-size:13px;">Loading...</div>
                     </div>
+                    <div class="pagination" id="html-files-pagination" style="margin-top:16px;"></div>
                 </div>
 
                 <!-- Analyzer Responses Tab -->
@@ -974,6 +991,19 @@ HTML_TEMPLATE = """
                     <button class="secondary small" onclick="document.getElementById('html-search-input').value=''; searchHtml('')">Clear</button>
                 </div>
                 <div class="html-viewer" id="html-viewer-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Viewer Modal -->
+    <div class="modal-backdrop" id="image-modal" onclick="if(event.target === this) closeImageModal()">
+        <div class="modal large" style="max-width:1400px;">
+            <div class="modal-header">
+                <h3 id="image-modal-title">Screenshot</h3>
+                <button class="modal-close" onclick="closeImageModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align:center; background:#1e293b;">
+                <img id="image-viewer-content" style="max-width:100%; max-height:80vh; cursor:zoom-in;" onclick="this.style.maxWidth = this.style.maxWidth === 'none' ? '100%' : 'none'; this.style.cursor = this.style.maxWidth === 'none' ? 'zoom-out' : 'zoom-in';">
             </div>
         </div>
     </div>
@@ -1602,33 +1632,136 @@ HTML_TEMPLATE = """
             }
         }
 
-        // ---- HTML Files Viewer ----
+        // ---- Debug Files Viewer (HTML + Screenshots + JSON) ----
+        let htmlFilesCurrentPage = 1;
+        let htmlFilesQueryId = null;
+
         async function loadHtmlFiles(queryId) {
+            // Only update queryId when explicitly passed; otherwise keep current filter context.
+            if (queryId !== undefined) {
+                htmlFilesQueryId = queryId;
+                htmlFilesCurrentPage = 1;
+            }
             const body = document.getElementById('html-files-body');
             body.innerHTML = '<div style="color:#999;font-size:13px;">Loading...</div>';
-            const params = queryId ? '?query_id=' + queryId : '';
-            const res = await fetch('./api/html_files' + params);
-            const files = await res.json();
-            if (!files.length) {
-                body.innerHTML = '<div style="color:#999;font-size:13px;">No HTML debug files found in /data/screenshots</div>';
+            const perPage = parseInt(document.getElementById('html-per-page').value || '20', 10);
+            const typeFilter = document.getElementById('html-filter-type').value || 'all';
+            const params = new URLSearchParams();
+            params.append('page', htmlFilesCurrentPage);
+            params.append('per_page', perPage);
+            if (htmlFilesQueryId) params.append('query_id', htmlFilesQueryId);
+            const res = await fetch('./api/html_files?' + params.toString());
+            const data = await res.json();
+            let items = data.items || [];
+            const total = data.total || 0;
+            const pages = data.pages || 1;
+
+            if (typeFilter !== 'all') {
+                items = items.filter(f => f.type === typeFilter);
+            }
+
+            if (!items.length) {
+                body.innerHTML = '<div style="color:#999;font-size:13px;">No debug files match the current filter.</div>';
+                document.getElementById('html-files-pagination').innerHTML = '';
                 return;
             }
+
+            const typeBadge = t => {
+                const colors = {html:'#4f46e5', image:'#059669', json:'#d97706', other:'#64748b'};
+                const c = colors[t] || colors.other;
+                return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' +
+                    c + '22;color:' + c + ';font-size:11px;font-weight:600;text-transform:uppercase;">' +
+                    t + '</span>';
+            };
+
+            const actionFor = f => {
+                if (f.type === 'image') {
+                    return "<span class='html-link' onclick='showImage(" +
+                        JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>View Image</span>";
+                }
+                if (f.type === 'html' || f.type === 'json') {
+                    return "<span class='html-link' onclick='showHtmlSource(" +
+                        JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>View Source</span>";
+                }
+                return '<span style="color:#999;">—</span>';
+            };
+
             body.innerHTML = '<table style="font-size:13px;width:100%;"><thead><tr>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;width:70px;">Type</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;width:80px;">Preview</th>' +
                 '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">File</th>' +
-                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Size</th>' +
-                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Modified</th>' +
-                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;">Action</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;width:80px;">Size</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;width:160px;">Modified</th>' +
+                '<th style="text-align:left;padding:6px 10px;background:#f8fafc;width:100px;">Action</th>' +
                 '</tr></thead><tbody>' +
-                files.map(f => {
+                items.map(f => {
                     const kb = (f.size / 1024).toFixed(1);
                     const dt = new Date(f.mtime * 1000).toLocaleString();
+                    let preview = '<span style="color:#ccc;">—</span>';
+                    if (f.type === 'image') {
+                        const src = './api/screenshot?path=' + encodeURIComponent(f.path);
+                        preview = "<img src='" + src + "' style='width:60px;height:40px;object-fit:cover;border-radius:4px;cursor:pointer;border:1px solid #e2e8f0;' onclick='showImage(" +
+                            JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")' loading='lazy'>";
+                    }
                     return '<tr>' +
+                        '<td style="padding:6px 10px;">' + typeBadge(f.type) + '</td>' +
+                        '<td style="padding:6px 10px;">' + preview + '</td>' +
                         '<td style="padding:6px 10px;font-family:monospace;max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(f.path) + '">' + escapeHtml(f.name) + '</td>' +
                         '<td style="padding:6px 10px;white-space:nowrap;">' + kb + ' KB</td>' +
                         '<td style="padding:6px 10px;white-space:nowrap;">' + dt + '</td>' +
-                        "<td style='padding:6px 10px;'><span class='html-link' onclick='showHtmlSource(" + JSON.stringify(f.path) + ", " + JSON.stringify(f.name) + ")'>View Source</span></td>" +
+                        "<td style='padding:6px 10px;'>" + actionFor(f) + "</td>" +
                         '</tr>';
                 }).join('') + '</tbody></table>';
+
+            renderHtmlFilesPagination(htmlFilesCurrentPage, pages, total);
+        }
+
+        function renderHtmlFilesPagination(page, totalPages, total) {
+            const pag = document.getElementById('html-files-pagination');
+            if (totalPages <= 1) {
+                pag.innerHTML = total
+                    ? '<div style="color:#999;font-size:12px;">' + total + ' file' + (total !== 1 ? 's' : '') + '</div>'
+                    : '';
+                return;
+            }
+            let startPage = Math.max(1, page - 2);
+            let endPage = Math.min(totalPages, startPage + 4);
+            if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+            let html = '';
+            html += '<button ' + (page === 1 ? 'disabled' : '') + ' onclick="goToHtmlFilesPage(' + (page - 1) + ')">&laquo; Prev</button>';
+            if (startPage > 1) {
+                html += '<button onclick="goToHtmlFilesPage(1)">1</button>';
+                if (startPage > 2) html += '<span style="padding:6px 4px;color:#999;">…</span>';
+            }
+            for (let p = startPage; p <= endPage; p++) {
+                html += '<button class="' + (p === page ? 'active' : '') + '" onclick="goToHtmlFilesPage(' + p + ')">' + p + '</button>';
+            }
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) html += '<span style="padding:6px 4px;color:#999;">…</span>';
+                html += '<button onclick="goToHtmlFilesPage(' + totalPages + ')">' + totalPages + '</button>';
+            }
+            html += '<button ' + (page === totalPages ? 'disabled' : '') + ' onclick="goToHtmlFilesPage(' + (page + 1) + ')">Next &raquo;</button>';
+            html += '<span style="padding:6px 12px;color:#666;font-size:12px;">Page ' + page + ' / ' + totalPages + ' · ' + total + ' total</span>';
+            pag.innerHTML = html;
+        }
+
+        function goToHtmlFilesPage(page) {
+            htmlFilesCurrentPage = page;
+            loadHtmlFiles();
+        }
+
+        function showImage(path, name) {
+            document.getElementById('image-modal-title').textContent = name || path;
+            const img = document.getElementById('image-viewer-content');
+            img.src = './api/screenshot?path=' + encodeURIComponent(path);
+            img.style.maxWidth = '100%';
+            img.style.cursor = 'zoom-in';
+            document.getElementById('image-modal').classList.add('show');
+        }
+
+        function closeImageModal() {
+            document.getElementById('image-modal').classList.remove('show');
+            document.getElementById('image-viewer-content').src = '';
         }
 
         async function showHtmlSource(path, name) {
@@ -2806,44 +2939,125 @@ def task_status(task_id):
         return jsonify({'state': 'ERROR', 'error': str(e)})
 
 
+_DEBUG_FILE_EXTS = ('.html', '.png', '.jpg', '.jpeg', '.json')
+
+
+def _classify_debug_file(fname: str) -> str:
+    lower = fname.lower()
+    if lower.endswith('.html'):
+        return 'html'
+    if lower.endswith('.png') or lower.endswith('.jpg') or lower.endswith('.jpeg'):
+        return 'image'
+    if lower.endswith('.json'):
+        return 'json'
+    return 'other'
+
+
 @app.route('/api/html_files')
 def html_files():
+    """List debug artifacts in SCREENSHOT_DIR (HTML + PNG + JSON snapshots),
+    sorted by mtime descending, with optional pagination."""
     query_id = request.args.get('query_id')
+    # When include_images=false, behave like the legacy HTML-only endpoint.
+    include_images = request.args.get('include_images', '1') not in ('0', 'false', 'False')
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except ValueError:
+        page = 1
+    try:
+        per_page = int(request.args.get('per_page', 20))
+    except ValueError:
+        per_page = 20
+    per_page = max(1, min(per_page, 200))
+
     try:
         entries = []
         if os.path.isdir(SCREENSHOT_DIR):
-            for fname in sorted(os.listdir(SCREENSHOT_DIR), reverse=True):
-                if not fname.endswith('.html'):
+            for fname in os.listdir(SCREENSHOT_DIR):
+                lower = fname.lower()
+                if not lower.endswith(_DEBUG_FILE_EXTS):
+                    continue
+                if not include_images and not lower.endswith('.html'):
                     continue
                 if query_id and f'query_{query_id}_' not in fname and f'query_{query_id}.' not in fname:
                     continue
                 fpath = os.path.join(SCREENSHOT_DIR, fname)
-                stat = os.stat(fpath)
+                try:
+                    stat = os.stat(fpath)
+                except OSError:
+                    continue
                 entries.append({
                     'name': fname,
                     'path': fpath,
                     'size': stat.st_size,
                     'mtime': stat.st_mtime,
+                    'type': _classify_debug_file(fname),
                 })
-        return jsonify(entries)
+
+        # Sort by mtime descending (newest first)
+        entries.sort(key=lambda e: e['mtime'], reverse=True)
+
+        total = len(entries)
+        start = (page - 1) * per_page
+        end = start + per_page
+        page_items = entries[start:end]
+
+        # Accept-based response: legacy clients that don't pass page still get the
+        # full array; paginated clients get {items, total, page, per_page}.
+        if request.args.get('page') is None and request.args.get('per_page') is None:
+            return jsonify(entries)
+        return jsonify({
+            'items': page_items,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': (total + per_page - 1) // per_page if per_page else 1,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def _validate_screenshot_path(path: str):
+    """Validate path is under SCREENSHOT_DIR. Returns (real_path, error_response)."""
+    if not path:
+        return None, ("Path required", 400)
+    real_path = os.path.realpath(path)
+    real_dir = os.path.realpath(SCREENSHOT_DIR)
+    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
+        return None, ("Access denied", 403)
+    if not os.path.isfile(real_path):
+        return None, ("File not found", 404)
+    return real_path, None
 
 
 @app.route('/api/html')
 def serve_html_source():
     path = request.args.get('path')
-    if not path:
-        return "Path required", 400
-    real_path = os.path.realpath(path)
-    real_dir = os.path.realpath(SCREENSHOT_DIR)
-    if not real_path.startswith(real_dir + os.sep) and real_path != real_dir:
-        return "Access denied", 403
-    if not os.path.isfile(real_path):
-        return "File not found", 404
+    real_path, err = _validate_screenshot_path(path)
+    if err:
+        return err
     with open(real_path, 'r', encoding='utf-8', errors='replace') as f:
         content = f.read()
     return Response(content, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/api/screenshot')
+def serve_screenshot():
+    """Serve binary image files (PNG/JPG) from SCREENSHOT_DIR."""
+    path = request.args.get('path')
+    real_path, err = _validate_screenshot_path(path)
+    if err:
+        return err
+    lower = real_path.lower()
+    if lower.endswith('.png'):
+        mime = 'image/png'
+    elif lower.endswith('.jpg') or lower.endswith('.jpeg'):
+        mime = 'image/jpeg'
+    else:
+        return "Unsupported file type", 415
+    with open(real_path, 'rb') as f:
+        data = f.read()
+    return Response(data, mimetype=mime)
 
 
 @app.route('/api/backfill_citations', methods=['POST'])
