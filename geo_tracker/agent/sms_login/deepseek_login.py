@@ -716,7 +716,7 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
         try:
             ts = int(time.time())
             screenshot_path = DEBUG_DIR / f"deepseek_{suffix}_{ts}.png"
-            await page.screenshot(path=str(screenshot_path), full_page=False)
+            await page.screenshot(path=str(screenshot_path), full_page=True)
             logger.info(f"[deepseek] 截图已保存: {screenshot_path}")
 
             html_path = DEBUG_DIR / f"deepseek_{suffix}_{ts}.html"
