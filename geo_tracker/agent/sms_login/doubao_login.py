@@ -394,11 +394,19 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                     return el
 
         # 2) 文本 "已阅读并同意" 附近的 checkbox / role=checkbox
+        # 注意：豆包 2026 用的是 <button role="checkbox" data-slot="checkbox">
+        # 并非真正的 <input type="checkbox">，所以要先找 role / data-slot
         text_selectors = [
+            "label:has-text('已阅读并同意') [data-slot='checkbox']",
+            "label:has-text('已阅读并同意') [role='checkbox']",
+            "label:has-text('已阅读并同意') button[role='checkbox']",
             "label:has-text('已阅读并同意') input[type='checkbox']",
-            "label:has-text('已阅读并同意')",
+            "[data-slot='checkbox']",
+            "button[role='checkbox']",
+            "[role='checkbox']",
+            "*:has-text('已阅读并同意') >> [data-slot='checkbox']",
+            "*:has-text('已阅读并同意') >> [role='checkbox']",
             "*:has-text('已阅读并同意') >> input[type='checkbox']",
-            "[role='checkbox']:near(:text('已阅读并同意'))",
         ]
         for sel in text_selectors:
             try:
@@ -597,29 +605,40 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             return False
 
         # 检查按钮是否可用（需要先勾选协议）
-        try:
-            disabled_attr = await next_btn.get_attribute("disabled")
-            aria_disabled = await next_btn.get_attribute("aria-disabled")
-            cls = (await next_btn.get_attribute("class")) or ""
-            is_disabled = (
-                disabled_attr is not None
-                or aria_disabled == "true"
-                or "disabled" in cls.lower()
-            )
-        except Exception:
-            is_disabled = False
+        async def _is_disabled(btn) -> bool:
+            try:
+                disabled_attr = await btn.get_attribute("disabled")
+                data_disabled = await btn.get_attribute("data-disabled")
+                aria_disabled = await btn.get_attribute("aria-disabled")
+                cls = (await btn.get_attribute("class")) or ""
+                return (
+                    disabled_attr is not None
+                    or data_disabled == "true"
+                    or aria_disabled == "true"
+                    or "disabled" in cls.lower()
+                    or "cursor-not-allowed" in cls.lower()
+                )
+            except Exception:
+                return False
+
+        is_disabled = await _is_disabled(next_btn)
 
         if is_disabled:
             logger.warning("[doubao] 下一步按钮不可用，尝试重新勾选协议")
-            checkbox = await page.query_selector(
-                "[data-testid='login_agreement_check']"
-            )
-            if checkbox:
-                try:
-                    await checkbox.click()
-                except Exception:
-                    pass
+            await self._handle_agreement(page)
+            # 等待按钮 enable（最多 ~3s）
+            for _ in range(6):
                 await page.wait_for_timeout(500)
+                refreshed = await self._find_next_button(page)
+                if refreshed:
+                    next_btn = refreshed
+                if not await _is_disabled(next_btn):
+                    is_disabled = False
+                    break
+            if is_disabled:
+                logger.warning(
+                    "[doubao] 下一步按钮仍 disabled，强制尝试点击"
+                )
 
         logger.info("[doubao] 点击下一步按钮")
         try:
@@ -702,7 +721,7 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                         return {
                             text: (e.textContent || '').trim().slice(0, 30),
                             testid: e.getAttribute('data-testid') || '',
-                            disabled: e.hasAttribute('disabled') || e.getAttribute('aria-disabled') === 'true',
+                            disabled: e.hasAttribute('disabled') || e.getAttribute('aria-disabled') === 'true' || e.getAttribute('data-disabled') === 'true',
                             visible: r.width > 0 && r.height > 0,
                             x: Math.round(r.x), y: Math.round(r.y),
                         };
