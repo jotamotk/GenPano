@@ -382,11 +382,71 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             screenshot_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.png"
             await page.screenshot(path=str(screenshot_path), full_page=False)
             logger.info(f"[doubao] 截图已保存: {screenshot_path}")
-            # 保存 HTML
+
+            # 保存 body HTML（跳过 head 大脚本 chunk，只留渲染后的 DOM）
+            try:
+                body_html = await page.evaluate(
+                    "() => document.body ? document.body.outerHTML : ''"
+                )
+            except Exception:
+                body_html = ""
             html_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.html"
-            html = await page.content()
-            html_path.write_text(html[:200000], encoding="utf-8")
-            logger.info(f"[doubao] HTML 已保存: {html_path} ({len(html)} bytes)")
+            html_path.write_text(body_html[:400000], encoding="utf-8")
+            logger.info(
+                f"[doubao] body HTML 已保存: {html_path} ({len(body_html)} bytes)"
+            )
+
+            # 额外抓取：所有 input / 候选登录容器 / 含 '登录' 或 '手机' 字样的块
+            try:
+                snippet = await page.evaluate("""
+                    () => {
+                        const pick = el => {
+                            const r = el.getBoundingClientRect();
+                            return {
+                                tag: el.tagName,
+                                id: el.id || '',
+                                cls: (el.className || '').toString().slice(0, 80),
+                                testid: el.getAttribute('data-testid') || '',
+                                placeholder: el.getAttribute('placeholder') || '',
+                                type: el.getAttribute('type') || '',
+                                name: el.getAttribute('name') || '',
+                                inputmode: el.getAttribute('inputmode') || '',
+                                maxlength: el.getAttribute('maxlength') || '',
+                                text: (el.textContent || '').trim().slice(0, 60),
+                                rect: [Math.round(r.x), Math.round(r.y),
+                                       Math.round(r.width), Math.round(r.height)],
+                                visible: r.width > 0 && r.height > 0,
+                            };
+                        };
+                        const inputs = [...document.querySelectorAll('input, textarea')]
+                            .map(pick);
+                        const testids = [...document.querySelectorAll('[data-testid]')]
+                            .filter(e => /login|phone|mobile|sms|verify|agreement|next/i
+                                .test(e.getAttribute('data-testid') || ''))
+                            .map(pick);
+                        const buttons = [...document.querySelectorAll('button, [role="button"]')]
+                            .filter(e => /登录|下一步|发送|获取验证码|确认/.test(e.textContent || ''))
+                            .map(pick);
+                        return {inputs, testids, buttons};
+                    }
+                """)
+                import json
+                snippet_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.snapshot.json"
+                snippet_path.write_text(
+                    json.dumps(snippet, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    f"[doubao] DOM 快照已保存: {snippet_path} "
+                    f"(inputs={len(snippet.get('inputs',[]))} "
+                    f"testids={len(snippet.get('testids',[]))} "
+                    f"buttons={len(snippet.get('buttons',[]))})"
+                )
+                # 把关键信息直接打到日志里，方便不取文件也能看
+                logger.info(f"[doubao] inputs: {snippet.get('inputs')!r}")
+                logger.info(f"[doubao] login-related testids: {snippet.get('testids')!r}")
+            except Exception as e:
+                logger.warning(f"[doubao] 抓取 DOM 快照失败: {e}")
         except Exception as e:
             logger.warning(f"[doubao] 保存调试信息失败: {e}")
 
