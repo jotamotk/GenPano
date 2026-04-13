@@ -12,6 +12,19 @@ DATABASE_URL = os.getenv(
 )
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# ─── 火山引擎 API 配置（Analyzer 使用）──────────────────────────────────────
+ARK_API_KEY = os.getenv("ARK_API_KEY", "")              # 豆包大模型 API Key
+ARK_BASE_URL = os.getenv(                                # Ark API 兼容 OpenAI 协议
+    "ARK_BASE_URL",
+    "https://ark.cn-beijing.volces.com/api/v3",
+)
+ARK_MODEL = os.getenv("ARK_MODEL", "doubao-pro-32k")    # 豆包模型 ID
+VOLC_NLP_API_KEY = os.getenv("VOLC_NLP_API_KEY", "")    # 火山 NLP 情感分析 API Key
+VOLC_NLP_API_URL = os.getenv(                            # 火山 NLP API URL
+    "VOLC_NLP_API_URL",
+    "https://open.volcengineapi.com/api/v1/nlp/sentiment",
+)
+
 # 全局 engine（用于 FastAPI 等常驻服务）
 engine = create_async_engine(DATABASE_URL, pool_size=20, max_overflow=10)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)

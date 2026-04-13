@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # 重试配置
 MAX_RETRY_ON_CF_BLOCK = 3                          # Cloudflare 拦截最大重试次数
-CLASH_PROXY_GROUP = "🍃 Proxies"                   # Clash 代理组名称（含实际节点）
+CLASH_PROXY_GROUP = os.getenv("CLASH_PROXY_GROUP", "💬 Ai平台")  # Clash 代理组名称（含实际节点）
 CF_CHALLENGE_TITLES = [
     "just a moment", "attention required", "checking your browser",
     "unable to load site", "please wait", "access denied",
@@ -68,8 +68,8 @@ GUEST_LLM_CONFIG = {
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
         "load_wait":        15000,
-        # 有 CHATGPT_COOKIES_JSON 时走登录态（支持 web browsing / citation）
-        "requires_login":   not bool(os.getenv("CHATGPT_COOKIES_JSON", "").strip()),
+        # ChatGPT 有账号模式：确保登录态以获取精准 GEO 数据和 citation
+        "requires_login":   True,
         "cookies_env":      "CHATGPT_COOKIES_JSON",
         "dismiss_selectors": [
             "button:has-text('Dismiss')",
@@ -120,7 +120,8 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea, [contenteditable='true'], [class*='chat-input']",
+        "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
+        "submit_button":    "button[data-testid='chat_input_send_button']",
         "submit_key":       "Enter",
         "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body",
         "wait_after_submit": 60000,
@@ -135,10 +136,12 @@ GUEST_LLM_CONFIG = {
         "url":              "https://chat.deepseek.com",
         "input_selector":   "textarea, [contenteditable=true], input[type=text]",
         "submit_key":       "Enter",
-        "response_selector": "[class*='message'], [class*='content'], .markdown",
-        "wait_after_submit": 20000,
+        "response_selector": ".ds-markdown, [class*='message-content'] .markdown, [class*='message'] .markdown",
+        "wait_after_submit": 90000,
         "load_wait":        8000,
-        "requires_login":   False,
+        "requires_login":   True,
+        "login_redirect_domains": ["login.deepseek.com", "deepseek.com/sign_in"],
+        "stream_check_selector": "[class*='loading'], [class*='ds-loading'], .ds-icon-stop, button:has-text('Stop'), button:has-text('停止')",
     },
     "claude": {
         "url":              "https://claude.ai",
@@ -305,12 +308,27 @@ class GuestQueryExecutor:
                     reduced_motion="reduce",
                 )
 
-            # 注入 LLM 专属 cookies（优先 DB 账号 cookies，fallback 环境变量）
+            # 注入 LLM 专属 cookies + localStorage
+            # 支持两种格式:
+            #   旧格式: [cookie1, cookie2, ...]  (纯 cookies 数组)
+            #   新格式: {"cookies": [...], "localStorage": {"key": "val", ...}}
             injected_cookies = []
+            local_storage_data = {}
             if self.account_cookies:
                 try:
-                    injected_cookies = json.loads(self.account_cookies)
-                    logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
+                    parsed = json.loads(self.account_cookies)
+                    if isinstance(parsed, dict) and "cookies" in parsed:
+                        # 新格式: cookies + localStorage
+                        injected_cookies = parsed.get("cookies", [])
+                        local_storage_data = parsed.get("localStorage", {})
+                        logger.info(
+                            f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个) "
+                            f"+ localStorage ({len(local_storage_data)} 项)"
+                        )
+                    elif isinstance(parsed, list):
+                        # 旧格式: 纯 cookies 数组
+                        injected_cookies = parsed
+                        logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
                 except Exception as e:
                     logger.warning(f"[{llm}] 解析 account_cookies 失败: {e}")
 
@@ -324,6 +342,36 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
             page_obj = await context.new_page()
+
+            # 注入 localStorage（必须在页面打开后、导航前）
+            if local_storage_data:
+                # 先导航到目标域名（空页面），才能设置 localStorage
+                target_url = config.get("url", "")
+                if target_url:
+                    try:
+                        await page_obj.goto(target_url, wait_until="commit", timeout=15000)
+                    except Exception:
+                        pass  # 只需要到达域名就够，不需要完全加载
+                    await page_obj.evaluate("""
+                        (data) => {
+                            for (const [key, value] of Object.entries(data)) {
+                                localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value) : value);
+                            }
+                        }
+                    """, local_storage_data)
+                    # 验证注入结果
+                    verify = await page_obj.evaluate("""
+                        (keys) => {
+                            const result = {};
+                            for (const k of keys) {
+                                const v = localStorage.getItem(k);
+                                result[k] = v ? v.substring(0, 80) + (v.length > 80 ? '...' : '') : null;
+                            }
+                            return result;
+                        }
+                    """, list(local_storage_data.keys()))
+                    logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage, 验证: {verify}")
+                    # 不 reload，后续主流程会重新 goto 加载页面
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
             if not use_camoufox:
@@ -440,6 +488,63 @@ class GuestQueryExecutor:
                         await _save_screenshot(page_obj, query.id, f"{llm}_cf_blocked")
                         return None
 
+                # ── ChatGPT: Cloudflare 通过后刷新 session token ──
+                if llm == "chatgpt" and injected_cookies:
+                    try:
+                        logger.info(f"[{llm}] CF 已通过，刷新 session token...")
+                        resp = await page_obj.goto(
+                            "https://chatgpt.com/api/auth/session",
+                            wait_until="domcontentloaded", timeout=30000
+                        )
+                        if resp:
+                            body = await page_obj.inner_text("body")
+                            logger.info(f"[{llm}] session endpoint HTTP {resp.status}, body: {body[:300]}")
+                            if resp.ok:
+                                try:
+                                    session_data = json.loads(body)
+                                    if session_data.get("accessToken"):
+                                        logger.info(
+                                            f"[{llm}] session 刷新成功，"
+                                            f"用户: {session_data.get('user', {}).get('email', 'unknown')}, "
+                                            f"expires: {session_data.get('expires', 'unknown')}"
+                                        )
+                                    else:
+                                        logger.warning(f"[{llm}] session 响应无 accessToken，cookie 可能已过期")
+                                        await _save_screenshot(page_obj, query.id, f"{llm}_session_no_token")
+                                        return None
+                                except json.JSONDecodeError:
+                                    # 可能返回了 CF 挑战页面 HTML
+                                    logger.warning(f"[{llm}] session 响应非 JSON（可能是 CF 页面）: {body[:200]}")
+                                    await _save_screenshot(page_obj, query.id, f"{llm}_session_cf_block")
+                                    return None
+                            else:
+                                logger.warning(f"[{llm}] session 刷新 HTTP {resp.status}")
+                                await _save_screenshot(page_obj, query.id, f"{llm}_session_http_error")
+                                return None
+                        else:
+                            logger.warning(f"[{llm}] session 刷新无响应")
+                            return None
+
+                        # 刷新后关闭旧页面，开新页面（清除客户端缓存的 expired 状态）
+                        logger.info(f"[{llm}] session 刷新完成，重新打开新页面...")
+                        await page_obj.close()
+                        page_obj = await context.new_page()
+                        await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
+                        await page_obj.wait_for_timeout(3000)
+                        # 新页面再过一次 CF
+                        cf_waited2 = 0
+                        while cf_waited2 < 15000:
+                            pt = (await page_obj.title() or "").strip().lower()
+                            if any(t in pt for t in CF_CHALLENGE_TITLES) or (not pt and cf_waited2 < 5000):
+                                await page_obj.wait_for_timeout(2000)
+                                cf_waited2 += 2000
+                            else:
+                                break
+                    except Exception as e:
+                        logger.warning(f"[{llm}] session 刷新异常: {e}")
+                        await _save_screenshot(page_obj, query.id, f"{llm}_session_exception")
+                        return None
+
                 # 检测是否被重定向到登录页（cookie 过期或未注入）
                 current_url = page_obj.url
                 login_domains = config.get("login_redirect_domains", [])
@@ -539,6 +644,16 @@ class GuestQueryExecutor:
                         await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
                     except:
                         pass
+                return None
+
+            # 页面加载后检查是否被重定向到登录页
+            current_url = page_obj.url
+            login_domains = config.get("login_redirect_domains", [])
+            if any(d in current_url for d in login_domains):
+                logger.warning(f"[{llm}] 页面加载后仍在登录页: {current_url}，cookies/token 已失效")
+                await _save_screenshot(page_obj, query.id, f"{llm}_login_after_load")
+                if self.account_cookies:
+                    return None  # 让上层标记 cookies_expired
                 return None
 
             # 尝试找输入框
@@ -699,7 +814,7 @@ class GuestQueryExecutor:
         """从豆包引用面板提取引用链接。
 
         豆包的引用不是内嵌在响应正文的 <a> 标签，而是在独立的引用面板中：
-        - 面板: [data-testid="search-reference-ui-v3"]
+        - 触发按钮: [data-testid="search-reference-ui-v3"]（需先点击展开）
         - 每条引用: [data-testid="search-text-item"] 内含 <a href="...">
         - 标题: .search-item-title-* 类名
         - 编号: .footer-citation-* 类名
@@ -710,7 +825,7 @@ class GuestQueryExecutor:
                     const citations = [];
                     const seen = new Set();
 
-                    // 从引用面板中提取
+                    // 策略1：从展开的引用面板中提取（search-text-item）
                     const items = document.querySelectorAll('[data-testid="search-text-item"]');
                     for (const item of items) {
                         const link = item.querySelector('a[href]');
@@ -743,15 +858,55 @@ class GuestQueryExecutor:
                         });
                     }
 
+                    // 策略2：如果 search-text-item 未找到，尝试从弹出面板中的所有链接提取
+                    // 豆包的弹出面板可能使用 popover / dialog / drawer 等容器
+                    if (citations.length === 0) {
+                        const panelSelectors = [
+                            '[data-testid*="search-reference"] a[href]',
+                            '[class*="reference-panel"] a[href]',
+                            '[class*="search-panel"] a[href]',
+                            '[class*="citation-panel"] a[href]',
+                            // popover / drawer 容器内的链接
+                            '[data-radix-popper-content-wrapper] a[href]',
+                            '[role="dialog"] a[href]',
+                        ];
+                        for (const sel of panelSelectors) {
+                            try {
+                                const links = document.querySelectorAll(sel);
+                                for (const link of links) {
+                                    const url = link.href;
+                                    if (!url || !url.startsWith('http') || seen.has(url)) continue;
+                                    // 过滤掉豆包自身的链接
+                                    if (url.includes('doubao.com') || url.includes('bytedance.com')) continue;
+                                    seen.add(url);
+                                    citations.push({
+                                        url: url,
+                                        title: (link.textContent || '').trim().slice(0, 200),
+                                        source: '',
+                                        index: citations.length + 1
+                                    });
+                                }
+                            } catch(e) {}
+                        }
+                    }
+
                     // 按引用编号排序
                     citations.sort((a, b) => a.index - b.index);
                     return citations;
                 }
             """)
+
             return citations or []
         except Exception as e:
             logger.warning(f"[doubao] 引用面板提取失败: {e}")
             return []
+        finally:
+            # 关闭引用面板（按 Escape），避免影响后续操作
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
 
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
@@ -865,11 +1020,47 @@ class GuestQueryExecutor:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
+        # 验证提交成功：检查发送的消息是否出现在页面上
+        if llm_name == "doubao":
+            try:
+                await page.wait_for_selector(
+                    '[data-testid="send_message"]',
+                    timeout=5000,
+                )
+                logger.info(f"[{llm_name}] 已确认消息发送成功")
+            except Exception:
+                logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
+                # 重试：先点击输入框确保焦点，再用 Enter
+                try:
+                    input_retry = await page.query_selector(
+                        "[data-testid='chat_input_input'], textarea"
+                    )
+                    if input_retry:
+                        await input_retry.click(force=True)
+                        await page.wait_for_timeout(300)
+                    await page.keyboard.press("Enter")
+                    logger.info(f"[{llm_name}] 重试 Enter 提交")
+                    try:
+                        await page.wait_for_selector(
+                            '[data-testid="send_message"]',
+                            timeout=5000,
+                        )
+                        logger.info(f"[{llm_name}] 重试后消息发送成功")
+                    except Exception:
+                        logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
+                        await _save_html(page, -1, f"{llm_name}_submit_failed")
+                except Exception as e:
+                    logger.warning(f"[{llm_name}] 重试提交异常: {e}")
+
         # 等待响应生成（分段等待，每隔一段检查是否已有内容）
         wait_total = cfg["wait_after_submit"]
         wait_interval = 5000  # 每 5 秒检查一次
         elapsed = 0
         response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
+
+        prev_resp_len = 0       # 上一轮检测到的响应文本长度
+        stable_rounds = 0       # 文本长度连续不变的轮数
+        STABLE_THRESHOLD = 2    # 连续 N 轮不变才认为生成完毕
 
         while elapsed < wait_total:
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
@@ -905,20 +1096,52 @@ class GuestQueryExecutor:
 
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
             resp_ready = False
+            current_resp_len = 0
             for sel in response_selectors:
                 try:
                     el = await page.query_selector(sel)
                     if el:
                         txt = await el.inner_text()
                         if txt and len(txt.strip()) > 20:
-                            logger.info(f"[{llm_name}] 响应内容提前就绪（{elapsed}ms），selector: {sel}")
                             resp_ready = True
+                            current_resp_len = len(txt.strip())
                             break
                 except Exception:
                     continue
 
-            if resp_ready and not still_generating:
-                break
+            if resp_ready:
+                # 检查是否仍在流式输出
+                # 方式1: stream_check_selector（loading/stop 按钮）
+                stream_sel = cfg.get("stream_check_selector", "")
+                still_streaming = False
+                if stream_sel:
+                    try:
+                        stream_el = await page.query_selector(stream_sel)
+                        if stream_el and await stream_el.is_visible():
+                            still_streaming = True
+                    except Exception:
+                        pass
+
+                # 方式2: 文本长度稳定性检测（连续 N 轮长度不变 → 完成）
+                if current_resp_len > prev_resp_len:
+                    stable_rounds = 0
+                    logger.info(
+                        f"[{llm_name}] 响应仍在增长（{elapsed}ms, {current_resp_len} chars）"
+                    )
+                else:
+                    stable_rounds += 1
+
+                prev_resp_len = current_resp_len
+
+                if still_streaming or still_generating:
+                    stable_rounds = 0  # 有明确的生成指示符时重置稳定计数
+                    logger.info(f"[{llm_name}] 检测到响应但仍在生成中（{elapsed}ms），继续等待...")
+                elif stable_rounds >= STABLE_THRESHOLD:
+                    logger.info(
+                        f"[{llm_name}] 响应内容就绪（{elapsed}ms, {current_resp_len} chars, "
+                        f"连续 {stable_rounds} 轮稳定）"
+                    )
+                    break
 
         # 抓取响应文本 + HTML
         resp_text = ""
@@ -1013,14 +1236,39 @@ class GuestQueryExecutor:
             if not resp_text:
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
 
+            # 豆包：检测是否误抓了首页内容（而非真正的 AI 响应）
+            if llm_name == "doubao" and resp_text:
+                homepage_indicators = ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"]
+                matched_indicators = [kw for kw in homepage_indicators if kw in resp_text]
+                if len(matched_indicators) >= 2:
+                    logger.warning(
+                        f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
+                        f"（匹配首页关键词: {matched_indicators}），丢弃"
+                    )
+                    await _save_html(page, -1, f"{llm_name}_homepage_content")
+                    resp_text = ""
+                    resp_html = ""
+
             # 豆包引用面板可能在响应完成后异步加载，额外等待
             if llm_name == "doubao":
                 try:
-                    await page.wait_for_selector(
+                    ref_btn = await page.wait_for_selector(
                         '[data-testid="search-reference-ui-v3"]',
                         timeout=8000,
                     )
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(500)
+                    # 引用按钮需要点击才能展开面板，展开后才有 search-text-item
+                    if ref_btn:
+                        await ref_btn.click()
+                        logger.debug("[doubao] 已点击引用面板按钮，等待展开")
+                        try:
+                            await page.wait_for_selector(
+                                '[data-testid="search-text-item"]',
+                                timeout=5000,
+                            )
+                            await page.wait_for_timeout(800)
+                        except Exception:
+                            logger.debug("[doubao] 引用面板展开后未找到 search-text-item")
                 except Exception:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 

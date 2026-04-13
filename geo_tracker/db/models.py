@@ -32,6 +32,21 @@ class ProxyType(str, enum.Enum):
 
 # ─── Brand ────────────────────────────────────────────────────────────────────
 
+class AnalysisStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class PromptIntent(str, enum.Enum):
+    BRAND = "brand"
+    NON_BRAND = "non_brand"
+    COMPARISON = "comparison"
+
+
+# ─── Brand ────────────────────────────────────────────────────────────────────
+
 class Brand(Base):
     __tablename__ = "brands"
 
@@ -41,6 +56,7 @@ class Brand(Base):
     industry     = Column(String(128))
     description  = Column(Text)
     target_market = Column(String(128), default="中国大陆")
+    aliases      = Column(JSON, nullable=True)
     created_at   = Column(DateTime, server_default=func.now())
 
     topics      = relationship("Topic",      back_populates="brand", cascade="all, delete-orphan")
@@ -73,8 +89,9 @@ class Prompt(Base):
     id           = Column(Integer, primary_key=True)
     topic_id     = Column(Integer, ForeignKey("topics.id"), nullable=False)
     text         = Column(Text, nullable=False)
-    intent       = Column(String(64))   # awareness|comparison|recommendation|problem_solving
+    intent       = Column(String(64))   # brand|non_brand|comparison
     language     = Column(String(8), default="zh")   # zh | en
+    tags         = Column(JSON, nullable=True)   # ["list", "scenario", "negative", "review"]
     created_at   = Column(DateTime, server_default=func.now())
 
     topic   = relationship("Topic", back_populates="prompts")
@@ -90,6 +107,7 @@ class Competitor(Base):
     brand_id         = Column(Integer, ForeignKey("brands.id"), nullable=False)
     name             = Column(String(256), nullable=False)
     website          = Column(String(512))
+    aliases          = Column(JSON, nullable=True)
     source           = Column(String(32), default="auto_generated")  # auto_generated|manual
     confidence_score = Column(Float, default=0.8)
     created_at       = Column(DateTime, server_default=func.now())
@@ -241,5 +259,273 @@ class LLMResponse(Base):
     screenshot_path  = Column(String(512), nullable=True)
     collected_at     = Column(DateTime, server_default=func.now())
     llm_version      = Column(String(64), nullable=True)   # gpt-4o | gemini-1.5-pro
+    analysis_status  = Column(String(16), default=AnalysisStatus.PENDING.value)
+    analyzed_at      = Column(DateTime, nullable=True)
 
     query            = relationship("Query", back_populates="response")
+    mentions         = relationship("BrandMention", back_populates="response",
+                                    cascade="all, delete-orphan")
+    citation_details = relationship("CitationSource", back_populates="response",
+                                    cascade="all, delete-orphan")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Analysis Layer Models
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── BrandMention ─────────────────────────────────────────────────────────────
+
+class BrandMention(Base):
+    __tablename__ = "brand_mentions"
+
+    id              = Column(Integer, primary_key=True)
+    response_id     = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    brand_id        = Column(Integer, ForeignKey("brands.id"), nullable=True)
+    brand_name      = Column(String(256), nullable=False)
+    product_name    = Column(String(256), nullable=True)
+    is_target       = Column(Boolean, default=False)
+
+    position_type   = Column(String(32))
+    position_rank   = Column(Integer, nullable=True)
+    detail_level    = Column(String(16))
+
+    sentiment       = Column(String(16))
+    sentiment_score = Column(Float)
+
+    context_snippet = Column(Text)
+    mention_count   = Column(Integer, default=1)
+
+    created_at      = Column(DateTime, server_default=func.now())
+
+    response        = relationship("LLMResponse", back_populates="mentions")
+    brand           = relationship("Brand")
+    drivers         = relationship("SentimentDriver", back_populates="mention",
+                                   cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "response_id", "brand_name", "product_name",
+            name="uq_mention_response_brand_product",
+        ),
+    )
+
+
+# ─── SentimentDriver ─────────────────────────────────────────────────────────
+
+class SentimentDriver(Base):
+    __tablename__ = "sentiment_drivers"
+
+    id            = Column(Integer, primary_key=True)
+    mention_id    = Column(Integer, ForeignKey("brand_mentions.id"), nullable=False)
+    response_id   = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    brand_name    = Column(String(256), nullable=False)
+
+    driver_text   = Column(String(512), nullable=False)
+    polarity      = Column(String(8), nullable=False)
+    category      = Column(String(64))
+    strength      = Column(Float, default=0.5)
+    source_quote  = Column(Text, nullable=True)
+
+    created_at    = Column(DateTime, server_default=func.now())
+
+    mention       = relationship("BrandMention", back_populates="drivers")
+    response      = relationship("LLMResponse")
+
+
+# ─── CitationSource ───────────────────────────────────────────────────────────
+
+class CitationSource(Base):
+    __tablename__ = "citation_sources"
+
+    id             = Column(Integer, primary_key=True)
+    response_id    = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    mention_id     = Column(Integer, ForeignKey("brand_mentions.id"), nullable=True)
+    url            = Column(String(2048), nullable=False)
+    domain         = Column(String(256))
+    title          = Column(String(512))
+    citation_index = Column(Integer)
+    source_type    = Column(String(32))
+    created_at     = Column(DateTime, server_default=func.now())
+
+    response       = relationship("LLMResponse", back_populates="citation_details")
+    mention        = relationship("BrandMention")
+
+
+# ─── ResponseAnalysis ─────────────────────────────────────────────────────────
+
+class ResponseAnalysis(Base):
+    __tablename__ = "response_analyses"
+
+    id                     = Column(Integer, primary_key=True)
+    response_id            = Column(Integer, ForeignKey("llm_responses.id"), unique=True)
+
+    dimension_industry     = Column(String(128))
+    dimension_company      = Column(String(128))
+    dimension_product      = Column(String(128))
+    dimension_category     = Column(String(128))
+
+    total_brands_mentioned = Column(Integer, default=0)
+    target_brand_mentioned = Column(Boolean, default=False)
+    target_brand_position  = Column(String(32), nullable=True)
+    target_brand_rank      = Column(Integer, nullable=True)
+    target_brand_sentiment = Column(String(16), nullable=True)
+    target_brand_detail    = Column(String(16), nullable=True)
+
+    visibility_score       = Column(Float, default=0.0)
+    sentiment_score        = Column(Float, default=0.0)
+    sov_score              = Column(Float, default=0.0)
+    citation_score         = Column(Float, default=0.0)
+
+    geo_score              = Column(Float, default=0.0)
+
+    analyzed_at            = Column(DateTime, server_default=func.now())
+    analyzer_model         = Column(String(64))
+    raw_analysis_json      = Column(JSON, nullable=True)
+
+    response               = relationship("LLMResponse", backref="analysis")
+    feature_mentions       = relationship("ProductFeatureMention",
+                                          back_populates="analysis",
+                                          cascade="all, delete-orphan")
+
+
+# ─── ProductFeatureMention ────────────────────────────────────────────────────
+
+class ProductFeatureMention(Base):
+    __tablename__ = "product_feature_mentions"
+
+    id                = Column(Integer, primary_key=True)
+    analysis_id       = Column(Integer, ForeignKey("response_analyses.id"), nullable=False)
+    brand_name        = Column(String(256), nullable=False)
+    product_name      = Column(String(256), nullable=False)
+
+    feature_name      = Column(String(128), nullable=False)
+    feature_sentiment = Column(String(16), nullable=True)
+    context_snippet   = Column(Text, nullable=True)
+
+    scenario          = Column(String(128), nullable=True)
+    price_positioning = Column(String(32), nullable=True)
+
+    created_at        = Column(DateTime, server_default=func.now())
+
+    analysis          = relationship("ResponseAnalysis", back_populates="feature_mentions")
+
+
+# ─── GEOScoreDaily ────────────────────────────────────────────────────────────
+
+class GEOScoreDaily(Base):
+    __tablename__ = "geo_score_daily"
+
+    id             = Column(Integer, primary_key=True)
+    brand_id       = Column(Integer, ForeignKey("brands.id"), nullable=False)
+    date           = Column(DateTime, nullable=False)
+    target_llm     = Column(String(64), nullable=True)
+    intent         = Column(String(64), nullable=True)
+    language       = Column(String(8), nullable=True)
+
+    total_queries       = Column(Integer, default=0)
+    mention_count       = Column(Integer, default=0)
+    mention_rate        = Column(Float, default=0.0)
+    avg_position_rank   = Column(Float, nullable=True)
+    first_place_count   = Column(Integer, default=0)
+    first_place_rate    = Column(Float, default=0.0)
+    positive_rate       = Column(Float, default=0.0)
+    negative_rate       = Column(Float, default=0.0)
+    avg_sentiment_score = Column(Float, default=0.0)
+    citation_rate       = Column(Float, default=0.0)
+    avg_sov             = Column(Float, default=0.0)
+
+    avg_visibility      = Column(Float, default=0.0)
+    avg_sentiment       = Column(Float, default=0.0)
+    avg_sov_score       = Column(Float, default=0.0)
+    avg_citation_score  = Column(Float, default=0.0)
+
+    avg_geo_score       = Column(Float, default=0.0)
+
+    industry            = Column(String(128), nullable=True)
+    industry_rank       = Column(Integer, nullable=True)
+    industry_sov_pct    = Column(Float, nullable=True)
+
+    created_at          = Column(DateTime, server_default=func.now())
+    updated_at          = Column(DateTime, onupdate=func.now(), nullable=True)
+
+    brand               = relationship("Brand")
+
+    __table_args__ = (
+        UniqueConstraint("brand_id", "date", "target_llm", "intent", "language",
+                         name="uq_geo_daily_dims"),
+    )
+
+
+# ─── IndustryBenchmarkDaily ──────────────────────────────────────────────────
+
+class IndustryBenchmarkDaily(Base):
+    __tablename__ = "industry_benchmark_daily"
+
+    id              = Column(Integer, primary_key=True)
+    industry        = Column(String(128), nullable=False)
+    date            = Column(DateTime, nullable=False)
+    target_llm      = Column(String(64), nullable=True)
+
+    total_brands    = Column(Integer, default=0)
+    total_queries   = Column(Integer, default=0)
+    avg_mention_rate = Column(Float, default=0.0)
+    avg_geo_score   = Column(Float, default=0.0)
+    avg_sentiment   = Column(Float, default=0.0)
+
+    score_p25       = Column(Float, nullable=True)
+    score_p50       = Column(Float, nullable=True)
+    score_p75       = Column(Float, nullable=True)
+
+    top_brands_json = Column(JSON, nullable=True)
+
+    created_at      = Column(DateTime, server_default=func.now())
+    updated_at      = Column(DateTime, onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("industry", "date", "target_llm", name="uq_industry_daily"),
+    )
+
+
+# ─── ProductScoreDaily ────────────────────────────────────────────────────────
+
+class ProductScoreDaily(Base):
+    __tablename__ = "product_score_daily"
+
+    id               = Column(Integer, primary_key=True)
+    brand_id         = Column(Integer, ForeignKey("brands.id"), nullable=False)
+    product_name     = Column(String(256), nullable=False)
+    category         = Column(String(128), nullable=True)
+    date             = Column(DateTime, nullable=False)
+    target_llm       = Column(String(64), nullable=True)
+
+    total_queries    = Column(Integer, default=0)
+    mention_count    = Column(Integer, default=0)
+    mention_rate     = Column(Float, default=0.0)
+    avg_position_rank = Column(Float, nullable=True)
+    first_place_count = Column(Integer, default=0)
+    first_place_rate = Column(Float, default=0.0)
+    avg_sentiment_score = Column(Float, default=0.0)
+    avg_geo_score    = Column(Float, default=0.0)
+
+    category_sov_pct = Column(Float, nullable=True)
+    category_rank    = Column(Integer, nullable=True)
+
+    comparison_wins  = Column(Integer, default=0)
+    comparison_total = Column(Integer, default=0)
+    win_rate         = Column(Float, default=0.0)
+
+    top_features_json     = Column(JSON, nullable=True)
+    top_scenarios_json    = Column(JSON, nullable=True)
+    price_positioning     = Column(String(32), nullable=True)
+    price_positioning_json = Column(JSON, nullable=True)
+    top_drivers_json      = Column(JSON, nullable=True)
+
+    created_at       = Column(DateTime, server_default=func.now())
+    updated_at       = Column(DateTime, onupdate=func.now(), nullable=True)
+
+    brand            = relationship("Brand")
+
+    __table_args__ = (
+        UniqueConstraint("brand_id", "product_name", "date", "target_llm",
+                         name="uq_product_daily"),
+    )

@@ -7,13 +7,32 @@ mode: rule
 log-level: warning
 external-controller: '0.0.0.0:9090'
 
-# 使用本地代理文件
+# DNS 配置（Docker 内部 DNS 无法解析代理节点域名，必须用外部 DNS）
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback:
+    - 8.8.8.8
+    - 8.8.4.4
+    - tls://1.0.0.1:853
+    - tls://dns.google:853
+  # 代理节点域名专用解析（cnameip.xyz 等）
+  # cnameip.xyz 通过 CNAME 跳转到 home7788.xyz (Cloudflare)，中国 DNS 无法解析
+  # 必须用海外 DOH（HTTPS 加密，不会被 DNS 污染）
+  proxy-server-nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+    - https://doh.pub/dns-query
+
+# 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）
 proxy-providers:
   ninja-sub:
-    type: http
-    url: "https://45.137.180.142/dli/H1EGv2qngpcGWVc?clash=1"
+    type: file
     path: ./proxies/ninja.yaml
-    interval: 3600
     health-check:
       enable: true
       interval: 300

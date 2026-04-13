@@ -32,4 +32,4 @@ def get_handler(platform: str) -> BaseSMSLoginHandler | None:
 
 # 导入时自动注册各平台处理器
 from geo_tracker.agent.sms_login.doubao_login import DoubaoLoginHandler  # noqa: E402, F401
-from geo_tracker.agent.sms_login.deepseek_login import DeepSeekLoginHandler  # noqa: E402, F401
+from geo_tracker.agent.sms_login.deepseek_login import DeepseekLoginHandler  # noqa: E402, F401

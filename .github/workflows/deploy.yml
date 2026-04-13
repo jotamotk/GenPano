@@ -43,10 +43,6 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }}
 
-      - name: Build & push minimax-test
-        run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:minimax-test-${{ env.IMAGE_TAG }} ./minimax-test
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:minimax-test-${{ env.IMAGE_TAG }}
 
   deploy:
     name: Deploy to Server
@@ -80,14 +76,18 @@ jobs:
             cd /opt/genpano
 
             # 创建完整的 .env 文件
-            cat > .env << ENVEOF
+            # 使用 quoted heredoc 防止 shell 展开密码中的 $
+            # heredoc 内容必须缩进（YAML block scalar 要求），写入后用 sed 去除前导空格
+            cat > .env <<'ENVEOF'
             ACR_REGISTRY=${{ secrets.ACR_REGISTRY }}
             IMAGE_TAG=${{ env.IMAGE_TAG }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
             PROXY_PROVIDER=clash
-            CLASH_PROXY_URL=http://clash:7890
+            CLASH_PROXY_URL=http://host.docker.internal:6789
+            CLASH_API_URL=http://host.docker.internal:9098
+            CLASH_PROXY_GROUP=💬 Ai平台
             PORT=4000
             NODE_ENV=production
             JWT_SECRET=${{ secrets.JWT_SECRET }}
@@ -97,20 +97,59 @@ jobs:
             CAPSOLVER_API_KEY=${{ secrets.CAPSOLVER_API_KEY }}
             LUBANSMS_TOKEN=${{ secrets.LUBANSMS_TOKEN }}
             LUBANSMS_PROJECT_DOUBAO=${{ secrets.LUBANSMS_PROJECT_DOUBAO }}
+            ARK_API_KEY=${{ secrets.ARK_API_KEY }}
+            ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+            ARK_MODEL=doubao-seed-2-0-pro-260215
             ENVEOF
+            sed -i 's/^[[:space:]]*//' .env
 
             # 单独写入 cookies JSON，用 Python 压缩为单行 JSON 再写入
-            # 避免多行 JSON 导致 docker compose 解析 .env 失败
+            # 转义 $ 为 $$ 防止 docker compose 将 cookie 值中的 $xx 当作变量
             printf '%s' "${GEMINI_COOKIES_JSON}" | python3 -c \
-              "import json,sys; print('GEMINI_COOKIES_JSON=' + json.dumps(json.loads(sys.stdin.read())))" \
+              "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('GEMINI_COOKIES_JSON=' + s)" \
               >> .env
 
             if [ -n "${DOUBAO_COOKIES_JSON}" ]; then
               printf '%s' "${DOUBAO_COOKIES_JSON}" | python3 -c \
-                "import json,sys; print('DOUBAO_COOKIES_JSON=' + json.dumps(json.loads(sys.stdin.read())))" \
+                "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('DOUBAO_COOKIES_JSON=' + s)" \
                 >> .env
+            fi
+
+            # 确保 V-Ninja 代理服务正在运行（宿主机 systemd 服务）
+            # 更新 allow-lan 脚本和 systemd 服务文件
+            cp /opt/genpano/clash/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh
+            chmod +x /usr/local/bin/vninja-allow-lan.sh
+            cp /opt/genpano/clash/vninja.service /etc/systemd/system/vninja.service
+            systemctl daemon-reload
+
+            # 确保 socat 已安装（API 端口转发需要）
+            which socat >/dev/null 2>&1 || apt-get install -y -qq socat
+
+            if systemctl is-active --quiet vninja; then
+              echo "✓ V-Ninja 代理服务正在运行"
+              # 确保 allow-lan 和 API 转发
+              curl -s -X PATCH http://127.0.0.1:9097/configs \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer set-your-secret" \
+                -d '{"allow-lan": true}' || true
+              # 确保 socat API 转发在运行
+              if ! pgrep -f "socat.*TCP-LISTEN:9098" >/dev/null; then
+                socat TCP-LISTEN:9098,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9097 &
+              fi
+            else
+              echo "⚠ V-Ninja 未运行，尝试启动..."
+              systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
             fi
 
             docker compose pull
             docker compose up -d --remove-orphans --force-recreate
-            docker image prune -f
+
+            # 清理 Docker 垃圾释放磁盘空间
+            # 1. 删除所有未被使用的镜像（不只是 dangling）
+            docker image prune -af --filter "until=72h"
+            # 2. 清理构建缓存
+            docker builder prune -af --keep-storage=2GB
+            # 3. 清理无主的 volume（排除正在使用的）
+            docker volume prune -f
+            # 4. 显示清理后的磁盘使用情况
+            df -h / && docker system df

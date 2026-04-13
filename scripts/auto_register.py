@@ -175,7 +175,8 @@ class PlatformRegistrar(ABC):
 
     async def _wait_for_captcha(self) -> None:
         """
-        检测验证码（滑块/点选），如果存在则暂停等待用户手动完成。
+        检测验证码（滑块/点选），优先使用视觉模型自动求解，
+        失败则暂停等待用户手动完成。
         """
         captcha_selectors = [
             "[class*='verify']",
@@ -191,8 +192,21 @@ class PlatformRegistrar(ABC):
 
         captcha_el = await self.page.query_selector(selector)
         if captcha_el:
+            # 优先尝试视觉模型自动求解
+            try:
+                from geo_tracker.agent.vision_captcha import solve_vision_captcha
+                logger.info("检测到验证码，尝试视觉模型自动求解...")
+                solved = await solve_vision_captcha(self.page, max_retries=3)
+                if solved:
+                    logger.info("视觉验证码求解成功")
+                    return
+                logger.warning("视觉求解未成功，降级为手动模式")
+            except Exception as e:
+                logger.warning(f"视觉求解异常: {e}，降级为手动模式")
+
+            # 降级：等待用户手动完成
             print("\n" + "=" * 60)
-            print("  检测到验证码，请在浏览器窗口手动完成验证...")
+            print("  验证码自动求解失败，请在浏览器窗口手动完成验证...")
             print("  完成后脚本将自动继续")
             print("=" * 60 + "\n")
             try:
@@ -438,7 +452,9 @@ class DeepSeekRegistrar(PlatformRegistrar):
     """
 
     platform_name = "deepseek"
-    sms_keyword = "DeepSeek"
+    # SMS 关键词需与 geo_tracker.agent.sms_login.deepseek_login.DeepseekLoginHandler
+    # 保持一致（DeepSeek 的短信下发方 "深度求索" 是企业名）
+    sms_keyword = "深度求索"
 
     async def register(self, phone: str) -> bool:
         page = self.page

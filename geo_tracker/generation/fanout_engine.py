@@ -31,11 +31,11 @@ REWRITE_BATCH_SIZE = 10
 # ─── LLM 分配矩阵 ─────────────────────────────────────────────────────────────
 
 LLM_BY_COUNTRY: dict[str, list[str]] = {
-    "CN": ["chatgpt", "kimi", "doubao", "zhipu", "perplexity"],
+    "CN": ["chatgpt", "kimi", "doubao", "deepseek", "zhipu", "perplexity"],
     "US": ["chatgpt", "gemini", "claude", "perplexity", "grok"],
     "GB": ["chatgpt", "gemini", "claude", "perplexity"],
     "DE": ["chatgpt", "gemini", "claude", "perplexity"],
-    "SG": ["chatgpt", "gemini", "perplexity", "kimi"],
+    "SG": ["chatgpt", "gemini", "perplexity", "kimi", "deepseek"],
     "AU": ["chatgpt", "gemini", "claude", "perplexity"],
 }
 LLM_DEFAULT = ["chatgpt", "gemini", "perplexity"]

@@ -34,8 +34,10 @@ except ImportError:
 # 国内 LLM 直连不走代理
 DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 
-# CAPTCHA 检测选择器（字节跳动/通用）
+# CAPTCHA 检测选择器（数美/字节跳动/通用）
 CAPTCHA_SELECTORS = [
+    ".shumei_captcha_wrapper",
+    "#sm-captcha",
     "[class*='verify']",
     "[class*='captcha']",
     "#captcha-verify",
@@ -193,11 +195,19 @@ class BaseSMSLoginHandler(ABC):
             # 注入已有 cookies（可能帮助跳过部分登录步骤）
             if existing_cookies:
                 try:
-                    cookies = json.loads(existing_cookies)
-                    await context.add_cookies(cookies)
-                    logger.info(
-                        f"[{self.platform}] 注入 {len(cookies)} 个已有 cookies"
-                    )
+                    parsed = json.loads(existing_cookies)
+                    # 支持新格式 {"cookies": [...], "localStorage": {...}}
+                    if isinstance(parsed, dict) and "cookies" in parsed:
+                        cookies = parsed["cookies"]
+                    elif isinstance(parsed, list):
+                        cookies = parsed
+                    else:
+                        cookies = []
+                    if cookies:
+                        await context.add_cookies(cookies)
+                        logger.info(
+                            f"[{self.platform}] 注入 {len(cookies)} 个已有 cookies"
+                        )
                 except Exception as e:
                     logger.warning(f"[{self.platform}] 注入 cookies 失败: {e}")
 
@@ -274,7 +284,7 @@ class BaseSMSLoginHandler(ABC):
                     logger.warning(f"[{self.platform}] {last_fail_reason}")
                     if not is_relogin:
                         # 新注册：将收不到短信的号码加黑名单
-                        await add_to_blacklist(self.platform, phone)
+                        await add_to_blacklist(self.platform, phone, reason="sms_timeout")
                     continue  # 重新登录只有 1 次，直接失败退出
 
                 # 收到验证码，继续登录流程
@@ -284,6 +294,36 @@ class BaseSMSLoginHandler(ABC):
 
                 await page.wait_for_timeout(random.randint(500, 1000))
 
+                # 开启网络响应监听（比 toast 更可靠，不会消失）
+                api_errors = []
+
+                async def _capture_api_error(response):
+                    try:
+                        if response.status >= 400 or (
+                            response.url and any(
+                                kw in response.url for kw in
+                                ["login", "send_code", "sms", "verify", "auth", "register"]
+                            )
+                        ):
+                            try:
+                                body = await response.text()
+                            except Exception:
+                                body = ""
+                            if body:
+                                api_errors.append({
+                                    "url": response.url,
+                                    "status": response.status,
+                                    "body": body[:500],
+                                })
+                                logger.info(
+                                    f"[{self.platform}] API响应: "
+                                    f"{response.status} {response.url.split('?')[0]} → {body[:200]}"
+                                )
+                    except Exception:
+                        pass
+
+                page.on("response", _capture_api_error)
+
                 logger.info(f"[{self.platform}] 提交登录...")
                 if not await self.submit_login(page):
                     logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
@@ -292,23 +332,97 @@ class BaseSMSLoginHandler(ABC):
                 # 等待登录完成
                 await page.wait_for_timeout(random.randint(3000, 5000))
 
+                # 停止监听
+                page.remove_listener("response", _capture_api_error)
+
+                # 检查捕获到的 API 错误
+                # DeepSeek login_by_mobile_sms 返回:
+                # {"code":0,"data":{"biz_code":11,"biz_msg":"RISK_DEVICE_DETECTED",...}}
+                device_env_error = False
+                for err in api_errors:
+                    body_lower = err["body"].lower()
+                    if "risk_device_detected" in body_lower:
+                        logger.warning(
+                            f"[{self.platform}] API返回 RISK_DEVICE_DETECTED: "
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
+                        )
+                        device_env_error = True
+                        break
+                    if "device" in body_lower and "environment" in body_lower:
+                        logger.warning(
+                            f"[{self.platform}] API返回设备环境错误: "
+                            f"{err['url'].split('?')[0]} → {err['body'][:300]}"
+                        )
+                        device_env_error = True
+                        break
+
+                # 兜底：检查 toast DOM
+                if not device_env_error:
+                    toast_error = await self._detect_error_toast(page)
+                    if toast_error:
+                        logger.warning(f"[{self.platform}] toast 错误: {toast_error}")
+                        if any(kw in toast_error for kw in [
+                            "device environment", "risk_device",
+                            "设备环境", "环境异常", "运行环境",
+                            "Device Environment", "RISK_DEVICE",
+                        ]):
+                            device_env_error = True
+
+                if device_env_error:
+                    logger.warning(
+                        f"[{self.platform}] 手机号 {phone} 设备环境错误，加入黑名单并换号"
+                    )
+                    await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
+                    last_fail_reason = f"手机号 {phone} 设备环境错误"
+                    continue
+
                 # 可能有登录后的 CAPTCHA
                 await self._handle_captcha(page)
                 await page.wait_for_timeout(2000)
 
                 # 验证登录成功
-                if not await self.verify_success(page):
+                verify_result = await self.verify_success(page)
+                if verify_result == "device_env_error":
+                    logger.warning(
+                        f"[{self.platform}] 设备环境错误 (verify阶段)，"
+                        f"手机号 {phone} 不干净，加入黑名单并换号"
+                    )
+                    await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
+                    last_fail_reason = f"手机号 {phone} 设备环境错误"
+                    continue
+                if not verify_result:
                     return _fail(f"登录验证失败（验证码已提交但未登录成功），URL: {page.url}")
 
                 # 提取 cookies
                 new_cookies = await context.cookies()
                 cookies_list = self._format_cookies(new_cookies)
 
+                # 提取 localStorage（DeepSeek 需要 userToken）
+                local_storage = {}
+                try:
+                    local_storage = await page.evaluate("""
+                        () => {
+                            const keys = ['userToken'];
+                            const result = {};
+                            for (const k of keys) {
+                                const v = localStorage.getItem(k);
+                                if (v) result[k] = v;
+                            }
+                            return result;
+                        }
+                    """)
+                except Exception as e:
+                    logger.debug(f"[{self.platform}] 提取 localStorage 失败: {e}")
+
                 logger.info(
                     f"[{self.platform}] 登录成功! "
                     f"phone={phone}, cookies={len(cookies_list)}"
+                    + (f", localStorage={len(local_storage)} 项" if local_storage else "")
                 )
-                return {"phone": phone, "cookies": cookies_list}
+                result = {"phone": phone, "cookies": cookies_list}
+                if local_storage:
+                    result["localStorage"] = local_storage
+                return result
 
             # 所有重试都失败
             return _fail(
@@ -400,8 +514,35 @@ class BaseSMSLoginHandler(ABC):
             Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         """)
 
+    async def _detect_error_toast(self, page: Page) -> Optional[str]:
+        """检测页面上的错误 toast/提示，返回错误文本或 None。"""
+        try:
+            error_text = await page.evaluate("""
+                () => {
+                    const sels = [
+                        '.ds-toast', '[class*="toast"]', '[class*="Toast"]',
+                        '[class*="message-error"]', '[class*="error-message"]',
+                        '[role="alert"]', '.ant-message-error',
+                        '[class*="notice"]', '[class*="notification"]',
+                    ];
+                    for (const sel of sels) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const text = (el.textContent || '').trim();
+                            if (text && el.offsetParent !== null) {
+                                return text.slice(0, 300);
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            return error_text
+        except Exception:
+            return None
+
     async def _handle_captcha(self, page: Page) -> None:
-        """检测并处理 CAPTCHA。当前 ByteDance 验证码无法自动解决。"""
+        """检测并处理 CAPTCHA。优先使用视觉模型求解，降级为等待消失。"""
         selector = ", ".join(CAPTCHA_SELECTORS)
         captcha_el = await page.query_selector(selector)
         if captcha_el:
@@ -413,8 +554,20 @@ class BaseSMSLoginHandler(ABC):
 
             if is_visible:
                 logger.warning(
-                    f"[{self.platform}] 检测到 CAPTCHA，等待自动消失..."
+                    f"[{self.platform}] 检测到 CAPTCHA，尝试视觉模型求解..."
                 )
+                # 优先尝试视觉模型求解
+                try:
+                    from geo_tracker.agent.vision_captcha import solve_vision_captcha
+                    solved = await solve_vision_captcha(page, max_retries=3)
+                    if solved:
+                        logger.info(f"[{self.platform}] 视觉验证码求解成功")
+                        return
+                except Exception as e:
+                    logger.warning(f"[{self.platform}] 视觉求解异常: {e}")
+
+                # 降级：等待验证码自动消失
+                logger.info(f"[{self.platform}] 视觉求解未成功，等待消失...")
                 try:
                     await page.wait_for_selector(
                         selector, state="hidden", timeout=30000

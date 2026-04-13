@@ -1,12 +1,8 @@
 services:
 
-  clash:
-    image: ghcr.io/metacubex/mihomo:latest
-    restart: unless-stopped
-    volumes:
-      - ./clash:/root/.config/mihomo
-    ports:
-      - "7890:7890"
+  # V-Ninja (ninja-mihomo) 运行在宿主机上，不在 Docker 内
+  # Docker 容器通过 host.docker.internal 访问宿主机代理
+  # 设置方法见 clash/setup-vninja-host.sh
 
   postgres:
     image: postgres:16-alpine
@@ -44,11 +40,13 @@ services:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
     shm_size: '2gb'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
       --concurrency=5
-      -Q celery,llm_chatgpt,llm_gemini,llm_claude,llm_perplexity,llm_kimi,llm_doubao,llm_zhipu,llm_grok,account_login
+      -Q celery,llm_chatgpt,llm_gemini,llm_doubao,llm_deepseek,account_login
     env_file: .env
     volumes:
       - screenshots_data:/data/screenshots
@@ -57,17 +55,33 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      clash:
-        condition: service_started
+
+  worker-analysis:
+    image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >
+      celery -A geo_tracker.tasks.celery_tasks worker
+      --loglevel=info
+      --concurrency=4
+      -Q analysis
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   beat:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: celery -A geo_tracker.tasks.celery_tasks beat --loglevel=info
     env_file: .env
     depends_on:
       - redis
-      - clash
 
   nginx:
     image: ${ACR_REGISTRY}/genpano:frontend-${IMAGE_TAG:-latest}
@@ -79,7 +93,6 @@ services:
     depends_on:
       - backend
       - query-tool
-      - minimax-test
 
   query-tool:
     image: ${ACR_REGISTRY}/genpano:query-tool-${IMAGE_TAG:-latest}
@@ -95,15 +108,6 @@ services:
       postgres:
         condition: service_healthy
 
-  minimax-test:
-    image: ${ACR_REGISTRY}/genpano:minimax-test-${IMAGE_TAG:-latest}
-    restart: unless-stopped
-    volumes:
-      - minimax_cookies:/app/cookies_store
-      - minimax_screenshots:/app/screenshots
-
 volumes:
   postgres_data:
   screenshots_data:
-  minimax_cookies:
-  minimax_screenshots:
