@@ -49,7 +49,13 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         """
         logger.info(f"[doubao] 当前 URL: {page.url}")
 
-        # Step 0: 登录表单可能已经内联渲染 —— 先检查 phone input 是否可用
+        # Step 0: 若 cookies 仍有效、账号已经处于登录状态，直接返回成功，
+        # 避免把"已登录"误判为"无法打开登录表单"
+        if await self._already_logged_in(page):
+            logger.info("[doubao] 检测到账号已登录，跳过登录流程")
+            return True
+
+        # Step 0.5: 登录表单可能已经内联渲染 —— 先检查 phone input 是否可用
         if await self._login_form_ready(page):
             logger.info("[doubao] 登录表单已就绪（内联渲染，无需点击按钮）")
             return await self._handle_agreement(page)
@@ -285,6 +291,47 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         results.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
         return [(r[4], r[5], r[6]) for r in results]
 
+    async def _already_logged_in(self, page: Page) -> bool:
+        """
+        判断当前页面是否已经处于登录态。
+        特征：
+        - 聊天输入区的 textarea（placeholder='发消息...'）可见
+        - 且页面上没有可见的 '登录' 按钮 / 链接
+        这样可以避免在 cookies 仍有效时把账号误当做需要重新登录。
+        """
+        try:
+            res = await page.evaluate(
+                """
+                () => {
+                    // 1) chat textarea 是否可见
+                    const inputs = [...document.querySelectorAll('textarea')];
+                    const chatInput = inputs.find(t => {
+                        const ph = t.getAttribute('placeholder') || '';
+                        const r = t.getBoundingClientRect();
+                        return /发消息|Message/i.test(ph) && r.width > 50 && r.height > 10;
+                    });
+                    if (!chatInput) return { chat: false, loginBtn: false };
+
+                    // 2) 是否还有 '登录' 按钮 / 链接可见
+                    const clickable = [...document.querySelectorAll(
+                        'button, a, [role="button"]'
+                    )];
+                    const hasLoginBtn = clickable.some(el => {
+                        const txt = (el.textContent || '').trim();
+                        if (txt !== '登录' && !/^登录$|立即登录|去登录/.test(txt)) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    });
+                    return { chat: true, loginBtn: hasLoginBtn };
+                }
+                """
+            )
+            if res and res.get("chat") and not res.get("loginBtn"):
+                return True
+        except Exception:
+            pass
+        return False
+
     async def _login_form_ready(self, page: Page) -> bool:
         """
         检查登录表单（phone input + 下一步按钮）是否已经可交互。
@@ -477,9 +524,9 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             except Exception:
                 pass
 
-            # 保存截图
+            # 保存截图（full_page=True 抓整个 DOM 高度，避免只截半张）
             screenshot_path = DEBUG_DIR / f"doubao_{suffix}_{ts}.png"
-            await page.screenshot(path=str(screenshot_path), full_page=False)
+            await page.screenshot(path=str(screenshot_path), full_page=True)
             logger.info(f"[doubao] 截图已保存: {screenshot_path}")
 
             # 保存 body HTML（跳过 head 大脚本 chunk，只留渲染后的 DOM）

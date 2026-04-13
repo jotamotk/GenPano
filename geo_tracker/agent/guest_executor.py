@@ -121,9 +121,13 @@ GUEST_LLM_CONFIG = {
     "doubao": {
         "url":              "https://www.doubao.com/chat",
         "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
-        "submit_button":    "button[data-testid='chat_input_send_button']",
+        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 Tailwind/业务 class name：
+        #   .send-btn-wrapper（空输入时 wrapper 被加 !hidden）
+        #   button[class*='send-msg-btn']（disabled 态 class: bg-g-send-msg-btn-disabled-bg）
+        "submit_button":    "button[class*='send-msg-btn']:not([disabled]), .send-btn-wrapper:not([class*='\\!hidden']) button, button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
         "submit_key":       "Enter",
-        "response_selector": "[data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body",
+        # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
+        "response_selector": ".flow-markdown-body, [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
         "wait_after_submit": 60000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
@@ -1003,7 +1007,70 @@ class GuestQueryExecutor:
         # 模拟人类"思考"后再提交
         await page.wait_for_timeout(random.randint(500, 1500))
 
-        # 提交：优先点击提交按钮，fallback 用 Enter
+        # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
+        # 再失败才 fallback 到 Enter
+        async def _find_submit_button_js():
+            """豆包新 UI 无 testid，通过稳定 class + 位置 + 图标找 send 按钮。"""
+            return await page.evaluate_handle(
+                """
+                () => {
+                    const all = [...document.querySelectorAll('button, [role="button"]')];
+
+                    // 最优先：按 class 匹配（稳定的 Tailwind/业务类名）
+                    const byClass = all.find(b => {
+                        if (b.disabled || b.getAttribute('data-disabled') === 'true') return false;
+                        const cls = b.className || '';
+                        if (typeof cls !== 'string') return false;
+                        // disabled 态会是 bg-g-send-msg-btn-disabled-bg，跳过
+                        if (/send-msg-btn-disabled-bg/.test(cls)) return false;
+                        return /send-msg-btn/.test(cls);
+                    });
+                    if (byClass) return byClass;
+
+                    // 其次：.send-btn-wrapper（不含 !hidden）内的 button
+                    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
+                    for (const w of wrappers) {
+                        const wcls = w.className || '';
+                        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
+                        const b = w.querySelector('button');
+                        if (b && !b.disabled && b.getAttribute('data-disabled') !== 'true') return b;
+                    }
+
+                    // 然后：aria-label / title 含 send/发送
+                    const byAria = all.find(b => {
+                        if (b.disabled) return false;
+                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                        const title = (b.getAttribute('title') || '').toLowerCase();
+                        return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
+                    });
+                    if (byAria) return byAria;
+
+                    // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
+                    const input = document.querySelector(
+                        'textarea, [contenteditable="true"]'
+                    );
+                    if (!input) return null;
+                    const ir = input.getBoundingClientRect();
+                    let best = null, bestDist = Infinity;
+                    for (const b of all) {
+                        if (b.disabled || b.getAttribute('data-disabled') === 'true') continue;
+                        const r = b.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) continue;
+                        const txt = (b.textContent || '').trim();
+                        if (txt.length > 4) continue;  // 文本按钮跳过
+                        if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
+                        // 限制在 input 正下方/右侧附近 150px 以内
+                        const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
+                        const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
+                        if (dx > 300 || dy > 200) continue;
+                        const dist = dx + dy;
+                        if (dist < bestDist) { bestDist = dist; best = b; }
+                    }
+                    return best;
+                }
+                """
+            )
+
         submitted = False
         if cfg.get("submit_button"):
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
@@ -1016,37 +1083,83 @@ class GuestQueryExecutor:
                         break
                 except Exception:
                     continue
+        if not submitted and llm_name == "doubao":
+            # JS 兜底：找 input 附近的 send 图标按钮
+            try:
+                handle = await _find_submit_button_js()
+                as_element = handle.as_element() if handle else None
+                if as_element:
+                    await as_element.click()
+                    submitted = True
+                    logger.info(f"[{llm_name}] 通过 JS 兜底按钮提交")
+            except Exception as e:
+                logger.debug(f"[{llm_name}] JS 找 submit 按钮失败: {e}")
         if not submitted:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
-        # 验证提交成功：检查发送的消息是否出现在页面上
-        if llm_name == "doubao":
+        # 验证提交成功：豆包 testid 已删除，改用 textarea 清空 + 出现新消息块判断
+        async def _submit_confirmed() -> bool:
             try:
-                await page.wait_for_selector(
-                    '[data-testid="send_message"]',
-                    timeout=5000,
+                return await page.evaluate(
+                    r"""
+                    (queryText) => {
+                        // 1) 存在 send_message testid（老 UI）
+                        if (document.querySelector('[data-testid="send_message"]')) return true;
+                        // 2) 输入框被清空（发送后 doubao 会清空）
+                        const inp = document.querySelector(
+                            'textarea[data-testid="chat_input_input"], textarea, [contenteditable="true"]'
+                        );
+                        if (inp) {
+                            const v = (inp.value !== undefined ? inp.value : inp.textContent) || '';
+                            if (v.trim().length === 0 && queryText.length > 0) return true;
+                        }
+                        // 3) 页面某个气泡类元素包含 query 文本
+                        //    豆包 2026 稳定 class: send-msg-bubble-bg（用户消息气泡）
+                        const candidates = document.querySelectorAll(
+                            '[class*="send-msg-bubble-bg"], [class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"], [class*="message-list"]'
+                        );
+                        const needle = queryText.slice(0, 20).trim();
+                        for (const el of candidates) {
+                            if ((el.textContent || '').includes(needle)) return true;
+                        }
+                        return false;
+                    }
+                    """,
+                    query_text,
                 )
-                logger.info(f"[{llm_name}] 已确认消息发送成功")
             except Exception:
+                return False
+
+        if llm_name == "doubao":
+            confirmed = False
+            for _ in range(10):  # 最多 ~5s 轮询
+                if await _submit_confirmed():
+                    confirmed = True
+                    break
+                await page.wait_for_timeout(500)
+
+            if confirmed:
+                logger.info(f"[{llm_name}] 已确认消息发送成功")
+            else:
                 logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
-                # 重试：先点击输入框确保焦点，再用 Enter
                 try:
                     input_retry = await page.query_selector(
-                        "[data-testid='chat_input_input'], textarea"
+                        "[data-testid='chat_input_input'], textarea, [contenteditable='true']"
                     )
                     if input_retry:
                         await input_retry.click(force=True)
                         await page.wait_for_timeout(300)
                     await page.keyboard.press("Enter")
                     logger.info(f"[{llm_name}] 重试 Enter 提交")
-                    try:
-                        await page.wait_for_selector(
-                            '[data-testid="send_message"]',
-                            timeout=5000,
-                        )
+                    for _ in range(10):
+                        if await _submit_confirmed():
+                            confirmed = True
+                            break
+                        await page.wait_for_timeout(500)
+                    if confirmed:
                         logger.info(f"[{llm_name}] 重试后消息发送成功")
-                    except Exception:
+                    else:
                         logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
                         await _save_html(page, -1, f"{llm_name}_submit_failed")
                 except Exception as e:
@@ -1301,7 +1414,7 @@ async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optio
         timestamp = int(datetime.utcnow().timestamp())
         filename = f"query_{query_id}_{suffix}_{timestamp}.png" if suffix else f"query_{query_id}_{timestamp}.png"
         path = SCREENSHOT_DIR / filename
-        await page.screenshot(path=str(path), full_page=False)
+        await page.screenshot(path=str(path), full_page=True)
         logger.info(f"截图已保存: {path}")
         return path
     except Exception as e:
