@@ -44,8 +44,13 @@ CAPTCHA_SELECTORS = [
     "[class*='slide-verify']",
     "[class*='slider-verify']",
     "iframe[src*='captcha']",
+    "iframe[src*='verify']",
     "[class*='secsdk']",
+    "[id*='secsdk']",
     "[class*='geetest']",
+    "[class*='sms_scene']",
+    "[class*='whirl']",
+    "[class*='puzzle']",
 ]
 
 

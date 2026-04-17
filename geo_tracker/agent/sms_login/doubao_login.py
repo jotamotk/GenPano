@@ -700,9 +700,112 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 return False
         await page.wait_for_timeout(random.randint(2000, 3000))
 
-        # 处理可能出现的 CAPTCHA
+        # 点击下一步后截图 + dump，便于排查 SMS 未发出的问题
+        await self._save_debug(page, "after_next_click")
+        await self._detect_post_click_state(page)
+
+        # 处理可能出现的 CAPTCHA（含字节跳动 secsdk 特有模式）
         await self._handle_captcha(page)
         return True
+
+    async def _detect_post_click_state(self, page: Page) -> None:
+        """点击"下一步"后检测页面状态，排查 SMS 是否真正发出。"""
+        try:
+            state = await page.evaluate("""
+                () => {
+                    const result = { captcha: [], codeInput: false, error: null, overlay: [] };
+
+                    // 1) 字节跳动 secsdk / 滑块 / 图形验证码
+                    const captchaSelectors = [
+                        '[class*="secsdk"]', '[class*="captcha"]', '[class*="verify"]',
+                        '[class*="slider"]', '[class*="slide"]', '[class*="puzzle"]',
+                        'iframe[src*="captcha"]', 'iframe[src*="verify"]',
+                        '[id*="captcha"]', '[id*="secsdk"]',
+                        '[class*="sms_scene"]', '[class*="whirl"]',
+                    ];
+                    for (const sel of captchaSelectors) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 10 && r.height > 10) {
+                                result.captcha.push({
+                                    sel, tag: el.tagName, cls: (el.className||'').toString().slice(0,80),
+                                    w: Math.round(r.width), h: Math.round(r.height)
+                                });
+                            }
+                        }
+                    }
+
+                    // 2) 验证码输入框（说明 SMS 已发出）
+                    const inputs = document.querySelectorAll('input');
+                    for (const inp of inputs) {
+                        const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+                        if (/验证码|code|verify/.test(ph)) {
+                            const r = inp.getBoundingClientRect();
+                            if (r.width > 20) { result.codeInput = true; break; }
+                        }
+                    }
+
+                    // 3) 错误提示（如"操作频繁"、"图形验证码"）
+                    const errorTexts = document.body.innerText || '';
+                    const errorPatterns = [
+                        '操作频繁', '请稍后再试', '图形验证', '滑块', '安全验证',
+                        '频率限制', '请完成验证', 'too frequent', 'rate limit',
+                    ];
+                    for (const p of errorPatterns) {
+                        if (errorTexts.includes(p)) {
+                            result.error = p;
+                            break;
+                        }
+                    }
+
+                    // 4) 新出现的 overlay / modal / dialog
+                    const overlays = document.querySelectorAll(
+                        '[class*="overlay"], [class*="modal"], [class*="dialog"], [role="dialog"]'
+                    );
+                    for (const ol of overlays) {
+                        const r = ol.getBoundingClientRect();
+                        if (r.width > 50 && r.height > 50) {
+                            result.overlay.push({
+                                tag: ol.tagName, cls: (ol.className||'').toString().slice(0,80),
+                                text: (ol.textContent || '').trim().slice(0, 100)
+                            });
+                        }
+                    }
+
+                    return result;
+                }
+            """)
+
+            has_captcha = state.get("captcha") and len(state["captcha"]) > 0
+            has_code_input = state.get("codeInput")
+            error_text = state.get("error")
+            overlays = state.get("overlay", [])
+
+            if has_code_input:
+                logger.info("[doubao] ✓ 验证码输入框已出现，SMS 已发出")
+            elif has_captcha:
+                for c in state["captcha"]:
+                    logger.warning(
+                        f"[doubao] ✗ 检测到 CAPTCHA: {c['sel']} tag={c['tag']} "
+                        f"cls={c['cls']} size={c['w']}x{c['h']}"
+                    )
+            elif error_text:
+                logger.warning(f"[doubao] ✗ 页面报错: '{error_text}'")
+            else:
+                logger.warning(
+                    "[doubao] ⚠ 点击下一步后既无验证码输入框也无 CAPTCHA，SMS 可能未发出"
+                )
+
+            if overlays:
+                for ol in overlays:
+                    logger.info(
+                        f"[doubao] overlay: {ol['tag']} cls={ol['cls']} "
+                        f"text={ol['text']!r}"
+                    )
+
+        except Exception as e:
+            logger.warning(f"[doubao] _detect_post_click_state 异常: {e}")
 
     async def _find_next_button(self, page: Page):
         """寻找"下一步 / 发送验证码"按钮。优先 testid，其次文本匹配。"""
