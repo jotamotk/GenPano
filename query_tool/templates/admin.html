@@ -537,7 +537,9 @@
                   </span>
                   <span class="text-ink-muted" x-text="k.deltaLabel"></span>
                 </div>
-                <canvas :id="'kpi-spark-' + k.id" class="mt-3 h-8 w-full"></canvas>
+                <div class="mt-3 h-8 w-full relative">
+                  <canvas :id="'kpi-spark-' + k.id" class="absolute inset-0"></canvas>
+                </div>
               </div>
             </template>
           </div>
