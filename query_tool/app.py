@@ -348,11 +348,11 @@ APPROVED_ENGINES = ('chatgpt', 'doubao', 'deepseek', 'gemini')
 
 def _normalize_query_data():
     """One-shot cleanup run at startup:
-    1) Lowercase queries.status and queries.target_llm (so filters and case-
-       sensitive comparisons don't miss rows like 'DONE' vs 'done').
-    2) Delete queries whose target_llm is not in APPROVED_ENGINES.
-    3) Same lowercase pass on llm_accounts.llm_name for consistency.
-    Uses IS DISTINCT FROM so rows already lowercased aren't touched.
+    1) Lowercase queries.status, queries.target_llm, llm_accounts.llm_name.
+    2) Cascade-delete queries whose target_llm is not in APPROVED_ENGINES
+       (llm_responses + all analyzer descendants reference queries via FKs
+       without ON DELETE CASCADE, so we must walk the chain manually).
+    Uses IS DISTINCT FROM so already-lowercased rows aren't touched.
     """
     try:
         conn = get_db()
@@ -373,11 +373,46 @@ def _normalize_query_data():
                     "WHERE llm_name IS DISTINCT FROM LOWER(llm_name)"
                 )
                 accounts_fixed = cur.rowcount
+
+                # Cascade delete. Chain:
+                # queries → llm_responses → {brand_mentions, response_analyses,
+                # sentiment_drivers, citation_sources} → product_feature_mentions
                 cur.execute(
-                    "DELETE FROM queries WHERE LOWER(COALESCE(target_llm, '')) NOT IN %s",
+                    "CREATE TEMP TABLE _bad_q ON COMMIT DROP AS "
+                    "SELECT id FROM queries "
+                    "WHERE LOWER(COALESCE(target_llm, '')) NOT IN %s",
                     (APPROVED_ENGINES,)
                 )
-                pruned = cur.rowcount
+                cur.execute("SELECT COUNT(*) FROM _bad_q")
+                pruned = cur.fetchone()[0]
+                if pruned > 0:
+                    cur.execute(
+                        "CREATE TEMP TABLE _bad_r ON COMMIT DROP AS "
+                        "SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _bad_q)"
+                    )
+                    cur.execute("""
+                        DELETE FROM product_feature_mentions
+                        WHERE analysis_id IN (
+                            SELECT id FROM response_analyses
+                            WHERE response_id IN (SELECT id FROM _bad_r)
+                        )
+                    """)
+                    cur.execute(
+                        "DELETE FROM sentiment_drivers WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM citation_sources WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM response_analyses WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM brand_mentions WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM llm_responses WHERE query_id IN (SELECT id FROM _bad_q)"
+                    )
+                    cur.execute("DELETE FROM queries WHERE id IN (SELECT id FROM _bad_q)")
             conn.commit()
             print(
                 f"DB normalize: status_lowered={status_fixed}, "
