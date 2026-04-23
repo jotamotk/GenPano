@@ -42,6 +42,15 @@ def parse_db_url(url: str):
                 port=m.group(4), dbname=m.group(5))
 
 
+def resync_sequence(cur, table: str, col: str = "id") -> None:
+    """Bump serial to MAX(id)+1. Prod data was inserted with explicit ids,
+    leaving sequences stuck at 1 and breaking plain INSERTs."""
+    cur.execute(
+        f"SELECT setval(pg_get_serial_sequence('{table}', '{col}'), "
+        f"COALESCE((SELECT MAX({col}) FROM {table}), 0) + 1, false)"
+    )
+
+
 def upsert_brand(cur) -> int:
     cur.execute(
         "SELECT id FROM brands WHERE name = %s OR aliases::text ILIKE %s LIMIT 1",
@@ -56,6 +65,7 @@ def upsert_brand(cur) -> int:
         )
         return bid
 
+    resync_sequence(cur, "brands")
     cur.execute(
         """INSERT INTO brands (name, industry, aliases, target_market)
            VALUES (%s, %s, %s::jsonb, %s)
@@ -108,6 +118,7 @@ def main():
             rows, skipped = load_executions(json_path)
             print(f"[info] parsed {len(rows)} executions ({skipped} skipped)")
 
+            resync_sequence(cur, "queries")
             execute_batch(
                 cur,
                 """INSERT INTO queries (target_llm, query_text, brand_id, status, created_at, queued_at)
@@ -115,9 +126,8 @@ def main():
                 [(engine, text, brand_id) for engine, text in rows],
                 page_size=200,
             )
-            inserted = cur.rowcount
             conn.commit()
-            print(f"[done] inserted {inserted} queries for brand {brand_id}")
+            print(f"[done] inserted {len(rows)} queries for brand {brand_id}")
     except Exception:
         conn.rollback()
         raise

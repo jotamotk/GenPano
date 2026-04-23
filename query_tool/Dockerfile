@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com
 
 COPY app.py .
 COPY templates/ ./templates/
+COPY scripts/ ./scripts/
 
 EXPOSE 5000
 
