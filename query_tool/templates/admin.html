@@ -1989,11 +1989,12 @@
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">标签</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">最后使用</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">成功率</th>
+                      <th class="px-6 py-3 text-left font-semibold text-ink-muted">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr x-show="!accountsLoading && filteredAccountPool.length === 0">
-                      <td colspan="8" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
+                      <td colspan="9" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
                     </tr>
                     <template x-for="a in filteredAccountPool" :key="a.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
@@ -2026,6 +2027,22 @@
                         </td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.lastUsed"></td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.successRate"></td>
+                        <td class="px-6 py-3">
+                          <div class="flex items-center gap-1.5">
+                            <template x-if="a.status === 'active'">
+                              <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
+                                      @click="toggleAccount(a, 'banned')" title="禁用">禁用</button>
+                            </template>
+                            <template x-if="a.status !== 'active'">
+                              <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-success"
+                                      @click="toggleAccount(a, 'active')" title="启用">启用</button>
+                            </template>
+                            <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
+                                    @click="resetAccount(a)" title="清零失败计数与每日用量">重置</button>
+                            <button class="h-7 px-2 rounded-btn border border-danger/30 bg-surface hover:bg-danger/5 text-[11px] font-medium text-danger"
+                                    @click="deleteAccount(a)" title="删除">删除</button>
+                          </div>
+                        </td>
                       </tr>
                     </template>
                   </tbody>
@@ -5442,6 +5459,51 @@ function adminApp() {
         this.toast('加载账号池失败: ' + this.accountsError);
       } finally {
         this.accountsLoading = false;
+      }
+    },
+    async toggleAccount(a, status) {
+      try {
+        const res = await fetch(API_BASE + '/accounts/' + a.dbId + '/status', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast(status === 'active' ? '已启用 ' + a.id : '已禁用 ' + a.id);
+        await this.loadAccounts();
+      } catch (e) {
+        this.toast('操作失败: ' + (e.message || e));
+      }
+    },
+    async resetAccount(a) {
+      try {
+        const res = await fetch(API_BASE + '/accounts/' + a.dbId + '/reset', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已重置 ' + a.id);
+        await this.loadAccounts();
+      } catch (e) {
+        this.toast('重置失败: ' + (e.message || e));
+      }
+    },
+    async deleteAccount(a) {
+      if (!window.confirm('确定删除账号 ' + a.id + '（' + (a.phone || a.engine) + '）？此操作不可撤销。')) return;
+      try {
+        const res = await fetch(API_BASE + '/accounts/' + a.dbId, {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已删除 ' + a.id);
+        await this.loadAccounts();
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
       }
     },
     accountRotationConfig: {
