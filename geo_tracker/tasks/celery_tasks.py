@@ -21,6 +21,8 @@ from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFI
 from geo_tracker.db.models import (
     Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus,
     AnalysisStatus, Brand, Competitor, Prompt,
+    BrandMention, SentimentDriver, CitationSource,
+    ResponseAnalysis, ProductFeatureMention,
 )
 from geo_tracker.pool.account_pool import AccountPool
 
@@ -56,6 +58,9 @@ app.conf.update(
     task_max_retries  = 3,
     task_default_retry_delay = 60,
     worker_concurrency = 2,
+    # 硬超时：Playwright/代理极端 hang 时强杀 worker child，避免 query 永久停在 running
+    task_time_limit      = 600,
+    task_soft_time_limit = 540,
     beat_schedule = _beat_schedule,
     task_routes = {
         "geo_tracker.tasks.celery_tasks.analyze_response": {"queue": "analysis"},
@@ -63,6 +68,47 @@ app.conf.update(
         "geo_tracker.tasks.celery_tasks.aggregate_daily_scores": {"queue": "analysis"},
     },
 )
+
+
+async def _cleanup_previous_response(db, query_id: int) -> None:
+    """
+    按外键拓扑顺序清空一条 query 的旧 response 及其所有派生行。
+    llm_responses 有多张子表持有 response_id / mention_id / analysis_id，
+    bulk DELETE 不触发 ORM cascade，这里显式依序删除避免 FK 违约。
+    """
+    old_resp_ids_subq = select(LLMResponse.id).where(LLMResponse.query_id == query_id)
+    old_analysis_ids_subq = select(ResponseAnalysis.id).where(
+        ResponseAnalysis.response_id.in_(old_resp_ids_subq)
+    )
+
+    await db.execute(
+        sa_delete(ProductFeatureMention).where(
+            ProductFeatureMention.analysis_id.in_(old_analysis_ids_subq)
+        )
+    )
+    await db.execute(
+        sa_delete(SentimentDriver).where(
+            SentimentDriver.response_id.in_(old_resp_ids_subq)
+        )
+    )
+    await db.execute(
+        sa_delete(CitationSource).where(
+            CitationSource.response_id.in_(old_resp_ids_subq)
+        )
+    )
+    await db.execute(
+        sa_delete(BrandMention).where(
+            BrandMention.response_id.in_(old_resp_ids_subq)
+        )
+    )
+    await db.execute(
+        sa_delete(ResponseAnalysis).where(
+            ResponseAnalysis.response_id.in_(old_resp_ids_subq)
+        )
+    )
+    await db.execute(
+        sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
+    )
 
 
 @app.task(bind=True, max_retries=2)
@@ -178,10 +224,9 @@ def execute_query(self, query_id: int) -> dict:
                         )
                         return {"query_id": query_id, "status": "failed", "reason": failure_reason}
 
-                    # 删除旧 response（重试场景），避免唯一约束冲突
-                    await db.execute(
-                        sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
-                    )
+                    # 重试场景：清理旧 response 及其所有派生行（mentions/drivers/
+                    # citations/analyses/feature_mentions），避免 FK 违约
+                    await _cleanup_previous_response(db, query_id)
                     db.add(response)
                     query.status = QueryStatus.DONE.value
                     if account_id and pool:
@@ -208,10 +253,33 @@ def execute_query(self, query_id: int) -> dict:
 
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
-                query.status = QueryStatus.FAILED.value
+                # 原事务可能已被 aborted（例如 FK 违约），先回滚让 session 可写
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                # 重新读取 query 实体，再写回 FAILED，保证 status 一定离开 running
+                try:
+                    refetched = await db.execute(
+                        select(Query).where(Query.id == query_id)
+                    )
+                    q_obj = refetched.scalar_one_or_none()
+                    if q_obj is not None:
+                        q_obj.status = QueryStatus.FAILED.value
+                    await db.commit()
+                except Exception as commit_err:
+                    logger.error(
+                        f"Query {query_id}: failed to write FAILED status "
+                        f"after rollback: {commit_err}"
+                    )
+                # 账号失败上报走独立 try，避免把主状态写回再次打断
                 if account_id and pool:
-                    await pool.report_failure(account_id, reason="exception")
-                await db.commit()
+                    try:
+                        await pool.report_failure(account_id, reason="exception")
+                    except Exception as pool_err:
+                        logger.error(
+                            f"Query {query_id}: pool.report_failure raised: {pool_err}"
+                        )
                 return {"query_id": query_id, "status": "failed", "error": str(e)}
 
     try:
