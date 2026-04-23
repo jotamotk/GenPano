@@ -278,28 +278,6 @@ function NavSection({ label, children }) {
   );
 }
 
-/* Tools nav — external links (escape the SPA router).
-   Used for the Flask query_tool served by nginx at /query/. */
-function ExternalNavItem({ icon, label, href }) {
-  return (
-    <a
-      href={href}
-      className="w-full flex items-center gap-3 h-10 pl-7 pr-3 text-sm text-left text-themed-muted hover:text-themed-primary hover:bg-themed-subtle transition-colors"
-    >
-      <span className="shrink-0">{icon}</span>
-      <span className="font-ui-cn">{label}</span>
-    </a>
-  );
-}
-
-function ToolsSection({ t }) {
-  return (
-    <NavSection label={t('nav.tools')}>
-      <ExternalNavItem icon={icons.terminal} label={t('nav.query_tool')} href="/query/" />
-    </NavSection>
-  );
-}
-
 /* ─────────────────────────────────────────────────────────────
    BrandSidebar — §4.6-IA-v2.C.2
    ───────────────────────────────────────────────────────────── */
@@ -373,7 +351,6 @@ function BrandSidebar({ t, onNavigate, currentPath, activeProject, search }) {
             />
           ))}
         </NavSection>
-        <ToolsSection t={t} />
       </nav>
 
       {/* Project footer — MVP Project hidden per §4.6-IA-v2.G */}
@@ -439,7 +416,6 @@ function IndustrySidebar({ t, onNavigate, currentPath, search, onSwitchMode }) {
             />
           ))}
         </NavSection>
-        <ToolsSection t={t} />
       </nav>
 
       {/* Switch-to-brand footer nudge */}

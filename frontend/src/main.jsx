@@ -7,9 +7,13 @@ import { ProjectProvider } from './contexts/ProjectContext'
 import App from './App'
 import './index.css'
 
+// Router basename must match Vite's BASE_URL so routes work under /preview/.
+// Strip trailing slash — BrowserRouter expects basename without one.
+const routerBasename = import.meta.env.BASE_URL.replace(/\/$/, '')
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={routerBasename}>
       <ThemeProvider>
         <LocaleProvider>
           <ProjectProvider>

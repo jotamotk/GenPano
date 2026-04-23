@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify, Response
+from flask import Flask, render_template, render_template_string, request, jsonify, Response
 
 # Add parent directory to path so we can import geo_tracker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -310,6 +310,30 @@ def _ensure_analyzer_tables():
             print("DB migration: analyzer tables ensured (brand_mentions, sentiment_drivers, "
                   "citation_sources, response_analyses, product_feature_mentions, "
                   "geo_score_daily, industry_benchmark_daily, product_score_daily)")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+def _ensure_preview_columns():
+    """Additive columns for the preview admin console's 执行追踪 view.
+    Worker is NOT being upgraded for the preview rollout, so these fields
+    stay NULL until the worker starts populating them — the UI renders '—'
+    for NULL values.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS queued_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS started_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS latency_ms INTEGER")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS retry_reason VARCHAR(256)")
+            conn.commit()
+            print("DB migration: preview columns ensured on queries "
+                  "(queued_at, started_at, finished_at, latency_ms, retry_reason)")
         finally:
             conn.close()
     except Exception as e:
@@ -2439,6 +2463,16 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
+@app.route('/admin')
+def admin_page():
+    """Preview admin console — prototype-based layout that merges the query
+    tool's live data (执行追踪, 账号池, Debug HTML) into one view.
+    The template lives in templates/admin.html; all APIs it consumes already
+    exist on this Flask app (/api/queries, /api/accounts, etc).
+    """
+    return render_template('admin.html')
+
+
 @app.route('/api/stats')
 def stats():
     conn = get_db()
@@ -2525,6 +2559,11 @@ def queries():
                     q.created_at,
                     q.executed_at,
                     q.retry_count,
+                    q.queued_at,
+                    q.started_at,
+                    q.finished_at,
+                    q.latency_ms,
+                    q.retry_reason,
                     r.raw_text as response,
                     r.llm_version,
                     r.citations_json as citations,
@@ -2566,8 +2605,8 @@ def create_query():
         try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO queries (target_llm, query_text, brand_id, status, created_at)
-                    VALUES (%s, %s, %s, 'pending', NOW())
+                    INSERT INTO queries (target_llm, query_text, brand_id, status, created_at, queued_at)
+                    VALUES (%s, %s, %s, 'pending', NOW(), NOW())
                     RETURNING id
                 """, (target_llm, query_text, brand_id))
                 query_id = cur.fetchone()[0]
@@ -2594,6 +2633,8 @@ def create_query():
 def retry_query(query_id):
     try:
         from psycopg2.extras import RealDictCursor
+        payload = request.get_json(silent=True) or {}
+        retry_reason = (payload.get('reason') or '').strip() or None
         conn = get_db()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -2605,11 +2646,20 @@ def retry_query(query_id):
                 if not query:
                     return jsonify({'success': False, 'error': 'Query not found'})
 
+                # Reset timing fields so the new attempt reports fresh latency.
+                # started_at / finished_at / latency_ms are owned by the worker;
+                # clearing them here keeps a clean slate per retry.
                 cur.execute("""
                     UPDATE queries
-                    SET status = 'pending', retry_count = COALESCE(retry_count, 0) + 1
+                    SET status = 'pending',
+                        retry_count = COALESCE(retry_count, 0) + 1,
+                        queued_at = NOW(),
+                        started_at = NULL,
+                        finished_at = NULL,
+                        latency_ms = NULL,
+                        retry_reason = %s
                     WHERE id = %s
-                """, (query_id,))
+                """, (retry_reason, query_id))
             conn.commit()
 
             if HAS_CELERY and celery_app is not None:
@@ -3783,6 +3833,7 @@ def analyzer_rerun_single(response_id):
 
 _ensure_citations_column()
 _ensure_analyzer_tables()
+_ensure_preview_columns()
 
 
 if __name__ == '__main__':

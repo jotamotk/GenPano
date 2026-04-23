@@ -1,7 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// VITE_BASE_PATH lets a single codebase produce two builds:
+//   - prod build:    base = '/'         (served from https://host/)
+//   - preview build: base = '/preview/' (served from https://host/preview/)
+// Must end with '/'. Leave unset for local dev.
+const basePath = process.env.VITE_BASE_PATH || '/'
+
 export default defineConfig({
+  base: basePath,
   plugins: [react()],
   server: {
     port: 3000,
