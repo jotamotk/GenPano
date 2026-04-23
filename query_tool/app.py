@@ -2589,6 +2589,7 @@ def queries():
     llm = request.args.get('llm')
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
+    topic_id = request.args.get('topic_id')
     query_id = request.args.get('id')
     prompt_q = (request.args.get('q') or '').strip()
     limit = int(request.args.get('limit', 50))
@@ -2620,6 +2621,9 @@ def queries():
         if brand_id:
             where.append("q.brand_id = %s")
             params.append(int(brand_id))
+        if topic_id:
+            where.append("q.prompt_id IN (SELECT id FROM prompts WHERE topic_id = %s)")
+            params.append(int(topic_id))
         if prompt_q:
             where.append("q.query_text ILIKE %s")
             params.append(f"%{prompt_q}%")
@@ -3635,6 +3639,30 @@ def analyzer_brands():
         from psycopg2.extras import RealDictCursor
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT id, name FROM brands ORDER BY name")
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/topics')
+def list_topics():
+    """Topics filtered by brand_id (optional). Used by the attempt-tracker
+    filter dropdown, which cascades from the brand selector."""
+    brand_id = request.args.get('brand_id')
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if brand_id:
+                cur.execute(
+                    "SELECT id, brand_id, text, category FROM topics "
+                    "WHERE brand_id = %s ORDER BY id",
+                    (int(brand_id),),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, brand_id, text, category FROM topics ORDER BY brand_id, id"
+                )
             return jsonify(cur.fetchall())
     finally:
         conn.close()

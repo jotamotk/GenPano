@@ -1,15 +1,17 @@
-"""Import Estée Lauder sample queries from estee-samples.json into the queries table.
+"""Import Estée Lauder sample queries from estee-samples.json.
 
-Reads the JSON file's `queryExecutions` array (1500 rows, 500 prompts × 3 engines),
-maps `engineId` → `target_llm` (deepseek-cn → deepseek), and bulk-inserts into
-`queries` linked to an upserted Estée Lauder brand row.
+Builds the full hierarchy so downstream filtering works:
+    brand (Estée Lauder) → topics (10) → prompts (100) → queries (1500)
+
+Each row in `queryExecutions` → one `queries` row, linked via `prompt_id`.
+`engineId` is mapped (deepseek-cn → deepseek). Topics/prompts are upserted by
+(brand_id, text) / (topic_id, text) so re-runs don't duplicate.
 
 Usage:
     python import_estee_samples.py [path/to/estee-samples.json] [--force]
 
-Defaults to the checked-in prototype path on Frank's laptop; override with an arg
-when running on the server. `--force` re-inserts even if queries already exist
-for the brand (otherwise the script exits idempotently).
+`--force` wipes existing queries for the brand and re-inserts (topics/prompts
+are kept and reused — safe because they're matched by text).
 """
 import json
 import os
@@ -43,8 +45,6 @@ def parse_db_url(url: str):
 
 
 def resync_sequence(cur, table: str, col: str = "id") -> None:
-    """Bump serial to MAX(id)+1. Prod data was inserted with explicit ids,
-    leaving sequences stuck at 1 and breaking plain INSERTs."""
     cur.execute(
         f"SELECT setval(pg_get_serial_sequence('{table}', '{col}'), "
         f"COALESCE((SELECT MAX({col}) FROM {table}), 0) + 1, false)"
@@ -75,20 +75,107 @@ def upsert_brand(cur) -> int:
     return cur.fetchone()[0]
 
 
-def load_executions(path: str):
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    execs = data.get("queryExecutions") or []
+def upsert_topics(cur, brand_id: int, topics):
+    """Returns {json_topic_id: db_topic_id}."""
+    mapping = {}
+    for t in topics:
+        text = (t.get("textZh") or "").strip()
+        if not text:
+            continue
+        cur.execute(
+            "SELECT id FROM topics WHERE brand_id = %s AND text = %s LIMIT 1",
+            (brand_id, text),
+        )
+        row = cur.fetchone()
+        if row:
+            mapping[t["id"]] = row[0]
+            continue
+        resync_sequence(cur, "topics")
+        cur.execute(
+            """INSERT INTO topics (brand_id, text, category, generated_by, status)
+               VALUES (%s, %s, %s, 'estee-import', 'active')
+               RETURNING id""",
+            (brand_id, text, t.get("dimension")),
+        )
+        mapping[t["id"]] = cur.fetchone()[0]
+    return mapping
+
+
+def upsert_prompts(cur, topic_id_map, prompts):
+    """Returns {json_prompt_id: db_prompt_id}."""
+    mapping = {}
+    for p in prompts:
+        topic_db_id = topic_id_map.get(p.get("topicId"))
+        text = (p.get("textZh") or "").strip()
+        if not topic_db_id or not text:
+            continue
+        cur.execute(
+            "SELECT id FROM prompts WHERE topic_id = %s AND text = %s LIMIT 1",
+            (topic_db_id, text),
+        )
+        row = cur.fetchone()
+        if row:
+            mapping[p["id"]] = row[0]
+            continue
+        resync_sequence(cur, "prompts")
+        cur.execute(
+            """INSERT INTO prompts (topic_id, text, intent, language)
+               VALUES (%s, %s, %s, 'zh')
+               RETURNING id""",
+            (topic_db_id, text, p.get("intent")),
+        )
+        mapping[p["id"]] = cur.fetchone()[0]
+    return mapping
+
+
+def load_executions(execs, prompt_id_map):
     rows = []
     skipped = 0
     for e in execs:
         engine = ENGINE_MAP.get(str(e.get("engineId", "")).lower())
         text = (e.get("textZh") or "").strip()
-        if not engine or not text:
+        prompt_db_id = prompt_id_map.get(e.get("promptId"))
+        if not engine or not text or not prompt_db_id:
             skipped += 1
             continue
-        rows.append((engine, text))
+        rows.append((engine, text, prompt_db_id))
     return rows, skipped
+
+
+def wipe_brand_queries(cur, brand_id: int) -> int:
+    """Cascade delete queries for a brand. All 1500 are pending with no
+    downstream response data, but we still walk the FK chain for safety."""
+    cur.execute(
+        "CREATE TEMP TABLE _qids ON COMMIT DROP AS "
+        "SELECT id FROM queries WHERE brand_id = %s",
+        (brand_id,),
+    )
+    cur.execute("SELECT COUNT(*) FROM _qids")
+    n = cur.fetchone()[0]
+    if n == 0:
+        return 0
+    for sql in [
+        "DELETE FROM product_feature_mentions WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM sentiment_drivers WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM citation_sources WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM response_analyses WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM brand_mentions WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM llm_responses WHERE query_id IN (SELECT id FROM _qids)",
+        "DELETE FROM queries WHERE id IN (SELECT id FROM _qids)",
+    ]:
+        try:
+            cur.execute(sql)
+        except Exception as e:
+            # Some analyzer tables may not exist on older DBs; non-fatal.
+            print(f"[warn] {sql[:60]}... -> {e}")
+            cur.execute("ROLLBACK TO SAVEPOINT before_wipe")
+            raise
+    return n
 
 
 def main():
@@ -99,6 +186,14 @@ def main():
     if not os.path.exists(json_path):
         print(f"[err] JSON not found: {json_path}", file=sys.stderr)
         sys.exit(1)
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    topics = data.get("topics") or []
+    prompts = data.get("prompts") or []
+    execs = data.get("queryExecutions") or []
+    print(f"[info] JSON: {len(topics)} topics, {len(prompts)} prompts, {len(execs)} executions")
 
     db_url = os.getenv("DATABASE_URL", "postgresql://genpano:genpano2026@localhost:5432/genpano")
     conn = psycopg2.connect(**parse_db_url(db_url))
@@ -111,19 +206,28 @@ def main():
             cur.execute("SELECT COUNT(*) FROM queries WHERE brand_id = %s", (brand_id,))
             existing = cur.fetchone()[0]
             if existing and not force:
-                print(f"[skip] {existing} queries already exist for brand {brand_id}; use --force to re-insert")
+                print(f"[skip] {existing} queries already exist for brand {brand_id}; use --force to wipe + re-insert")
                 conn.rollback()
                 return
+            if existing and force:
+                wiped = wipe_brand_queries(cur, brand_id)
+                print(f"[wipe] removed {wiped} existing queries for brand {brand_id}")
 
-            rows, skipped = load_executions(json_path)
-            print(f"[info] parsed {len(rows)} executions ({skipped} skipped)")
+            topic_id_map = upsert_topics(cur, brand_id, topics)
+            print(f"[ok] upserted {len(topic_id_map)} topics")
+
+            prompt_id_map = upsert_prompts(cur, topic_id_map, prompts)
+            print(f"[ok] upserted {len(prompt_id_map)} prompts")
+
+            rows, skipped = load_executions(execs, prompt_id_map)
+            print(f"[info] queued {len(rows)} queries ({skipped} skipped)")
 
             resync_sequence(cur, "queries")
             execute_batch(
                 cur,
-                """INSERT INTO queries (target_llm, query_text, brand_id, status, created_at, queued_at)
-                   VALUES (%s, %s, %s, 'pending', NOW(), NOW())""",
-                [(engine, text, brand_id) for engine, text in rows],
+                """INSERT INTO queries (target_llm, query_text, brand_id, prompt_id, status, created_at, queued_at)
+                   VALUES (%s, %s, %s, %s, 'pending', NOW(), NOW())""",
+                [(engine, text, brand_id, prompt_id) for engine, text, prompt_id in rows],
                 page_size=200,
             )
             conn.commit()

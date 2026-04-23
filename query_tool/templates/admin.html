@@ -2521,10 +2521,18 @@
               <div class="flex items-center gap-2 flex-wrap">
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
                         x-model="attemptFilter.brandId"
-                        @change="attemptsPage=1; loadAttempts()">
+                        @change="attemptFilter.topicId=''; loadTopics(); attemptsPage=1; loadAttempts()">
                   <option value="">全部品牌</option>
                   <template x-for="b in availableBrands" :key="b.id">
                     <option :value="b.id" x-text="b.name"></option>
+                  </template>
+                </select>
+                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
+                        x-model="attemptFilter.topicId"
+                        @change="attemptsPage=1; loadAttempts()">
+                  <option value="">全部 Topic</option>
+                  <template x-for="t in availableTopics" :key="t.id">
+                    <option :value="t.id" x-text="t.text"></option>
                   </template>
                 </select>
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
@@ -2557,7 +2565,7 @@
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { brandId:'', engine:'', status:'', queryId:'', promptQ:'' }; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptQ:'' }; availableTopics=[]; attemptsPage=1; loadAttempts()">重置</button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -5139,8 +5147,9 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
-    attemptFilter: { brandId: '', engine: '', status: '', queryId: '', promptQ: '' },
+    attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptQ: '' },
     availableBrands: [],
+    availableTopics: [],
 
     async loadAttempts() {
       this.attemptsLoading = true;
@@ -5154,6 +5163,7 @@ function adminApp() {
         qp.set('offset', offset);
         qp.set('count', '1');
         if (this.attemptFilter.brandId) qp.set('brand_id', this.attemptFilter.brandId);
+        if (this.attemptFilter.topicId) qp.set('topic_id', this.attemptFilter.topicId);
         if (this.attemptFilter.engine)  qp.set('llm',    this.attemptFilter.engine);
         if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
         if (this.attemptFilter.queryId) qp.set('id',     this.attemptFilter.queryId);
@@ -5188,6 +5198,21 @@ function adminApp() {
         this.availableBrands = Array.isArray(list) ? list : [];
       } catch (e) {
         // Non-fatal — filter just stays empty.
+      }
+    },
+
+    async loadTopics() {
+      // Topic dropdown cascades from brand selection — skip the fetch when no
+      // brand is chosen (would otherwise return the whole cross-brand list).
+      if (!this.attemptFilter.brandId) { this.availableTopics = []; return; }
+      try {
+        const qp = new URLSearchParams({ brand_id: this.attemptFilter.brandId });
+        const res = await fetch(API_BASE + '/topics?' + qp.toString(), { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const list = await res.json();
+        this.availableTopics = Array.isArray(list) ? list : [];
+      } catch (e) {
+        // Non-fatal — topic filter just stays empty.
       }
     },
 
