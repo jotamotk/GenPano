@@ -3769,6 +3769,30 @@
           <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-body max-h-[400px] overflow-auto whitespace-pre-wrap"
                x-text="debugDrawer.responseText || '(无数据 — 查询尚未完成或未保存)'"></div>
         </div>
+        <!-- Screenshots -->
+        <div>
+          <div class="text-[11px] font-semibold text-ink-muted mb-1 flex items-center gap-2">
+            <span>截图</span>
+            <span x-show="debugScreenshotsLoading" class="text-ink-faint">加载中…</span>
+            <span x-show="!debugScreenshotsLoading && debugScreenshots.length === 0" class="text-ink-faint">（无截图）</span>
+          </div>
+          <template x-if="!debugScreenshotsLoading && debugScreenshots.length > 0">
+            <div class="space-y-2">
+              <template x-for="(s, idx) in debugScreenshots" :key="s.url">
+                <div class="rounded-card bg-surface-page border border-b-card p-2">
+                  <div class="flex items-center justify-between mb-1 text-[10px] text-ink-muted">
+                    <span class="font-mono truncate" :title="s.name" x-text="s.name"></span>
+                    <a :href="s.url" target="_blank" class="text-accent hover:underline ml-2">原图 ↗</a>
+                  </div>
+                  <a :href="s.url" target="_blank">
+                    <img :src="s.url" :alt="s.name" class="w-full rounded border border-b-card"
+                         style="max-height: 500px; object-fit: contain; background: #f8f8f8;" />
+                  </a>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
         <!-- Citations -->
         <template x-if="debugDrawer.citations">
           <div>
@@ -5537,9 +5561,38 @@ function adminApp() {
 
     // Debug drawer — shows the stored response_html / raw_text / citations for a query.
     debugDrawer: null,
+    debugScreenshots: [],
+    debugScreenshotsLoading: false,
     openDebugDrawer(att) {
       this.debugDrawer = att;
+      this.debugScreenshots = [];
       this.$nextTick(() => lucide.createIcons());
+      // Pull the latest debug artifacts (PNG/JPG) for this query. SCREENSHOT_DIR
+      // lives on the worker host — image is served binary via /api/screenshot.
+      this.loadDebugScreenshots(att.queryDbId);
+    },
+
+    async loadDebugScreenshots(queryId) {
+      if (!queryId) return;
+      this.debugScreenshotsLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/html_files?query_id=' + queryId, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const items = Array.isArray(data) ? data : (data.items || []);
+        this.debugScreenshots = items
+          .filter(f => f.type === 'image')
+          .slice(0, 5)
+          .map(f => ({
+            name: f.name,
+            url: API_BASE + '/screenshot?path=' + encodeURIComponent(f.path),
+            mtime: f.mtime,
+          }));
+      } catch (e) {
+        this.debugScreenshots = [];
+      } finally {
+        this.debugScreenshotsLoading = false;
+      }
     },
 
     // ======== CHARTS ========
