@@ -2520,6 +2520,14 @@
               <!-- Filter bar -->
               <div class="flex items-center gap-2 flex-wrap">
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
+                        x-model="attemptFilter.brandId"
+                        @change="attemptsPage=1; loadAttempts()">
+                  <option value="">全部品牌</option>
+                  <template x-for="b in availableBrands" :key="b.id">
+                    <option :value="b.id" x-text="b.name"></option>
+                  </template>
+                </select>
+                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
                         x-model="attemptFilter.engine"
                         @change="attemptsPage=1; loadAttempts()">
                   <option value="">全部引擎</option>
@@ -2544,7 +2552,7 @@
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { engine:'', status:'', queryId:'' }; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', engine:'', status:'', queryId:'' }; attemptsPage=1; loadAttempts()">重置</button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -5126,7 +5134,8 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
-    attemptFilter: { engine: '', status: '', queryId: '' },
+    attemptFilter: { brandId: '', engine: '', status: '', queryId: '' },
+    availableBrands: [],
 
     async loadAttempts() {
       this.attemptsLoading = true;
@@ -5139,6 +5148,7 @@ function adminApp() {
         qp.set('limit', size);
         qp.set('offset', offset);
         qp.set('count', '1');
+        if (this.attemptFilter.brandId) qp.set('brand_id', this.attemptFilter.brandId);
         if (this.attemptFilter.engine)  qp.set('llm',    this.attemptFilter.engine);
         if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
         if (this.attemptFilter.queryId) qp.set('id',     this.attemptFilter.queryId);
@@ -5161,6 +5171,17 @@ function adminApp() {
         this.toast('加载执行追踪失败: ' + this.attemptsError);
       } finally {
         this.attemptsLoading = false;
+      }
+    },
+
+    async loadBrands() {
+      try {
+        const res = await fetch(API_BASE + '/analyzer/brands', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const list = await res.json();
+        this.availableBrands = Array.isArray(list) ? list : [];
+      } catch (e) {
+        // Non-fatal — filter just stays empty.
       }
     },
 
@@ -5542,7 +5563,7 @@ function adminApp() {
     goto(key){
       this.page = key;
       this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-      if (key === 'tracker-attempts') this.loadAttempts();
+      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
       if (key === 'planner-resources') this.loadAccounts();
     },
 
