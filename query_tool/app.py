@@ -2590,6 +2590,7 @@ def queries():
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
     query_id = request.args.get('id')
+    prompt_q = (request.args.get('q') or '').strip()
     limit = int(request.args.get('limit', 50))
     offset = int(request.args.get('offset', 0))
     sort = request.args.get('sort', 'id_desc')
@@ -2619,6 +2620,9 @@ def queries():
         if brand_id:
             where.append("q.brand_id = %s")
             params.append(int(brand_id))
+        if prompt_q:
+            where.append("q.query_text ILIKE %s")
+            params.append(f"%{prompt_q}%")
 
         where_clause = " AND ".join(where) if where else "1=1"
 

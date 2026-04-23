@@ -2549,10 +2549,15 @@
                        x-model="attemptFilter.queryId"
                        @keydown.enter="attemptsPage=1; loadAttempts()"
                        class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-32" />
+                <input type="text"
+                       placeholder="Prompt 内容"
+                       x-model="attemptFilter.promptQ"
+                       @keydown.enter="attemptsPage=1; loadAttempts()"
+                       class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-56" />
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { brandId:'', engine:'', status:'', queryId:'' }; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', engine:'', status:'', queryId:'', promptQ:'' }; attemptsPage=1; loadAttempts()">重置</button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -5134,7 +5139,7 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
-    attemptFilter: { brandId: '', engine: '', status: '', queryId: '' },
+    attemptFilter: { brandId: '', engine: '', status: '', queryId: '', promptQ: '' },
     availableBrands: [],
 
     async loadAttempts() {
@@ -5152,6 +5157,7 @@ function adminApp() {
         if (this.attemptFilter.engine)  qp.set('llm',    this.attemptFilter.engine);
         if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
         if (this.attemptFilter.queryId) qp.set('id',     this.attemptFilter.queryId);
+        if (this.attemptFilter.promptQ) qp.set('q',      this.attemptFilter.promptQ.trim());
         const res = await fetch(API_BASE + '/queries?' + qp.toString(),
                                 { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
