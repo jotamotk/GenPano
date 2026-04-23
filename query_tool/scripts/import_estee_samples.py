@@ -154,9 +154,13 @@ def wipe_brand_queries(cur, brand_id: int) -> int:
     n = cur.fetchone()[0]
     if n == 0:
         return 0
+    # Cascade order mirrors app.py:_normalize_query_data. Note:
+    # product_feature_mentions links via analysis_id → response_analyses → llm_responses,
+    # NOT directly to llm_responses.
     for sql in [
-        "DELETE FROM product_feature_mentions WHERE response_id IN "
-        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
+        "DELETE FROM product_feature_mentions WHERE analysis_id IN "
+        "(SELECT id FROM response_analyses WHERE response_id IN "
+        "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids)))",
         "DELETE FROM sentiment_drivers WHERE response_id IN "
         "(SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _qids))",
         "DELETE FROM citation_sources WHERE response_id IN "
@@ -168,13 +172,7 @@ def wipe_brand_queries(cur, brand_id: int) -> int:
         "DELETE FROM llm_responses WHERE query_id IN (SELECT id FROM _qids)",
         "DELETE FROM queries WHERE id IN (SELECT id FROM _qids)",
     ]:
-        try:
-            cur.execute(sql)
-        except Exception as e:
-            # Some analyzer tables may not exist on older DBs; non-fatal.
-            print(f"[warn] {sql[:60]}... -> {e}")
-            cur.execute("ROLLBACK TO SAVEPOINT before_wipe")
-            raise
+        cur.execute(sql)
     return n
 
 
