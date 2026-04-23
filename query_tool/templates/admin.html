@@ -1971,7 +1971,7 @@
                   <span x-show="accountsLoading" class="text-[12px] text-ink-muted">加载中…</span>
                   <span x-show="accountsError" class="text-[12px] text-danger" x-text="accountsError"></span>
                   <button class="h-9 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[13px] font-medium" @click="loadAccounts()">刷新</button>
-                  <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90">批量导入</button>
+                  <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90" @click="openAccountModal('cookies')">+ 接入账号</button>
                 </div>
               </div>
 
@@ -1990,10 +1990,10 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <tr x-show="!accountsLoading && accountPoolList.length === 0">
+                    <tr x-show="!accountsLoading && filteredAccountPool.length === 0">
                       <td colspan="8" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
                     </tr>
-                    <template x-for="a in accountPoolList" :key="a.id">
+                    <template x-for="a in filteredAccountPool" :key="a.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
                         <td class="px-6 py-3 font-mono text-[12px] font-semibold text-ink" x-text="a.id"></td>
                         <td class="px-6 py-3 font-mono text-[12px] text-ink-body" x-text="a.phone || '—'"></td>
@@ -2292,8 +2292,8 @@
           <!-- Header with action -->
           <div class="flex items-center justify-between">
             <h3 class="text-[14px] font-semibold text-ink">账号池详情</h3>
-            <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90">
-              批量导入
+            <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90" @click="openAccountModal('cookies')">
+              + 接入账号
             </button>
           </div>
 
@@ -2509,36 +2509,42 @@
               <!-- Summary bar -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
                 <div class="flex items-center gap-6 text-[12px]">
-                  <span class="text-ink-muted">总 Attempt: <span class="font-bold text-ink" x-text="attemptsSummary.total.toLocaleString()"></span></span>
-                  <span>成功: <span class="font-bold text-success" x-text="attemptsSummary.success.toLocaleString() + ' (' + attemptsSummary.successRate + '%)'"></span></span>
-                  <span>失败: <span class="font-bold text-danger" x-text="attemptsSummary.failed.toLocaleString()"></span></span>
-                  <span>重试中: <span class="font-bold text-warning" x-text="attemptsSummary.retrying"></span></span>
-                  <span>待人工: <span class="font-bold text-accent" x-text="attemptsSummary.waitingManual"></span></span>
-                  <span>DLQ: <span class="font-bold text-danger" x-text="attemptsSummary.dlq"></span></span>
+                  <span class="text-ink-muted">总 Query: <span class="font-bold text-ink" x-text="attemptsSummary.total.toLocaleString()"></span></span>
+                  <span>成功: <span class="font-bold text-success" x-text="(attemptsSummary.success || 0).toLocaleString() + ' (' + attemptsSummary.successRate + '%)'"></span></span>
+                  <span>失败: <span class="font-bold text-danger" x-text="(attemptsSummary.failed || 0).toLocaleString()"></span></span>
+                  <span>运行中: <span class="font-bold text-info" x-text="(attemptsSummary.running || 0).toLocaleString()"></span></span>
+                  <span>待执行: <span class="font-bold text-ink-muted" x-text="(attemptsSummary.pending || 0).toLocaleString()"></span></span>
                 </div>
               </div>
 
               <!-- Filter bar -->
               <div class="flex items-center gap-2 flex-wrap">
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
+                        x-model="attemptFilter.engine"
+                        @change="attemptsPage=1; loadAttempts()">
                   <option value="">全部引擎</option>
-                  <option>ChatGPT</option><option>豆包</option><option>DeepSeek</option>
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="doubao">豆包</option>
+                  <option value="deepseek">DeepSeek</option>
                 </select>
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
+                        x-model="attemptFilter.status"
+                        @change="attemptsPage=1; loadAttempts()">
                   <option value="">全部状态</option>
-                  <option>success</option><option>failed</option><option>retrying</option><option>waiting_manual</option><option>dlq</option>
+                  <option value="done">✅ 成功</option>
+                  <option value="failed">❌ 失败</option>
+                  <option value="running">▶ 运行中</option>
+                  <option value="pending">⏸ 待执行</option>
                 </select>
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                  <option value="">全部错误码</option>
-                  <template x-for="cat in retryErrorCards" :key="cat.code">
-                    <option :value="cat.code" x-text="cat.code + ' (' + cat.count + ')'"></option>
-                  </template>
-                </select>
-                <input placeholder="搜索 Query ID / Attempt ID" class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-52" />
-                <div class="ml-auto flex items-center gap-2">
-                  <button class="h-8 px-3 rounded-btn text-[12px] font-medium border border-warning/30 text-warning bg-white hover:bg-warning/5">批量送 DLQ</button>
-                  <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">批量重试</button>
-                </div>
+                <input type="number"
+                       placeholder="Query ID"
+                       x-model="attemptFilter.queryId"
+                       @keydown.enter="attemptsPage=1; loadAttempts()"
+                       class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-32" />
+                <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
+                        @click="attemptsPage=1; loadAttempts()">搜索</button>
+                <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
+                        @click="attemptFilter = { engine:'', status:'', queryId:'' }; attemptsPage=1; loadAttempts()">重置</button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -2583,8 +2589,8 @@
                         </td>
                         <td class="px-3 py-2.5">
                           <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
-                                :class="att.status==='success' ? 'bg-success/10 text-success' : att.status==='failed' ? 'bg-danger/10 text-danger' : att.status==='retrying' ? 'bg-warning/10 text-warning' : att.status==='waiting_manual' ? 'bg-accent/10 text-accent' : att.status==='dlq' ? 'bg-danger/10 text-danger' : 'bg-gray-100 text-gray-500'"
-                                x-text="att.status==='success' ? '✅ 成功' : att.status==='failed' ? '❌ 失败' : att.status==='retrying' ? '⏳ 重试中' : att.status==='waiting_manual' ? '🔧 待人工' : att.status==='dlq' ? '☠️ DLQ' : att.status"></span>
+                                :class="att.status==='success' ? 'bg-success/10 text-success' : att.status==='failed' ? 'bg-danger/10 text-danger' : att.status==='running' ? 'bg-info/10 text-info' : att.status==='pending' ? 'bg-gray-100 text-gray-600' : att.status==='retrying' ? 'bg-warning/10 text-warning' : att.status==='waiting_manual' ? 'bg-accent/10 text-accent' : att.status==='dlq' ? 'bg-danger/10 text-danger' : 'bg-gray-100 text-gray-500'"
+                                x-text="att.status==='success' ? '✅ 成功' : att.status==='failed' ? '❌ 失败' : att.status==='running' ? '▶ 运行中' : att.status==='pending' ? '⏸ 待执行' : att.status==='retrying' ? '⏳ 重试中' : att.status==='waiting_manual' ? '🔧 待人工' : att.status==='dlq' ? '☠️ DLQ' : att.status"></span>
                         </td>
                         <td class="px-3 py-2.5 max-w-[200px]">
                           <div class="font-mono text-[10px] truncate" :class="att.errorCode ? 'text-danger font-semibold' : 'text-ink-muted'" :title="att.errorCode || ''" x-text="att.errorCode || '—'"></div>
@@ -4274,6 +4280,125 @@
   </div>
 </div>
 
+<!-- ============ ACCOUNT REGISTRATION MODAL ============ -->
+<div x-show="accountModal" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-4" @click="accountModal=false">
+  <div x-show="accountModal" x-cloak class="bg-surface rounded-card-lg shadow-elevated w-full max-w-2xl overflow-hidden" @click.stop>
+    <div class="px-5 h-12 border-b border-b-card flex items-center justify-between bg-surface-page">
+      <h3 class="text-[15px] font-bold text-ink">账号接入</h3>
+      <button class="w-7 h-7 rounded-btn hover:bg-surface flex items-center justify-center text-ink-muted" @click="accountModal=false">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <!-- Tab header -->
+    <div class="px-5 pt-3 flex items-center gap-1 text-[12px] font-semibold border-b border-b-card">
+      <button class="h-8 px-3 rounded-t-btn border-b-2"
+              :class="accountModalTab==='cookies' ? 'border-accent text-accent' : 'border-transparent text-ink-muted hover:text-ink'"
+              @click="accountModalTab='cookies'">导入 Cookies</button>
+      <button class="h-8 px-3 rounded-t-btn border-b-2"
+              :class="accountModalTab==='sms' ? 'border-accent text-accent' : 'border-transparent text-ink-muted hover:text-ink'"
+              @click="accountModalTab='sms'">SMS 注册</button>
+      <button class="h-8 px-3 rounded-t-btn border-b-2"
+              :class="accountModalTab==='login' ? 'border-accent text-accent' : 'border-transparent text-ink-muted hover:text-ink'"
+              @click="accountModalTab='login'">自动登录</button>
+    </div>
+
+    <div class="px-5 py-4 max-h-[70vh] overflow-y-auto">
+      <!-- Tab 1: Import cookies -->
+      <template x-if="accountModalTab==='cookies'">
+        <div class="space-y-3">
+          <div class="grid grid-cols-3 gap-3">
+            <label class="text-[12px] font-medium text-ink-body">
+              平台
+              <select x-model="cookieForm.platform" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]">
+                <option value="chatgpt">ChatGPT</option>
+                <option value="doubao">豆包</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </label>
+            <label class="text-[12px] font-medium text-ink-body">
+              标签 / 手机号
+              <input type="text" x-model="cookieForm.label" placeholder="可选" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]" />
+            </label>
+            <label class="text-[12px] font-medium text-ink-body">
+              每日上限
+              <input type="number" x-model.number="cookieForm.dailyLimit" min="1" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]" />
+            </label>
+          </div>
+          <label class="text-[12px] font-medium text-ink-body block">
+            Cookies JSON
+            <textarea x-model="cookieForm.cookiesJson" rows="6" placeholder='[{"name":"sessionid","value":"...","domain":".chatgpt.com"}, ...]'
+                      class="mt-1 w-full rounded-input border border-b-default bg-white text-[12px] font-mono p-2 focus:outline-none focus:shadow-focus-accent"></textarea>
+          </label>
+          <label class="text-[12px] font-medium text-ink-body block">
+            localStorage JSON（可选）
+            <textarea x-model="cookieForm.localStorage" rows="2" placeholder='{"userToken":"..."}'
+                      class="mt-1 w-full rounded-input border border-b-default bg-white text-[12px] font-mono p-2"></textarea>
+          </label>
+          <div class="flex items-center justify-end gap-2 pt-2">
+            <button class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[13px] text-ink-body hover:bg-surface-page" @click="accountModal=false">取消</button>
+            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50"
+                    :disabled="accountBusy"
+                    @click="submitImportCookies()">
+              <span x-text="accountBusy ? '提交中…' : '导入'"></span>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Tab 2: SMS Register -->
+      <template x-if="accountModalTab==='sms'">
+        <div class="space-y-3">
+          <p class="text-[12px] text-ink-muted">触发 worker 端的自动 SMS 注册流程，会在后台通过 LubanSMS 接码平台完成手机号注册并保存 cookies。</p>
+          <label class="text-[12px] font-medium text-ink-body block">
+            平台
+            <select x-model="smsForm.platform" class="mt-1 h-9 px-3 rounded-input border border-b-default bg-white text-[13px]">
+              <option value="chatgpt">ChatGPT</option>
+              <option value="doubao">豆包</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="gemini">Gemini</option>
+            </select>
+          </label>
+          <div x-show="accountTaskStatus" class="rounded-btn bg-surface-page border border-b-card px-3 py-2 text-[12px]" x-text="accountTaskStatus"></div>
+          <div class="flex items-center justify-end gap-2 pt-2">
+            <button class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[13px] text-ink-body hover:bg-surface-page" @click="accountModal=false">关闭</button>
+            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50"
+                    :disabled="accountBusy"
+                    @click="submitSmsRegister()">
+              <span x-text="accountBusy ? '运行中…' : '开始注册'"></span>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Tab 3: Auto login -->
+      <template x-if="accountModalTab==='login'">
+        <div class="space-y-3">
+          <p class="text-[12px] text-ink-muted">为已存在的账号重新获取 cookies（比如 cookies 过期时），通过 worker 发起一次 SMS 登录。</p>
+          <label class="text-[12px] font-medium text-ink-body block">
+            账号
+            <select x-model.number="loginForm.accountId" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]">
+              <option :value="0">— 请选择 —</option>
+              <template x-for="a in filteredAccountPool" :key="a.dbId">
+                <option :value="a.dbId" x-text="a.id + ' · ' + a.engine + (a.phone ? ' · ' + a.phone : '')"></option>
+              </template>
+            </select>
+          </label>
+          <div x-show="accountTaskStatus" class="rounded-btn bg-surface-page border border-b-card px-3 py-2 text-[12px]" x-text="accountTaskStatus"></div>
+          <div class="flex items-center justify-end gap-2 pt-2">
+            <button class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[13px] text-ink-body hover:bg-surface-page" @click="accountModal=false">关闭</button>
+            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50"
+                    :disabled="accountBusy || !loginForm.accountId"
+                    @click="submitAutoLogin()">
+              <span x-text="accountBusy ? '运行中…' : '发起登录'"></span>
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
 <!-- ============ APP STATE + CHARTS ============ -->
 <script>
 // Resolve the API base path so the admin page works identically whether it's
@@ -4291,11 +4416,15 @@ function mapQueryRowToAttempt(r) {
     deepseek: 'DeepSeek', kimi: 'Kimi', glm: 'GLM',
   };
   const rawStatus = String(r.status || 'pending').toLowerCase();
-  // Prototype shows success/failed/retrying/waiting_manual/dlq; map query states to those.
+  // query_tool's real statuses: pending / running / done / failed.
+  // Keep pending + running distinct so the UI can show them accurately instead
+  // of lumping both into 重试中 — the prototype status set is extended below.
   const statusMap = {
     done: 'success', success: 'success', completed: 'success',
     failed: 'failed', error: 'failed',
-    running: 'retrying', pending: 'retrying', queued: 'retrying',
+    running: 'running',
+    pending: 'pending', queued: 'pending',
+    retrying: 'retrying',
   };
   const rt = (r.latency_ms != null)
     ? Number(r.latency_ms)
@@ -4426,21 +4555,36 @@ function summarizeAccountPool(list) {
   }));
 }
 
-function summarizeAttempts(rows, total) {
-  const by = { success: 0, failed: 0, retrying: 0, waiting_manual: 0, dlq: 0 };
-  for (const a of rows) {
-    if (by[a.status] != null) by[a.status]++;
+function summarizeAttempts(rows, total, byStatus) {
+  // Prefer server-side breakdown so counts reflect the full dataset instead of
+  // the current page (50 rows can't represent 166 done).
+  let success = 0, failed = 0, running = 0, pending = 0;
+  if (byStatus && typeof byStatus === 'object') {
+    success = (byStatus.done || 0) + (byStatus.success || 0) + (byStatus.completed || 0);
+    failed = (byStatus.failed || 0) + (byStatus.error || 0);
+    running = byStatus.running || 0;
+    pending = (byStatus.pending || 0) + (byStatus.queued || 0);
+  } else {
+    for (const a of rows) {
+      if (a.status === 'success') success++;
+      else if (a.status === 'failed') failed++;
+      else if (a.status === 'running') running++;
+      else if (a.status === 'pending') pending++;
+    }
   }
   const t = (total != null) ? total : rows.length;
-  const successRate = t > 0 ? Math.round((by.success / t) * 100) : 0;
+  const successRate = t > 0 ? Math.round((success / t) * 100) : 0;
   return {
     total: t,
-    success: by.success,
+    success,
     successRate,
-    failed: by.failed,
-    retrying: by.retrying,
-    waitingManual: by.waiting_manual,
-    dlq: by.dlq,
+    failed,
+    running,
+    pending,
+    // keep retrying/waitingManual/dlq in the shape in case other views read them
+    retrying: 0,
+    waitingManual: 0,
+    dlq: 0,
   };
 }
 
@@ -4958,6 +5102,7 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
+    attemptFilter: { engine: '', status: '', queryId: '' },
 
     async loadAttempts() {
       this.attemptsLoading = true;
@@ -4966,7 +5111,14 @@ function adminApp() {
         const page = Math.max(1, Math.floor(Number(this.attemptsPage) || 1));
         const size = Math.max(1, Math.floor(Number(this.attemptsPageSize) || 50));
         const offset = (page - 1) * size;
-        const res = await fetch(API_BASE + '/queries?limit=' + size + '&offset=' + offset + '&count=1',
+        const qp = new URLSearchParams();
+        qp.set('limit', size);
+        qp.set('offset', offset);
+        qp.set('count', '1');
+        if (this.attemptFilter.engine)  qp.set('llm',    this.attemptFilter.engine);
+        if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
+        if (this.attemptFilter.queryId) qp.set('id',     this.attemptFilter.queryId);
+        const res = await fetch(API_BASE + '/queries?' + qp.toString(),
                                 { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const body = await res.json();
@@ -4977,7 +5129,8 @@ function adminApp() {
         // Clamp current page if it's past the end (e.g. after delete)
         const maxPage = Math.max(1, Math.ceil(total / size));
         if (this.attemptsPage > maxPage) this.attemptsPage = maxPage;
-        this.attemptsSummary = summarizeAttempts(this.executionAttempts, total);
+        const byStatus = (body && body.by_status) ? body.by_status : null;
+        this.attemptsSummary = summarizeAttempts(this.executionAttempts, total, byStatus);
         this.attemptsLastLoaded = new Date();
       } catch (e) {
         this.attemptsError = String(e.message || e);
@@ -5006,9 +5159,19 @@ function adminApp() {
 
     get filteredAttempts() {
       return this.executionAttempts.filter(a => {
+        // Product decision: Gemini is tracked in the DB but hidden in this
+        // preview UI. Drop Gemini rows here so they don't bleed through even
+        // if the API returns them.
+        if (String(a.engine || '').toLowerCase() === 'gemini') return false;
         if (this.retrySelectedCategory) return a.errorCode === this.retrySelectedCategory;
         return true;
       });
+    },
+
+    get filteredAccountPool() {
+      return (this.accountPoolList || []).filter(a =>
+        String(a.engineKey || '').toLowerCase() !== 'gemini'
+      );
     },
 
     // Tracker: Attempt 汇总统计
@@ -5054,6 +5217,137 @@ function adminApp() {
     accountsError: null,
     accountPoolEngines: [],
     accountPoolList: [],
+
+    // Account registration modal (Import Cookies / SMS Register / Auto Login)
+    accountModal: false,
+    accountModalTab: 'cookies',
+    accountBusy: false,
+    accountTaskStatus: '',
+    cookieForm: { platform: 'chatgpt', label: '', dailyLimit: 20, cookiesJson: '', localStorage: '' },
+    smsForm:    { platform: 'chatgpt' },
+    loginForm:  { accountId: 0 },
+
+    openAccountModal(tab) {
+      this.accountModalTab = tab || 'cookies';
+      this.accountTaskStatus = '';
+      this.accountModal = true;
+    },
+
+    async submitImportCookies() {
+      const f = this.cookieForm;
+      if (!f.cookiesJson.trim()) { this.toast('请粘贴 Cookies JSON'); return; }
+      try { JSON.parse(f.cookiesJson); }
+      catch (e) { this.toast('Cookies JSON 格式错误: ' + e.message); return; }
+      let ls = (f.localStorage || '').trim();
+      if (ls) {
+        try { ls = JSON.stringify(JSON.parse(ls)); }
+        catch (e) { this.toast('localStorage JSON 格式错误'); return; }
+      }
+      this.accountBusy = true;
+      try {
+        const res = await fetch(API_BASE + '/accounts/import_cookies', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform: f.platform, label: f.label,
+            daily_limit: f.dailyLimit, cookies_json: f.cookiesJson,
+            local_storage: ls,
+          }),
+        });
+        const body = await res.json();
+        if (!body.success) throw new Error(body.error || '导入失败');
+        this.toast(body.message || 'Cookies 导入成功');
+        this.cookieForm.cookiesJson = '';
+        this.cookieForm.localStorage = '';
+        this.cookieForm.label = '';
+        this.accountModal = false;
+        await this.loadAccounts();
+      } catch (e) {
+        this.toast('导入失败: ' + (e.message || e));
+      } finally {
+        this.accountBusy = false;
+      }
+    },
+
+    async submitSmsRegister() {
+      this.accountBusy = true;
+      this.accountTaskStatus = '触发注册中…';
+      try {
+        const res = await fetch(API_BASE + '/sms_register', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ platform: this.smsForm.platform }),
+        });
+        const body = await res.json();
+        if (!body.success || !body.task_id) throw new Error(body.error || '触发失败');
+        this.accountTaskStatus = '已入队 · task=' + body.task_id + ' · 等待 worker 拾取…';
+        this.pollAccountTask(body.task_id);
+      } catch (e) {
+        this.accountTaskStatus = '错误: ' + (e.message || e);
+        this.accountBusy = false;
+      }
+    },
+
+    async submitAutoLogin() {
+      if (!this.loginForm.accountId) { this.toast('请选择账号'); return; }
+      this.accountBusy = true;
+      this.accountTaskStatus = '发起登录…';
+      try {
+        const res = await fetch(API_BASE + '/accounts/' + this.loginForm.accountId + '/auto_login', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const body = await res.json();
+        if (!body.success || !body.task_id) throw new Error(body.error || '触发失败');
+        this.accountTaskStatus = '已入队 · task=' + body.task_id + ' · 等待 worker 拾取…';
+        this.pollAccountTask(body.task_id);
+      } catch (e) {
+        this.accountTaskStatus = '错误: ' + (e.message || e);
+        this.accountBusy = false;
+      }
+    },
+
+    pollAccountTask(taskId) {
+      let attempts = 0;
+      const max = 80; // ~4 分钟
+      const timer = setInterval(async () => {
+        attempts++;
+        if (attempts > max) {
+          clearInterval(timer);
+          this.accountTaskStatus = '超时 · 任务仍在后台运行，请稍后刷新账号池';
+          this.accountBusy = false;
+          return;
+        }
+        try {
+          const res = await fetch(API_BASE + '/task_status/' + taskId, { credentials: 'same-origin' });
+          const body = await res.json();
+          const state = body.state;
+          if (state === 'PENDING' || state === 'RECEIVED') {
+            this.accountTaskStatus = '等待 worker 拾取… (' + attempts + ')';
+          } else if (state === 'STARTED' || state === 'RETRY') {
+            this.accountTaskStatus = '登录中… (SMS 验证进行中)';
+          } else if (state === 'SUCCESS') {
+            clearInterval(timer);
+            const r = body.result || {};
+            if (r.status === 'success') {
+              this.accountTaskStatus = '登录成功 · 账号 #' + (r.account_id || '') + (r.phone ? ' (' + r.phone + ')' : '');
+              this.loadAccounts();
+            } else {
+              this.accountTaskStatus = '失败: ' + (r.error || JSON.stringify(r));
+            }
+            this.accountBusy = false;
+          } else if (state === 'FAILURE') {
+            clearInterval(timer);
+            this.accountTaskStatus = '任务失败: ' + (body.traceback || body.error || '未知错误');
+            this.accountBusy = false;
+          }
+        } catch (e) {
+          this.accountTaskStatus = '状态查询失败: ' + (e.message || e);
+        }
+      }, 3000);
+    },
 
     async loadAccounts() {
       this.accountsLoading = true;

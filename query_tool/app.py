@@ -340,6 +340,56 @@ def _ensure_preview_columns():
         print(f"DB migration warning (non-fatal): {e}")
 
 
+# Engines we want to keep in the preview DB. Anything else gets pruned so the
+# 执行追踪 table only shows supported engines (Gemini is kept in the DB but
+# hidden in the UI per product decision).
+APPROVED_ENGINES = ('chatgpt', 'doubao', 'deepseek', 'gemini')
+
+
+def _normalize_query_data():
+    """One-shot cleanup run at startup:
+    1) Lowercase queries.status and queries.target_llm (so filters and case-
+       sensitive comparisons don't miss rows like 'DONE' vs 'done').
+    2) Delete queries whose target_llm is not in APPROVED_ENGINES.
+    3) Same lowercase pass on llm_accounts.llm_name for consistency.
+    Uses IS DISTINCT FROM so rows already lowercased aren't touched.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE queries SET status = LOWER(status) "
+                    "WHERE status IS DISTINCT FROM LOWER(status)"
+                )
+                status_fixed = cur.rowcount
+                cur.execute(
+                    "UPDATE queries SET target_llm = LOWER(target_llm) "
+                    "WHERE target_llm IS DISTINCT FROM LOWER(target_llm)"
+                )
+                llm_fixed = cur.rowcount
+                cur.execute(
+                    "UPDATE llm_accounts SET llm_name = LOWER(llm_name) "
+                    "WHERE llm_name IS DISTINCT FROM LOWER(llm_name)"
+                )
+                accounts_fixed = cur.rowcount
+                cur.execute(
+                    "DELETE FROM queries WHERE LOWER(COALESCE(target_llm, '')) NOT IN %s",
+                    (APPROVED_ENGINES,)
+                )
+                pruned = cur.rowcount
+            conn.commit()
+            print(
+                f"DB normalize: status_lowered={status_fixed}, "
+                f"target_llm_lowered={llm_fixed}, accounts_lowered={accounts_fixed}, "
+                f"pruned_non_approved={pruned}"
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB normalize warning (non-fatal): {e}")
+
+
 def get_db():
     import psycopg2
     import time
@@ -2538,12 +2588,22 @@ def queries():
         where_clause = " AND ".join(where) if where else "1=1"
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            by_status = None
             if include_count:
                 cur.execute(
                     f"SELECT COUNT(*) as cnt FROM queries q WHERE {where_clause}",
                     params
                 )
                 total = cur.fetchone()['cnt']
+                # Full-dataset status breakdown so the UI summary isn't capped at
+                # the current page size (e.g. 50 rows can't represent 166 done).
+                cur.execute(
+                    f"""SELECT LOWER(q.status) AS st, COUNT(*) AS cnt
+                        FROM queries q WHERE {where_clause}
+                        GROUP BY LOWER(q.status)""",
+                    params
+                )
+                by_status = {row['st'] or 'unknown': row['cnt'] for row in cur.fetchall()}
             else:
                 total = None
 
@@ -2584,7 +2644,7 @@ def queries():
 
         result = [dict(r) for r in rows]
         if include_count:
-            return jsonify({'rows': result, 'total': total})
+            return jsonify({'rows': result, 'total': total, 'by_status': by_status})
         return jsonify(result)
     finally:
         conn.close()
@@ -3834,6 +3894,7 @@ def analyzer_rerun_single(response_id):
 _ensure_citations_column()
 _ensure_analyzer_tables()
 _ensure_preview_columns()
+_normalize_query_data()
 
 
 if __name__ == '__main__':
