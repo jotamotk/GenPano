@@ -1980,6 +1980,7 @@
                   <thead>
                     <tr class="border-b border-b-card bg-surface-page">
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">账号 ID</th>
+                      <th class="px-6 py-3 text-left font-semibold text-ink-muted">手机号</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">引擎</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">状态</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">健康评分</th>
@@ -1990,11 +1991,12 @@
                   </thead>
                   <tbody>
                     <tr x-show="!accountsLoading && accountPoolList.length === 0">
-                      <td colspan="7" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
+                      <td colspan="8" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
                     </tr>
                     <template x-for="a in accountPoolList" :key="a.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
                         <td class="px-6 py-3 font-mono text-[12px] font-semibold text-ink" x-text="a.id"></td>
+                        <td class="px-6 py-3 font-mono text-[12px] text-ink-body" x-text="a.phone || '—'"></td>
                         <td class="px-6 py-3 text-ink-body" x-text="a.engine"></td>
                         <td class="px-6 py-3">
                           <span class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[11px] font-semibold"
@@ -2301,6 +2303,7 @@
               <thead>
                 <tr class="border-b border-b-card bg-surface-page">
                   <th class="px-6 py-3 text-left font-semibold text-ink-muted">账号 ID</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">手机号</th>
                   <th class="px-6 py-3 text-left font-semibold text-ink-muted">引擎</th>
                   <th class="px-6 py-3 text-left font-semibold text-ink-muted">状态</th>
                   <th class="px-6 py-3 text-left font-semibold text-ink-muted">健康评分</th>
@@ -2313,6 +2316,7 @@
                 <template x-for="a in accountPoolList" :key="a.id">
                   <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
                     <td class="px-6 py-3 font-mono text-[12px] font-semibold text-ink" x-text="a.id"></td>
+                    <td class="px-6 py-3 font-mono text-[12px] text-ink-body" x-text="a.phone || '—'"></td>
                     <td class="px-6 py-3 text-ink-body" x-text="a.engine"></td>
                     <td class="px-6 py-3">
                       <span class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[11px] font-semibold"
@@ -2541,28 +2545,25 @@
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
                 <div class="px-3 py-1.5 border-b border-b-card bg-surface-page flex items-center gap-3 text-[11px] text-ink-muted">
                   <span x-show="attemptsLoading">加载中…</span>
-                  <span x-show="!attemptsLoading && !attemptsError" x-text="'共 ' + executionAttempts.length + ' 条 · ' + (attemptsLastLoaded ? attemptsLastLoaded.toLocaleTimeString() : '')"></span>
+                  <span x-show="!attemptsLoading && !attemptsError"
+                        x-text="'共 ' + attemptsTotal + ' 条 · 第 ' + attemptsPage + ' / ' + Math.max(1, Math.ceil(attemptsTotal / attemptsPageSize)) + ' 页 · ' + (attemptsLastLoaded ? attemptsLastLoaded.toLocaleTimeString() : '')"></span>
                   <span x-show="attemptsError" class="text-danger" x-text="attemptsError"></span>
                   <button class="ml-auto text-accent hover:underline" @click="loadAttempts()">刷新</button>
                 </div>
-                <table class="w-full text-[12px]">
+                <div class="overflow-x-auto">
+                <table class="w-full text-[12px] min-w-[1280px]">
                   <thead>
                     <tr class="border-b border-b-card bg-surface-page">
                       <th class="px-3 py-2.5 text-left w-8"><input type="checkbox" class="rounded" /></th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Attempt ID</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Query ID</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">引擎</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">#</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Query</th>
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted min-w-[200px]">Query</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">账号 / 代理</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">错误码</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">耗时</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="queued_at">入队时间</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="started_at">开始时间</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="finished_at">完成时间</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="latency_ms">延迟(ms)</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="retry_reason">重试原因</th>
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="retry_reason">错误码 / 重试原因</th>
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="latency_ms">延迟</th>
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="queued_at → started_at → finished_at">执行时间</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Debug</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">操作</th>
                     </tr>
@@ -2572,27 +2573,31 @@
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors"
                           :class="att.status==='failed' ? 'q-failed' : att.status==='success' ? 'q-done' : att.status==='retrying' ? 'q-running' : ''">
                         <td class="px-3 py-2.5"><input type="checkbox" class="rounded" /></td>
-                        <td class="px-3 py-2.5 font-mono text-[10px] font-semibold text-ink" x-text="att.id"></td>
-                        <td class="px-3 py-2.5 font-mono text-[10px] text-ink-muted" x-text="att.queryId"></td>
+                        <td class="px-3 py-2.5 font-mono text-[10px] text-ink" x-text="att.queryId"></td>
                         <td class="px-3 py-2.5 text-ink-body text-[11px]" x-text="att.engine"></td>
                         <td class="px-3 py-2.5 text-ink-muted font-mono text-[10px]" x-text="'#' + att.attemptNum"></td>
-                        <td class="px-3 py-2.5 text-ink-body text-[11px] max-w-[260px] truncate" :title="att.prompt" x-text="att.prompt"></td>
+                        <td class="px-3 py-2.5 text-ink-body text-[11px] max-w-[320px] truncate" :title="att.prompt" x-text="att.prompt"></td>
                         <td class="px-3 py-2.5 text-[10px] text-ink-muted">
-                          <span x-text="att.accountId"></span>
-                          <span class="ml-1 text-ink-faint" x-text="att.proxyRegion"></span>
+                          <div x-text="att.accountId"></div>
+                          <div class="text-ink-faint" x-text="att.proxyRegion"></div>
                         </td>
                         <td class="px-3 py-2.5">
                           <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
                                 :class="att.status==='success' ? 'bg-success/10 text-success' : att.status==='failed' ? 'bg-danger/10 text-danger' : att.status==='retrying' ? 'bg-warning/10 text-warning' : att.status==='waiting_manual' ? 'bg-accent/10 text-accent' : att.status==='dlq' ? 'bg-danger/10 text-danger' : 'bg-gray-100 text-gray-500'"
                                 x-text="att.status==='success' ? '✅ 成功' : att.status==='failed' ? '❌ 失败' : att.status==='retrying' ? '⏳ 重试中' : att.status==='waiting_manual' ? '🔧 待人工' : att.status==='dlq' ? '☠️ DLQ' : att.status"></span>
                         </td>
-                        <td class="px-3 py-2.5 font-mono text-[10px]" :class="att.errorCode ? 'text-danger font-semibold' : 'text-ink-muted'" x-text="att.errorCode || '—'"></td>
-                        <td class="px-3 py-2.5 tabular-nums text-[11px] text-ink-body" x-text="att.responseTime ? (att.responseTime / 1000).toFixed(1) + 's' : '—'"></td>
-                        <td class="px-3 py-2.5 tabular-nums text-[10px] text-ink-muted" x-text="fmtTs(att.queuedAt)"></td>
-                        <td class="px-3 py-2.5 tabular-nums text-[10px] text-ink-muted" x-text="fmtTs(att.startedAtRaw)"></td>
-                        <td class="px-3 py-2.5 tabular-nums text-[10px] text-ink-muted" x-text="fmtTs(att.finishedAtRaw)"></td>
-                        <td class="px-3 py-2.5 tabular-nums text-[10px] text-ink-muted" x-text="att.latencyMs != null ? att.latencyMs : '—'"></td>
-                        <td class="px-3 py-2.5 text-[10px] text-ink-muted max-w-[160px] truncate" :title="att.retryReason || ''" x-text="att.retryReason || '—'"></td>
+                        <td class="px-3 py-2.5 max-w-[200px]">
+                          <div class="font-mono text-[10px] truncate" :class="att.errorCode ? 'text-danger font-semibold' : 'text-ink-muted'" :title="att.errorCode || ''" x-text="att.errorCode || '—'"></div>
+                          <div class="text-[10px] text-ink-muted truncate" :title="att.retryReason || ''" x-text="att.retryReason || ''"></div>
+                        </td>
+                        <td class="px-3 py-2.5 tabular-nums text-[11px] text-ink-body">
+                          <div x-text="att.latencyMs != null ? att.latencyMs + 'ms' : (att.responseTime ? (att.responseTime / 1000).toFixed(1) + 's' : '—')"></div>
+                        </td>
+                        <td class="px-3 py-2.5 tabular-nums text-[10px] text-ink-muted leading-tight">
+                          <div><span class="text-ink-faint">Q</span> <span x-text="fmtTs(att.queuedAt)"></span></div>
+                          <div><span class="text-ink-faint">S</span> <span x-text="fmtTs(att.startedAtRaw)"></span></div>
+                          <div><span class="text-ink-faint">F</span> <span x-text="fmtTs(att.finishedAtRaw)"></span></div>
+                        </td>
                         <td class="px-3 py-2.5">
                           <!-- Debug artifact icons -->
                           <div class="flex items-center gap-1">
@@ -2618,10 +2623,44 @@
                       </tr>
                     </template>
                     <tr x-show="!attemptsLoading && executionAttempts.length === 0">
-                      <td colspan="17" class="px-3 py-8 text-center text-[12px] text-ink-muted">暂无数据</td>
+                      <td colspan="12" class="px-3 py-8 text-center text-[12px] text-ink-muted">暂无数据</td>
                     </tr>
                   </tbody>
                 </table>
+                </div>
+                <!-- Pagination footer -->
+                <div class="px-3 py-2 border-t border-b-card bg-surface-page flex items-center gap-3 text-[11px] text-ink-muted">
+                  <span x-text="attemptsTotal > 0
+                      ? ((attemptsPage - 1) * attemptsPageSize + 1) + '–' + Math.min(attemptsPage * attemptsPageSize, attemptsTotal) + ' / ' + attemptsTotal
+                      : '0 / 0'"></span>
+                  <label class="ml-2 flex items-center gap-1">
+                    每页
+                    <select class="h-7 px-1 rounded-btn border border-b-default bg-white text-[11px]"
+                            x-model.number="attemptsPageSize" @change="attemptsPage=1; loadAttempts()">
+                      <option :value="20">20</option>
+                      <option :value="50">50</option>
+                      <option :value="100">100</option>
+                      <option :value="200">200</option>
+                    </select>
+                  </label>
+                  <div class="ml-auto flex items-center gap-1">
+                    <button class="h-7 px-2 rounded-btn border border-b-default bg-white hover:bg-surface-page disabled:opacity-40"
+                            :disabled="attemptsPage <= 1"
+                            @click="attemptsPage=1; loadAttempts()">«</button>
+                    <button class="h-7 px-2 rounded-btn border border-b-default bg-white hover:bg-surface-page disabled:opacity-40"
+                            :disabled="attemptsPage <= 1"
+                            @click="attemptsPage--; loadAttempts()">‹ 上一页</button>
+                    <input type="number" min="1" class="h-7 w-14 px-1 rounded-btn border border-b-default bg-white text-center text-[11px]"
+                           x-model.number="attemptsPage"
+                           @keydown.enter="loadAttempts()" />
+                    <button class="h-7 px-2 rounded-btn border border-b-default bg-white hover:bg-surface-page disabled:opacity-40"
+                            :disabled="attemptsPage >= Math.ceil(attemptsTotal / attemptsPageSize)"
+                            @click="attemptsPage++; loadAttempts()">下一页 ›</button>
+                    <button class="h-7 px-2 rounded-btn border border-b-default bg-white hover:bg-surface-page disabled:opacity-40"
+                            :disabled="attemptsPage >= Math.ceil(attemptsTotal / attemptsPageSize)"
+                            @click="attemptsPage=Math.max(1, Math.ceil(attemptsTotal / attemptsPageSize)); loadAttempts()">»</button>
+                  </div>
+                </div>
               </div>
 
               <!-- Retry strategy settings (gear icon inline) -->
@@ -4916,17 +4955,29 @@ function adminApp() {
     attemptsLoading: false,
     attemptsError: null,
     attemptsLastLoaded: null,
+    attemptsPage: 1,
+    attemptsPageSize: 50,
+    attemptsTotal: 0,
 
     async loadAttempts() {
       this.attemptsLoading = true;
       this.attemptsError = null;
       try {
-        const res = await fetch(API_BASE + '/queries?limit=200&count=1', { credentials: 'same-origin' });
+        const page = Math.max(1, Math.floor(Number(this.attemptsPage) || 1));
+        const size = Math.max(1, Math.floor(Number(this.attemptsPageSize) || 50));
+        const offset = (page - 1) * size;
+        const res = await fetch(API_BASE + '/queries?limit=' + size + '&offset=' + offset + '&count=1',
+                                { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const body = await res.json();
         const rows = Array.isArray(body) ? body : (body.rows || []);
+        const total = (body && body.total != null) ? body.total : rows.length;
         this.executionAttempts = rows.map(r => mapQueryRowToAttempt(r));
-        this.attemptsSummary = summarizeAttempts(this.executionAttempts, body.total);
+        this.attemptsTotal = total;
+        // Clamp current page if it's past the end (e.g. after delete)
+        const maxPage = Math.max(1, Math.ceil(total / size));
+        if (this.attemptsPage > maxPage) this.attemptsPage = maxPage;
+        this.attemptsSummary = summarizeAttempts(this.executionAttempts, total);
         this.attemptsLastLoaded = new Date();
       } catch (e) {
         this.attemptsError = String(e.message || e);
