@@ -12,8 +12,9 @@ Requires env:
 Options (env):
   BRAND_NAME    default "Estée Lauder"
   DEEP_LIMIT    how many responses to deep-analyze (default 10)
-  LLM_MODEL     default "doubao-pro-32k"
-  LLM_BASE_URL  default https://ark.cn-beijing.volces.com/api/v3
+  ARK_MODEL     Ark endpoint id or model alias (default "doubao-seed-2-0-pro-260215",
+                matching what worker/.env uses). LLM_MODEL kept as legacy alias.
+  ARK_BASE_URL  default https://ark.cn-beijing.volces.com/api/v3
 """
 import asyncio
 import json
@@ -41,8 +42,16 @@ except Exception:
 
 BRAND_NAME = os.environ.get("BRAND_NAME", "Estée Lauder")
 DEEP_LIMIT = int(os.environ.get("DEEP_LIMIT", "10"))
-LLM_MODEL = os.environ.get("LLM_MODEL", "doubao-pro-32k")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+LLM_MODEL = (
+    os.environ.get("ARK_MODEL")
+    or os.environ.get("LLM_MODEL")
+    or "doubao-seed-2-0-pro-260215"
+)
+LLM_BASE_URL = (
+    os.environ.get("ARK_BASE_URL")
+    or os.environ.get("LLM_BASE_URL")
+    or "https://ark.cn-beijing.volces.com/api/v3"
+)
 ARK_API_KEY = os.environ.get("ARK_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
