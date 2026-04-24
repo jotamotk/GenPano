@@ -208,6 +208,19 @@ def engine_label(raw):
     return s
 
 
+def _strip_fences(text):
+    s = (text or "").strip()
+    if s.startswith("```"):
+        try:
+            first_nl = s.index("\n")
+        except ValueError:
+            return s
+        s = s[first_nl + 1:]
+        if s.endswith("```"):
+            s = s[:-3].strip()
+    return s
+
+
 async def deep_analyze(client, target, prompt, response):
     msgs = [
         {"role": "system", "content": ANALYSIS_SYSTEM},
@@ -220,24 +233,25 @@ async def deep_analyze(client, target, prompt, response):
         resp = await client.chat.completions.create(
             model=LLM_MODEL,
             messages=msgs,
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            temperature=0.1,
             timeout=90,
         )
         content = resp.choices[0].message.content or "{}"
     except Exception as e:
         print(f"  LLM call failed: {e}", file=sys.stderr)
         return None
+    cleaned = _strip_fences(content)
     try:
-        return json.loads(content)
-    except Exception:
+        return json.loads(cleaned)
+    except Exception as e1:
         if repair_json:
             try:
-                return json.loads(repair_json(content))
-            except Exception as e:
-                print(f"  json_repair failed: {e}", file=sys.stderr)
+                return json.loads(repair_json(cleaned))
+            except Exception as e2:
+                print(f"  json parse failed ({e1}); json_repair also failed ({e2})", file=sys.stderr)
+                print(f"  raw head: {content[:300]}", file=sys.stderr)
                 return None
-        print("  json decode failed, no repair_json available", file=sys.stderr)
+        print(f"  json decode failed ({e1}), no repair_json available", file=sys.stderr)
         return None
 
 
