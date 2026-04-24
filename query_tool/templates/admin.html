@@ -2622,7 +2622,11 @@
                         <td class="px-3 py-2.5 font-mono text-[10px] text-ink" x-text="att.queryId"></td>
                         <td class="px-3 py-2.5 text-ink-body text-[11px]" x-text="att.engine"></td>
                         <td class="px-3 py-2.5 text-ink-muted font-mono text-[10px]" x-text="'#' + att.attemptNum"></td>
-                        <td class="px-3 py-2.5 text-ink-body text-[11px] max-w-[320px] truncate" :title="att.prompt" x-text="att.prompt"></td>
+                        <td class="px-3 py-2.5 max-w-[320px]">
+                          <div x-show="att.topicText" class="text-[10px] text-accent font-semibold truncate" :title="att.topicText" x-text="att.topicText"></div>
+                          <div x-show="att.promptText" class="text-[10px] text-ink-muted truncate" :title="att.promptText" x-text="att.promptText"></div>
+                          <div class="text-ink-body text-[11px] truncate" :title="att.prompt" x-text="att.prompt"></div>
+                        </td>
                         <td class="px-3 py-2.5 text-[10px] text-ink-muted">
                           <div x-text="att.accountId"></div>
                           <div class="text-ink-faint" x-text="att.proxyRegion"></div>
@@ -4530,6 +4534,10 @@ function mapQueryRowToAttempt(r) {
     createdAt: r.created_at || null,
     responseText: r.response || null,
     citations: r.citations || null,
+    topicId: r.topic_id != null ? r.topic_id : null,
+    topicText: r.topic_text || '',
+    promptId: r.prompt_id != null ? r.prompt_id : null,
+    promptText: r.prompt_text || '',
   };
 }
 

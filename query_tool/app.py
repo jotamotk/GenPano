@@ -2667,6 +2667,10 @@ def queries():
                     q.finished_at,
                     q.latency_ms,
                     q.retry_reason,
+                    q.prompt_id,
+                    pr.text as prompt_text,
+                    t.id as topic_id,
+                    t.text as topic_text,
                     r.raw_text as response,
                     r.llm_version,
                     r.citations_json as citations,
@@ -2679,6 +2683,8 @@ def queries():
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 LEFT JOIN profiles p ON q.profile_id = p.id
                 LEFT JOIN llm_accounts a ON q.account_id = a.id
+                LEFT JOIN prompts pr ON q.prompt_id = pr.id
+                LEFT JOIN topics t ON pr.topic_id = t.id
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT %s OFFSET %s
