@@ -2792,6 +2792,119 @@ def retry_query(query_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/queries/batch_trigger', methods=['POST'])
+def batch_trigger_queries():
+    """Reset matching queries to pending and dispatch them to Celery.
+
+    Accepts JSON body matching /api/queries GET filters:
+      brand_id, topic_id, prompt_id, llm, status, id, q
+    Optional:
+      max (int, default 2000) — hard cap; refuse if match count exceeds it
+      dry_run (bool) — return count only, no writes
+      reason (str) — stored in retry_reason (default 'batch_trigger')
+    Default status filter: only 'pending' or 'failed' queries.
+    """
+    from psycopg2.extras import RealDictCursor
+    payload = request.get_json(silent=True) or {}
+
+    ids = payload.get('ids')
+    brand_id = payload.get('brand_id')
+    topic_id = payload.get('topic_id')
+    prompt_id = payload.get('prompt_id')
+    llm = (payload.get('llm') or '').strip() or None
+    status = (payload.get('status') or '').strip() or None
+    query_id = payload.get('id')
+    prompt_q = (payload.get('q') or '').strip() or None
+    max_count = int(payload.get('max') or 2000)
+    dry_run = bool(payload.get('dry_run'))
+    reason = (payload.get('reason') or 'batch_trigger').strip() or 'batch_trigger'
+
+    where = []
+    params = []
+    if isinstance(ids, list) and ids:
+        clean_ids = [int(x) for x in ids if str(x).strip().lstrip('-').isdigit()]
+        if not clean_ids:
+            return jsonify({'success': False, 'error': 'ids 列表为空或无效'}), 400
+        where.append("id = ANY(%s)")
+        params.append(clean_ids)
+    else:
+        if query_id:
+            where.append("id = %s"); params.append(int(query_id))
+        if llm:
+            where.append("target_llm = %s"); params.append(llm)
+        if status:
+            where.append("UPPER(status) = UPPER(%s)"); params.append(status)
+        else:
+            where.append("LOWER(status) IN ('pending','failed')")
+        if brand_id:
+            where.append("brand_id = %s"); params.append(int(brand_id))
+        if topic_id:
+            where.append("prompt_id IN (SELECT id FROM prompts WHERE topic_id = %s)")
+            params.append(int(topic_id))
+        if prompt_id:
+            where.append("prompt_id = %s"); params.append(int(prompt_id))
+        if prompt_q:
+            where.append("query_text ILIKE %s"); params.append(f"%{prompt_q}%")
+
+    where_clause = " AND ".join(where) if where else "1=1"
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM queries WHERE {where_clause}", params)
+            total = cur.fetchone()[0]
+            if dry_run:
+                return jsonify({'success': True, 'count': total, 'dry_run': True})
+            if total == 0:
+                return jsonify({'success': True, 'count': 0, 'dispatched': 0})
+            if total > max_count:
+                return jsonify({
+                    'success': False,
+                    'error': f'匹配 {total} 条，超过上限 {max_count}，请缩小筛选或传入更大的 max',
+                    'count': total,
+                }), 400
+            cur.execute(f"""
+                UPDATE queries
+                SET status = 'pending',
+                    retry_count = COALESCE(retry_count, 0) + 1,
+                    queued_at = NOW(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    latency_ms = NULL,
+                    retry_reason = %s
+                WHERE {where_clause}
+                RETURNING id
+            """, [reason, *params])
+            ids = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    finally:
+        conn.close()
+
+    dispatched = 0
+    dispatch_failed = 0
+    if HAS_CELERY and celery_app is not None:
+        for qid in ids:
+            try:
+                celery_app.send_task(
+                    'geo_tracker.tasks.celery_tasks.execute_query',
+                    args=[qid],
+                    queue='celery',
+                )
+                dispatched += 1
+            except Exception as e:
+                dispatch_failed += 1
+                print(f"batch_trigger: celery dispatch failed for q={qid}: {e}")
+    else:
+        print("batch_trigger: Celery not available; queries reset but not dispatched")
+
+    return jsonify({
+        'success': True,
+        'count': len(ids),
+        'dispatched': dispatched,
+        'dispatch_failed': dispatch_failed,
+    })
+
+
 @app.route('/api/queries/<int:query_id>/mark_failed', methods=['POST'])
 def mark_failed(query_id):
     try:

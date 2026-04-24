@@ -2606,7 +2606,11 @@
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; selectedAttemptIds={}; attemptsPage=1; loadAttempts()">重置</button>
+                <button class="h-8 px-3 rounded-btn bg-purple-600 text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
+                        :disabled="selectedAttemptCount === 0 || batchTriggering"
+                        @click="batchTriggerSelected()"
+                        x-text="batchTriggering ? '触发中…' : ('批量触发 ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -2622,7 +2626,12 @@
                 <table class="w-full text-[12px] min-w-[1280px]">
                   <thead>
                     <tr class="border-b border-b-card bg-surface-page">
-                      <th class="px-3 py-2.5 text-left w-8"><input type="checkbox" class="rounded" /></th>
+                      <th class="px-3 py-2.5 text-left w-8">
+                        <input type="checkbox" class="rounded cursor-pointer"
+                               :checked="allVisibleAttemptsSelected"
+                               @change="toggleAllVisibleAttempts()"
+                               title="选中当前页全部" />
+                      </th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Query ID</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">引擎</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">#</th>
@@ -2640,7 +2649,11 @@
                     <template x-for="att in filteredAttempts" :key="att.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors"
                           :class="att.status==='failed' ? 'q-failed' : att.status==='success' ? 'q-done' : att.status==='retrying' ? 'q-running' : ''">
-                        <td class="px-3 py-2.5"><input type="checkbox" class="rounded" /></td>
+                        <td class="px-3 py-2.5">
+                          <input type="checkbox" class="rounded cursor-pointer"
+                                 :checked="!!selectedAttemptIds[att.queryDbId]"
+                                 @change="toggleAttemptSelect(att)" />
+                        </td>
                         <td class="px-3 py-2.5 font-mono text-[10px] text-ink" x-text="att.queryId"></td>
                         <td class="px-3 py-2.5 text-ink-body text-[11px]" x-text="att.engine"></td>
                         <td class="px-3 py-2.5 text-ink-muted font-mono text-[10px]" x-text="'#' + att.attemptNum"></td>
@@ -5197,6 +5210,9 @@ function adminApp() {
     attemptsPageSize: 50,
     attemptsTotal: 0,
     attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptId: '' },
+    // Selection map: { [queryDbId]: true }. Only covers current page (cleared on page/filter change).
+    selectedAttemptIds: {},
+    batchTriggering: false,
     availableBrands: [],
     availableTopics: [],
     availablePrompts: [],
@@ -5228,6 +5244,8 @@ function adminApp() {
         const total = (body && body.total != null) ? body.total : rows.length;
         this.executionAttempts = rows.map(r => mapQueryRowToAttempt(r));
         this.attemptsTotal = total;
+        // New page of data → drop selection (current-page semantics).
+        this.selectedAttemptIds = {};
         // Clamp current page if it's past the end (e.g. after delete)
         const maxPage = Math.max(1, Math.ceil(total / size));
         if (this.attemptsPage > maxPage) this.attemptsPage = maxPage;
@@ -5297,6 +5315,70 @@ function adminApp() {
       this.promptSelectOpen = false;
       this.attemptsPage = 1;
       this.loadAttempts();
+    },
+
+    toggleAttemptSelect(att) {
+      const id = att && att.queryDbId;
+      if (id == null) return;
+      if (this.selectedAttemptIds[id]) {
+        delete this.selectedAttemptIds[id];
+      } else {
+        this.selectedAttemptIds[id] = true;
+      }
+    },
+
+    toggleAllVisibleAttempts() {
+      const ids = (this.filteredAttempts || [])
+        .map(a => a.queryDbId)
+        .filter(x => x != null);
+      if (ids.length === 0) return;
+      const allOn = ids.every(id => this.selectedAttemptIds[id]);
+      const next = { ...this.selectedAttemptIds };
+      if (allOn) {
+        ids.forEach(id => { delete next[id]; });
+      } else {
+        ids.forEach(id => { next[id] = true; });
+      }
+      this.selectedAttemptIds = next;
+    },
+
+    get selectedAttemptCount() {
+      return Object.keys(this.selectedAttemptIds).length;
+    },
+
+    get allVisibleAttemptsSelected() {
+      const ids = (this.filteredAttempts || [])
+        .map(a => a.queryDbId)
+        .filter(x => x != null);
+      if (ids.length === 0) return false;
+      return ids.every(id => this.selectedAttemptIds[id]);
+    },
+
+    async batchTriggerSelected() {
+      const ids = Object.keys(this.selectedAttemptIds)
+        .map(x => Number(x))
+        .filter(n => Number.isFinite(n) && n > 0);
+      if (ids.length === 0) { this.toast('未选中任何 query'); return; }
+      if (!confirm('确认批量触发 ' + ids.length + ' 条 query？将重置为 pending 并派发到 celery。')) return;
+      this.batchTriggering = true;
+      try {
+        const res = await fetch(API_BASE + '/queries/batch_trigger', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, reason: 'admin batch trigger' }),
+        });
+        const body = await res.json();
+        if (!res.ok || !body.success) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已触发 ' + (body.count || 0) + ' 条 · 派发成功 ' + (body.dispatched || 0)
+                   + (body.dispatch_failed ? ' · 失败 ' + body.dispatch_failed : ''));
+        this.selectedAttemptIds = {};
+        await this.loadAttempts();
+      } catch (e) {
+        this.toast('批量触发失败: ' + (e.message || e));
+      } finally {
+        this.batchTriggering = false;
+      }
     },
 
     async retryAttempt(att) {
