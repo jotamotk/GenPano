@@ -2590,6 +2590,7 @@ def queries():
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
     topic_id = request.args.get('topic_id')
+    prompt_id = request.args.get('prompt_id')
     query_id = request.args.get('id')
     prompt_q = (request.args.get('q') or '').strip()
     limit = int(request.args.get('limit', 50))
@@ -2624,6 +2625,9 @@ def queries():
         if topic_id:
             where.append("q.prompt_id IN (SELECT id FROM prompts WHERE topic_id = %s)")
             params.append(int(topic_id))
+        if prompt_id:
+            where.append("q.prompt_id = %s")
+            params.append(int(prompt_id))
         if prompt_q:
             where.append("q.query_text ILIKE %s")
             params.append(f"%{prompt_q}%")
@@ -3669,6 +3673,38 @@ def list_topics():
                 cur.execute(
                     "SELECT id, brand_id, text, category FROM topics ORDER BY brand_id, id"
                 )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/prompts')
+def list_prompts():
+    """Prompts filtered by brand_id and/or topic_id. Used by the attempt
+    tracker's searchable prompt picker — client filters in-memory by text."""
+    brand_id = request.args.get('brand_id')
+    topic_id = request.args.get('topic_id')
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        where = []
+        params = []
+        if brand_id:
+            where.append("t.brand_id = %s")
+            params.append(int(brand_id))
+        if topic_id:
+            where.append("pr.topic_id = %s")
+            params.append(int(topic_id))
+        where_clause = " AND ".join(where) if where else "1=1"
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""SELECT pr.id, pr.topic_id, pr.text, t.text AS topic_text
+                    FROM prompts pr
+                    LEFT JOIN topics t ON pr.topic_id = t.id
+                    WHERE {where_clause}
+                    ORDER BY pr.topic_id, pr.id""",
+                params,
+            )
             return jsonify(cur.fetchall())
     finally:
         conn.close()

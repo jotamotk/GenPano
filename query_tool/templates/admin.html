@@ -2540,7 +2540,7 @@
               <div class="flex items-center gap-2 flex-wrap">
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
                         x-model="attemptFilter.brandId"
-                        @change="attemptFilter.topicId=''; loadTopics(); attemptsPage=1; loadAttempts()">
+                        @change="attemptFilter.topicId=''; attemptFilter.promptId=''; promptSelectSearch=''; loadTopics(); loadPrompts(); attemptsPage=1; loadAttempts()">
                   <option value="">全部品牌</option>
                   <template x-for="b in availableBrands" :key="b.id">
                     <option :value="b.id" x-text="b.name"></option>
@@ -2548,8 +2548,8 @@
                 </select>
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white"
                         x-model="attemptFilter.topicId"
-                        @change="attemptsPage=1; loadAttempts()">
-                  <option value="">全部 Topic</option>
+                        @change="attemptFilter.promptId=''; promptSelectSearch=''; attemptsPage=1; loadAttempts()">
+                  <option value="" x-text="'全部 Topic' + (availableTopics.length ? ' (' + availableTopics.length + ')' : '')"></option>
                   <template x-for="t in availableTopics" :key="t.id">
                     <option :value="t.id" x-text="t.text"></option>
                   </template>
@@ -2576,15 +2576,37 @@
                        x-model="attemptFilter.queryId"
                        @keydown.enter="attemptsPage=1; loadAttempts()"
                        class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-32" />
-                <input type="text"
-                       placeholder="Prompt 内容"
-                       x-model="attemptFilter.promptQ"
-                       @keydown.enter="attemptsPage=1; loadAttempts()"
-                       class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-56" />
+                <div class="relative w-80" @click.outside="promptSelectOpen=false">
+                  <input type="text"
+                         :placeholder="attemptFilter.promptId ? '已选 prompt · 点击更换' : (attemptFilter.brandId ? '搜索 prompt 并选择…' : '请先选品牌')"
+                         x-model="promptSelectSearch"
+                         @focus="promptSelectOpen=true; attemptFilter.brandId && loadPrompts()"
+                         :disabled="!attemptFilter.brandId"
+                         class="h-8 px-3 pr-7 rounded-btn border border-b-default text-[12px] w-full disabled:bg-surface-page disabled:text-ink-muted" />
+                  <button x-show="attemptFilter.promptId || promptSelectSearch"
+                          @click="attemptFilter.promptId=''; promptSelectSearch=''; attemptsPage=1; loadAttempts()"
+                          class="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink text-[14px] leading-none">×</button>
+                  <div x-show="promptSelectOpen && attemptFilter.brandId"
+                       x-transition.opacity
+                       class="absolute z-20 mt-1 left-0 w-[460px] max-h-72 overflow-auto rounded-btn border border-b-default bg-white shadow-card">
+                    <div x-show="filteredPromptOptions.length === 0" class="px-3 py-2 text-[11px] text-ink-muted">
+                      <span x-show="availablePrompts.length === 0">无 prompt 数据</span>
+                      <span x-show="availablePrompts.length > 0">无匹配的 prompt</span>
+                    </div>
+                    <template x-for="p in filteredPromptOptions" :key="p.id">
+                      <div @mousedown.prevent="selectPrompt(p)"
+                           class="px-3 py-2 text-[12px] hover:bg-surface-page cursor-pointer border-b border-b-card last:border-b-0"
+                           :class="String(attemptFilter.promptId) === String(p.id) ? 'bg-accent/10' : ''">
+                        <div class="text-ink truncate" x-text="p.text"></div>
+                        <div class="text-[10px] text-ink-muted truncate" x-text="p.topic_text ? ('Topic: ' + p.topic_text) : ''"></div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptQ:'' }; availableTopics=[]; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; attemptsPage=1; loadAttempts()">重置</button>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -5174,9 +5196,12 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
-    attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptQ: '' },
+    attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptId: '' },
     availableBrands: [],
     availableTopics: [],
+    availablePrompts: [],
+    promptSelectOpen: false,
+    promptSelectSearch: '',
 
     async loadAttempts() {
       this.attemptsLoading = true;
@@ -5193,8 +5218,8 @@ function adminApp() {
         if (this.attemptFilter.topicId) qp.set('topic_id', this.attemptFilter.topicId);
         if (this.attemptFilter.engine)  qp.set('llm',    this.attemptFilter.engine);
         if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
-        if (this.attemptFilter.queryId) qp.set('id',     this.attemptFilter.queryId);
-        if (this.attemptFilter.promptQ) qp.set('q',      this.attemptFilter.promptQ.trim());
+        if (this.attemptFilter.queryId) qp.set('id',        this.attemptFilter.queryId);
+        if (this.attemptFilter.promptId) qp.set('prompt_id', this.attemptFilter.promptId);
         const res = await fetch(API_BASE + '/queries?' + qp.toString(),
                                 { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -5241,6 +5266,37 @@ function adminApp() {
       } catch (e) {
         // Non-fatal — topic filter just stays empty.
       }
+    },
+
+    async loadPrompts() {
+      if (!this.attemptFilter.brandId) { this.availablePrompts = []; return; }
+      try {
+        const qp = new URLSearchParams({ brand_id: this.attemptFilter.brandId });
+        const res = await fetch(API_BASE + '/prompts?' + qp.toString(), { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const list = await res.json();
+        this.availablePrompts = Array.isArray(list) ? list : [];
+      } catch (e) {
+        // Non-fatal.
+      }
+    },
+
+    get filteredPromptOptions() {
+      const topicId = this.attemptFilter.topicId;
+      const search = (this.promptSelectSearch || '').trim().toLowerCase();
+      return (this.availablePrompts || [])
+        .filter(p => !topicId || String(p.topic_id) === String(topicId))
+        .filter(p => !search || (p.text || '').toLowerCase().includes(search)
+                             || (p.topic_text || '').toLowerCase().includes(search))
+        .slice(0, 200);
+    },
+
+    selectPrompt(p) {
+      this.attemptFilter.promptId = p.id;
+      this.promptSelectSearch = p.text;
+      this.promptSelectOpen = false;
+      this.attemptsPage = 1;
+      this.loadAttempts();
     },
 
     async retryAttempt(att) {
