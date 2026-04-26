@@ -439,20 +439,30 @@ Phase 0 投入的时间在 Phase 1 会十倍回报
 
 ## 8. 资源估算
 
-### 时间分配 (GENPANO 4周 MVP)
+### 时间分配 (GENPANO 8-10 周 MVP, Python 反转后, 2026-04-26 重估)
+
+> 决策 #29 (Python 反转) 后, MVP 由原 Next.js 单体 7 Session 重排为 11 Session × 4 Milestone (M1 Foundation / M2 Pipeline / M3 KG+Planner / M4 Analyzer+UI)。详见 `REPLAN_2026_04_26.md`。
 
 | 阶段 | 人类时间 | AI 时间 | 总日历时间 |
 |------|---------|---------|-----------|
-| Phase 0 产品设计 | 8-12h (对话) | 即时 | 2-3 天 |
-| Session 0 初始化 | 1h (Review) | 2-3h | 0.5 天 |
-| Session 1 爬取引擎 | 2h (Review) | 4-6h | 1.5 天 |
-| Session 2 Query 生成 | 2h (Review) | 3-4h | 1 天 |
-| Session 3 分析+API+MCP | 3h (Review) | 5-7h | 2 天 |
-| Session 4a 用户系统+Onboarding | 2h (Review) | 3-5h | 1.5 天 |
-| Session 4b Dashboard+报告 | 3h (Review) | 5-7h | 2 天 |
-| Session 5 上线打磨 | 4h (Review+手测) | 4-6h | 2 天 |
-| Fix Sessions | 2-4h | 3-5h | 1-2 天 |
-| **合计** | **~25-35h** | **~26-38h** | **~12-15 天** |
+| Phase 0 产品设计 (已完成) | — | — | (sunk cost) |
+| **M1 Foundation** | | | |
+| Session 0' 仓库基建 + CI/CD + preview env | 2h (Review) | 4-6h | 1.5 天 |
+| Session A0' Admin 认证脚手架 (FastAPI + JWT) | 2h (Review) | 4-6h | 1.5 天 |
+| Session 4a' 用户系统 + Onboarding | 2h (Review) | 3-5h | 1.5 天 |
+| **M2 Pipeline** | | | |
+| Session 1' Adapter 框架 + Parser (Camoufox/httpx) | 2h (Review) | 5-7h | 2 天 |
+| Session 1.5' KG 冷启动 (LLM + dedupe + 关系边) | 2h (Review) | 4-6h | 1.5 天 |
+| Session 1.2' MVP 3 引擎 Live (Camoufox + Luban) | 3h (Review) | 6-8h | 2 天 |
+| **M3 KG + Planner** | | | |
+| Session 2' Planner (Topic/Prompt/Query 三层) | 2h (Review) | 4-6h | 1.5 天 |
+| Session 2.1' Planner LLM Refinement | 2h (Review) | 3-5h | 1 天 |
+| Session 3' 分析引擎 + API + MCP Server | 3h (Review) | 5-7h | 2 天 |
+| **M4 Analyzer + UI** | | | |
+| Session A1' Admin 用户管理 + KG QA | 2h (Review) | 4-6h | 1.5 天 |
+| Session 4b' Dashboard + 报告 (前端 IA v2.0) | 3h (Review) | 5-7h | 2 天 |
+| Fix Sessions (跨 M1-M4) | 3-5h | 4-6h | 1.5-2 天 |
+| **合计** | **~28-35h** | **~51-75h** | **~20-25 天 (8-10 周)** |
 
 **人类的 25-35 小时主要花在**: 产品设计对话 (40%) + Code Review (30%) + 手动测试 (20%) + 环境/部署 (10%)
 
@@ -546,45 +556,53 @@ Echo Chamber 示例:
 
 ```bash
 #!/bin/bash
-# verify-session-1.sh — 爬取引擎 Session 验收
+# verify-session-1.sh — 爬取引擎 Session 验收 (Python pivot, 2026-04-26)
 set -e
 
-echo "=== Session 1 验收 ==="
+echo "=== Session 1' 验收 ==="
 
 # 1. 结构验证: 必须存在的文件
 echo "[Check 1] File structure..."
 REQUIRED_FILES=(
-  "src/scraping/browser-manager.ts"
-  "src/scraping/engines/chatgpt-adapter.ts"
-  "src/scraping/engines/gemini-adapter.ts"
-  "src/scraping/account-pool.ts"
-  "src/scraping/__tests__/"
+  "src/scraping/browser_manager.py"
+  "src/scraping/engines/chatgpt_adapter.py"
+  "src/scraping/engines/doubao_adapter.py"
+  "src/scraping/engines/deepseek_adapter.py"
+  "src/scraping/account_pool.py"
+  "tests/scraping/"
+  "alembic/versions/"
 )
 for f in "${REQUIRED_FILES[@]}"; do
   [ -e "$f" ] || { echo "FAIL: Missing $f"; exit 1; }
 done
 echo "  PASS"
 
-# 2. 接口合规: Adapter 必须实现标准接口
+# 2. 接口合规: Adapter 必须继承 EngineAdapter ABC
 echo "[Check 2] Interface compliance..."
-grep -q "implements EngineAdapter" src/scraping/engines/chatgpt-adapter.ts \
-  || { echo "FAIL: ChatGPT adapter missing interface"; exit 1; }
+grep -q "class.*EngineAdapter" src/scraping/engines/chatgpt_adapter.py \
+  || { echo "FAIL: ChatGPT adapter missing base class"; exit 1; }
 echo "  PASS"
 
-# 3. 测试通过
+# 3. 测试通过 (pytest)
 echo "[Check 3] Unit tests..."
-npm run test -- --testPathPattern=scraping --passWithNoTests=false \
+pytest tests/scraping/ -v --tb=short \
   || { echo "FAIL: Tests failed"; exit 1; }
 echo "  PASS"
 
-# 4. 功能验证: 实际执行一次爬取 (mock 模式)
-echo "[Check 4] Smoke test..."
-MOCK_MODE=true npx ts-node src/scraping/__tests__/smoke.ts \
+# 4. 数据迁移完整性: Alembic head 与 model 一致
+echo "[Check 4] Alembic migration check..."
+alembic check \
+  || { echo "FAIL: Alembic migrations out of sync with models"; exit 1; }
+echo "  PASS"
+
+# 5. 功能验证: 实际执行一次爬取 (mock 模式)
+echo "[Check 5] Smoke test..."
+MOCK_MODE=true python -m src.scraping.smoke_test \
   || { echo "FAIL: Smoke test failed"; exit 1; }
 echo "  PASS"
 
-# 5. 安全检查: 无硬编码密钥
-echo "[Check 5] No hardcoded secrets..."
+# 6. 安全检查: 无硬编码密钥
+echo "[Check 6] No hardcoded secrets..."
 ! grep -rn "sk-[a-zA-Z0-9]" src/scraping/ \
   || { echo "FAIL: Hardcoded secrets found"; exit 1; }
 echo "  PASS"
@@ -641,11 +659,11 @@ echo "=== All checks passed ✅ ==="
 
 | Session 类型 | 对抗性审查重点 |
 |---|---|
-| 爬取引擎 | 资源泄露, 并发安全, 反检测绕过, 错误恢复 |
-| 数据分析 | 计算正确性, 除零/空值, 浮点精度, 性能 |
-| API/MCP | 认证绕过, 输入验证, 速率限制, 错误信息泄露 |
-| Dashboard | XSS/CSRF, 响应式断裂, 状态一致性, 加载异常 |
-| 部署 | 密钥管理, 权限最小化, 容器逃逸, 日志敏感信息 |
+| 爬取引擎 (Python + Camoufox) | 资源泄露 (browser context 未 close / Playwright 进程残留), 并发安全 (asyncio task 取消传播, account_pool 取号竞态), 反检测绕过 (Camoufox stealth 配置 / humanize 鼠标轨迹 / fingerprint drift 是否被 wire 进 hot path), HAR sanitize (cookie/authorization header 是否真的脱敏, 测试 fixture 是否泄露 token), 错误恢复 (CAPTCHA 三级兜底是否真有兜底, COOKIE_EXPIRED 是否触发 cooldown) |
+| 数据分析 (FastAPI + SQLAlchemy) | 计算正确性 (mention_rate 分母口径, sentiment 0.45/0.55 边界), 除零/空值 (空 query 集合 / 单引擎数据缺失), 浮点精度 (Decimal vs float 在金额字段), N+1 query (SQLAlchemy lazy load 是否引爆), 性能 (聚合查询是否走索引) |
+| API/MCP (FastAPI) | 认证绕过 (Depends 是否真生效 / token 验证 short-circuit), 输入验证 (Pydantic v2 strict 模式, query param coercion), 速率限制 (slowapi key 是否唯一, Redis 不可达时 fail-open vs fail-close), 错误信息泄露 (ValidationError 是否吐内部字段名, HTTPException detail 是否带堆栈) |
+| Dashboard (React + Vite) | XSS/CSRF, 响应式断裂, 状态一致性, 加载异常 (前端 stack 不变, 沿用 JSX) |
+| 部署 (Docker + preview env) | 密钥管理 (.env 不进镜像, GitHub Actions secrets), 权限最小化 (容器 USER 非 root), 容器逃逸, 日志敏感信息 (httpx/httpcore 日志默认是否打 Authorization) |
 
 ### 10.5 Layer 3: 规约对齐检查 (Spec Compliance)
 
@@ -667,10 +685,10 @@ echo "=== All checks passed ✅ ==="
 │                                                      │
 │  | PRD 条目 | 是否实现 | 实现位置 | 偏差说明 |          │
 │  |---------|---------|---------|---------|           │
-│  | 4.2.1 多引擎 | ✅ | engine-adapter.ts | — |       │
-│  | 4.2.3 stealth | ⚠️ | browser.ts L45 | 用了      │
-│  |   puppeteer-extra 而非 playwright-extra |          │
-│  | 4.3.2 账号池自动补充 | ❌ | — | 未实现 |           │
+│  | 4.2.1 多引擎 | ✅ | src/scraping/engines/ | — |  │
+│  | 4.2.3 stealth | ⚠️ | browser_manager.py L45 |   │
+│  |   用了 playwright 原生而非 Camoufox stealth |       │
+│  | 4.3.2 账号池自动补充 | ❌ | — | Luban SMS 未接入 │
 │                                                      │
 │  重点检查:                                            │
 │  - PRD 中标注为 P0 的功能是否全部实现                   │
@@ -692,14 +710,15 @@ echo "=== All checks passed ✅ ==="
 │                                                     │
 │  频率: 不是每个 Session，而是每个 Phase Gate          │
 │                                                     │
-│  Gate 1: Session 0 完成后 (架构确认)                  │
-│    □ 技术选型是否合理?                               │
-│    □ 目录结构是否清晰?                               │
+│  Gate 1: Session 0' 完成后 (基建+CI/CD 确认)          │
+│    □ 技术选型是否合理? (FastAPI/SQLAlchemy/Alembic)   │
+│    □ 目录结构是否清晰? (src/api / src/platform / ...) │
 │    □ Platform/User 双层数据模型是否正确?              │
+│    □ Preview env 一键部署可访问                       │
 │    □ 阅读 review/ 中的 adversarial 报告              │
 │    ⏱ ~30min                                        │
 │                                                     │
-│  Gate 2: Session 1.5 完成后 (平台数据+爬取确认)       │
+│  Gate 2: Session 1.5' 完成后 (平台数据+爬取确认)      │
 │    □ 爬取引擎核心流程是否通顺?                        │
 │    □ 品牌/产品发现 pipeline 结果抽检                  │
 │    □ 4 个行业数据图谱质量审核                         │
@@ -707,20 +726,20 @@ echo "=== All checks passed ✅ ==="
 │    □ 阅读 review/ 中的 compliance 报告               │
 │    ⏱ ~1h                                           │
 │                                                     │
-│  Gate 3: Session 3 完成后 (核心引擎+API 确认)         │
+│  Gate 3: Session 3' 完成后 (分析引擎+API+MCP 确认)    │
 │    □ Query 生成 + 分析引擎 + API 全链路通顺?          │
 │    □ MCP Server 可用?                                │
 │    □ PANO Score 计算合理?                            │
 │    ⏱ ~45min                                        │
 │                                                     │
-│  Gate 4: Session 4a/4b 完成后 (产品体验确认)          │
+│  Gate 4: Session A1' + 4b' 完成后 (产品体验确认)      │
 │    □ Dashboard 看一遍: 交互是否合理?                  │
 │    □ Onboarding: 选行业→立即看到品牌数据?             │
 │    □ 作为用户跑一遍完整流程                           │
 │    □ "这像一个我会用的产品吗?"                        │
 │    ⏱ ~1h                                           │
 │                                                     │
-│  Gate 5: Session 5 完成后 (上线确认)                  │
+│  Gate 5: Preview env → Production 切换 (上线确认)     │
 │    □ 部署是否正常?                                   │
 │    □ 全引擎爬取跑一遍                                │
 │    □ 平台采集 pipeline 连续 3 天稳定?                 │
