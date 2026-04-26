@@ -4,6 +4,38 @@
 > 每个 Session 包含: 完整 Prompt、预期产出、验收标准、依赖说明
 > 完整方法论参见 [HARNESS_ENGINEERING.md](./HARNESS_ENGINEERING.md)
 
+---
+
+## 重大架构反转公告 (2026-04-26, 决策 #29)
+
+> **本文档自 2026-04-26 起进入双轨态**: 顶部 "§0-§13 Python Backend Sessions" 是当前活跃 Session 计划; 中部 "Next.js 时代 Sessions" (Session 0-rev / 0 / 1 / 1.2 / 1.5 / 2 / 2.1 / 3 / 4a / 4b / 5) **整体降级为附录 A**, 保留作历史参考与决策溯源, 但**不得作为新代码的实施依据**.
+
+**触发**: Frank 用 jotamotk/GenPano.git 实验代码合并 PRD + 32 份战略文档后, 决策最优架构 = **FastAPI 0.111+ + SQLAlchemy 2.0 async + Alembic + Celery 5.4 + Redis 7 + Pydantic v2 + Playwright + Camoufox + python-jose + slowapi + passlib bcrypt + httpx**. 原 Next.js + Prisma + TypeScript 后端代码 (Session 0-rev / A0 / 1 / 1.5 / 2 / 2.1) **代码本身报废**, 但所有决策 #21-#28 中的**契约 / 算法 / 错误码 / 状态机 / 测试 fixture 命名规范 / Harness 规则**全部 transpose 到 Python 等价物 (见 `docs/SESSION_PROGRESS.md` 报废范围 + transpose 资产表).
+
+**前端**: `frontend/` 目录 (React 18 + Vite + JSX + Tailwind + recharts + d3 + framer-motion + @antv/g6 + Radix + mixpanel-browser + lucide-react) **完整保留**, 不切 TSX, T1'-T6' 五个 UI Prototype Session 全部 ✅ 已交付且作为视觉/IA 真相源继续使用. DESIGN_TOKENS.md C1-C15 + 38 条 Harness 规则 (Group A-E + F1-F4 + G1-G4 + H1-H3 + D8/D9/D10) 整体保留, 等价 Python pytest 实现见 `HARNESS_ENGINEERING.md` §10.6.
+
+**MVP Milestone × Session 编号** (见 `docs/REPLAN_2026_04_26.md` + `docs/SESSION_PROGRESS.md`):
+
+| Milestone | Sessions | 周期 | 后端栈 | Phase Gate |
+|---|---|---|---|---|
+| **M1 · Foundation** | 0' (脚手架 + CI/CD + Preview Env), A0' (Admin Auth Python 重写), 4a' (用户系统 + Onboarding) | 2-3 周 | FastAPI + SQLAlchemy + Alembic + python-jose | Gate 1 |
+| **M2 · Pipeline** | 1' (Adapter 框架 + Parser + Scheduler), 1.5' (KG 冷启动 + LLM Discovery), 1.2' (Camoufox + Live Adapter + Luban SMS) | 3-4 周 | Playwright + Camoufox + httpx + Celery | Gate 2 + Gate 3 |
+| **M3 · KG + Planner** | 2' (Topic/Prompt/Query 三层), 2.1' (LLM Refinement), 3' (分析引擎 + API + MCP) | 2-3 周 | Pydantic v2 + Celery beat + Redis | Gate 3 |
+| **M4 · Analyzer + UI** | A1' (Admin 用户管理 + RBAC + KG 审核), 4b' (Dashboard 数据接入 + 报告生成 + 咨询转化) | 1-2 周 | + 前端集成 | Gate 4 + Gate 5 |
+
+**总计 11 Sessions / 8-10 周**. Phase Gate 链见 `HARNESS_ENGINEERING.md` §10.6.
+
+**横切要求 (决策 #30 + #31)**:
+- 每 Session 结束必须 (a) 代码 push 触发 GitHub Actions CI 全绿 (b) Preview env 部署成功 (Vercel/Render/Fly.io 任一) (c) Frank 浏览器自验前后端联动可点击产物
+- 每 1-几个 Session 一个 feature 分支从 main fork (branch-per-session); claude/* 历史分支不再 merge 也不并入
+- 真相源仍是 `CLAUDE.md` + `PRD.md` + `DATA_MODEL.md` + `ADAPTER_CONTRACT.md`; 决策 #25 的 12 条 Prompt 编写公约对 Python Sessions 同样生效
+
+**详细 Session Prompts**: 各 Session 的 Prompt 在开工前现场起草 (按决策 #25 公约 + 决策 #30 preview env + 决策 #31 branch-per-session 模板), 不预先批量灌入本文档以避免 PRD/CLAUDE.md 决策漂移导致 Prompt 过时. 真相源永远是 `docs/SESSION_PROGRESS.md` 的 Session 状态表.
+
+**附录 A (本文档下方 Session 0-rev 起的全部内容)**: Next.js 时代 Sessions 的 Prompt + 任务清单 + 验收标准, 状态全部由 `SESSION_PROGRESS.md` 标记为 📜 已归档. **不得作为新代码实施依据**, 但 (a) 决策 #21-#28 提到的算法 / 错误码 / 状态机 / Harness 规则 / fixture 命名作为 transpose 起点必须读 (b) UI Prototype Sessions T1'-T6' (本文档 line 4729+) 状态保持 ✅, 不属于附录 A 范围.
+
+---
+
 ## 前置阅读 (必读文件)
 
 - **`ADMIN_CLAUDE_CODE_SESSIONS.md` §0 (line 55 到 §0 末尾)** — Session Prompt 编写 9 条公约 (2026-04-21 固化规则 1-8, 2026-04-22 追加规则 9 · commit closure), **全 App + Admin + UI Prototype Session 通用**, 本文档不复写, 以 ADMIN §0 为单一真相源
@@ -272,6 +304,23 @@ POST-FLIGHT 🛬 (人类, 15min)
 - 若 Claude Code 在执行过程中开始主动修代码/改文档, 立即 Ctrl-C, 重开新 Session, 强化硬约束段
 - 若报告只有模糊判断 (如 "大部分 OK" 而没有具体数字 + 文件行号), 要求重跑相应轴
 - 若报告超过 800 行, 要求精简到 ≤500 行 (摘要 + 详表 + 建议, 不要复述 PRD 内容)
+
+---
+
+# 附录 A · Next.js 时代 Sessions (2026-04-26 报废, 决策 #29)
+
+> 以下全部内容 (Session 0-rev / Session 0 / Session 1 / Session 1.2 / Session 1.5 / Session 2 / Session 2.1 / Session 3 / Session 4a / Session 4b / Session 5 / Session A0-A5 / 等) 属于 **Next.js + Prisma + TypeScript** 时代的 Session 规划, 已于 2026-04-26 决策 #29 报废, **不得作为新代码实施依据**.
+>
+> **保留理由 (3 条)**:
+> 1. **算法 transpose 源**: 部分纯逻辑模块 (parsers / sentiment classifier / KG confidence math / Planner intent matrix / topic purity guard / persona FNV-1a sampler 等) 算法本身有效, 新 Python Sessions 可作为 transpose 参考蓝本
+> 2. **决策追溯**: CLAUDE.md 决策 #22-#28 引用本附录 Session 实施记录作为偏差登记锚点, 删除会导致追溯断链
+> 3. **harness 规则源**: 38 master harness 规则 (Group A-E + F1-F4 + G1-G4 + H1-H3 + D8/D9/D10) 需 transpose 到 Python pytest grep, 本附录的 fixture / selftest 设计是直接参考
+>
+> **新代码实施请使用**:
+> - 顶部"重大架构反转公告 (2026-04-26, 决策 #29)" 段
+> - `docs/SESSION_PROGRESS.md` (11 个 ⬜ pending Sessions: 0' / A0' / 4a' / 1' / 1.5' / 1.2' / 2' / 2.1' / 3' / A1' / 4b')
+> - `docs/REPLAN_2026_04_26.md` (M1-M4 Milestone × Session 详细规划)
+> - 各 Session 开工前现场起草 Prompt (按决策 #25 公约 + 决策 #30 preview env + 决策 #31 branch-per-session 模板)
 
 ---
 
