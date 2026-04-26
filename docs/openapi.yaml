@@ -1,0 +1,1557 @@
+openapi: 3.1.0
+info:
+  title: GENPANO API
+  version: 1.0.0-mvp
+  description: |
+    Single source of truth for HTTP contracts. Syncs with ADAPTER_CONTRACT.md §2-3, DATA_MODEL.md, and DECISIONS.md.
+
+    ## Conventions
+
+    - **Dates**: ISO 8601 strings (e.g., "2026-04-20T14:30:00Z")
+    - **Pagination**: Cursor-based by default; offset only for Admin list views
+    - **Errors**: RFC 7807 `application/problem+json` format
+    - **Auth**: Bearer JWT in `Authorization` header; refresh token in HttpOnly cookie
+    - **Rate limit**: 60 req/min/user (MVP); headers `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+    - **Path params**: Documentation uses `:name` style for readability; OpenAPI uses `{name}` format
+    - **Status codes**: 204 No Content responses have no body; 201 Created includes resource in body
+
+servers:
+  - url: https://api.genpano.com/v1
+    description: Production
+  - url: http://localhost:3000/api/v1
+    description: Local dev (matches Node Express routing)
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ================== AUTH ENDPOINTS ==================
+
+  /auth/lookup:
+    post:
+      tags:
+        - Auth
+      summary: Check if email exists and get auth method
+      operationId: authLookup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+              required:
+                - email
+      responses:
+        '200':
+          description: Email lookup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+                  method:
+                    type: string
+                    enum: ['password', 'sso']
+                required:
+                  - exists
+                  - method
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register new user
+      operationId: authRegister
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                name:
+                  type: string
+              required:
+                - email
+                - password
+      responses:
+        '201':
+          description: User created; verification email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  verificationSent:
+                    type: boolean
+                required:
+                  - userId
+                  - verificationSent
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Email already exists
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /auth/verify-email:
+    get:
+      tags:
+        - Auth
+      summary: Verify email address with token
+      operationId: authVerifyEmail
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                required:
+                  - verified
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/forgot-password:
+    post:
+      tags:
+        - Auth
+      summary: Request password reset email
+      operationId: authForgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+              required:
+                - email
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/reset-password:
+    post:
+      tags:
+        - Auth
+      summary: Reset password with token
+      operationId: authResetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  minLength: 8
+              required:
+                - token
+                - password
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login with email and password
+      operationId: authLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+              required:
+                - email
+                - password
+      responses:
+        '200':
+          description: Login successful; refresh token in HttpOnly cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                    description: JWT bearer token
+                  refreshToken:
+                    type: string
+                    description: Refresh token (also in HttpOnly cookie)
+                required:
+                  - accessToken
+                  - refreshToken
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      operationId: authRefresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: New access token issued; refresh token rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+                required:
+                  - accessToken
+                  - refreshToken
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout user (revoke all sessions)
+      operationId: authLogout
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ================== USER ENDPOINTS ==================
+
+  /users/me:
+    delete:
+      tags:
+        - Users
+      summary: Request account deletion (30-day window)
+      operationId: deleteUser
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ================== PROJECTS ==================
+
+  /v1/projects:
+    post:
+      tags:
+        - Projects
+      summary: Create new project
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectInput'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get project details
+      operationId: getProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Projects
+      summary: Update project
+      operationId: updateProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectInput'
+      responses:
+        '200':
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Projects
+      summary: Delete project
+      operationId: deleteProject
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/projects/{projectId}/competitors:
+    post:
+      tags:
+        - Brands
+      summary: Add competitor brand to project
+      operationId: addCompetitor
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                brandId:
+                  type: string
+                  format: uuid
+              required:
+                - brandId
+      responses:
+        '201':
+          description: Competitor link created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompetitorLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /v1/projects/{projectId}/competitors/{brandId}:
+    delete:
+      tags:
+        - Brands
+      summary: Remove competitor brand from project
+      operationId: removeCompetitor
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: brandId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+
+  /v1/projects/{projectId}/brands/{brandId}:
+    get:
+      tags:
+        - Brands
+      summary: Get brand scoped to project
+      operationId: getBrandScoped
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: brandId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Brand details (project-scoped)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandScoped'
+        '403':
+          description: Brand not in project scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/projects/{projectId}/brands/{brandId}/metrics:
+    get:
+      tags:
+        - Brands
+      summary: Get brand metrics with optional profile group filtering
+      operationId: getBrandMetrics
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: brandId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: profileGroups
+          in: query
+          description: Comma-separated profile group IDs (empty = all groups)
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: engine
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Brand metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandMetrics'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ================== TOPICS ==================
+
+  /v1/projects/{projectId}/topics:
+    get:
+      tags:
+        - Topics
+      summary: List topics in project
+      operationId: getTopics
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Topic list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Topic'
+
+  /v1/projects/{projectId}/topics/{topicId}:
+    patch:
+      tags:
+        - Topics
+      summary: Update topic (mark as keyword/ignored)
+      operationId: updateTopic
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: topicId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isKeyword:
+                  type: boolean
+                isIgnored:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated topic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Topic'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Topics
+      summary: Delete topic
+      operationId: deleteTopic
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: topicId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+
+  # ================== QUERIES ==================
+
+  /v1/projects/{projectId}/prompts/{promptId}/queries:
+    get:
+      tags:
+        - Queries
+      summary: Get query executions for a prompt
+      operationId: getQueryExecutions
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: promptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Query execution list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QueryExecution'
+
+  # ================== PROFILE GROUPS ==================
+
+  /v1/profile-groups:
+    get:
+      tags:
+        - ProfileGroups
+      summary: Get all profile groups
+      operationId: getProfileGroups
+      responses:
+        '200':
+          description: Profile group list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileGroupResponse'
+
+  # ================== BRAND SUBMISSIONS ==================
+
+  /v1/brands/submissions:
+    post:
+      tags:
+        - Brands
+      summary: Submit new brand for discovery
+      operationId: submitBrand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrandSubmissionInput'
+      responses:
+        '201':
+          description: Submission created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandSubmission'
+
+  # ================== ADMIN: BRANDS ==================
+
+  /admin/v1/brands/submissions:
+    get:
+      tags:
+        - Admin
+      summary: List brand submissions (admin only)
+      operationId: adminListSubmissions
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Submissions list (paginated)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BrandSubmission'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /admin/v1/brands/submissions/{id}/approve:
+    post:
+      tags:
+        - Admin
+      summary: Approve brand submission
+      operationId: adminApproveBrand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Submission approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandSubmission'
+
+  /admin/v1/brands/submissions/{id}/reject:
+    post:
+      tags:
+        - Admin
+      summary: Reject brand submission
+      operationId: adminRejectBrand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+              required:
+                - reason
+      responses:
+        '200':
+          description: Submission rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandSubmission'
+
+  /admin/v1/brands/submissions/{id}/merge:
+    post:
+      tags:
+        - Admin
+      summary: Merge submission with existing brand
+      operationId: adminMergeBrand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetBrandId:
+                  type: string
+                  format: uuid
+              required:
+                - targetBrandId
+      responses:
+        '200':
+          description: Submission merged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandSubmission'
+
+  # ================== ADMIN: USERS ==================
+
+  /admin/v1/users:
+    get:
+      tags:
+        - Admin
+      summary: List users (admin only, paginated)
+      operationId: adminListUsers
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Users list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  # ================== ADMIN: AUDIT & COST ==================
+
+  /admin/v1/audit-logs:
+    get:
+      tags:
+        - Admin
+      summary: List audit logs (admin only, paginated)
+      operationId: adminAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /admin/v1/cost-dashboard:
+    get:
+      tags:
+        - Admin
+      summary: Get cost events grouped by budget scope
+      operationId: adminCostDashboard
+      responses:
+        '200':
+          description: Cost events grouped
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CostEvent'
+
+  # ================== ADMIN: PROFILE GROUPS ==================
+
+  /admin/v1/profile-groups:
+    get:
+      tags:
+        - Admin
+      summary: List profile groups (admin view)
+      operationId: adminListProfileGroups
+      responses:
+        '200':
+          description: Profile groups list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileGroupResponse'
+
+    post:
+      tags:
+        - Admin
+      summary: Create profile group (admin only)
+      operationId: adminCreateProfileGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileGroupInput'
+      responses:
+        '201':
+          description: Profile group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileGroupResponse'
+
+  /admin/v1/profile-groups/{id}:
+    patch:
+      tags:
+        - Admin
+      summary: Update profile group (admin only)
+      operationId: adminUpdateProfileGroup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileGroupInput'
+      responses:
+        '200':
+          description: Updated profile group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileGroupResponse'
+
+  # ================== MCP (PHASE 2 SKELETON) ==================
+
+  /mcp/brands/{brandId}/metrics:
+    get:
+      tags:
+        - MCP
+      summary: 'Phase 2 — MCP skeleton only'
+      operationId: mcpBrandMetrics
+      parameters:
+        - name: brandId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Brand metrics for MCP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandMetrics'
+
+  /mcp/topics:
+    get:
+      tags:
+        - MCP
+      summary: 'Phase 2 — MCP skeleton only'
+      operationId: mcpTopics
+      responses:
+        '200':
+          description: Topics list for MCP
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Topic'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ProjectIdParam:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+
+    PageSizeParam:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        default: 20
+        maximum: 100
+
+  responses:
+    NoContent:
+      description: No Content
+      content: {}
+
+    BadRequest:
+      description: Bad Request
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Forbidden:
+      description: Forbidden
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    NotFound:
+      description: Not Found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    TooManyRequests:
+      description: Too Many Requests
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    # ================== Core Domain ==================
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - createdAt
+
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        primaryBrandId:
+          type: string
+          format: uuid
+        competitorBrandIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - name
+        - primaryBrandId
+        - competitorBrandIds
+
+    ProjectInput:
+      type: object
+      properties:
+        name:
+          type: string
+        primaryBrandId:
+          type: string
+          format: uuid
+      required:
+        - name
+        - primaryBrandId
+
+    Brand:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        nameZh:
+          type: string
+        nameEn:
+          type: string
+        aliases:
+          type: array
+          items:
+            type: string
+        positioning:
+          type: string
+        priceRange:
+          type: string
+        origin:
+          type: string
+        status:
+          type: string
+          enum: ['active', 'inactive']
+      required:
+        - id
+        - nameZh
+        - status
+
+    BrandScoped:
+      type: object
+      description: Brand view filtered by project scope (403 if not in scope)
+      allOf:
+        - $ref: '#/components/schemas/Brand'
+
+    CompetitorLink:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        brandId:
+          type: string
+          format: uuid
+        addedAt:
+          type: string
+          format: date-time
+      required:
+        - projectId
+        - brandId
+
+    Topic:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        text:
+          type: string
+        dimension:
+          type: string
+        isKeyword:
+          type: boolean
+        isIgnored:
+          type: boolean
+        status:
+          type: string
+      required:
+        - id
+        - text
+        - dimension
+        - isKeyword
+        - isIgnored
+
+    Prompt:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        topicId:
+          type: string
+          format: uuid
+        text:
+          type: string
+        intent:
+          type: string
+      required:
+        - id
+        - topicId
+        - text
+
+    ExecutableQuery:
+      type: object
+      description: Query with all profile group and execution context
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Query ID for tracing
+        prompt:
+          type: string
+          description: Complete user-facing prompt text
+        promptId:
+          type: string
+          format: uuid
+        language:
+          type: string
+          enum: ['zh-CN', 'en-US']
+        intent:
+          type: string
+          enum: ['informational', 'commercial', 'transactional', 'navigational']
+          description: Intent always transported as string; stored as VARCHAR(50)
+        profileGroupIds:
+          type: array
+          items:
+            type: string
+          description: Empty array = any group; Profile-Aware sampling (DECISIONS §3)
+        requiresLogin:
+          type: boolean
+          default: false
+          description: true → PENDING if no account available (DECISIONS §4)
+        topicDimension:
+          type: string
+          enum: ['品类', '品牌', '产品']
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - prompt
+        - promptId
+        - language
+        - intent
+        - profileGroupIds
+        - topicDimension
+        - createdAt
+
+    QueryExecution:
+      type: object
+      description: Renamed from platform_query per DECISIONS §18
+      properties:
+        id:
+          type: string
+          format: uuid
+        queryId:
+          type: string
+          format: uuid
+        engineId:
+          type: string
+        status:
+          type: string
+          enum: ['pending', 'running', 'success', 'failed']
+        attempt:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - queryId
+        - engineId
+        - status
+        - attempt
+
+    AIResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        queryId:
+          type: string
+          format: uuid
+        engineId:
+          type: string
+        rawText:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIResponseCitation'
+        latencyMs:
+          type: integer
+        profile:
+          $ref: '#/components/schemas/BrowserProfile'
+        sentiment:
+          type: number
+          minimum: -1
+          maximum: 1
+        status:
+          type: string
+          enum: ['success', 'partial']
+      required:
+        - id
+        - queryId
+        - engineId
+        - rawText
+
+    AIResponseCitation:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        domain:
+          type: string
+        brandId:
+          type: string
+          format: uuid
+          nullable: true
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        extractionMethod:
+          type: string
+      required:
+        - url
+        - domain
+
+    BrandMetrics:
+      type: object
+      properties:
+        brandId:
+          type: string
+          format: uuid
+        mentionRate:
+          type: number
+        sentiment:
+          type: number
+        ranking:
+          type: integer
+        shareOfVoice:
+          type: number
+        citationShare:
+          type: number
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+      required:
+        - brandId
+
+    BrowserProfile:
+      type: object
+      description: Browser profile instance per DECISIONS §14
+      properties:
+        instanceId:
+          type: string
+          description: Renamed from profileId (DECISIONS §14)
+        profileGroupId:
+          type: string
+        locale:
+          type: string
+        timezone:
+          type: string
+        userAgent:
+          type: string
+        platform:
+          type: string
+      required:
+        - instanceId
+        - profileGroupId
+
+    ProfileGroupResponse:
+      type: object
+      description: Profile group definition (DECISIONS §6, D-P1-6)
+      properties:
+        id:
+          type: string
+        nameZh:
+          type: string
+        nameEn:
+          type: string
+        description:
+          type: string
+        industryScope:
+          type: array
+          items:
+            type: string
+          nullable: true
+        isDefault:
+          type: boolean
+      required:
+        - id
+        - nameZh
+        - nameEn
+        - isDefault
+
+    BrandSubmissionInput:
+      type: object
+      properties:
+        brandNameZh:
+          type: string
+        brandNameEn:
+          type: string
+        industryId:
+          type: string
+          format: uuid
+      required:
+        - brandNameZh
+        - industryId
+
+    BrandSubmission:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        brandNameZh:
+          type: string
+        brandNameEn:
+          type: string
+        status:
+          type: string
+          enum: ['pending', 'verified', 'approved', 'rejected', 'merged']
+        llmVerificationResult:
+          type: object
+          nullable: true
+        rejectionReason:
+          type: string
+          nullable: true
+        mergedIntoBrandId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - userId
+        - brandNameZh
+        - status
+        - createdAt
+
+    ProfileGroupInput:
+      type: object
+      properties:
+        nameZh:
+          type: string
+        nameEn:
+          type: string
+        description:
+          type: string
+        industryScope:
+          type: array
+          items:
+            type: string
+      required:
+        - nameZh
+        - nameEn
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        actorId:
+          type: string
+          format: uuid
+        action:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        changes:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - actorId
+        - action
+        - createdAt
+
+    CostEvent:
+      type: object
+      description: Cost tracking with budget scope distinction (DECISIONS §13)
+      properties:
+        id:
+          type: string
+          format: uuid
+        budgetScope:
+          type: string
+          enum: ['pipeline', 'kg']
+          description: Budget scope per DECISIONS §13
+        engineId:
+          type: string
+        costUsd:
+          type: number
+        tokenCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - budgetScope
+        - costUsd
+
+    AdapterError:
+      type: object
+      description: Adapter error codes (ADAPTER_CONTRACT §6)
+      properties:
+        code:
+          type: string
+          enum:
+            - CAPTCHA_BLOCK
+            - COOLDOWN
+            - BANNED
+            - FROZEN
+            - TIMEOUT
+            - NETWORK_ERROR
+            - NO_ACCOUNT_AVAILABLE
+            - PARSER_FAIL
+        message:
+          type: string
+      required:
+        - code
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        nextCursor:
+          type: string
+          nullable: true
+      required:
+        - page
+        - pageSize
+        - total
+
+    ProblemDetails:
+      type: object
+      description: RFC 7807 error response format
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+      required:
+        - status
+        - title
+
+tags:
+  - name: Auth
+    description: Authentication endpoints
+  - name: Users
+    description: User management
+  - name: Projects
+    description: Project management
+  - name: Brands
+    description: Brand and competitor management
+  - name: Topics
+    description: Topic and query management
+  - name: Queries
+    description: Query execution
+  - name: ProfileGroups
+    description: User profile groups (consumer)
+  - name: Admin
+    description: Admin-only endpoints
+  - name: MCP
+    description: MCP integration (Phase 2 skeleton)
