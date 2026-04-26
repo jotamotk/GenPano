@@ -1,0 +1,18 @@
+Plan J D1+D4: A5 merge into A1' + DECISION_LOG.md index
+
+D1 (old Session A5 absorbed into Session A1'):
+- SESSION_A1_PRIME_PROMPT.md: 5 edits (Truth Source Index + Module E Y33-Y39 + STOP triggers B8/B9/B10 + C9/C10/C11 + dependency note)
+- REPLAN_2026_04_26.md: 2 edits (A1' header + Session 3' dedup)
+- CLAUDE.md decision #29.B: appended Plan J D1 absorption note
+- References: decision #19 (Citation Tier 5 weights), #21.E (A5 spec), #29
+
+D4 (DECISION_LOG.md index + sync harness):
+- docs/DECISION_LOG.md: new 29-row index table, 5 columns, SUPERSEDED preservation rules
+- scripts/decision-log-sync-check.mjs: drift guard, exit 1 on mismatch
+- CLAUDE.md: anchor at decisions section + decision #25 rule 6 microadjust (lookup index first)
+- References: decision #25 (Prompt conventions)
+
+Verification:
+- CLAUDE.md decision body anchors: 29 (grep ^N. **)
+- DECISION_LOG.md table rows: 29 (grep ^| N |)
+- Run scripts/decision-log-sync-check.mjs from PowerShell to confirm exit 0

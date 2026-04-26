@@ -108,7 +108,10 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 | ADAPTER_CONTRACT.md | §5.3a Pre-Warm | 7 步流程 + PRE_WARMING/QUARANTINED 变体 |
 | ADAPTER_CONTRACT.md | §5.4 自动注册 | 鲁班 SMS + doubao/deepseek-CN 自动入池 |
 | ADAPTER_CONTRACT.md | §6 错误码 | 9 种 AdapterError + 重试策略矩阵 (Pipeline 错误展示用) |
-| ADMIN_CLAUDE_CODE_SESSIONS.md | §A1 / §A2 / §A3 | 旧 TS 实现指南; Python rewrite 不照搬代码, 但 IA / 验收点 / RBAC 范围以这里为准 |
+| ADMIN_CLAUDE_CODE_SESSIONS.md | §A1 / §A2 / §A3 / §A5 | 旧 TS 实现指南; Python rewrite 不照搬代码, 但 IA / 验收点 / RBAC 范围以这里为准; A5 (Citation Tier CRUD + MCP Token) 已并入本 Session, 见决策 #21.E |
+| PRD.md | §4.2.6 (citation tier 表 5 级权重) | 决策 #19 锁定: 0 未知 / 1 官方 1.0 / 2 权威媒体 0.7 / 3 KOL 0.4 / 4 UGC 0.15; Citation Tier CRUD UI + 回溯 recompute 任务的语义真相源 |
+| PRD.md | §4.5.2 (3 个 MCP 工具契约) | `genpano_get_citations` / `list_pr_targets` / `simulate_authority_boost` 工具 schema; MCP Token 签发与吊销服务的消费方契约 |
+| CLAUDE.md | 决策 #21.E (Session A5 规格) | Citation Tier CRUD + 回溯 recompute Celery 任务 + `mcp_api_tokens` 表 + 60s Redis pub-sub 吊销黑名单; 半天工作量, 已并入本 Session |
 | TEST_STRATEGY.md | §10 (Admin 测试矩阵) | A1-A5 测试任务 + 7 条 Admin-specific 异常 (Auth/RBAC/Audit/KG QA/Pipeline/Cost/Cross) |
 | TEST_STRATEGY.md | §11 (P0/P1/P2 优先级清单) | 本 Session 承担 P2-1 (Admin KG QA 5 层抽样 + Trust Score 11 边界) + P2-2 (Admin Pipeline 监控面板) — 详见 `docs/TEST_COVERAGE_MAP.md` §4 A1' 段 |
 | TEST_COVERAGE_MAP.md | §1 P0 / §3 P2 / §4 A1' 责任清单 | Plan K.1 索引: A1' 不直接承担 P0/P1, 仅 P2-1/P2-2 覆盖 (Phase 2 标 ❌, MVP 内只走 L2 单测占位) |
@@ -144,7 +147,7 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 5. **ADMIN_PRD_B_PIPELINE §0.2 v2 重构**: 旧 v1 的 13 个子页 (B1-B13) 已映射到 v2 三模块 (Planner/Tracker/Analyzer); 本 Session 取 v2 路径 (`/admin/pipeline/dashboard` + `/admin/pipeline/planner/{scheduler,resources}` + `/admin/pipeline/tracker/{attempts,engines}` + retry-center 落在 tracker/attempts 之内), 不实现 Analyzer 页面 (推 Phase 2)。
 6. **ADMIN_PRD_C_KG §2 C7-C9 ★ 不开**: Entity Merger / KG Diff / Quality Monitor 是深化新增 3 页, **MVP 不实现**, A1' 只开 C1-C6 摘要 6 页。
 7. **ADMIN_PRD §4.4 Module D 7 子页 MVP 只开 2**: cost dashboard (只读) + audit-log; alerts / schedule kill switch / comms / commercial leads / mcp-ops 推 Phase 2。
-8. **决策 #19 Citation Tier CRUD 不在本 Session**: 推 Session A5 (尚未规划) 或并入 4b' 收尾; 本 Session 不动 `citation_domain_authority` 表。
+8. **决策 #19 + 决策 #21.E Citation Tier CRUD + MCP Token 已并入本 Session (Plan J D1, 2026-04-26)**: 旧 Session A5 规格 (Citation Tier 5 级权重 CRUD + 回溯 recompute Celery 任务 + `mcp_api_tokens` 表 + 60s Redis pub-sub 吊销黑名单) 整体合入 A1', 不再单独排期 A5。Tier 表 5 级 (0 未知 / 1 官方 1.0 / 2 权威媒体 0.7 / 3 KOL 0.4 / 4 UGC 0.15) 走 DB seed + Admin CRUD UI, **禁** 硬编码进代码 (决策 #19 硬约束 + Harness E1)。MCP Token 签发面向 `genpano_get_citations` / `list_pr_targets` / `simulate_authority_boost` 三个 MCP 工具 (PRD §4.5.2), 吊销走 Redis pub-sub channel 60s 内全节点生效。
 9. **决策 #9 Auth-Required 仍然成立**: Admin API 全线 `Depends(requireAdminSession)`; `/admin/api/v1/*` 与 `/api/v1/*` 严格分离 (ADMIN_PRD §5.5)。
 10. **决策 #30 Frank Layer 3 验收**: Phase Gate 接受标准是在 preview admin 子域上**实操**完成 — 看真实账号池水位 + 真实当日成本 + 真实一条 Brand Submission 全流程, 不接受 mock 截图。
 
@@ -194,30 +197,37 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 - **Y31** `GET /admin/api/v1/audit-log` — 全局审计列表 (operator_id / action / target_type / from / to filter)
 - **Y32** `GET /admin/api/v1/audit-log/export.csv` — super_admin CSV 导出 (UTF-8 BOM, 10k 行上限, **导出本身写 audit**, slowapi 5/min rate limit)
 
+**Module E · Citation Tier + MCP Token (并入自旧 A5, Plan J D1, 2026-04-26 — 决策 #19 + #21.E)**
+- **Y33** `GET /admin/api/v1/citations/tiers` — 列出 5 级 Tier (0/1/2/3/4) 当前权重 + 修改历史 (`citation_domain_authority` 表 + audit log)
+- **Y34** `PATCH /admin/api/v1/citations/tiers/:tierLevel` — 修改单个 Tier 权重 (super_admin only, audit 必写, 触发 Y35 recompute, body schema 限 `{weight: float ∈ [0, 1]}`)
+- **Y35** `POST /admin/api/v1/citations/recompute` — 触发回溯 recompute Celery 任务 (PANO A 公式重算, idempotent by `recompute_job_id`, 任务进度查 `GET /admin/api/v1/citations/recompute/:jobId`)
+- **Y36** `mcp_api_tokens` 表 (Alembic migration): `id uuid / user_id uuid FK / token_hash text / scopes text[] / created_at / last_used_at / revoked_at`; `POST /admin/api/v1/mcp-tokens` 签发 (返回 token plaintext **仅一次**, 入 audit) / `GET /admin/api/v1/mcp-tokens` 列表 / `DELETE /admin/api/v1/mcp-tokens/:id` 吊销
+- **Y37** Redis pub-sub 吊销黑名单 worker — `DELETE` 端点写入 Redis channel `mcp:token:revoked`, 60s 内全节点 (App + Admin + Worker) 订阅生效; in-memory `Set<tokenHash>` 合 Redis subscriber, 60s TTL 防内存膨胀; 配 Celery beat 任务清扫已过期 token
+- **Y38** Citation Tier UI 页 `/admin/citations/tiers` (5 行 Tier 表 + inline weight 编辑 + 修改历史抽屉 + recompute trigger 按钮 + 进度面板, super_admin only)
+- **Y39** MCP Token UI 页 `/admin/mcp-tokens` (列表 + 签发对话框 (scopes 多选 = `genpano_get_citations` / `list_pr_targets` / `simulate_authority_boost` 三工具任选) + 吊销 + token plaintext 一次性 reveal modal)
+
 **横切**
-- **Y33** RBAC decorator `require_role('super_admin')` + audit context injection (operator_id 从 JWT claims, ip + ua 从 request)
-- **Y34** Group J Harness 5 条 (J1 audit-must-fire / J2 admin-must-not-rewrite-account-pool / J3 rbac-super-admin-only / J4 cookie-mask-in-response / J5 user-data-write-only-status)
-- **Y35** 17 React+TSX 页面 (按 §1 修改清单), 共享 admin layout shell + AdminRouteGuard (复用 A0' 已交付)
-- **Y36** docker-compose.admin 子服务 + Vercel admin.preview.genpano.dev 子域 + Render admin worker
-- **Y37** Phase Gate 3-Layer 验收 (§4)
+- **Y40** RBAC decorator `require_role('super_admin')` + audit context injection (operator_id 从 JWT claims, ip + ua 从 request)
+- **Y41** Group J Harness 6 条 (J1 audit-must-fire / J2 admin-must-not-rewrite-account-pool / J3 rbac-super-admin-only / J4 cookie-mask-in-response / J5 user-data-write-only-status / J6 citation-tier-weight-no-hardcode 与 Group E E1 联防)
+- **Y42** 19 React+TSX 页面 (17 + Citation Tier + MCP Token 共 19, 按 §1 修改清单), 共享 admin layout shell + AdminRouteGuard (复用 A0' 已交付)
+- **Y43** docker-compose.admin 子服务 + Vercel admin.preview.genpano.dev 子域 + Render admin worker (含 Celery worker for recompute + Redis subscriber for token blacklist)
+- **Y44** Phase Gate 3-Layer 验收 (§4)
 
-### ❌ 本 Session 不做 (N1-N15)
+### ❌ 本 Session 不做 (N1-N13)
 
-- **N1** Citation Tier CRUD (PRD §4.2.6 决策 #19) — 推后续 Session A5 或并入 4b'; 本 Session **不**动 `citation_domain_authority` 表
-- **N2** MCP Token 签发 + 60s Redis blacklist — 同上, 推 A5 / 4b'
-- **N3** Module D 其余 5 子页 (alerts inbox / schedule kill switch / comms 公告 + 邮件模板 / commercial leads / mcp-ops) — Phase 2
-- **N4** ADMIN_PRD_B_PIPELINE Analyzer 模块 (§3.1 quality / §3.2 QA) — Phase 2
-- **N5** Pipeline §1.2 生成管线 single-page 三层 Tab (Topic→Prompt→Query 内联编辑) — Phase 2, 本 Session 只展示 dashboard 漏斗数字, 不开生成管线编辑器
-- **N6** Pipeline §1.3 Prompt 模板 A/B testing — Phase 2
-- **N7** Pipeline §1.4 ProfileGroup 权重调整 — Phase 2 (现行 4 个静态 seed 即可, 见 1.5' Profile Groups)
-- **N8** Tracker §2.4 链路追溯 (Trace & Lineage) — Phase 2
-- **N9** Pipeline §4.3 横切变更审批中心 — Phase 2 (本 Session 走 RBAC + audit, 不另开审批工作流)
-- **N10** KG §C7-C9 ★ 三深化页 (Entity Merger / KG Diff / Quality Monitor) — Phase 2
-- **N11** Multi-role RBAC 扩展 (ops/data_ops/support/bizdev) — Phase 2 Session A2 (尚未规划); A1' 仍只开 super_admin
-- **N12** 2FA / TOTP — Phase 2; `admin_users.totp_secret` 字段保留但不启用
-- **N13** Cloudflare Access 集成 — Phase 2 部署任务, 本 Session preview 上仅靠 Admin auth (cookie + JWT) 守门
-- **N14** Pipeline kill switch 写入 + 立即运行 Planner 按钮 — Phase 2 (太危险, MVP 不开 hard write 路径)
-- **N15** Brand Submission Trust Score 自动降权算法 — MVP 用静态字段, 不实现动态 score 计算; UI 只展示
+- **N1** Module D 其余 5 子页 (alerts inbox / schedule kill switch / comms 公告 + 邮件模板 / commercial leads / mcp-ops) — Phase 2
+- **N2** ADMIN_PRD_B_PIPELINE Analyzer 模块 (§3.1 quality / §3.2 QA) — Phase 2
+- **N3** Pipeline §1.2 生成管线 single-page 三层 Tab (Topic→Prompt→Query 内联编辑) — Phase 2, 本 Session 只展示 dashboard 漏斗数字, 不开生成管线编辑器
+- **N4** Pipeline §1.3 Prompt 模板 A/B testing — Phase 2
+- **N5** Pipeline §1.4 ProfileGroup 权重调整 — Phase 2 (现行 4 个静态 seed 即可, 见 1.5' Profile Groups)
+- **N6** Tracker §2.4 链路追溯 (Trace & Lineage) — Phase 2
+- **N7** Pipeline §4.3 横切变更审批中心 — Phase 2 (本 Session 走 RBAC + audit, 不另开审批工作流)
+- **N8** KG §C7-C9 ★ 三深化页 (Entity Merger / KG Diff / Quality Monitor) — Phase 2
+- **N9** Multi-role RBAC 扩展 (ops/data_ops/support/bizdev) — Phase 2 Session A2 (尚未规划); A1' 仍只开 super_admin
+- **N10** 2FA / TOTP — Phase 2; `admin_users.totp_secret` 字段保留但不启用
+- **N11** Cloudflare Access 集成 — Phase 2 部署任务, 本 Session preview 上仅靠 Admin auth (cookie + JWT) 守门
+- **N12** Pipeline kill switch 写入 + 立即运行 Planner 按钮 — Phase 2 (太危险, MVP 不开 hard write 路径)
+- **N13** Brand Submission Trust Score 自动降权算法 — MVP 用静态字段, 不实现动态 score 计算; UI 只展示
 
 ---
 
@@ -242,18 +252,23 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 - **B5**: ADMIN_PRD §5.2 audit 必触发列表新增条目而 §1 真相源索引未同步 → 停, 走 Rule 4 双向同步
 - **B6**: ADMIN_PRD_C_KG §2 C7-C9 ★ 转入 MVP (Frank 决定开) → 停, 重排 §2 Y/N 列表与 §5 step 数量
 - **B7**: ADAPTER_CONTRACT §5.1 账号状态机增加新状态 (如 RATE_LIMITED) → 停, Account Pool wrapper Y10/Y11 边界需要重画
+- **B8**: PRD §4.2.6 Citation Tier 5 级权重表数值漂移 (例 Tier 1 从 1.0 改 0.95, 与 CLAUDE.md 决策 #19 不符) → 停, 走 Rule 4 双向同步, 决议是改 PRD 还是 Y33-Y34 默认 seed
+- **B9**: PRD §4.5.2 MCP 工具列表 ≠ 3 (`genpano_get_citations` / `list_pr_targets` / `simulate_authority_boost`) — 出现新增或删除 → 停, Y36 scopes 枚举需重排
+- **B10**: Redis pub-sub channel 名称在 App / Admin / Worker 三端不一致 (例 `mcp:token:revoked` vs `mcp_token_revoked`) → 停, 60s 全节点生效契约破坏
 
 ### Type C · 范围溢出
 
-- **C1**: 实施进入 Module D alerts inbox / schedule / comms 任一 (N3 列表) → 停, 这是 Phase 2 推手
-- **C2**: 实施进入 Citation Tier CRUD (N1) → 停, 走 A5/4b'
-- **C3**: 实施进入 Analyzer / Trace / 生成管线编辑器 (N4/N5/N8) → 停
-- **C4**: RBAC decorator 接受第二个角色值 (N11) → 停
-- **C5**: 出现"先在 admin handler 里写一遍 luban 注册再 import 一下"的双轨实现 → 停, J2 violation
-- **C6**: Brand Submission Trust Score 出现自动 +/- 算法 (N15) → 停, MVP 只静态读
-- **C7**: 任何对 `users.email` / `users.password_hash` / `projects.*` 的 PATCH/DELETE 路径 → 停, ADMIN_PRD §5.4 violation
-- **C8**: Audit log 表出现 UPDATE / DELETE 路径 → 停 (§5.2 INSERT-only 强约束)
-- **C9**: Cost CSV export 没有写自身的 audit log → 停 (Y32 验收点)
+- **C1**: 实施进入 Module D alerts inbox / schedule / comms 任一 (N1 列表) → 停, 这是 Phase 2 推手
+- **C2**: 实施进入 Analyzer / Trace / 生成管线编辑器 (N2/N3/N6) → 停
+- **C3**: RBAC decorator 接受第二个角色值 (N9) → 停
+- **C4**: 出现"先在 admin handler 里写一遍 luban 注册再 import 一下"的双轨实现 → 停, J2 violation
+- **C5**: Brand Submission Trust Score 出现自动 +/- 算法 (N13) → 停, MVP 只静态读
+- **C6**: 任何对 `users.email` / `users.password_hash` / `projects.*` 的 PATCH/DELETE 路径 → 停, ADMIN_PRD §5.4 violation
+- **C7**: Audit log 表出现 UPDATE / DELETE 路径 → 停 (§5.2 INSERT-only 强约束)
+- **C8**: Cost CSV export 没有写自身的 audit log → 停 (Y32 验收点)
+- **C9**: Citation Tier 权重出现硬编码进 `app/services/citation/**` 或 `app/parsers/citation*.py` (regex `tier_weight\s*=\s*[\d.]+` 或 `{0:\s*0\.0,\s*1:\s*1\.0` 类) → 停, 必须走 DB seed + Y33-Y34 CRUD, J6 + Group E E1 联防
+- **C10**: MCP Token plaintext 出现于 audit log / 服务端日志 / DB 列 (除签发瞬间响应体外) → 停, 安全违反 (token 应只 hash 入库)
+- **C11**: Redis token blacklist worker 未配置 60s TTL 内存清扫 → 停, 长期跑会内存膨胀
 - **C10**: Pipeline kill switch / 立即运行 Planner 按钮被实现 (N14) → 停
 - **C11**: 多于 17 个 admin React 页面被新建 → 停 (Y35 数量上限)
 - **C12**: alembic 单 migration 文件超过 800 行 → 停 (拆成 2 个原子 migration; 太大不可 review)
@@ -374,7 +389,7 @@ A1' Phase Gate 关闭条件 ≡ §4 三层全绿 (L1.1-L1.11 全 green + L2 self
 
 A1' 完成 ≡ Admin 域 Python rewrite 全部就位 ≡ App 后端 + Admin 后端双轨完成。**剩下唯一 Session = 4b'** — IA v2.0 完整 JSX→TSX + 真实 FastAPI 集成 + 17 个 admin 页面再细化 + 18 个 app 页面 (5 KPI + Brand Mode 9 + Industry Mode 4) 接入真后端。4b' 完成 = MVP 完成。
 
-A2' (multi-role RBAC) / A5' (Citation Tier CRUD + MCP Token) / Phase 2 Module D / Phase 2 Pipeline Analyzer 等推 Phase 2 排期, 不属 MVP 关键路径。
+A5' (Citation Tier CRUD + MCP Token + Redis 60s 吊销黑名单) **已并入本 A1' Session**, 不再单独排期 (Plan J D1, 2026-04-26 — 决策 #19 + #21.E + DECISION_LOG.md 同步索引)。A2' (multi-role RBAC) / Phase 2 Module D / Phase 2 Pipeline Analyzer 等仍推 Phase 2 排期, 不属 MVP 关键路径。
 
 ---
 

@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# VITE_BASE_PATH is empty for the prod image and '/preview/' for the preview image.
+ARG VITE_BASE_PATH=/
+ENV VITE_BASE_PATH=$VITE_BASE_PATH
 RUN npm run build
 
 # Stage 2: Nginx serve + reverse proxy

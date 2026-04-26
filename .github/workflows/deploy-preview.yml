@@ -1,0 +1,99 @@
+name: Build & Deploy (Preview)
+
+# Builds and deploys the preview (merge-frontend-pages) environment alongside
+# prod on the same host. Shares postgres/redis/backend/worker with prod.
+# Reachable at http://<host>/preview/.
+#
+# Triggers: pushes to the preview branch (currently claude/merge-frontend-pages-DWFMx)
+# Images:   genpano:query-tool-preview-<sha>, genpano:frontend-preview-<sha>
+# Tag var:  PREVIEW_IMAGE_TAG (written into .env on the host, merged with prod .env)
+
+on:
+  push:
+    branches:
+      - claude/merge-frontend-pages-DWFMx
+
+env:
+  PREVIEW_IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Preview Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Alibaba Cloud ACR
+        uses: docker/login-action@v3
+        with:
+          registry: crpi-vklfeye8td1r1mei.cn-shanghai.personal.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build & push frontend-preview
+        run: |
+          docker build \
+            --build-arg VITE_BASE_PATH=/preview/ \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./frontend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }}
+
+      - name: Build & push query-tool-preview
+        run: |
+          docker build \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./query_tool
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }}
+
+  deploy:
+    name: Deploy Preview to Server
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy preview files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.preview.yml,nginx-preview.conf,frontend/nginx.conf"
+          target: /opt/genpano
+
+      - name: Deploy preview overlay
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/genpano
+
+            # Merge PREVIEW_IMAGE_TAG into the shared .env (prod workflow owns the rest)
+            if [ -f .env ]; then
+              grep -v '^PREVIEW_IMAGE_TAG=' .env > .env.tmp || true
+              mv .env.tmp .env
+            fi
+            echo "PREVIEW_IMAGE_TAG=${{ env.PREVIEW_IMAGE_TAG }}" >> .env
+
+            # Pull new preview images and apply the overlay without touching prod services.
+            # --no-recreate for unchanged services keeps prod containers running as-is.
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml pull \
+              query-tool-preview frontend-preview
+
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
+              --no-deps \
+              query-tool-preview frontend-preview
+
+            # nginx needs the extra volume mount (routes.conf) — recreate only nginx.
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
+              --no-deps --force-recreate \
+              nginx
+
+            # Light cleanup — don't touch volumes or aggressive prunes that could hit prod
+            docker image prune -af --filter "until=72h" --filter "label=preview=true" || true

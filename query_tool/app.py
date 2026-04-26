@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify, Response
+from flask import Flask, render_template, render_template_string, request, jsonify, Response
 
 # Add parent directory to path so we can import geo_tracker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -314,6 +314,115 @@ def _ensure_analyzer_tables():
             conn.close()
     except Exception as e:
         print(f"DB migration warning (non-fatal): {e}")
+
+
+def _ensure_preview_columns():
+    """Additive columns for the preview admin console's 执行追踪 view.
+    Worker is NOT being upgraded for the preview rollout, so these fields
+    stay NULL until the worker starts populating them — the UI renders '—'
+    for NULL values.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS queued_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS started_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS latency_ms INTEGER")
+                cur.execute("ALTER TABLE queries ADD COLUMN IF NOT EXISTS retry_reason VARCHAR(256)")
+            conn.commit()
+            print("DB migration: preview columns ensured on queries "
+                  "(queued_at, started_at, finished_at, latency_ms, retry_reason)")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+# Engines we want to keep in the preview DB. Anything else gets pruned so the
+# 执行追踪 table only shows supported engines (Gemini is kept in the DB but
+# hidden in the UI per product decision).
+APPROVED_ENGINES = ('chatgpt', 'doubao', 'deepseek', 'gemini')
+
+
+def _normalize_query_data():
+    """One-shot cleanup run at startup:
+    1) Lowercase queries.status, queries.target_llm, llm_accounts.llm_name.
+    2) Cascade-delete queries whose target_llm is not in APPROVED_ENGINES
+       (llm_responses + all analyzer descendants reference queries via FKs
+       without ON DELETE CASCADE, so we must walk the chain manually).
+    Uses IS DISTINCT FROM so already-lowercased rows aren't touched.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE queries SET status = LOWER(status) "
+                    "WHERE status IS DISTINCT FROM LOWER(status)"
+                )
+                status_fixed = cur.rowcount
+                cur.execute(
+                    "UPDATE queries SET target_llm = LOWER(target_llm) "
+                    "WHERE target_llm IS DISTINCT FROM LOWER(target_llm)"
+                )
+                llm_fixed = cur.rowcount
+                cur.execute(
+                    "UPDATE llm_accounts SET llm_name = LOWER(llm_name) "
+                    "WHERE llm_name IS DISTINCT FROM LOWER(llm_name)"
+                )
+                accounts_fixed = cur.rowcount
+
+                # Cascade delete. Chain:
+                # queries → llm_responses → {brand_mentions, response_analyses,
+                # sentiment_drivers, citation_sources} → product_feature_mentions
+                cur.execute(
+                    "CREATE TEMP TABLE _bad_q ON COMMIT DROP AS "
+                    "SELECT id FROM queries "
+                    "WHERE LOWER(COALESCE(target_llm, '')) NOT IN %s",
+                    (APPROVED_ENGINES,)
+                )
+                cur.execute("SELECT COUNT(*) FROM _bad_q")
+                pruned = cur.fetchone()[0]
+                if pruned > 0:
+                    cur.execute(
+                        "CREATE TEMP TABLE _bad_r ON COMMIT DROP AS "
+                        "SELECT id FROM llm_responses WHERE query_id IN (SELECT id FROM _bad_q)"
+                    )
+                    cur.execute("""
+                        DELETE FROM product_feature_mentions
+                        WHERE analysis_id IN (
+                            SELECT id FROM response_analyses
+                            WHERE response_id IN (SELECT id FROM _bad_r)
+                        )
+                    """)
+                    cur.execute(
+                        "DELETE FROM sentiment_drivers WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM citation_sources WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM response_analyses WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM brand_mentions WHERE response_id IN (SELECT id FROM _bad_r)"
+                    )
+                    cur.execute(
+                        "DELETE FROM llm_responses WHERE query_id IN (SELECT id FROM _bad_q)"
+                    )
+                    cur.execute("DELETE FROM queries WHERE id IN (SELECT id FROM _bad_q)")
+            conn.commit()
+            print(
+                f"DB normalize: status_lowered={status_fixed}, "
+                f"target_llm_lowered={llm_fixed}, accounts_lowered={accounts_fixed}, "
+                f"pruned_non_approved={pruned}"
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB normalize warning (non-fatal): {e}")
 
 
 def get_db():
@@ -2439,6 +2548,16 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
+@app.route('/admin')
+def admin_page():
+    """Preview admin console — prototype-based layout that merges the query
+    tool's live data (执行追踪, 账号池, Debug HTML) into one view.
+    The template lives in templates/admin.html; all APIs it consumes already
+    exist on this Flask app (/api/queries, /api/accounts, etc).
+    """
+    return render_template('admin.html')
+
+
 @app.route('/api/stats')
 def stats():
     conn = get_db()
@@ -2470,7 +2589,10 @@ def queries():
     llm = request.args.get('llm')
     status = request.args.get('status')
     brand_id = request.args.get('brand_id')
+    topic_id = request.args.get('topic_id')
+    prompt_id = request.args.get('prompt_id')
     query_id = request.args.get('id')
+    prompt_q = (request.args.get('q') or '').strip()
     limit = int(request.args.get('limit', 50))
     offset = int(request.args.get('offset', 0))
     sort = request.args.get('sort', 'id_desc')
@@ -2500,16 +2622,35 @@ def queries():
         if brand_id:
             where.append("q.brand_id = %s")
             params.append(int(brand_id))
+        if topic_id:
+            where.append("q.prompt_id IN (SELECT id FROM prompts WHERE topic_id = %s)")
+            params.append(int(topic_id))
+        if prompt_id:
+            where.append("q.prompt_id = %s")
+            params.append(int(prompt_id))
+        if prompt_q:
+            where.append("q.query_text ILIKE %s")
+            params.append(f"%{prompt_q}%")
 
         where_clause = " AND ".join(where) if where else "1=1"
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            by_status = None
             if include_count:
                 cur.execute(
                     f"SELECT COUNT(*) as cnt FROM queries q WHERE {where_clause}",
                     params
                 )
                 total = cur.fetchone()['cnt']
+                # Full-dataset status breakdown so the UI summary isn't capped at
+                # the current page size (e.g. 50 rows can't represent 166 done).
+                cur.execute(
+                    f"""SELECT LOWER(q.status) AS st, COUNT(*) AS cnt
+                        FROM queries q WHERE {where_clause}
+                        GROUP BY LOWER(q.status)""",
+                    params
+                )
+                by_status = {row['st'] or 'unknown': row['cnt'] for row in cur.fetchall()}
             else:
                 total = None
 
@@ -2525,6 +2666,15 @@ def queries():
                     q.created_at,
                     q.executed_at,
                     q.retry_count,
+                    q.queued_at,
+                    q.started_at,
+                    q.finished_at,
+                    q.latency_ms,
+                    q.retry_reason,
+                    q.prompt_id,
+                    pr.text as prompt_text,
+                    t.id as topic_id,
+                    t.text as topic_text,
                     r.raw_text as response,
                     r.llm_version,
                     r.citations_json as citations,
@@ -2537,6 +2687,8 @@ def queries():
                 LEFT JOIN llm_responses r ON q.id = r.query_id
                 LEFT JOIN profiles p ON q.profile_id = p.id
                 LEFT JOIN llm_accounts a ON q.account_id = a.id
+                LEFT JOIN prompts pr ON q.prompt_id = pr.id
+                LEFT JOIN topics t ON pr.topic_id = t.id
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT %s OFFSET %s
@@ -2545,7 +2697,7 @@ def queries():
 
         result = [dict(r) for r in rows]
         if include_count:
-            return jsonify({'rows': result, 'total': total})
+            return jsonify({'rows': result, 'total': total, 'by_status': by_status})
         return jsonify(result)
     finally:
         conn.close()
@@ -2566,8 +2718,8 @@ def create_query():
         try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO queries (target_llm, query_text, brand_id, status, created_at)
-                    VALUES (%s, %s, %s, 'pending', NOW())
+                    INSERT INTO queries (target_llm, query_text, brand_id, status, created_at, queued_at)
+                    VALUES (%s, %s, %s, 'pending', NOW(), NOW())
                     RETURNING id
                 """, (target_llm, query_text, brand_id))
                 query_id = cur.fetchone()[0]
@@ -2594,6 +2746,8 @@ def create_query():
 def retry_query(query_id):
     try:
         from psycopg2.extras import RealDictCursor
+        payload = request.get_json(silent=True) or {}
+        retry_reason = (payload.get('reason') or '').strip() or None
         conn = get_db()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -2605,11 +2759,20 @@ def retry_query(query_id):
                 if not query:
                     return jsonify({'success': False, 'error': 'Query not found'})
 
+                # Reset timing fields so the new attempt reports fresh latency.
+                # started_at / finished_at / latency_ms are owned by the worker;
+                # clearing them here keeps a clean slate per retry.
                 cur.execute("""
                     UPDATE queries
-                    SET status = 'pending', retry_count = COALESCE(retry_count, 0) + 1
+                    SET status = 'pending',
+                        retry_count = COALESCE(retry_count, 0) + 1,
+                        queued_at = NOW(),
+                        started_at = NULL,
+                        finished_at = NULL,
+                        latency_ms = NULL,
+                        retry_reason = %s
                     WHERE id = %s
-                """, (query_id,))
+                """, (retry_reason, query_id))
             conn.commit()
 
             if HAS_CELERY and celery_app is not None:
@@ -2627,6 +2790,119 @@ def retry_query(query_id):
             conn.close()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/queries/batch_trigger', methods=['POST'])
+def batch_trigger_queries():
+    """Reset matching queries to pending and dispatch them to Celery.
+
+    Accepts JSON body matching /api/queries GET filters:
+      brand_id, topic_id, prompt_id, llm, status, id, q
+    Optional:
+      max (int, default 2000) — hard cap; refuse if match count exceeds it
+      dry_run (bool) — return count only, no writes
+      reason (str) — stored in retry_reason (default 'batch_trigger')
+    Default status filter: only 'pending' or 'failed' queries.
+    """
+    from psycopg2.extras import RealDictCursor
+    payload = request.get_json(silent=True) or {}
+
+    ids = payload.get('ids')
+    brand_id = payload.get('brand_id')
+    topic_id = payload.get('topic_id')
+    prompt_id = payload.get('prompt_id')
+    llm = (payload.get('llm') or '').strip() or None
+    status = (payload.get('status') or '').strip() or None
+    query_id = payload.get('id')
+    prompt_q = (payload.get('q') or '').strip() or None
+    max_count = int(payload.get('max') or 2000)
+    dry_run = bool(payload.get('dry_run'))
+    reason = (payload.get('reason') or 'batch_trigger').strip() or 'batch_trigger'
+
+    where = []
+    params = []
+    if isinstance(ids, list) and ids:
+        clean_ids = [int(x) for x in ids if str(x).strip().lstrip('-').isdigit()]
+        if not clean_ids:
+            return jsonify({'success': False, 'error': 'ids 列表为空或无效'}), 400
+        where.append("id = ANY(%s)")
+        params.append(clean_ids)
+    else:
+        if query_id:
+            where.append("id = %s"); params.append(int(query_id))
+        if llm:
+            where.append("target_llm = %s"); params.append(llm)
+        if status:
+            where.append("UPPER(status) = UPPER(%s)"); params.append(status)
+        else:
+            where.append("LOWER(status) IN ('pending','failed')")
+        if brand_id:
+            where.append("brand_id = %s"); params.append(int(brand_id))
+        if topic_id:
+            where.append("prompt_id IN (SELECT id FROM prompts WHERE topic_id = %s)")
+            params.append(int(topic_id))
+        if prompt_id:
+            where.append("prompt_id = %s"); params.append(int(prompt_id))
+        if prompt_q:
+            where.append("query_text ILIKE %s"); params.append(f"%{prompt_q}%")
+
+    where_clause = " AND ".join(where) if where else "1=1"
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM queries WHERE {where_clause}", params)
+            total = cur.fetchone()[0]
+            if dry_run:
+                return jsonify({'success': True, 'count': total, 'dry_run': True})
+            if total == 0:
+                return jsonify({'success': True, 'count': 0, 'dispatched': 0})
+            if total > max_count:
+                return jsonify({
+                    'success': False,
+                    'error': f'匹配 {total} 条，超过上限 {max_count}，请缩小筛选或传入更大的 max',
+                    'count': total,
+                }), 400
+            cur.execute(f"""
+                UPDATE queries
+                SET status = 'pending',
+                    retry_count = COALESCE(retry_count, 0) + 1,
+                    queued_at = NOW(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    latency_ms = NULL,
+                    retry_reason = %s
+                WHERE {where_clause}
+                RETURNING id
+            """, [reason, *params])
+            ids = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    finally:
+        conn.close()
+
+    dispatched = 0
+    dispatch_failed = 0
+    if HAS_CELERY and celery_app is not None:
+        for qid in ids:
+            try:
+                celery_app.send_task(
+                    'geo_tracker.tasks.celery_tasks.execute_query',
+                    args=[qid],
+                    queue='celery',
+                )
+                dispatched += 1
+            except Exception as e:
+                dispatch_failed += 1
+                print(f"batch_trigger: celery dispatch failed for q={qid}: {e}")
+    else:
+        print("batch_trigger: Celery not available; queries reset but not dispatched")
+
+    return jsonify({
+        'success': True,
+        'count': len(ids),
+        'dispatched': dispatched,
+        'dispatch_failed': dispatch_failed,
+    })
 
 
 @app.route('/api/queries/<int:query_id>/mark_failed', methods=['POST'])
@@ -3491,6 +3767,62 @@ def analyzer_brands():
         conn.close()
 
 
+@app.route('/api/topics')
+def list_topics():
+    """Topics filtered by brand_id (optional). Used by the attempt-tracker
+    filter dropdown, which cascades from the brand selector."""
+    brand_id = request.args.get('brand_id')
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if brand_id:
+                cur.execute(
+                    "SELECT id, brand_id, text, category FROM topics "
+                    "WHERE brand_id = %s ORDER BY id",
+                    (int(brand_id),),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, brand_id, text, category FROM topics ORDER BY brand_id, id"
+                )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
+@app.route('/api/prompts')
+def list_prompts():
+    """Prompts filtered by brand_id and/or topic_id. Used by the attempt
+    tracker's searchable prompt picker — client filters in-memory by text."""
+    brand_id = request.args.get('brand_id')
+    topic_id = request.args.get('topic_id')
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        where = []
+        params = []
+        if brand_id:
+            where.append("t.brand_id = %s")
+            params.append(int(brand_id))
+        if topic_id:
+            where.append("pr.topic_id = %s")
+            params.append(int(topic_id))
+        where_clause = " AND ".join(where) if where else "1=1"
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""SELECT pr.id, pr.topic_id, pr.text, t.text AS topic_text
+                    FROM prompts pr
+                    LEFT JOIN topics t ON pr.topic_id = t.id
+                    WHERE {where_clause}
+                    ORDER BY pr.topic_id, pr.id""",
+                params,
+            )
+            return jsonify(cur.fetchall())
+    finally:
+        conn.close()
+
+
 @app.route('/api/analyzer/llms')
 def analyzer_llms():
     conn = get_db()
@@ -3783,6 +4115,8 @@ def analyzer_rerun_single(response_id):
 
 _ensure_citations_column()
 _ensure_analyzer_tables()
+_ensure_preview_columns()
+_normalize_query_data()
 
 
 if __name__ == '__main__':
