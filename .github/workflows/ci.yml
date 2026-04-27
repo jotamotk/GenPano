@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+
+jobs:
+  backend-lint-test:
+    name: Backend Lint + Test (Python 3.12)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --frozen
+
+      - name: Ruff lint (uv run ruff check)
+        run: uv run ruff check .
+
+      - name: Ruff format check (uv run ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: mypy strict (uv run mypy app/)
+        run: uv run mypy app/
+
+      - name: Harness L1 ci_check (uv run python scripts/ci_check.py)
+        run: uv run python scripts/ci_check.py
+
+      - name: Harness L1 selftest (uv run python scripts/ci_harness_selftest.py)
+        run: uv run python scripts/ci_harness_selftest.py
+
+      - name: Alembic upgrade head (default SQLite, Step 6 regression guard)
+        run: uv run alembic upgrade head
+
+      - name: pytest (uv run pytest -- exit 5 = no tests collected, treat as PASS)
+        shell: bash
+        run: |
+          set +e
+          uv run pytest -v
+          EXIT_CODE=$?
+          set -e
+          # pytest exit 5 = "no tests were collected"; per Step 8 spec
+          # ("即使现在 0 testcase 也要保留 step"), this is expected pre-Step 9.
+          # Step 9 introduces Harness tests; exit 5 path goes cold.
+          if [ "$EXIT_CODE" = "0" ] || [ "$EXIT_CODE" = "5" ]; then
+            exit 0
+          fi
+          exit "$EXIT_CODE"

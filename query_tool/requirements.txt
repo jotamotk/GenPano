@@ -1,3 +1,6 @@
 flask
 psycopg2-binary
 celery[redis]
+openai
+httpx
+json_repair

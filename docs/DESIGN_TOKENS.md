@@ -156,40 +156,40 @@ BrandTopicHeatmap 组件使用两套色带, 覆盖两种语义:
 
 Chart color token 只管"颜色"; 以下 7 条契约约束"什么数据能进图"、"图怎么长"。每一条都对应过一个已修复的 Bug (2026-04-17), 进 Harness pre-commit + CI grep 拦截回归。
 
-#### C1. 原子组件默认 100% 填充 — 禁止固定像素默认
+### C1. 原子组件默认 100% 填充 — 禁止固定像素默认
 
 - `<MiniSparkline>` / 同类 sparkline 原子组件: `width`、`height` **默认值必须是 `'100%'`**。
 - 调用方在**外层 wrapper** 用 Tailwind 尺寸类 (`h-10`, `flex-1`, `w-full`, `w-[200px]`) 控制尺寸。
 - 🚫 **禁止** 在原子组件默认参数中写 `width = 100` / `height = 32` 等像素字面量 — 会把所有 `<div className="flex-1">` 的调用方锁死在 100px (2026-04-17 已修复 root cause)。
 - ✅ 只允许**显式**传数字: `<MiniSparkline width={200} height={40} />`。
 
-#### C2. 排行/分布柱图默认单色 + 数值标签
+### C2. 排行/分布柱图默认单色 + 数值标签
 
 - `<HorizontalBar>` 用于排名/占比分布时, 默认传 `monochrome showLabels`。
 - 🚫 **禁止** 给柱图 `data[]` 每项单独写不同 hex 色 (6 种颜色并排 = 视觉噪声)。
 - 视觉诉求: **值的高低是唯一视觉变量**, 颜色不做分类编码。
 - `defaultColor` 走 `var(--color-accent)` 或 chart token; 禁止字面 hex。
 
-#### C3. SoV / 占比饼图: "其他" ≤ 10%
+### C3. SoV / 占比饼图: "其他" ≤ 10%
 
 - 若占比图 `其他` 片 > 任一真实品牌片, 说明 **数据集不完整**, 必须扩充到 Top 8+。
 - 🚫 禁止让灰色"其他"成为视觉焦点 (直接吞噬品牌洞察)。
 - Donut 配 > 5 项图例时: Donut `size ≥ 200`, 图例采用 `grid-cols-2` 布局。
 
-#### C4. Sentiment 展示统一百分比整数
+### C4. Sentiment 展示统一百分比整数
 
 - 面向用户的 KPI / 卡片 / 表格 / 排行榜: `${Math.round(sentiment * 100)}%` → `"82%"`。
 - 🚫 **禁止** `sentimentValue.toFixed(2)` 给终端用户看 `"0.82"`。
 - **唯一例外**: 当 Y 轴原生值域是 `[0, 1]` (如 `CompetitorQuadrant` scatter 的 `ReferenceLine y={0.75}`), tooltip 可保留 decimal 以与轴同单位; 此例外必须加代码注释标注。
 
-#### C5. Sparkline 数据平滑性
+### C5. Sparkline 数据平滑性
 
 - rank / metric 的 sparkline 合成逻辑必须用**连续函数**: 线性趋势 + `sin/cos * 振幅<1` 扰动。
 - 🚫 **禁止** 离散台阶模式 `i % N === 0 ? +V : 0` — 直接产生锯齿波, 误导用户判读 (Bug#2, 2026-04-17)。
 - rank 类 sparkline (`trendIsRank: true`): 外部应反转 Y 轴 (低值 = 更好)。
 - mock 合成值要像真实数据: 有**趋势** + 小扰动, 不是周期脉冲。
 
-#### C6. "放大胜利者" — 排行榜 Hero 变体
+### C6. "放大胜利者" — 排行榜 Hero 变体
 
 - 行业 PANO Score 排行榜、Topic 热门榜等多项排名场景: Top 1 应用 **Hero 卡片**:
   - 横向布局 (`flex items-center gap-8`)
@@ -201,7 +201,7 @@ Chart color token 只管"颜色"; 以下 7 条契约约束"什么数据能进图
 - 2 - N 名走普通 `grid-cols-4` 网格。
 - 这和知识图谱"放大胜利者"是同一视觉原则, 2026-04-17 扩展到排行榜。
 
-#### C7. Mock 数据字段内在一致性
+### C7. Mock 数据字段内在一致性
 
 - 若实体 (Brand/Product) 同时有 `ranking` 字段和排序指标字段 (`panoScore`):
   - `ranking` 必须与 **按排序指标降序排列后的索引+1** 完全一致。
@@ -209,7 +209,7 @@ Chart color token 只管"颜色"; 以下 7 条契约约束"什么数据能进图
 - 规则适用于 `frontend/src/data/mock.js` 的 BRANDS / PRODUCTS, 以及后端 API 契约。
 - 建议在数据定义文件末尾加 assertion: `assert BRANDS.every((b, i) => b.ranking === i + 1)` (按 `panoScore desc` 排序后)。
 
-#### C8. Drawer / Side-Sheet 契约 (2026-04-20 新增, 配合 §4.6.1a-drilldown)
+### C8. Drawer / Side-Sheet 契约 (2026-04-20 新增, 配合 §4.6.1a-drilldown)
 
 KPI Drawer (Mode A 右侧抽屉下钻) 是 GENPANO 引入的第一个非 Modal 非 Popover 的覆盖层形态, 必须与 Dialog / Tooltip 区分清楚并统一实现:
 
@@ -245,7 +245,7 @@ grep -rnE "duration-(100|1[0-7][0-9]|2[6-9][0-9]|[3-9][0-9][0-9])\s.*drawer|draw
 
 任何一条有输出即视为"Drawer 契约回归", PR 必须修复方可合并。
 
-#### C9. Heatmap & Chart Token 边界规则 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.L)
+### C9. Heatmap & Chart Token 边界规则 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.L)
 
 **Boundary rule (C-P1-1)**: `BrandTopicHeatmap` 组件**只能使用** `--color-heatmap-*` token (diverging + sequential 色带)。所有其他图表 (趋势线、堆叠柱、散点等) **只能使用** `--color-chart-*` token。禁止在两个家族间混用。所有跨界使用由 CI grep 规则 C9-mix 在 `scripts/ci-check.mjs` 中拦截。
 
@@ -267,7 +267,7 @@ grep -nE "(fill|background)[:=]\s*['\"]?#[0-9a-fA-F]{3,8}" \
   frontend/src/components/charts/BrandTopicHeatmap.jsx
 ```
 
-#### C10. Brand Mode 分析页全局 Filter Bar 统一出口 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.K)
+### C10. Brand Mode 分析页全局 Filter Bar 统一出口 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.K)
 
 Brand Mode 下 6 个深度分析页 (Visibility / Topics / Sentiment / Citations / Products / Competitors) 的筛选状态**必须**经 `useBrandAnalysisFilters()` hook 读取, 禁止:
 
@@ -290,7 +290,7 @@ grep -rnE "useState\s*\(\s*['\"]7d|useState.*dateRange|useState.*fromDate" \
   frontend/src/pages/brand/ --include='*.jsx'
 ```
 
-#### C11. mentionRate 数据必须存小数 [0, 1] (2026-04-20 新增, 配合 PRD §4.6-IA-v2.N)
+### C11. mentionRate 数据必须存小数 [0, 1] (2026-04-20 新增, 配合 PRD §4.6-IA-v2.N)
 
 **因为 2026-04-20 Frank 反馈出现 "1620%" bug**, `mentionRate` 字段在整个系统 (mock.js / DB / API / UI) **必须**是 0-1 小数, 在 UI 渲染层统一 ×100。不得混用百分比存储格式。
 
@@ -324,7 +324,7 @@ grep -nE "mentionRate:\s*[1-9][0-9]*(\.[0-9]+)?[,\s}]" frontend/src/data/mock.js
 grep -rnE "mentionRate.*Math\.round\s*\(.*\*\s*100\s*\)" frontend/src/pages --include='*.jsx'
 ```
 
-#### C12. Sentiment Distribution 必须用 Donut (2026-04-20 新增, 配合 PRD §4.6-IA-v2.N)
+### C12. Sentiment Distribution 必须用 Donut (2026-04-20 新增, 配合 PRD §4.6-IA-v2.N)
 
 **因为 2026-04-20 Frank 反馈 BrandSentimentPage 的 Distribution 用 3 个大号文字百分比显得"图表坏了"**, 情感分布 (正/中/负 三段占比) **必须**用 `<DonutChart>` 组件, 不得:
 
@@ -344,7 +344,7 @@ grep -nE "text-(3xl|4xl|5xl).*(positive|negative|neutral)Pct|(positivePct|negati
   frontend/src/pages/brand/BrandSentimentPage.jsx
 ```
 
-#### C13. CompetitorQuadrantChart 气泡尺寸 caller-controlled + 必带 label (2026-04-20 新增, 配合 PRD §4.6-IA-v2.M + BCG 矩阵修复)
+### C13. CompetitorQuadrantChart 气泡尺寸 caller-controlled + 必带 label (2026-04-20 新增, 配合 PRD §4.6-IA-v2.M + BCG 矩阵修复)
 
 **因为 2026-04-20 Frank 反馈 "矩阵非常乱"** — 原 `CompetitorQuadrantChart.jsx` shape override 内写死 `radius = 40 + zNorm * 360`, 产生 40-400px 半径 (80-800px 直径) 的气泡, 密集场景必然互相覆盖; 且气泡本身无文字标签, 用户要 hover 才能辨识品牌。
 
@@ -373,7 +373,7 @@ grep -q "showLabels" frontend/src/components/charts/CompetitorQuadrantChart.jsx 
   echo "C13 violation: CompetitorQuadrantChart missing showLabels prop"
 ```
 
-#### C14. V2 分析页密度标准 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.K-N)
+### C14. V2 分析页密度标准 (2026-04-20 新增, 配合 PRD §4.6-IA-v2.K-N)
 
 **因为 2026-04-20 Frank 反馈 "可见性的图表排列太过于松散"** — Brand Mode 6 个分析页 (Visibility / Topics / Sentiment / Citations / Products / Competitors) 各自延续了旧页的 padding / 字号 / 垂直节奏, 导致跨页不一致 + 信息密度低。V2 密度规范如下:
 
@@ -415,7 +415,7 @@ grep -rnE "return\s*\(\s*<div\s+className=[\"'][^\"']*space-y-[4-9]" \
 
 ---
 
-#### C15. BrandProductDetailPage 路由契约 (2026-04-20 Wave-4, 配合 PRD §4.6-IA-v2.O)
+### C15. BrandProductDetailPage 路由契约 (2026-04-20 Wave-4, 配合 PRD §4.6-IA-v2.O)
 
 **定位**: Frank 2026-04-20 傍晚校正 — Wave-4 初版误读为"列表页扩 7 区", 已于同日回滚。真正要固化的是 **详情页 `/brand/products/:productId?brandId=:brandId` 的 brandId 从 query string 读取契约**, 修复 `useParams()` 解构 `brandId` 得 undefined 导致整页 "暂无数据" 的 P0 bug。
 

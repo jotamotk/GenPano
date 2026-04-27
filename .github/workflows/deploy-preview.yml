@@ -1,0 +1,205 @@
+name: Build & Deploy (Preview)
+
+# Builds and deploys the preview (merge-frontend-pages) environment alongside
+# prod on the same host. Shares postgres/redis/backend/worker with prod.
+# Reachable at http://<host>/preview/.
+#
+# Triggers (gated per job):
+#   build-and-push / deploy:
+#     push to claude/merge-frontend-pages-DWFMx
+#     (the original docker preview lane targeting the Alibaba Cloud host)
+#   backend-preview:
+#     pull_request OR push to feature/**
+#     (Step 10 / Session 0' Python backend gate; runs lint + types + migration
+#     only, no docker push, no SSH deploy)
+#
+# Images:   genpano:query-tool-preview-<sha>, genpano:frontend-preview-<sha>
+# Tag var:  PREVIEW_IMAGE_TAG (written into .env on the host, merged with prod .env)
+
+on:
+  push:
+    branches:
+      - claude/merge-frontend-pages-DWFMx
+      - "feature/**"
+  pull_request:
+
+# Minimum scopes for the backend-preview job's PR-comment step
+# (actions/github-script -> issues.createComment). contents:read keeps
+# checkout working without granting write to the tree.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  PREVIEW_IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Preview Images
+    runs-on: ubuntu-latest
+    # Defensive lock: only fire on the original docker preview branch.
+    # Without this, the feature/** push trigger added for backend-preview would
+    # also kick off an ACR image build, which is not what we want.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/claude/merge-frontend-pages-DWFMx'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Alibaba Cloud ACR
+        uses: docker/login-action@v3
+        with:
+          registry: crpi-vklfeye8td1r1mei.cn-shanghai.personal.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build & push frontend-preview
+        run: |
+          docker build \
+            --build-arg VITE_BASE_PATH=/preview/ \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./frontend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }}
+
+      - name: Build & push query-tool-preview
+        run: |
+          docker build \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./query_tool
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }}
+
+  deploy:
+    name: Deploy Preview to Server
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy preview files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.preview.yml,nginx-preview.conf,frontend/nginx.conf"
+          target: /opt/genpano
+
+      - name: Deploy preview overlay
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/genpano
+
+            # Merge PREVIEW_IMAGE_TAG into the shared .env (prod workflow owns the rest)
+            if [ -f .env ]; then
+              grep -v '^PREVIEW_IMAGE_TAG=' .env > .env.tmp || true
+              mv .env.tmp .env
+            fi
+            echo "PREVIEW_IMAGE_TAG=${{ env.PREVIEW_IMAGE_TAG }}" >> .env
+
+            # Pull new preview images and apply the overlay without touching prod services.
+            # --no-recreate for unchanged services keeps prod containers running as-is.
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml pull \
+              query-tool-preview frontend-preview
+
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
+              --no-deps \
+              query-tool-preview frontend-preview
+
+            # nginx needs the extra volume mount (routes.conf) — recreate only nginx.
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
+              --no-deps --force-recreate \
+              nginx
+
+            # Light cleanup — don't touch volumes or aggressive prunes that could hit prod
+            docker image prune -af --filter "until=72h" --filter "label=preview=true" || true
+
+  backend-preview:
+    name: Backend Preview Gate (Python 3.12)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    # Sibling lane to build-and-push / deploy. This job is the Step 10 / Session 0'
+    # backend gate: PR or feature/** push runs lint + types + migration smoke,
+    # no docker image build, no SSH deploy, no ACR push. Production deploys still
+    # live in deploy.yml; the original docker preview lane still owns ACR images.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/'))
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv (pinned)
+        run: pip install uv==0.11.4
+
+      - name: Cache uv dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('backend/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: mypy strict
+        run: uv run mypy app
+
+      - name: Alembic upgrade head (Supabase preview if configured, sqlite fallback)
+        shell: bash
+        env:
+          SUPABASE_PREVIEW_DB_URL: ${{ secrets.SUPABASE_PREVIEW_DB_URL }}
+        run: |
+          if [ -n "$SUPABASE_PREVIEW_DB_URL" ]; then
+            export GENPANO_DATABASE_URL="$SUPABASE_PREVIEW_DB_URL"
+            echo "Using Supabase preview DB"
+          else
+            export GENPANO_DATABASE_URL="sqlite+aiosqlite:///./preview.db"
+            echo "Using sqlite fallback (Supabase secret unset; expected pre-Step 11)"
+          fi
+          uv run alembic upgrade head
+
+      - name: pytest smoke (exit 5 = no tests collected, treat as PASS)
+        shell: bash
+        run: |
+          set +e
+          uv run pytest -v
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" = "0" ] || [ "$EXIT_CODE" = "5" ]; then
+            exit 0
+          fi
+          exit "$EXIT_CODE"
+
+      - name: Comment preview gate result on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const label = status === 'success' ? 'PASS' : 'FAIL';
+            const sha = context.sha.substring(0, 7);
+            const body = `**Backend Preview Gate: ${label}** (\`${sha}\`)\n\nRuff · mypy · Alembic · pytest — status: \`${status}\``;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
