@@ -180,6 +180,8 @@ rg -n "^[0-9]+\. \*\*" CLAUDE.md | tail -3
 
 ## §4 · Harness Group I (本 Session 不新增, 复用 4b'.2 框架)
 
+**L3/L4 Phase Gate**: 本 sub-Session 验收追溯到 SESSION_4B_PRIME_PROMPT.md §4 L3/L4 Phase Gate 卡控 (Hard Fail), 详见 REPLAN_2026_04_26.md §5 4b' 行.
+
 **重要**: 本 Session 不新增 Group I 子规则, selftest 维持 38/38。但 D4 harness (11 Legacy 301 全覆盖) 必须验证通过。
 
 ### D4 (复用 4b'.1 已建框架, 本 Session 验证 11 条全覆盖)

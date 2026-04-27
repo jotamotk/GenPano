@@ -206,6 +206,23 @@ grep -rnE "response_source|ai_responses" backend/alembic/versions/ | head -10
 
 ## §4 Phase Gate (规则验收闸)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (4 项)**:
+- parsers 4 件 (brand-matcher 多语言/sentiment 三档/citation 3 tier 优先级/ranking 1-50 + N>50 拒绝); state-machine 6 状态 + COOLDOWN 差异化; HAR sanitize 9 leak pattern; profile-sampler 确定性 + segmentGroup 隔离
+
+**本 Session 必跑 L4 E2E 测试**: 本 Session 无 L4 (Adapter execute 走 TIMEOUT sentinel, E2E 留给 1.2')
+
+**补救测试**: **TS#1 → Python pytest 463+** (master Session 1 vitest 13 套测试翻译: parsers + scheduler + accounts + engines/profile-sampler + har/sanitize 全部 Python 重实现)
+
+**Phase Gate 通过条件 (在原有 G_1.1 基础上追加)**:
+- G_L3.1: 4 项集成测试全部跑绿 (parsers / state-machine / HAR / profile-sampler)
+- G_Remedial.1: master TS 13 套测试翻译完整, pytest 测试数 ≥ 463
+
 ### G_1.1 · Layer 1 · `verify-session-1prime.sh` (一键验收)
 
 ```bash

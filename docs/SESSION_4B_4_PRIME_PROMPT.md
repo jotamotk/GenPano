@@ -164,6 +164,8 @@ test -f vercel.json && cat vercel.json | jq '.redirects | length' 2>/dev/null
 
 ## §4 · Harness (本 Session 不新增, 验证 38 持续生效)
 
+**L3/L4 Phase Gate**: 本 sub-Session 验收追溯到 SESSION_4B_PRIME_PROMPT.md §4 L3/L4 Phase Gate 卡控 (Hard Fail), 详见 REPLAN_2026_04_26.md §5 4b' 行.
+
 ### 不新增 Group I 或其他规则
 
 `scripts/ci-harness-selftest.mjs` EXPECTED_POSITIVES = 38 (4b'.2 锁定后不变):

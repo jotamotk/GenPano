@@ -214,6 +214,23 @@ grep -E "^Session (0'|1\.5'|2')\s+\|\s+GREEN" docs/SESSION_PROGRESS.md
 
 ## §4 · Phase Gate (3 层验证)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (3 项)**:
+- refine_topics_with_llm 三档分流 (approved/audit/dropped); naturalize_prompts 4 Gate (intent/brand vocab/品类 leak/confidence); rewrite_queries fallback ladder (llm→fallback_prefix→skeleton_only)
+
+**本 Session 必跑 L4 E2E 测试**: 本 Session 无 L4
+
+**补救测试**: **TS#2.1 → Python pytest 61+** (master 65 新例覆盖 LLM threading + canned transport 全部翻译)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: refine/naturalize/rewrite 三层 LLM 集成测试全部绿
+- G_Remedial.1: master TS 65 例翻译完整, pytest 测试数 ≥ 61
+
 ### Layer 1 · `scripts/verify_session_2_1prime.sh` (9 项自动化检查, Step 11 必跑)
 
 ```bash

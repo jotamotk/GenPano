@@ -350,6 +350,29 @@ rg -n "/onboarding\?resumeStep|DraftProject" backend/app/api/v1/ 2>/dev/null | h
 
 ## §4 Phase Gate 3-Layer (决策 #30)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (3 项)**:
+- TSX 编译产物零类型错误 (mypy strict 等价); mock.js → FastAPI 真实 API 接通 9 + 4 页面无 broken state; CSV 导出 8 exportType 字段字典齐备
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 端到端: 注册 → onboarding → /brand/overview → 切 Industry Mode → /industry/ranking → 导出 CSV → 调 MCP API (Playwright Python E2E)
+
+**本 Session Visual baseline (2 张)**:
+- `/brand/competitors.png` + `/industry/overview.png` 建立后 Playwright `to_have_screenshot()` diff < 0.1%, 后续 PR 不得破
+
+**补救测试**: **TS#4b → TSX + E2E** (master frontend 50+ JSX 翻译为 TSX + Playwright 6 路径)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: 3 项集成测试全部绿 (TSX mypy strict / API 接通 / CSV 导出)
+- G_L4.1: Frank 浏览器 E2E register → onboarding → brand/overview → industry/ranking → CSV + MCP
+- G_Visual.2: `/brand/competitors.png` + `/industry/overview.png` 两张 baseline 已建立 + Playwright 各 0 diff
+- G_Remedial.1: master TS JSX 50+ 页翻译为 TSX, mypy strict 全绿
+
 ### Layer 1 · `scripts/verify_4b.sh` 单脚本本地全绿
 
 ```bash

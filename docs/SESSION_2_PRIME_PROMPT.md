@@ -269,6 +269,23 @@ grep -nE "fastapi|sqlalchemy|asyncpg|alembic|pydantic|pytest|httpx" pyproject.to
 
 ## §4 · Phase Gate 三层验收
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (4 项)**:
+- Intent×Engine×Locale 23 行矩阵穷举; category-purity 品牌名泄漏拦截; topic-planner 3 维度 + 配额 ≥40%; persona JSONB 注入 attempts.browser_profile (G3 锁定无顶层列)
+
+**本 Session 必跑 L4 E2E 测试**: 本 Session 无 L4 (Pipeline 真实跑要 3' 才接通)
+
+**补救测试**: **TS#2 → Python pytest 319+** (master 9 套 planner + golden-beauty 13 例语义锚点全部翻译)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: 4 项 planner 集成测试全部绿 (matrix / purity / topic-planner / persona JSONB)
+- G_Remedial.1: master TS 9 套测试翻译完整, pytest 测试数 ≥ 319
+
 > **决策 #25 规则 12 + #30 (preview env)**: 三层验收全过才能在 SESSION_PROGRESS.md 宣绿, 三层缺一即 Session 未完成。
 
 ### Layer 1 · 自动化脚本 (Claude Code 在 Linux 沙箱跑)

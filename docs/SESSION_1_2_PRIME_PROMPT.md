@@ -201,6 +201,23 @@ grep -nE 'camoufox|playwright|pytest-playwright|opencv-python|Pillow|numpy|httpx
 
 ## §4 · Phase Gate (3 层验收)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (3 项)**:
+- Camoufox launch + page.goto 真实 ChatGPT/Doubao/DeepSeek; Luban SMS live 1 条注册成功 (preview Luban 沙箱); Golden HAR 录制 + routeFromHAR 回放 3 引擎契约
+
+**本 Session 必跑 L4 E2E 测试**: 本 Session 无 L4 (E2E 留给 3' Pipeline 联通后)
+
+**补救测试**: **TS#1.2 F4 → Python F4** (response_source 三子规则 stamp/labeling 翻译)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: Camoufox launch + Luban SMS live + golden HAR routeFromHAR 回放 3 项全绿
+- G_Remedial.1: master TS F4 三子规则翻译完成 (adapter execute stamp / api-fallback label / insert with response_source)
+
 ### Layer 1 · `verify-session-1.2prime.sh` (12 项自动验证)
 
 ```bash

@@ -232,6 +232,30 @@ Layer 2 Agent 与本 Agent **零共享上下文**, Frank 用 `docs/HARNESS_ENGIN
 
 ---
 
+## §4.L3/L4 L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (1 项)**:
+- Alembic upgrade head + downgrade base 双向跑通; Celery worker + Redis 启动健康; FastAPI `/healthz` 在 preview env 返回 200
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 浏览器打开 preview Landing → 点 "登录" → 落到 /auth → 截图比对
+
+**本 Session Visual baseline (1 张)**:
+- `/landing.png` 建立后 Playwright `to_have_screenshot()` diff < 0.1%, 后续 PR 不得破
+
+**补救测试**: 本 Session 是 Python 新写基础设施, 无补救测试
+
+**Phase Gate 通过条件 (在原有 G1.* 基础上追加)**:
+- G_L3.1: Alembic 双向迁移 + Celery 6 队列启动 + `/healthz` 200 全部绿
+- G_L4.1: Frank 浏览器 E2E 截图成功
+- G_Visual.1: `/landing.png` baseline 已建立 + Playwright `to_have_screenshot()` 0 diff
+
+---
+
 ## §6 Phase Gate 1 验收清单 (Session 收尾时回填)
 
 收尾时, 把下列模板填进 `docs/SESSION_0_PRIME_DELIVERY.md`, Frank 一眼对照决定是否过 Gate 1。

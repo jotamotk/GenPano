@@ -185,6 +185,28 @@ grep -n "role IN" docs/ADMIN_PRD.md
 
 ## §4 Phase Gate (Layer 1/2/3 验收)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (1 项)**:
+- super_admin bootstrap 幂等; OTP rate limit (5次/15min email + 20次/15min IP); cookie HttpOnly+Strict+Path=/admin+Secure 实测
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 在 preview /admin/login 用 super_admin 邮箱 → 登录 → silent refresh 14min → Dashboard
+
+**本 Session Visual baseline (1 张)**:
+- `/admin/login.png` 建立后 Playwright `to_have_screenshot()` diff < 0.1%, 后续 PR 不得破
+
+**补救测试**: 本 Session 是 Python 新写认证模块, 无补救测试
+
+**Phase Gate 通过条件 (在原有 G_A0.1-G_A0.3 基础上追加)**:
+- G_L3.1: bootstrap idempotent + rate limit 5 fail trigger 429 + cookie HttpOnly+Strict+Secure 全部绿
+- G_L4.1: Frank 浏览器 E2E login → change-password → dashboard 全流程
+- G_Visual.1: `/admin/login.png` baseline 已建立 + Playwright `to_have_screenshot()` 0 diff
+
 ### G_A0.1 — `verify-session-a0prime.sh` Layer 1 自动验收
 
 ```bash

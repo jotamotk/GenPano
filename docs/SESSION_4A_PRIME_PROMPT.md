@@ -210,6 +210,28 @@ grep -rnE 'RequireAuth|requireAuth|AuthRouteGuard' frontend/src/ 2>/dev/null | h
 
 ## §4 Phase Gate (Layer 1/2/3 验收)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (2 项)**:
+- User register + email verify; DraftProject 72h 过期 + Route Guard 强制重定向 /onboarding step
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 注册新账号 → 收 verify email → 点击链接 → /onboarding 4 步 → /brand/overview (空数据)
+
+**本 Session Visual baseline (1 张)**:
+- `/onboarding/step-1.png` 建立后 Playwright `to_have_screenshot()` diff < 0.1%, 后续 PR 不得破
+
+**补救测试**: 本 Session 是 Python 新写用户认证模块, 无补救测试
+
+**Phase Gate 通过条件 (在原有 G_4A.1-G_4A.3 基础上追加)**:
+- G_L3.1: register endpoint + email verification flow 全绿; DraftProject 72h TTL + pg_cron cleaner 验证
+- G_L4.1: Frank 浏览器 E2E register → verify → onboarding 4-step → brand/overview 全流程
+- G_Visual.1: `/onboarding/step-1.png` baseline 已建立 + Playwright `to_have_screenshot()` 0 diff
+
 ### G_4A.1 — `verify-session-4aprime.sh` Layer 1 自动验收
 
 ```bash

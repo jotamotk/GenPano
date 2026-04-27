@@ -272,6 +272,29 @@ grep -E "^Session (2'|2\.1'|1\.2'|A1')\s+\|\s+GREEN" docs/SESSION_PROGRESS.md
 
 ## §4 · Phase Gate (3-Layer Acceptance, 决策 #30)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (4 项)**:
+- Response 采集 (Celery worker → ai_responses 入库 + response_source labeled); 分析 pipeline (brand_detector + sentiment + citation 真实跑); 用户态 brand API 6 路径 (auth-required); MCP Bearer token 验证 + 吊销 60s 生效
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 在 preview /brand/overview?brandId=loreal 看到真实数据 (KPI 5 张 + 趋势图)
+
+**本 Session Visual baseline (1 张)**:
+- `/brand/overview.png` 建立后 Playwright `to_have_screenshot()` diff < 0.1%, 后续 PR 不得破
+
+**补救测试**: **TS#3 → Python pytest 267+** (master Session 3 测试 + Citation §4.2.6/§4.2.7 全链路 Python 重写)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: 4 项分析 pipeline 集成测试全部绿 (response collection / brand detection / sentiment / citation)
+- G_L4.1: Frank 浏览器 /brand/overview 显示真实 KPI 5 张卡
+- G_Visual.1: `/brand/overview.png` baseline 已建立 + Playwright 0 diff
+- G_Remedial.1: master TS Citation 全链路测试翻译完整, pytest 测试数 ≥ 267
+
 ### Layer 1 · `scripts/verify_session_3prime.sh` (11 检查)
 
 ```bash

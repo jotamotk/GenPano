@@ -277,6 +277,25 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 
 ## §4 Phase Gate 3-Layer (决策 #30)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4/Visual 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (2 项)**:
+- Citation Tier CRUD + 修改 Tier 2 权重触发 recompute Celery 任务 + PANO A 数值刷新 (idempotent by recompute_job_id); MCP Token 签发 + Redis pub-sub `mcp:token:revoked` 60s 全节点生效
+
+**本 Session 必跑 L4 E2E 测试 (1 项)**:
+- Frank 在 preview /admin/citations/tiers 改 Tier 2 0.7→0.8 → 看 PANO A 重算 → /admin/mcp-tokens 签发 token → curl 200 → 吊销 → 60s 后 401
+
+**补救测试**: **TS A1+A5 → Python** (master 旧 A5 整体并入 A1', Plan J D1)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: Citation Tier CRUD + MCP Token 签发/吊销 2 项集成测试全部绿
+- G_L4.1: Frank 浏览器 /admin/citations/tiers 改权重 → PANO A 重算 + /admin/mcp-tokens 签发/吊销
+- G_Remedial.1: master A1 + A5 (原 5 session) 测试翻译到 Python
+
 ### Layer 1 · `scripts/verify_a1.sh` 单脚本本地全绿
 
 ```bash

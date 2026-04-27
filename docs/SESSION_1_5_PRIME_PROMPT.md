@@ -179,6 +179,23 @@ grep -nE "sqlalchemy|asyncpg|httpx|alembic|tldts" pyproject.toml | head -10
 
 ## §4 Phase Gate (3 层验收)
 
+### L3/L4 Phase Gate 卡控 (Hard Fail, 决策 2026-04-26)
+
+**真相源**: `docs/REPLAN_2026_04_26.md §5` L3/L4 测试覆盖矩阵 + §5.3 Hard Fail 卡控规范.
+
+**Hard Fail 强制**: 下列 L3/L4 任一未跑绿, GitHub Actions branch protection 拦截 merge. 不允许 soft warning, 不允许临时跳过.
+
+**本 Session 必跑 L3 集成测试 (3 项)**:
+- 火山 Ark client (`callJson`/budget exceeded/3 模型定价); category_tree 3 级 + level-4 容错丢弃; brand_discovery 跨 category 去重 + COMPETES_WITH/SAME_GROUP 边写入
+
+**本 Session 必跑 L4 E2E 测试**: 本 Session 无 L4 (无 UI 端到端)
+
+**补救测试**: **TS#1.5 → Python pytest 154+** (master 132 例覆盖 llm/db/discovery/knowledge_graph/scheduler 全部翻译)
+
+**Phase Gate 通过条件 (在原有 Layer 1-3 基础上追加)**:
+- G_L3.1: 火山 Ark client + category_tree + brand_discovery 3 项集成测试全部绿
+- G_Remedial.1: master TS 132 例测试翻译完整, pytest 测试数 ≥ 154
+
 ### Layer 1 · CI 自动验收 (`bash scripts/verify-session-1.5prime.sh`)
 
 | Check | 命令 | 期望输出 |

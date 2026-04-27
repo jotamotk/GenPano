@@ -216,6 +216,8 @@ rg -n "^[0-9]+\. \*\*" CLAUDE.md | tail -3
 
 ## §4 · 本 Session 引入的 Harness (Group I 子集 1 条)
 
+**L3/L4 Phase Gate**: 本 sub-Session 验收追溯到 SESSION_4B_PRIME_PROMPT.md §4 L3/L4 Phase Gate 卡控 (Hard Fail), 详见 REPLAN_2026_04_26.md §5 4b' 行.
+
 `frontend/scripts/ci_check.py` 新增 Group I 段落, 本 Session 落地 **I6** 一条:
 
 - **I6 · `no-empty-state-components`**: 扫 `frontend/src/**/*.tsx`, 黑名单文件名 `DashboardEmptyState.tsx` / `ProjectRequiredBanner.tsx` / `LandingNavQuickCreateButton.tsx` (decision #10 已废 E1-E4); 命中即 block。fixture: `frontend/src/__ci_fixtures__/I6_dashboard_empty_state.cifixture.tsx` 自带文件名匹配黑名单 → selftest 应抓到。

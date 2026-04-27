@@ -215,6 +215,8 @@ rg -n "^[0-9]+\. \*\*" CLAUDE.md | tail -3
 
 ## §4 · Harness Group I (本 Session 新增 5 条 + cifixture self-seeded)
 
+**L3/L4 Phase Gate**: 本 sub-Session 验收追溯到 SESSION_4B_PRIME_PROMPT.md §4 L3/L4 Phase Gate 卡控 (Hard Fail), 详见 REPLAN_2026_04_26.md §5 4b' 行.
+
 ### I1 · `chart-sparkline-no-literal-width-percent`
 
 - **范围**: `frontend/src/**/*.{tsx,jsx}` 排 `__ci_fixtures__/`
