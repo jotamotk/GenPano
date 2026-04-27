@@ -1,0 +1,39 @@
+# GENPANO pre-commit hooks - Session 0' baseline
+# Install: pip install pre-commit && pre-commit install
+# Run all: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.4
+    hooks:
+      - id: ruff
+        name: ruff check (backend)
+        files: ^backend/
+        args: [--fix]
+      - id: ruff-format
+        name: ruff format (backend)
+        files: ^backend/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^backend/app/__ci_fixtures__/
+      - id: end-of-file-fixer
+        exclude: ^backend/app/__ci_fixtures__/
+      - id: check-yaml
+        exclude: ^\.github/workflows/
+        # workflows contain the YAML 1.1 `on:` quirk; ci.yml's own yaml.safe_load
+        # probe in deploy-preview.yml + ci.yml structural checks already covers it.
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: harness-check
+        name: Harness Python (F1 / F4-1 / F4-2 / F4-3 / D8)
+        entry: bash -c 'cd backend && uv run python scripts/ci_check.py'
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: false
