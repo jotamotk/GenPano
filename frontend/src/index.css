@@ -1,44 +1,459 @@
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=Inter:wght@400;500;600&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Orbit animation for particle art */
-@keyframes orbit {
-  0% {
-    transform: rotate(0deg) translateX(80px) rotate(0deg);
+/* ══════════════════════════════════════════════════
+   GENPANO Design Tokens — Figma-derived
+   ──────────────────────────────────────────────────
+   This is a STYLE layer only. Page structure lives
+   in /src/pages/*.jsx and must map to PRD requirements,
+   not to any one Figma mock. Tokens here control
+   look-and-feel; components should reference them via
+   the utility classes at the bottom of this file or
+   the `.t-*` component classes in @layer components.
+
+   Source: Figma mocks (Auth / Dashboard / Topics /
+   DashboardLayout) — extracted 2026-04.
+   ══════════════════════════════════════════════════ */
+
+:root {
+  /* ── Surfaces ────────────────────────────────── */
+  --color-bg-page:          #FAFAFB;           /* Figma main canvas */
+  --color-bg-card:          #FFFFFF;
+  --color-bg-card-hover:    #FFFFFF;
+  --color-bg-elevated:      #FFFFFF;
+  --color-bg-input:         #FFFFFF;
+  --color-bg-header:        rgba(255,255,255,0.92);
+  --color-bg-badge:         #F0F0FF;           /* Figma accent-tinted badge */
+  --color-bg-table-hover:   #FAFAFB;
+  --color-bg-progress-track:#E8E8F0;
+  --color-bg-subtle:        #FAFAFB;
+  --color-bg-subtle-2:      #F4F4F4;           /* brand/project selector pill */
+
+  /* Sidebar (two variants — page chooses) */
+  --color-bg-sidebar:       #FFFFFF;           /* Figma light sidebar */
+  --color-bg-sidebar-dark:  #0A1929;           /* reserved: dark variant */
+
+  /* ── Text ────────────────────────────────────── */
+  --color-text-primary:     #030229;           /* Figma deep navy */
+  --color-text-secondary:   #1C1D22;
+  --color-text-muted:       #818194;           /* Figma nav muted */
+  --color-text-faint:       #BEC0C6;           /* input placeholder */
+  --color-text-body:        #333333;           /* form labels/body */
+  --color-text-body-soft:   #666666;           /* secondary labels */
+  --color-text-inverse:     #FFFFFF;
+
+  /* ── Accent (Figma Primary Purple) ───────────── */
+  --color-accent:           #605BFF;
+  --color-accent-hover:     #5450E6;
+  --color-accent-bright:    #7A75FF;
+  --color-accent-2:         #8B5CF6;           /* gradient companion */
+  --color-accent-subtle:    rgba(96,91,255,0.07);
+  --color-accent-bg-light:  #F0F0FF;           /* insight-tip card bg */
+  --color-accent-text:      #605BFF;
+  --color-accent-alpha-30:  rgba(96,91,255,0.30); /* accent overlay (e.g. KG filter active state) */
+  --color-accent-alpha-27:  rgba(96,91,255,0.27); /* selector border */
+  --color-accent-soft:      #ACA9FF;           /* sidebar active gradient start */
+
+  /* ── Borders ─────────────────────────────────── */
+  --color-border:           #D0D5DD;           /* form/input borders */
+  --color-border-subtle:    #E8E8F0;           /* chart grid / faint */
+  --color-border-strong:    #C1C9D2;
+  --color-border-card:      #F2F4F7;           /* card outline (soft) */
+
+  /* ── Shadows ─────────────────────────────────── */
+  --shadow-card:            0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-card-hover:      0 8px 24px rgba(50,50,93,0.08), 0 2px 6px rgba(0,0,0,0.04);
+  --shadow-elevated:        0 25px 50px rgba(50,50,93,0.25);
+  --shadow-header:          0 1px 3px rgba(50,50,93,0.06);
+  --shadow-btn:             0 1px 3px rgba(0,0,0,0.10), 0 1px 2px rgba(0,0,0,0.10);
+  --shadow-btn-hover:       0 4px 8px rgba(50,50,93,0.12), 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-input:           0 1px 2px rgba(16,24,40,0.05);
+
+  /* ── Radius ──────────────────────────────────── */
+  --radius-input:           6px;
+  --radius-btn:             6px;
+  --radius-btn-lg:          8px;
+  --radius-badge:           6px;
+  --radius-card:            12px;
+  --radius-card-lg:         16px;
+  --radius-banner:          24px;              /* "查看全景" banner pill */
+  --radius-pill:            9999px;
+
+  /* ── Engine Brand Colors ── */
+  --color-engine-chatgpt:   #10A37F;
+  --color-engine-doubao:    #3B82F6;
+  --color-engine-deepseek:  #8B5CF6;
+
+  /* ── Tooltip Surface ── */
+  --color-tooltip-bg:       #ffffff;
+
+  /* ── Chart Palette (Figma dashboard line chart) ── */
+  --color-chart-1:          #030229;           /* 可见度 primary line */
+  --color-chart-2:          #FF708B;           /* 情感 sentiment pink */
+  --color-chart-3:          #3B82F6;           /* 品牌声量 blue */
+  --color-chart-4:          #1E3A8A;           /* 引用率 navy blue */
+  --color-chart-5:          #605BFF;           /* generic accent */
+  --color-chart-6:          #FDB022;           /* warning amber */
+  --color-chart-7:          #0ABB87;           /* success green */
+  --color-chart-line-grid:  #E8E8F0;
+  --color-chart-axis-text:  #818194;
+  --color-chart-cursor:     rgba(96,91,255,0.06);
+
+  /* Subtle backgrounds for stat cells (BrandsPage heatmap) */
+  --color-chart-subtle-1:   rgba(3,2,41,0.06);
+  --color-chart-subtle-2:   rgba(255,112,139,0.10);
+  --color-chart-subtle-3:   rgba(59,130,246,0.10);
+  --color-chart-subtle-4:   rgba(30,58,138,0.08);
+  --color-chart-subtle-5:   rgba(96,91,255,0.08);
+
+  /* ── Sentiment Palette (Topics page sentiment bar) ── */
+  --color-sentiment-positive: #FF708B;
+  --color-sentiment-neutral:  #DFE3F3;
+  --color-sentiment-warning:  #FDB022;
+  --color-sentiment-brand:    #605BFF;
+  --color-sentiment-mild:     #C9C7F8;
+
+  /* ── Heatmap Scales (BrandTopicHeatmap, 2026-04-20) ── */
+  /* Sequential: 0 → max (mentionRate, SoV, citation share) */
+  --color-heatmap-seq-0:      #F4F4F5;           /* zinc-100, 空/极低 */
+  --color-heatmap-seq-1:      #E4E4E7;           /* zinc-200 */
+  --color-heatmap-seq-2:      #C7D2FE;           /* indigo-200 */
+  --color-heatmap-seq-3:      #818CF8;           /* indigo-400 */
+  --color-heatmap-seq-4:      #605BFF;           /* brand accent */
+  --color-heatmap-seq-5:      #3730A3;           /* indigo-800, 最高 */
+  /* Diverging: -1 ↔ +1 (sentiment, sovDelta, win/loss) */
+  --color-heatmap-div-neg-2:  #DC2626;           /* red-600, 强负 */
+  --color-heatmap-div-neg-1:  #FCA5A5;           /* red-300 */
+  --color-heatmap-div-zero:   #F4F4F5;           /* zinc-100, 中性 */
+  --color-heatmap-div-pos-1:  #86EFAC;           /* green-300 */
+  --color-heatmap-div-pos-2:  #16A34A;           /* green-600, 强正 */
+
+  /* ── Semantic Colors ─────────────────────────── */
+  --color-success:          #0ABB87;
+  --color-success-bg:       rgba(10,187,135,0.08);
+  --color-success-text:     #0ABB87;
+  --color-warning:          #F5A623;
+  --color-warning-bg:       rgba(245,166,35,0.08);
+  --color-warning-text:     #C68A1E;
+  --color-danger:           #DB373F;
+  --color-danger-bg:        rgba(219,55,63,0.07);
+  --color-danger-text:      #DB373F;
+  --color-info:             #605BFF;
+  --color-info-bg:          #F0F0FF;
+  --color-info-text:        #605BFF;
+
+  /* ── Environment Band (Admin Session A0) ─────── */
+  /* Distinct from success/warning/danger: these mark which environment
+     the Admin UI is running against, never a success/error state.      */
+  --color-env-dev:          #10B981;           /* emerald — local dev */
+  --color-env-dev-bg:       rgba(16,185,129,0.10);
+  --color-env-staging:      #F59E0B;           /* amber  — staging    */
+  --color-env-staging-bg:   rgba(245,158,11,0.10);
+  --color-env-prod:         #EF4444;           /* red    — production */
+  --color-env-prod-bg:      rgba(239,68,68,0.10);
+
+  /* ── Gradients ───────────────────────────────── */
+  --gradient-accent:        linear-gradient(135deg, #605BFF 0%, #8B5CF6 100%);
+  --gradient-sidebar-active:linear-gradient(90deg, rgba(172,169,255,1) 0%, rgba(172,169,255,0) 24%);
+  --gradient-avatar-warm:   linear-gradient(135deg, #FFC7D4, #FFE0C7);
+
+  /* ── Sidebar (dark variant — reserved) ───────── */
+  --color-sidebar-text:         rgba(255,255,255,0.5);
+  --color-sidebar-text-hover:   rgba(255,255,255,0.72);
+  --color-sidebar-text-active:  #FFFFFF;
+  --color-sidebar-indicator:    #605BFF;
+  --color-sidebar-item-hover:   rgba(255,255,255,0.06);
+  --color-sidebar-border:       rgba(255,255,255,0.07);
+  --color-sidebar-selector-bg:  rgba(255,255,255,0.07);
+
+  /* ── Logo / Avatar ───────────────────────────── */
+  --color-logo-accent:      #605BFF;
+  --color-logo-text:        #030229;
+  --color-avatar-bg:        #605BFF;
+
+  /* ── Misc ────────────────────────────────────── */
+  --header-backdrop:        blur(12px);
+}
+
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-  100% {
-    transform: rotate(360deg) translateX(80px) rotate(-360deg);
+
+  body {
+    background-color: var(--color-bg-page);
+    color: var(--color-text-primary);
+    /* Figma uses Nunito for brand/titles and Microsoft YaHei for Chinese UI.
+       Inter kept as system fallback for legacy components. */
+    font-family: 'Nunito', 'Inter', 'Microsoft YaHei', 'Noto Sans SC',
+                 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-weight: 400;
+    letter-spacing: -0.005em;
+    line-height: 1.5;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-subtle);
+    color: var(--color-text-primary);
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 100px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-border-strong); }
+}
+
+
+@layer components {
+  /* ── Card ── */
+  .t-card {
+    background: var(--color-bg-card);
+    border-radius: var(--radius-card);
+    padding: 1.25rem;
+    border: 1px solid var(--color-border-card);
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+  }
+  .t-card-interactive:hover {
+    box-shadow: var(--shadow-card-hover);
+    border-color: var(--color-border-strong);
+    transform: translateY(-1px);
+  }
+
+  /* ── Buttons ── */
+  .t-btn-primary {
+    background: var(--color-accent);
+    color: #ffffff;
+    border-radius: var(--radius-btn);
+    font-weight: 500;
+    border: none;
+    box-shadow: var(--shadow-btn);
+    transition: all 0.15s ease;
+  }
+  .t-btn-primary:hover {
+    background: var(--color-accent-hover);
+    box-shadow: var(--shadow-btn-hover);
+    transform: translateY(-1px);
+  }
+
+  .t-btn-secondary {
+    background: #ffffff;
+    color: var(--color-text-body);
+    border-radius: var(--radius-btn);
+    font-weight: 500;
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-btn);
+    transition: all 0.15s ease;
+  }
+  .t-btn-secondary:hover {
+    background: #FAFAFB;
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-btn-hover);
+  }
+
+  .t-btn-ghost {
+    background: transparent;
+    color: var(--color-text-muted);
+    border-radius: var(--radius-btn);
+    font-weight: 500;
+    border: none;
+    transition: all 0.12s ease;
+  }
+  .t-btn-ghost:hover {
+    color: var(--color-text-primary);
+    background: var(--color-bg-badge);
+  }
+
+  /* ── Badge ── */
+  .t-badge {
+    border-radius: var(--radius-badge);
+    font-weight: 500;
+    font-size: 0.6875rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    letter-spacing: 0.01em;
+  }
+  .t-badge-default { background: var(--color-bg-badge); color: var(--color-text-secondary); }
+  .t-badge-accent  { background: var(--color-accent-subtle); color: var(--color-accent-text); }
+  .t-badge-success { background: var(--color-success-bg); color: var(--color-success-text); }
+  .t-badge-warning { background: var(--color-warning-bg); color: var(--color-warning-text); }
+  .t-badge-danger  { background: var(--color-danger-bg); color: var(--color-danger-text); }
+  .t-badge-info    { background: var(--color-info-bg); color: var(--color-info-text); }
+
+  /* ── Tabs ── */
+  .t-tabs {
+    display: inline-flex;
+    gap: 1px;
+    background: var(--color-bg-badge);
+    border-radius: var(--radius-btn);
+    padding: 3px;
+    border: 1px solid var(--color-border-card);
+  }
+  .t-tab {
+    padding: 5px 12px;
+    border-radius: calc(var(--radius-btn) - 2px);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    border: none;
+    background: transparent;
+    white-space: nowrap;
+  }
+  .t-tab:hover { color: var(--color-text-secondary); }
+  .t-tab-active {
+    background: #ffffff;
+    color: var(--color-text-primary);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+
+  /* ── Input ── */
+  .t-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-input);
+    background: var(--color-bg-input);
+    color: var(--color-text-body);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .t-input::placeholder { color: var(--color-text-faint); }
+  .t-input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-accent);
+  }
+  .t-input-error { border-color: var(--color-danger) !important; }
+
+  /* ── Table ── */
+  .t-table th {
+    color: var(--color-text-muted);
+    font-weight: 500;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--color-border-card);
+    padding: 10px 12px;
+  }
+  .t-table td {
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    border-bottom: 1px solid var(--color-border-subtle);
+    padding: 10px 12px;
+  }
+  .t-table tbody tr { transition: background 0.1s ease; }
+  .t-table tbody tr:hover td { background: var(--color-bg-table-hover); }
+
+  /* ── Progress track ── */
+  .t-progress-track {
+    background: var(--color-bg-progress-track);
+    border-radius: 100px;
+    overflow: hidden;
+  }
+
+  /* ── Stagger animation ── */
+  .stagger > * {
+    opacity: 0;
+    animation: fadeUp 0.4s cubic-bezier(0.22,1,0.36,1) forwards;
+  }
+  .stagger > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger > *:nth-child(2) { animation-delay: 50ms; }
+  .stagger > *:nth-child(3) { animation-delay: 100ms; }
+  .stagger > *:nth-child(4) { animation-delay: 150ms; }
+  .stagger > *:nth-child(5) { animation-delay: 200ms; }
+  .stagger > *:nth-child(6) { animation-delay: 250ms; }
+
+  @keyframes fadeUp {
+    0%   { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Sidebar (default = light, Figma style) ── */
+  .t-sidebar { background: var(--color-bg-sidebar); }
+  .t-sidebar-dark { background: var(--color-bg-sidebar-dark); }
+
+  /* ── Header ── */
+  .t-header {
+    background: var(--color-bg-header);
+    backdrop-filter: var(--header-backdrop);
+    -webkit-backdrop-filter: var(--header-backdrop);
+    border-bottom: 1px solid var(--color-border-card);
+    box-shadow: var(--shadow-header);
+  }
+
+  /* ── Recharts overrides ── */
+  .recharts-cartesian-grid-horizontal line,
+  .recharts-cartesian-grid-vertical line {
+    stroke: var(--color-chart-line-grid);
+  }
+  .recharts-text { fill: var(--color-chart-axis-text); }
+  .recharts-tooltip-wrapper {
+    filter: drop-shadow(0 4px 12px rgba(50,50,93,0.12));
+  }
+  .recharts-default-tooltip {
+    background: #ffffff !important;
+    border: 1px solid var(--color-border-card) !important;
+    border-radius: var(--radius-card) !important;
+    box-shadow: var(--shadow-card-hover) !important;
+    padding: 8px 12px !important;
+    font-size: 12px !important;
+  }
+  .recharts-tooltip-label {
+    color: var(--color-text-primary) !important;
+    font-weight: 600 !important;
+    margin-bottom: 4px !important;
+  }
+  .recharts-tooltip-item {
+    color: var(--color-text-secondary) !important;
+    font-size: 12px !important;
+    padding: 1px 0 !important;
+  }
+  .recharts-legend-item-text {
+    color: var(--color-text-muted) !important;
+    font-size: 12px !important;
   }
 }
 
-/* Smooth focus outline for accessibility */
-*:focus-visible {
-  outline: 2px solid #6C5CE7;
-  outline-offset: 2px;
-}
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #e5e7eb;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #d1d5db;
-}
+@layer utilities {
+  /* Text */
+  .text-themed-primary   { color: var(--color-text-primary); }
+  .text-themed-secondary { color: var(--color-text-secondary); }
+  .text-themed-muted     { color: var(--color-text-muted); }
+  .text-themed-faint     { color: var(--color-text-faint); }
+  .text-themed-body      { color: var(--color-text-body); }
+  .text-themed-body-soft { color: var(--color-text-body-soft); }
+  .text-themed-accent    { color: var(--color-accent-text); }
+  .text-themed-inverse   { color: var(--color-text-inverse); }
+  .text-themed-success   { color: var(--color-success-text); }
+  .text-themed-danger    { color: var(--color-danger-text); }
+  .text-themed-warning   { color: var(--color-warning-text); }
 
-/* Input autofill styling override */
-input:-webkit-autofill,
-input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 30px white inset !important;
-  -webkit-text-fill-color: #111827 !important;
+  /* Backgrounds */
+  .bg-themed-page        { background: var(--color-bg-page); }
+  .bg-themed-card        { background: var(--color-bg-card); }
+  .bg-themed-badge       { background: var(--color-bg-badge); }
+  .bg-themed-subtle      { background: var(--color-bg-subtle); }
+  .bg-themed-accent-soft { background: var(--color-accent-bg-light); }
+  .bg-themed-gradient-accent { background: var(--gradient-accent); }
+
+  /* Borders */
+  .border-themed         { border-color: var(--color-border); }
+  .border-themed-subtle  { border-color: var(--color-border-subtle); }
+  .border-themed-card    { border-color: var(--color-border-card); }
+  .border-themed-strong  { border-color: var(--color-border-strong); }
+
+  /* Typographic niceties */
+  .tabular-nums          { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
+  .font-brand            { font-family: 'Nunito', sans-serif; }
+  .font-ui-cn            { font-family: 'Microsoft YaHei', 'Noto Sans SC', sans-serif; }
 }
