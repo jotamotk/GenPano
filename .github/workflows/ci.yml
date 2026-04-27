@@ -41,6 +41,12 @@ jobs:
       - name: mypy strict (uv run mypy app/)
         run: uv run mypy app/
 
+      - name: Harness L1 ci_check (uv run python scripts/ci_check.py)
+        run: uv run python scripts/ci_check.py
+
+      - name: Harness L1 selftest (uv run python scripts/ci_harness_selftest.py)
+        run: uv run python scripts/ci_harness_selftest.py
+
       - name: Alembic upgrade head (default SQLite, Step 6 regression guard)
         run: uv run alembic upgrade head
 
