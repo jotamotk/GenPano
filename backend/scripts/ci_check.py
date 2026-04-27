@@ -1,6 +1,6 @@
 """GENPANO L1 Harness rule scan (Python era).
 
-Translates 3 rules from the TypeScript era ci-check.mjs into native Python
+Translates 5 rules from the TypeScript era ci-check.mjs into native Python
 AST/regex scanners:
 
   - F1  no-bare-playwright-import         (origin: CLAUDE.md #22.F)
@@ -9,6 +9,8 @@ AST/regex scanners:
        F4-2  api_fallback path return dict must stamp 'api_fallback'
        F4-3  AiResponse(...) constructor must include explicit kwarg
   - D8  no-hardcoded-jwt-secret           (origin: CLAUDE.md #24.F)
+  - D9  admin-password-bcrypt-cost ≥ 12   (origin: CLAUDE.md #24.F)
+  - D10 admin-cookie-samesite=strict      (origin: CLAUDE.md #24.F)
 
 Self-seeded fixtures live under backend/app/__ci_fixtures__/ and are excluded
 from the default scan (only the selftest opts them in).
@@ -267,12 +269,132 @@ class D8NoHardcodedJwtSecret:
         return out
 
 
+class D9BcryptCostAtLeast12:
+    """`bcrypt.gensalt(rounds=N)` literal must have N ≥ 12.
+
+    Walks call-sites for `bcrypt.gensalt(...)`/`gensalt(...)` and inspects
+    the `rounds=` kwarg. A constant int < 12 is the violation. Non-literals
+    (e.g. `rounds=BCRYPT_COST`) are allowed — those route through the
+    constants module which is the single canonical source. Files under
+    `app/admin/auth/password.py` are NOT whitelisted: they MUST use
+    `BCRYPT_COST` (the constant), not a literal — so they pass naturally
+    without a special-case here.
+    """
+
+    id = "D9"
+    description = "bcrypt cost factor must be ≥ 12 (or routed through BCRYPT_COST)"
+
+    def scan(self, files: list[Path]) -> list[Violation]:
+        out: list[Violation] = []
+        for path in files:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError):
+                continue
+            for call in ast.walk(tree):
+                if not isinstance(call, ast.Call):
+                    continue
+                func_name: str | None = None
+                if isinstance(call.func, ast.Name):
+                    func_name = call.func.id
+                elif isinstance(call.func, ast.Attribute):
+                    func_name = call.func.attr
+                if func_name != "gensalt":
+                    continue
+                for kw in call.keywords:
+                    if kw.arg != "rounds":
+                        continue
+                    if (
+                        isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, int)
+                        and kw.value.value < 12
+                    ):
+                        out.append(
+                            Violation(
+                                self.id,
+                                path,
+                                call.lineno,
+                                f"bcrypt.gensalt(rounds={kw.value.value}) "
+                                f"violates BCRYPT_COST ≥ 12 floor",
+                            )
+                        )
+        return out
+
+
+class D10CookieSameSiteStrict:
+    """`samesite=` kwarg must be the literal 'strict' (case-insensitive).
+
+    Walks calls (e.g. `response.set_cookie(..., samesite='lax')`) and any
+    plain assignment whose target name contains 'samesite' / 'same_site'
+    bound to a string literal != 'strict'. Catches both Starlette's API
+    surface and hand-rolled Set-Cookie strings that bind a SameSite value
+    to a top-level constant.
+    """
+
+    id = "D10"
+    description = "admin auth cookies must use SameSite=Strict (no 'lax' / 'none')"
+
+    _SAMESITE_NAMES = ("samesite", "same_site")
+
+    def _bad_const(self, value: ast.AST) -> str | None:
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            return None
+        if value.value.lower() != "strict":
+            return value.value
+        return None
+
+    def scan(self, files: list[Path]) -> list[Violation]:
+        out: list[Violation] = []
+        for path in files:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    for kw in node.keywords:
+                        if kw.arg is None:
+                            continue
+                        if kw.arg.lower() not in self._SAMESITE_NAMES:
+                            continue
+                        bad = self._bad_const(kw.value)
+                        if bad is not None:
+                            out.append(
+                                Violation(
+                                    self.id,
+                                    path,
+                                    node.lineno,
+                                    f"samesite={bad!r} — must be 'strict'",
+                                )
+                            )
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if not isinstance(target, ast.Name):
+                            continue
+                        lower = target.id.lower()
+                        if not any(token in lower for token in self._SAMESITE_NAMES):
+                            continue
+                        bad = self._bad_const(node.value)
+                        if bad is not None:
+                            out.append(
+                                Violation(
+                                    self.id,
+                                    path,
+                                    node.lineno,
+                                    f"`{target.id} = {bad!r}` — SameSite must be 'strict'",
+                                )
+                            )
+        return out
+
+
 ALL_RULES: list[object] = [
     F1NoBarePlaywrightImport(),
     F4_1AdapterExecuteResponseSourceStamp(),
     F4_2ApiFallbackResponseSourceLabel(),
     F4_3AiResponseInsertExplicitKwarg(),
     D8NoHardcodedJwtSecret(),
+    D9BcryptCostAtLeast12(),
+    D10CookieSameSiteStrict(),
 ]
 
 
