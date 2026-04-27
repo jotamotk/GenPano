@@ -379,3 +379,17 @@ Step 8 场景 8 实施过程诊断暴露的 2 条**独立** follow-up bug, **不
 **修复方向**: FastAPI `lifespan` / `app.main` import time 检查 `ADMIN_JWT_SECRET` 长度 ≥ 32, 否则 raise 不让进程起 (mirror Session A0 TS 时代决策 #24.B 的 boot-time fail-fast 实现)。
 
 **留待**: A0' 后批次或 Session A1'。
+
+### Bug 3 · `require_admin_session` 不重新校验 user.status
+
+**现象**: `app/admin/auth/middleware.py:147-171` 的 `require_admin_session` 只过 `verify_access_token` (签名/过期/claims), 拿到 payload 直接返回, 不做 DB user row 查找, 也不 assert `status='active'`。`/refresh` 同 gap — 找到 session row 后 mint 新 access token 之前从不查 user.status, 因此被 suspend 的用户还能拿现有 refresh cookie 给自己续命。
+
+**后果**: admin 把某 user `status` 改成 `suspended` 后, 该 user 已发的 access cookie 仍可继续打受保护端点 (`/change-password` / 未来 admin API) 直到 access TTL 到期, 最长 15 分钟。`/refresh` 路径还能进一步 self-extend, 直到对应 admin_sessions 行被显式 revoke。
+
+**触发**: `tests/admin/auth/test_e2e_integration.py::test_flow6_suspended_user_cannot_login_or_use_existing_cookie` Step 4。当前 assertion **pin 在 buggy behaviour (200)** + TODO marker 保留期望行为 (401/403), 等 A1' 修复后翻转。
+
+**修复方向**: A1' Session admin "suspend user" UI 一起做 — middleware 扩展加 user row load + `status='active'` assert + `revoke_all_sessions_for_user` 在 suspend admin action 触发, 单一 PR 闭环。Decision #24.D 中跨状态机边界 gap, 在 A0' scope 之外。
+
+**风险窗口**: TTL=15 min, 需 admin 已发起 suspend (privileged action 链), MVP super_admin 仅 Frank 一人, 不构成 hostile actor 场景。Phase Gate 不阻断。
+
+**留待**: Session A1' (admin 用户管理 + suspend 流) 一并修复, 决策依据 #25 Rule 12 Type C (scope creep 拒绝)。
