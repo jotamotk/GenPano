@@ -35,12 +35,12 @@ import { adminAuthApi, AdminApiError } from '../lib/adminApi.js';
      `status` and decides whether to render children or redirect.
    ───────────────────────────────────────────────────────────── */
 
-/** Access token lifetime — 15 minutes. Mirrors backend ACCESS_TOKEN_TTL_SECONDS.
- *  Kept in sync manually (small constant, rarely changes). If backend TTL
- *  changes, update this literal too — the harness doesn't cross-check. */
+/* Silent refresh: 14min interval (token TTL 15min, lead 60s).
+ * MVP 客观选择: 客户端常量调度, 不消费 accessExpiresAt 的服务端时钟。
+ * 时钟漂移 >60s 的低概率分支兜底是 SessionExpiredModal (用户重登)。
+ * 升级路径: 改用 accessExpiresAt 动态调度待 Session A1' 或会话健壮性批次。
+ * 后端 mirror: app/admin/auth/constants.py · ACCESS_TOKEN_TTL_SECONDS=900. */
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
-/** Fire silent refresh this many seconds BEFORE expiry. Mirrors
- *  SILENT_REFRESH_LEAD_SECONDS in backend/src/admin/auth/constants.ts. */
 const SILENT_REFRESH_LEAD_SECONDS = 60;
 const SILENT_REFRESH_INTERVAL_MS =
   (ACCESS_TOKEN_TTL_SECONDS - SILENT_REFRESH_LEAD_SECONDS) * 1000;
