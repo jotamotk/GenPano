@@ -188,15 +188,63 @@ jobs:
           fi
           exit "$EXIT_CODE"
 
+      - name: Phase Gate Layer 1 (bash scripts/verify-session-a0prime.sh)
+        id: phase_gate_a0prime
+        # Canonical Session A0' Phase Gate gate. Captures PASS/FAIL/SKIP
+        # totals + total time so the PR comment below can render a
+        # human-readable summary line. Local dry-run baseline:
+        # 34 PASS / 0 FAIL / 1 SKIP (~20s on Windows + sqlite).
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set +e
+          start_ts=$(date +%s)
+          bash scripts/verify-session-a0prime.sh > /tmp/phase-gate-a0prime.log 2>&1
+          GATE_EXIT=$?
+          end_ts=$(date +%s)
+          set -e
+          # Parse the canonical "Result: N PASS / N FAIL / N SKIP" footer line
+          # the script always emits (even on RED).
+          summary_line="$(grep -E '^Result:' /tmp/phase-gate-a0prime.log | tail -1 || echo 'Result: 0 PASS / 0 FAIL / 0 SKIP')"
+          # Strip the "Result: " prefix so the PR comment reads cleanly.
+          summary_line="${summary_line#Result: }"
+          duration=$((end_ts - start_ts))
+          {
+            echo "summary=${summary_line}"
+            echo "duration_s=${duration}"
+            echo "gate_exit=${GATE_EXIT}"
+          } >> "$GITHUB_OUTPUT"
+          # Also tail to runner logs so a failed gate is debuggable from
+          # Actions UI without downloading the log artifact.
+          tail -40 /tmp/phase-gate-a0prime.log
+          exit "$GATE_EXIT"
+
       - name: Comment preview gate result on PR
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
+        env:
+          GATE_SUMMARY: ${{ steps.phase_gate_a0prime.outputs.summary }}
+          GATE_DURATION: ${{ steps.phase_gate_a0prime.outputs.duration_s }}
+          GATE_EXIT: ${{ steps.phase_gate_a0prime.outputs.gate_exit }}
         with:
           script: |
             const status = '${{ job.status }}';
             const label = status === 'success' ? 'PASS' : 'FAIL';
             const sha = context.sha.substring(0, 7);
-            const body = `**Backend Preview Gate: ${label}** (\`${sha}\`)\n\nRuff · mypy · Alembic · pytest — status: \`${status}\``;
+            const gateSummary = process.env.GATE_SUMMARY || '(gate did not run)';
+            const gateDuration = process.env.GATE_DURATION || '?';
+            const gateExit = process.env.GATE_EXIT;
+            const gateLabel = gateExit === '0'
+              ? 'GREEN'
+              : (gateExit === undefined || gateExit === '' ? 'SKIPPED' : 'RED');
+            const body = [
+              `**Backend Preview Gate: ${label}** (\`${sha}\`)`,
+              ``,
+              `Ruff · mypy · Alembic · pytest — status: \`${status}\``,
+              ``,
+              `**Phase Gate Layer 1: ${gateLabel}**  (\`${gateSummary}\`, ${gateDuration}s)`,
+              `verify-session-a0prime.sh — Session A0' canonical Phase Gate`,
+            ].join('\n');
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

@@ -64,3 +64,15 @@ jobs:
             exit 0
           fi
           exit "$EXIT_CODE"
+
+      - name: Phase Gate Layer 1 (bash scripts/verify-session-a0prime.sh)
+        # Canonical Session A0' Phase Gate gate. Bundles the individual steps
+        # above (ruff / mypy / harness / alembic / pytest) plus file-presence /
+        # admin-table / bootstrap-idempotency checks into one PASS/FAIL signal.
+        # Local dry-run baseline: 34 PASS / 0 FAIL / 1 SKIP (~20s on Windows
+        # Git Bash + sqlite). On CI, §6 SKIP retains the SQLite-default
+        # rationale (Postgres CHECK reject path lives in a future Step 11
+        # Postgres job, not this one).
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: bash scripts/verify-session-a0prime.sh
