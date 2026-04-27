@@ -54,6 +54,10 @@ warn_unreachable = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*", "kombu", "kombu.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
