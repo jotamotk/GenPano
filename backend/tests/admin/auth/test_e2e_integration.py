@@ -282,9 +282,7 @@ async def test_flow6_suspended_user_cannot_login_or_use_existing_cookie(
 
     # Step 2: admin suspends the user (simulated by direct DB update).
     async with http_env.sessionmaker() as s:
-        row = (
-            await s.execute(select(AdminUser).where(AdminUser.id == user.id))
-        ).scalar_one()
+        row = (await s.execute(select(AdminUser).where(AdminUser.id == user.id))).scalar_one()
         row.status = "suspended"
         await s.commit()
 

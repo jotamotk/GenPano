@@ -169,8 +169,7 @@ async def test_login_rate_limit_kicks_in_after_five_email_attempts(
     assert res.json()["detail"]["reason"] == "rate_limited"
     async with http_env.sessionmaker() as s:
         codes = [
-            r.failure_code
-            for r in (await s.execute(select(AdminLoginAttempt))).scalars().all()
+            r.failure_code for r in (await s.execute(select(AdminLoginAttempt))).scalars().all()
         ]
         assert codes.count("RATE_LIMITED") >= 1
 
@@ -353,9 +352,7 @@ async def test_reset_password_happy_path_revokes_all_sessions(
 
     assert res.status_code == 200
     async with http_env.sessionmaker() as s:
-        refreshed = (
-            await s.execute(select(AdminUser).where(AdminUser.id == user.id))
-        ).scalar_one()
+        refreshed = (await s.execute(select(AdminUser).where(AdminUser.id == user.id))).scalar_one()
         # New password sets last_password_at + clears force_password_change_at.
         assert refreshed.last_password_at is not None
         assert refreshed.force_password_change_at is None
@@ -441,9 +438,7 @@ async def test_change_password_happy_path_keeps_caller_logged_in(
         active = [r for r in sessions if r.revoked_at is None]
         assert len(active) == 1
         # last_password_at must be set after the change.
-        refreshed = (
-            await s.execute(select(AdminUser).where(AdminUser.id == user.id))
-        ).scalar_one()
+        refreshed = (await s.execute(select(AdminUser).where(AdminUser.id == user.id))).scalar_one()
         assert refreshed.last_password_at is not None
 
 

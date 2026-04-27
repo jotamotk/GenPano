@@ -53,9 +53,7 @@ def hash_password(plaintext: str) -> str:
 
     payload = plaintext.encode("utf-8")
     if len(payload) > _BCRYPT_MAX_BYTES:
-        raise ValueError(
-            f"password exceeds bcrypt 72-byte limit ({len(payload)} bytes)"
-        )
+        raise ValueError(f"password exceeds bcrypt 72-byte limit ({len(payload)} bytes)")
     salt = bcrypt.gensalt(rounds=BCRYPT_COST)
     return bcrypt.hashpw(payload, salt).decode("ascii")
 

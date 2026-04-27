@@ -57,9 +57,7 @@ async def _bootstrap_async() -> int:
 
     async with AsyncSessionLocal() as session:
         existing = (
-            await session.execute(
-                select(AdminUser).where(AdminUser.email == email_normalised)
-            )
+            await session.execute(select(AdminUser).where(AdminUser.email == email_normalised))
         ).scalar_one_or_none()
 
         if existing is not None:
@@ -70,9 +68,7 @@ async def _bootstrap_async() -> int:
                     file=sys.stderr,
                 )
                 return 3
-            print(
-                f"OK: super_admin {email_normalised!r} already present (no-op)"
-            )
+            print(f"OK: super_admin {email_normalised!r} already present (no-op)")
             return 0
 
         now = datetime.now(UTC).replace(tzinfo=None)

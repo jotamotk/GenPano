@@ -134,10 +134,6 @@ def test_clear_path_matches_set_path_for_browser_eviction() -> None:
     headers = _set_cookie_strings(clear_resp)
     access_clear = next(h for h in headers if h.startswith(ACCESS_TOKEN_COOKIE))
 
-    set_path = next(
-        part for part in set_header.split("; ") if part.startswith("Path=")
-    )
-    clear_path = next(
-        part for part in access_clear.split("; ") if part.startswith("Path=")
-    )
+    set_path = next(part for part in set_header.split("; ") if part.startswith("Path="))
+    clear_path = next(part for part in access_clear.split("; ") if part.startswith("Path="))
     assert set_path == clear_path

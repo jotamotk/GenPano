@@ -130,8 +130,7 @@ def _build_invitation(
 
     subject = "您被邀请加入 GenPano 管理后台"
     text = (
-        f"{inviter_email} 邀请您加入 GenPano 管理后台。\n\n"
-        f"设置密码 (24 小时内有效): {invite_url}\n"
+        f"{inviter_email} 邀请您加入 GenPano 管理后台。\n\n设置密码 (24 小时内有效): {invite_url}\n"
     )
     html = (
         f"<p>{inviter_email} 邀请您加入 GenPano 管理后台。</p>"

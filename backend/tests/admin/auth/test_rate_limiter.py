@@ -28,7 +28,7 @@ def test_email_capacity_5_within_window() -> None:
     email = "Frank@Example.com"
     # Capacity is 5; the 6th call must be rejected.
     for i in range(EMAIL_LIMIT_CAPACITY):
-        assert check_email_limit(email, now=100.0 + i) is True, f"call {i+1}"
+        assert check_email_limit(email, now=100.0 + i) is True, f"call {i + 1}"
     assert check_email_limit(email, now=100.0 + EMAIL_LIMIT_CAPACITY) is False
 
 

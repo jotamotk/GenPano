@@ -64,9 +64,7 @@ class AccessTokenPayload:
 def _load_secret() -> str:
     raw = os.environ.get(_ENV_VAR)
     if raw is None or len(raw.encode("utf-8")) < _MIN_SECRET_BYTES:
-        raise AdminJwtSecretMissingError(
-            f"{_ENV_VAR} must be set and ≥ {_MIN_SECRET_BYTES} bytes"
-        )
+        raise AdminJwtSecretMissingError(f"{_ENV_VAR} must be set and ≥ {_MIN_SECRET_BYTES} bytes")
     return raw
 
 

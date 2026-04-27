@@ -111,12 +111,23 @@ if ! command -v uv > /dev/null 2>&1; then
   SKIP=$((SKIP + 7))
 else
   # ----------------------------------------------------------------------
-  # §2 ruff + mypy
+  # §2 ruff (lint + format) + mypy
+  #
+  # ⚠️ §2 contract: lint AND format. The earlier draft (Step 10 commit
+  # 9fe7f72) only ran `ruff check .` and skipped `ruff format --check`,
+  # which let 9 files committed during Steps 1-9 land with format drift
+  # and surface only on CI (PR #130 first run failed exactly here). The
+  # added `ruff format --check` step closes that gap so future Sessions
+  # can rely on Phase Gate Layer 1 catching format drift locally before
+  # push. Step 11.5 root-cause fix; decision #25 Rule 3 deviation logged
+  # + Rule 7 Closing Loop closed on the CI lane.
   # ----------------------------------------------------------------------
   echo ""
-  echo "▶ §2 Lint + type"
+  echo "▶ §2 Lint + format + type"
   check "ruff check ." \
         "cd backend && uv run ruff check ."
+  check "ruff format --check (no auto-fix)" \
+        "cd backend && uv run ruff format --check ."
   check "mypy app" \
         "cd backend && uv run mypy app"
 

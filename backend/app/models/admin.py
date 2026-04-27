@@ -69,9 +69,7 @@ class AdminUser(Base):
     last_password_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
-    last_login_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), nullable=True
-    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=func.now()
     )
