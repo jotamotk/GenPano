@@ -13,7 +13,7 @@ from sqlalchemy import engine_from_config, pool
 from app.core.config import get_settings
 from app.db._upstream_stubs import UPSTREAM_STUB_NAMES
 from app.db.base import Base
-from app.models import *  # noqa: F401,F403
+from app.models import *  # noqa: F403
 
 config = context.config
 

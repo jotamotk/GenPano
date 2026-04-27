@@ -19,11 +19,7 @@ from app.db.base import Base
 
 UPSTREAM_STUB_NAMES = frozenset({"llm_responses", "brands", "competitors", "prompts"})
 
-llm_responses = Table(
-    "llm_responses", Base.metadata, Column("id", Integer, primary_key=True)
-)
+llm_responses = Table("llm_responses", Base.metadata, Column("id", Integer, primary_key=True))
 brands = Table("brands", Base.metadata, Column("id", Integer, primary_key=True))
-competitors = Table(
-    "competitors", Base.metadata, Column("id", Integer, primary_key=True)
-)
+competitors = Table("competitors", Base.metadata, Column("id", Integer, primary_key=True))
 prompts = Table("prompts", Base.metadata, Column("id", Integer, primary_key=True))

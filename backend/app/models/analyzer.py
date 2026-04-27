@@ -47,9 +47,7 @@ class BrandMention(Base):
     response_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("llm_responses.id"), nullable=False
     )
-    brand_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("brands.id"), nullable=True
-    )
+    brand_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("brands.id"), nullable=True)
     brand_name: Mapped[str] = mapped_column(String(256), nullable=False)
     product_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     is_target: Mapped[bool | None] = mapped_column(
@@ -61,9 +59,7 @@ class BrandMention(Base):
     sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)
     sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     context_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
-    mention_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="1"
-    )
+    mention_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="1")
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
@@ -83,9 +79,7 @@ class SentimentDriver(Base):
     driver_text: Mapped[str] = mapped_column(String(512), nullable=False)
     polarity: Mapped[str] = mapped_column(String(8), nullable=False)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    strength: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.5"
-    )
+    strength: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.5")
     source_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
@@ -139,15 +133,9 @@ class ResponseAnalysis(Base):
     sentiment_score: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    sov_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    citation_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    geo_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    sov_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    citation_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    geo_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     analyzed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
@@ -191,22 +179,14 @@ class GeoScoreDaily(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    brand_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("brands.id"), nullable=False
-    )
+    brand_id: Mapped[int] = mapped_column(Integer, ForeignKey("brands.id"), nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     target_llm: Mapped[str | None] = mapped_column(String(64), nullable=True)
     intent: Mapped[str | None] = mapped_column(String(64), nullable=True)
     language: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    total_queries: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    mention_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    mention_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    total_queries: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    mention_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    mention_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     avg_position_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_place_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True, server_default="0"
@@ -214,72 +194,44 @@ class GeoScoreDaily(Base):
     first_place_rate: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    positive_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    negative_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    positive_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    negative_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     avg_sentiment_score: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    citation_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    avg_sov: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    avg_visibility: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    avg_sentiment: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    avg_sov_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    citation_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_sov: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_visibility: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_sov_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     avg_citation_score: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    avg_geo_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    avg_geo_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     industry: Mapped[str | None] = mapped_column(String(128), nullable=True)
     industry_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     industry_sov_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), nullable=True
-    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
 
 class IndustryBenchmarkDaily(Base):
     __tablename__ = "industry_benchmark_daily"
-    __table_args__ = (
-        UniqueConstraint("industry", "date", "target_llm", name="uq_industry_daily"),
-    )
+    __table_args__ = (UniqueConstraint("industry", "date", "target_llm", name="uq_industry_daily"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     industry: Mapped[str] = mapped_column(String(128), nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     target_llm: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    total_brands: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    total_queries: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
+    total_brands: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    total_queries: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
     avg_mention_rate: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    avg_geo_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
-    avg_sentiment: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    avg_geo_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_sentiment: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     score_p25: Mapped[float | None] = mapped_column(Float, nullable=True)
     score_p50: Mapped[float | None] = mapped_column(Float, nullable=True)
     score_p75: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -287,9 +239,7 @@ class IndustryBenchmarkDaily(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), nullable=True
-    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
 
 class ProductScoreDaily(Base):
@@ -305,22 +255,14 @@ class ProductScoreDaily(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    brand_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("brands.id"), nullable=False
-    )
+    brand_id: Mapped[int] = mapped_column(Integer, ForeignKey("brands.id"), nullable=False)
     product_name: Mapped[str] = mapped_column(String(256), nullable=False)
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
     target_llm: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    total_queries: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    mention_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    mention_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    total_queries: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    mention_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    mention_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     avg_position_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_place_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True, server_default="0"
@@ -331,20 +273,12 @@ class ProductScoreDaily(Base):
     avg_sentiment_score: Mapped[float | None] = mapped_column(
         Float, nullable=True, server_default="0.0"
     )
-    avg_geo_score: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    avg_geo_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     category_sov_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     category_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    comparison_wins: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    comparison_total: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, server_default="0"
-    )
-    win_rate: Mapped[float | None] = mapped_column(
-        Float, nullable=True, server_default="0.0"
-    )
+    comparison_wins: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    comparison_total: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    win_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     top_features_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
     top_scenarios_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
     price_positioning: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -353,6 +287,4 @@ class ProductScoreDaily(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=False), nullable=True
-    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
