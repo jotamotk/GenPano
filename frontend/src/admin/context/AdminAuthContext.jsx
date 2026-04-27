@@ -10,7 +10,7 @@ import React, {
 import { adminAuthApi, AdminApiError } from '../lib/adminApi.js';
 
 /* ─────────────────────────────────────────────────────────────
-   AdminAuthContext — Session A0 · Step 7 (CLAUDE.md #24)
+   AdminAuthContext — Provider implementation (CLAUDE.md #24.D)
 
    Responsibilities:
      1. Track current admin identity: { user, status }
@@ -30,9 +30,9 @@ import { adminAuthApi, AdminApiError } from '../lib/adminApi.js';
        inspection. The backend is the real authority via /refresh response.
      - Store the access token in memory. Cookies do the job.
 
-   URL guard behavior (Step 8 later):
-     The provider just maintains state; AdminRouteGuard.jsx (Step 8) reads
-     `status` and decides whether to render children or redirect.
+   URL guard behavior:
+     The provider just maintains state; AdminRouteGuard.jsx reads `status`
+     and decides whether to render children or redirect.
    ───────────────────────────────────────────────────────────── */
 
 /* Silent refresh: 14min interval (token TTL 15min, lead 60s).
