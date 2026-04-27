@@ -86,7 +86,7 @@ async def test_login_success_sets_cookies_and_returns_user(http_env: HttpEnv) ->
     body = res.json()
     assert body["user"]["email"] == user.email
     assert body["user"]["role"] == "super_admin"
-    assert body["access_expires_at"] > 0
+    assert body["accessExpiresAt"] > 0
     # Both auth cookies present, both HttpOnly + SameSite=Strict + Path=/admin
     cookies = res.headers.get_list("set-cookie")
     assert any(c.startswith(f"{ACCESS_TOKEN_COOKIE}=") for c in cookies)
@@ -429,7 +429,7 @@ async def test_change_password_happy_path_keeps_caller_logged_in(
 
     assert res.status_code == 200
     body = res.json()
-    assert body["user"]["force_password_change_at"] is None
+    assert body["user"]["forcePasswordChangeAt"] is None
     # The response sets a NEW pair of cookies — caller stays logged in.
     cookies = res.headers.get_list("set-cookie")
     assert any(c.startswith(f"{ACCESS_TOKEN_COOKIE}=") for c in cookies)
