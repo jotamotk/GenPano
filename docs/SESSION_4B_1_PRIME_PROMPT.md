@@ -403,7 +403,7 @@ Frank 必须亲自走以下 3 段旅程, 每段产出截图归档:
 
 1. **再跑 §0 Pre-Flight Grep**: 6 条全部命中, 验真相源未漂移
 2. **CLAUDE.md 加决策 #N**: "Session 4b'.1 · Frontend Foundation 交付 (2026-XX-XX)" 含 A-G 段 (A 目录 / B 12 文件 / C Y1-Y14 实施 / D Group I I6 / E 偏差登记 / F Phase Gate 验收 / G 下游链)
-3. **`.auto-memory` 加新文件**: `project_genpano_session_4b1_delivery.md` 5-7 行摘要
+3. **(可选) `docs/auto-memory/` 加 cross-Session pattern 文件**: 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. Frontend Foundation Y1-Y14 模式 / TanStack Query setup 模式) 时, 写 `docs/auto-memory/{type}_{topic}.md` + `docs/MEMORY.md` 追加一行 index; per-session delivery (Y1-Y14 + Group I 6 条) 详情走 CLAUDE.md 决策 #N, 不单独写 archive 文件 (对齐 A0' 实际落档机制 — A0' Step 12 commit 09014b0 仅写了 cross-Session pattern, 未写 per-session delivery archive)
 4. **`docs/SESSIONS_PYTHON.md` 加状态行**: `4b'.1 · Frontend Foundation · GREEN · 2026-XX-XX`
 5. **git commit + push**: `git commit -F .git-msg-4b1.txt` (标题 `Session 4b'.1: Frontend Foundation - Phase Gate 3/3 PASS`, body 回引 CLAUDE.md decision #N)
 6. **PR 描述含 Layer 3 截图归档链接**

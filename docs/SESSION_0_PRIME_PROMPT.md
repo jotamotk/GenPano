@@ -316,7 +316,7 @@ Layer 2 Agent 与本 Agent **零共享上下文**, Frank 用 `docs/HARNESS_ENGIN
 2. **写代码时 §2 ✅ 表的"验收信号"列就是验收契约**, 不要写超出验收信号的功能 (会被规则 10 反向裁掉)。
 3. **每完成 1 step 立即 commit**, 不要囤 5 step 一次性 commit (违规则 31 atomic commits 精神)。
 4. **遇到 Camoufox / Adapter execute() / Planner / KG / Auth 任何业务逻辑诱惑, 走 §3 STOP Type C** — 这些都在 N1-N10 ❌ 列表。
-5. **规则 11 freshness check 在你这边的复责是闭环 §0 grep 即可**, 不需要重新 grep `.auto-memory/` (Frank 在发 Prompt 前已经验过)。
+5. **规则 11 freshness check 在你这边的复责是闭环 §0 grep 即可**, 不需要重新 grep `docs/auto-memory/` (Frank 在发 Prompt 前已经验过)。
 6. **规则 5 §1 真相源索引在每个文件路径后都标 [引用] / [修改]**, 你写 commit message 时引用这些路径要保持原样, 不要简写。
 7. **规则 6 段号最小单元**: 引用 PRD 写 `PRD §X.Y.Z`, 引用 REPLAN 写 `REPLAN §4 / §6`, 不要写"见 PRD"或"见 REPLAN"。
 8. **如果 Session 收尾时 Phase Gate 1 中任一条 ❌**, 走 `docs/HARNESS_ENGINEERING.md §10.8` Fix Loop (≤3 轮); 第 4 轮失败立即升级人工 (Frank), 不要无限循环。

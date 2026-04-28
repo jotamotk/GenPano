@@ -62,9 +62,9 @@ rg -n "§4\.10\.4a|formatBrand" docs/PRD.md | head -10
 # F11. 确认 PRD §4.11 埋点事件 (#63-#65 保留, #44/#45/#46 弃用, #70 onboarding_step_completed 新增)
 rg -n "事件 #(44|45|46|63|64|65|70)" docs/PRD.md | head -10
 
-# F12. CLAUDE.md 最近 3 条决策对 4b' 范围影响 (Rule 11) + .auto-memory 近 7 天
+# F12. CLAUDE.md 最近 3 条决策对 4b' 范围影响 (Rule 11) + docs/auto-memory/ 近 7 天
 rg -n "^\d+\." CLAUDE.md | tail -3
-ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
+git log --since='7 days ago' --diff-filter=A --name-only -- docs/auto-memory/
 ```
 
 **Pre-flight 失败的 per-grep STOP 映射 (决策 #25 规则 12 + 规则 11)**:
@@ -475,7 +475,7 @@ Frank 在 `app.preview.genpano.dev` 子域执行下列 8 步, 全部成功后 4b
 | **9** | CSV Export 8 接入点 + AuthPromptModal + 11 Legacy 301 | Y34-Y41 + vercel.json rewrite (`/dashboard` → `/brand/overview` 等 11 条) |
 | **10** | Group I Harness 6 条 + 6 self-seeded fixture | `scripts/ci_check.py` Group I 段; 6 fixture 在 `__ci_fixtures__/`; `ci_harness_selftest.py` 32→38 |
 | **11** | Playwright smoke E2E + verify_4b.sh + Vercel preview deploy | Y44-Y45 + scripts/verify_4b.sh + GitHub Actions `app-preview.yml`; preview push → Vercel 自动 deploy + Render API 接入 |
-| **12** | Frank Layer 3 + CLAUDE.md 决策 #33 + .auto-memory + main merge → MVP COMPLETE | Frank S1-S8 全绿; CLAUDE.md 决策 #33 (Session 4b' 交付细节 + 偏差 C1/C2/...); `.auto-memory/project_genpano_mvp_completed.md`; PR `session-4bprime` → main fast-forward; **MVP COMPLETE 标志** |
+| **12** | Frank Layer 3 + CLAUDE.md 决策 #33 + docs/auto-memory/ + main merge → MVP COMPLETE | Frank S1-S8 全绿; CLAUDE.md 决策 #33 (Session 4b' 交付细节 + 偏差 C1/C2/...); `docs/auto-memory/project_genpano_mvp_completed.md` (MVP 完成是跨 Session 里程碑性质 archive, 与日常 per-session delivery 不同); PR `session-4bprime` → main fast-forward; **MVP COMPLETE 标志** |
 
 每步收尾必须先跑 `scripts/verify_4b.sh` 全绿 → `git add -A && git commit -m "Session 4b' Step N: <topic>"` → 推送; 中间任一步 verify 红, **不推**, 修绿再推。
 
@@ -489,7 +489,7 @@ Frank 在 `app.preview.genpano.dev` 子域执行下列 8 步, 全部成功后 4b
 
 1. **回跑 §0 Pre-flight grep F1-F12**: 真相源未漂移确认; 若漂移走 §3 Type B 流程
 2. **CLAUDE.md 决策 #33 写入**: 含 A 段 (实施摘要 — 18 TSX 页 + 6 Harness + 8 CSV 接入点) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta) / D 段 (**MVP COMPLETE 宣告** — 11 个 Python pivot Session 全部交付)
-3. **`.auto-memory/project_genpano_mvp_completed.md` 写入**: 索引添加到 MEMORY.md, 记录 18 TSX 页 + 6 Group I Harness + 8 CSV 接入点 + Frank 实操 S1-S8 验收完成 + Phase 2 候选清单
+3. **`docs/auto-memory/project_genpano_mvp_completed.md` 写入**: 索引添加到 `docs/MEMORY.md`, 记录 18 TSX 页 + 6 Group I Harness + 8 CSV 接入点 + Frank 实操 S1-S8 验收完成 + Phase 2 候选清单 (MVP 完成是跨 Session 里程碑性质 archive, 与日常 per-session delivery 不同, 故保留 archive 文件)
 4. **`docs/CLAUDE_CODE_SESSIONS_PYTHON.md` 状态更新**: 4b' 标 ✅; **Milestone 4 ✅ COMPLETE**; 在 master 索引顶部加 "**MVP COMPLETE 2026-04-XX**" 横幅; Phase 2 候选 Session (A2'/A5'/Citation Simulator/PDF 生成 等) 列出, 不属 MVP 关键路径
 
 ---
@@ -533,9 +533,9 @@ Frank 在 `app.preview.genpano.dev` 子域执行下列 8 步, 全部成功后 4b
 | Check | 状态 | 备注 |
 |---|---|---|
 | CLAUDE.md 最近 3 决策 (#29 Python pivot / #30 preview env / #31 branch-per-session) | ✅ 已 thread 入 §1 真相源 + §3 STOP A8/C18 + §4 Layer 3 |
-| .auto-memory 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_branch_per_session.md` / `feedback_genpano_session_preview_env_2026_04_26.md` | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
-| .auto-memory 视觉契约: `feedback_production_deps.md` (recharts/AntV G6/TanStack 等成熟库) / `feedback_genpano_g6_knowledge_graph.md` (8 坑点) / `feedback_genpano_landing_v21.md` (浅色 Stripe) | ✅ Y6 Charts + Y33 KG + Y11 LandingPage 全部对齐 |
-| .auto-memory 决策记录: `project_genpano_brand_industry_mode_ia.md` (IA v2.0 master) / `project_genpano_product_detail_brandid_contract.md` (C15) / `project_genpano_industry_overview_plan_s_v2.md` (v3.2 跨 Mode 共享) / `project_genpano_review_2026_04_21_closure.md` (38 harness 5 组) | ✅ §1 真相源 + §3 STOP B6/B8 + §4 Layer 2 全部 thread |
+| docs/auto-memory/ 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_branch_per_session.md` / `feedback_genpano_session_preview_env_2026_04_26.md` | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
+| docs/auto-memory/ 视觉契约: `feedback_production_deps.md` (recharts/AntV G6/TanStack 等成熟库) / `feedback_genpano_g6_knowledge_graph.md` (8 坑点) / `feedback_genpano_landing_v21.md` (浅色 Stripe) | ✅ Y6 Charts + Y33 KG + Y11 LandingPage 全部对齐 |
+| docs/auto-memory/ 决策记录: `project_genpano_brand_industry_mode_ia.md` (IA v2.0 master) / `project_genpano_product_detail_brandid_contract.md` (C15) / `project_genpano_industry_overview_plan_s_v2.md` (v3.2 跨 Mode 共享) / `project_genpano_review_2026_04_21_closure.md` (38 harness 5 组) | ✅ §1 真相源 + §3 STOP B6/B8 + §4 Layer 2 全部 thread |
 | PRD.md §4.6-IA-v2 supersession 完整 (废除 §4.6.1 / §4.6.1-0 / §4.6.1b / §4.6.1d / §4.6.1e 顶层结构 + E1-E4 Empty State) | ✅ 已 thread 入 §1 引用 + §3 STOP B1/C8 + §4 Layer 2 I6 |
 | DESIGN_TOKENS C9-C15 (V2 6 深度页 + product detail) | ✅ 已 thread 入 §1 + §3 STOP C13/C14/C16/C17 + §4 Layer 2 I1-I5 |
 | 决策 #19 Citation Tier 是否进 4b' | ❌ 已锁 N2 (Tier CRUD 编辑器), 但只读 Tier 渲染必做 (Y20-Y24 Citation 5 Tab); Tier 编辑 + Simulator 推 A5'/Phase 2 |

@@ -138,7 +138,7 @@ POST-FLIGHT 🛬 (人类, 15min)
 5. ADMIN 第 0 节规则 8 反向同步清单: grep 下游 Session 对本 Session 产出 (字段 / 表 / 函数 / 常量) 的引用, 清单报告人类, 已引用处反向 patch
 6. ADMIN 第 0 节规则 9 commit closure: PowerShell here-string + `git commit --file commit-msg.txt`, 标题 `Session {号}: {主题} - Phase Gate X/X PASS`, body 回引 CLAUDE.md 决策号, 禁 `§/✅/—/🚫` 等特殊 Unicode; commit 后 `git log --oneline -3` 贴回"完成后报告"作 closure 证据
 7. 更新 `docs/SESSION_PROGRESS.md` 本 Session 状态 ⬜/🟡 → ✅; CLAUDE.md 决策号对照表追加新行
-8. 更新 `.auto-memory/MEMORY.md` 追加 1 行决策索引 (若本 Session 产出新决策)
+8. 更新 `docs/MEMORY.md` 追加 1 行决策索引 (若本 Session 产出新决策); 仅当本 Session 产出 cross-Session 可复用 pattern 时才在 `docs/auto-memory/` 写 archive 文件 (对齐 A0' 实际落档机制 — A0' Step 12 commit 09014b0 仅写了 1 个 cross-Session pattern, 未写 per-session delivery archive)
 
 ### P.6 第一批动作模板
 

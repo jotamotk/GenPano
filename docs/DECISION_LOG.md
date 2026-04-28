@@ -42,6 +42,7 @@
 | 28 | 2026-04-23 | Session 1.2 · Camoufox + 3 引擎 Adapter Live 化 (含 Phase A: Platform Layer 边界 + MVP 不加密 cookie + Luban SMS live 拉回); 6 枚举 response_source labeling, Harness F4 三子规则 | superseded by Session 1.2' (Python, 见 #29) — 边界纪律 + response_source 枚举承继 | line ~384 |
 | 29 | 2026-04-26 | Python pivot + 11 Session 重写: TS/Next.js 报废, 切 FastAPI + SQLAlchemy 2.0 async + Alembic + Celery + Redis + Pydantic v2 + uv + ruff + mypy strict; REPLAN_2026_04_26.md 真相源; 11 SESSION_*_PRIME_PROMPT.md 已交付; Plan J D1: 旧 Session A5 并入 Session A1' | active (anchor decision for all 2026-04-26+ work) | line ~420 |
 | 30 | 2026-04-28 | Session A0' Phase Gate 接受标准 4 轮偏离 + Bug 4 logger gap: Round 1 Vercel 跳过 + Round 2 docker compose 跳过 + Round 3a 手工 L3 9 场景重跑跳过 + Round 3b 邮件实际发送跳过 (mock 模式 + Bug 4 logger 可观察性 gap, 修复方向 dictConfig + structlog + JSONRenderer); A1' 转交清单含 Bug 1-4 + Resend live + #24.C4 schema gap + preview env + docker-compose + 5 个 TS 时代 .mjs scripts 清理 | active (deviation registration for #29.C; transfer list to A1') | line ~432 |
+| 31 | 2026-04-28 | MVP scope-cut: minimax 视频解析 / minimax 网页爬取 archaeology 空集; T1-T6 read-only 扫描确认 main 零代码 / 零 schema / 零真相源, MiniMax 仅在 PRD §4.2.2a future 候选行出现; MVP 3 引擎锁 `chatgpt|doubao|deepseek-CN` 不追加; claude/* archive 不删不 merge 不 cherry-pick; A1' Step 0 unblock | active | line ~445 |
 
 ## How to use this index
 
