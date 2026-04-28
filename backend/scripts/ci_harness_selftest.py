@@ -28,6 +28,8 @@ EXPECTED_POSITIVES: dict[str, int] = {
     "F4-2": 1,
     "F4-3": 1,
     "D8": 1,
+    "D9": 1,
+    "D10": 1,
 }
 
 

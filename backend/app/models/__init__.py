@@ -1,3 +1,9 @@
+from app.models.admin import (
+    AdminLoginAttempt,
+    AdminPasswordReset,
+    AdminSession,
+    AdminUser,
+)
 from app.models.analyzer import (
     BrandMention,
     CitationSource,
@@ -10,6 +16,10 @@ from app.models.analyzer import (
 )
 
 __all__ = [
+    "AdminLoginAttempt",
+    "AdminPasswordReset",
+    "AdminSession",
+    "AdminUser",
     "BrandMention",
     "CitationSource",
     "GeoScoreDaily",

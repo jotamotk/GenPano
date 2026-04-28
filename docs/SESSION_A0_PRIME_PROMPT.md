@@ -40,9 +40,23 @@ grep -n "C1.2 (字段命名 + 类型双偏差" CLAUDE.md
 # F6 · 验证 PRD §5.6.8 与 CLAUDE.md #24.C1-C4 偏差对齐 (purpose 字段 / role CHECK / 工具链 NodeNext - NodeNext 不需要 Python 翻译)
 grep -n "purpose VARCHAR" docs/ADMIN_PRD.md
 grep -n "role IN" docs/ADMIN_PRD.md
+
+# F7 · 验证 merge 仓 frontend admin 4 页 + 3 component + adminApi.js 已存在 (复用 baseline, 非新建)
+test -f frontend/src/admin/pages/AdminLoginPage.jsx && echo "✅ AdminLoginPage 复用基线存在" || echo "❌ 缺失, 需评估是否回到新建"
+test -f frontend/src/admin/pages/AdminForgotPasswordPage.jsx && echo "✅ AdminForgotPasswordPage" || echo "❌"
+test -f frontend/src/admin/pages/AdminChangePasswordPage.jsx && echo "✅ AdminChangePasswordPage" || echo "❌"
+test -f frontend/src/admin/pages/AdminDashboardPage.jsx && echo "✅ AdminDashboardPage" || echo "❌"
+test -f frontend/src/admin/context/AdminAuthContext.jsx && echo "✅ AdminAuthContext" || echo "❌"
+test -f frontend/src/admin/components/AdminRouteGuard.jsx && echo "✅ AdminRouteGuard" || echo "❌"
+test -f frontend/src/admin/components/SessionExpiredModal.jsx && echo "✅ SessionExpiredModal" || echo "❌"
+test -f frontend/src/admin/lib/adminApi.js && echo "✅ adminApi.js (TS 版, 待 rewire 到 Python /admin/api/v1/auth/)" || echo "❌"
+
+# F8 · 决策号引用格式合规 (决策 #25 规则 6 + Plan J D4): Prompt 内引用 CLAUDE.md 必须 `决策 #N (短标题)` 格式
+grep -nE "决策 #[0-9]+\.[A-Z]?" docs/SESSION_A0_PRIME_PROMPT.md  # 预期段号引用 (#24.C1.2 等) 仍合规, 单独 #N 必须有短标题
 ```
 
-**期望结果**: F1-F3 + F5 + F6 全部命中, F4 全 ✅。任一失败立即 STOP (见 §3 Type B)。
+**期望结果**: F1-F3 + F5 + F6 + F8 全部命中, F4 + F7 全 ✅。任一失败立即 STOP (见 §3 Type B)。
+**F7 全 ✅ 的语义**: §2.1 frontend 5 项 (Item 16-20) 是 **"复用 + API rewire"** (从 master 决策 #24 的 TS adminApi.js 切到 Python `/admin/api/v1/auth/` 6 endpoint), 不是新建; 任何文件 ❌ 立即 STOP 评估是否回退为新建。
 
 ---
 
@@ -114,14 +128,14 @@ grep -n "role IN" docs/ADMIN_PRD.md
 | 13 | `app/admin/auth/constants.py` — TTL/长度/algorithm/audience/issuer 单一真相源 (ACCESS_TOKEN_TTL_SECONDS=900 / REFRESH_TOKEN_TTL_SECONDS=604800 / REAUTH_WINDOW_MS=30*60_000 / BCRYPT_COST=12 / MIN_PASSWORD_LENGTH=12 / MIN_ZXCVBN_SCORE=3 / JWT_ALGORITHM='HS256' / JWT_ISSUER='genpano-admin' / JWT_AUDIENCE_ACCESS='genpano-admin-access' / ACCESS_TOKEN_COOKIE='admin_access_token' / REFRESH_TOKEN_COOKIE='admin_refresh_token' / COOKIE_PATH='/admin') | 决策 #24.B | grep `BCRYPT_COST = 12` 单点出现; harness D9 失败若硬编码任意位置 |
 | 14 | 6 个 FastAPI endpoint `app/admin/api/v1/auth/`: `POST /login` / `POST /refresh` / `POST /logout` / `POST /forgot-password` / `POST /reset-password` / `POST /change-password` 全部接 `app/admin/auth/*` 模块 | 决策 #24.B + 决策 #24.E | pytest endpoint 整合 ≥ 18 例 + curl 实测每端点 200/401/429 |
 | 15 | `scripts/admin-bootstrap.py` — 幂等 super_admin 种子 (env: `ADMIN_BOOTSTRAP_EMAIL` + `ADMIN_BOOTSTRAP_PASSWORD`), 检测已存在 super_admin 直接 exit 0 | 决策 #24.G (Frank 实测的种子机制) | 运行 2 次结果一致 + DB 行数不变 |
-| 16 | Frontend `frontend/src/admin/pages/`: `AdminLoginPage.jsx` (env-aware 顶条 dev/staging/prod 三色) + `AdminForgotPasswordPage.jsx` + `AdminChangePasswordPage.jsx` + `AdminDashboardPage.jsx` (Phase Gate stub) | 决策 #24.D | Frank 浏览器开 4 页面无 React 报错 |
-| 17 | Frontend `frontend/src/admin/context/AdminAuthContext.jsx` — 4 状态机 (initializing/authenticated/anonymous/expired) + silent refresh 14min 定时器 (Access TTL=15min lead=60s) + `BroadcastChannel('genpano-admin-auth')` 跨 tab 同步 (login/refresh/logout/expire 4 消息) | 决策 #24.D | Frank 开 2 个 tab 登录 → 一个 tab 登出 → 另一个 tab 自动到 login |
-| 18 | Frontend `frontend/src/admin/components/SessionExpiredModal.jsx` — 无 X-close / 无 ESC / 无 backdrop-click, 唯一 CTA "重新登录" → `/admin/login?reason=session_expired&redirect=<current>` | 决策 #24.D | 模拟 token 过期 + 自动 trigger modal 实测 |
-| 19 | Frontend `frontend/src/admin/components/AdminRouteGuard.jsx` — 决策矩阵 (initializing→spinner / anonymous→navigate login / authenticated+forceChange+非 change-password 白名单→navigate change-password / authenticated+OK→render / expired→render children 让 modal 盖顶) + 双层 force-change gating (Edge layer 1 + Context layer 2) | 决策 #24.E | Frank 用 forcePasswordChangeAt != null 的 super_admin 登录 → 自动跳 /admin/change-password |
-| 20 | Frontend `frontend/src/admin/lib/adminApi.js` — `adminFetch()` wrapper + `adminAuthApi` 封装 6 端点 + `AdminApiError` class 携 `{status, body}` + `credentials: 'include'` 硬编码 | 决策 #24.D | pytest mock + manual smoke |
-| 21 | Harness D8/D9/D10 Python 重写 + 3 self-seeded fixture (`backend/.harness_fixtures/D8_hardcoded_jwt_secret.py.cifixture` / `D9_bcrypt_cost_8.py.cifixture` / `D10_cookie_samesite_lax.py.cifixture`) + `python -m harness selftest` 期望 EXPECTED_POSITIVES=6 (Session 0' 的 F1+F4+D8 + 本 Session 的 D8+D9+D10 — 注: D8 在 Session 0' 已上, 本 Session 是验证可命中 admin/auth 实际代码) | 决策 #21.C + 决策 #24.F | `python -m harness selftest` 打印 `selftest: PASS (6/6 fixture expectations met)` |
+| 16 | **复用 (非新建)** Frontend `frontend/src/admin/pages/`: `AdminLoginPage.jsx` (env-aware 顶条 dev/staging/prod 三色) + `AdminForgotPasswordPage.jsx` + `AdminChangePasswordPage.jsx` + `AdminDashboardPage.jsx` (Phase Gate stub) — 4 页 merge 仓 §0 F7 已验证存在, 本 Session 不新建, 仅在需要时调整 import / 文案 | 决策 #24.D | Frank 浏览器开 4 页面无 React 报错 |
+| 17 | **复用 (非新建)** Frontend `frontend/src/admin/context/AdminAuthContext.jsx` — 4 状态机 (initializing/authenticated/anonymous/expired) + silent refresh 14min 定时器 (Access TTL=15min lead=60s) + `BroadcastChannel('genpano-admin-auth')` 跨 tab 同步 (login/refresh/logout/expire 4 消息); merge 仓已存在, 本 Session 不重写 4 状态机, 只 rewire fetch 路径到 Python `/admin/api/v1/auth/refresh` | 决策 #24.D | Frank 开 2 个 tab 登录 → 一个 tab 登出 → 另一个 tab 自动到 login |
+| 18 | **复用 (非新建)** Frontend `frontend/src/admin/components/SessionExpiredModal.jsx` — 无 X-close / 无 ESC / 无 backdrop-click, 唯一 CTA "重新登录" → `/admin/login?reason=session_expired&redirect=<current>`; merge 仓已存在, 本 Session 不动 UI 行为 | 决策 #24.D | 模拟 token 过期 + 自动 trigger modal 实测 |
+| 19 | **复用 (非新建)** Frontend `frontend/src/admin/components/AdminRouteGuard.jsx` — 决策矩阵 (initializing→spinner / anonymous→navigate login / authenticated+forceChange+非 change-password 白名单→navigate change-password / authenticated+OK→render / expired→render children 让 modal 盖顶) + 双层 force-change gating (Edge layer 1 + Context layer 2); merge 仓已存在, 本 Session 仅校验 forceChange 字段从 Python refresh response 解出无误 | 决策 #24.E | Frank 用 forcePasswordChangeAt != null 的 super_admin 登录 → 自动跳 /admin/change-password |
+| 20 | **API rewire (非新建)** Frontend `frontend/src/admin/lib/adminApi.js` — `adminFetch()` wrapper + `adminAuthApi` 封装 6 端点 + `AdminApiError` class 携 `{status, body}` + `credentials: 'include'` 硬编码; **本 Session 唯一 frontend 实质工作** = 把 master 决策 #24.D 的 TS Next.js 端点路径切到 Python FastAPI 6 端点 (`/admin/api/v1/auth/login` / `/refresh` / `/logout` / `/forgot-password` / `/reset-password` / `/change-password`), 不新建文件不动调用方 | 决策 #24.D | pytest mock + manual smoke |
+| 21 | Harness D8/D9/D10 Python 重写 + 3 self-seeded fixture (`backend/.harness_fixtures/D8_hardcoded_jwt_secret.py.cifixture` / `D9_bcrypt_cost_8.py.cifixture` / `D10_cookie_samesite_lax.py.cifixture`) + `python scripts/ci_harness_selftest.py` 期望 EXPECTED_POSITIVES=7 (F1 + F4-1 + F4-2 + F4-3 + D8 + D9 + D10) | 决策 #21.C + 决策 #24.F | `python scripts/ci_harness_selftest.py` 打印 `selftest: PASS (7/7 fixture expectations met)` <br>**[Step 12 反向同步, 2026-04-28]** 真相源 = `backend/scripts/ci_harness_selftest.py` 的 `EXPECTED_POSITIVES` dict (实测 7 keys: F1 / F4-1 / F4-2 / F4-3 / D8 / D9 / D10), 与 `scripts/verify-session-a0prime.sh:218` 硬编码 "7/7 fixture expectations met" 对齐. **不引用 CLAUDE.md #24 的 11 计数 (TS 时代决策档案, 决策 #29 已划 Python 翻译边界)**. |
 | 22 | pytest 覆盖率 admin/auth 聚合 ≥ 80% (剔除 Resend/Redis 耦合的 email.py + session_repo.py + rate_limit_config.py — 改 L3 endpoint replay 覆盖) | 决策 #24.F | `pytest backend/tests/admin/auth/ --cov=backend/app/admin/auth --cov-report=term-missing --cov-fail-under=80` 全过 |
-| 23 | Preview env 部署: PR comment 自动给 `https://genpano-preview-pr-<id>.vercel.app/admin/login` URL, Frank 浏览器登录 super_admin | 决策 #30 + Session 0' Step 10 | Frank 截图 OK |
+| 23 | Preview env 部署: PR comment 自动给 `https://genpano-preview-pr-<id>.vercel.app/admin/login` URL, Frank 浏览器登录 super_admin | 决策 #30 + Session 0' Step 10 | Frank 截图 OK <br>**[Step 12 反向同步, 2026-04-28]** 决策 #30.A 已把 Vercel preview 整体转交 A1', A0' Phase Gate 用 frontend Vite dev :5173 + backend uvicorn dev :4001 双 process local 跑作为等效证据 (G_A0.3.1 已同步说明). |
 
 ### 2.2 ❌ 本 Session 不做 (推迟到对应 Session)
 
@@ -242,7 +256,7 @@ psql $DATABASE_URL -c "INSERT INTO admin_users (email, password_hash, role, stat
 
 # 5. Harness selftest
 echo "▶ G_A0.1.6 harness selftest"
-python -m harness selftest || exit 1
+python scripts/ci_harness_selftest.py || exit 1
 
 # 6. admin-bootstrap idempotent
 echo "▶ G_A0.1.7 admin-bootstrap 幂等"
@@ -258,16 +272,19 @@ echo "✅ G_A0.1 Layer 1 全部通过"
 ### G_A0.2 — Harness selftest Layer 2
 
 ```bash
-python -m harness selftest
-# 期望: ● selftest: PASS  (6 / 6 fixture expectations met)
-# 6 = Session 0' 的 F1/F4/D8 + Session A0' 的 D8/D9/D10 (注: D8 在 Session 0' 已存, A0' 验证可命中 admin/auth 实际代码)
+python scripts/ci_harness_selftest.py
+# 期望: ● selftest: PASS  (7 / 7 fixture expectations met)
+# 7 = Session 0' F1 + Session 1' F4-1/F4-2/F4-3 + Session A0' D8/D9/D10
+# [Step 12 反向同步, 2026-04-28] 真相源 = backend/scripts/ci_harness_selftest.py 的 EXPECTED_POSITIVES dict
+# (实测 7 keys: F1 / F4-1 / F4-2 / F4-3 / D8 / D9 / D10),
+# 与 scripts/verify-session-a0prime.sh:218 硬编码 "7/7 fixture expectations met" 对齐.
 ```
 
 ### G_A0.3 — Frank Layer 3 浏览器实测
 
 | 编号 | 操作 | 期望结果 | 自动 / 人审 |
 |------|------|---------|------------|
-| G_A0.3.1 | 打开 `https://genpano-preview-pr-<id>.vercel.app/admin/login` | 看到登录页 + dev 顶条 (绿色) | 人审 |
+| G_A0.3.1 | 打开 `http://localhost:5173/admin/login` (frontend Vite dev server) 或 Vercel preview URL (若已接) | 看到登录页 + dev 顶条 (绿色) | 人审 <br>**[Step 12 反向同步, 2026-04-28]** Vercel/Render preview env 已转交 A1' (决策 #30.A), A0' Phase Gate 接受 frontend Vite dev (`npm --prefix frontend run dev` → :5173) + backend uvicorn dev (`uv run --project backend uvicorn app.main:app --port 4001`) 双 process local 跑作为等效证据; docker-compose.yml 编排同推 A1' (决策 #30.B). |
 | G_A0.3.2 | 用 super_admin 邮箱 + 错密码登录 5 次 | 第 6 次返回 429 + audit 看到 5 行 RATE_LIMITED | 人审 |
 | G_A0.3.3 | 用对的密码登录 | 落到 /admin/change-password (因为 forcePasswordChangeAt 已 set) | 人审 |
 | G_A0.3.4 | 改密成功 | 落到 /admin/dashboard 看到 placeholder 卡片 | 人审 |
@@ -332,24 +349,24 @@ Commit: `Session A0' Step 5: 6 endpoint 集成测试 18 例`
 - `backend/.harness_fixtures/D8_hardcoded_jwt_secret.py.cifixture`
 - `backend/.harness_fixtures/D9_bcrypt_cost_8.py.cifixture`
 - `backend/.harness_fixtures/D10_cookie_samesite_lax.py.cifixture`
-- `python -m harness selftest` 实测 6/6
-Commit: `Session A0' Step 6: Bootstrap + Harness D8/D9/D10 selftest 6/6`
+- `python scripts/ci_harness_selftest.py` 实测 7/7
+Commit: `Session A0' Step 6: Bootstrap + Harness D8/D9/D10 selftest 7/7`
 
-### Step 7 · 前端 4 页 + AdminAuthContext
-- `frontend/src/admin/lib/adminApi.js`
-- `frontend/src/admin/context/AdminAuthContext.jsx`
-- `frontend/src/admin/pages/AdminLoginPage.jsx`
-- `frontend/src/admin/pages/AdminForgotPasswordPage.jsx`
-- `frontend/src/admin/pages/AdminChangePasswordPage.jsx`
-Commit: `Session A0' Step 7: Admin 前端 4 页 + AuthContext 4 状态机`
+### Step 7 · 前端 adminApi.js API rewire (复用基线, 非新建)
+**前置确认**: §0 F7 已验证 `frontend/src/admin/pages/{AdminLoginPage,AdminForgotPasswordPage,AdminChangePasswordPage,AdminDashboardPage}.jsx` + `context/AdminAuthContext.jsx` + `lib/adminApi.js` 在 merge 仓全部存在 (8 个 ✅)。本 Step **不新建任何 .jsx 页面 / 不重写 4 状态机**, 唯一实质工作 = 把 `adminApi.js` 的 fetch 路径从 master 决策 #24.D 的 TS Next.js endpoint 切到 Python FastAPI 6 endpoint。
+- `frontend/src/admin/lib/adminApi.js` — **rewire only**: 6 endpoint URL 字符串 (`/admin/api/v1/auth/login` 等) 与 `credentials: 'include'` + `AdminApiError` 类保持不变; 若 master 版 endpoint path 与 Python FastAPI route path 完全一致则 0 行变更, 仅 README 注释引 §1.2.5 (本 Session 修改契约文件) 标记 "切到 Python 后端"
+- `frontend/src/admin/context/AdminAuthContext.jsx` — **复用**, 0 行变更 (4 状态机 + silent refresh 14min 定时器 + BroadcastChannel 跨 tab 已就位)
+- `frontend/src/admin/pages/AdminLoginPage.jsx` / `AdminForgotPasswordPage.jsx` / `AdminChangePasswordPage.jsx` — **复用**, 0 行变更, 仅在 manual smoke 时若 UI 文案与 Python 后端 error code 不一致才微调
+Commit: `Session A0' Step 7: adminApi.js rewire 到 Python /admin/api/v1/auth/ 6 endpoint (frontend 复用 master 基线)`
 
-### Step 8 · AdminRouteGuard + SessionExpiredModal + Dashboard stub
-- `frontend/src/admin/components/AdminRouteGuard.jsx`
-- `frontend/src/admin/components/SessionExpiredModal.jsx`
-- `frontend/src/admin/components/AdminAuthShell.jsx`
-- `frontend/src/admin/pages/AdminDashboardPage.jsx` (stub)
-- `frontend/src/App.jsx` (集成 AdminRouteGuard)
-Commit: `Session A0' Step 8: RouteGuard + ExpiredModal + Dashboard stub`
+### Step 8 · AdminRouteGuard + SessionExpiredModal + Dashboard stub (复用基线, 仅校验)
+**前置确认**: §0 F7 已验证 3 component + AdminDashboardPage.jsx 在 merge 仓全部存在。本 Step **不新建任何 component**, 仅校验 forcePasswordChangeAt 字段从 Python refresh response 解出后, 双层 force-change gating (Edge layer 1 + Context layer 2) 决策矩阵仍 fire 正确, 必要时调 1-2 行 fallback 处理。
+- `frontend/src/admin/components/AdminRouteGuard.jsx` — **复用**, 0 行变更 (决策矩阵已就位)
+- `frontend/src/admin/components/SessionExpiredModal.jsx` — **复用**, 0 行变更 (无 X-close / 无 ESC / 无 backdrop-click 已就位)
+- `frontend/src/admin/components/AdminAuthShell.jsx` — **复用** (master 已交付)
+- `frontend/src/admin/pages/AdminDashboardPage.jsx` — **复用**, Phase Gate stub 已就位
+- `frontend/src/App.jsx` — 校验 AdminRouteGuard 集成无 React 报错; 若 master 已 wire 则 0 行变更
+Commit: `Session A0' Step 8: AdminRouteGuard + ExpiredModal + Dashboard stub 校验 (frontend 复用 master 基线)`
 
 ### Step 9 · 端到端集成测试
 - `backend/tests/admin/auth/test_e2e_integration.py` (登录 → 改密 → 登出 → silent refresh)
@@ -392,7 +409,7 @@ Commit: `Session A0' Step 12: 文档 + 决策追溯 + Closing Loop 全绿`
 - admin-bootstrap 幂等: ✅
 
 ### G_A0.2 Layer 2 (Harness)
-- selftest: <实际 6/6 fixture expectations met>
+- selftest: <实际 7/7 fixture expectations met>
 
 ### G_A0.3 Layer 3 (Frank 浏览器)
 - 9/9 场景通过 (附截图链接)
