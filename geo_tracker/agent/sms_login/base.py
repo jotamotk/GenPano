@@ -16,6 +16,7 @@ from typing import Optional
 
 from playwright.async_api import Page, async_playwright
 
+from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
 from geo_tracker.agent.sms_login.phone_blacklist import (
     add_to_blacklist,
@@ -435,21 +436,14 @@ class BaseSMSLoginHandler(ABC):
             return {"status": "failed", "reason": f"异常: {e}"}
 
         finally:
-            if browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-            if _camoufox_ctx:
-                try:
-                    await _camoufox_ctx.__aexit__(None, None, None)
-                except Exception:
-                    pass
-            if _playwright:
-                try:
-                    await _playwright.stop()
-                except Exception:
-                    pass
+            # 生产事故 2026-04-27 根因修复 (browser.close() hang 导致进程泄漏 + SMS 浪费):
+            # SMS 登录路径同样会 hang, 而且这条路径每次失败都会再要新手机号 → 鲁班扣费.
+            # 必须先安全清理浏览器, 再释放手机号, 顺序不可换.
+            await cleanup_browser_resources(
+                browser=browser,
+                camoufox_ctx=_camoufox_ctx,
+                playwright=_playwright,
+            )
             if sms_client:
                 # 统一释放所有本次申请过的手机号
                 for p in used_phones:
