@@ -14,7 +14,7 @@
 >
 > **Milestone**: M4 (Admin MVP) — A1' Phase Gate Frank 接受标准 = 在 preview admin 子域上看见**真实** doubao 账号池水位 + 当日累计成本 + 一条 Brand Submission 从用户提交流向 Admin Inbox 流向 active 的端到端审核动作; M4 = MVP 完成 (剩 4b' IA v2.0 完整 JSX→TSX 迁移)
 >
-> **Branch (branch-per-session 约定, 见 `.auto-memory/feedback_genpano_branch_per_session.md`, 决策 #29.D 已锚)**: `session-A1prime` 从 main fork; **不 cherry-pick** 历史 claude/* 分支代码; 所有提交按 §5 12-Step Delivery 原子化, 每步独立 commit
+> **Branch (branch-per-session 约定, 见 CLAUDE.md 决策 #29.D)**: `session-A1prime` 从 main fork; **不 cherry-pick** 历史 claude/* 分支代码; 所有提交按 §5 12-Step Delivery 原子化, 每步独立 commit
 >
 > **Truth Source Authority**: 本 Session 以 `docs/ADMIN_PRD.md` (master) + `docs/ADMIN_PRD_B_PIPELINE.md` (B 模块深化, supersedes §4.2 摘要) + `docs/ADMIN_PRD_C_KG.md` (C 模块深化, supersedes §4.3 摘要) + `docs/ADMIN_CLAUDE_CODE_SESSIONS.md` (Session 实施约束) 四份为唯一真相源, **不引用 App 端 `docs/PRD.md`** (`feedback_genpano_app_truth_source.md`)。Adapter / 账号池 / KG 行为细节 cross-ref `docs/ADAPTER_CONTRACT.md`。
 
@@ -138,7 +138,7 @@ A0' Session 完工后留下的 6 项 + Resend live 升级共 7 项标的, 必须
 | TEST_STRATEGY.md | §11 (P0/P1/P2 优先级清单) | 本 Session 承担 P2-1 (Admin KG QA 5 层抽样 + Trust Score 11 边界) + P2-2 (Admin Pipeline 监控面板) — 详见 `docs/TEST_COVERAGE_MAP.md` §4 A1' 段 |
 | TEST_COVERAGE_MAP.md | §1 P0 / §3 P2 / §4 A1' 责任清单 | Plan K.1 索引: A1' 不直接承担 P0/P1, 仅 P2-1/P2-2 覆盖 (Phase 2 标 ❌, MVP 内只走 L2 单测占位) |
 | CLAUDE.md | 决策 #9 / #19 / #21 / #24 / #25 / #28 / #29 / #30 | Auth-Required / Citation Tier / 测试地基 / A0 / 公约 / Platform Layer / Python pivot / preview env |
-| .auto-memory | `feedback_genpano_branch_per_session.md` (决策 #29.D 已锚) | branch-per-session 约定: 每 1-几个 Session 一个 feature 分支从 main fork; 不 cherry-pick `claude/*` 历史分支 |
+| CLAUDE.md | 决策 #29.D (branch-per-session 约定) | 每 1-几个 Session 一个 feature 分支从 main fork; 不 cherry-pick `claude/*` 历史分支 |
 
 ### 修改 (本 Session 写入或新建)
 
@@ -439,8 +439,8 @@ A5' (Citation Tier CRUD + MCP Token + Redis 60s 吊销黑名单) **已并入本 
 
 | Check | 状态 | 备注 |
 |---|---|---|
-| CLAUDE.md 最近 2 决策 (#29 Python pivot / #30 preview env) + branch-per-session 约定 (`.auto-memory/feedback_genpano_branch_per_session.md`, 决策 #29.D 已锚) | ✅ 已 thread 入 §1 真相源 + §3 STOP A6/A7 + §4 Layer 3 |
-| .auto-memory 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_branch_per_session.md` / `feedback_genpano_session_preview_env_2026_04_26.md` | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
+| CLAUDE.md 最近 2 决策 (#29 Python pivot / #30 preview env) + 决策 #29.D (branch-per-session 约定) | ✅ 已 thread 入 §1 真相源 + §3 STOP A6/A7 + §4 Layer 3 |
+| .auto-memory 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_session_preview_env_2026_04_26.md` (branch 约定见 CLAUDE.md 决策 #29.D) | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
 | ADMIN_PRD.md 最新版本号 (header date) | 需 Step 0 grep 确认; 出现 newer than 2026-04-19 → §3 Type B 检查变更 |
 | ADAPTER_CONTRACT.md §5.1 / §5.3a / §5.4 | ✅ Y9-Y12 wrapper 边界对齐 |
 | 决策 #19 Citation Tier 是否进 A1' | ❌ 已锁 N1, 推 A5/4b' |
