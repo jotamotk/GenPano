@@ -409,7 +409,7 @@ Frank 在 admin.preview.genpano.dev 子域执行下列 6 步, 全部成功后 A1
 | **9** | 17 React+TSX 页面 (admin layout + 路由 + 占位 + 数据接入) | `frontend/src/admin/pages/` Module A×3 + B×6 + C×6 + D×2; AdminRouteGuard 复用 A0'; AntV G6 v5 用于 KG 品类树 (`feedback_genpano_g6_knowledge_graph.md` 8 坑点); shadcn/ui Drawer/Tabs/Table; **关联转交清单 (§0.5): T1** — `adminFetch` wrapper 加 401 interceptor: 用户主动操作 (列表加载 / freeze / force-reset / KG approve) 收 401 立即切 `AdminAuthContext` expired 态 + 显示 `SessionExpiredModal` + redirect `/admin/login?reason=session_expired&redirect=<current>` (复用 A0' 已落地的 expired 态消费链路) |
 | **10** | docker-compose.admin + Vercel 子域 + Render service | `docker-compose.yml` admin profile; Vercel `vercel.json` admin subdomain rewrite; Render `render.yaml` admin worker (跑 Celery + cron job for engine_health_5min refresh) |
 | **11** | verify_a1.sh + smoke_admin_a1.sh + L1-L3 三层全绿 | `scripts/verify_a1.sh` (§4 Layer 1) + `scripts/smoke_admin_a1.sh` (curl 序列) + GitHub Actions workflow `admin-preview.yml` 接 Layer 1; preview push → Vercel + Render 自动 deploy |
-| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #31 落档 + (可选) docs/auto-memory/ 落 cross-Session pattern + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #31 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC / Citation Tier CRUD 等) 时, 写 `docs/auto-memory/{type}_{topic}.md` + `docs/MEMORY.md` 追加一行 index; per-session delivery 详情走 CLAUDE.md 决策 #31, 不单独写 archive 文件 (对齐 A0' 实际落档机制 — A0' Step 12 commit 09014b0 也未写 project_genpano_session_a0_delivery.md); PR `session-A1prime` → main fast-forward |
+| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #32 落档 + (可选) docs/auto-memory/ 落 cross-Session pattern + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #32 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC / Citation Tier CRUD 等) 时, 写 `docs/auto-memory/{type}_{topic}.md` + `docs/MEMORY.md` 追加一行 index; per-session delivery 详情走 CLAUDE.md 决策 #32, 不单独写 archive 文件 (对齐 A0' 实际落档机制 — A0' Step 12 commit 09014b0 也未写 project_genpano_session_a0_delivery.md); PR `session-A1prime` → main fast-forward |
 
 每步收尾必须先跑 `scripts/verify_a1.sh` 全绿 → `git add -A && git commit -m "Session A1' Step N: <topic>"` → 推送; 中间任一步 verify 红, **不推**, 修绿再推。
 
@@ -421,8 +421,8 @@ A1' Phase Gate 关闭条件 ≡ §4 三层全绿 (L1.1-L1.11 全 green + L2 self
 
 收尾必做 4 件事 (规则 7 一致性回路):
 1. **回跑 §0 Pre-flight grep F1-F11**: 真相源未漂移确认; 若漂移走 §3 Type B 流程
-2. **CLAUDE.md 决策 #31 写入**: 含 A 段 (实施摘要) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta)
-3. **(可选) `docs/auto-memory/` 落 cross-Session pattern 文件**: 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC 模式 / Citation Tier CRUD 模式) 时, 写 `docs/auto-memory/{type}_{topic}.md` 并在 `docs/MEMORY.md` 追加一行 index; per-session delivery (8 张新表 + 5 Group J Harness + Frank 实操验收完成) 详情走 CLAUDE.md 决策 #31, 不单独写 archive 文件 — 对齐 A0' 实际落档机制 (考古 commit 09014b0 确认 A0' Step 12 也只写了 1 个 cross-Session pattern + 决策 #30, 未写 per-session delivery archive)
+2. **CLAUDE.md 决策 #32 写入**: 含 A 段 (实施摘要) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta)
+3. **(可选) `docs/auto-memory/` 落 cross-Session pattern 文件**: 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC 模式 / Citation Tier CRUD 模式) 时, 写 `docs/auto-memory/{type}_{topic}.md` 并在 `docs/MEMORY.md` 追加一行 index; per-session delivery (8 张新表 + 5 Group J Harness + Frank 实操验收完成) 详情走 CLAUDE.md 决策 #32, 不单独写 archive 文件 — 对齐 A0' 实际落档机制 (考古 commit 09014b0 确认 A0' Step 12 也只写了 1 个 cross-Session pattern + 决策 #30, 未写 per-session delivery archive)
 4. **`docs/CLAUDE_CODE_SESSIONS_PYTHON.md` 状态更新**: A1' 标 ✅; 4b' (最后一个 Session) 仍 pending; M4 milestone 5/6 完成 (剩 4b')
 
 ---
