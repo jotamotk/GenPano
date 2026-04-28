@@ -160,8 +160,13 @@ class AdminLoginAttempt(Base):
 # ---------------------------------------------------------------------------
 # A1' Step 1 (round 8) — 8 new admin tables per ADMIN_PRD §4.1.4 / §4.3.7 / §4.4.8.
 # Migration: alembic 15500b81322a (chains off A0' baseline 55a628f2bb7d).
-# FK policy: only admin_users.id FKs are materialized; references to App users /
-# kg_* tables are stored as plain String(36) UUID until Sessions 4a' / 1.5'.
+# FK policy:
+# - admin_users.id FKs materialized in Step 1 baseline.
+# - users.id FKs materialized in Step 3 (CLAUDE.md #30.H Path B Variant 2):
+#     user_moderation_actions.user_id (CASCADE)
+#     user_activity_stats.user_id (CASCADE)
+#     brand_submissions.submitter_user_id (SET NULL — column made nullable)
+# - kg_* references remain plain String(36) UUID until Session 1.5' lands them.
 # ---------------------------------------------------------------------------
 
 
@@ -175,7 +180,9 @@ class AdminUserModerationAction(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     operator_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("admin_users.id"), nullable=False
     )
@@ -190,7 +197,9 @@ class AdminUserModerationAction(Base):
 class AdminUserActivityStat(Base):
     __tablename__ = "user_activity_stats"
 
-    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     login_count_30d: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     query_count_30d: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -252,7 +261,9 @@ class BrandSubmission(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    submitter_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    submitter_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     brand_name_zh: Mapped[str | None] = mapped_column(String(255), nullable=True)
     brand_name_en: Mapped[str | None] = mapped_column(String(255), nullable=True)
     aliases: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

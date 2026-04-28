@@ -48,10 +48,15 @@ from app.models.admin import (
     CostDaily,
     KgReviewQueue,
 )
+from app.models.user import User
 
 _TABLES: list[Table] = [
     cast(Table, AdminUser.__table__),
     cast(Table, AdminPasswordReset.__table__),
+    # Step 3 promoted `users` to a real table; the 3 FKs onto it
+    # (user_moderation_actions.user_id, user_activity_stats.user_id,
+    # brand_submissions.submitter_user_id) require the table exist.
+    cast(Table, User.__table__),
     cast(Table, AdminUserModerationAction.__table__),
     cast(Table, AdminUserActivityStat.__table__),
     cast(Table, KgReviewQueue.__table__),
@@ -94,6 +99,21 @@ async def _seed_admin(session: AsyncSession) -> str:
     return admin.id
 
 
+async def _seed_app_user(session: AsyncSession) -> str:
+    """Seed a minimal App-side User row.
+
+    Step 3 added FKs from user_moderation_actions / user_activity_stats /
+    brand_submissions onto users.id, so tests that exercise those tables
+    must reference a real `users.id`. The earlier pattern of using a
+    random UUID started failing once `PRAGMA foreign_keys=ON` met the
+    materialised FK.
+    """
+    user = User(email=f"user-{uuid.uuid4()}@example.com")
+    session.add(user)
+    await session.commit()
+    return user.id
+
+
 # ---------------------------------------------------------------------------
 # 1. user_moderation_actions: action CHECK + FK to admin_users
 # ---------------------------------------------------------------------------
@@ -101,11 +121,12 @@ async def _seed_admin(session: AsyncSession) -> str:
 
 async def test_user_moderation_action_valid_and_check(db_session: AsyncSession) -> None:
     operator_id = await _seed_admin(db_session)
+    user_id = await _seed_app_user(db_session)
 
     # Valid: each of 4 allowed action values inserts (round 8 decision).
     for action in ("freeze", "unfreeze", "force_password_reset", "soft_delete"):
         row = AdminUserModerationAction(
-            user_id=str(uuid.uuid4()),
+            user_id=user_id,
             operator_id=operator_id,
             action=action,
             reason="QA",
@@ -116,7 +137,7 @@ async def test_user_moderation_action_valid_and_check(db_session: AsyncSession) 
     # CHECK violation: unknown action.
     db_session.add(
         AdminUserModerationAction(
-            user_id=str(uuid.uuid4()),
+            user_id=user_id,
             operator_id=operator_id,
             action="ban_forever",
         )
@@ -128,7 +149,7 @@ async def test_user_moderation_action_valid_and_check(db_session: AsyncSession) 
     # FK violation: operator_id not in admin_users.
     db_session.add(
         AdminUserModerationAction(
-            user_id=str(uuid.uuid4()),
+            user_id=user_id,
             operator_id=str(uuid.uuid4()),  # not a real admin
             action="freeze",
         )
@@ -144,7 +165,7 @@ async def test_user_moderation_action_valid_and_check(db_session: AsyncSession) 
 
 
 async def test_user_activity_stats_defaults_and_pk(db_session: AsyncSession) -> None:
-    user_id = str(uuid.uuid4())
+    user_id = await _seed_app_user(db_session)
     db_session.add(
         AdminUserActivityStat(
             user_id=user_id,
@@ -264,7 +285,7 @@ async def test_alias_conflicts_json_roundtrip(db_session: AsyncSession) -> None:
 
 async def test_brand_submissions_check_and_numeric(db_session: AsyncSession) -> None:
     admin_id = await _seed_admin(db_session)
-    submitter = str(uuid.uuid4())
+    submitter = await _seed_app_user(db_session)
 
     db_session.add(
         BrandSubmission(
@@ -287,10 +308,11 @@ async def test_brand_submissions_check_and_numeric(db_session: AsyncSession) -> 
     assert fetched.aliases == ["TB", "TestBrand"]
     assert Decimal(str(fetched.trust_score)) == Decimal("0.7500")
 
-    # CHECK violation
+    # CHECK violation — submitter_user_id is now nullable (FK SET NULL),
+    # so omit it to avoid an FK violation masking the CHECK we want.
     db_session.add(
         BrandSubmission(
-            submitter_user_id=str(uuid.uuid4()),
+            submitter_user_id=None,
             status="archived",  # invalid
         )
     )
