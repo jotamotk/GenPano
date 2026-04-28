@@ -14,7 +14,7 @@
 >
 > **Milestone**: M4 (Admin MVP) — A1' Phase Gate Frank 接受标准 = 在 preview admin 子域上看见**真实** doubao 账号池水位 + 当日累计成本 + 一条 Brand Submission 从用户提交流向 Admin Inbox 流向 active 的端到端审核动作; M4 = MVP 完成 (剩 4b' IA v2.0 完整 JSX→TSX 迁移)
 >
-> **Branch (决策 #31)**: `session-A1prime` 从 main fork; **不 cherry-pick** 历史 claude/* 分支代码; 所有提交按 §5 12-Step Delivery 原子化, 每步独立 commit
+> **Branch (branch-per-session 约定, 见 `.auto-memory/feedback_genpano_branch_per_session.md`, 决策 #29.D 已锚)**: `session-A1prime` 从 main fork; **不 cherry-pick** 历史 claude/* 分支代码; 所有提交按 §5 12-Step Delivery 原子化, 每步独立 commit
 >
 > **Truth Source Authority**: 本 Session 以 `docs/ADMIN_PRD.md` (master) + `docs/ADMIN_PRD_B_PIPELINE.md` (B 模块深化, supersedes §4.2 摘要) + `docs/ADMIN_PRD_C_KG.md` (C 模块深化, supersedes §4.3 摘要) + `docs/ADMIN_CLAUDE_CODE_SESSIONS.md` (Session 实施约束) 四份为唯一真相源, **不引用 App 端 `docs/PRD.md`** (`feedback_genpano_app_truth_source.md`)。Adapter / 账号池 / KG 行为细节 cross-ref `docs/ADAPTER_CONTRACT.md`。
 
@@ -80,6 +80,28 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 
 ---
 
+## §0.5 A0' 转交清单 (决策 #30.D 承接)
+
+A0' Session 完工后留下的 6 项 + Resend live 升级共 7 项标的, 必须在 A1' Session 内闭合。下表是集中索引, 每项关联到 §5 12-Step 实施步骤的具体 step。
+
+| # | 项 | 类型 | 真相源锚点 | 关联 §5 Step |
+|---|----|------|------------|--------------|
+| **T1** | Bug 1 · `adminFetch` lacks 401 interceptor — 用户主动操作收 401 不切 expired 态 | Bug 修复 | 决策 #30.D / 转交清单 | **Step 9** (frontend admin 17 页) |
+| **T2** | Bug 2 · login handler 把 `AdminJwtSecretMissingError` 包成通用 401 — 应 boot-time fail-fast lifespan raise | Bug 修复 | 决策 #30.D / 转交清单 | **Step 0** (branch + RBAC scaffold + app boot) |
+| **T3** | Bug 3 · `require_admin_session` 不重新校验 `user.status` — suspended user 残留 access cookie 最长 15min 仍可用 | Bug 修复 | 决策 #30.D / 转交清单 | **Step 0** (RBAC scaffold + session middleware) |
+| **T4** | Bug 4 · forgot-password mock 邮件组装 `admin_email.skipped` log 行未输出到 stdout — logger config gap | Bug 修复 | 决策 #30.D / 转交清单 | **Step 3** (与 T7 合并, Module A 用户管理) |
+| **T5** | 决策 #24.C4 schema gap · `admin_password_resets.purpose` 列缺失 ADMIN_PRD §5.6.8 定义 | Schema 补齐 | 决策 #24.C4 / ADMIN_PRD §5.6.8 | **Step 1** (alembic 8 张新表 + .purpose backfill 'reset') |
+| **T6** | 5 个 TS-era `.mjs` scripts 评估 (`check-data-contracts` / `ci-check` / `ci-harness-selftest` / `coverage-gap-scan` / `decision-log-sync-check`) — 逐文件评估 (i) Python 重写 / (ii) 保留 Node 运行 / (iii) 删 | 工具治理 | 决策 #30.D / 转交清单 | **Step 8** (Group J Harness 落地, 顺手清理 .mjs) |
+| **T7** | Resend live 集成 · A0' 走 mock 模式 (`admin_email.skipped` 分支), A1' 用户管理 UI 第一次发邮件时接 Resend live + `RESEND_API_KEY` env var + logger config `dictConfig` (structlog + JSONRenderer) + INFO level + stdout handler | Infra 升级 | 决策 #30.D / 转交清单 | **Step 3** (Y4 force-password-reset 是首次 Resend live 触发点) |
+
+承接纪律 (决策 #25 Rule 3 + Rule 7):
+- 每项 T1-T7 必须在 §5 12-Step 内显式分配到一个 step, 不可漏分; 上表已分配完, 无 unassigned
+- 每项闭合时必须在该 step 的 commit message + Closing Loop 反查 §0.5 表 + 标记 ✅ (例 `Step 0 closing loop: T2 ✅ T3 ✅`)
+- 任一项决定不修 (defer 到后续 Session) 必须按 Rule 3 在 CLAUDE.md 决策 #30.D 下新增 C 段登记偏离 (例 C1 = T6 中的 coverage-gap-scan defer 到 Phase 2), 并在 §0.5 表对应行标记 `[DEFER → Session XX]`
+- §6 完成判定步骤 1 (回跑 §0 Pre-flight grep) 之外, **回跑本 §0.5 表**: 任一 T_ 仍标 Step ___ 或未 ✅ → A1' Phase Gate 不可关 (除非已按 Rule 3 显式登记 DEFER)
+
+---
+
 ## §1 Truth Source Index (决策 #25 Rule 5)
 
 ### 引用 (Read-only, 本 Session 不修改)
@@ -115,7 +137,8 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 | TEST_STRATEGY.md | §10 (Admin 测试矩阵) | A1-A5 测试任务 + 7 条 Admin-specific 异常 (Auth/RBAC/Audit/KG QA/Pipeline/Cost/Cross) |
 | TEST_STRATEGY.md | §11 (P0/P1/P2 优先级清单) | 本 Session 承担 P2-1 (Admin KG QA 5 层抽样 + Trust Score 11 边界) + P2-2 (Admin Pipeline 监控面板) — 详见 `docs/TEST_COVERAGE_MAP.md` §4 A1' 段 |
 | TEST_COVERAGE_MAP.md | §1 P0 / §3 P2 / §4 A1' 责任清单 | Plan K.1 索引: A1' 不直接承担 P0/P1, 仅 P2-1/P2-2 覆盖 (Phase 2 标 ❌, MVP 内只走 L2 单测占位) |
-| CLAUDE.md | 决策 #9 / #19 / #21 / #24 / #25 / #28 / #29 / #30 / #31 | Auth-Required / Citation Tier / 测试地基 / A0 / 公约 / Platform Layer / Python pivot / preview env / branch-per-session |
+| CLAUDE.md | 决策 #9 / #19 / #21 / #24 / #25 / #28 / #29 / #30 | Auth-Required / Citation Tier / 测试地基 / A0 / 公约 / Platform Layer / Python pivot / preview env |
+| .auto-memory | `feedback_genpano_branch_per_session.md` (决策 #29.D 已锚) | branch-per-session 约定: 每 1-几个 Session 一个 feature 分支从 main fork; 不 cherry-pick `claude/*` 历史分支 |
 
 ### 修改 (本 Session 写入或新建)
 
@@ -374,19 +397,19 @@ Frank 在 admin.preview.genpano.dev 子域执行下列 6 步, 全部成功后 A1
 
 | Step | 主题 | 关键交付物 |
 |---|---|---|
-| **0** | branch + 依赖 + RBAC scaffold | `git checkout -b session-A1prime`; 在 `pyproject.toml` 加 `python-multipart` (csv export 用) + `slowapi` (已有 3' 引入则跳); `backend/app/admin/middleware/rbac.py` `require_role('super_admin')` decorator + audit context fixture |
-| **1** | 8 张新表 alembic + SQLAlchemy 模型 | `backend/alembic/versions/xxxx_admin_a1.py`: `user_moderation_actions` / `user_activity_stats` / `kg_review_queue` / `alias_conflicts` / `brand_submissions` / `alerts` / `cost_daily` / `budget_config` + `models/admin/*.py` 8 模型 + CHECK 约束走 raw SQL |
+| **0** | branch + 依赖 + RBAC scaffold | `git checkout -b session-A1prime`; 在 `pyproject.toml` 加 `python-multipart` (csv export 用) + `slowapi` (已有 3' 引入则跳); `backend/app/admin/middleware/rbac.py` `require_role('super_admin')` decorator + audit context fixture; **关联转交清单 (§0.5): T2** (FastAPI `lifespan` 启动时 boot-time `AdminJwtSecretMissingError` fail-fast raise, login handler 不再吞包成 401) **+ T3** (`require_admin_session` middleware 每次请求重新拉 `user.status`, suspended → 立即 401 + 撤销 session, 不留 15min cookie 残留窗口) |
+| **1** | 8 张新表 alembic + SQLAlchemy 模型 | `backend/alembic/versions/xxxx_admin_a1.py`: `user_moderation_actions` / `user_activity_stats` / `kg_review_queue` / `alias_conflicts` / `brand_submissions` / `alerts` / `cost_daily` / `budget_config` + `models/admin/*.py` 8 模型 + CHECK 约束走 raw SQL; **关联转交清单 (§0.5): T5** — 同 migration 内补 `admin_password_resets.purpose` 列 (`String NOT NULL DEFAULT 'reset'` + CHECK `IN ('reset','invitation')`), backfill 存量行 = 'reset', A0' 决策 #24.C4 schema gap 闭合 (ADMIN_PRD §5.6.8 唯一真相源对齐) |
 | **2** | `record_audit()` 单一入口 + 模型 + 单测 | `backend/app/services/admin_audit.py` 单函数; INSERT-only 表约束 (raw SQL trigger 拒绝 UPDATE/DELETE); pytest 7 例 (write 6 个必触发场景, INSERT-only enforcement) |
-| **3** | Module A 用户管理 5 endpoints + RBAC + audit | Y1-Y6 实现; user.email / password_hash / Project.* 写路径全 raise NotImplementedError + J5 fixture 自验; pytest 12 例覆盖 freeze / force-reset / soft-delete 全路径 + audit assert |
+| **3** | Module A 用户管理 5 endpoints + RBAC + audit | Y1-Y6 实现; user.email / password_hash / Project.* 写路径全 raise NotImplementedError + J5 fixture 自验; pytest 12 例覆盖 freeze / force-reset / soft-delete 全路径 + audit assert; **关联转交清单 (§0.5): T7** — Y4 `force-password-reset` 是 Resend live 首次触发点, 接 `RESEND_API_KEY` env var (Render secret + Vercel env) + `dictConfig` (structlog + JSONRenderer + INFO level + stdout handler) 替换 A0' mock 模式; **+ T4** (合并 T7 修复) — `admin_email.skipped` log 行经 `dictConfig` 升级后正确流向 stdout, pytest 加 1 例 caplog assert 守护 logger gap 不复发 |
 | **4** | Module C KG 16 endpoints | Y19-Y28 全实现; brand approve/reject/merge 状态机 + alias 仲裁 + brand-submission 24h SLA 字段; pytest 18 例; J1 audit assert; soft rename `previous_names[]` 历史 |
 | **5** | Account Pool wrapper + Module B 资源页 | `backend/app/services/account_pool_admin.py` `from app.accounts.pool/auto_register/crypto_noop` (J2 强制); Y9-Y12 + Y18; cookie 字段 response model 经 `mask_secret()` (J4 强制); pytest 8 例 |
 | **6** | Module B Pipeline Tracker + Dashboard | Y7-Y8 + Y13-Y17; engine_health_5min 物化视图 SQL + cron refresh fixture; 失败 Attempt 重试经 Celery enqueue; pytest 10 例 |
 | **7** | Module D Cost Dashboard + Audit Log | Y29-Y32; csv export 经 `csv-stringify` (Python `csv` stdlib + UTF-8 BOM); 10k 行上限; slowapi 5/min; export 自身写 audit (闭环验收 S5) |
-| **8** | Group J Harness 5 条 + 5 self-seeded fixture | `scripts/ci_check.py` Group J 段; 5 fixture 在 `__ci_fixtures__/`; `ci_harness_selftest.py` EXPECTED_POSITIVES 27→32 |
-| **9** | 17 React+TSX 页面 (admin layout + 路由 + 占位 + 数据接入) | `frontend/src/admin/pages/` Module A×3 + B×6 + C×6 + D×2; AdminRouteGuard 复用 A0'; AntV G6 v5 用于 KG 品类树 (`feedback_genpano_g6_knowledge_graph.md` 8 坑点); shadcn/ui Drawer/Tabs/Table |
+| **8** | Group J Harness 5 条 + 5 self-seeded fixture | `scripts/ci_check.py` Group J 段; 5 fixture 在 `__ci_fixtures__/`; `ci_harness_selftest.py` EXPECTED_POSITIVES 27→32; **关联转交清单 (§0.5): T6** — 5 个 TS-era `.mjs` scripts 逐文件评估并落决: `ci-check.mjs` + `ci-harness-selftest.mjs` 已被本步 Python 重写替代, **删除** `.mjs` 版本; `check-data-contracts.mjs` / `coverage-gap-scan.mjs` / `decision-log-sync-check.mjs` 三件各自决议 (i) Python 重写 / (ii) 保留 Node 运行 / (iii) 删, 决议落 §6 收尾 CLAUDE.md 决策 #30.D 新增 C 段 (与 §0.5 DEFER 机制一致, 按 Rule 3 登记每件归属) |
+| **9** | 17 React+TSX 页面 (admin layout + 路由 + 占位 + 数据接入) | `frontend/src/admin/pages/` Module A×3 + B×6 + C×6 + D×2; AdminRouteGuard 复用 A0'; AntV G6 v5 用于 KG 品类树 (`feedback_genpano_g6_knowledge_graph.md` 8 坑点); shadcn/ui Drawer/Tabs/Table; **关联转交清单 (§0.5): T1** — `adminFetch` wrapper 加 401 interceptor: 用户主动操作 (列表加载 / freeze / force-reset / KG approve) 收 401 立即切 `AdminAuthContext` expired 态 + 显示 `SessionExpiredModal` + redirect `/admin/login?reason=session_expired&redirect=<current>` (复用 A0' 已落地的 expired 态消费链路) |
 | **10** | docker-compose.admin + Vercel 子域 + Render service | `docker-compose.yml` admin profile; Vercel `vercel.json` admin subdomain rewrite; Render `render.yaml` admin worker (跑 Celery + cron job for engine_health_5min refresh) |
 | **11** | verify_a1.sh + smoke_admin_a1.sh + L1-L3 三层全绿 | `scripts/verify_a1.sh` (§4 Layer 1) + `scripts/smoke_admin_a1.sh` (curl 序列) + GitHub Actions workflow `admin-preview.yml` 接 Layer 1; preview push → Vercel + Render 自动 deploy |
-| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #32 落档 + .auto-memory 落档 + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #32 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 写 `.auto-memory/project_genpano_session_a1_delivery.md`; PR `session-A1prime` → main fast-forward |
+| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #31 落档 + .auto-memory 落档 + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #31 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 写 `.auto-memory/project_genpano_session_a1_delivery.md`; PR `session-A1prime` → main fast-forward |
 
 每步收尾必须先跑 `scripts/verify_a1.sh` 全绿 → `git add -A && git commit -m "Session A1' Step N: <topic>"` → 推送; 中间任一步 verify 红, **不推**, 修绿再推。
 
@@ -398,7 +421,7 @@ A1' Phase Gate 关闭条件 ≡ §4 三层全绿 (L1.1-L1.11 全 green + L2 self
 
 收尾必做 4 件事 (规则 7 一致性回路):
 1. **回跑 §0 Pre-flight grep F1-F11**: 真相源未漂移确认; 若漂移走 §3 Type B 流程
-2. **CLAUDE.md 决策 #32 写入**: 含 A 段 (实施摘要) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta)
+2. **CLAUDE.md 决策 #31 写入**: 含 A 段 (实施摘要) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta)
 3. **`.auto-memory/project_genpano_session_a1_delivery.md` 写入**: 索引添加到 MEMORY.md, 记录 8 张新表 + 5 Group J Harness + Frank 实操验收完成
 4. **`docs/CLAUDE_CODE_SESSIONS_PYTHON.md` 状态更新**: A1' 标 ✅; 4b' (最后一个 Session) 仍 pending; M4 milestone 5/6 完成 (剩 4b')
 
@@ -416,7 +439,7 @@ A5' (Citation Tier CRUD + MCP Token + Redis 60s 吊销黑名单) **已并入本 
 
 | Check | 状态 | 备注 |
 |---|---|---|
-| CLAUDE.md 最近 3 决策 (#29 Python pivot / #30 preview env / #31 branch-per-session) | ✅ 已 thread 入 §1 真相源 + §3 STOP A6/A7 + §4 Layer 3 |
+| CLAUDE.md 最近 2 决策 (#29 Python pivot / #30 preview env) + branch-per-session 约定 (`.auto-memory/feedback_genpano_branch_per_session.md`, 决策 #29.D 已锚) | ✅ 已 thread 入 §1 真相源 + §3 STOP A6/A7 + §4 Layer 3 |
 | .auto-memory 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_branch_per_session.md` / `feedback_genpano_session_preview_env_2026_04_26.md` | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
 | ADMIN_PRD.md 最新版本号 (header date) | 需 Step 0 grep 确认; 出现 newer than 2026-04-19 → §3 Type B 检查变更 |
 | ADAPTER_CONTRACT.md §5.1 / §5.3a / §5.4 | ✅ Y9-Y12 wrapper 边界对齐 |
