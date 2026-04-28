@@ -25,6 +25,7 @@ try:
 except ImportError:
     HAS_CAMOUFOX = False
 
+from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
     get_current_node,
@@ -726,21 +727,16 @@ class GuestQueryExecutor:
                     pass
             return None
         finally:
-            if browser:
-                try:
-                    await browser.close()
-                except:
-                    pass
-            if _camoufox_ctx:
-                try:
-                    await _camoufox_ctx.__aexit__(None, None, None)
-                except:
-                    pass
-            if _playwright:
-                try:
-                    await _playwright.stop()
-                except:
-                    pass
+            # 生产事故 2026-04-27 根因修复:
+            # 原代码 try/except: pass 捕不了 await hang, 浏览器 close 卡死时
+            # 后续 camoufox/playwright 清理永不执行, 进程泄漏到 458 PIDs.
+            # 统一走 browser_lifecycle.cleanup_browser_resources, 每段独立超时.
+            await cleanup_browser_resources(
+                page=page_obj,
+                browser=browser,
+                camoufox_ctx=_camoufox_ctx,
+                playwright=_playwright,
+            )
 
     async def _extract_citations(self, page: Page, cfg: dict, llm_name: str) -> list:
         """从响应区域提取引用链接"""

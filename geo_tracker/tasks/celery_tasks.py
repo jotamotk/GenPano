@@ -17,7 +17,14 @@ from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import delete as sa_delete, select
 
+from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
+from geo_tracker.agent.sms_login.registration_lock import (
+    should_enqueue_new_account,
+    should_enqueue_relogin,
+    release_new_account_lock,
+    release_relogin_lock,
+)
 from geo_tracker.db.models import (
     Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus,
     AnalysisStatus, Brand, Competitor, Prompt,
@@ -166,10 +173,14 @@ def execute_query(self, query_id: int) -> dict:
                     f"Query {query_id}: {query.target_llm} requires login "
                     f"but no account available, marking FAILED"
                 )
-                auto_login.apply_async(
-                    kwargs={"platform": query.target_llm, "new_account": True},
-                    queue="account_login",
-                )
+                # 生产事故 2026-04-27 SMS 浪费根因修复:
+                # 原代码无锁直接 enqueue, 同时间窗多个 query 失败会喷多个 auto_login,
+                # 每个都向鲁班要新手机号 (~1元/条). 加分布式锁 + 失败 cooldown.
+                if await should_enqueue_new_account(query.target_llm):
+                    auto_login.apply_async(
+                        kwargs={"platform": query.target_llm, "new_account": True},
+                        queue="account_login",
+                    )
                 return {
                     "query_id": query_id,
                     "status": "failed",
@@ -242,12 +253,13 @@ def execute_query(self, query_id: int) -> dict:
                     if account_id and pool:
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
-                    # 触发自动重新登录
+                    # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
                     if failure_reason == "cookies_expired" and account_id:
-                        auto_login.apply_async(
-                            kwargs={"account_id": account_id},
-                            queue="account_login",
-                        )
+                        if await should_enqueue_relogin(account_id):
+                            auto_login.apply_async(
+                                kwargs={"account_id": account_id},
+                                queue="account_login",
+                            )
                     logger.warning(f"Query {query_id} failed ({failure_reason}: {resp_len} chars)")
                     return {"query_id": query_id, "status": "failed", "reason": f"{failure_reason}:{resp_len}"}
 
@@ -449,11 +461,13 @@ def cookie_keep_alive() -> dict:
                         logger.warning(
                             f"cookie_keep_alive: #{account.id} {llm_name} refresh failed"
                         )
-                        # 触发自动重新登录
-                        auto_login.apply_async(
-                            kwargs={"account_id": account.id},
-                            queue="account_login",
-                        )
+                        # 触发自动重新登录 (生产事故 2026-04-27: 加去重锁,
+                        # 防止 keep-alive 周期性反复触发同账号登录)
+                        if await should_enqueue_relogin(account.id):
+                            auto_login.apply_async(
+                                kwargs={"account_id": account.id},
+                                queue="account_login",
+                            )
 
                     # 随机间隔，避免同时访问多个平台被检测
                     await asyncio.sleep(random.uniform(10, 30))
@@ -483,7 +497,12 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
     自动 SMS 登录/注册，独立于 query 执行。
 
     场景 1: account_id 有值 → 已有账号重新登录（用 DB 里的 phone_number）
-    场景 2: new_account=True → 注册新账号（LubanSMS 获取新号码）
+    场景 2: new_account=True → 注册新账号（LubanSMS 获取新号码，每次 ~1元）
+
+    生产事故 2026-04-27 SMS 浪费根因修复:
+      1. 任务结束 (success/failure/exception) 必须释放 in-flight 锁
+      2. 新注册失败必须设 30 min cooldown, 防止 query 风暴期反复扣费
+      3. retry 进入任务体时先检查 cooldown, 命中则跳过避免再扣费
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -491,6 +510,24 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
 
     async def _run():
         from geo_tracker.agent.sms_login import get_handler
+        from geo_tracker.agent.sms_login.registration_lock import _redis_url, _cooldown_key
+        import redis.asyncio as aioredis
+
+        # 任务体内 cooldown 双重保护: Celery retry 不经过 enqueue 锁,
+        # 必须在这里再查一次, 避免 max_retries 期间继续扣费.
+        if new_account and platform:
+            try:
+                _client = aioredis.from_url(_redis_url(), decode_responses=True)
+                _on_cooldown = await _client.exists(_cooldown_key(platform))
+                await _client.aclose()
+                if _on_cooldown:
+                    logger.warning(
+                        f"auto_login: {platform} new-account in cooldown, "
+                        f"aborting to save SMS"
+                    )
+                    return {"status": "skipped", "reason": "cooldown_active"}
+            except Exception as e:
+                logger.warning(f"auto_login: cooldown check failed (fail-open): {e}")
 
         async with get_task_async_session(task_engine) as db:
             pool = AccountPool(db)
@@ -585,13 +622,27 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
             else:
                 return {"status": "error", "reason": "invalid arguments"}
 
+    succeeded = False
     try:
         result = loop.run_until_complete(_run())
+        # success 判断: status 字段 == 'success'. skipped/failed/error 都视为非成功.
+        succeeded = isinstance(result, dict) and result.get("status") == "success"
         return result
     except Exception as exc:
         logger.exception(f"auto_login exception: {exc}")
         raise self.retry(exc=exc, countdown=120)
     finally:
+        # 生产事故 2026-04-27 SMS 浪费根因修复: 释放锁 + 失败时设 cooldown.
+        # 必须在 task_engine.dispose() 前完成, 不依赖 DB.
+        try:
+            if account_id is not None:
+                loop.run_until_complete(release_relogin_lock(account_id))
+            elif new_account and platform:
+                loop.run_until_complete(
+                    release_new_account_lock(platform, failed=not succeeded)
+                )
+        except Exception as e:
+            logger.warning(f"auto_login: lock release best-effort failed: {e}")
         try:
             loop.run_until_complete(task_engine.dispose())
         except:
@@ -875,18 +926,10 @@ async def _visit_and_refresh(
         logger.exception(f"cookie_keep_alive: {llm_name} visit error: {e}")
         return None
     finally:
-        if browser:
-            try:
-                await browser.close()
-            except:
-                pass
-        if _camoufox_ctx:
-            try:
-                await _camoufox_ctx.__aexit__(None, None, None)
-            except:
-                pass
-        if _playwright:
-            try:
-                await _playwright.stop()
-            except:
-                pass
+        # 生产事故 2026-04-27 根因修复 (与 guest_executor.py 同根因):
+        # browser.close() 偶尔 hang, 原 try/except 捕不了 → finally 链断 → 进程泄漏.
+        await cleanup_browser_resources(
+            browser=browser,
+            camoufox_ctx=_camoufox_ctx,
+            playwright=_playwright,
+        )

@@ -7,6 +7,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_DB: genpano
       POSTGRES_USER: genpano
@@ -21,6 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -29,6 +31,7 @@ services:
   backend:
     image: ${ACR_REGISTRY}/genpano:backend-${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 512m
     env_file: .env
     depends_on:
       postgres:
@@ -36,16 +39,26 @@ services:
       redis:
         condition: service_healthy
 
+  # 生产事故 2026-04-27 缓解配置:
+  #   - mem_limit/cpus: 防止单容器吃满整机 (上次到 143% CPU + 2.22GB)
+  #   - --max-tasks-per-child=20: worker 进程跑 20 个任务后自杀重启,
+  #     周期性回收 OS 级孤儿 Chromium 进程, 配合代码层 timeout 闭环
+  #   - --max-memory-per-child=400000 KB ≈ 400MB: 内存触发的双保险
   worker:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
     shm_size: '2gb'
+    mem_limit: 2.5g
+    memswap_limit: 3g
+    cpus: 2.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
       --concurrency=5
+      --max-tasks-per-child=20
+      --max-memory-per-child=400000
       -Q celery,llm_chatgpt,llm_gemini,llm_doubao,llm_deepseek,account_login
     env_file: .env
     volumes:
@@ -59,12 +72,15 @@ services:
   worker-analysis:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >
       celery -A geo_tracker.tasks.celery_tasks worker
       --loglevel=info
       --concurrency=4
+      --max-tasks-per-child=50
       -Q analysis
     env_file: .env
     depends_on:
@@ -76,6 +92,7 @@ services:
   beat:
     image: ${ACR_REGISTRY}/genpano:worker-${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 256m
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: celery -A geo_tracker.tasks.celery_tasks beat --loglevel=info
