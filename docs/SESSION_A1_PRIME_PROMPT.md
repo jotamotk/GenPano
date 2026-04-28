@@ -56,8 +56,8 @@ rg -n "role.*CHECK|role.*IN \(" backend/alembic/versions/*admin*.py
 # F10. CLAUDE.md 最近 3 条决策对 A1' 范围影响 (Rule 11)
 rg -n "^\d+\." CLAUDE.md | tail -3
 
-# F11. .auto-memory 近 7 天新增 feedback (规则 11)
-ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
+# F11. docs/auto-memory/ 近 7 天新增 feedback (规则 11)
+ls -lt docs/auto-memory/feedback_*.md 2>/dev/null | head -5
 ```
 
 **Pre-flight 失败的 per-grep STOP 映射 (决策 #25 规则 12 + 规则 11)**:
@@ -74,7 +74,7 @@ ls -lt .auto-memory/feedback_*.md 2>/dev/null | head -5
 | F8 | Session 3' 未交付 `cost_paused` Redis flag 或 `admin_audit_log` 表 | **Type A** | 暂停, 等 3' 落地; 决策 #28.A 边界硬约束 |
 | F9 | `admin_users.role` CHECK 约束变多值 (出现 ops_admin 等) 与 A0 决策 #24.C2 super_admin 单值不符 | **Type B** | 走 §3 STOP B2; 决议 schema rollback 还是 A1' 内顺手扩 (走规则 4 双向同步) |
 | F10 | CLAUDE.md 最新 3 条决策对 A1' 范围有影响 (规则 11) | **不一定 STOP** | 列变化清单进 §1 引用项; 若变更涉及 admin RBAC / audit / module IA 走 Type B; 仅文档微调可继续 |
-| F11 | .auto-memory 近 7 天新增 feedback 包含 admin / RBAC / audit 关键字 | **不一定 STOP** | 列 diff, 若与本 Prompt §1 / §2 范围矛盾走 Type B; 仅 cosmetic 可继续 |
+| F11 | docs/auto-memory/ 近 7 天新增 feedback 包含 admin / RBAC / audit 关键字 | **不一定 STOP** | 列 diff, 若与本 Prompt §1 / §2 范围矛盾走 Type B; 仅 cosmetic 可继续 |
 
 **任一 F1-F9 STOP 立即停下, 写 alignment note 给 Frank, 等回复后再决定调整 Prompt 还是调整代码; F10/F11 列 diff 进 §1 freshness check 段。**
 
@@ -409,7 +409,7 @@ Frank 在 admin.preview.genpano.dev 子域执行下列 6 步, 全部成功后 A1
 | **9** | 17 React+TSX 页面 (admin layout + 路由 + 占位 + 数据接入) | `frontend/src/admin/pages/` Module A×3 + B×6 + C×6 + D×2; AdminRouteGuard 复用 A0'; AntV G6 v5 用于 KG 品类树 (`feedback_genpano_g6_knowledge_graph.md` 8 坑点); shadcn/ui Drawer/Tabs/Table; **关联转交清单 (§0.5): T1** — `adminFetch` wrapper 加 401 interceptor: 用户主动操作 (列表加载 / freeze / force-reset / KG approve) 收 401 立即切 `AdminAuthContext` expired 态 + 显示 `SessionExpiredModal` + redirect `/admin/login?reason=session_expired&redirect=<current>` (复用 A0' 已落地的 expired 态消费链路) |
 | **10** | docker-compose.admin + Vercel 子域 + Render service | `docker-compose.yml` admin profile; Vercel `vercel.json` admin subdomain rewrite; Render `render.yaml` admin worker (跑 Celery + cron job for engine_health_5min refresh) |
 | **11** | verify_a1.sh + smoke_admin_a1.sh + L1-L3 三层全绿 | `scripts/verify_a1.sh` (§4 Layer 1) + `scripts/smoke_admin_a1.sh` (curl 序列) + GitHub Actions workflow `admin-preview.yml` 接 Layer 1; preview push → Vercel + Render 自动 deploy |
-| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #31 落档 + .auto-memory 落档 + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #31 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 写 `.auto-memory/project_genpano_session_a1_delivery.md`; PR `session-A1prime` → main fast-forward |
+| **12** | Frank Layer 3 验收 + CLAUDE.md 决策 #31 落档 + (可选) docs/auto-memory/ 落 cross-Session pattern + git 合并到 main | Frank 在浏览器跑完 S1-S6 全绿; 我写决策 #31 (Session A1' 交付细节 + 偏差 C1/C2/...) 进 CLAUDE.md; 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC / Citation Tier CRUD 等) 时, 写 `docs/auto-memory/{type}_{topic}.md` + `docs/MEMORY.md` 追加一行 index; per-session delivery 详情走 CLAUDE.md 决策 #31, 不单独写 archive 文件 (对齐 A0' 实际落档机制 — A0' Step 12 commit 09014b0 也未写 project_genpano_session_a0_delivery.md); PR `session-A1prime` → main fast-forward |
 
 每步收尾必须先跑 `scripts/verify_a1.sh` 全绿 → `git add -A && git commit -m "Session A1' Step N: <topic>"` → 推送; 中间任一步 verify 红, **不推**, 修绿再推。
 
@@ -422,7 +422,7 @@ A1' Phase Gate 关闭条件 ≡ §4 三层全绿 (L1.1-L1.11 全 green + L2 self
 收尾必做 4 件事 (规则 7 一致性回路):
 1. **回跑 §0 Pre-flight grep F1-F11**: 真相源未漂移确认; 若漂移走 §3 Type B 流程
 2. **CLAUDE.md 决策 #31 写入**: 含 A 段 (实施摘要) / B 段 (偏差登记 C1/C2/... 按 Rule 3) / C 段 (与 §1 修改清单的 actual delta)
-3. **`.auto-memory/project_genpano_session_a1_delivery.md` 写入**: 索引添加到 MEMORY.md, 记录 8 张新表 + 5 Group J Harness + Frank 实操验收完成
+3. **(可选) `docs/auto-memory/` 落 cross-Session pattern 文件**: 仅当本 Session 产出 cross-Session 可复用 pattern (e.g. RBAC 模式 / Citation Tier CRUD 模式) 时, 写 `docs/auto-memory/{type}_{topic}.md` 并在 `docs/MEMORY.md` 追加一行 index; per-session delivery (8 张新表 + 5 Group J Harness + Frank 实操验收完成) 详情走 CLAUDE.md 决策 #31, 不单独写 archive 文件 — 对齐 A0' 实际落档机制 (考古 commit 09014b0 确认 A0' Step 12 也只写了 1 个 cross-Session pattern + 决策 #30, 未写 per-session delivery archive)
 4. **`docs/CLAUDE_CODE_SESSIONS_PYTHON.md` 状态更新**: A1' 标 ✅; 4b' (最后一个 Session) 仍 pending; M4 milestone 5/6 完成 (剩 4b')
 
 ---
@@ -440,7 +440,7 @@ A5' (Citation Tier CRUD + MCP Token + Redis 60s 吊销黑名单) **已并入本 
 | Check | 状态 | 备注 |
 |---|---|---|
 | CLAUDE.md 最近 2 决策 (#29 Python pivot / #30 preview env) + 决策 #29.D (branch-per-session 约定) | ✅ 已 thread 入 §1 真相源 + §3 STOP A6/A7 + §4 Layer 3 |
-| .auto-memory 近 7 天: `feedback_genpano_session_commit_rule.md` / `feedback_genpano_app_truth_source.md` / `feedback_genpano_no_api_scraping.md` / `feedback_genpano_session_preview_env_2026_04_26.md` (branch 约定见 CLAUDE.md 决策 #29.D) | ✅ commit 规则 / 真相源分立 / response_source labeling / branch / preview env 全部 thread 入 §3 + §4 + §5 Step 12 |
+| 近 7 天 docs/auto-memory/ 新增 = `git log --since='7 days ago' --diff-filter=A --name-only -- docs/auto-memory/` 输出 (期望含 `feedback_genpano_session_preview_env_2026_04_26.md`, A0' commit 09014b0 落档) | ✅ preview env deviation pattern thread 入 §3 + §4 + §5 Step 12; 其他 cross-Session 约定 (commit 规则 / 真相源分立 / response_source labeling / branch / 边界 / pivot) 走 CLAUDE.md 决策表 #25 / #28 / #29 |
 | ADMIN_PRD.md 最新版本号 (header date) | 需 Step 0 grep 确认; 出现 newer than 2026-04-19 → §3 Type B 检查变更 |
 | ADAPTER_CONTRACT.md §5.1 / §5.3a / §5.4 | ✅ Y9-Y12 wrapper 边界对齐 |
 | 决策 #19 Citation Tier 是否进 A1' | ❌ 已锁 N1, 推 A5/4b' |
