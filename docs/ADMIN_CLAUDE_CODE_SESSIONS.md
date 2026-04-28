@@ -250,8 +250,8 @@ A0 的决策 #24 "C1/C2" 结构是标准模板, 后续 Session 沿用。
 # F1: 近 3 条 CLAUDE.md 决策 (最近几天可能落地的新规则)
 tail -400 CLAUDE.md | grep -nE "^[0-9]+\. \*\*" | tail -5
 
-# F2: .auto-memory 近 7 天新增 feedback / project 记忆
-find /sessions/<session>/mnt/.auto-memory -name "*.md" -type f -newer $(date -d "7 days ago" +%Y-%m-%d) 2>/dev/null
+# F2: docs/auto-memory/ 近 7 天新增 feedback / project 记忆
+git log --since='7 days ago' --diff-filter=A --name-only -- docs/auto-memory/
 
 # F3: 本 Session 涉及表 / 字段的近期 migration (与 Prompt §0.3 声明对齐)
 ls -lt backend/prisma/migrations/ | head -5

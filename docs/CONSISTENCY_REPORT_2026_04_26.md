@@ -221,7 +221,7 @@ Session 4b' 单 Session 覆盖 9 brand pages + 4 industry pages + auth + onboard
 
 ### **Cut-5 · Decision #25 规则 11 Pre-Send Freshness Check 未在任何 Prompt 体现**
 
-规则 11 要求发 Prompt 前 30min 跑 3 条 grep 检查 CLAUDE.md / .auto-memory / migration 新增项。这次 11 Prompts 创建时是否做了? — 推断**没做**, 否则 P0-A (CLAUDE.md #29-#40 缺失) 会被发现。
+规则 11 要求发 Prompt 前 30min 跑 3 条 grep 检查 CLAUDE.md / docs/auto-memory / migration 新增项。这次 11 Prompts 创建时是否做了? — 推断**没做**, 否则 P0-A (CLAUDE.md #29-#40 缺失) 会被发现。
 
 修复路径: Frank 在把任一 Prompt 交给 Claude Code 前, 我代跑 3 条 grep 验证, 输出 "freshness check report" 进 Prompt §1 footer。
 
