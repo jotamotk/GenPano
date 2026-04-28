@@ -352,9 +352,9 @@ CC 整合 9 场景结果到 Step 8 commit body, 然后 commit:
 
 ---
 
-## A0' Phase Gate 后 known issues (Step 8 诊断产物)
+## A0' Phase Gate 后 known issues (Step 8 + Step 11 诊断产物)
 
-Step 8 场景 8 实施过程诊断暴露的 2 条**独立** follow-up bug, **不在 Step 8 修**, 进 A0' Phase Gate 后的 known issues 列表, **不阻断 Phase Gate**。Session A1' 或单独批次再修。
+Step 8 场景 8 + Step 11 Layer 3 邮件流验证累计暴露 4 条**独立** follow-up bug, **不在 A0' 内修**, 进 A0' Phase Gate 后的 known issues 列表, **不阻断 Phase Gate**。Session A1' 或单独批次再修。
 
 ### Bug 1 · adminFetch wrapper 缺 401 interceptor
 
@@ -393,3 +393,22 @@ Step 8 场景 8 实施过程诊断暴露的 2 条**独立** follow-up bug, **不
 **风险窗口**: TTL=15 min, 需 admin 已发起 suspend (privileged action 链), MVP super_admin 仅 Frank 一人, 不构成 hostile actor 场景。Phase Gate 不阻断。
 
 **留待**: Session A1' (admin 用户管理 + suspend 流) 一并修复, 决策依据 #25 Rule 12 Type C (scope creep 拒绝)。
+
+### Bug 4 · forgot-password mock 邮件组装路径 `admin_email.skipped` log 行未输出
+
+**现象**: Step 11 Layer 3 G_A0.3.8 + G_A0.3.9 mock 模式实跑时, `POST /admin/api/v1/auth/forgot-password` 两次 202 Accepted 后, `admin_password_resets` 表已落 2 行 (`purpose='reset'` / `used_at IS NULL` / `expires_at` 比 `created_at` 晚 24h, 双 locale 各一行), 但 uvicorn stdout **只有** 2 行 access log `POST /admin/api/v1/auth/forgot-password HTTP/1.1 202 Accepted`, **没有** 预期的 `INFO:app.admin.auth.email:admin_email.skipped extra={...locale, subject, reason="no_resend_client"...}` 行。
+
+**影响**: observability gap, **不影响业务行为** — DB 行成功写入证明 `forgot_password.py` endpoint 已调到 `send_password_reset_email(...)`, mock 邮件组装逻辑 (`_build_password_reset` + `_send` 走 `client is None` 分支) 已跑通, 仅 logger 的 INFO 信息没输出到 stdout。会让未来调试者 (例如 A1' Resend live 集成时验证 fallback path) 误以为 `admin_email.skipped` 分支没走, 浪费 root cause 时间。
+
+**可能根因 (3 候选)**:
+1. **logger level 默认 WARNING** — `app/admin/auth/email.py` 用 `logger = logging.getLogger(__name__)`, FastAPI/uvicorn 默认只把 root + uvicorn 自家 logger 设 INFO; 子模块 logger 走 root 默认 (Python stdlib `logging.basicConfig()` 未调用), `logger.info(...)` 被丢
+2. **handler 没接 stdout** — 即便 level 调到 INFO, 没有 StreamHandler 接 sys.stdout 也不会输出。uvicorn 自己的 access log 走 `uvicorn.access` 命名空间 logger, 跟 `app.admin.auth.email` 不共用 handler
+3. **propagate=False 误配** — 若上游某处把 `app.admin.auth.email.propagate = False` 关掉了向 root 冒泡, 也会沉默
+
+最可能是候选 1+2 叠加 (logger config 整体没设)。
+
+**修复方向**: A1' user-management 第一次发邮件 (邀请 + 密码重置 + 用户状态变更通知) 时, logger config 必走 `logging.config.dictConfig()` 或 `structlog`, 把 `app.admin.auth.email` logger level 设 INFO + 接 stdout handler + 保留 `extra={...}` 字段渲染 (例如用 `python-json-logger` 或 structlog 的 JSONRenderer)。跟 Resend live 集成 (Bug 2 lifespan + RESEND_API_KEY) 同一 PR 闭环。
+
+**风险窗口**: 仅缺日志, 业务无影响。即便日志缺失, 第 4 层 (实发) 在 A0' 内本来就跳过, A1' 上线 Resend live 时 logger config 必然要做 (否则连成功发出的 message_id 都看不到), 自然顺手关闭 Bug 4。Phase Gate 不阻断。
+
+**留待**: Session A1' (admin 用户管理 + Resend live 集成) 一并修复, 跟 Bug 1/2/3 同 batch。
