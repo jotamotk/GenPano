@@ -412,3 +412,13 @@ Step 8 场景 8 + Step 11 Layer 3 邮件流验证累计暴露 4 条**独立** fo
 **风险窗口**: 仅缺日志, 业务无影响。即便日志缺失, 第 4 层 (实发) 在 A0' 内本来就跳过, A1' 上线 Resend live 时 logger config 必然要做 (否则连成功发出的 message_id 都看不到), 自然顺手关闭 Bug 4。Phase Gate 不阻断。
 
 **留待**: Session A1' (admin 用户管理 + Resend live 集成) 一并修复, 跟 Bug 1/2/3 同 batch。
+
+---
+
+## Step 11.5 verify gap 补充 (Step 12 反向同步, 2026-04-28)
+
+**背景**: Step 11.5 修复 `scripts/verify-session-a0prime.sh` 的 §2 contract gap — 早期 Step 10 草案 (commit 9fe7f72) 只跑 `ruff check .` 漏跑 `ruff format --check .`, 导致 9 份 Step 1-9 期间提交的文件带 format drift 直到 PR #130 首次 CI 才暴露。Step 11.5 加 `ruff format --check (no auto-fix)` 段补齐 §2 lint+format 双闸 (verify-session-a0prime.sh:129-130)。决策 #25 Rule 3 偏差 + Rule 7 Closing Loop 在 CI lane 关闭。
+
+**同 gap 在 master Session 0 verify 脚本仍存在**: `scripts/verify-session-0prime.sh:60` 当前只跑 `ruff check`, 未加 `ruff format --check`。Session 0' 当时落地脚本时未触发 ruff format auto-fix 的 9 文件场景, 该 gap 留给后续脚本继承的第一个 Session (Session 1' 或 Session 4a' — 看哪个先开工 verify 化) 在自己的 verify 脚本第一次 CI 运行前一并 uplift, 把 §2 段从单 `ruff check` 升到 `ruff check + ruff format --check` 双闸。
+
+**A0' 不补 master 脚本**: Session A0' Phase Gate 接受标准只覆盖 Session A0' 范围 (verify-session-a0prime.sh + 自己的 ruff format 全绿), 不溢出修 master 脚本以避免 scope creep (Rule 12 Type C)。已在本 SMOKE_CHECKLIST 此节登记为 known issue, 但不进 A1' 转交清单 (那是 admin/auth + Resend live 闭环, 与 verify 脚本工具链独立) — 由 Session 1' / 4a' 在第一次自建 verify 时一并修。
