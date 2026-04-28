@@ -32,6 +32,9 @@ Thumbs.db
 
 # Test coverage
 coverage/
+.coverage
+backend/.coverage
+backend/htmlcov/
 .mcp.json
 
 # Secrets — private keys, cookies, credentials
