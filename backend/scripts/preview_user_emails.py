@@ -30,7 +30,7 @@ def _index(items: list[tuple[str, str, Path]]) -> str:
     links = "\n".join(
         (
             f'<li><a href="{escape(path.name)}">{escape(title)}</a>'
-            f'<span>{escape(subject)}</span></li>'
+            f"<span>{escape(subject)}</span></li>"
         )
         for title, subject, path in items
     )

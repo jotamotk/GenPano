@@ -56,7 +56,9 @@ def frontend_base_url() -> str:
 
 
 def _from_address() -> str:
-    return os.environ.get("USER_EMAIL_FROM") or os.environ.get("EMAIL_FROM") or _FROM_ADDRESS_DEFAULT
+    return (
+        os.environ.get("USER_EMAIL_FROM") or os.environ.get("EMAIL_FROM") or _FROM_ADDRESS_DEFAULT
+    )
 
 
 def _get_resend_client() -> ResendLike | None:
@@ -73,7 +75,11 @@ def _get_resend_client() -> ResendLike | None:
 
 
 def _email_provider() -> str:
-    configured = (os.environ.get("USER_EMAIL_PROVIDER") or os.environ.get("EMAIL_PROVIDER") or "").strip().lower()
+    configured = (
+        (os.environ.get("USER_EMAIL_PROVIDER") or os.environ.get("EMAIL_PROVIDER") or "")
+        .strip()
+        .lower()
+    )
     if configured:
         return configured
     if os.environ.get("RESEND_API_KEY"):
@@ -111,7 +117,7 @@ def _button(url: str, label: str) -> str:
         '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">'
         '<tr><td bgcolor="#605BFF" style="background:#605BFF;border-radius:10px;">'
         f'<a href="{escape(url)}" style="display:inline-block;padding:14px 24px;'
-        'font:700 14px Arial,Microsoft YaHei,sans-serif;color:#ffffff;text-decoration:none;'
+        "font:700 14px Arial,Microsoft YaHei,sans-serif;color:#ffffff;text-decoration:none;"
         'letter-spacing:0;">'
         f"{escape(label)}</a></td></tr></table>"
     )
@@ -287,7 +293,9 @@ def build_verification_email(*, token: str, locale: EmailLocale = _DEFAULT_LOCAL
     return EmailContent(subject=subject, html=html, text=text)
 
 
-def build_password_reset_email(*, token: str, locale: EmailLocale = _DEFAULT_LOCALE) -> EmailContent:
+def build_password_reset_email(
+    *, token: str, locale: EmailLocale = _DEFAULT_LOCALE
+) -> EmailContent:
     reset_url = f"{frontend_base_url()}/reset-password?token={token}"
     if locale == "en-US":
         subject = "Reset your GenPano password"
@@ -386,7 +394,13 @@ def _send_with_resend(
     if client is None:
         logger.info(
             "user_email.skipped",
-            extra={"to": to, "subject": subject, "locale": locale, "provider": "resend", "reason": "no_resend_client"},
+            extra={
+                "to": to,
+                "subject": subject,
+                "locale": locale,
+                "provider": "resend",
+                "reason": "no_resend_client",
+            },
         )
         return EmailResult(delivered=False, provider_message_id=None, locale=locale)
 
@@ -420,7 +434,13 @@ def _send_with_aliyun_dm(
     if not username or not password:
         logger.info(
             "user_email.skipped",
-            extra={"to": to, "subject": subject, "locale": locale, "provider": "aliyun_dm", "reason": "missing_smtp_credentials"},
+            extra={
+                "to": to,
+                "subject": subject,
+                "locale": locale,
+                "provider": "aliyun_dm",
+                "reason": "missing_smtp_credentials",
+            },
         )
         return EmailResult(delivered=False, provider_message_id=None, locale=locale)
 
@@ -482,7 +502,13 @@ def _send(
     if provider in {"", "noop", "none", "off"}:
         logger.info(
             "user_email.skipped",
-            extra={"to": to, "subject": subject, "locale": locale, "provider": "noop", "reason": "email_disabled"},
+            extra={
+                "to": to,
+                "subject": subject,
+                "locale": locale,
+                "provider": "noop",
+                "reason": "email_disabled",
+            },
         )
         return EmailResult(delivered=False, provider_message_id=None, locale=locale)
 

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import os
 import secrets
 from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,10 +58,57 @@ from app.user_auth.tokens import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+OAUTH_STATE_TTL_SECONDS = 5 * 60
+_MIN_OAUTH_STATE_SECRET_BYTES = 32
 
 
 def _api_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _oauth_state_secret() -> bytes | None:
+    raw = os.environ.get("USER_JWT_SECRET") or os.environ.get("ADMIN_JWT_SECRET")
+    if raw is None:
+        return None
+    encoded = raw.encode("utf-8")
+    if len(encoded) < _MIN_OAUTH_STATE_SECRET_BYTES:
+        return None
+    return encoded
+
+
+def _sign_oauth_state_body(body: str, secret: bytes) -> str:
+    return hmac.new(secret, body.encode("utf-8"), digestmod="sha256").hexdigest()
+
+
+def _make_oauth_state(now: datetime | None = None) -> str | None:
+    secret = _oauth_state_secret()
+    if secret is None:
+        return None
+    issued_at = int((now or datetime.now(UTC)).timestamp())
+    body = f"{secrets.token_urlsafe(24)}.{issued_at}"
+    return f"{body}.{_sign_oauth_state_body(body, secret)}"
+
+
+def _is_valid_oauth_state(state: str | None, now: datetime | None = None) -> bool:
+    secret = _oauth_state_secret()
+    if not state or secret is None:
+        return False
+    parts = state.split(".")
+    if len(parts) != 3:
+        return False
+    nonce, issued_raw, signature = parts
+    if not nonce or not issued_raw or not signature:
+        return False
+    try:
+        issued_at = int(issued_raw)
+    except ValueError:
+        return False
+    now_ts = int((now or datetime.now(UTC)).timestamp())
+    if issued_at > now_ts + 60 or now_ts - issued_at > OAUTH_STATE_TTL_SECONDS:
+        return False
+    body = f"{nonce}.{issued_raw}"
+    expected = _sign_oauth_state_body(body, secret)
+    return hmac.compare_digest(signature, expected)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -310,7 +358,7 @@ async def setup_token_info(
                 name=user.name,
                 company=user.company,
                 requires_password=token_type == "verify_email",
-                token_type=token_type,  # type: ignore[arg-type]
+                token_type=token_type,
             )
     raise _api_error(status.HTTP_400_BAD_REQUEST, "invalid_token", "链接无效")
 
@@ -446,16 +494,14 @@ async def me(current_user: Annotated[User, Depends(get_current_user)]) -> UserDt
 
 @router.get("/google")
 async def google_start() -> RedirectResponse:
-    import os
-
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     callback_url = os.environ.get("GOOGLE_CALLBACK_URL") or (
         f"{frontend_base_url()}/api/auth/google/callback"
     )
-    if not client_id:
+    state = _make_oauth_state()
+    if not client_id or state is None:
         return RedirectResponse(f"{frontend_base_url()}/login?error=oauth_not_configured")
 
-    state = secrets.token_urlsafe(24)
     params = urlencode(
         {
             "client_id": client_id,
@@ -467,16 +513,7 @@ async def google_start() -> RedirectResponse:
             "state": state,
         }
     )
-    response = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
-    response.set_cookie(
-        "gp_oauth_state",
-        state,
-        max_age=300,
-        httponly=True,
-        samesite="lax",
-        path="/api/auth/google/callback",
-    )
-    return response
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
 
 
 @router.get("/google/callback")
@@ -485,28 +522,15 @@ async def google_callback(
     code: Annotated[str | None, Query()] = None,
     error: Annotated[str | None, Query()] = None,
     state: Annotated[str | None, Query()] = None,
-    oauth_state_cookie: Annotated[str | None, Cookie(alias="gp_oauth_state")] = None,
 ) -> RedirectResponse:
-    import os
-
     base = frontend_base_url()
-    if (
-        error
-        or not code
-        or not state
-        or not oauth_state_cookie
-        or not hmac.compare_digest(state, oauth_state_cookie)
-    ):
-        response = RedirectResponse(f"{base}/login?error=oauth_failed")
-        response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-        return response
+    if error or not code or not _is_valid_oauth_state(state):
+        return RedirectResponse(f"{base}/login?error=oauth_failed")
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
     redirect_uri = os.environ.get("GOOGLE_CALLBACK_URL") or f"{base}/api/auth/google/callback"
     if not client_id or not client_secret:
-        response = RedirectResponse(f"{base}/login?error=oauth_not_configured")
-        response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-        return response
+        return RedirectResponse(f"{base}/login?error=oauth_not_configured")
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
@@ -529,15 +553,11 @@ async def google_callback(
             profile_res.raise_for_status()
             profile = profile_res.json()
     except (httpx.HTTPError, KeyError, TypeError):
-        response = RedirectResponse(f"{base}/login?error=oauth_failed")
-        response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-        return response
+        return RedirectResponse(f"{base}/login?error=oauth_failed")
 
     email = normalize_email(str(profile.get("email", "")))
     if not is_valid_email_format(email):
-        response = RedirectResponse(f"{base}/login?error=invalid_email")
-        response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-        return response
+        return RedirectResponse(f"{base}/login?error=invalid_email")
     google_id = str(profile.get("id", ""))
     name = str(profile.get("name") or "").strip() or None
 
@@ -567,14 +587,10 @@ async def google_callback(
             ttl_seconds=OAUTH_SETUP_TTL_SECONDS,
         )
         await db.commit()
-        response = RedirectResponse(f"{base}/setup?token={quote(setup)}&oauth=google")
-        response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-        return response
+        return RedirectResponse(f"{base}/setup?token={quote(setup)}&oauth=google")
 
     user.last_login_at = datetime.now(UTC).replace(tzinfo=None)
     await db.commit()
     await db.refresh(user)
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
-    response = RedirectResponse(f"{base}/auth/callback?token={quote(token)}")
-    response.delete_cookie("gp_oauth_state", path="/api/auth/google/callback")
-    return response
+    return RedirectResponse(f"{base}/auth/callback?token={quote(token)}")
