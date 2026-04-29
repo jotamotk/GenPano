@@ -3,7 +3,7 @@ info:
   title: GENPANO API
   version: 1.0.0-mvp
   description: |
-    Single source of truth for HTTP contracts. Syncs with ADAPTER_CONTRACT.md §2-3, DATA_MODEL.md, and DECISIONS.md.
+    Single source of truth for HTTP contracts. Syncs with DATA_MODEL.md and checked-in runtime/API code. Adapter runtime behavior is code-first under geo_tracker.
 
     ## Conventions
 
@@ -1482,7 +1482,7 @@ components:
 
     AdapterError:
       type: object
-      description: Adapter error codes (ADAPTER_CONTRACT §6)
+      description: Future/legacy adapter error codes. Current Python runtime may expose lower-case failure reasons instead; do not treat this schema as the adapter contract without a migration plan.
       properties:
         code:
           type: string

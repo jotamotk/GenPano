@@ -1925,7 +1925,7 @@ Knowledge Graph (知识图谱: Industry→Category→Brand→Product + 关系边
 
 > **设计动机**: 对于品牌/产品/竞品 dimension 的 Topic (如 "雅诗兰黛小棕瓶怎么样"), LLM 大概率会在 Response 中提及该品牌, 导致提及率虚高、失去诊断意义。提及率 KPI 默认只统计品类 dimension 的 Topic 下产生的 Query (non-brand), 保证指标真实反映 "AI 被问到品类通用问题时, 是否会主动想到我的品牌"。
 
-**MVP 引擎宇宙锁定** (Decision #28.C1, 2026-04-22): 本节及下文所有"引擎"指代统一限定为 **3 家** — `chatgpt` / `doubao` / `deepseek-CN` (`-CN` 后缀为 Phase 2 `'deepseek-overseas'` 命名空间预留)。原 9 家草案 (含 Gemini / Perplexity / Kimi / Grok / 智谱 / Claude) 推到 Phase 2+。Planner / Adapter / DB CHECK / CSV 导出全链路对齐, 实施真相源见 ADAPTER_CONTRACT §1.1 + DATA_MODEL §2.3 + §4.10.3.A 决策矩阵。
+**MVP 引擎宇宙锁定** (Decision #28.C1, 2026-04-22): 本节及下文所有"引擎"指代统一限定为 **3 家**。当前运行代码以 `geo_tracker/agent/guest_executor.py` 为准，实际 engine key 为 `chatgpt` / `doubao` / `deepseek`；历史文档中出现过的 CN 后缀命名只是 Phase 2 海内外命名空间预留，落库或 API 改名前必须先做迁移决策。原 9 家草案 (含 Gemini / Perplexity / Kimi / Grok / 智谱 / Claude) 推到 Phase 2+。
 
 **Topic.dimension 与 brand/non-brand 映射**:
 
@@ -2904,15 +2904,13 @@ simulatedPanoA = [ Σ (tier_weight × (currentTierCount + deltaTier) × authorit
 
 ### 4.3 AI 引擎爬取系统
 
-> **📌 实施层真相源**: 本节仅描述 **产品视角** 的爬取能力需求 (为什么 Web-First / 覆盖哪些引擎 / 账号池水位目标 / 成本边界)。
+> **📌 代码优先重置 (2026-04-30)**: 本节仅描述 **产品视角** 的爬取能力需求 (为什么 Web-First / 覆盖哪些引擎 / 账号池水位目标 / 成本边界)。
 >
-> **Adapter 接口形状、错误码、状态机、反检测技巧、CAPTCHA 处置、HAR 脱敏** 的实施细节全部固化在 [`docs/ADAPTER_CONTRACT.md`](./ADAPTER_CONTRACT.md)。
+> 当前已跑通的 adapter/runtime 行为以 `geo_tracker/agent/**`、`geo_tracker/tasks/**`、`geo_tracker/pool/**`、`geo_tracker/analyzer/**`、`geo_tracker/db/models.py`、运行脚本和现有测试为准。旧 adapter contract 文档已删除，不再作为约束来源。
 >
 > 来源: 2025 Q1-Q2 在 `github.com/jotamotk/GenPano` 测试床跑通的 9 引擎对抗经验蒸馏而来, 每条规则都对应一次真实生产 Bug 或风控对抗。
 >
-> 任何 Adapter 代码 (`src/engines/adapters/**`)、Admin 采集健康看板 (ADMIN_PRD §4.2)、Session 实施 (SESSIONS §1 / §1.2, ADMIN SESSIONS A2 / A2.5) 的开发都 **必须先读 ADAPTER_CONTRACT.md 全文**。
->
-> 本节保留的 §4.3.1 - §4.3.5 是产品层需求; 新增 §4.3.6 - §4.3.10 是本节向 ADAPTER_CONTRACT 的锚点索引 (不重复定义, 仅指路)。
+> 下方保留的 HAR、attempt 表、标准错误码、`response_source`、`engine_health_5min` 等描述属于未来目标/历史设计材料。实施前必须先对照当前 Python schema (`queries`, `llm_responses`, `retry_count`) 写清迁移方案，不得反向判定已跑通代码违规。
 
 #### 4.3.1 技术路线: Web-First (浏览器自动化)
 
@@ -3047,24 +3045,22 @@ AccountPool (数据库表)
 
 #### 4.3.3 适配器架构
 
-> **⚠️ 接口定义已迁移至** [`docs/ADAPTER_CONTRACT.md`](./ADAPTER_CONTRACT.md) **§2**。
->
-> 本节只保留"为什么这样设计"的产品层叙事, 具体 TypeScript 签名不在 PRD 维护 (避免双源漂移)。
+> **当前实现真相源 (2026-04-30)**: 已跑通路径是 Python `geo_tracker` stack: `tasks/celery_tasks.py` 调度 `agent/guest_executor.py`, 通过 `pool/account_pool.py` / `pool/proxy_pool.py` 取资源, 成功写入 `geo_tracker.db.models.LLMResponse`。本节只保留产品层叙事，不维护历史 TypeScript adapter 签名。
 
 **接口全景 (产品视角)**:
 
-- **AIEngineAdapter**: 每个 AI 引擎独立 Adapter, Web 主路径 / API 降级共享接口形状, 参数为 `ExecutableQuery + ExecutionContext`, 返回 `AIResponse` 或抛 `AdapterError`。
-- **ExecutableQuery**: Pipeline 第三层产出 (Topic × Prompt × Profile), 传入 adapter 的唯一输入。
-- **ExecutionContext**: Adapter 执行上下文, 绑定 BrowserProfile + AccountSnapshot + ProxySnapshot, **每次 attempt 重新构造**, 不跨 attempt 复用。
-- **AIResponse**: 结构化回答, 含 `rawText` (textContent 强制) + `citations[]` (ParsedCitation, 见 §4.2.6 A) + HAR/截图/raw HTML 三件套路径 (持久化字段定义见 ADAPTER_CONTRACT §10.1)。
-- **AdapterError**: 8 种离散错误码 (CF_BLOCKED / COOKIE_EXPIRED / CAPTCHA_REQUIRED / PAGE_CRASHED / PROXY_DEAD / NO_ACCOUNT_AVAILABLE / EXTRACT_EMPTY / TIMEOUT), 详见 ADAPTER_CONTRACT §6.1 错误码表。
+- **Runtime adapter**: 每个 AI 引擎在 `GuestQueryExecutor` 中有独立执行分支；ChatGPT / 豆包 / DeepSeek 已按 Python 运行路径落地。
+- **Query 输入**: 当前由 `geo_tracker.db.models.Query` 承载 topic/prompt/profile/engine/status/retry_count 等运行态字段。
+- **执行上下文**: 当前上下文由账号池、代理池、浏览器 profile 和 engine config 在任务执行时组装；未落地独立 `attempts` 表。
+- **LLMResponse**: 当前成功结果写入 `llm_responses`，主要字段为 `raw_text`、`response_html`、`citations_json`、`screenshot_path`、`response_time_ms`、`llm_version`。
+- **失败原因**: 当前代码使用运行时 reason/exception 路径 (`no_account_available`, `cookies_expired`, `response_too_short`, `exception` 等)，未落地标准 `AdapterError.code` 枚举。
 
-**关键语义合同** (给产品/业务读者, 实现层约束见 ADAPTER_CONTRACT):
+**当前代码语义**:
 
-1. `requiresLogin=true` 且无可用账号 → **Query 置 PENDING 而非 FAILED**; 账号补充后由调度器重入 (不污染成功率看板)。
-2. Adapter 只抛结构化 `AdapterError`, 调度器按错误码决定重试 / 冷却 / 告警 (见 ADAPTER_CONTRACT §6.1 表)。
-3. partial Response (抽到正文但 Citation 失败) 不抛异常, `status='partial'`, 与 success 在看板分桶统计。
-4. traceId 贯穿 execute → 解析 → 持久化, 所有日志 / HAR / 截图共享前缀, 便于 Admin 失败重试中心 (ADMIN_PRD §4.2.6) 定位。
+1. `requires_login=true` 且无可用账号时，当前任务会把 Query 标为 `failed` 并返回 `no_account_available`，同时触发账号补充/登录流程；这不是 PENDING 队列语义。
+2. Cookie 过期或回答过短会走账号池 failure/cooldown 与重登录路径，当前也会落到 Query failed/retry 语义。
+3. 当前没有 append-only attempt 粒度；重试计数在 `queries.retry_count`。
+4. 当前保存截图路径；HTML 可写本地文件但未作为结构化 raw artifact URL 落库，HAR 未落地。
 
 #### 4.3.4 爬取执行策略
 
@@ -3101,58 +3097,19 @@ AccountPool (数据库表)
 
 **开发顺序说明**: 优先实现 DeepSeek/豆包，完成数据采集 pipeline 验证，确保爬取、解析、指标计算全链路可用后，再投入资源攻克 ChatGPT 反爬难题。这样可早期验证产品价值，避免陷入最难的反爬问题中。
 
-#### 4.3.6 错误分类 & 重试策略 (锚点 → ADAPTER_CONTRACT §6)
+#### 4.3.6 当前代码事实与未来迁移边界 (2026-04-30)
 
-Adapter 层 8 种离散错误码, 每种的"账号处置 / 代理处置 / 重试策略 / 是否计入成功率 / 告警级别" 矩阵定义在 [`ADAPTER_CONTRACT.md §6.1`](./ADAPTER_CONTRACT.md#61-错误码表-权威)。本节只给读者路标, 不重复定义。
+当前已跑通实现:
 
-产品层关键约束 (跨文档强一致):
+- **错误/重试**: `geo_tracker/tasks/celery_tasks.py` 使用 failure reason + `queries.retry_count`；未落地 8 值 `AdapterError.code` 和 append-only `attempts` 表。
+- **账号不可用/Cookie 过期**: `no_account_available`、`cookies_expired`、`response_too_short` 当前会进入 failed/retry 或账号 cooldown/relogin 流程；不具备“保持 PENDING 且排除成功率分母”的统一落库语义。
+- **账号池**: `geo_tracker/pool/account_pool.py` 以 `llm_accounts`、`active/cooldown/banned` 和 `cookies_json` 为运行事实；没有 `frozen/pending_register` 完整状态机，也没有数据库级 `FOR UPDATE SKIP LOCKED` 取号锁。
+- **代理池**: `geo_tracker/pool/proxy_pool.py` 让豆包/DeepSeek 等国内引擎直连，ChatGPT 使用海外代理；cooldown 和 provider 策略以代码为准。
+- **CAPTCHA**: query path 主要接入 CapSolver；SMS 登录路径有视觉/滑块模块。ByteDance/DeepSeek query CAPTCHA 的全自动三级处置仍是未来增强。
+- **观测/持久化**: 当前 `llm_responses` 保存原文、HTML 字段、citation JSON、截图路径和响应耗时；HAR、raw_html_url、attempt artifact、`response_source` 尚未作为运行 schema 落地。
+- **自动注册**: 豆包/DeepSeek 的鲁班 SMS 自动登录/注册在 `geo_tracker/agent/sms_login/**`，这是当前代码价值，应保留而不是按旧文档重写。
 
-- **NO_ACCOUNT_AVAILABLE 不计入成功率**, Query 状态置 PENDING, 与 FAILED 分桶 (避免账号池水位波动污染引擎可用性看板)。
-- **COOKIE_EXPIRED 不计入成功率** (这是账号维护问题, 非引擎本身故障)。
-- **成功率分母**: `success / (success + 计入成功率的失败)`; 与 §4.6 "引擎可用性" 指标定义一致, 与 ADMIN_PRD §4.2.2 引擎健康 5 分钟物化视图口径一致。
-
-Harness: `retry_count` 不落库 (并发写会 race), 只存 `attempts: Attempt[]` append-only 数组 (见 ADAPTER_CONTRACT §6.3, 来自原测试床真实 Bug)。
-
-#### 4.3.7 Profile-Aware 执行 (锚点 → ADAPTER_CONTRACT §3)
-
-Query × BrowserProfile × AccountCookies 三元组构造 ExecutionContext, 实现细节见 [`ADAPTER_CONTRACT.md §3`](./ADAPTER_CONTRACT.md#3-profile-aware-执行模型)。
-
-产品层约束:
-
-- **Account.segmentGroup 必须匹配 Profile.segmentGroup**, 否则调度器拒绝执行并返 `NO_ACCOUNT_AVAILABLE`。原因: 同一账号反复喂跨类目 Query 会污染引擎的个性化模型, 导致结果偏离真实用户画像。
-- **BrowserProfile 必须来自 coherent preset** (`config/browser-profiles.json`), UserAgent/platform/viewport/locale 禁止随机组合 (混搭直接 CF_BLOCKED)。
-- ProfileGroup 定义见 §4.2.3a, 采样时 HAR 回放测试必须传 seed 保证确定性。
-
-#### 4.3.8 CAPTCHA 三级处置 (锚点 → ADAPTER_CONTRACT §9)
-
-实施分级: CapSolver API (Level 1, 覆盖 Turnstile/hCaptcha/reCAPTCHA) → 视觉模型 (Level 2, 火山方舟 doubao-seed-2.0-pro 判图) → 人工轨迹模拟 (Level 3, 滑块贝塞尔曲线 + 微抖动) → P1 告警人工兜底。
-
-完整算法与超时/配额定义见 [`ADAPTER_CONTRACT.md §9`](./ADAPTER_CONTRACT.md#9-captcha-三级解决策略)。
-
-产品层约束:
-
-- 三级全失败 → P1 告警到 Admin `CAPTCHA_UNSOLVED` 分组 (ADMIN_PRD §4.2.6), **不自动重试** (防止 CAPTCHA 反复触发放大代理/账号成本)。
-- CapSolver 配额 20 次/账号/天, 超出 P2 告警 (成本控制)。
-
-#### 4.3.9 观测 & 持久化 (锚点 → ADAPTER_CONTRACT §10)
-
-每条 Response 强制持久化: rawText + rawHtmlUrl + harUrl + screenshotUrl + profileSnapshot + accountIdUsed + proxyIdUsed + attempts 数组 (每次 attempt 独立 HAR/截图)。字段定义见 [`ADAPTER_CONTRACT.md §10.1`](./ADAPTER_CONTRACT.md#101-持久化字段-response-表)。
-
-产品层约束:
-
-- **HAR 必须脱敏** (删除 Authorization/Cookie/Set-Cookie/refresh_token), 违规即 CI 失败 (Harness grep `tests/fixtures/scraping/`)。
-- **CI 回放** 用 `page.routeFromHAR({ update: false, notFound: 'abort' })`, 整个 Adapter 层测试 < 30s, 不连真实网络。
-- `engine_health_5min` 物化视图 (SQL 定义在 ADAPTER_CONTRACT §10.4) 是 ADMIN_PRD §4.2.2 引擎健康卡的唯一数据源。
-
-#### 4.3.10 账号 Cookie 生命周期 & 自动注册 (锚点 → ADAPTER_CONTRACT §5)
-
-账号状态机 (ACTIVE ↔ COOLDOWN 12h ↔ FROZEN ↔ BANNED) 、Cookie 保活 2h cron、EditThisCookie/HAR 两种粘贴格式、DeepSeek localStorage.userToken 特例、鲁班SMS 接码注册全流程 — 全部固化在 [`ADAPTER_CONTRACT.md §5`](./ADAPTER_CONTRACT.md#5-账号--cookie-生命周期)。
-
-产品层约束:
-
-- **Cookie 存储必须 KMS 加密** (`encryptedCookies: Bytes`), Admin UI 回显永远 `***`, 审计日志仅记录"粘贴"动作不记明文。
-- **自动注册 MVP 仅豆包/DeepSeek**, ChatGPT/Gemini 走半自动 (脚本 + CAPTCHA 失败告警人工)。
-- **账号池水位阈值** (active_count < 3 触发补充) 在 `config/account-pool.yaml`, Admin §4.2.4 只读展示, Phase 2 改为 DB 可配置。
+未来如要推进标准错误码、attempt 粒度、HAR 回放、`response_source`、账号不可用类错误不计成功率等能力，必须先做一次 code-first 迁移设计: 明确当前 `queries` / `llm_responses` / `llm_accounts` 如何演进，再改代码与看板口径。
 
 ### 4.4 分析引擎
 
@@ -3925,7 +3882,7 @@ Brand Mode 7 个分析 sub-view (overview / visibility / topics / sentiment / ci
 
 所有 Brand Mode 分析 sub-view 顶部 (仅 Overview 下方紧跟 KPI 卡后, 其他页首屏顶部) 渲染统一的 `<BrandAnalysisFilterBar>` 组件:
 
-- **筛选项 (URL-driven)**: `?from=YYYY-MM-DD&to=YYYY-MM-DD&engines=chatgpt,doubao,deepseek-CN&profileGroup=xxx&dimensions=品类,品牌&intents=informational,commercial` (engines 枚举锁 MVP 3 家, Decision #28.C1)
+- **筛选项 (URL-driven)**: `?from=YYYY-MM-DD&to=YYYY-MM-DD&engines=chatgpt,doubao,deepseek&profileGroup=xxx&dimensions=品类,品牌&intents=informational,commercial` (engines 枚举锁 MVP 3 家, code-first key)
 - **6 字段 semantics**:
   - `from` / `to`: 时间段, 默认近 7 天 (空值表示默认)
   - `engines`: 引擎多选, 空值表示全部 (ChatGPT + 豆包 + DeepSeek)
@@ -6878,6 +6835,8 @@ L3 × 10 单 × 18万 = 180万
 #### 4.9.4 成本保护与异常消费告警 (2026-04-21 新增)
 
 > **⚠️ 开发者约束 (不作为 UI 文案)**: 本节告警阈值与暂停策略仅用于后端实现和 Admin 面板, 不向终端用户展示"火山引擎 API 花了多少钱"这类经营数据.
+>
+> **Code-first caveat (2026-04-30)**: 当前 runtime 尚未把成本字段、`ai_responses` 目标表和 adapter AFTER hook 作为运行事实落地。本节是成本治理目标态；实现前应先以当前 `queries` / `llm_responses` 写入路径设计迁移和埋点。
 
 **问题背景**: Review 2026-04-21 §1 指出, GENPANO 成本 3 大来源 (火山引擎 LLM API / Ninja Clash 代理订阅 / Supabase 存储) 都有突增风险, 此前 PRD 未定义"什么情况暂停爬取避免烧钱", 也未定义阈值和告警链路. 对 Solo founder 财务安全是红线.
 
@@ -6885,7 +6844,7 @@ L3 × 10 单 × 18万 = 180万
 
 | 成本项 | 监控字段 | 采集频率 | 告警阈值 |
 |---|---|---|---|
-| LLM API (火山引擎) | `ai_responses.cost_usd` + `cost_cny` | 每条 Response 实时 | 单日 > 前 7 日中位数的 200% |
+| LLM API (火山引擎) | target: `ai_responses.cost_usd` + `cost_cny`; current: 待接入 | 每条 Response 实时 | 单日 > 前 7 日中位数的 200% |
 | 代理订阅 (Ninja Clash) | `proxy_subscription_usage` (Admin 每日 pull) | 每日 | 月配额用 > 80% |
 | Supabase 存储 | Supabase dashboard API | 每小时 | 用量 > Plan 70% |
 | Playwright 运行时长 | `query_executions.duration_ms` 聚合 | 每小时 | 日总耗时 > 48 核·时 |
@@ -6921,7 +6880,7 @@ trigger_source     String         // 'scheduled' | 'manual' | 'retry' | 'user_re
 
 **4.9.4.5 测试兜底**:
 
-- `ai-response-cost-field-required` harness: `ai_responses` 写入路径 (adapter AFTER hook) 必须设 `cost_usd`, 缺失 → PR block
+- Future harness: `ai_responses` 写入路径落地后，成本字段缺失应阻断 PR；当前 Python runtime 需先补埋点和迁移。
 - 单测 `cost-spike-alert.test.ts` 覆盖 "前 7 日中位数" 滑窗算法 + 告警去重冷却
 - 集成测试 `proxy-quota-fallback.test.ts` 覆盖 80% / 95% 两档切换
 
@@ -7056,7 +7015,7 @@ interface Query {
 
 **问题背景**: Review 2026-04-21 §1 指出, Planner 在 Topic × Intent 生成 Prompt 时, 与 Engine Language 的交叉矩阵只有散落描述, 没有**一张决策表**让实施者一眼看到"在什么引擎、什么地区、什么意图下, 我该发中文还是英文"。
 
-**实施 EngineId 标识符** (Decision #28.C1, 2026-04-22): 表中 "豆包" 对应 `'doubao'`, "ChatGPT" 对应 `'chatgpt'`, "DeepSeek-CN" 对应 `'deepseek-CN'` — `-CN` 后缀为 Phase 2 `'deepseek-overseas'` 命名空间预留, 实施代码 / Prisma CHECK / `intent-engine-locale-matrix.ts` 必须用全名。MVP 引擎宇宙锁 3 家, 其它 (Gemini / Perplexity / Kimi / Grok / 智谱 / Claude) 推到 Phase 2+ (规则 4)。
+**实施 EngineId 标识符** (code-first reset, 2026-04-30): 表中 "豆包" 对应 `'doubao'`, "ChatGPT" 对应 `'chatgpt'`, "DeepSeek" 对应当前运行 key `'deepseek'`。如 Phase 2 要拆海内外 DeepSeek 命名空间，必须先做数据迁移和 API 兼容决策。MVP 引擎宇宙锁 3 家, 其它 (Gemini / Perplexity / Kimi / Grok / 智谱 / Claude) 推到 Phase 2+ (规则 4)。
 
 **决策矩阵** (Planner 生成 Prompt 时的强制查表):
 
@@ -7064,25 +7023,25 @@ interface Query {
 |---|---|---|---|---|---|
 | informational | 豆包 | zh-CN | zh-CN | ✅ | 国内信息型问答主力 |
 | informational | 豆包 | en-US | — | ❌ | 豆包不发英文 (引擎能力约束) |
-| informational | DeepSeek-CN | zh-CN | zh-CN | ✅ | 同豆包 |
-| informational | DeepSeek-CN | en-US | — | ❌ | 同豆包 |
+| informational | DeepSeek | zh-CN | zh-CN | ✅ | 同豆包 |
+| informational | DeepSeek | en-US | — | ❌ | 同豆包 |
 | informational | ChatGPT | zh-CN | zh-CN | ✅ | 海外 ChatGPT 对中文 Prompt 有合理回答, 覆盖中文市场但从海外引擎视角 |
 | informational | ChatGPT | en-US | en-US | ✅ | 海外 ChatGPT 英文信息型主力 |
 | commercial | 豆包 | zh-CN | zh-CN | ✅ | |
 | commercial | 豆包 | en-US | — | ❌ | |
-| commercial | DeepSeek-CN | zh-CN | zh-CN | ✅ | |
-| commercial | DeepSeek-CN | en-US | — | ❌ | |
+| commercial | DeepSeek | zh-CN | zh-CN | ✅ | |
+| commercial | DeepSeek | en-US | — | ❌ | |
 | commercial | ChatGPT | zh-CN | zh-CN | ✅ | |
 | commercial | ChatGPT | en-US | en-US | ✅ | |
 | transactional | 豆包 | zh-CN | zh-CN | ✅ (含"购买/对比/值不值"型) | |
 | transactional | 豆包 | en-US | — | ❌ | |
-| transactional | DeepSeek-CN | zh-CN | zh-CN | ✅ | |
-| transactional | DeepSeek-CN | en-US | — | ❌ | |
+| transactional | DeepSeek | zh-CN | zh-CN | ✅ | |
+| transactional | DeepSeek | en-US | — | ❌ | |
 | transactional | ChatGPT | zh-CN | zh-CN | ✅ | |
 | transactional | ChatGPT | en-US | en-US | ✅ | |
 | navigational | 豆包 | zh-CN | zh-CN | ⚠️ 降频 30% | 导航型 prompt AI 回答信息量低, 仅补全 coverage, 不是主力 |
 | navigational | 豆包 | en-US | — | ❌ | |
-| navigational | DeepSeek-CN | zh-CN | zh-CN | ⚠️ 降频 30% | 同上 |
+| navigational | DeepSeek | zh-CN | zh-CN | ⚠️ 降频 30% | 同上 |
 | navigational | ChatGPT | zh-CN | zh-CN | ⚠️ 降频 30% | |
 | navigational | ChatGPT | en-US | en-US | ⚠️ 降频 30% | |
 

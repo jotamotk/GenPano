@@ -1,5 +1,7 @@
 # Profile-Aware 执行层改造 + 多账号 Cookie 管理
 
+> **状态 (2026-04-30 code-first reset)**: 这是历史改造计划/待办，不是当前运行契约。当前已跑通代码以 `geo_tracker/agent/**`、`geo_tracker/tasks/**`、`geo_tracker/pool/**`、`geo_tracker/db/models.py` 为准；例如“无账号置 PENDING 而非 FAILED”仍是未来决策，不是现状。
+
 > 总体目标：让每个 Query 用对应 Profile 的浏览器指纹执行，对需要登录的 LLM（豆包、智谱等）自动从 AccountPool 注入 cookies，支持多账号轮换。
 
 ---

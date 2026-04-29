@@ -7,6 +7,8 @@
 > - **Analyzer** — "采集质量如何" — 每条 Response 的指标分数 + 人工质检 + 趋势
 >
 > **配套**: `design/prototype-admin.html`
+>
+> **Code-first caveat (2026-04-30)**: Tracker/Attempt 设计是 Admin 目标态。当前运行采集链路主要写 `queries`、`llm_responses`、`llm_accounts`，并由 `geo_tracker/tasks/**` / `geo_tracker/agent/**` / `geo_tracker/pool/**` 驱动；`query_execution_attempts`、`ai_responses`、标准 error_code 和 HAR artifact 不是当前事实源。
 
 ---
 
@@ -539,7 +541,7 @@ CREATE TABLE query_execution_attempts (
   
   -- 执行结果
   status enum('pending','running','success','failed','retrying','waiting_manual','dlq') NOT NULL DEFAULT 'pending',
-  error_code TEXT,                               -- ADAPTER_CONTRACT §6: CAPTCHA_UNSOLVED / CF_BLOCKED / PARSER_FAIL / etc.
+  error_code TEXT,                               -- Future standardized code; current runtime stores failure reasons/exceptions.
   error_subcategory TEXT,                        -- e.g. captcha_type=turnstile, selector=article-body
   error_message TEXT,
   

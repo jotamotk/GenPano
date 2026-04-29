@@ -293,7 +293,7 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 >
 > **⚠️ §4.2 为摘要 (6 子页)。完整实现 (10 子页 · 含 Prompt 模板管理 / Response 质检 / Trace & Lineage / 变更审批 4 个延伸)、失败场景 F1-F10、以及新增 8 张数据表，见 [`ADMIN_PRD_B_PIPELINE.md`](./ADMIN_PRD_B_PIPELINE.md)。本摘要与深化文档出现冲突时，以深化文档为准。**
 >
-> **📌 Adapter 行为真相源**: 引擎健康 / 账号池 / 代理池 / 失败重试分组的底层数据模型、错误码定义、状态机、自动化动作的副作用边界, 全部以 [`docs/ADAPTER_CONTRACT.md`](./ADAPTER_CONTRACT.md) 为准。Admin 这层只是 **把 Adapter 已暴露的能力可视化** — 任何想新加的监控字段或告警规则, 必须先落在 ADAPTER_CONTRACT, 再接入 Admin 看板。
+> **📌 Code-first reset (2026-04-30)**: 引擎健康 / 账号池 / 代理池 / 失败重试分组的当前行为，以 `geo_tracker/agent/**`、`geo_tracker/tasks/**`、`geo_tracker/pool/**`、`geo_tracker/db/models.py` 和现有运行数据为准。Admin 这层应该先可视化已暴露能力；想新增监控字段、错误码或告警规则，必须先设计当前 schema 的迁移/兼容方案。
 
 #### 4.2.1 Pipeline 全景 `/admin/pipeline/overview`
 
@@ -337,16 +337,16 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 - **切换降级 API**：将该引擎的 adapter 从 Web 切到 API，立即生效（写入 `engine_runtime_config.adapter_mode = 'api'`），所有新入队的 Query 走 API 路径
 - **停采**：立即暂停该引擎所有新任务入队；running 任务跑完后停止
 
-**数据源真相**：
+**数据源口径**：
 
-- 5 个 KPI (成功率 / P50 / P95 / 错误分布 / 样本数) 全部来自物化视图 `engine_health_5min` (SQL 定义见 [`ADAPTER_CONTRACT.md §10.4`](./ADAPTER_CONTRACT.md#104-metrics-推给-admin-admin_prd-42))，每 5 分钟刷新。
-- **成功率分母的关键口径**: 自动剔除 `NO_ACCOUNT_AVAILABLE` 与 `COOKIE_EXPIRED` (账号池 / Cookie 侧问题, 非引擎故障) — 与 PRD §4.6 引擎可用性定义一致, 见 [`ADAPTER_CONTRACT.md §6.1`](./ADAPTER_CONTRACT.md#61-错误码表-权威)。
-- **错误分布饼图的 8 个错误码** (CF_BLOCKED / COOKIE_EXPIRED / CAPTCHA_REQUIRED / PAGE_CRASHED / PROXY_DEAD / NO_ACCOUNT_AVAILABLE / EXTRACT_EMPTY / TIMEOUT) 来自 `AdapterError.code` 枚举, 不得自造, 不得合并显示 (合并会丢失诊断信号)。
-- **"查看失败样本"** 抽屉: 直接读取 `ai_responses.harUrl + screenshotUrl + rawHtmlUrl` 三件套 (每次 attempt 独立留档, ADAPTER_CONTRACT §10.1), 点击"重放到本地" 走 `page.routeFromHAR()` 在 admin debugger 内回放。
+- 当前运行数据主要来自 Python runtime 的 `queries` / `llm_responses` / `llm_accounts` 及任务日志；`engine_health_5min`、`ai_responses.harUrl`、append-only attempt artifact 是未来目标模型，不是现状。
+- 成功率是否剔除账号不可用 / Cookie 过期类问题尚未在当前代码统一落库；实现 Admin KPI 前需要先定义从 `failed` reason 到统计分母的映射。
+- 错误分布当前应先消费现有 failure reason (`no_account_available`, `cookies_expired`, `response_too_short`, `exception` 等)，标准 `AdapterError.code` 枚举如需引入，必须走迁移。
+- **"查看失败样本"** 抽屉 MVP 可读取当前已保存的截图路径、HTML/response 字段和日志；HAR replay 作为后续增强。
 
-**DOM 变更告警规则** (ADAPTER_CONTRACT §6.1 的"告警级别"列落地):
+**DOM 变更告警规则**:
 
-- 同一 Adapter 同一 selector 连续 3 条 `EXTRACT_EMPTY` 失败 → 自动发 **P1 告警 "DOM 变更疑似"**, 在本页该引擎卡片顶部标红 + 插入一行 "近 24h 新 selector failure: xxx" + 跳转至 [`ADAPTER_CONTRACT.md §8.3`](./ADAPTER_CONTRACT.md#83-引擎特异-quirks) 对应引擎的 selector 章节便于修订。
+- 同一 Adapter 同一 selector 连续 3 条解析为空/回答过短失败 → 自动发 **P1 告警 "DOM 变更疑似"**, 在本页该引擎卡片顶部标红 + 插入一行 "近 24h 新 selector failure: xxx" + 跳转到对应 adapter 代码和调试样本。
 
 #### 4.2.3 爬取任务队列 `/admin/pipeline/queue`
 
@@ -358,7 +358,7 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 
 #### 4.2.4 账号池水位 `/admin/accounts-pool`
 
-> **架构边界**: 本页的数据与业务逻辑 (`accounts` / `account_states` / `account_registration_logs` 表读写, Luban SMS live client, auto-register orchestrator, cookie bundle 读写) 全部由 **Platform Layer** (`backend/src/accounts/**`) 提供, 契约真相源为 [`ADAPTER_CONTRACT.md §5.3 状态机 / §5.4 自动注册`](./ADAPTER_CONTRACT.md)。本页仅是 **HTTP wrapper + 可视化**, admin API handler 必须 `import { ... } from '@/accounts/**'`, **严禁** 重写 Luban / auto-register / crypto 业务逻辑, 避免双轨代码。
+> **架构边界**: 本页的数据与业务逻辑应复用当前 Python runtime 的 `geo_tracker/pool/account_pool.py`、`geo_tracker/agent/sms_login/**`、`geo_tracker/tasks/**` 和相关 ORM。Admin 只是 HTTP wrapper + 可视化，严禁重写 Luban SMS / auto-register / cookie bundle 业务逻辑，避免双轨代码。
 
 每个引擎一屏，内容：
 
@@ -370,17 +370,17 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 
 **阈值配置**（MVP hardcode，Phase 2 迁到 UI）：`config/account-pool.yaml`。
 
-**账号状态机 & Cookie 粘贴规范真相源**:
+**账号状态机 & Cookie 粘贴规范**:
 
-- 4 状态机 (ACTIVE ↔ COOLDOWN 12h ↔ FROZEN ↔ BANNED) 及触发条件见 [`ADAPTER_CONTRACT.md §5.1`](./ADAPTER_CONTRACT.md#51-账号状态机)。本页按钮"冻结/解冻/强制下线"的跳转规则必须与契约一致, 禁止自造新状态转移。
-- **Cookie 粘贴表单只接受两种格式**: EditThisCookie JSON 数组 或 浏览器"Copy as HAR"的 `request.cookies[]`; 其它格式拒绝, 前端自动检测并转换为 Playwright `BrowserContext.addCookies()` 格式 (ADAPTER_CONTRACT §5.3)。
+- 当前 Python runtime 的账号状态是 `active` / `cooldown` / `banned`；`frozen` / `pending_register` 属于 Admin 目标态，落地前要先设计迁移。
+- Cookie 粘贴 MVP 应兼容当前 `llm_accounts.cookies_json` 的 JSON bundle 形状；EditThisCookie / HAR 导入可作为 UI 增强，但不得破坏当前可运行存量数据。
 - **DeepSeek 特例**: 表单必须同时有 `userToken` 输入框 (DeepSeek 用 localStorage, 只传 Cookie 无效); 该字段随账号一起加密存储。
 - **存储要求**: `encryptedCookies: Bytes` 字段 **MVP 阶段存明文 UTF-8 JSON** (`JSON.stringify({cookies, localStorage, userToken?})` 的 UTF-8 bytes), 字段名与 Bytes 类型保留作为日后 AES-256-GCM + KMS 升级的预留点, 不改 schema。UI 仍遵守"回显永远 `***` / 审计日志不记明文" 两条行为纪律 (避免 operator 手动 psql 查表和 UI 显示耦合, 减少未来加密时 UI 迁移成本); 审计日志仅记"粘贴 cookie" 动作名 + 时间 + operator, **严禁** 记录 JSON 内容本身。升级加密时机: 付费版本 / B2B 客户合规要求触发时, 走标准 migration + codec 替换, 无需改 Prisma schema 字段名。
-- **并发锁**: 两个 scheduler worker 取账号必须走 `SELECT ... FOR UPDATE SKIP LOCKED` (SQL 见 ADAPTER_CONTRACT §7.2), 否则会选到同一账号造成状态污染 — Admin 本页的"当前使用中"状态依赖这个锁保证准确。
+- **并发锁**: 当前取号逻辑未落地数据库级 `SELECT ... FOR UPDATE SKIP LOCKED`。如果 Admin 要展示"当前使用中"或支持多 worker 强一致调度，应先补运行层锁语义。
 
 **自动注册** (`pending_register` 状态对应的流程):
 
-- MVP 仅豆包 / DeepSeek 自动注册 (CN 引擎, 鲁班SMS 接码), ChatGPT / Gemini 半自动 (脚本 + CAPTCHA 失败告警)。完整流程见 [`ADAPTER_CONTRACT.md §5.4`](./ADAPTER_CONTRACT.md#54-自动注册-cn-引擎)。
+- MVP 仅豆包 / DeepSeek 自动注册 (CN 引擎, 鲁班SMS 接码), ChatGPT / Gemini 半自动 (脚本 + CAPTCHA 失败告警)。当前流程以 `geo_tracker/agent/sms_login/**` 为准。
 - "自动注册历史" 表的 `cost` 列从 `AccountRegistrationLog` 表读取, 单号成本 ¥0.5-2, 累计展示月消耗。
 - 触发条件: `account_pool.active_count < 3` 且该引擎未在 `pending_register` 状态中 (避免重复触发)。
 
@@ -390,7 +390,7 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 - 字段：IP / Provider / 可用性 / 近 1h 请求数 / 失败率 / 最后使用
 - 操作：拉黑 / 重新启用 / 补充（触发代理供应商 API）
 
-**MVP 代理调度规则** (Ninja Clash 订阅方案真相源见 [`ADAPTER_CONTRACT.md §7.1`](./ADAPTER_CONTRACT.md#71-代理调度) 及 memory `project_genpano_proxy_architecture.md`):
+**MVP 代理调度规则**:
 
 - **Solo 阶段不做 IP 池 CRUD**: Admin 只看订阅源健康度 + 当前可用节点列表 (从订阅链接自动刷新, 每 6h 一次), 不提供"手动添加 IP"表单 (避免过度工程化)。
 - **失败率阈值**: 节点近 1h 失败率 > 30% 自动 `status='probing'` 降级; Admin 页显示红标。
@@ -408,24 +408,23 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 
 每组支持批量操作；每个任务可查看原始 HTML / 截图。
 
-**分组映射真相源** (与 ADAPTER_CONTRACT §6.1 错误码表对齐):
+**分组映射口径**:
 
-| 本页分组 | 对应 AdapterError.code | 上游处置已做 | 人工层要做 |
+| 本页分组 | 当前/future 错误口径 | 上游处置已做 | 人工层要做 |
 |---------|-----------------------|-------------|-----------|
-| `CAPTCHA_UNSOLVED` | `CAPTCHA_REQUIRED` (三级全失败后) | Adapter 已走 CapSolver → 视觉 → 滑块轨迹三级 (ADAPTER_CONTRACT §9) | 人工过一次 Cookie, 或标记该 profile 废弃 |
-| `PARSER_FAIL` | `EXTRACT_EMPTY` | 不自动重试 (selector 过期大概率重试无效) | 对比 fixture + ADAPTER_CONTRACT §8.3 quirks, 修 selector 后跑 HAR 回放 |
+| `CAPTCHA_UNSOLVED` | current: captcha/exception reason; future: `CAPTCHA_REQUIRED` | 当前 query path 主要接入 CapSolver；SMS 登录路径有视觉/滑块模块 | 人工过一次 Cookie, 或标记该 profile 废弃 |
+| `PARSER_FAIL` | current: `response_too_short` / extraction exception; future: `EXTRACT_EMPTY` | selector 过期大概率重试无效 | 对比 fixture + adapter 代码, 修 selector 后跑样本回放 |
 | `PROXY_BLOCK` | `CF_BLOCKED` / `PROXY_DEAD` | 代理已加黑 1h / 24h | 确认 Ninja Clash 订阅是否健康, 触发换组 |
 | `OTHER` | `PAGE_CRASHED` / `TIMEOUT` (3 次后) / 其它未归类 | 已尝试重启 Browser Context | 看 HAR + 截图定位 |
 
 **不进入本页的失败**:
 
-- `NO_ACCOUNT_AVAILABLE` → 对应 Query 已置 PENDING, 等账号补充后重入; 在 §4.2.4 账号池页处置, 不污染重试中心。
-- `COOKIE_EXPIRED` → 账号已 COOLDOWN 12h, 自动 warmup 探测; 在 §4.2.4 账号池页处置。
+- 当前 `no_account_available` / `cookies_expired` 会进入 Query failed/retry 或账号 cooldown/relogin 语义。是否从失败重试中心排除，需要 Admin KPI/retry 口径单独决策。
 
 **HAR 复现按钮**:
 
 - 每条任务详情支持"下载 HAR" (已脱敏) + "在 admin sandbox 回放" (启动内置 Playwright headless + routeFromHAR), 便于在不触碰真实账号/代理的前提下反复验证解析器修改效果。
-- 脱敏规则见 [`ADAPTER_CONTRACT.md §10.2`](./ADAPTER_CONTRACT.md#102-har-录制约束); **禁止** Admin 提供"查看原始 cookie" 按钮 (合规红线)。
+- HAR 落地前必须先定义脱敏规则；无论是否支持 HAR，Admin **禁止** 提供"查看原始 cookie" 按钮 (合规红线)。
 
 #### 4.2.7 数据模型
 
@@ -438,13 +437,13 @@ scrape_account_pool    (id, engine, username_masked, encrypted_cookies, status,
                         tags JSONB)
 account_registration_log (id, engine, sms_provider, phone_masked, success, duration_ms,
                           cost_cny, failure_reason, created_at)
--- 物化视图 (Adapter 层观测数据源, 每 5 分钟刷新 by cron `refresh_engine_health`):
+-- 目标态物化视图 (当前 runtime 尚未落地, 每 5 分钟刷新 by cron `refresh_engine_health`):
 engine_health_5min     (engine, window_start, sample_count, success_rate,
                         p50_latency_ms, p95_latency_ms, error_breakdown JSONB)
--- 复用 App 侧: query_executions, ai_responses (含 harUrl / screenshotUrl / rawHtmlUrl / attempts)
+-- 目标态复用 App 侧: query_executions, ai_responses (含 harUrl / screenshotUrl / rawHtmlUrl / attempts)
 ```
 
-**模型定义真相源**: 以上表结构与字段语义由 [`ADAPTER_CONTRACT.md §5.1 / §10.1 / §10.4`](./ADAPTER_CONTRACT.md) 权威定义; Admin 这层只是消费。任何新字段需求必须先在 ADAPTER_CONTRACT 落地, 再通过迁移进入本表。
+**模型定义口径**: 以上是 Admin 目标态表结构。当前运行模型以 `geo_tracker/db/models.py`、backend ORM、迁移文件和运行代码为准；任何新字段需求必须先写清迁移/backfill，再接入 Admin。
 
 ---
 
@@ -644,7 +643,7 @@ GENPANO 是 Agent-native 产品，必须监控谁在"程序化访问"平台：
 -- cost_daily: A1' round 8 决议字段 (合并 PRD + spec)
 --   id (PK, UUID)
 --   date (Date, NOT NULL)
---   engine_id (String, NOT NULL) — chatgpt / doubao / deepseek-CN
+--   engine_id (String, NOT NULL) — chatgpt / doubao / deepseek
 --   category (String, NULL) — 品类聚合维度
 --   industry_id (UUID, NULL)
 --   brand_id (UUID, NULL)
@@ -1203,6 +1202,8 @@ set -e
 ---
 
 ## 附录 A — 与 App PRD 数据模型的边界
+
+> **Code-first caveat**: 下表仍使用部分目标态表名。当前运行采集数据需要映射到 Python runtime 的 `queries` / `llm_responses` / `llm_accounts`，不能直接按目标表名判断代码缺失。
 
 | 表 | App PRD 定义？ | Admin PRD 使用？ | Admin 写权限？ |
 |---|---|---|---|

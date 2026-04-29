@@ -1,15 +1,13 @@
 # DATA_MODEL.md — GENPANO Backend Schema
 
-> **Status**: GENPANO MVP v1 (2026-04-20)
+> **Status**: GENPANO MVP target/reference schema (2026-04-30 code-first reset)
 >
-> **Scope**: This document specifies the complete database schema for MVP in PostgreSQL 15+.
+> **Scope**: This document specifies the planned database schema for MVP in PostgreSQL 15+.
 > For development and CI, a SQLite adapter layer translates `JSONB` → `JSON`, `UUID` → `TEXT`, and handles dialect differences.
 >
-> **Authority**: Mandatory reference for database initialization and API implementation.
-> All table definitions, indexes, materialized views, and migration order are definitive and supersede ad-hoc mentions elsewhere.
+> **Authority**: Design reference for database initialization and API implementation. Current runtime truth is the checked-in migrations plus ORM/code in `geo_tracker/db/models.py`, `backend/app/models/**`, and live query paths. When this document conflicts with code, treat it as target/drift to resolve explicitly, not as proof that the running adapter is wrong.
 >
 > **Linked to**:
-> - `ADAPTER_CONTRACT.md` — §2 (data types) and §10 (persistence contract)
 > - `PRD.md` — §4.0 (entities), §4.2 (Pipeline), §4.6 (KPI cards)
 > - `ADMIN_PRD.md` + `_B_PIPELINE.md` + `_C_KG.md` — Admin-facing entities
 
@@ -292,6 +290,8 @@ confidence_score = min(1.0, 1 - 0.85^evidence_count)
 ## 2. Pipeline Entities
 
 > These tables record the flow: Topic → Prompt → Query → Response → Analysis
+>
+> **Code-first caveat**: This section is a future/target schema. The current running collector uses `queries`, `llm_responses`, `llm_accounts`, `profiles`, and related Python ORM models under `geo_tracker/db/models.py`; do not use `query_executions` / `attempts` / `ai_responses` alone to judge adapter compliance.
 
 ### 2.1 platform_topics
 ```sql
@@ -342,7 +342,7 @@ CREATE INDEX idx_prompt_topic_intent ON platform_prompts(topic_id, intent);
 CREATE TABLE query_executions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   prompt_id UUID NOT NULL REFERENCES platform_prompts(id) ON DELETE CASCADE,
-  engine_id VARCHAR(50) NOT NULL CHECK (engine_id IN ('chatgpt', 'doubao', 'deepseek-CN')),  -- MVP 锁 3 家 (Decision #28.C1, 2026-04-22). Phase 2 扩展前先改本 CHECK + 同步 ADAPTER_CONTRACT §2.1 EngineId.
+  engine_id VARCHAR(50) NOT NULL CHECK (engine_id IN ('chatgpt', 'doubao', 'deepseek')),  -- Code-first MVP keys. Any CN/overseas split requires migration.
   profile_group_ids VARCHAR(255)[] DEFAULT '{}',  -- DECISIONS §3: plural, array of group IDs; [] = any group
   requires_login BOOLEAN DEFAULT FALSE,
   status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'queued', 'executing', 'completed', 'failed')),
@@ -363,7 +363,7 @@ CREATE TABLE attempts (
   query_execution_id UUID NOT NULL REFERENCES query_executions(id) ON DELETE CASCADE,
   attempt_number INT NOT NULL CHECK (attempt_number >= 1),
   status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'executing', 'success', 'partial', 'failed')),
-  error_code VARCHAR(50),  -- ADAPTER_CONTRACT §6.1: CF_BLOCKED, COOKIE_EXPIRED, CAPTCHA_REQUIRED, etc.
+  error_code VARCHAR(50),  -- Future standardized code; current runtime mostly stores failure reasons/exceptions.
   error_detail JSONB,
   account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,
   proxy_id VARCHAR(255),  -- Proxy node ID from Ninja Clash
@@ -377,7 +377,7 @@ CREATE TABLE attempts (
 CREATE INDEX idx_attempts_query ON attempts(query_execution_id);
 CREATE INDEX idx_attempts_error ON attempts(error_code);
 ```
-**Why**: Retry tracking. Each failed Query → new Attempt (up to 3 max per ADAPTER_CONTRACT §6.2).
+**Why**: Future retry tracking target. Current runtime keeps retry count on `queries.retry_count`.
 **browser_profile**: Snapshot of sampled profile to ensure reproducibility (HAR replay with same seed).
 
 ### 2.5 ai_responses
@@ -389,7 +389,7 @@ CREATE TABLE ai_responses (
   engine_id VARCHAR(50) NOT NULL,
   execution_mode VARCHAR(10) CHECK (execution_mode IN ('web', 'api')),
   status VARCHAR(50) DEFAULT 'success' CHECK (status IN ('success', 'partial', 'failed')),
-  raw_text TEXT,  -- Full response body (ADAPTER_CONTRACT §8.2: textContent, not innerText)
+  raw_text TEXT,  -- Full response body
   raw_html_url VARCHAR(500),  -- S3 path to snapshot
   har_url VARCHAR(500),  -- S3 path to HAR (HAR replay + CI回放 mandatory)
   screenshot_url VARCHAR(500),  -- S3 path to viewport screenshot
@@ -407,7 +407,7 @@ CREATE TABLE ai_responses (
   latency_ms INT,
   response_started_at TIMESTAMPTZ,
   response_completed_at TIMESTAMPTZ,
-  profile_snapshot JSONB NOT NULL,  -- BrowserProfile at execution time (Object.freeze deep-copy, ADAPTER_CONTRACT §D-P1-3)
+  profile_snapshot JSONB NOT NULL,  -- BrowserProfile at execution time
   account_id_used UUID REFERENCES accounts(id) ON DELETE SET NULL,
   proxy_id_used VARCHAR(255),
 
@@ -421,7 +421,7 @@ CREATE TABLE ai_responses (
 
   -- 2026-04-22 patch (Session 1.2 双修正最终版, Decision #28.C3): 来源标签
   -- NO SCHEMA DEFAULT — Adapter / API fallback / Prisma create 三处必须显式 stamp,
-  -- Harness F4-1/F4-2/F4-3 拦未写; 详见 ADAPTER_CONTRACT §10.5
+  -- Historical target: Harness F4-1/F4-2/F4-3 would block missing stamps once this schema is implemented.
   response_source   VARCHAR(24) NOT NULL
                     CHECK (response_source IN ('web_ui', 'api_fallback', 'mock_proxy', 'cached_replay', 'admin_har_replay', 'harness_fixture')),
   
@@ -443,7 +443,7 @@ CREATE INDEX idx_ai_responses_source_created ON ai_responses(response_source, cr
 
 **Migration 注意 (Session 1 实施)**: 现有数据若已有 `latency_ms` 单字段, 不删除, 与 `latency_breakdown.total_ms` 保持冗余 (latency_ms 为主, latency_breakdown 是细分); 历史 Response 的成本字段保持 NULL, 仅新写入强制. 历史 trigger_source 一次性 backfill 为 'scheduled' (因 MVP 前已无手动触发渠道).
 
-**response_source (Session 1.2 双修正最终版, 2026-04-22, Decision #28.C3)**: 6 值枚举 (`web_ui` / `api_fallback` / `mock_proxy` / `cached_replay` / `admin_har_replay` / `harness_fixture`) 标记每条 Response 的来源路径, 是数据可信度审计 + Admin 回放可追溯 + 分析口径正确性的根。**Migration 模式特殊** — 必须走 `ADD COLUMN ... NOT NULL DEFAULT 'web_ui'` 完成 backfill 后立即 `ALTER COLUMN ... DROP DEFAULT`, 让后续 INSERT 漏写当场抛 `NOT NULL violation` 而不是默默 fallback 成 `web_ui` 蒙混过关。Adapter / API fallback / Prisma create 三处由 Harness F4-1/F4-2/F4-3 拦截漏写; selftest EXPECTED_POSITIVES 21/21 PASS。详见 ADAPTER_CONTRACT §10.5 + 迁移文件 `20260424000000_session_1_2_adapter_hardening/migration.sql §7`.
+**response_source (future target)**: 6 值枚举 (`web_ui` / `api_fallback` / `mock_proxy` / `cached_replay` / `admin_har_replay` / `harness_fixture`) 标记每条 Response 的来源路径。当前 Python runtime 的 `llm_responses` 没有此字段；实施前需要先设计从当前表到目标表/字段的迁移和 backfill 策略。
 
 ### 2.6 ai_response_citations
 ```sql
@@ -550,12 +550,12 @@ CREATE INDEX idx_browser_profiles_group ON browser_profiles(profile_group_id);
 ```sql
 CREATE TABLE accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  engine_id VARCHAR(50) NOT NULL CHECK (engine_id IN ('chatgpt', 'doubao', 'deepseek-CN')),  -- MVP 锁 3 家 (Decision #28.C1, 2026-04-22).
+  engine_id VARCHAR(50) NOT NULL CHECK (engine_id IN ('chatgpt', 'doubao', 'deepseek')),  -- Code-first MVP keys.
   username_masked VARCHAR(100),  -- e.g. 'm***@gmail.com' (never store plain username in logs)
   encrypted_cookies BYTEA,  -- AES-256-GCM, KMS key management
   segment_group VARCHAR(100) REFERENCES profile_groups(id) ON DELETE SET NULL,  -- DECISIONS §3.3: accounts bound to segment groups
   status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'cooldown', 'frozen', 'banned', 'pending_register')),
-  cooldown_until TIMESTAMPTZ,  -- ADAPTER_CONTRACT §5.1: cooldown duration (12h after COOKIE_EXPIRED)
+  cooldown_until TIMESTAMPTZ,  -- Cooldown duration target; current runtime policy is in account_pool.py.
   consecutive_failures INT DEFAULT 0,
   last_used_at TIMESTAMPTZ,
   last_health_check_at TIMESTAMPTZ,
@@ -567,7 +567,7 @@ CREATE TABLE accounts (
 CREATE INDEX idx_accounts_engine_status ON accounts(engine_id, status, segment_group);
 CREATE INDEX idx_accounts_active ON accounts(engine_id, status, last_used_at) WHERE status = 'active';
 ```
-**Why**: Account pool for each engine. ADAPTER_CONTRACT §5: status machine (ACTIVE → COOLDOWN → FROZEN) + consecutive_failures tracking.
+**Why**: Account pool target model. Current runtime status machine is `active` / `cooldown` / `banned` in `geo_tracker/db/models.py`.
 **segment_group binding**: DECISIONS §3.3: Scheduler matches Query.profileGroupIds to Account.segment_group to avoid profile pollution.
 **encrypted_cookies**: AES-256-GCM with KMS; never log plain value.
 
@@ -932,7 +932,7 @@ SQLite does not support materialized views natively. For development:
 7. `projects` (test project with primary_brand_id + competitor list)
 8. `profile_groups` (seed 6 groups: baseline, beauty_daily, luxury_collector, …)
 9. `browser_profiles` (seed 18–24 profiles: 6 groups × 3–4 profiles/group)
-10. `accounts` (seed 3 test accounts per engine: chatgpt, doubao, deepseek-CN — MVP 3 家, Decision #28.C1)
+10. `accounts` (seed 3 test accounts per engine: chatgpt, doubao, deepseek — MVP 3 家, code-first keys)
 
 **Phase 3: Pipeline** (15–25 min)
 11. `platform_topics` (seed 100–200 topics from KG)
