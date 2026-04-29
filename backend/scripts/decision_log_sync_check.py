@@ -85,8 +85,7 @@ def main() -> int:
         )
 
     return _ok(
-        f"{max_claude} decisions, fully in sync between CLAUDE.md body "
-        "and DECISION_LOG.md index."
+        f"{max_claude} decisions, fully in sync between CLAUDE.md body and DECISION_LOG.md index."
     )
 
 

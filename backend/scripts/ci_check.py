@@ -664,16 +664,18 @@ class J5UserDataWriteOnlyDeletionRequestedAt:
     id = "J5"
     description = "admin code wrote a non-whitelisted column on the App User row"
 
-    _FORBIDDEN_ATTRS = frozenset({
-        "email",
-        "password_hash",
-        "name_zh",
-        "name_en",
-        "locale",
-        "preferences",
-        "email_verified_at",
-        "force_password_change_at",
-    })
+    _FORBIDDEN_ATTRS = frozenset(
+        {
+            "email",
+            "password_hash",
+            "name_zh",
+            "name_en",
+            "locale",
+            "preferences",
+            "email_verified_at",
+            "force_password_change_at",
+        }
+    )
     _ADMIN_AUTH_SEGMENTS = ("admin/auth", "admin/api/v1/auth")
 
     def scan(self, files: list[Path]) -> list[Violation]:

@@ -125,11 +125,7 @@ def test_j2_negative_inside_accounts_dir(tmp_path: Path) -> None:
     src = _write(
         tmp_path,
         "app/accounts/auto_register.py",
-        "def auto_register(phone: str) -> dict:\n"
-        "    return {}\n"
-        "\n"
-        "class CookieEncoder:\n"
-        "    pass\n",
+        "def auto_register(phone: str) -> dict:\n    return {}\n\nclass CookieEncoder:\n    pass\n",
     )
     assert J2AccountPoolRewriteForbidden().scan([src]) == []
 
@@ -168,8 +164,7 @@ def test_j3_negative_super_admin_literal(tmp_path: Path) -> None:
     src = _write(
         tmp_path,
         "app/admin/api/v1/users.py",
-        "def require_role(*a): ...\n"
-        "_dep = require_role('super_admin')\n",
+        "def require_role(*a): ...\n_dep = require_role('super_admin')\n",
     )
     assert J3RbacSuperAdminOnly().scan([src]) == []
 
