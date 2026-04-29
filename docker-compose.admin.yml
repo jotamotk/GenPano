@@ -1,0 +1,123 @@
+# Admin stack — Session A1' Step 10 (decision #29 Python rewrite)
+#
+# Brings up Python admin backend (FastAPI app.main:app + admin/api/v1/*)
+# alongside dedicated Postgres + Redis. Frontend admin shell runs Vite dev
+# server.
+#
+# Activate via:
+#   docker compose -f docker-compose.admin.yml --profile admin up
+#   docker compose -f docker-compose.admin.yml --profile admin down
+#   docker compose -f docker-compose.admin.yml --profile admin logs -f
+#
+# Legacy TS-era docker-compose.yml is untouched (decision #29 declared TS
+# backend dead; file retained for historical legacy ops).
+#
+# admin-worker (Celery) — admin-specific tasks land in Session 1.2'/3'.
+# Pipeline Celery (6-queue topology) lives in app/celery_app.py but is
+# not part of the admin profile.
+
+services:
+  postgres-admin:
+    image: postgres:16-alpine
+    profiles: ["admin"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: genpano_admin
+      POSTGRES_USER: ${ADMIN_DB_USER:-genpano}
+      POSTGRES_PASSWORD: ${ADMIN_DB_PASSWORD:-change_me}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_admin_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ADMIN_DB_USER:-genpano}"]
+      interval: 10s
+      retries: 5
+
+  redis-admin:
+    image: redis:7-alpine
+    profiles: ["admin"]
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  backend-admin:
+    image: python:3.12-slim
+    profiles: ["admin"]
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      bash -c "
+      pip install --no-cache-dir uv==0.11.4 &&
+      uv sync --frozen &&
+      uv run alembic upgrade head &&
+      uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+    environment:
+      GENPANO_DATABASE_URL: postgresql+asyncpg://${ADMIN_DB_USER:-genpano}:${ADMIN_DB_PASSWORD:-change_me}@postgres-admin:5432/genpano_admin
+      GENPANO_REDIS_URL: redis://redis-admin:6379/0
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-http://localhost:5173}
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres-admin:
+        condition: service_healthy
+      redis-admin:
+        condition: service_healthy
+
+  frontend-admin:
+    image: node:20-alpine
+    profiles: ["admin"]
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "
+      npm ci &&
+      npm run dev -- --host 0.0.0.0 --port 5173
+      "
+    environment:
+      VITE_ADMIN_BACKEND_URL: http://backend-admin:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_admin_node_modules:/app/node_modules
+    depends_on:
+      - backend-admin
+
+  # admin-worker (Celery) — placeholder for Session 1.2'/3' admin task workload
+  # (audit-log batch, alert dispatch, user_activity_stats / cost_daily
+  # materialization per ADMIN_PRD §5.4). Pipeline Celery is shared with
+  # backend-admin via app/celery_app.py but the admin worker is not yet built.
+  #
+  # admin-worker:
+  #   image: python:3.12-slim
+  #   profiles: ["admin"]
+  #   restart: unless-stopped
+  #   working_dir: /app
+  #   command: >
+  #     bash -c "
+  #     pip install --no-cache-dir uv==0.11.4 &&
+  #     uv sync --frozen &&
+  #     uv run celery -A app.celery_app:celery_app worker --loglevel=info --queues=admin
+  #     "
+  #   environment:
+  #     GENPANO_DATABASE_URL: postgresql+asyncpg://${ADMIN_DB_USER:-genpano}:${ADMIN_DB_PASSWORD:-change_me}@postgres-admin:5432/genpano_admin
+  #     GENPANO_REDIS_URL: redis://redis-admin:6379/0
+  #   volumes:
+  #     - ./backend:/app
+  #   depends_on:
+  #     redis-admin:
+  #       condition: service_healthy
+
+volumes:
+  postgres_admin_data:
+  frontend_admin_node_modules:

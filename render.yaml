@@ -1,0 +1,65 @@
+# Render Blueprint — Session A1' Step 10 (decision #29 Python rewrite)
+#
+# Admin backend Python service (FastAPI app.main:app + admin/api/v1/*).
+# Vercel rewrites /admin/* to this Render service (vercel.json).
+#
+# Deploy via Render dashboard import or `render blueprint deploy`.
+#
+# Secrets (sync: false) must be set in Render dashboard before first deploy:
+#   - ADMIN_JWT_SECRET    (>= 32 bytes; backend/app/admin/auth/jwt.py:39)
+#   - RESEND_API_KEY      (mock mode if empty — Session A1' Step 10 decision iii;
+#                          flip to live in Session 4a' per CLAUDE.md #30)
+#   - GENPANO_DATABASE_URL (Postgres connection string from Render PG add-on
+#                           or external Supabase/Neon)
+#   - GENPANO_REDIS_URL   (Redis connection string; required by Session 1.2'/3'
+#                          Celery, optional for A1' admin auth)
+#
+# admin-worker (Celery) — placeholder for Session 1.2'/3'. Not deployed yet.
+# Pipeline Celery (6-queue topology) lives in app/celery_app.py but admin
+# worker does not exist; will be added when Session 1.2' goes live.
+
+services:
+  - type: web
+    name: genpano-admin-backend
+    runtime: python
+    plan: starter
+    branch: main
+    rootDir: backend
+    buildCommand: pip install --no-cache-dir uv==0.11.4 && uv sync --frozen && uv run alembic upgrade head
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: ADMIN_JWT_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: ADMIN_BASE_URL
+        value: https://genpano.vercel.app
+      - key: GENPANO_DATABASE_URL
+        sync: false
+      - key: GENPANO_REDIS_URL
+        sync: false
+
+  # admin-worker (Celery) — Session 1.2'/3' placeholder.
+  # Uncomment and rotate secrets once admin task workload exists per
+  # ADMIN_PRD §5.4 (audit-log batch, alert dispatch, cost_daily materialization).
+  #
+  # - type: worker
+  #   name: genpano-admin-worker
+  #   runtime: python
+  #   plan: starter
+  #   branch: main
+  #   rootDir: backend
+  #   buildCommand: pip install --no-cache-dir uv==0.11.4 && uv sync --frozen
+  #   startCommand: uv run celery -A app.celery_app:celery_app worker --loglevel=info --queues=admin
+  #   autoDeploy: true
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: "3.12"
+  #     - key: GENPANO_DATABASE_URL
+  #       sync: false
+  #     - key: GENPANO_REDIS_URL
+  #       sync: false
