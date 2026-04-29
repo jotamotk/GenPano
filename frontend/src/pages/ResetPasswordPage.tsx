@@ -20,10 +20,13 @@ export default function ResetPasswordPage() {
   const [newPasswordError, setNewPasswordError] = useState('')
   const [confirmPasswordError, setConfirmPasswordError] = useState('')
 
+  const isStrongPassword = (value: string) =>
+    value.length >= 8 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value)
+
   const validate = (): boolean => {
     let valid = true
 
-    if (!newPassword || newPassword.length < 8) {
+    if (!isStrongPassword(newPassword)) {
       setNewPasswordError(t.resetPassword.passwordError)
       valid = false
     } else {
@@ -62,7 +65,7 @@ export default function ResetPasswordPage() {
   return (
     <AuthLayout>
       <div className="mb-8">
-        <h1 className="text-[32px] font-heading font-semibold text-[#1A1A2E]">
+        <h1 className="text-[32px] font-brand font-semibold text-themed-primary">
           {t.resetPassword.title}
         </h1>
       </div>

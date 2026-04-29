@@ -2,10 +2,14 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { authApi } from '../api/auth'
 
 interface User {
-  id: number
+  id: string
   email: string
   name: string | null
   company: string | null
+  role?: string
+  provider?: string
+  emailVerified?: boolean
+  locale?: 'zh-CN' | 'en-US'
 }
 
 interface AuthContextValue {

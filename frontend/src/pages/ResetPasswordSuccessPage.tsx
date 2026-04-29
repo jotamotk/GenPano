@@ -18,7 +18,7 @@ export default function ResetPasswordSuccessPage() {
           <ParticleArt />
         </div>
         <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs" style={{ color: '#A0845C', lineHeight: 1.6 }}>
+          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
             Monitor your brand's presence<br />
             across AI-generated content
           </p>
@@ -26,7 +26,7 @@ export default function ResetPasswordSuccessPage() {
       </div>
 
       {/* Right panel — light gray background */}
-      <div className="flex-1 flex flex-col" style={{ backgroundColor: '#F9FAFB' }}>
+      <div className="flex-1 flex flex-col bg-themed-page">
         {/* Language switcher top right */}
         <div className="flex justify-end px-8 pt-6">
           <LanguageSwitcher />

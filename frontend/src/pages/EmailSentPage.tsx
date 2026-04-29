@@ -1,4 +1,5 @@
 import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import { useLanguage } from '../context/LanguageContext'
 import { authApi } from '../api/auth'
 import { showToast } from '../components/Toast'
@@ -6,12 +7,13 @@ import ParticleArt from '../components/ParticleArt'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 
 export default function EmailSentPage() {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
 
   const email = searchParams.get('email') || ''
   const type = searchParams.get('type') as 'verify' | 'reset' | null
+  const [cooldown, setCooldown] = useState(0)
 
   const isReset = type === 'reset'
 
@@ -22,7 +24,7 @@ export default function EmailSentPage() {
   const nextStepsLabel = isReset ? t.emailSent.nextStepsReset : t.emailSent.nextSteps
 
   const handleResend = async () => {
-    if (!email) return
+    if (!email || cooldown > 0) return
     try {
       if (isReset) {
         await authApi.forgotPassword(email)
@@ -30,10 +32,17 @@ export default function EmailSentPage() {
         await authApi.resendVerification(email)
       }
       showToast(t.emailSent.resendButton, 'success')
+      setCooldown(60)
     } catch {
       showToast(t.errors.serverError, 'error')
     }
   }
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const id = window.setTimeout(() => setCooldown(value => value - 1), 1000)
+    return () => window.clearTimeout(id)
+  }, [cooldown])
 
   const handleEditEmail = () => {
     if (isReset) {
@@ -47,22 +56,22 @@ export default function EmailSentPage() {
     <div className="min-h-screen flex">
       {/* Left decorative panel */}
       <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden bg-brand-beige"
+        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden"
+        style={{ background: 'var(--color-auth-visual-bg)' }}
         aria-hidden="true"
       >
         <div className="flex-1 w-full">
           <ParticleArt />
         </div>
         <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs" style={{ color: '#A0845C', lineHeight: 1.6 }}>
-            Monitor your brand's presence<br />
-            across AI-generated content
+          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
+            {language === 'zh' ? '完成验证后进入 GenPano 工作台' : 'Continue to your GenPano workspace after verification'}
           </p>
         </div>
       </div>
 
       {/* Right panel — light gray background */}
-      <div className="flex-1 flex flex-col" style={{ backgroundColor: '#F9FAFB' }}>
+      <div className="flex-1 flex flex-col bg-themed-page">
         {/* Language switcher top right */}
         <div className="flex justify-end px-8 pt-6">
           <LanguageSwitcher />
@@ -96,7 +105,7 @@ export default function EmailSentPage() {
                   type="button"
                   onClick={handleEditEmail}
                   className="text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
-                  title="修改邮箱"
+                  title={language === 'zh' ? '修改邮箱' : 'Edit email'}
                 >
                   <PencilIcon />
                 </button>
@@ -124,9 +133,10 @@ export default function EmailSentPage() {
             <button
               type="button"
               onClick={handleResend}
-              className="w-full h-12 px-4 text-base font-semibold text-white rounded-[10px] transition-all duration-200 bg-primary-500 hover:bg-primary-600 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-purple-500/25 active:bg-primary-700 active:translate-y-0 focus:ring-2 focus:ring-primary-100 focus:outline-none"
+              disabled={cooldown > 0}
+              className="w-full h-12 px-4 text-base font-semibold text-white rounded-[10px] transition-all duration-200 bg-primary-500 hover:bg-primary-600 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-purple-500/25 active:bg-primary-700 active:translate-y-0 focus:ring-2 focus:ring-primary-100 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {t.emailSent.resendButton}
+              {cooldown > 0 ? `${t.emailSent.resendButton} (${cooldown}s)` : t.emailSent.resendButton}
             </button>
 
             {/* No email hint */}
@@ -140,7 +150,7 @@ export default function EmailSentPage() {
                 href={email ? `mailto:${email}` : '#'}
                 className="text-sm text-primary-500 hover:text-primary-600 transition-colors"
               >
-                {t.emailSent.viewEmail} 👉
+                {t.emailSent.viewEmail}
               </a>
             </div>
           </div>

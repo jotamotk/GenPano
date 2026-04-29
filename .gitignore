@@ -64,5 +64,6 @@ scripts/doubao.txt
 # Local debugging artifacts
 *.db
 *.sqlite
+backend/email_previews/
 geo_tracker/*.png
 gemini_*.png
