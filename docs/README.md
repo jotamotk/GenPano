@@ -3,7 +3,6 @@
 Canonical product and implementation references:
 
 - `PRD.md`
-- `PRD-auth.md`
 - `ADMIN_PRD.md`
 - `ADMIN_PRD_B_PIPELINE.md`
 - `ADMIN_PRD_C_KG.md`

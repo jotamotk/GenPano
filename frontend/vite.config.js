@@ -13,8 +13,8 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
-    // /api/*        — main backend (Node.js on :4000, user/brand/industry APIs)
-    // /admin/api/*  — admin console backend (same :4000, Path=/admin cookie scope)
+    // /api/*        - main FastAPI backend on :4000
+    // /admin/api/*  - admin console backend on :4000, Path=/admin cookie scope
     proxy: {
       '/api': {
         target: 'http://localhost:4000',
