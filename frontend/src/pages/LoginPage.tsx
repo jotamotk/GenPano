@@ -29,8 +29,8 @@ export default function LoginPage() {
     if (emailParam) setEmail(emailParam)
 
     const error = searchParams.get('error')
-    if (error === 'personal_email') {
-      showToast('请使用工作邮箱的 Google 账号 / Please use a work Google account', 'error')
+    if (error === 'invalid_email') {
+      showToast(t.validation.emailInvalid, 'error')
     } else if (error === 'oauth_failed') {
       showToast(t.errors.serverError, 'error')
     }

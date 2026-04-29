@@ -1,5 +1,4 @@
 import React from 'react'
-import ParticleArt from './ParticleArt'
 import LanguageSwitcher from './LanguageSwitcher'
 
 interface AuthLayoutProps {
@@ -17,7 +16,7 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
         {/* Logo top-left */}
         <div className="absolute top-8 left-8 z-10">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-gradient-to-br from-primary-500 to-primary-700">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-gradient-accent">
               <span className="text-white text-xs font-bold">GP</span>
             </div>
             <span className="text-sm font-semibold text-gray-800">
@@ -26,9 +25,17 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
           </div>
         </div>
 
-        {/* 3D particle art — fills the panel */}
-        <div className="flex-1 w-full">
-          <ParticleArt />
+        <div className="flex-1 w-full flex items-center justify-center px-10">
+          <div className="relative w-full max-w-[360px] aspect-square">
+            <div className="absolute inset-8 rounded-full border border-accent-500/20" />
+            <div className="absolute inset-20 rounded-full border border-accent-500/30" />
+            <div className="absolute left-8 top-16 w-24 h-16 rounded-card bg-white border border-card shadow-card" />
+            <div className="absolute right-10 top-28 w-28 h-20 rounded-card bg-white border border-card shadow-card" />
+            <div className="absolute left-20 bottom-14 w-32 h-20 rounded-card bg-white border border-card shadow-card" />
+            <div className="absolute left-1/2 top-1/2 w-20 h-20 -translate-x-1/2 -translate-y-1/2 rounded-card bg-gradient-accent shadow-card-hover flex items-center justify-center text-white font-semibold">
+              AI
+            </div>
+          </div>
         </div>
 
         {/* Bottom tagline */}

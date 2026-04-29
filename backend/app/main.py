@@ -5,10 +5,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.api.v1.auth import router as admin_auth_router
+from app.api.v1.auth import router as user_auth_router
 from app.db.session import get_db
 
 app = FastAPI()
 app.include_router(admin_auth_router)
+app.include_router(user_auth_router)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 

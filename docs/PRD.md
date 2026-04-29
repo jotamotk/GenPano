@@ -404,7 +404,7 @@ MVP 规模估算:
 **支持方式**:
 - 邮箱注册 + OAuth (Google, GitHub)
 - **OAuth 首次登录**: 因第三方已验证邮箱, 跳过 §4.1.1a E1 邮箱验证邮件, 直接触发 E2 欢迎邮件
-- **找回密码**: 邮箱验证 → 重置密码链接 (24h 有效) → 设置新密码
+- **找回密码**: 邮箱验证 → 重置密码链接 (1h 有效) → 设置新密码
   - 仅邮箱注册用户需要, OAuth 用户无密码
   - 重置链接使用一次性 token, 点击后立即失效
   - 连续请求频率限制: 同一邮箱 60 秒内仅可发送 1 次
@@ -418,7 +418,7 @@ MVP 规模估算:
 | `locale` | 自动推断 | 根据浏览器 `Accept-Language` 预填, 用户可在设置页切换. 详见 [4.10.4 UI 国际化](#4104-ui-国际化-中文--英文) |
 | `defaultIndustryId` | ❌ | **不在注册表单收集**. 若用户从行业页 / 品牌直链进入注册, 自动从 URL `return_to` 继承; 否则在登录后首屏轻量引导 (可跳过, 详见 §4.1.1b) |
 
-> **表单交互模型**: 上表是字段清单, 实际填写流程走 **§4.1.1-form Email-first 2-step** — 用户第一步只看到邮箱字段, 点"用邮箱继续" → 系统 lookup → 再决定显示"设密码" (新) 还是"输密码" (老). 这避免了"邮箱 + 密码同屏对新用户的摩擦". 完整状态机 / API 契约 / 防枚举约束见 §4.1.1-form.
+> **表单交互模型**: 上表是字段清单, 实际填写流程走 **§4.1.1-form Email-first 2-step** — 用户第一步只看到邮箱字段, 点"继续" → 系统 lookup → 再决定显示"验证邮箱" (新) 还是"输入密码" (老). 这避免了"邮箱 + 密码同屏对新用户的摩擦". 完整状态机 / API 契约 / 防枚举约束见 §4.1.1-form.
 
 > **变更说明**: 2026-04-17 之前版本把行业选择作为 Onboarding 必选步骤 (即便在注册后). 现改为: 未登录浏览时 URL 已体现用户关心的行业, 无需二次询问; 若用户是无 referrer 直接注册, 登录后展示"你想先看哪个行业?" 引导卡, **但可跳过直接进面板**. 这把"注册后看到数据"的步骤数从 2 (选行业 → 看数据) 降到 0-1 步.
 
@@ -442,7 +442,7 @@ MVP 规模估算:
 
 #### 4.1.1-form 注册/登录表单: Email-first 2-step (2026-04-19 新增, 锚点 = design/prototype-auth-v4.html + v5.html)
 
-> **⚠️ 开发者约束 (不作为 UI 文案)**: 本节的状态机 / 契约 / "Step N" 等术语仅用于指导实施; UI 文案只显示用户层面的动作标签 ("用邮箱继续" / "登录" / "创建账号"), 严禁出现 "Step 1 / Step 2 / Next Action / lookup" 等开发语. 参见 §4.6.0a.
+> **⚠️ 开发者约束 (不作为 UI 文案)**: 本节的状态机 / 契约 / "Step N" 等术语仅用于指导实施; UI 文案只显示用户层面的动作标签 ("继续" / "登录" / "验证邮箱"), 严禁出现 "Step 1 / Step 2 / Next Action / lookup" 等开发语. 参见 §4.6.0a.
 
 **背景**:
 
@@ -450,7 +450,7 @@ MVP 规模估算:
   1. 新用户看到密码字段前, 没有任何"我要创建账号"的心智确认, 摩擦大
   2. 老用户无法区分"自己用哪个邮箱注册过" — 错邮箱 + 错密码两个错交错报错无法归因
   3. `/login` 和 `/register` 两条 URL 挂的是同一个 UI, 用户很难感知"我现在在做什么", 跟 Landing v2.1 (Stripe Light) 的现代感也对不上
-- Stripe / Linear / Vercel / Claude.ai 等成熟产品都是 email-first 2-step: Step 0 只输邮箱 → 后端 lookup → Step 1 分流到"设密码 (新)" 或 "输密码 (老)". 原型 `design/prototype-auth-v4.html` (2026-04-17) + `v5.html` 已完整绘制该流程, 本节把原型固化为 spec.
+- Stripe / Linear / Vercel / Claude.ai 等成熟产品都是 email-first 2-step: Step 0 只输邮箱 → 后端 lookup → Step 1 分流到"验证邮箱 (新)" 或 "输密码 (老)". 原型 `design/prototype-auth-v4.html` (2026-04-17) + `v5.html` 已完整绘制该流程, 本节把原型固化为 spec, 生产文案以 2026-04-29 落地口径为准。
 
 **状态机 (authoritative)**:
 
@@ -465,10 +465,9 @@ MVP 规模估算:
         │  Step 1: branch                                      │
         │                                                      │
         │  next=register (新邮箱)       │  next=login (老邮箱) │
-        │  ─ "为你的账号设置密码"       │  ─ "欢迎回来"        │
-        │  ─ password strength meter    │  ─ "忘记密码?" 入口  │
-        │  ─ [创建账号]                  │  ─ [登录]            │
-        │  ─ 密码 ≥ 8 位                │                       │
+        │  ─ "验证你的邮箱"             │  ─ "输入密码"        │
+        │  ─ 发送验证邮件               │  ─ "忘记密码?" 入口  │
+        │  ─ 邮件 token 进入 /setup     │  ─ [登录]            │
         │                   ───→ Step 2: post-auth redirect   │
         └──────────────────────────────────────────────────────┘
 
@@ -487,11 +486,9 @@ MVP 规模估算:
 
 **URL 路由契约**:
 
-- `/register` 和 `/login` 都继续挂 `<AuthPage>` (保留现有 Landing / WatchBrandButton / AuthPromptModal 的 CTA URL 不变), 但 Step 0 UI **不区分两条 URL** — 两者都显示 "用邮箱继续". 区别只在头部副标题:
-  - `type="register"` → "直接输邮箱即可" / "Just enter your email"
-  - `type="login"`    → "欢迎回来" / "Welcome back"
+- `/register` 和 `/login` 都继续挂 `<AuthPage>` (保留现有 Landing / WatchBrandButton / AuthPromptModal 的 CTA URL 不变), 但 Step 0 UI **不区分两条 URL** — 两者都显示 "登录或注册". 入口副标题统一为 "输入邮箱，继续访问你的 GenPano 工作台。" / "Enter your email to continue to your GenPano workspace."
 - Step 0 / Step 1 切换**不改变 URL** (不用 `/register/step-2` 这种深链). 仅前端 state. 目的: 避免用户刷新页面时处于"设密码态但没 email"的不可恢复态 — 刷新后自动回到 Step 0.
-- 所有 CTA 落地 `/register` 或 `/login` 均可, AuthPage 内部 lookup 会自动分流. Landing 的 "免费开始监测" 指 `/register`, "已有账号? 登录" 指 `/login`, 两者只差 header 副标题.
+- 所有 CTA 落地 `/register` 或 `/login` 均可, AuthPage 内部 lookup 会自动分流. Landing 的 "注册" 指 `/register`, "登录" 指 `/login`, 首屏文案保持一致。
 - Post-auth redirect 保留 §4.1.1c T9 快路径 + `return_to` 白名单 (详见 §4.1.1c Return-To 契约).
 
 **API 契约**:
@@ -522,13 +519,12 @@ MVP 规模估算:
 每个 key 必须在 `frontend/src/i18n/messages.zh-CN.json` 和 `messages.en-US.json` 都提供. CI grep 扫描缺项即阻断.
 
 ```text
-auth.step0.title                    一步开始 / Start in one step
-auth.step0.subtitle.login           欢迎回来 / Welcome back
-auth.step0.subtitle.register        直接输邮箱即可 / Just enter your email
+auth.step0.title                    登录或注册 / Sign in or create an account
+auth.step0.subtitle                 输入邮箱，继续访问你的 GenPano 工作台。 / Enter your email to continue to your GenPano workspace.
 auth.step0.email_label              邮箱 / Email
-auth.step0.email_placeholder        你的工作邮箱 / your@work-email.com
-auth.step0.continue_btn             用邮箱继续 / Continue with email
-auth.step0.continue_btn_loading     识别中… / Verifying…
+auth.step0.email_placeholder        你的邮箱 / name@example.com
+auth.step0.continue_btn             继续 / Continue
+auth.step0.continue_btn_loading     请稍候… / Please wait…
 auth.step0.oauth_divider            或 / or
 auth.step0.oauth_google             使用 Google 账号继续 / Continue with Google
 auth.step0.oauth_github             使用 GitHub 账号继续 / Continue with GitHub
@@ -536,28 +532,28 @@ auth.step0.error.email_invalid      请输入有效的邮箱地址 / Please ente
 auth.step0.error.rate_limited       请求过于频繁, 请稍后再试 / Too many attempts, please retry later
 auth.step0.legal                    继续即表示同意 {terms} 与 {privacy} / By continuing you agree to {terms} and {privacy}
 
-auth.step1.new.chip                 新邮箱 · 正在为你创建账号 / New email · creating your account
-auth.step1.new.title                为你的账号设置密码 / Set a password for your account
+auth.step1.new.chip                 新账号 / New account
+auth.step1.new.title                验证你的邮箱 / Verify your email
 auth.step1.new.password_label       密码 / Password
 auth.step1.new.password_hint        至少 8 位, 建议混合大小写与数字 / At least 8 chars, mix upper/lower and digits
 auth.step1.new.strength.weak        弱 / Weak
 auth.step1.new.strength.medium      中 / Medium
 auth.step1.new.strength.strong      强 / Strong
-auth.step1.new.create_btn           创建账号 / Create account
+auth.step1.new.create_btn           发送验证邮件 / Send verification email
 auth.step1.new.error.password_short 密码至少需要 8 个字符 / Password must be at least 8 characters
 
-auth.step1.existing.chip            欢迎回来 / Welcome back
-auth.step1.existing.title           输入密码登录 / Enter your password
+auth.step1.existing.chip            已有账号 / Existing account
+auth.step1.existing.title           输入密码 / Enter your password
 auth.step1.existing.password_label  密码 / Password
 auth.step1.existing.forgot          忘记密码? / Forgot password?
 auth.step1.existing.login_btn       登录 / Sign in
 auth.step1.back_to_email            用其他邮箱 / Use a different email
 
 auth.step1.forgot.title             重置密码 / Reset your password
-auth.step1.forgot.subtitle          输入注册邮箱, 我们会发送 24h 有效的重置链接 / Enter your email, we'll send a reset link valid for 24h
+auth.step1.forgot.subtitle          输入邮箱，我们会发送密码重置链接。 / Enter your email and we'll send a password reset link.
 auth.step1.forgot.send_btn          发送重置链接 / Send reset link
 auth.step1.forgot.sent_title        重置邮件已发送 / Reset email sent
-auth.step1.forgot.sent_body         请查收 {email} 的收件箱, 24h 内点击链接完成重置 / Check {email} inbox, click the link within 24h
+auth.step1.forgot.sent_body         如果 {email} 已注册，我们会发送密码重置邮件。请在 1 小时内完成重置。 / If {email} is registered, we'll send a password reset email. Please complete the reset within 1 hour.
 auth.step1.forgot.back_to_login     返回登录 / Back to sign-in
 ```
 
@@ -588,8 +584,8 @@ grep -rnE '(Step ?[012]|lookup|next_action|state machine)' frontend/src/i18n --i
 
 | # | 事件名 | 触发点 | Props (禁 PII) |
 |---|--------|--------|----------------|
-| #57 | `auth_step0_email_submitted` | Step 0 点"用邮箱继续" | email_domain (仅 `@` 后部分), outcome=new\|existing\|error, elapsed_ms (实际等待时间) |
-| #58 | `auth_step1_new_account_created` | Step 1 · 新邮箱, "创建账号"成功 | locale, oauth_available |
+| #57 | `auth_step0_email_submitted` | Step 0 点"继续" | email_domain (仅 `@` 后部分), outcome=new\|existing\|error, elapsed_ms (实际等待时间) |
+| #58 | `auth_step1_new_verification_sent` | Step 1 · 新邮箱, "发送验证邮件"成功 | locale, oauth_available |
 | #59 | `auth_step1_existing_logged_in` | Step 1 · 老邮箱, "登录"成功 | locale |
 | #60 | `auth_step1_forgot_sent` | 忘记密码 → 点击"发送重置链接"成功 | — |
 | #61 | `auth_oauth_fallback_clicked` | Step 0 用户不输邮箱直接走 Google / GitHub | provider=google\|github |
@@ -601,6 +597,50 @@ grep -rnE '(Step ?[012]|lookup|next_action|state machine)' frontend/src/i18n --i
 - 结构视觉锚点: `design/prototype-auth-v4.html` · `design/prototype-auth-v5.html`
 - 代码实现: `frontend/src/pages/AuthPage.jsx` (重写自 2026-04-17 版本)
 - DESIGN_TOKENS 依赖: 全部走 `var(--color-*)` / `t-input` / `t-btn-primary` / `t-card`, 禁止内联 hex (§设计锚点 · 样式契约)
+
+##### 4.1.1-form.B 2026-04-29 落地口径: 邮箱验证优先的产品端 Auth
+
+> **本节为 2026-04-29 实施基线**: Email-first 入口保留, 但"新邮箱"分支不在浏览器内直接设置密码, 而是先发送邮箱验证邮件。用户点击邮件中的一次性 token 后进入 `/setup`, 再补全密码、姓名、公司。这样把"确认邮箱归属"前置, 同时让 token/邮件/账号激活链路成为唯一真相。任何格式合法的邮箱均允许注册。
+
+**前端路由**
+
+| 路由 | 访问策略 | 说明 |
+|---|---|---|
+| `/login` / `/register` / `/auth` | 未登录可访问, 已登录重定向 `/brand/overview` | 同一个 `<AuthPage>`; Step 0 只收邮箱, 后端 lookup 后分流 |
+| `/forgot` / `/forgot-password` | 未登录可访问 | 复用 `<AuthPage initialStep="forgot">` |
+| `/email-sent?type=verify\|reset&email=...` | 未登录可访问 | 展示验证/重置邮件已发送, 重发按钮 60s 冷却 |
+| `/setup?token=...` | 未登录可访问 | `GET /api/auth/setup-token` 预填邮箱; 邮箱注册需要密码, OAuth 新用户不需要 |
+| `/reset-password?token=...` | 未登录可访问 | 设置新密码, token 1h 有效且一次性 |
+| `/auth/callback?token=...` | 未登录可访问 | OAuth 后端回跳, 前端换取 `/me` 后写入本地 token |
+| 所有数据路由 | 需登录 | `<RequireAuth>` 统一拦截, 未登录跳 `/register?redirect=<current>` |
+
+**后端 API**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/auth/lookup` | email-first lookup; 响应固定至少 400ms, 返回 `next=register\|login` |
+| `POST` | `/api/auth/register` | 创建未激活用户 + 24h `verify_email` token + 发送验证邮件 |
+| `GET` | `/api/auth/setup-token` | 校验 `verify_email` / `oauth_setup` token, 返回邮箱与是否需要密码 |
+| `POST` | `/api/auth/setup` | 消耗 setup token, 写入密码/姓名/公司, 激活账号并签发 7d JWT |
+| `POST` | `/api/auth/login` | 邮箱 + 密码登录, 未验证邮箱不允许登录 |
+| `POST` | `/api/auth/forgot-password` | 非枚举响应; 已注册密码用户生成 1h `password_reset` token |
+| `POST` | `/api/auth/reset-password` | 消耗 password reset token, 写入新 bcrypt 密码 |
+| `POST` | `/api/auth/resend-verification` | 未激活用户重发验证邮件, 60s UI 冷却 + 后端限速 |
+| `GET` | `/api/auth/me` | Bearer JWT 读取当前用户 |
+| `GET` | `/api/auth/google` / `/api/auth/google/callback` | Google OAuth; 新用户进入 `/setup?oauth=google&token=...`, 老用户直接回 `/auth/callback` |
+
+**数据模型**
+
+| 表 | 字段摘要 | 规则 |
+|---|---|---|
+| `users` | `email`, `password_hash`, `name`, `company`, `provider`, `google_id`, `email_verified`, `newsletter_subscribed`, `locale`, `last_login_at` | `email` 小写唯一; `provider=email\|google`; OAuth 用户允许无密码 |
+| `user_auth_tokens` | `user_id`, `token_hash`, `token_type`, `expires_at`, `used_at`, `email_snapshot` | 只存 SHA-256 hash; `token_type=verify_email\|password_reset\|oauth_setup`; 所有 token 一次性 |
+
+**安全与邮件**
+- 密码: bcrypt cost 12; 产品端策略为 ≥8 位, 必须包含大小写字母和数字。
+- JWT: `USER_JWT_SECRET` 32+ bytes, HS256, issuer `genpano`, audience `genpano-user-access`, 有效期 7 天。
+- 邮件: 支持 `noop` / `resend` / `aliyun_dm` 三种 provider; 生产优先接阿里云 DM SMTP (`smtpdm.aliyun.com:465` + SSL), 本地/CI 可 no-op 但保留 token 记录。模板覆盖验证邮件、重置密码、欢迎邮件, 默认双语主题。
+- 限速: lookup 20/min, register/login 10/min, forgot 5/min, resend 3/min; MVP 为单进程内存滑窗, 多 worker 上线前迁移 Redis。
 
 ---
 
@@ -720,8 +760,9 @@ grep -nE "searchParams\.(get|has).*\b(redirect|brandHint)\b" frontend/src/pages/
 - **多语言**: 每封邮件提供 zh-CN / en-US 两个模板文件 (共 10 个)，按 `User.locale` 选择发送版本；未注册场景 (E1 发送时用户尚未完成注册) 按注册表单填写的 locale 或浏览器 Accept-Language 判断。详见 [4.10.4](#4104-ui-国际化-中文--英文)
 
 **技术实现**:
-- 邮件服务: Resend (开发者友好, 免费 tier 100 封/天 MVP 足够) 或 AWS SES
-- 模板引擎: React Email (与 Next.js 生态一致) 生成 HTML 邮件
+- 邮件服务: `EMAIL_PROVIDER=aliyun_dm` 走阿里云 DirectMail SMTP; `EMAIL_PROVIDER=resend` 作为海外/备用通道; `EMAIL_PROVIDER=noop` 用于本地和 CI。
+- 阿里云 DM SMTP 配置: `ALIYUN_DM_SMTP_HOST=smtpdm.aliyun.com`, `ALIYUN_DM_SMTP_PORT=465`, `ALIYUN_DM_SMTP_SSL=true`, `ALIYUN_DM_SMTP_USER=<发信地址>`, `ALIYUN_DM_SMTP_PASSWORD=<SMTP 密码>`。
+- 模板引擎: 后端内置品牌 HTML 模板, 纯文本 + HTML 双体发送
 - 发送方式: 后端 API 触发，异步发送 (不阻塞用户操作)
 - Token 存储: 数据库存 hashed token + 过期时间，验证后立即删除
 - 频率限制: Redis / 内存计数器，按邮箱地址 + 邮件类型限流

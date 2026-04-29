@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useLanguage } from '../context/LanguageContext'
 import { useAuth } from '../context/AuthContext'
@@ -9,7 +9,7 @@ import ParticleArt from '../components/ParticleArt'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 
 export default function SetupPage() {
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const navigate = useNavigate()
   const { setTokenAndUser } = useAuth()
   const [searchParams] = useSearchParams()
@@ -22,6 +22,8 @@ export default function SetupPage() {
   const [company, setCompany] = useState('')
   const [newsletter, setNewsletter] = useState(true)
   const [isLoading, setIsLoading] = useState(false)
+  const [requiresPassword, setRequiresPassword] = useState(true)
+  const [tokenLoading, setTokenLoading] = useState(true)
 
   const [emailError, setEmailError] = useState('')
   const [passwordError, setPasswordError] = useState('')
@@ -29,6 +31,36 @@ export default function SetupPage() {
   const [companyError, setCompanyError] = useState('')
 
   const { validate: validateEmail } = useEmailValidation()
+
+  const isStrongPassword = (value: string) =>
+    value.length >= 8 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!token) {
+      setTokenLoading(false)
+      showToast(t.errors.serverError, 'error')
+      return
+    }
+
+    authApi.getSetupToken(token)
+      .then(info => {
+        if (cancelled) return
+        setEmail(info.email)
+        setName(info.name || '')
+        setCompany(info.company || '')
+        setRequiresPassword(info.requiresPassword)
+      })
+      .catch(err => {
+        const msg = err instanceof Error ? err.message : ''
+        showToast(msg || t.errors.serverError, 'error')
+      })
+      .finally(() => {
+        if (!cancelled) setTokenLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [token, t.errors.serverError])
 
   const validate = (): boolean => {
     let valid = true
@@ -43,7 +75,7 @@ export default function SetupPage() {
       setEmailError('')
     }
 
-    if (!password || password.length < 8) {
+    if (requiresPassword && !isStrongPassword(password)) {
       setPasswordError(t.setup.passwordError)
       valid = false
     } else {
@@ -73,9 +105,17 @@ export default function SetupPage() {
 
     setIsLoading(true)
     try {
-      const response = await authApi.setup({ token, email, password, name, company, newsletter })
+      const response = await authApi.setup({
+        token,
+        email,
+        password: requiresPassword ? password : undefined,
+        name,
+        company,
+        newsletter,
+        locale: language === 'zh' ? 'zh-CN' : 'en-US',
+      })
       setTokenAndUser(response.token, response.user)
-      navigate('/dashboard')
+      navigate('/brand/overview')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''
       showToast(msg || t.errors.serverError, 'error')
@@ -84,20 +124,33 @@ export default function SetupPage() {
     }
   }
 
+  if (tokenLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-themed-page">
+        <svg className="animate-spin w-7 h-7 text-themed-accent" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen flex">
       {/* Left decorative panel */}
       <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden bg-brand-beige"
+        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden"
+        style={{ background: 'var(--color-auth-visual-bg)' }}
         aria-hidden="true"
       >
         <div className="flex-1 w-full">
           <ParticleArt />
         </div>
         <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs" style={{ color: '#A0845C', lineHeight: 1.6 }}>
-            Monitor your brand's presence<br />
-            across AI-generated content
+          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
+            {language === 'zh'
+              ? '完成设置后进入 GenPano 工作台'
+              : 'Continue to your GenPano workspace after setup'}
           </p>
         </div>
       </div>
@@ -114,7 +167,7 @@ export default function SetupPage() {
           <div className="max-w-md mx-auto">
             {/* Title */}
             <div className="mb-8">
-              <h1 className="text-[32px] font-heading font-semibold text-[#1A1A2E]">
+              <h1 className="text-[32px] font-brand font-semibold text-themed-primary">
                 {t.setup.title}
               </h1>
             </div>
@@ -134,14 +187,14 @@ export default function SetupPage() {
                     type="email"
                     autoComplete="email"
                     value={email}
-                    onChange={e => { setEmail(e.target.value); setEmailError('') }}
+                    readOnly
                     placeholder="email@company.com"
                     aria-invalid={!!emailError}
                     className={`w-full pl-10 pr-3.5 py-2.5 text-sm rounded-lg border transition-colors outline-none
                       ${emailError
                         ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
-                        : 'border-gray-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/10'
-                      } placeholder:text-gray-400 text-gray-900`}
+                        : 'border-gray-200 bg-gray-50'
+                      } placeholder:text-gray-400 text-gray-700`}
                   />
                 </div>
                 {emailError && (
@@ -149,49 +202,50 @@ export default function SetupPage() {
                 )}
               </div>
 
-              {/* Password field */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  {t.setup.passwordLabel}
-                  <span className="text-red-500 ml-0.5">★</span>
-                  <button
-                    type="button"
-                    title={t.setup.passwordInfo}
-                    className="ml-1.5 text-gray-400 hover:text-gray-600 transition-colors inline-flex items-center"
-                  >
-                    <InfoIcon />
-                  </button>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                    <LockIcon />
-                  </span>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="new-password"
-                    value={password}
-                    onChange={e => { setPassword(e.target.value); setPasswordError('') }}
-                    placeholder={t.setup.passwordLabel}
-                    aria-invalid={!!passwordError}
-                    className={`w-full pl-10 pr-10 py-2.5 text-sm rounded-lg border transition-colors outline-none
-                      ${passwordError
-                        ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
-                        : 'border-gray-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/10'
-                      } placeholder:text-gray-400 text-gray-900`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(v => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
-                    tabIndex={-1}
-                  >
-                    {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                  </button>
+              {requiresPassword && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    {t.setup.passwordLabel}
+                    <span className="text-red-500 ml-0.5">★</span>
+                    <button
+                      type="button"
+                      title={t.setup.passwordInfo}
+                      className="ml-1.5 text-gray-400 hover:text-gray-600 transition-colors inline-flex items-center"
+                    >
+                      <InfoIcon />
+                    </button>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <LockIcon />
+                    </span>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      value={password}
+                      onChange={e => { setPassword(e.target.value); setPasswordError('') }}
+                      placeholder={t.setup.passwordLabel}
+                      aria-invalid={!!passwordError}
+                      className={`w-full pl-10 pr-10 py-2.5 text-sm rounded-lg border transition-colors outline-none
+                        ${passwordError
+                          ? 'border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-100'
+                          : 'border-gray-200 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/10'
+                        } placeholder:text-gray-400 text-gray-900`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                    </button>
+                  </div>
+                  {passwordError && (
+                    <p className="mt-1 text-xs text-red-500" role="alert">{passwordError}</p>
+                  )}
                 </div>
-                {passwordError && (
-                  <p className="mt-1 text-xs text-red-500" role="alert">{passwordError}</p>
-                )}
-              </div>
+              )}
 
               {/* Full name field */}
               <div>

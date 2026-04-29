@@ -14,6 +14,7 @@ from app.models.analyzer import (
     ResponseAnalysis,
     SentimentDriver,
 )
+from app.models.user import User, UserAuthToken
 
 __all__ = [
     "AdminLoginAttempt",
@@ -28,4 +29,6 @@ __all__ = [
     "ProductScoreDaily",
     "ResponseAnalysis",
     "SentimentDriver",
+    "User",
+    "UserAuthToken",
 ]

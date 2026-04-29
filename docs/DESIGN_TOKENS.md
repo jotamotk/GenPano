@@ -77,6 +77,18 @@
 | `--color-bg-subtle-2` | `#F4F4F4` | 品牌/项目选择器 pill |
 | `--color-bg-badge` | `#F0F0FF` | 默认 badge 背景 |
 
+### Auth Flow Tokens (2026-04-29)
+
+| Token | 值 | 用法 |
+|---|---|---|
+| `--color-auth-visual-bg` / `brand-beige` | `#F6F8FB` | 注册登录左侧视觉区背景; `brand-beige` 仅作旧原型兼容别名 |
+| `--color-auth-panel-bg` | `#FFFFFF` | 表单承载面 |
+| `--color-auth-note-bg` / `auth-note` | `rgba(96,91,255,0.06)` | 邮箱验证说明、轻提示块 |
+| `--color-auth-success-bg` | `rgba(10,187,135,0.08)` | 邮件发送成功 / 重置成功提示块 |
+| `--color-auth-graph-line` | `rgba(96,91,255,0.22)` | Auth 视觉插画线条 |
+
+兼容约束: 旧 auth 原型中的 `primary-*` 类已映射到锁定品牌色 `accent-*`。新代码优先使用 `.t-input`、`.t-btn-primary`、`.text-themed-*` 或 `accent-*`。`brand-beige` 名称保留但值不再是米色系，避免注册登录模块退回单一暖色调。
+
 ### Overlay (覆盖层 & Scrim)
 
 | Token | 值 | 用法 |

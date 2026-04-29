@@ -238,7 +238,7 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 
 ### 4.7 Info Card (信息卡片)
 
-用于邮件发送成功页面的 "已发送至" 和 "接下来你需要" 区域：
+用于邮件确认页面的邮箱展示和下一步说明区域：
 
 | 属性 | 值 |
 |------|-----|
@@ -371,11 +371,11 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 登录                          ← H1, Nunito 32px SemiBold
 没有账号？ Sign Up             ← Subtitle 14px + Primary Link
 
-工作邮箱                       ← Label 14px Medium
+邮箱                           ← Label 14px Medium
 ┌─────────────────────────┐
 │ ✉  email@company.com    │   ← Input 48px, 邮件图标
 └─────────────────────────┘
-  请输入有效的公司邮箱          ← Error 13px red (条件显示)
+  请输入有效的邮箱地址          ← Error 13px red (条件显示)
 
 [        继续        ]        ← Primary Button 48px
 
@@ -392,7 +392,7 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 登录
 没有账号？ 注册
 
-工作邮箱
+邮箱
 ┌──────────────────────── ✏ ┐
 │  frank.wang@lianwei.com    │  ← 禁用态，右侧编辑图标可返回 Step1
 └────────────────────────────┘
@@ -419,11 +419,11 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 创建免费账户                    ← H1
 已经有账户了？ 登录
 
-工作邮箱
+邮箱
 ┌─────────────────────────┐
 │  frank.wang@lianwei.com │
 └─────────────────────────┘
-  请输入有效的公司邮箱
+  请输入有效的邮箱地址
 
 [        注册        ]
 
@@ -439,7 +439,7 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 ```
 设置您的帐户                    ← H1
 
-公司邮箱  *
+邮箱  *
 ┌──────────────────────────┐
 │  ✉  email@company.com    │
 └──────────────────────────┘
@@ -464,28 +464,28 @@ className="h-12 w-full rounded-[10px] border border-gray-200 bg-white text-gray-
 [        注册        ]
 ```
 
-### 7.5 邮件发送成功页 (验证/重置共用)
+### 7.5 邮件确认页 (验证/重置共用)
 
 ```
         ✅                     ← 绿色勾号 64px, scale-in 动画
 
-   邮件发送成功！               ← H2 24px
-   我们已将验证邮件发送到您的邮箱  ← Body 14px gray
+   请查收邮箱                  ← H2 24px
+   验证邮件已发送。完成验证后，你可以继续设置账号。 ← Body 14px gray
 
 ┌─────────────────────────────┐
 │  ✉ 已发送至                  │  ← Info Card, bg-gray-50
 │  email@company.com      ✏   │
 └─────────────────────────────┘
 
-接下来你需要：
-  ① 登录你的邮箱查看验证邮件     ← 编号步骤
-  ② 点击邮件中的验证按钮或链接
+下一步：
+  ① 打开邮箱，查看 GenPano 验证邮件 ← 编号步骤
+  ② 点击邮件中的按钮继续设置账号
 
 [     重新发送邮件     ]        ← Primary Button
 
 没有收到邮件？请检查你的垃圾邮件文件夹  ← Caption gray
 
-查看邮件 👉                    ← Link
+查看邮件                      ← Link
 ```
 
 ### 7.6 忘记密码页

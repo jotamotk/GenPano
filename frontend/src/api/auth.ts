@@ -1,17 +1,16 @@
-import axios from 'axios'
-
-const api = axios.create({
-  baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' },
-})
+const API_BASE = '/api'
 
 export interface LoginResponse {
   token: string
   user: {
-    id: number
+    id: string
     email: string
     name: string | null
     company: string | null
+    role?: string
+    provider?: string
+    emailVerified?: boolean
+    locale?: 'zh-CN' | 'en-US'
   }
 }
 
@@ -21,34 +20,95 @@ export interface RegisterResponse {
 }
 
 export interface MeResponse {
-  id: number
+  id: string
   email: string
   name: string | null
   company: string | null
+  role?: string
+  provider?: string
+  emailVerified?: boolean
+  locale?: 'zh-CN' | 'en-US'
   createdAt: string
+}
+
+export interface LookupResponse {
+  next: 'register' | 'login'
+  exists: boolean
+  hasPassword: boolean
+  provider: 'email' | 'google' | null
+  localeHint: 'zh-CN' | 'en-US' | null
+}
+
+export interface SetupTokenResponse {
+  email: string
+  provider: 'email' | 'google'
+  name: string | null
+  company: string | null
+  requiresPassword: boolean
+  tokenType: 'verify_email' | 'oauth_setup'
+}
+
+async function parseError(res: Response): Promise<Error> {
+  try {
+    const data = await res.json()
+    const message =
+      data?.message ||
+      data?.detail?.message ||
+      data?.detail?.reason ||
+      (typeof data?.detail === 'string' ? data.detail : null) ||
+      res.statusText
+    return new Error(message)
+  } catch {
+    return new Error(res.statusText || 'Unknown error')
+  }
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  token?: string,
+): Promise<T> {
+  const headers = new Headers(options.headers)
+  headers.set('Content-Type', 'application/json')
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  if (!res.ok) throw await parseError(res)
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
 }
 
 export const authApi = {
   async register(email: string): Promise<RegisterResponse> {
-    const res = await api.post('/auth/register', { email })
-    return res.data
+    return request<RegisterResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
+  },
+
+  async lookup(email: string): Promise<LookupResponse> {
+    return request<LookupResponse>('/auth/lookup', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
   },
 
   async login(email: string, password: string): Promise<LoginResponse> {
-    const res = await api.post('/auth/login', { email, password })
-    return res.data
+    return request<LoginResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    })
   },
 
   async forgotPassword(email: string): Promise<{ message: string }> {
-    const res = await api.post('/auth/forgot-password', { email })
-    return res.data
+    return request<{ message: string }>('/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
   },
 
   async getMe(token: string): Promise<MeResponse> {
-    const res = await api.get('/auth/me', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    return res.data
+    return request<MeResponse>('/auth/me', { method: 'GET' }, token)
   },
 
   getGoogleOAuthUrl(): string {
@@ -56,36 +116,39 @@ export const authApi = {
   },
 
   async checkEmail(email: string): Promise<{ exists: boolean }> {
-    const res = await api.get(`/auth/check-email?email=${encodeURIComponent(email)}`)
-    return res.data
+    return request<{ exists: boolean }>(`/auth/check-email?email=${encodeURIComponent(email)}`)
   },
 
   async resendVerification(email: string): Promise<void> {
-    await api.post('/auth/resend-verification', { email })
+    await request<void>('/auth/resend-verification', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
+  },
+
+  async getSetupToken(token: string): Promise<SetupTokenResponse> {
+    return request<SetupTokenResponse>(`/auth/setup-token?token=${encodeURIComponent(token)}`)
   },
 
   async setup(data: {
     token: string
     email: string
-    password: string
+    password?: string
     name: string
     company: string
     newsletter: boolean
+    locale?: 'zh-CN' | 'en-US'
   }): Promise<LoginResponse> {
-    const res = await api.post('/auth/setup', data)
-    return res.data
+    return request<LoginResponse>('/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   },
 
   async resetPassword(token: string, password: string): Promise<void> {
-    await api.post('/auth/reset-password', { token, password })
+    await request<void>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    })
   },
 }
-
-// Response interceptor for consistent error handling
-api.interceptors.response.use(
-  res => res,
-  err => {
-    const message = err.response?.data?.message || err.message || 'Unknown error'
-    return Promise.reject(new Error(message))
-  }
-)

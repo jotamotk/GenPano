@@ -30,6 +30,13 @@
   --color-bg-subtle:        #FAFAFB;
   --color-bg-subtle-2:      #F4F4F4;           /* brand/project selector pill */
 
+  /* ── Auth Experience ─────────────────────────── */
+  --color-auth-visual-bg:    #F6F8FB;
+  --color-auth-panel-bg:     #FFFFFF;
+  --color-auth-note-bg:      rgba(96,91,255,0.06);
+  --color-auth-success-bg:   rgba(10,187,135,0.08);
+  --color-auth-graph-line:   rgba(96,91,255,0.22);
+
   /* Sidebar (two variants — page chooses) */
   --color-bg-sidebar:       #FFFFFF;           /* Figma light sidebar */
   --color-bg-sidebar-dark:  #0A1929;           /* reserved: dark variant */
@@ -54,6 +61,9 @@
   --color-accent-alpha-30:  rgba(96,91,255,0.30); /* accent overlay (e.g. KG filter active state) */
   --color-accent-alpha-27:  rgba(96,91,255,0.27); /* selector border */
   --color-accent-soft:      #ACA9FF;           /* sidebar active gradient start */
+  --color-primary-500:      var(--color-accent);       /* compat alias for auth prototype */
+  --color-primary-600:      var(--color-accent-hover); /* compat alias for auth prototype */
+  --color-primary-700:      #4440C0;
 
   /* ── Borders ─────────────────────────────────── */
   --color-border:           #D0D5DD;           /* form/input borders */

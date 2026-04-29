@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLocale } from '../contexts/LocaleContext';
+import { authApi } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
+import { validateEmailFormat } from '../hooks/useEmailValidation';
+import ParticleArt from '../components/ParticleArt';
 
 /* ─────────────────────────────────────────────────────────────
    AuthPage — PRD §4.1.1 + §4.1.1-form (Email-first 2-step)
@@ -38,29 +42,6 @@ import { useLocale } from '../contexts/LocaleContext';
 function tOr(t, key, fallback) {
   const v = t(key);
   return v && v !== key ? v : fallback;
-}
-
-/* ── Mock lookup (前端 stub) ──
-   SESSIONS §1 会把这里换成真实 fetch('/api/auth/lookup').
-   ⚠️ 固定 ≥400ms 延迟是 anti-enum 硬约束 (PRD §4.1.1-form H1/H3).
-   已注册邮箱列表 hardcoded, 其他一律走 register 分支. */
-const MOCK_REGISTERED_EMAILS = new Set([
-  'demo@genpano.com',
-  'frank@genpano.com',
-  'test@genpano.com',
-]);
-
-function mockLookup(email) {
-  const start = Date.now();
-  return new Promise((resolve) => {
-    const normalized = (email || '').trim().toLowerCase();
-    const registered = MOCK_REGISTERED_EMAILS.has(normalized);
-    const next = registered ? 'login' : 'register';
-    const hasPassword = registered;
-    const elapsed = Date.now() - start;
-    const wait = Math.max(420 - elapsed, 0); // 固定 ≥400ms
-    setTimeout(() => resolve({ next, hasPassword }), wait);
-  });
 }
 
 /* ── Icons ───────────────────────────────────────────────── */
@@ -126,7 +107,7 @@ function LeftPanel({ t }) {
     >
       <div className="relative z-10 max-w-md">
         {/* Logo */}
-        <div className="flex items-center gap-3 mb-10">
+        <div className="flex items-center gap-3 mb-8">
           <div
             className="w-11 h-11 rounded-card flex items-center justify-center"
             style={{ background: 'var(--color-accent)' }}
@@ -144,11 +125,18 @@ function LeftPanel({ t }) {
           </span>
         </div>
 
+        <div
+          className="h-[300px] overflow-hidden rounded-[28px] border mb-8 shadow-[0_18px_60px_rgba(28,34,58,0.10)]"
+          style={{ borderColor: 'var(--color-border-subtle)' }}
+        >
+          <ParticleArt />
+        </div>
+
         <h2
           className="text-[28px] font-brand font-bold leading-tight mb-4"
           style={{ color: 'var(--color-text-primary)', letterSpacing: '-0.02em' }}
         >
-          {tOr(t, 'auth.leftpanel.tagline', '在 AI 引擎里看见你的品牌')}
+          {tOr(t, 'auth.leftpanel.tagline', '管理你的品牌监测数据')}
         </h2>
         <p
           className="text-base leading-relaxed mb-8"
@@ -157,16 +145,16 @@ function LeftPanel({ t }) {
           {tOr(
             t,
             'auth.leftpanel.body',
-            '监测 ChatGPT、豆包、DeepSeek 中的品牌可见度、情感与引用份额。每日全量采集，注册即看完整数据。'
+            '登录后查看品牌可见度、情感、引用和竞品表现，继续完成项目配置与报告管理。'
           )}
         </p>
 
         {/* Feature bullets — muted, non-decorative */}
         <div className="space-y-3">
           {[
-            ['auth.leftpanel.bullet_1', '四层 Pipeline：Topic → Prompt → Query → Response'],
-            ['auth.leftpanel.bullet_2', '行业知识图谱驱动的自动竞品发现'],
-            ['auth.leftpanel.bullet_3', 'Agent-native MCP API，工具级集成'],
+            ['auth.leftpanel.bullet_1', '品牌、竞品和人群分组统一管理'],
+            ['auth.leftpanel.bullet_2', '监测结果、诊断和报告集中查看'],
+            ['auth.leftpanel.bullet_3', '支持团队后续接入 API 与自动化流程'],
           ].map(([key, fallback]) => (
             <div key={key} className="flex items-start gap-2.5">
               <div
@@ -196,14 +184,15 @@ function LeftPanel({ t }) {
  *   Step 0 is shown regardless; type only nudges the "new user" framing
  *   on /register (subtitle emphasizes sign-up) vs "returning" on /login.
  */
-export default function AuthPage({ type = 'login' }) {
+export default function AuthPage({ type = 'login', initialStep = null }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t, locale, setLocale } = useLocale();
+  const { setTokenAndUser } = useAuth();
 
   /* ── Query passthrough (PRD §4.1.2a / §4.1.1c / §4.1.1d) ── */
   const monitorBrand = searchParams.get('monitor_brand') || '';
-  const returnTo = searchParams.get('return_to') || '';
+  const returnTo = searchParams.get('redirect') || searchParams.get('return_to') || '';
   const action = searchParams.get('action') || '';
   const entrySource = searchParams.get('entry_source') || '';
   const emailPrefill = searchParams.get('email') || '';
@@ -219,7 +208,7 @@ export default function AuthPage({ type = 'login' }) {
   }, [monitorBrand, returnTo, action, entrySource]);
 
   /* ── State machine ── */
-  const [step, setStep] = useState('step_0_email');
+  const [step, setStep] = useState(initialStep === 'forgot' ? 'step_1_forgot' : 'step_0_email');
   const [email, setEmail] = useState(emailPrefill);
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
@@ -240,10 +229,11 @@ export default function AuthPage({ type = 'login' }) {
   }, [step]);
 
   /* ── Validation ── */
-  const isValidEmail = useCallback(
-    (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((v || '').trim()),
-    []
-  );
+  const isValidEmail = useCallback((v) => validateEmailFormat(v) === 'valid', []);
+
+  const safeRedirect = useCallback((value) => {
+    return value && value.startsWith('/') && !value.startsWith('//') ? value : '/brand/overview';
+  }, []);
 
   /* ── Step 0 → Step 1 (lookup) ── */
   const submitEmail = async (e) => {
@@ -259,7 +249,7 @@ export default function AuthPage({ type = 'login' }) {
     setStep('step_1_looking_up');
 
     try {
-      const { next } = await mockLookup(email);
+      const { next } = await authApi.lookup(email);
       setNextAction(next);
       setPassword('');
       setPasswordConfirm('');
@@ -273,52 +263,7 @@ export default function AuthPage({ type = 'login' }) {
   };
 
   /* ── Step 1 New → Create account ── */
-  const submitRegister = (e) => {
-    e.preventDefault();
-    setError(null);
-
-    if (password.length < 8) {
-      setError(tOr(t, 'auth.errors.password_too_short', '密码至少需要 8 个字符'));
-      return;
-    }
-    if (password !== passwordConfirm) {
-      setError(tOr(t, 'auth.errors.password_mismatch', '两次输入的密码不一致'));
-      return;
-    }
-
-    setSubmitting(true);
-    // SESSIONS §1 will swap this for POST /api/auth/register.
-    setTimeout(() => {
-      setSubmitting(false);
-      // PRD §4.1.1c T9 expert fast-path: create_project hook → /projects/new
-      if (action === 'create_project') {
-        navigate(`/projects/new${entrySource ? `?entry_source=${entrySource}` : ''}`);
-      } else {
-        navigate(`/onboarding${passthroughQs}`);
-      }
-    }, 420);
-  };
-
-  /* ── Step 1 Existing → Login ── */
-  const submitLogin = (e) => {
-    e.preventDefault();
-    setError(null);
-
-    if (password.length < 1) {
-      setError(tOr(t, 'auth.errors.password_too_short', '密码至少需要 8 个字符'));
-      return;
-    }
-
-    setSubmitting(true);
-    // SESSIONS §1 will swap this for POST /api/auth/login.
-    setTimeout(() => {
-      setSubmitting(false);
-      navigate(returnTo || '/dashboard');
-    }, 420);
-  };
-
-  /* ── Step 1 Forgot → Send reset link ── */
-  const submitForgot = (e) => {
+  const submitRegister = async (e) => {
     e.preventDefault();
     setError(null);
 
@@ -328,11 +273,67 @@ export default function AuthPage({ type = 'login' }) {
     }
 
     setSubmitting(true);
-    // SESSIONS §1a will swap this for POST /api/auth/forgot-password.
-    setTimeout(() => {
+    try {
+      await authApi.register(email);
+      const qs = new URLSearchParams({ email, type: 'verify' });
+      if (returnTo) qs.set('redirect', returnTo);
+      navigate(`/email-sent?${qs.toString()}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      setError(msg || tOr(t, 'auth.errors.lookup_failed', '服务暂时繁忙，请稍后重试'));
+    } finally {
       setSubmitting(false);
-      setStep('step_1_forgot_sent');
-    }, 420);
+    }
+  };
+
+  /* ── Step 1 Existing → Login ── */
+  const submitLogin = async (e) => {
+    e.preventDefault();
+    setError(null);
+
+    if (password.length < 1) {
+      setError(tOr(t, 'auth.errors.password_too_short', '密码至少需要 8 个字符'));
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await authApi.login(email, password);
+      setTokenAndUser(res.token, res.user);
+      navigate(safeRedirect(returnTo));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      setError(msg || tOr(t, 'auth.errors.invalid_credentials', '用户名或密码不正确'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /* ── Step 1 Forgot → Send reset link ── */
+  const submitForgot = async (e) => {
+    e.preventDefault();
+    setError(null);
+
+    if (!isValidEmail(email)) {
+      setError(tOr(t, 'auth.errors.email_invalid', '请输入有效的邮箱地址'));
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await authApi.forgotPassword(email);
+      const qs = new URLSearchParams({ email, type: 'reset' });
+      navigate(`/email-sent?${qs.toString()}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      setError(msg || tOr(t, 'auth.errors.lookup_failed', '服务暂时繁忙，请稍后重试'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const startGoogleOAuth = () => {
+    window.location.href = authApi.getGoogleOAuthUrl();
   };
 
   /* ── Back / switch email ── */
@@ -396,10 +397,10 @@ export default function AuthPage({ type = 'login' }) {
         {submitting ? (
           <>
             <Spinner />
-            <span>{tOr(t, 'auth.step0.submitting', '识别中…')}</span>
+            <span>{tOr(t, 'auth.step0.submitting', '请稍候…')}</span>
           </>
         ) : (
-          <span>{tOr(t, 'auth.step0.submit', '用邮箱继续')}</span>
+          <span>{tOr(t, 'auth.step0.submit', '继续')}</span>
         )}
       </button>
 
@@ -415,6 +416,7 @@ export default function AuthPage({ type = 'login' }) {
         type="button"
         className="t-btn-secondary w-full h-11 flex items-center justify-center gap-2.5 text-sm"
         disabled={submitting}
+        onClick={startGoogleOAuth}
       >
         <GoogleIcon />
         <span>{tOr(t, 'auth.step0.oauth_google', '用 Google 账号继续')}</span>
@@ -428,7 +430,7 @@ export default function AuthPage({ type = 'login' }) {
         <Spinner />
       </div>
       <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-        {tOr(t, 'auth.step0.submitting', '识别中…')}
+        {tOr(t, 'auth.step0.submitting', '请稍候…')}
       </span>
     </div>
   );
@@ -462,42 +464,24 @@ export default function AuthPage({ type = 'login' }) {
 
   const renderStep1New = () => (
     <form onSubmit={submitRegister} className="space-y-4" noValidate>
-      {renderEmailChip('auth.step1.new.chip', '新邮箱 · 正在为你创建账号')}
+      {renderEmailChip('auth.step1.new.chip', '新账号')}
 
-      <div>
-        <label className="block text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-body)' }}>
-          {tOr(t, 'auth.step1.new.password_label', '密码')}
-        </label>
-        <input
-          ref={passwordInputRef}
-          type="password"
-          value={password}
-          onChange={(e) => { setPassword(e.target.value); if (error) setError(null); }}
-          placeholder="••••••••"
-          className={`t-input ${error ? 't-input-error' : ''}`}
-          autoComplete="new-password"
-          disabled={submitting}
-        />
-        <p className="text-xs mt-1.5" style={{ color: 'var(--color-text-muted)' }}>
-          {tOr(t, 'auth.step1.new.password_hint', '至少 8 位，建议包含数字和字母')}
+      <div
+        className="rounded-card p-4"
+        style={{
+          background: 'var(--color-auth-note-bg)',
+          border: '1px solid var(--color-border-subtle)',
+        }}
+      >
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-body)' }}>
+          {tOr(
+            t,
+            'auth.step1.new.verify_body',
+            '我们会发送一封验证邮件。验证完成后，你可以设置密码并补充账号信息。'
+          )}
         </p>
-      </div>
-
-      <div>
-        <label className="block text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-body)' }}>
-          {tOr(t, 'auth.step1.new.password_confirm_label', '确认密码')}
-        </label>
-        <input
-          type="password"
-          value={passwordConfirm}
-          onChange={(e) => { setPasswordConfirm(e.target.value); if (error) setError(null); }}
-          placeholder="••••••••"
-          className={`t-input ${error ? 't-input-error' : ''}`}
-          autoComplete="new-password"
-          disabled={submitting}
-        />
         {error && (
-          <p className="text-xs mt-1.5" style={{ color: 'var(--color-danger-text)' }}>
+          <p className="text-xs mt-2" style={{ color: 'var(--color-danger-text)' }}>
             {error}
           </p>
         )}
@@ -511,10 +495,10 @@ export default function AuthPage({ type = 'login' }) {
         {submitting ? (
           <>
             <Spinner />
-            <span>{tOr(t, 'auth.step1.new.submitting', '创建中…')}</span>
+            <span>{tOr(t, 'auth.step1.new.submitting', '发送中…')}</span>
           </>
         ) : (
-          <span>{tOr(t, 'auth.step1.new.submit', '创建账号')}</span>
+          <span>{tOr(t, 'auth.step1.new.submit', '发送验证邮件')}</span>
         )}
       </button>
 
@@ -533,7 +517,7 @@ export default function AuthPage({ type = 'login' }) {
 
   const renderStep1Existing = () => (
     <form onSubmit={submitLogin} className="space-y-4" noValidate>
-      {renderEmailChip('auth.step1.existing.chip', '欢迎回来')}
+      {renderEmailChip('auth.step1.existing.chip', '已有账号')}
 
       <div>
         <div className="flex items-center justify-between mb-1.5">
@@ -636,7 +620,7 @@ export default function AuthPage({ type = 'login' }) {
     const bodyTpl = tOr(
       t,
       'auth.step1.forgot.sent_body',
-      '如果 {email} 是注册邮箱，我们已把重置链接发送过去。请在 24 小时内点击邮件中的链接完成密码重置。'
+      '如果 {email} 已注册，我们会发送密码重置邮件。请在 1 小时内完成重置。'
     );
     const body = bodyTpl.replace('{email}', email);
     return (
@@ -688,13 +672,13 @@ export default function AuthPage({ type = 'login' }) {
   const headerFor = () => {
     if (step === 'step_1_new') {
       return {
-        title: tOr(t, 'auth.step1.new.title', '设置登录密码'),
+        title: tOr(t, 'auth.step1.new.title', '验证你的邮箱'),
         subtitle: null,
       };
     }
     if (step === 'step_1_existing') {
       return {
-        title: tOr(t, 'auth.step1.existing.title', '输入密码登录'),
+        title: tOr(t, 'auth.step1.existing.title', '输入密码'),
         subtitle: null,
       };
     }
@@ -703,14 +687,14 @@ export default function AuthPage({ type = 'login' }) {
         title: tOr(t, 'auth.step1.forgot.title', '重置你的密码'),
         subtitle:
           step === 'step_1_forgot'
-            ? tOr(t, 'auth.step1.forgot.subtitle', '我们会把重置链接发到你的邮箱，24 小时内有效。')
+            ? tOr(t, 'auth.step1.forgot.subtitle', '输入邮箱，我们会发送密码重置链接。')
             : null,
       };
     }
     // step_0_email or step_1_looking_up
     return {
-      title: tOr(t, 'auth.step0.title', '用邮箱继续'),
-      subtitle: tOr(t, 'auth.step0.subtitle', '1 秒识别账号状态，新用户和老用户走同一个入口'),
+      title: tOr(t, 'auth.step0.title', '登录或注册'),
+      subtitle: tOr(t, 'auth.step0.subtitle', '输入邮箱，继续访问你的 GenPano 工作台。'),
     };
   };
 

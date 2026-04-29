@@ -1,151 +1,101 @@
-// Abstract 3D particle sculpture — CSS-animated geometric art
-// Evokes floating gold/bronze particles forming a cube-like structure
+const METRICS = [
+  { label: 'Visibility', value: '64%', color: 'var(--color-accent)' },
+  { label: 'Sentiment', value: '+8.4', color: 'var(--color-success)' },
+  { label: 'Citations', value: '128', color: 'var(--color-chart-3)' },
+]
+
+const SIGNALS = [
+  { x: 78, y: 116, label: 'Prompt' },
+  { x: 78, y: 214, label: 'Brand' },
+  { x: 78, y: 312, label: 'Citation' },
+  { x: 442, y: 142, label: 'Topic' },
+  { x: 442, y: 260, label: 'Intent' },
+  { x: 442, y: 342, label: 'Report' },
+]
 
 export default function ParticleArt() {
   return (
-    <div className="relative w-full h-full flex items-center justify-center overflow-hidden select-none">
-      {/* Background ambient glow */}
-      <div className="absolute w-72 h-72 rounded-full opacity-20"
-        style={{ background: 'radial-gradient(circle, #C9A96E 0%, transparent 70%)' }}
-      />
+    <div
+      className="relative w-full h-full overflow-hidden select-none"
+      style={{ background: 'var(--color-auth-visual-bg)' }}
+    >
+      <div className="absolute inset-0 opacity-[0.55]" aria-hidden="true">
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(var(--color-auth-graph-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-auth-graph-line) 1px, transparent 1px)',
+            backgroundSize: '36px 36px',
+          }}
+        />
+      </div>
 
-      {/* Central geometric structure */}
-      <div className="relative w-64 h-64 animate-float" style={{ animationDelay: '0s' }}>
+      <div
+        className="absolute left-1/2 top-1/2 w-[min(82%,560px)] aspect-[1.18] -translate-x-1/2 -translate-y-1/2 rounded-[28px] border bg-white/85 shadow-[0_22px_70px_rgba(28,34,58,0.14)]"
+        style={{ borderColor: 'var(--color-border-subtle)' }}
+      >
+        <svg className="absolute inset-0 h-full w-full" viewBox="0 0 560 474" role="img" aria-label="GenPano brand signal visualization">
+          <defs>
+            <linearGradient id="signalLine" x1="70" y1="120" x2="490" y2="340" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#605BFF" stopOpacity="0.9" />
+              <stop offset="0.48" stopColor="#3B82F6" stopOpacity="0.72" />
+              <stop offset="1" stopColor="#0ABB87" stopOpacity="0.86" />
+            </linearGradient>
+            <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="10" stdDeviation="12" floodColor="#111827" floodOpacity="0.12" />
+            </filter>
+          </defs>
 
-        {/* Outer ring */}
-        <svg
-          viewBox="0 0 200 200"
-          className="absolute inset-0 w-full h-full animate-rotate-slow"
-          style={{ opacity: 0.35 }}
-        >
-          <ellipse
-            cx="100" cy="100" rx="92" ry="40"
-            fill="none" stroke="#8B6914" strokeWidth="1"
-            strokeDasharray="4 6"
-          />
-          <ellipse
-            cx="100" cy="100" rx="92" ry="40"
-            fill="none" stroke="#C9A96E" strokeWidth="0.5"
-            strokeDasharray="2 8"
-            transform="rotate(60 100 100)"
-          />
-          <ellipse
-            cx="100" cy="100" rx="92" ry="40"
-            fill="none" stroke="#C9A96E" strokeWidth="0.5"
-            strokeDasharray="2 8"
-            transform="rotate(120 100 100)"
-          />
+          <rect x="34" y="34" width="492" height="406" rx="22" fill="#FFFFFF" />
+          <path d="M72 342C155 268 209 386 282 298C350 216 386 198 488 146" fill="none" stroke="url(#signalLine)" strokeWidth="3" strokeLinecap="round" />
+          <path d="M74 184C146 106 225 154 280 224C347 309 407 330 486 284" fill="none" stroke="#605BFF" strokeWidth="1.5" strokeDasharray="7 9" strokeLinecap="round" opacity="0.55" />
+          <path d="M96 382H464" stroke="#E5E7EB" strokeWidth="1" />
+          <path d="M96 310H464" stroke="#E5E7EB" strokeWidth="1" />
+          <path d="M96 238H464" stroke="#E5E7EB" strokeWidth="1" />
+          <path d="M96 166H464" stroke="#E5E7EB" strokeWidth="1" />
+          <path d="M96 94H464" stroke="#E5E7EB" strokeWidth="1" />
+
+          <g filter="url(#softShadow)">
+            <rect x="196" y="154" width="168" height="132" rx="20" fill="#030229" />
+            <path d="M226 222C249 186 313 180 335 222C312 264 249 258 226 222Z" fill="#FFFFFF" fillOpacity="0.96" />
+            <circle cx="280" cy="222" r="23" fill="#605BFF" />
+            <circle cx="280" cy="222" r="8" fill="#FFFFFF" />
+            <text x="280" y="258" textAnchor="middle" fontSize="13" fontWeight="700" fill="#FFFFFF" letterSpacing="1.2">GENPANO</text>
+          </g>
+
+          {SIGNALS.map((item) => (
+            <g key={`${item.label}-${item.x}`}>
+              <line x1={item.x < 200 ? item.x + 46 : item.x - 46} y1={item.y} x2="280" y2="222" stroke="#D7D8E8" strokeWidth="1.2" />
+              <rect x={item.x - 40} y={item.y - 17} width="80" height="34" rx="17" fill="#FFFFFF" stroke="#E6E8F2" />
+              <circle cx={item.x - 24} cy={item.y} r="4" fill={item.x < 200 ? '#605BFF' : '#0ABB87'} />
+              <text x={item.x - 12} y={item.y + 4} fontSize="11" fontWeight="600" fill="#4B5563">{item.label}</text>
+            </g>
+          ))}
+
+          <g>
+            <rect x="72" y="52" width="150" height="46" rx="14" fill="#F7F7FF" stroke="#E8E8F8" />
+            <text x="92" y="80" fontSize="13" fontWeight="700" fill="#030229">Brand panorama</text>
+          </g>
         </svg>
 
-        {/* Inner cube wireframe */}
-        <svg
-          viewBox="0 0 200 200"
-          className="absolute inset-0 w-full h-full"
-          style={{ opacity: 0.8 }}
-        >
-          {/* Cube faces - isometric projection */}
-          {/* Top face */}
-          <polygon
-            points="100,50 140,70 100,90 60,70"
-            fill="none" stroke="#C9A96E" strokeWidth="1.5"
-          />
-          {/* Left face */}
-          <polygon
-            points="60,70 100,90 100,140 60,120"
-            fill="#8B6914" fillOpacity="0.12" stroke="#8B6914" strokeWidth="1.5"
-          />
-          {/* Right face */}
-          <polygon
-            points="100,90 140,70 140,120 100,140"
-            fill="#C9A96E" fillOpacity="0.15" stroke="#C9A96E" strokeWidth="1.5"
-          />
-          {/* Inner depth lines */}
-          <line x1="100" y1="50" x2="100" y2="90" stroke="#D4A853" strokeWidth="1" opacity="0.6" />
-          <line x1="60" y1="70" x2="60" y2="120" stroke="#D4A853" strokeWidth="1" opacity="0.5" />
-          <line x1="140" y1="70" x2="140" y2="120" stroke="#D4A853" strokeWidth="1" opacity="0.5" />
-          <line x1="60" y1="120" x2="100" y2="140" stroke="#D4A853" strokeWidth="1" opacity="0.5" />
-          <line x1="100" y1="140" x2="140" y2="120" stroke="#D4A853" strokeWidth="1" opacity="0.5" />
-        </svg>
-
-        {/* Orbiting particles */}
-        <div className="absolute inset-0">
-          {ORBIT_PARTICLES.map((p, i) => (
+        <div className="absolute bottom-6 left-6 right-6 grid grid-cols-3 gap-3">
+          {METRICS.map((metric) => (
             <div
-              key={i}
-              className="absolute"
-              style={{
-                top: '50%',
-                left: '50%',
-                width: p.size,
-                height: p.size,
-                marginTop: -p.size / 2,
-                marginLeft: -p.size / 2,
-                animation: `orbit ${p.duration}s linear infinite ${p.reverse ? 'reverse' : 'normal'}`,
-                animationDelay: `${p.delay}s`,
-              }}
+              key={metric.label}
+              className="min-w-0 rounded-[14px] border bg-white/90 px-3 py-3"
+              style={{ borderColor: 'var(--color-border-subtle)' }}
             >
-              <div
-                style={{
-                  width: p.size,
-                  height: p.size,
-                  borderRadius: p.shape === 'circle' ? '50%' : '2px',
-                  background: p.color,
-                  opacity: p.opacity,
-                  transform: `rotate(${p.rotation}deg)`,
-                }}
-              />
+              <div className="mb-1 h-1.5 w-8 rounded-full" style={{ background: metric.color }} />
+              <p className="truncate text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--color-text-muted)' }}>
+                {metric.label}
+              </p>
+              <p className="mt-1 text-lg font-semibold leading-none" style={{ color: 'var(--color-text-primary)' }}>
+                {metric.value}
+              </p>
             </div>
           ))}
         </div>
-
-        {/* Floating dot particles */}
-        {FLOAT_PARTICLES.map((p, i) => (
-          <div
-            key={i}
-            className="absolute rounded-full"
-            style={{
-              top: p.top,
-              left: p.left,
-              width: p.size,
-              height: p.size,
-              background: p.color,
-              opacity: p.opacity,
-              animation: `float ${p.duration}s ease-in-out infinite`,
-              animationDelay: `${p.delay}s`,
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Bottom text */}
-      <div className="absolute bottom-12 text-center">
-        <p className="text-xs tracking-widest uppercase" style={{ color: '#8B6914', opacity: 0.6, letterSpacing: '0.2em' }}>
-          GenPano
-        </p>
-        <p className="text-xs mt-1" style={{ color: '#A0845C', opacity: 0.5, fontSize: '10px' }}>
-          GEO Monitoring
-        </p>
       </div>
     </div>
   )
 }
-
-// Static particle data (avoids re-computation on render)
-const ORBIT_PARTICLES = [
-  { size: 6, duration: 10, delay: 0, reverse: false, color: '#C9A96E', opacity: 0.9, shape: 'circle', rotation: 0 },
-  { size: 4, duration: 14, delay: -3, reverse: false, color: '#8B6914', opacity: 0.7, shape: 'square', rotation: 45 },
-  { size: 5, duration: 8, delay: -5, reverse: true, color: '#D4A853', opacity: 0.8, shape: 'circle', rotation: 0 },
-  { size: 3, duration: 16, delay: -2, reverse: true, color: '#5C4200', opacity: 0.5, shape: 'square', rotation: 30 },
-  { size: 7, duration: 12, delay: -7, reverse: false, color: '#B8922D', opacity: 0.6, shape: 'circle', rotation: 0 },
-]
-
-const FLOAT_PARTICLES = [
-  { top: '15%', left: '20%', size: 4, color: '#C9A96E', opacity: 0.6, duration: 7, delay: 0 },
-  { top: '25%', left: '75%', size: 3, color: '#8B6914', opacity: 0.5, duration: 9, delay: -2 },
-  { top: '70%', left: '15%', size: 5, color: '#D4A853', opacity: 0.7, duration: 6, delay: -4 },
-  { top: '80%', left: '80%', size: 3, color: '#C9A96E', opacity: 0.4, duration: 8, delay: -1 },
-  { top: '45%', left: '88%', size: 4, color: '#B8922D', opacity: 0.5, duration: 11, delay: -6 },
-  { top: '60%', left: '8%', size: 2, color: '#8B6914', opacity: 0.6, duration: 5, delay: -3 },
-  { top: '10%', left: '50%', size: 3, color: '#D4A853', opacity: 0.4, duration: 13, delay: -8 },
-  { top: '85%', left: '45%', size: 5, color: '#C9A96E', opacity: 0.3, duration: 7, delay: -2 },
-]

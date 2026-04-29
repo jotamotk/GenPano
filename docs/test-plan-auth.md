@@ -16,7 +16,7 @@
 |------|------|
 | 前端 | `http://localhost:3000` (Vite dev server) |
 | 后端 | `http://localhost:4000` (Express) |
-| 邮件 | Ethereal 测试账户 (开发环境) |
+| 邮件 | 本地 `EMAIL_PROVIDER=noop` 验证 token 入库; 生产/联调用 `EMAIL_PROVIDER=aliyun_dm` + 阿里云 DM SMTP |
 | 浏览器 | Chrome (latest), Firefox, Safari, Edge |
 | 设备 | Desktop (1920x1080), Tablet (768x1024), Mobile (375x812) |
 
@@ -28,11 +28,11 @@
 
 | ID | 测试用例 | 输入 | 预期结果 | 优先级 |
 |----|---------|------|---------|--------|
-| REG-01 | 正常注册 | 有效工作邮箱 | 发送验证邮件，跳转成功页 | P0 |
-| REG-02 | 个人邮箱注册 | gmail.com 邮箱 | 显示 "请输入有效的公司邮箱" | P0 |
+| REG-01 | 正常注册 | 有效邮箱 | 发送验证邮件，跳转成功页 | P0 |
+| REG-02 | Gmail 邮箱注册 | gmail.com 邮箱 | 允许注册并发送验证邮件 | P0 |
 | REG-03 | 已注册邮箱 | 已存在的邮箱 | 提示已注册，引导登录 | P0 |
 | REG-04 | 无效邮箱格式 | "abc", "abc@", "@.com" | 前端格式校验错误 | P1 |
-| REG-05 | 空邮箱提交 | 空字段 | 显示 "请输入您的公司邮箱" | P1 |
+| REG-05 | 空邮箱提交 | 空字段 | 显示 "请输入您的邮箱" | P1 |
 | REG-06 | 邮箱大小写 | "Frank@Company.COM" | 统一转小写处理 | P2 |
 | REG-07 | 隐私条款链接 | 点击隐私政策/条款 | 打开对应页面 | P2 |
 | REG-08 | Google 注册 (新用户) | Google OAuth | 授权后跳转账户设置页 | P0 |
@@ -81,7 +81,7 @@
 |----|---------|------|---------|--------|
 | FGT-01 | 发送重置邮件 | 已注册邮箱 | 发送邮件，跳转成功页 | P0 |
 | FGT-02 | 不存在的邮箱 | 未注册邮箱 | 同样显示 "已发送"(防枚举) | P0 |
-| FGT-03 | 个人邮箱 | gmail.com | 显示邮箱校验错误 | P1 |
+| FGT-03 | Gmail 邮箱 | gmail.com | 允许提交；若已注册则发送重置邮件，否则仍返回非枚举成功提示 | P1 |
 
 ### 2.6 重置密码
 
@@ -162,8 +162,8 @@
 
 | ID | 测试用例 | 预期结果 | 优先级 |
 |----|---------|---------|--------|
-| MAIL-01 | 验证邮件发送 | Ethereal 收到邮件 | P0 |
-| MAIL-02 | 重置邮件发送 | Ethereal 收到邮件 | P0 |
+| MAIL-01 | 验证邮件发送 | 阿里云 DM 收到 SMTP 请求并投递邮件；本地 no-op 时 token 入库 | P0 |
+| MAIL-02 | 重置邮件发送 | 阿里云 DM 收到 SMTP 请求并投递邮件；本地 no-op 时 token 入库 | P0 |
 | MAIL-03 | 邮件模板渲染 | HTML 格式正确，紫色 header + CTA 按钮 | P0 |
 | MAIL-04 | 验证链接有效 | 点击链接跳转到正确页面 | P0 |
 | MAIL-05 | 重置链接有效 | 点击链接跳转到正确页面 | P0 |
@@ -181,10 +181,10 @@
 
 ```
 1. 访问 /register
-2. 输入工作邮箱 (e.g. test@company.com)
+2. 输入邮箱 (e.g. test@example.com)
 3. 点击 "注册"
 4. 验证跳转到邮件发送成功页
-5. 从 Ethereal 获取验证邮件
+5. 从邮箱收取验证邮件；本地 no-op 时从 `user_auth_tokens` 生成/读取测试链接
 6. 点击验证链接
 7. 验证跳转到账户设置页
 8. 填写密码、全名、公司名称
@@ -213,7 +213,7 @@
 3. 输入邮箱
 4. 点击 "发送"
 5. 验证跳转到发送成功页
-6. 从 Ethereal 获取重置邮件
+6. 从邮箱收取重置邮件；本地 no-op 时从 `user_auth_tokens` 生成/读取测试链接
 7. 点击重置链接
 8. 输入新密码 + 确认密码
 9. 点击 "Reset"
@@ -254,6 +254,6 @@
 | 单元测试 | Vitest + React Testing Library |
 | E2E 测试 | Playwright / Cypress |
 | API 测试 | Postman / REST Client |
-| 邮件测试 | Ethereal (dev) / Mailtrap (staging) |
+| 邮件测试 | 本地 no-op + token 入库 / 阿里云 DM SMTP 联调 |
 | 性能测试 | Lighthouse / Chrome DevTools |
 | 安全测试 | OWASP ZAP / Burp Suite |

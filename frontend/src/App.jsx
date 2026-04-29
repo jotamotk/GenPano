@@ -1,8 +1,15 @@
+import React from 'react'
 import { Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import DashboardLayout from './layouts/DashboardLayout'
 import LandingPage from './pages/LandingPage'
 import AuthPage from './pages/AuthPage'
 import OnboardingPage from './pages/OnboardingPage'
+import EmailSentPage from './pages/EmailSentPage'
+import SetupPage from './pages/SetupPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
+import ResetPasswordSuccessPage from './pages/ResetPasswordSuccessPage'
+import { useAuth } from './context/AuthContext'
+import { authApi } from './api/auth'
 
 /* ── Existing pages (re-used directly at new canonical routes) ── */
 import DashboardPage from './pages/DashboardPage'         // becomes BrandOverviewPage (T2')
@@ -77,16 +84,94 @@ function RedirectWithQuery({ to }) {
   return <Navigate to={`${to}${location.search}`} replace />
 }
 
+function isSafeRedirectTarget(value) {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+}
+
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-themed-page">
+      <svg className="animate-spin w-7 h-7 text-themed-accent" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+    </div>
+  )
+}
+
+function RequireAuth({ children }) {
+  const { user, isLoading } = useAuth()
+  const location = useLocation()
+
+  if (isLoading) return <LoadingScreen />
+  if (!user) {
+    const redirect = `${location.pathname}${location.search}`
+    return <Navigate to={`/register?redirect=${encodeURIComponent(redirect)}`} replace />
+  }
+  return children
+}
+
+function PublicOnly({ children }) {
+  const { user, isLoading } = useAuth()
+  const location = useLocation()
+
+  if (isLoading) return <LoadingScreen />
+  if (user) {
+    const params = new URLSearchParams(location.search)
+    const redirect = params.get('redirect') || params.get('return_to')
+    return <Navigate to={isSafeRedirectTarget(redirect) ? redirect : '/brand/overview'} replace />
+  }
+  return children
+}
+
+function AuthCallback() {
+  const { setTokenAndUser } = useAuth()
+  const location = useLocation()
+  const params = new URLSearchParams(location.search)
+  const token = params.get('token')
+
+  React.useEffect(() => {
+    let cancelled = false
+    async function hydrate() {
+      if (!token) {
+        window.location.replace('/login?error=oauth_failed')
+        return
+      }
+      try {
+        const user = await authApi.getMe(token)
+        if (!cancelled) {
+          setTokenAndUser(token, user)
+          window.history.replaceState({}, '', '/brand/overview')
+          window.location.replace('/brand/overview')
+        }
+      } catch {
+        window.location.replace('/login?error=oauth_failed')
+      }
+    }
+    hydrate()
+    return () => { cancelled = true }
+  }, [setTokenAndUser, token])
+
+  return <LoadingScreen />
+}
+
 export default function App() {
   return (
     <>
       <Routes>
         {/* ── Anonymous routes (§4.1.1-gate: the only anon surfaces) ── */}
         <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<AuthPage type="login" />} />
-        <Route path="/auth" element={<AuthPage type="login" />} />
-        <Route path="/register" element={<AuthPage type="register" />} />
-        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/login" element={<PublicOnly><AuthPage type="login" /></PublicOnly>} />
+        <Route path="/auth" element={<PublicOnly><AuthPage type="login" /></PublicOnly>} />
+        <Route path="/register" element={<PublicOnly><AuthPage type="register" /></PublicOnly>} />
+        <Route path="/forgot" element={<PublicOnly><AuthPage type="login" initialStep="forgot" /></PublicOnly>} />
+        <Route path="/forgot-password" element={<PublicOnly><AuthPage type="login" initialStep="forgot" /></PublicOnly>} />
+        <Route path="/email-sent" element={<PublicOnly><EmailSentPage /></PublicOnly>} />
+        <Route path="/setup" element={<PublicOnly><SetupPage /></PublicOnly>} />
+        <Route path="/reset-password" element={<PublicOnly><ResetPasswordPage /></PublicOnly>} />
+        <Route path="/reset-password-success" element={<PublicOnly><ResetPasswordSuccessPage /></PublicOnly>} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/onboarding" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
 
         {/* ── Admin Console (Session A0) ──
              Admin routes are wrapped by <AdminAuthShell /> which mounts
@@ -110,7 +195,7 @@ export default function App() {
             Authenticated app shell (Brand/Industry Mode IA v2.0)
             §4.6-IA-v2. Route Guard wiring lands in Session T4'.
             ══════════════════════════════════════════════════════════ */}
-        <Route element={<DashboardLayout />}>
+        <Route element={<RequireAuth><DashboardLayout /></RequireAuth>}>
           {/* ── Brand Mode sub-views (§4.6-IA-v2.C.2) ── */}
           <Route path="/brand/overview"            element={<DashboardPage />} />
           <Route path="/brand/visibility"          element={<BrandVisibilityPage />} />

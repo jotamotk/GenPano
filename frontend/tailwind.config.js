@@ -11,7 +11,7 @@
  *     docs/DESIGN_TOKENS.md for rationale).
  */
 export default {
-  content: ['./index.html', './src/**/*.{js,jsx}'],
+  content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
   theme: {
     extend: {
       colors: {
@@ -43,6 +43,19 @@ export default {
           800: '#353299',
           900: '#272473',
         },
+
+        /* Auth prototype compatibility — maps old `primary-*` classes to
+           the locked GENPANO accent tokens while pages migrate to semantic
+           `.t-*` components. */
+        primary: {
+          50:  'var(--color-accent-bg-light)',
+          100: 'var(--color-accent-bg-light)',
+          500: 'var(--color-primary-500)',
+          600: 'var(--color-primary-600)',
+          700: 'var(--color-primary-700)',
+        },
+        'brand-beige': 'var(--color-auth-visual-bg)',
+        'auth-note': 'var(--color-auth-note-bg)',
 
         /* ── DEPRECATED alias — retained so legacy `bf-*` utilities in
            ProjectSettingsPage.jsx (text-bf-400, bg-bf-400, ring-bf-400,
