@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.api.v1.auth import router as admin_auth_router
+from app.admin.api.v1.kg import router as admin_kg_router
 from app.admin.api.v1.users import router as admin_users_router
 from app.core.logging import configure_logging
 from app.db.session import get_db
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 app.include_router(admin_auth_router)
 app.include_router(admin_users_router)
+app.include_router(admin_kg_router)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 

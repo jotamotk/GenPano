@@ -477,6 +477,22 @@ Knowledge Graph → Planner (Bottom-Up) → Topics → ×Intent → Prompts → 
 
     **执行结果**: 4 文件删除 (`ci-check.mjs` / `ci-harness-selftest.mjs` / `coverage-gap-scan.mjs` / `decision-log-sync-check.mjs`), 1 文件保留 (`check-data-contracts.mjs`), 1 文件 Python 重写 (`backend/scripts/decision_log_sync_check.py`)。**Group J Harness 5 条同 PR 登陆**: J1 (admin write 必须 record_audit) / J2 (account-pool 名字只能在 app/accounts/) / J3 (require_role 仅 super_admin literal) / J4 (cookie response 必走 mask_secret) / J5 (admin 只能写 users.deletion_requested_at, round 9 / decision #30.H Path B Variant 2)。fixtures 5 件 self-seeded 在 `backend/app/__ci_fixtures__/J{1,2,3,4,5}_*.cifixture.py`, EXPECTED_POSITIVES 7→12, `python backend/scripts/ci_harness_selftest.py` 实测 `● selftest: PASS (12 / 12 fixture expectations met across 12 fixture file(s))`, 默认扫描 `python backend/scripts/ci_check.py` 实测 `● ci_check: PASS (0 violations across 12 rule(s) on 46 file(s))`。**§E 转交清单 .mjs 项关闭**: A1' 闭合, 不再向 Session 1' 转交。
 
+    **J. T0.7 Module C KG scope 缩决议 (2026-04-29, A1' Step 4 启动期)**: A1' Step 4 启动 T0 真相源验证发现 SESSION_A1_PRIME_PROMPT.md §5 Step 4 spec "16 endpoints (Y19-Y28)" 与 ADMIN_PRD §4.3 / ADMIN_PRD_C_KG.md / DATA_MODEL §1.3-§1.9 真相源 + Session 1.5' 所有权三层不一致: (1) 7 KG 主表 (kg_industries / kg_categories / kg_brands / kg_products / kg_brand_relations / kg_product_relations / kg_mined_relations) 由 SESSION_1_5_PRIME_PROMPT.md 显式拥有 alembic + L1.4 验收; (2) Step 1 baseline docstring 显式 deferral kg_* tables don't exist yet; (3) Step 9 frontend 6 KG 页 pendingSession 全部标注 Session 1.5'/4a'。
+
+    **A. 决议**: 采纳 CC Option Z — Step 4 限定 admin 侧 3 表 endpoints (alias_conflicts + brand_submissions + kg_review_queue, 全已在 Step 1 baseline), 不落 KG 主表 alembic。12-15 KG 主表 endpoints (Y19-Y23 + Y28) 推 Session 1.5' (按 1.5' prompt §X 已规划)。
+
+    **B. 4 endpoints 范围**:
+    - Y24 `GET /admin/api/v1/kg/alias-conflicts` (列表 + filter status, 派生 N 候选数量)
+    - Y25 `POST /admin/api/v1/kg/alias-conflicts/{id}/resolve` (N 候选 JSONB resolved_to_id 选定, round 9 #30.H 决议版)
+    - Y26 `GET /admin/api/v1/kg/submissions` (列表 + 24h SLA 高亮)
+    - Y27 `POST /admin/api/v1/kg/submissions/{id}/approve` + `.../{id}/reject` (状态机 pending→approved/rejected)
+
+    **C. spec 修正**: SESSION_A1_PRIME_PROMPT.md §5 Step 4 row 改写, "16 endpoints" 改为 "4 endpoints (Y24-Y27)", 子页范围注明仅 KGAliasesRelationsPage + KGBrandSubmissionsPage 接入真数据, 其他 KG 子页继续 placeholder 等 Session 1.5' 接入。
+
+    **D. 为什么是 Rule 3 偏离登记 + 不开 round PR**: Step 4 spec 草稿假设 KG 主表 A1' 内落地, T0.7 真相源验证发现跨 Session 边界冲突 (决策 #28.A Platform Layer + 1.5' 所有权 + Step 1 deferral + Step 9 pendingSession)。Rule 3 偏离登记 + Rule 4 双向同步, 但跟 Step 8 #30.I (.mjs sweep) 同模式, A1' Session 内 scope 调整跟代码绑同一 commit, 不开独立 main PR。
+
+    **E. §0.5 转交加 T9**: 12-15 KG 主表 endpoints (Y19-Y23 + Y28) 推 Session 1.5', 跟 1.5' prompt §X alembic + L1.4 验收一致。
+
 31. **MVP scope-cut: minimax 视频解析 / minimax 网页爬取 archaeology 空集 (2026-04-28)**: A1' Step 0 重启过程中 Frank 触发的"历史 minimax 痕迹是否需复活"读检, T1-T6 read-only 扫描 (CLAUDE.md / DECISION_LOG.md / docs/ / backend/ / scripts/ / frontend/) **两条 archaeology 全部空集**: (a) **LLM-API 视频解析路径** (Doubao / DeepSeek / ChatGPT 之外引入 minimax 视频理解 API 做 video-to-text Topic discovery) 在 main 分支零代码 / 零 schema 列 / 零 Prompt 真相源段落; (b) **minimax 网页爬取 archaeology** (`engines/adapters/minimax/` 目录 + AdapterError 增 minimax 引擎枚举 + selectors.ts + api-fallback.ts) 在 main 分支同样零落地。MiniMax 作为可能的 LLM 引擎源仅在 PRD §4.2.2a "MVP 引擎枚举" 与 ADAPTER_CONTRACT §1 中以 future 候选身份出现, MVP 3 引擎 (`chatgpt | doubao | deepseek-CN`) 不含 (沿用决策 #28.G C4 口径)。
 
     **A. archaeology 空集结果**: T1-T6 凡 grep `(?i)minimax|视频解析|video.parsing|video-understanding` 全部 0 hit (除 PRD §4.2.2a future 候选行 + 极少历史 commit message 在 git log 中, 不构成代码或真相源)。`claude/*` 历史分支 (claude/session-A0-explore-1 / claude/session-1-explore-2 / claude/session-1.5-explore-1 / claude/session-A1-explore-1) 在决策 #29.D 已明确"不再 merge 沉淀但不并入", 即使内含 minimax 探索代码也作为历史 archive only, 不属于 main 分支真相源。
