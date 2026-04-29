@@ -21,8 +21,8 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/admin/api': {
-        target: 'http://localhost:4000',
-        changeOrigin: false,
+        target: process.env.VITE_ADMIN_BACKEND_URL || 'http://localhost:8001',
+        changeOrigin: true,
         secure: false,
       },
     },

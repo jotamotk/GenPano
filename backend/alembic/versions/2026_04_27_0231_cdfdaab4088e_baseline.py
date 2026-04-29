@@ -47,7 +47,7 @@ def upgrade() -> None:
     sa.Column('brand_id', sa.Integer(), nullable=True),
     sa.Column('brand_name', sa.String(length=256), nullable=False),
     sa.Column('product_name', sa.String(length=256), nullable=True),
-    sa.Column('is_target', sa.Boolean(), server_default=sa.text('0'), nullable=True),
+    sa.Column('is_target', sa.Boolean(), server_default=sa.text('false'), nullable=True),
     sa.Column('position_type', sa.String(length=32), nullable=True),
     sa.Column('position_rank', sa.Integer(), nullable=True),
     sa.Column('detail_level', sa.String(length=16), nullable=True),
@@ -56,8 +56,6 @@ def upgrade() -> None:
     sa.Column('context_snippet', sa.Text(), nullable=True),
     sa.Column('mention_count', sa.Integer(), server_default='1', nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
-    sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], name=op.f('fk_brand_mentions_brand_id_brands')),
-    sa.ForeignKeyConstraint(['response_id'], ['llm_responses.id'], name=op.f('fk_brand_mentions_response_id_llm_responses')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_brand_mentions')),
     sa.UniqueConstraint('response_id', 'brand_name', name='uq_mention_response_brand')
     )
@@ -89,7 +87,6 @@ def upgrade() -> None:
     sa.Column('industry_sov_pct', sa.Float(), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
-    sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], name=op.f('fk_geo_score_daily_brand_id_brands')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_geo_score_daily')),
     sa.UniqueConstraint('brand_id', 'date', 'target_llm', 'intent', 'language', name='uq_geo_daily_dims')
     )
@@ -120,7 +117,6 @@ def upgrade() -> None:
     sa.Column('top_drivers_json', postgresql.JSONB(astext_type=Text()).with_variant(sa.JSON(), 'sqlite'), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
-    sa.ForeignKeyConstraint(['brand_id'], ['brands.id'], name=op.f('fk_product_score_daily_brand_id_brands')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_product_score_daily')),
     sa.UniqueConstraint('brand_id', 'product_name', 'date', 'target_llm', name='uq_product_daily')
     )
@@ -132,7 +128,7 @@ def upgrade() -> None:
     sa.Column('dimension_product', sa.String(length=128), nullable=True),
     sa.Column('dimension_category', sa.String(length=128), nullable=True),
     sa.Column('total_brands_mentioned', sa.Integer(), server_default='0', nullable=True),
-    sa.Column('target_brand_mentioned', sa.Boolean(), server_default=sa.text('0'), nullable=True),
+    sa.Column('target_brand_mentioned', sa.Boolean(), server_default=sa.text('false'), nullable=True),
     sa.Column('target_brand_position', sa.String(length=32), nullable=True),
     sa.Column('target_brand_rank', sa.Integer(), nullable=True),
     sa.Column('target_brand_sentiment', sa.String(length=16), nullable=True),
@@ -146,7 +142,6 @@ def upgrade() -> None:
     sa.Column('analyzer_model', sa.String(length=64), nullable=True),
     sa.Column('raw_analysis_json', postgresql.JSONB(astext_type=Text()).with_variant(sa.JSON(), 'sqlite'), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
-    sa.ForeignKeyConstraint(['response_id'], ['llm_responses.id'], name=op.f('fk_response_analyses_response_id_llm_responses')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_response_analyses')),
     sa.UniqueConstraint('response_id', name=op.f('uq_response_analyses_response_id'))
     )
@@ -161,7 +156,6 @@ def upgrade() -> None:
     sa.Column('source_type', sa.String(length=32), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.ForeignKeyConstraint(['mention_id'], ['brand_mentions.id'], name=op.f('fk_citation_sources_mention_id_brand_mentions')),
-    sa.ForeignKeyConstraint(['response_id'], ['llm_responses.id'], name=op.f('fk_citation_sources_response_id_llm_responses')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_citation_sources'))
     )
     op.create_table('product_feature_mentions',
@@ -190,7 +184,6 @@ def upgrade() -> None:
     sa.Column('source_quote', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
     sa.ForeignKeyConstraint(['mention_id'], ['brand_mentions.id'], name=op.f('fk_sentiment_drivers_mention_id_brand_mentions')),
-    sa.ForeignKeyConstraint(['response_id'], ['llm_responses.id'], name=op.f('fk_sentiment_drivers_response_id_llm_responses')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_sentiment_drivers'))
     )
     # ### end Alembic commands ###

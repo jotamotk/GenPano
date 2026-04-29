@@ -1,0 +1,14 @@
+WIP: A1' Layer 3 验收期间撞坑修复 (未完成, 备份用)
+
+包含:
+- Step 11.5 docker-compose.admin.yml anonymous volume (Windows venv bind-mount fix)
+- Step 11.5 A0' baseline Boolean DEFAULT 'false' (PG cross-DB compat)
+- Step 11.5 A0' baseline brand_mentions/geo_score_daily/etc 7 处 FK to stubs 解耦
+- Step 11.5 frontend/vite.config.js proxy target VITE_ADMIN_BACKEND_URL env-driven
+- DECISION_32_DRAFT.md (#30.L 草稿)
+- backend/scripts/seed_layer3_fixtures.py (Layer 3 fixture seed script)
+
+A1' Step 12.A 已完成 (PR #141 draft open). Frank 战略层决定止损,
+保留备份分支后清场.
+
+未 merge, 不进 main.

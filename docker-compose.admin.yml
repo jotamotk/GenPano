@@ -67,6 +67,7 @@ services:
       - "8001:8000"
     volumes:
       - ./backend:/app
+      - /app/.venv  # anonymous volume, 屏蔽 host Windows .venv (Frank Layer 3 fix)
     depends_on:
       postgres-admin:
         condition: service_healthy
