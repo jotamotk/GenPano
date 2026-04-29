@@ -5,7 +5,7 @@
 > - PRD §4.3 (AI 引擎爬取系统) 仅描述"做什么 / 为什么"，具体接口、状态机、错误码、反检测技巧在此固化。
 > - ADMIN_PRD §4.2 (Module B — 数据管道 & 采集健康) 的监测指标定义、告警规则从本文件派生。
 > - 所有 Adapter 代码 (`src/engines/adapters/**`) 实现必须与本文件一一对应；任何偏离需先在此更新，再改代码。
-> - Session 实施 (CLAUDE_CODE_SESSIONS.md Session 1 / 1.2；ADMIN_CLAUDE_CODE_SESSIONS.md A2 / A2.5) 直接以本文件为 Prompt 附件。
+> - Adapter / account-pool / admin wrapper implementation should use this file as the contract reference.
 >
 > **维护原则**: 本文件的每一条规则都来自一次真实的生产 Bug 或 CF/风控对抗实验 (源头: `github.com/jotamotk/GenPano` 测试床 2025Q1-Q2)。禁止删除未替换的规则；如需废弃，保留历史并标注 `DEPRECATED-YYYY-MM-DD + 原因`。
 >
@@ -245,7 +245,7 @@ interface ProfileGroupResponse {
 
 ### 2.5 禁止项
 
-- ❌ 业务代码直接 `import { chromium } from 'playwright'`; 必须走 `src/engines/adapters/{engine}/` 封装。(Harness 规则, 见 CLAUDE_CODE_SESSIONS Session 1 §4.6)
+- ❌ 业务代码直接 `import { chromium } from 'playwright'`; 必须走 `src/engines/adapters/{engine}/` 封装。
 - ❌ Adapter 内部起后台定时器 / setInterval; 定时任务全部归 scheduler (§7.3)。
 - ❌ 在 Adapter 里写死 query 字符串测试 (fixture 必须走 `tests/fixtures/scraping/queries.json`)。
 - ❌ execute 返回后不 release 浏览器 Page/Context; 必须 `try/finally`。
@@ -507,7 +507,7 @@ COOLDOWN → PRE_WARMING → QUARANTINED       (恢复失败, 升级为隔离)
 
 Admin §4.2.4 (账号池仪表盘) 新增列: "Pre-Warm 成功率 (近 7d)" + "末次 pre-warm 失败码".
 
-**测试** (TEST_STRATEGY §9.2):
+**测试**:
 - L3 集成 `account-prewarm.test.ts` (Session 1): 录制 pre-warm HAR, 验证状态迁移正确
 - L3 `account-prewarm-failure.test.ts`: 注入探测失败, 验证进 QUARANTINED
 - Harness (Session 1 追加): 所有账号状态迁入 `ACTIVE` 必须经过 `PRE_WARMING` 中间态, 禁止 `PENDING → ACTIVE` 直跳 (grep `status:\s*['"]ACTIVE['"]` 反查上一行 `PRE_WARMING`)
@@ -684,7 +684,7 @@ model AdminRuntimeFlags {
 - `cost_paused` (PRD §4.9.4.4)
 - `kg_planner_paused` (Admin Session A1 用)
 
-**测试** (TEST_STRATEGY §9.2):
+**测试**:
 - L3 集成 `proxy-zero-node.test.ts`: 模拟 healthy=0 持续, 验证海外 Worker 进 idle + flag 写入 + 告警发出
 - L3 `proxy-subscription-unreachable.test.ts`: 模拟订阅 URL 5xx 3 次, 验证 B 路径
 - L3 `proxy-pool-recovery.test.ts`: 模拟节点恢复, 验证 PENDING Query 自动入队不重复
@@ -881,7 +881,7 @@ model AiResponse {
   - 删除所有 `Cookie` / `Set-Cookie` header
   - 删除 POST body 中的 `refresh_token` / `session_token` 字段
   - **保留**: 响应体、URL、method、status (这些是回放必需)。
-- Harness 规则 (CLAUDE_CODE_SESSIONS Session 1 §4.6):
+- Harness 规则:
   ```bash
   grep -rE 'Authorization|Cookie|refresh_token' tests/fixtures/scraping/
   ```
@@ -1000,7 +1000,7 @@ GROUP BY engine_id, window_start;
 | 引擎 quirks | §8.3 | — | — | App Session 1.2 |
 | Citation 抽取 | §8.4 | §4.2.6 (A-H) | — | App Session 3 §1.5/§1.6 |
 | CAPTCHA 三级 | §9 | §4.3 | §4.2.6 (CAPTCHA_UNSOLVED 分组) | App Session 1.2 |
-| HAR 持久化 + 脱敏 | §10.2 | — | §4.2.6 (样本回放) | App Session 1 §4, TEST_STRATEGY Phase 1 |
+| HAR 持久化 + 脱敏 | §10.2 | — | §4.2.6 (样本回放) | Adapter test coverage |
 | engine_health_5min | §10.4 | — | §4.2.2 | Admin A2 §3 |
 
 **维护规则**: 本矩阵由任何一处规则变更触发 review; 如果某行在三个文档中定义漂移, **以本文件为准**, 其它文档修正回来 (这是"单一真相源"的含义)。

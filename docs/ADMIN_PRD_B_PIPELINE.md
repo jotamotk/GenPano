@@ -6,7 +6,7 @@
 > - **Tracker** — "每次执行的全记录" — Query × Engine × Attempt 级追踪 + Debug + 重试
 > - **Analyzer** — "采集质量如何" — 每条 Response 的指标分数 + 人工质检 + 趋势
 >
-> **配套**: `docs/ADMIN_CLAUDE_CODE_SESSIONS.md` Session A2 系列 · `design/prototype-admin.html`
+> **配套**: `design/prototype-admin.html`
 
 ---
 
@@ -974,7 +974,7 @@ CREATE TABLE pipeline_change_requests (
 
 ## 4.5 Pipeline UI 文案边界
 
-遵守 CLAUDE.md §UI vs Prompt 指引边界：UI 不使用"本页不做 X / 严禁 X / 请去 Y 页"。页面边界通过导航跳转和动作可用/不可用状态表达。
+UI 不使用"本页不做 X / 严禁 X / 请去 Y 页"这类内部约束文案。页面边界通过导航跳转和动作可用/不可用状态表达。
 
 ---
 

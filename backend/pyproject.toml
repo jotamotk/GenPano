@@ -70,8 +70,7 @@ asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 
 [tool.coverage.run]
-# Exclude L3-deferred modules per SESSION_A0_PRIME_PROMPT.md §2.1 row 22 +
-# CLAUDE.md decision #24.F. These are Resend / live-DB coupled and are
+# Exclude deferred modules that are Resend / live-DB coupled and are
 # covered by the Step 5 endpoint replay tests, not by unit tests.
 omit = [
     "app/admin/auth/email.py",

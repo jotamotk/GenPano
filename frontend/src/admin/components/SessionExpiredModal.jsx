@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 
 /* ─────────────────────────────────────────────────────────────
-   SessionExpiredModal — Session A0 · Step 7 (CLAUDE.md #24)
+   SessionExpiredModal
 
    Rendered as a sibling of <Outlet /> inside AdminAuthShell. Consumes
    AdminAuthContext.sessionExpired and mounts a blocking overlay only when

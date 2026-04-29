@@ -5,12 +5,10 @@
 > **Scope**: This document specifies the complete database schema for MVP in PostgreSQL 15+.
 > For development and CI, a SQLite adapter layer translates `JSONB` → `JSON`, `UUID` → `TEXT`, and handles dialect differences.
 >
-> **Authority**: Mandatory reference for Session 2 (DB initialization) and Session 3 (API endpoints).
-> All table definitions, indexes, materialized views, and migration order are definitive and supersede ad-hoc mentions in PRD or Session Prompts.
+> **Authority**: Mandatory reference for database initialization and API implementation.
+> All table definitions, indexes, materialized views, and migration order are definitive and supersede ad-hoc mentions elsewhere.
 >
 > **Linked to**:
-> - `DECISIONS.md` — §7 (Heatmap aggregation), §8 (Citation matching), §9 (Brand Submissions), §10 (Profile Groups), §13 (Cost budgets), §18 (table renames)
-> - `PRD_SESSION_REVIEW.md` — §6 (E zone) for all data model P0s
 > - `ADAPTER_CONTRACT.md` — §2 (data types) and §10 (persistence contract)
 > - `PRD.md` — §4.0 (entities), §4.2 (Pipeline), §4.6 (KPI cards)
 > - `ADMIN_PRD.md` + `_B_PIPELINE.md` + `_C_KG.md` — Admin-facing entities
@@ -217,7 +215,7 @@ CREATE INDEX idx_brand_domains_domain ON kg_brand_domains(domain);
 
 ### 1.9 kg_mined_relations (2026-04-21 新增)
 
-> **Why**: CLAUDE.md 关键设计决策 #6 规定 "Knowledge Graph: LLM 初始化 + Response 挖掘迭代" — 从 Response 中挖掘出的候选品牌/产品关系必须先累积置信度, 达到阈值才升迁到 `kg_brand_relations` / `kg_product_relations`. Review 2026-04-21 §3 指出此表 schema 之前仅在 CLAUDE.md 口头提及, 未在 DATA_MODEL 落 schema, 导致 Session 1.5 (KG 构建) 没有实现锚点.
+> **Why**: Knowledge Graph uses LLM initialization plus Response mining iteration. Candidate brand/product relations mined from Responses must accumulate confidence before promotion into `kg_brand_relations` / `kg_product_relations`.
 
 ```sql
 CREATE TABLE kg_mined_relations (
@@ -284,7 +282,7 @@ confidence_score = min(1.0, 1 - 0.85^evidence_count)
 
 **Cross-ref**: Admin Session A1 (KG 审核) 必须暴露该表的 manual_review 队列; Session 1.5 (KG 构建) 的 Response 解析器在命中关系时 upsert 此表.
 
-**测试** (TEST_STRATEGY §9.3):
+**测试**:
 - L2 `kg-mined-relation-confidence.test.ts` — 11 个 evidence_count 边界值
 - L2 `kg-mined-promotion.test.ts` — 升迁到 kg_brand_relations / manual_review / 保持的 3 条路径
 - L1 Harness (Session 1.5 追加): kg 迁移不能绕过 `kg_mined_relations` 直写 `kg_brand_relations` — grep `INSERT INTO kg_brand_relations` 上下文必须有 `promoted_at` 或 admin-seed 注释

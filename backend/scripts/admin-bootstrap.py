@@ -18,7 +18,7 @@ Exits 0 on success or no-op; non-zero on missing env / DB errors. Re-run is
 safe: row count is invariant across calls.
 
 The hyphenated filename matches the spec-aligned invocation surface used by
-`verify-session-a0prime.sh`. Direct script invocation (`python scripts/...`)
+the backend CI checks. Direct script invocation (`python scripts/...`)
 does not require an importable module name, so the hyphen is fine.
 """
 

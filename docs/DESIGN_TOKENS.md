@@ -671,7 +671,7 @@ const styles = { primary: '#605BFF' };
 | `PanoRing.jsx` | 🟢 Token 对齐 | 阈值色改为 `var(--color-accent/success/warning/danger)` |
 | `MiniSparkline.jsx` | 🟢 C1 合规 | 默认宽高 100% |
 
-🟡 页面将在后续 Session (见 `docs/CLAUDE_CODE_SESSIONS.md`) 按 PRD 重建，届时结构换掉、样式消费这里的 token。
+🟡 页面将在后续工程任务中按 PRD 重建，届时结构换掉、样式消费这里的 token。
 
 ## 改动这份 token 的流程
 
@@ -685,4 +685,4 @@ const styles = { primary: '#605BFF' };
 
 - Figma 提取源: Auth / Dashboard / Topics / DashboardLayout (2026-04)
 - 样式原则: `docs/DESIGNER_AGENT.md` — Stripe/Linear 风格精简
-- 依赖规则: `CLAUDE.md` → "依赖规则" — 禁止手写生产级组件
+- 依赖规则: 禁止手写生产级组件，优先使用成熟组件库。

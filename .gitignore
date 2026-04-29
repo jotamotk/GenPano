@@ -12,6 +12,21 @@ venv/
 .pytest_cache/
 .claude/
 
+# Agent/session artifacts
+CLAUDE.md
+docs/ADMIN_CLAUDE_CODE_SESSIONS.md
+docs/CLAUDE_CODE_SESSIONS*.md
+docs/SESSION_*.md
+docs/DECISION*.md
+docs/MEMORY.md
+docs/auto-memory/
+docs/REPLAN_*.md
+docs/REVISION_DIFF.md
+docs/PREFLIGHT_REPORT.md
+docs/CONSISTENCY_REPORT_*.md
+docs/COVERAGE_GAP.json
+docs/CI_BASELINE_ZERO.md
+
 # Logs
 *.log
 logs/

@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 
 /* ─────────────────────────────────────────────────────────────
-   AdminRouteGuard — Session A0 · Step 8 (CLAUDE.md #24)
+   AdminRouteGuard
 
    Client-side gate for /admin/** pages that REQUIRE an authenticated
    session. Wraps any route group that should not render without a valid

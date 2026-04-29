@@ -4,7 +4,7 @@ import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import { AdminApiError } from '../lib/adminApi.js';
 
 /* ─────────────────────────────────────────────────────────────
-   AdminLoginPage — Session A0 · CLAUDE.md #24
+   AdminLoginPage
 
    Deliberately simpler than user-facing AuthPage:
    - No email-first 2-step (admin count is fixed, no identifier probing)
@@ -17,7 +17,7 @@ import { AdminApiError } from '../lib/adminApi.js';
    - Anti-enum: every credential failure returns the same message, no
      "email not found" leakage.
 
-   First-login flow (ADMIN_PRD §5.6.4-8 + CLAUDE.md #24.C2):
+   First-login flow (ADMIN_PRD §5.6.4-8):
      POST /admin/api/v1/auth/login returns { user: { forcePasswordChangeAt } }
      on success. If present AND ≤ now(), navigate to /admin/change-password;
      otherwise → /admin/dashboard (or ?redirect=).

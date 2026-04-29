@@ -18,7 +18,7 @@ import { useLocale } from '../../contexts/LocaleContext';
                   the URL after the auth wizard completes
 
    Each hook advertises 3 fixed value bullets + a primary + secondary
-   CTA. Uses Radix Dialog (CLAUDE.md forbids hand-rolled modals —
+   CTA. Uses Radix Dialog rather than a hand-rolled modal —
    this gets us focus trap, ESC, ARIA out of the box).
 
    Wire-up note (PRD §4.11 #44-46): callers should also fire the

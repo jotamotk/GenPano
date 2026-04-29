@@ -32,7 +32,7 @@ import BrandCompetitorsPage from './pages/brand/BrandCompetitorsPage'
 import IndustryRankingPage from './pages/industry/IndustryRankingPage'
 import IndustryTopicsPage from './pages/industry/IndustryTopicsPage'
 
-/* ── Admin Console pages (Session A0 · CLAUDE.md #24) ──
+/* Admin Console pages.
    Admin surfaces live under /admin/* and are gated by a separate Next.js
    middleware (Step 8). For Phase Gate A0 only the three auth-front pages
    are mounted; the authenticated /admin/dashboard target is a Step 8 stub. */

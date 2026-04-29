@@ -15,10 +15,10 @@ Compatibility notes (per Session 0' baseline conventions):
 - failure_code CHECK accepts NULL (success=true rows omit the code).
 
 Decision references:
-- CLAUDE.md #24.A (4-table master spec, algorithm semantics preserved)
-- CLAUDE.md #24.C1.2 (force_password_change_at name + DateTime? type LOCKED)
-- CLAUDE.md #24.C2 (role CHECK = super_admin only at MVP, A1' widens)
-- CLAUDE.md #24.C4 (purpose column gap — closed in this Session)
+- Admin PRD auth model spec
+- force_password_change_at name + nullable DateTime semantics
+- role CHECK = super_admin only at MVP
+- purpose column is present for reset / invitation flows
 - ADMIN_PRD §5.6.8 (truth source for field list + initial CHECKs)
 """
 

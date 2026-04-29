@@ -6,7 +6,7 @@
  * Reads `frontend/src/data/mock.js` via dynamic import and validates
  * relational invariants. Exit 1 on any failure; 0 if all green.
  *
- * Bloodline: docs/DESIGN_TOKENS.md C3/C7 + docs/TEST_STRATEGY.md §9.
+ * Bloodline: docs/DESIGN_TOKENS.md C3/C7.
  *
  * Assertions:
  *   DC1 — SOV_DATA "其他" (Others) must not be greater than any real brand slice
@@ -272,7 +272,7 @@ async function main() {
     process.exit(0);
   }
   console.log(`${RED}● data-contracts: FAIL${RESET}  ${totalViolations} violation(s) across ${results.filter((r) => r.violations.length).length} / 7 assertions`);
-  console.log(`${YELLOW}Fix hints: see docs/DESIGN_TOKENS.md C3/C7/C11 or docs/TEST_STRATEGY.md §9${RESET}`);
+  console.log(`${YELLOW}Fix hints: see docs/DESIGN_TOKENS.md C3/C7/C11${RESET}`);
   process.exit(1);
 }
 
