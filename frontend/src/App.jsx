@@ -43,6 +43,26 @@ import AdminDashboardPage from './admin/pages/AdminDashboardPage'
 import AdminAuthShell from './admin/components/AdminAuthShell'
 import AdminRouteGuard from './admin/components/AdminRouteGuard'
 
+/* ── Session A1' Step 9 · 17 admin pages (Module A×3 + B×6 + C×6 + D×2) ── */
+import AdminLayout from './admin/layouts/AdminLayout'
+import UsersListPage from './admin/pages/users/UsersListPage'
+import UserDetailPage from './admin/pages/users/UserDetailPage'
+import LoginAuditPage from './admin/pages/users/LoginAuditPage'
+import PipelineOverviewPage from './admin/pages/pipeline/PipelineOverviewPage'
+import PipelineEnginesPage from './admin/pages/pipeline/PipelineEnginesPage'
+import PipelineQueuePage from './admin/pages/pipeline/PipelineQueuePage'
+import AccountsPoolPage from './admin/pages/pipeline/AccountsPoolPage'
+import PipelineProxiesPage from './admin/pages/pipeline/PipelineProxiesPage'
+import RetryCenterPage from './admin/pages/pipeline/RetryCenterPage'
+import KGIndustriesPage from './admin/pages/kg/KGIndustriesPage'
+import KGBrandsPage from './admin/pages/kg/KGBrandsPage'
+import KGProductsPage from './admin/pages/kg/KGProductsPage'
+import KGAliasesRelationsPage from './admin/pages/kg/KGAliasesRelationsPage'
+import KGBrandSubmissionsPage from './admin/pages/kg/KGBrandSubmissionsPage'
+import KGDiscoveryLogsPage from './admin/pages/kg/KGDiscoveryLogsPage'
+import CostDailyPage from './admin/pages/cost/CostDailyPage'
+import AuditLogPage from './admin/pages/audit/AuditLogPage'
+
 /* ─────────────────────────────────────────────────────────────
    Legacy-path redirect helpers
    §4.6-IA-v2.D — 301 map from pre-2026-04-20 paths to Brand/Industry Mode
@@ -102,7 +122,41 @@ export default function App() {
           {/* Gated admin routes (require valid session) */}
           <Route element={<AdminRouteGuard />}>
             <Route path="/admin/change-password" element={<AdminChangePasswordPage />} />
-            <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+
+            {/* Session A1' Step 9 · 17 admin pages mounted under AdminLayout.
+                Module A×3 (users list/detail/login-audit) — wired to Step 3
+                backend Y1-Y5 endpoints. Module B×6 + C×6 + D×2 — placeholder
+                pages until Sessions 1.2' / 3' / Steps 4-7 land their data
+                wiring. AdminDashboardPage is kept at /admin/dashboard as the
+                A0 phase-gate stub destination. */}
+            <Route element={<AdminLayout />}>
+              <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+
+              {/* Module A · users */}
+              <Route path="/admin/users" element={<UsersListPage />} />
+              <Route path="/admin/users/login-audit" element={<LoginAuditPage />} />
+              <Route path="/admin/users/:userId" element={<UserDetailPage />} />
+
+              {/* Module B · pipeline monitoring */}
+              <Route path="/admin/pipeline/overview" element={<PipelineOverviewPage />} />
+              <Route path="/admin/pipeline/engines" element={<PipelineEnginesPage />} />
+              <Route path="/admin/pipeline/queue" element={<PipelineQueuePage />} />
+              <Route path="/admin/accounts-pool" element={<AccountsPoolPage />} />
+              <Route path="/admin/pipeline/proxies" element={<PipelineProxiesPage />} />
+              <Route path="/admin/pipeline/retry-center" element={<RetryCenterPage />} />
+
+              {/* Module C · knowledge graph */}
+              <Route path="/admin/kg/industries" element={<KGIndustriesPage />} />
+              <Route path="/admin/kg/brands" element={<KGBrandsPage />} />
+              <Route path="/admin/kg/products" element={<KGProductsPage />} />
+              <Route path="/admin/kg/aliases-relations" element={<KGAliasesRelationsPage />} />
+              <Route path="/admin/kg/brand-submissions" element={<KGBrandSubmissionsPage />} />
+              <Route path="/admin/kg/discovery-logs" element={<KGDiscoveryLogsPage />} />
+
+              {/* Module D · cost + audit (only 2 of 7 PRD subpages per Step 9 scope) */}
+              <Route path="/admin/cost/daily" element={<CostDailyPage />} />
+              <Route path="/admin/audit-log" element={<AuditLogPage />} />
+            </Route>
           </Route>
         </Route>
 

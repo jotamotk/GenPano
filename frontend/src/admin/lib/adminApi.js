@@ -8,6 +8,25 @@
  *   - Error normalization: every non-2xx becomes AdminApiError with
  *     { status, body }. Consumers map status+body.error to UI copy.
  *
+ * Session A1' · T1 closure (decision #30 / SESSION_A1_PRIME_PROMPT.md §0.5):
+ *   When a *user-initiated* call returns 401 (the silent-refresh probe in
+ *   AdminAuthContext is itself an auth endpoint and is exempt), the wrapper
+ *   notifies a registered expire-handler so AdminAuthContext can flip
+ *   `sessionExpired = true` + cancel the refresh timer + broadcast across
+ *   tabs. SessionExpiredModal then renders by reacting to that state and
+ *   the user's "重新登录" CTA does the actual /admin/login redirect (the
+ *   redirect chain is the A0' contract — we do not hard-navigate from the
+ *   fetch wrapper because that would race with React render and lose the
+ *   `?redirect=<current>` capture point).
+ *
+ * Auth endpoints (login / refresh / forgot-password / reset-password /
+ * change-password) are exempt from the interceptor: a 401 there is an
+ * expected business outcome (wrong password, expired refresh cookie) and
+ * the relevant flow already handles it locally (login form shows error;
+ * silent-refresh's own catch flips state directly). Firing the interceptor
+ * on auth-endpoint 401 would either double-flip (refresh) or wrongly
+ * "expire" an anonymous user mid-login (login).
+ *
  * We deliberately do NOT bake a base URL here — in dev vite proxies
  * /admin/api/* to http://localhost:4000, in prod the backend is served
  * from the same origin. Either way, relative paths work.
@@ -32,6 +51,31 @@ async function parseBody(res) {
   }
 }
 
+/* ── 401 interceptor · module-level handler registry ─────────────
+ *
+ * AdminAuthProvider registers a single callback at mount and unregisters
+ * on unmount. The registry is intentionally a single slot (not a list):
+ * only one provider should be alive per page; replacing the slot under
+ * StrictMode double-invoke is the correct behavior.
+ */
+
+let expireHandler = null;
+const AUTH_ENDPOINT_PREFIX = '/admin/api/v1/auth/';
+
+export function registerExpireHandler(fn) {
+  expireHandler = typeof fn === 'function' ? fn : null;
+}
+
+function isAuthEndpoint(path) {
+  if (typeof path !== 'string') return false;
+  return path.startsWith(AUTH_ENDPOINT_PREFIX);
+}
+
+/**
+ * @param {string} path
+ * @param {{ method?: string, body?: any, signal?: AbortSignal }} [options]
+ * @returns {Promise<any>}
+ */
 export async function adminFetch(path, { method = 'GET', body, signal } = {}) {
   const res = await fetch(path, {
     method,
@@ -41,7 +85,16 @@ export async function adminFetch(path, { method = 'GET', body, signal } = {}) {
     signal,
   });
   const parsed = await parseBody(res);
-  if (!res.ok) throw new AdminApiError(res.status, parsed);
+  if (!res.ok) {
+    if (res.status === 401 && !isAuthEndpoint(path) && expireHandler) {
+      try {
+        expireHandler({ status: 401, body: parsed, path });
+      } catch {
+        // Handler must never throw out of the fetch path. Swallow.
+      }
+    }
+    throw new AdminApiError(res.status, parsed);
+  }
   return parsed;
 }
 
@@ -76,6 +129,53 @@ export const adminAuthApi = {
     return adminFetch('/admin/api/v1/auth/change-password', {
       method: 'POST',
       body: { currentPassword, newPassword },
+    });
+  },
+};
+
+/* ── Module A · admin user-management endpoints (Step 3 Y1-Y5) ── */
+
+export const adminUsersApi = {
+  list({ limit = 50, offset = 0, signal } = {}) {
+    const qs = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    }).toString();
+    return adminFetch(`/admin/api/v1/users?${qs}`, { signal });
+  },
+  detail(userId, { signal } = {}) {
+    return adminFetch(`/admin/api/v1/users/${encodeURIComponent(userId)}`, {
+      signal,
+    });
+  },
+  /**
+   * @param {string} userId
+   * @param {{ reason: string, expiresAt?: string | null }} args
+   */
+  freeze(userId, { reason, expiresAt }) {
+    return adminFetch(
+      `/admin/api/v1/users/${encodeURIComponent(userId)}/freeze`,
+      { method: 'POST', body: { reason, expires_at: expiresAt ?? null } },
+    );
+  },
+  /**
+   * @param {string} userId
+   * @param {{ reason?: string | null }} args
+   */
+  forcePasswordReset(userId, { reason }) {
+    return adminFetch(
+      `/admin/api/v1/users/${encodeURIComponent(userId)}/force-password-reset`,
+      { method: 'POST', body: { reason: reason ?? null } },
+    );
+  },
+  /**
+   * @param {string} userId
+   * @param {{ reason: string }} args
+   */
+  softDelete(userId, { reason }) {
+    return adminFetch(`/admin/api/v1/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      body: { reason },
     });
   },
 };

@@ -49,7 +49,10 @@ function Placeholder() {
   );
 }
 
-export default function AdminRouteGuard({ children }) {
+/**
+ * @param {{ children?: React.ReactNode }} props
+ */
+export default function AdminRouteGuard({ children } = {}) {
   const { status, user } = useAdminAuth();
   const location = useLocation();
   const navigate = useNavigate();

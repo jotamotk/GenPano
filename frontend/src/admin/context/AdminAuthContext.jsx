@@ -7,7 +7,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { adminAuthApi, AdminApiError } from '../lib/adminApi.js';
+import {
+  adminAuthApi,
+  AdminApiError,
+  registerExpireHandler,
+} from '../lib/adminApi.js';
 
 /* ─────────────────────────────────────────────────────────────
    AdminAuthContext — Provider implementation (CLAUDE.md #24.D)
@@ -163,10 +167,34 @@ export function AdminAuthProvider({ children }) {
     setSessionExpired(false);
   }, []);
 
+  /* ── 401 interceptor handler (Session A1' T1 closure) ─────
+   *
+   * Registered at mount; called by adminFetch when a *user-initiated*
+   * (non-auth-endpoint) call returns 401. Mirrors the silentRefresh
+   * catch path: cancel the timer, drop user, flip to expired so the
+   * SessionExpiredModal renders, broadcast across tabs.
+   *
+   * Idempotent: if the timer already fired and silentRefresh already
+   * flipped state, calling this again is a no-op state-setter pattern
+   * (React skips re-render when the value is unchanged via Object.is).
+   */
+  const handleExpire = useCallback(() => {
+    if (!mountedRef.current) return;
+    clearRefreshTimer();
+    setUser(null);
+    setStatus('expired');
+    setSessionExpired(true);
+    broadcast({ type: 'expire' });
+  }, [broadcast, clearRefreshTimer]);
+
   /* ── Mount: probe session + set up BroadcastChannel ───────── */
 
   useEffect(() => {
     mountedRef.current = true;
+
+    // Register the 401 interceptor BEFORE the probe fires, so a probe
+    // that races into a 401 still routes through the same expire path.
+    registerExpireHandler(handleExpire);
 
     // Set up cross-tab channel FIRST so an immediate login/logout in another
     // tab while we're probing doesn't get lost.
@@ -231,6 +259,7 @@ export function AdminAuthProvider({ children }) {
     return () => {
       mountedRef.current = false;
       clearRefreshTimer();
+      registerExpireHandler(null);
       try {
         channelRef.current?.close();
       } catch {
