@@ -1,0 +1,14 @@
+.coverage
+.env
+.env.*
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+dev.db
+node_modules
+dist
+htmlcov

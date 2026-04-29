@@ -1,169 +1,136 @@
-# GenPano — GEO Monitoring Tool
+# GENPANO
 
-A full-stack authentication system for GenPano, a GEO (Generative Engine Optimization) monitoring tool that tracks brand visibility in AI-generated content.
+GENPANO is a GEO (Generative Engine Optimization) monitoring platform. The
+active architecture is data-first: platform jobs collect and analyze AI-engine
+responses once, while user projects and dashboards read filtered views of that
+shared platform dataset.
 
-## Project Structure
+## Current Architecture
 
-```
-genpano/
-├── PRD.md                    # Product Requirements Document (Chinese/English)
-├── README.md                 # This file
-├── frontend/                 # React + TypeScript + Vite + Tailwind CSS
-│   ├── src/
-│   │   ├── api/auth.ts       # Axios API client
-│   │   ├── components/
-│   │   │   ├── AuthLayout.tsx      # Split-panel layout (beige left / white right)
-│   │   │   ├── LanguageSwitcher.tsx
-│   │   │   ├── ParticleArt.tsx     # CSS-animated 3D particle sculpture
-│   │   │   └── Toast.tsx           # Toast notification system
-│   │   ├── context/
-│   │   │   ├── AuthContext.tsx     # JWT auth state
-│   │   │   └── LanguageContext.tsx # i18n state (zh/en)
-│   │   ├── hooks/
-│   │   │   └── useEmailValidation.ts  # Work email validation hook
-│   │   ├── i18n/
-│   │   │   ├── zh.ts          # Chinese translations
-│   │   │   ├── en.ts          # English translations
-│   │   │   └── index.ts
-│   │   ├── pages/
-│   │   │   ├── LoginPage.tsx
-│   │   │   ├── RegisterPage.tsx
-│   │   │   ├── ForgotPasswordPage.tsx
-│   │   │   └── DashboardPage.tsx
-│   │   └── App.tsx            # Router + protected routes
-│   ├── package.json
-│   ├── tailwind.config.js
-│   └── vite.config.ts         # Dev server on port 3000, proxies /api → 4000
-└── backend/                  # Node.js + Express + TypeScript + SQLite
-    ├── src/
-    │   ├── db/
-    │   │   ├── index.ts       # better-sqlite3 connection
-    │   │   └── init.ts        # Schema creation
-    │   ├── middleware/
-    │   │   └── auth.ts        # JWT requireAuth middleware
-    │   ├── routes/
-    │   │   └── auth.ts        # All auth endpoints + Google OAuth
-    │   ├── utils/
-    │   │   ├── email.ts       # Nodemailer (Ethereal in dev / SMTP in prod)
-    │   │   └── jwt.ts         # Sign/verify JWT tokens
-    │   └── index.ts           # Express app entry point
-    ├── .env.example
-    └── package.json
+```text
+frontend/                 React + Vite product and admin UI
+backend/                  FastAPI control plane and Admin API
+geo_tracker/              Celery workers for engine collection and analysis
+query_tool/               Internal operational query console
+docs/                     PRD, Admin PRD, data model, adapter contract
+migrations/               Legacy/raw SQL migrations for tracker/analyzer work
+prototypes/node-auth-backend/
+                           Archived Node/Express auth prototype
 ```
 
-## Prerequisites
+The production backend path is now `backend/app` and runs with FastAPI. The old
+Node/Express auth prototype has been moved to `prototypes/node-auth-backend` so
+it remains available for reference without being confused with the active
+backend.
 
-- Node.js 18+ (20 LTS recommended)
-- npm 9+
+## Architecture Source Documents
 
-## Quick Start
+- `docs/PRD.md` - product and GEO monitoring model
+- `docs/ADMIN_PRD.md` - internal Admin console requirements
+- `docs/ADMIN_PRD_B_PIPELINE.md` - Planner / Tracker / Analyzer design
+- `docs/ADMIN_PRD_C_KG.md` - knowledge graph governance design
+- `docs/DATA_MODEL.md` - intended canonical data model
+- `docs/ADAPTER_CONTRACT.md` - engine adapter behavior and error contract
 
-### 1. Backend Setup
+## Local Development
+
+### Backend
 
 ```bash
 cd backend
-
-# Install dependencies
-npm install
-
-# Copy and configure environment variables
+uv sync --frozen
 cp .env.example .env
-# Edit .env — at minimum set JWT_SECRET to a strong random string
-
-# Start the development server (port 4000)
-npm run dev
+# Edit .env and set ADMIN_JWT_SECRET to a 32+ byte value.
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 4000
 ```
 
-On first start, the SQLite database is automatically created at `./data/genpano.db`.
+Useful backend checks:
 
-### 2. Frontend Setup
+```bash
+cd backend
+make ci
+```
+
+Health endpoints:
+
+- `GET /health`
+- `GET /healthz`
+- `GET /healthz/db`
+
+Implemented Admin auth endpoints currently live under:
+
+- `POST /admin/api/v1/auth/login`
+- `POST /admin/api/v1/auth/refresh`
+- `POST /admin/api/v1/auth/logout`
+- `POST /admin/api/v1/auth/forgot-password`
+- `POST /admin/api/v1/auth/reset-password`
+- `POST /admin/api/v1/auth/change-password`
+
+### Frontend
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start the development server (port 3000)
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+The Vite dev server runs on port `3000` and proxies `/api/*` and
+`/admin/api/*` to the FastAPI backend on port `4000`.
 
-The Vite dev server proxies all `/api/*` requests to `http://localhost:4000`.
+### Worker Stack
 
-## Environment Variables (backend/.env)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `4000` | Backend server port |
-| `NODE_ENV` | `development` | Environment |
-| `FRONTEND_URL` | `http://localhost:3000` | Frontend URL for CORS and email links |
-| `JWT_SECRET` | *(required in prod)* | Secret key for JWT signing (min 32 chars) |
-| `JWT_EXPIRES_IN` | `7d` | Token expiry duration |
-| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID (optional) |
-| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret (optional) |
-| `GOOGLE_CALLBACK_URL` | `http://localhost:4000/api/auth/google/callback` | OAuth callback URL |
-| `SMTP_HOST` | — | SMTP host (leave empty to use Ethereal in dev) |
-| `SMTP_PORT` | `587` | SMTP port |
-| `SMTP_USER` | — | SMTP username |
-| `SMTP_PASS` | — | SMTP password |
-| `EMAIL_FROM` | `noreply@genpano.com` | Sender address |
-| `DB_PATH` | `./data/genpano.db` | SQLite database path |
-
-## API Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `POST` | `/api/auth/register` | — | Register with work email |
-| `POST` | `/api/auth/login` | — | Login, returns JWT |
-| `POST` | `/api/auth/forgot-password` | — | Send password reset email |
-| `POST` | `/api/auth/reset-password` | — | Reset password with token |
-| `GET` | `/api/auth/me` | Bearer JWT | Get current user |
-| `GET` | `/api/auth/google` | — | Start Google OAuth flow |
-| `GET` | `/api/auth/google/callback` | — | Google OAuth callback |
-| `GET` | `/health` | — | Health check |
-
-## Google OAuth Setup (Optional)
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create a new project or select an existing one
-3. Enable the **Google+ API** / **People API**
-4. Create OAuth 2.0 credentials (Web application)
-5. Add `http://localhost:4000/api/auth/google/callback` to **Authorized redirect URIs**
-6. Copy the Client ID and Client Secret to your `backend/.env`
-
-## Email in Development
-
-When `SMTP_*` env vars are not set, the backend automatically creates an [Ethereal](https://ethereal.email) test account and logs preview URLs to the console:
-
-```
-Using Ethereal test account: xxxxx@ethereal.email
-Preview emails at: https://ethereal.email
-Verification email preview URL: https://ethereal.email/message/...
-```
-
-Visit the preview URL to view sent emails without a real inbox.
-
-## Building for Production
+The deployed worker services are built from `geo_tracker/` and run Celery
+queues for collection and analysis. The app also depends on Postgres and Redis.
+For a local container stack:
 
 ```bash
-# Frontend
-cd frontend && npm run build
-# Output: frontend/dist/
-
-# Backend
-cd backend && npm run build
-# Output: backend/dist/
-# Start: node dist/index.js
+cp .env.example .env
+# Edit .env with database, Redis, Admin, proxy, and provider secrets.
+docker compose up -d
 ```
 
-## Key Design Decisions
+## Environment
 
-- **Work email enforcement**: Personal email domains (gmail, hotmail, qq, 163, etc.) are blocked at both frontend and backend layers.
-- **JWT authentication**: Stateless tokens stored in `localStorage`. No cookie sessions.
-- **SQLite**: Zero-config database suitable for MVP and small-to-medium deployments. Migrate to PostgreSQL for large scale.
-- **Ethereal email**: Auto-configured in development — no SMTP setup required to test email flows.
-- **Rate limiting**: 10 req/min on sensitive auth endpoints, 20 req/min on all auth routes.
-- **Anti-enumeration**: The `/forgot-password` endpoint returns the same response whether or not the email exists.
-- **i18n**: Chinese (default) and English, toggled client-side with `localStorage` persistence.
+Root deployment variables are documented in `.env.example`. Backend-only local
+variables are documented in `backend/.env.example`.
+
+Minimum backend runtime variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` or `GENPANO_DATABASE_URL` | SQLAlchemy async database URL |
+| `REDIS_URL` or `GENPANO_REDIS_URL` | Celery broker/result backend |
+| `ADMIN_JWT_SECRET` | Admin access/refresh token signing secret |
+| `GENPANO_ENVIRONMENT` | `development` or `production` |
+
+## Deployment
+
+`.github/workflows/deploy.yml` builds these images:
+
+- `frontend` from `frontend/`
+- `backend` from `backend/` using FastAPI
+- `worker` from `geo_tracker/`
+- `query-tool` from `query_tool/`
+
+`frontend/nginx.conf` routes `/api`, `/admin/api`, and `/health` to the
+FastAPI backend service on port `4000`.
+
+## Prototype Notice
+
+`prototypes/node-auth-backend` is an archived prototype for public user
+signup/login/email/OAuth flows. It uses an in-memory store and is not part of
+the production backend path. Migrate any still-needed public auth behavior into
+FastAPI before relying on it in production.
+
+## Current Implementation Boundary
+
+The repo is mid-transition from prototype surfaces to the PRD target
+architecture. Treat these as active convergence tasks:
+
+- Make FastAPI the single backend API surface.
+- Persist pipeline data through `query_executions`, `attempts`, and
+  `ai_responses`.
+- Ensure every adapter response stamps `response_source`.
+- Keep account-unavailable cases in `PENDING`, not `FAILED`.
+- Move frontend pages from runtime mock data to platform APIs page by page.

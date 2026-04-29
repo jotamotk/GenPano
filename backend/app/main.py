@@ -13,6 +13,7 @@ app.include_router(admin_auth_router)
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
+@app.get("/health")
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
