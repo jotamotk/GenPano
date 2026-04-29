@@ -9,7 +9,7 @@
  * (vite.config.js rollupOptions.external), from tsconfig, from prettier, and
  * from vitest/playwright.
  *
- * Bloodline: CLAUDE.md Decision #21.C + docs/TEST_STRATEGY.md §12 (fixture naming).
+ * Fixture for CJK hardcoded text detection.
  */
 
 export function A1_CjkLeak() {

@@ -1,13 +1,12 @@
-"""Admin auth constants — Session A0' single source of truth.
+"""Admin auth constants.
 
 All TTLs, lengths, algorithms, audiences, issuers, cookie names live here.
-Mirrors decision #24.B exactly. Splitting into per-module literals would
-violate decision #25 rule 1 (single-source-of-truth anchoring).
+Splitting these literals across modules makes the auth surface harder to audit.
 
-Decision references:
-- CLAUDE.md #24.B (12 constants list)
-- SESSION_A0_PRIME_PROMPT.md §1.3 (Admin REFRESH_TOKEN_TTL = 7d intentional vs
-  user side 30d in Session 4a' — security/UX trade-off, NOT shared singleton)
+References:
+- Admin auth constants
+- Admin REFRESH_TOKEN_TTL = 7d intentional vs
+  user side 30d — security/UX trade-off, NOT shared singleton)
 """
 
 from __future__ import annotations

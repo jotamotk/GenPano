@@ -17,7 +17,7 @@ Two surfaces exposed:
    rare hand-rolled response (e.g. middleware that writes raw headers).
 
 Decision references:
-- CLAUDE.md #24.B (cookie discipline)
+- Admin auth cookie discipline
 - Harness D10 (admin-session-cookie-samesite-strict, Step 6 will land it)
 """
 

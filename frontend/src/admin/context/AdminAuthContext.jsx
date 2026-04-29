@@ -10,7 +10,7 @@ import React, {
 import { adminAuthApi, AdminApiError } from '../lib/adminApi.js';
 
 /* ─────────────────────────────────────────────────────────────
-   AdminAuthContext — Provider implementation (CLAUDE.md #24.D)
+   AdminAuthContext — Provider implementation
 
    Responsibilities:
      1. Track current admin identity: { user, status }

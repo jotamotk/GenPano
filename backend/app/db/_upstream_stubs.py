@@ -13,7 +13,7 @@ DO NOT create real models for these 4 tables in Step 6 -- they are
 out of scope per Step 6 spec hard constraint #1.
 
 NOTE: users was originally on the stub list but was promoted to a real
-table in A1' Step 3 (Round 9 PR), see CLAUDE.md decision #30.H. The 4
+table in the admin implementation. The 4
 stubs above (llm_responses / brands / competitors / prompts) remain stubs.
 """
 

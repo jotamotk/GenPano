@@ -309,7 +309,7 @@ async def test_flow6_suspended_user_cannot_login_or_use_existing_cookie(
     # self-extension). Fix scheduled for Session A1' alongside the admin
     # "suspend user" + "revoke all sessions" flow — middleware extension
     # + bulk session revocation are the same one-shot change there. See
-    # `docs/SESSION_A0_STEP_8_SMOKE_CHECKLIST.md` "A0' Phase Gate 后 known
+    # Admin auth known
     # issues" section (Bug 3) for the running log. Decision #24.D
     # cross-state-machine boundary gap; not blocking A0' scaffold.
     async with AsyncClient(transport=transport, base_url="http://test") as replay:

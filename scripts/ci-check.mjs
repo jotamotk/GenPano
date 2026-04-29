@@ -8,7 +8,7 @@
  * Each rule is a specific function that reads files under `frontend/src/**` and
  * returns an array of violations. Violations carry `{ rule, file, line, message, fixHint }`.
  *
- * Rule bloodline: docs/TEST_STRATEGY.md §13 + CLAUDE.md Decision #21.A.
+ * Rule registry for frontend quality checks.
  *
  * CLI:
  *   node scripts/ci-check.mjs              # run all rules

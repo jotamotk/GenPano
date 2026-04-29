@@ -3,7 +3,7 @@
  * ProjectContext.pushToast({ kind, message }).
  *
  * Lives at the app root (mounted from App.jsx). Real impl will swap
- * to Sonner per CLAUDE.md dependency rules.
+ * to Sonner.
  *
  * ⚠️ 开发者约束 (不作为 UI 文案 — PRD §4.6.0a):
  *   This file owns no copy. All `toast.message` strings are produced by

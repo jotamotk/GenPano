@@ -12,7 +12,7 @@
  *   4. 品牌渐变只有一条: linear-gradient(135deg, #605BFF 0%, #8B5CF6 100%)
  *   5. 主字体 Nunito (已在 frontend/src/index.css 全局挂载到 body), 不引入 JetBrains Mono / Geist
  *   6. 不渲染 macOS 终端红/黄/绿点 mock
- *   7. 禁止开发者约束文字泄漏到用户 UI (见 CLAUDE.md "UI vs Prompt 指引边界")
+ *   7. 禁止开发者约束文字泄漏到用户 UI
  */
 
 import React, { useEffect, useState, useCallback } from 'react';

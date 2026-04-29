@@ -1,6 +1,6 @@
 """GENPANO L1 Harness selftest: every rule must catch its own fixture.
 
-Per CLAUDE.md #21.C (TS era, inherited): a rule registry without self-seeded
+A rule registry without self-seeded
 fixtures rots silently — the day you accidentally weaken a regex or AST
 matcher, no test fails because the only thing watching the rule is whatever
 real-world violation might appear in CI logs months later. Fixture-driven

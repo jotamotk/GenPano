@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 
 /* ─────────────────────────────────────────────────────────────
-   AdminDashboardPage — Session A0 · Step 8 stub (CLAUDE.md #24)
+   AdminDashboardPage
 
    A placeholder destination so the login → guard → dashboard path can
    be walked end-to-end for the Phase Gate self-test. Real admin home

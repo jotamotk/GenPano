@@ -1,6 +1,6 @@
 """Celery application factory for the GENPANO Pipeline workers.
 
-Defines the canonical 6-queue topology per docs/REPLAN_2026_04_26.md
+Defines the canonical 6-queue topology for background workers.
 §4 Session 0' Step 7 (lines 82 and 362, both enumerate exactly the same
 6 names -- treated as a closed enumeration).
 

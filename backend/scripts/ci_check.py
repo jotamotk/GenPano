@@ -3,19 +3,19 @@
 Translates 5 rules from the TypeScript era ci-check.mjs into native Python
 AST/regex scanners:
 
-  - F1  no-bare-playwright-import         (origin: CLAUDE.md #22.F)
-  - F4  response_source stamping (3 sub)  (origin: CLAUDE.md #28.G C2)
+  - F1  no-bare-playwright-import
+  - F4  response_source stamping (3 sub)
        F4-1  adapter execute() return dict must include `response_source`
        F4-2  api_fallback path return dict must stamp 'api_fallback'
        F4-3  AiResponse(...) constructor must include explicit kwarg
-  - D8  no-hardcoded-jwt-secret           (origin: CLAUDE.md #24.F)
-  - D9  admin-password-bcrypt-cost ≥ 12   (origin: CLAUDE.md #24.F)
-  - D10 admin-cookie-samesite=strict      (origin: CLAUDE.md #24.F)
+  - D8  no-hardcoded-jwt-secret
+  - D9  admin-password-bcrypt-cost >= 12
+  - D10 admin-cookie-samesite=strict
 
 Self-seeded fixtures live under backend/app/__ci_fixtures__/ and are excluded
 from the default scan (only the selftest opts them in).
 
-Per CLAUDE.md #29 (Python pivot), the TS .mjs registry is retired; the rule
+The TS .mjs registry is retired; the rule
 *ideas* survive, the implementation is rewritten.
 """
 

@@ -13,7 +13,7 @@
  *     Visibility 页 BrandTopicHeatmap (mentionRate 0-1 真实比值) 重复, 本页 brandTopicHits 0-100
  *     合成 ordinal 只是"相对位感", MVP mock 期两张图回答同一问题. 留 Visibility 那张更贴近
  *     用户"我在哪些 Topic 上强/弱"叙事.
- *   - 段 ④ Topic × Intent Matrix 组件从 components/industry/ 迁到 components/topics/ 以便 Brand Mode 复用 (决策详见 PRD §4.2.5 / CLAUDE.md 决策 #20 v3.2 补注).
+ *   - 段 ④ Topic × Intent Matrix 组件从 components/industry/ 迁到 components/topics/ 以便 Brand Mode 复用 (详见 PRD §4.2.5).
  *
  * v3.1 (保留) 字段契约 (§4.6.1g.D 硬约束):
  *   - 禁 topic.title (→ topic.topicName)

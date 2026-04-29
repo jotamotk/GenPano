@@ -10,7 +10,7 @@
  *   ⑤ 行业 PANO 趋势 + 近 7d 异动 Top 3
  *   ⑥ 品牌集团版图 Top 5
  *
- * 口径 (与 CLAUDE.md 决策 #20 一致):
+ * 口径:
  *   - mentionRate 全系统 0-1 小数, UI (×100).toFixed(1)% 渲染
  *   - IQR 只通过 lib/industry/statistics.computeIQR (禁 inline percentile)
  *   - SoV 饼图 >8 品牌 Top 6 + 其他 (C3), ≤8 全展示

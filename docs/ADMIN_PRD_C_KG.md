@@ -2,7 +2,7 @@
 
 > **状态**: v1 · 2026-04-16 · 作为 `docs/ADMIN_PRD.md` §4.3 的深化。ADMIN_PRD.md §4.3 保留为一屏摘要；落地到 Claude Code 的实现细节 / 数据模型 / 实体运维 SOP 以本文为准。
 >
-> **配套**: `docs/ADMIN_CLAUDE_CODE_SESSIONS.md` Session A3（主实施）+ A3.1 / A3.2（本文新增的 Entity Merge / KG Diff / Quality Monitor 延伸 Session，列在 §7）。
+> **配套**: 本文 §7 的 Entity Merge / KG Diff / Quality Monitor 实施阶段。
 
 ---
 
@@ -77,7 +77,7 @@ ADMIN_PRD.md §4.3 里原列 6 个子页，此次深化新增 3 页（标 ★）
 - 顶部工具条：筛选 `status=active|deprecated`、搜索 category 名
 
 **关键实现点**:
-- 品类树使用 **AntV G6 v5** 的 compact tree 布局（已在 CLAUDE.md 锚点之内，禁手写 SVG）
+- 品类树使用 **AntV G6 v5** 的 compact tree 布局，禁手写 SVG。
 - 节点右键菜单（复用 Radix ContextMenu）：新建子品类 / 改名 / 移动到... / 标 deprecated
 
 **边界**:
@@ -556,7 +556,7 @@ Admin 可**全写**所有 `kg_*` 表；但**不可**直接修改:
 
 ### 4.4 UI / Prompt 边界
 
-对齐 CLAUDE.md §UI vs Prompt 指引边界：C2/C3/C4 页面 **不**写 "本页不做...详情请进入..." 这类文字。改为：
+C2/C3/C4 页面 **不**写 "本页不做...详情请进入..." 这类内部约束文字。改为：
 
 - 在品牌审核抽屉底部放 "如需拆分此品牌 → Entity Ops" 的 **链接按钮**（带图标），不是文字说明
 - 在 Quality Monitor orphan 列表点击 orphan 直接跳对应审核页

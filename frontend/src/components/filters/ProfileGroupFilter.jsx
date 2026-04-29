@@ -13,7 +13,7 @@
  *
  * API surface deliberately kept minimal so it can be swapped to
  * `@radix-ui/react-select` in production without touching the call sites
- * (CLAUDE.md dependency rule: production build uses Radix Select; in this
+ * (Production build uses Radix Select; in this
  * prototype we mirror the same pattern as <ProjectSelector> with a custom
  * accessible button + panel).
  *
