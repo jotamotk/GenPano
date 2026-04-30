@@ -16,14 +16,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build production images
+        run: |
+          docker build \
+            --build-arg VITE_BASE_PATH=/ \
+            --build-arg VITE_API_BASE=/api \
+            -t genpano-local/genpano:frontend-${IMAGE_TAG} \
+            ./frontend
+          docker build -t genpano-local/genpano:backend-${IMAGE_TAG} ./backend
+          docker build -t genpano-local/genpano:worker-${IMAGE_TAG} ./geo_tracker
+          docker build -t genpano-local/genpano:query-tool-${IMAGE_TAG} ./query_tool
+
+          docker save \
+            genpano-local/genpano:frontend-${IMAGE_TAG} \
+            genpano-local/genpano:backend-${IMAGE_TAG} \
+            genpano-local/genpano:worker-${IMAGE_TAG} \
+            genpano-local/genpano:query-tool-${IMAGE_TAG} \
+            | gzip -1 > genpano-images-${IMAGE_TAG}.tar.gz
+          ls -lh genpano-images-${IMAGE_TAG}.tar.gz
+
       - name: Copy files to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "docker-compose.yml,clash/,frontend/,backend/,geo_tracker/,query_tool/"
+          source: "docker-compose.yml,clash/,frontend/nginx.conf,genpano-images-${{ env.IMAGE_TAG }}.tar.gz"
           target: /opt/genpano
+          timeout: 60m
+          command_timeout: 60m
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.3
@@ -127,14 +148,9 @@ jobs:
               systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
             fi
 
-            docker build \
-              --build-arg VITE_BASE_PATH=/ \
-              --build-arg VITE_API_BASE=/api \
-              -t genpano-local/genpano:frontend-${{ env.IMAGE_TAG }} \
-              ./frontend
-            docker build -t genpano-local/genpano:backend-${{ env.IMAGE_TAG }} ./backend
-            docker build -t genpano-local/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
-            docker build -t genpano-local/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
+            IMAGE_ARCHIVE="genpano-images-${{ env.IMAGE_TAG }}.tar.gz"
+            gzip -dc "$IMAGE_ARCHIVE" | docker load
+            rm -f "$IMAGE_ARCHIVE"
 
             docker compose up -d postgres redis
             docker compose run --rm backend alembic upgrade head
