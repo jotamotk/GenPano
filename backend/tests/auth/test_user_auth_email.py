@@ -66,3 +66,20 @@ def test_email_noops_without_provider_credentials(monkeypatch) -> None:
     result = send_verification_email(to="person@example.com", token="abc123")
 
     assert result.delivered is False
+
+
+def test_preview_provider_writes_email_files(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("EMAIL_PROVIDER", "preview")
+    monkeypatch.setenv("USER_EMAIL_PREVIEW_DIR", str(tmp_path))
+    monkeypatch.setenv("USER_BASE_URL", "http://app.local")
+
+    result = send_verification_email(to="person@example.com", token="abc123", locale="en-US")
+
+    assert result.delivered is True
+    assert result.preview_url is not None
+    filename = result.preview_url.rsplit("/", 1)[-1]
+    assert filename.endswith(".html")
+    html = (tmp_path / filename).read_text(encoding="utf-8")
+    text = (tmp_path / filename.replace(".html", ".txt")).read_text(encoding="utf-8")
+    assert "http://app.local/setup?token=abc123" in html
+    assert "http://app.local/setup?token=abc123" in text

@@ -42,6 +42,7 @@ class RegisterRequest(_BaseDto):
 class RegisterResponse(_BaseDto):
     message: str
     email: str
+    preview_url: str | None = None
 
 
 class LookupRequest(_BaseDto):
@@ -68,6 +69,7 @@ class ForgotPasswordRequest(_BaseDto):
 
 class OkResponse(_BaseDto):
     message: str = "ok"
+    preview_url: str | None = None
 
 
 class SetupTokenResponse(_BaseDto):

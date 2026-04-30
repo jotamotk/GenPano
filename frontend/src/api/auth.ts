@@ -21,6 +21,7 @@ export interface LoginResponse {
 export interface RegisterResponse {
   message: string
   email: string
+  previewUrl?: string | null
 }
 
 export interface MeResponse {

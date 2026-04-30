@@ -32,6 +32,30 @@ async def test_register_accepts_gmail_address(user_auth_http_env: UserAuthHttpEn
     assert res.json()["email"] == "person@gmail.com"
 
 
+async def test_register_returns_preview_email_link(
+    user_auth_http_env: UserAuthHttpEnv,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("EMAIL_PROVIDER", "preview")
+    monkeypatch.setenv("USER_EMAIL_PREVIEW_DIR", str(tmp_path))
+
+    res = await user_auth_http_env.client.post(
+        "/api/auth/register",
+        json={"email": "preview@gmail.com"},
+    )
+
+    assert res.status_code == 201
+    preview_url = res.json()["previewUrl"]
+    assert preview_url.startswith("http://test/api/auth/email-preview/")
+
+    preview = await user_auth_http_env.client.get(
+        preview_url.removeprefix("http://test"),
+    )
+    assert preview.status_code == 200
+    assert "/setup?token=" in preview.text
+
+
 async def test_register_setup_and_me_flow(
     user_auth_http_env: UserAuthHttpEnv,
     monkeypatch,

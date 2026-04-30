@@ -31,8 +31,10 @@ export default function RegisterPage() {
 
     setIsLoading(true)
     try {
-      await authApi.register(email)
-      navigate(`/email-sent?email=${encodeURIComponent(email)}&type=verify`)
+      const result = await authApi.register(email)
+      const params = new URLSearchParams({ email, type: 'verify' })
+      if (result.previewUrl) params.set('previewUrl', result.previewUrl)
+      navigate(`/email-sent?${params.toString()}`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''
       if (msg.toLowerCase().includes('exists') || msg.toLowerCase().includes('already') || msg.toLowerCase().includes('已注册')) {
