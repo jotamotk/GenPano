@@ -32,6 +32,7 @@
 - 推送到 `preview/**` 分支后，`Build & Deploy (Preview)` 会构建并部署 `frontend-preview`、`backend-preview`、`query-tool-preview`，预览环境访问路径为 `/preview/`。
 - 预览环境会使用 `PREVIEW_USER_BASE_URL`、`PREVIEW_FRONTEND_URL`、`PREVIEW_GOOGLE_CALLBACK_URL`。未设置时默认使用 `http://<SERVER_HOST>/preview`。
 - 阿里云 DM 的发件域名、发件地址、SMTP 密码必须在阿里云控制台配置完成；GitHub Actions 只负责把这些 secrets 写入服务器 `.env`。
+- `USER_EMAIL_PROVIDER` 未配置时默认使用 `preview`，注册邮件会保存到 `/data/email-previews` 并在注册成功页展示临时验证入口，方便在阿里云 DM/DNS 生效前测试注册流程。真实发信准备好后，将 repository variable 或 secret `USER_EMAIL_PROVIDER` 改为 `aliyun_dm`。
 
 ## 常见问题
 

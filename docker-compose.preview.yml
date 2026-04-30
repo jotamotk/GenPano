@@ -35,10 +35,13 @@ services:
       FRONTEND_URL: ${PREVIEW_FRONTEND_URL}
       GOOGLE_CALLBACK_URL: ${PREVIEW_GOOGLE_CALLBACK_URL}
       USER_EMAIL_PROVIDER: ${PREVIEW_USER_EMAIL_PROVIDER}
+      USER_EMAIL_PREVIEW_DIR: /data/email-previews
       USER_EMAIL_FROM: ${PREVIEW_USER_EMAIL_FROM}
       EMAIL_FROM: ${PREVIEW_USER_EMAIL_FROM}
       USER_EMAIL_REPLY_TO: ${PREVIEW_USER_EMAIL_REPLY_TO}
       EMAIL_REPLY_TO: ${PREVIEW_USER_EMAIL_REPLY_TO}
+    volumes:
+      - email_previews_data:/data/email-previews
     depends_on:
       postgres:
         condition: service_healthy

@@ -3,8 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLocale } from '../contexts/LocaleContext';
 import { authApi } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import { validateEmailFormat } from '../hooks/useEmailValidation';
-import ParticleArt from '../components/ParticleArt';
+import AuthVisualPanel from '../components/AuthVisualPanel';
 
 /* ─────────────────────────────────────────────────────────────
    AuthPage — PRD §4.1.1 + §4.1.1-form (Email-first 2-step)
@@ -188,6 +189,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t, locale, setLocale } = useLocale();
+  const { setLanguage } = useLanguage();
   const { setTokenAndUser } = useAuth();
 
   /* ── Query passthrough (PRD §4.1.2a / §4.1.1c / §4.1.1d) ── */
@@ -274,8 +276,9 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
 
     setSubmitting(true);
     try {
-      await authApi.register(email);
+      const result = await authApi.register(email);
       const qs = new URLSearchParams({ email, type: 'verify' });
+      if (result?.previewUrl) qs.set('previewUrl', result.previewUrl);
       if (returnTo) qs.set('redirect', returnTo);
       navigate(`/email-sent?${qs.toString()}`);
     } catch (err) {
@@ -358,7 +361,9 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
 
   /* ── Language toggle — real setLocale, no more placeholder button ── */
   const toggleLocale = () => {
-    setLocale(locale === 'zh-CN' ? 'en-US' : 'zh-CN');
+    const nextLocale = locale === 'zh-CN' ? 'en-US' : 'zh-CN';
+    setLocale(nextLocale);
+    setLanguage(nextLocale === 'zh-CN' ? 'zh' : 'en');
   };
 
   /* ── Render helpers ── */
@@ -707,10 +712,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
       {/* inject small keyframes for Spinner without touching global css */}
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
 
-      {/* Left brand panel (hidden on mobile) */}
-      <div className="hidden lg:block flex-1 min-w-0">
-        <LeftPanel t={t} />
-      </div>
+      <AuthVisualPanel />
 
       {/* Right form panel */}
       <div

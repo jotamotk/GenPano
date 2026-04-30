@@ -8,14 +8,19 @@ can be tested without network access or secrets.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import secrets
 import smtplib
 import ssl
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.utils import parseaddr
 from html import escape
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
@@ -26,6 +31,9 @@ _BASE_URL_FALLBACK = "http://localhost:3000"
 _FROM_ADDRESS_DEFAULT = "GenPano <noreply@genpano.com>"
 _ALIYUN_DM_SMTP_HOST = "smtpdm.aliyun.com"
 _ALIYUN_DM_SMTP_PORT = 465
+_EMAIL_PREVIEW_DIR_DEFAULT = "/data/email-previews"
+_EMAIL_PREVIEW_PROVIDER_NAMES = {"preview", "file", "filesystem"}
+_EMAIL_PREVIEW_FILE_RE = re.compile(r"^[A-Za-z0-9_-]{24,96}\.html$")
 
 
 @dataclass(frozen=True)
@@ -33,6 +41,7 @@ class EmailResult:
     delivered: bool
     provider_message_id: str | None
     locale: EmailLocale
+    preview_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,24 @@ def _email_provider() -> str:
     if os.environ.get("ALIYUN_DM_SMTP_PASSWORD") or os.environ.get("ALIYUN_DM_SMTP_USER"):
         return "aliyun_dm"
     return "noop"
+
+
+def _email_preview_dir() -> Path:
+    return Path(
+        os.environ.get("USER_EMAIL_PREVIEW_DIR")
+        or os.environ.get("EMAIL_PREVIEW_DIR")
+        or _EMAIL_PREVIEW_DIR_DEFAULT
+    )
+
+
+def _email_preview_enabled() -> bool:
+    return _email_provider() in _EMAIL_PREVIEW_PROVIDER_NAMES
+
+
+def get_preview_email_path(message_id: str) -> Path | None:
+    if not _email_preview_enabled() or not _EMAIL_PREVIEW_FILE_RE.fullmatch(message_id):
+        return None
+    return _email_preview_dir() / message_id
 
 
 def _env_bool(name: str, *, default: bool) -> bool:
@@ -478,6 +505,56 @@ def _send_with_aliyun_dm(
     return EmailResult(delivered=True, provider_message_id=None, locale=locale)
 
 
+def _send_with_preview(
+    *,
+    to: str,
+    subject: str,
+    html: str,
+    text: str,
+    locale: EmailLocale,
+) -> EmailResult:
+    preview_dir = _email_preview_dir()
+    preview_dir.mkdir(parents=True, exist_ok=True)
+
+    message_id = secrets.token_urlsafe(24)
+    html_filename = f"{message_id}.html"
+    text_filename = f"{message_id}.txt"
+    html_path = preview_dir / html_filename
+    text_path = preview_dir / text_filename
+    html_path.write_text(html, encoding="utf-8")
+    text_path.write_text(text, encoding="utf-8")
+
+    preview_url = f"{frontend_base_url()}/api/auth/email-preview/{html_filename}"
+    metadata = {
+        "id": message_id,
+        "to": to,
+        "subject": subject,
+        "locale": locale,
+        "preview_url": preview_url,
+        "html_file": html_filename,
+        "text_file": text_filename,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    (preview_dir / f"{message_id}.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (preview_dir / "latest.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info(
+        "user_email.preview_saved",
+        extra={"to": to, "subject": subject, "locale": locale, "preview_url": preview_url},
+    )
+    return EmailResult(
+        delivered=True,
+        provider_message_id=message_id,
+        locale=locale,
+        preview_url=preview_url,
+    )
+
+
 def _send(
     *,
     to: str,
@@ -488,6 +565,8 @@ def _send(
     client_override: ResendLike | None = None,
 ) -> EmailResult:
     provider = _email_provider()
+    if provider in _EMAIL_PREVIEW_PROVIDER_NAMES:
+        return _send_with_preview(to=to, subject=subject, html=html, text=text, locale=locale)
     if provider in {"aliyun", "aliyun_dm", "aliyun_smtp"}:
         return _send_with_aliyun_dm(to=to, subject=subject, html=html, text=text, locale=locale)
     if provider == "resend" or client_override is not None:

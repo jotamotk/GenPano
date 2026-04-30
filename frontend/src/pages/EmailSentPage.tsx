@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { useLanguage } from '../context/LanguageContext'
 import { authApi } from '../api/auth'
 import { showToast } from '../components/Toast'
-import ParticleArt from '../components/ParticleArt'
+import AuthVisualPanel from '../components/AuthVisualPanel'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 
 export default function EmailSentPage() {
@@ -13,6 +13,7 @@ export default function EmailSentPage() {
 
   const email = searchParams.get('email') || ''
   const type = searchParams.get('type') as 'verify' | 'reset' | null
+  const previewUrl = searchParams.get('previewUrl')
   const [cooldown, setCooldown] = useState(0)
 
   const isReset = type === 'reset'
@@ -54,24 +55,9 @@ export default function EmailSentPage() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Left decorative panel */}
-      <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden"
-        style={{ background: 'var(--color-auth-visual-bg)' }}
-        aria-hidden="true"
-      >
-        <div className="flex-1 w-full">
-          <ParticleArt />
-        </div>
-        <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
-            {language === 'zh' ? '完成验证后进入 GenPano 工作台' : 'Continue to your GenPano workspace after verification'}
-          </p>
-        </div>
-      </div>
-
+      <AuthVisualPanel />
       {/* Right panel — light gray background */}
-      <div className="flex-1 flex flex-col bg-themed-page">
+      <div className="w-full lg:w-[520px] lg:shrink-0 flex flex-col bg-themed-page">
         {/* Language switcher top right */}
         <div className="flex justify-end px-8 pt-6">
           <LanguageSwitcher />
@@ -128,6 +114,17 @@ export default function EmailSentPage() {
                 <span className="text-sm text-gray-600">{step2}</span>
               </div>
             </div>
+
+            {previewUrl && !isReset && (
+              <a
+                href={previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="block w-full h-12 px-4 mb-3 text-center leading-[48px] text-base font-semibold text-primary-600 rounded-[10px] border border-primary-200 bg-primary-50 hover:bg-primary-100 transition-colors"
+              >
+                {language === 'zh' ? '打开验证邮件' : 'Open verification email'}
+              </a>
+            )}
 
             {/* Resend button */}
             <button

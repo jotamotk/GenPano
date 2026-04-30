@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from app.db.session import get_db
 from app.models.user import User, UserAuthToken
 from app.user_auth.email import (
     frontend_base_url,
+    get_preview_email_path,
     send_password_reset_email,
     send_verification_email,
     send_welcome_email,
@@ -282,6 +283,14 @@ async def check_email(
     return {"exists": user is not None}
 
 
+@router.get("/email-preview/{message_id}", include_in_schema=False)
+async def email_preview(message_id: str) -> FileResponse:
+    path = get_preview_email_path(message_id)
+    if path is None or not path.is_file():
+        raise _api_error(status.HTTP_404_NOT_FOUND, "preview_not_found", "Email preview not found")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -309,10 +318,14 @@ async def register(
         token_type="verify_email",
         ttl_seconds=VERIFY_EMAIL_TTL_SECONDS,
     )
-    send_verification_email(to=user.email, token=token, locale=payload.locale)
+    email_result = send_verification_email(to=user.email, token=token, locale=payload.locale)
     await db.commit()
 
-    return RegisterResponse(message="Verification email sent", email=user.email)
+    return RegisterResponse(
+        message="Verification email sent",
+        email=user.email,
+        preview_url=getattr(email_result, "preview_url", None),
+    )
 
 
 @router.post("/resend-verification", response_model=OkResponse)
@@ -326,6 +339,7 @@ async def resend_verification(
         raise _api_error(status.HTTP_429_TOO_MANY_REQUESTS, "rate_limited", "请求过于频繁")
 
     user = await _find_user_by_email(db, email)
+    preview_url: str | None = None
     if user is not None and not user.email_verified:
         token = await _create_auth_token(
             db,
@@ -333,10 +347,14 @@ async def resend_verification(
             token_type="verify_email",
             ttl_seconds=VERIFY_EMAIL_TTL_SECONDS,
         )
-        send_verification_email(to=user.email, token=token, locale=payload.locale)
+        email_result = send_verification_email(to=user.email, token=token, locale=payload.locale)
+        preview_url = getattr(email_result, "preview_url", None)
         await db.commit()
 
-    return OkResponse(message="If the email exists, a verification email was sent.")
+    return OkResponse(
+        message="If the email exists, a verification email was sent.",
+        preview_url=preview_url,
+    )
 
 
 @router.get("/setup-token", response_model=SetupTokenResponse)
@@ -447,6 +465,7 @@ async def forgot_password(
         raise _api_error(status.HTTP_429_TOO_MANY_REQUESTS, "rate_limited", "请求过于频繁")
 
     user = await _find_user_by_email(db, normalized)
+    preview_url: str | None = None
     if user is not None and user.password_hash is not None:
         token = await _create_auth_token(
             db,
@@ -454,9 +473,13 @@ async def forgot_password(
             token_type="password_reset",
             ttl_seconds=PASSWORD_RESET_TTL_SECONDS,
         )
-        send_password_reset_email(to=user.email, token=token, locale=payload.locale)
+        email_result = send_password_reset_email(to=user.email, token=token, locale=payload.locale)
+        preview_url = getattr(email_result, "preview_url", None)
         await db.commit()
-    return OkResponse(message="If the email is registered, a reset email was sent.")
+    return OkResponse(
+        message="If the email is registered, a reset email was sent.",
+        preview_url=preview_url,
+    )
 
 
 @router.post("/forgot", response_model=OkResponse)

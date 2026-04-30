@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useLanguage } from '../context/LanguageContext'
-import ParticleArt from '../components/ParticleArt'
+import AuthVisualPanel from '../components/AuthVisualPanel'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 
 export default function ResetPasswordSuccessPage() {
@@ -9,24 +9,10 @@ export default function ResetPasswordSuccessPage() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Left decorative panel */}
-      <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden bg-brand-beige"
-        aria-hidden="true"
-      >
-        <div className="flex-1 w-full">
-          <ParticleArt />
-        </div>
-        <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
-            Monitor your brand's presence<br />
-            across AI-generated content
-          </p>
-        </div>
-      </div>
+      <AuthVisualPanel />
 
       {/* Right panel — light gray background */}
-      <div className="flex-1 flex flex-col bg-themed-page">
+      <div className="w-full lg:w-[520px] lg:shrink-0 flex flex-col bg-themed-page">
         {/* Language switcher top right */}
         <div className="flex justify-end px-8 pt-6">
           <LanguageSwitcher />

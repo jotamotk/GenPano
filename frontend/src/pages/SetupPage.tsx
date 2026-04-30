@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import { authApi } from '../api/auth'
 import { useEmailValidation } from '../hooks/useEmailValidation'
 import { showToast } from '../components/Toast'
-import ParticleArt from '../components/ParticleArt'
+import AuthVisualPanel from '../components/AuthVisualPanel'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 
 export default function SetupPage() {
@@ -137,26 +137,9 @@ export default function SetupPage() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Left decorative panel */}
-      <div
-        className="hidden lg:flex lg:w-2/5 xl:w-[45%] flex-col relative overflow-hidden"
-        style={{ background: 'var(--color-auth-visual-bg)' }}
-        aria-hidden="true"
-      >
-        <div className="flex-1 w-full">
-          <ParticleArt />
-        </div>
-        <div className="absolute bottom-8 left-8 right-8">
-          <p className="text-xs text-themed-muted" style={{ lineHeight: 1.6 }}>
-            {language === 'zh'
-              ? '完成设置后进入 GenPano 工作台'
-              : 'Continue to your GenPano workspace after setup'}
-          </p>
-        </div>
-      </div>
-
+      <AuthVisualPanel />
       {/* Right form panel */}
-      <div className="flex-1 flex flex-col bg-white">
+      <div className="w-full lg:w-[520px] lg:shrink-0 flex flex-col bg-white">
         {/* Language switcher top right */}
         <div className="flex justify-end px-8 pt-6">
           <LanguageSwitcher />
