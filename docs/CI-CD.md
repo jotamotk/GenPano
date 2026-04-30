@@ -16,6 +16,22 @@
 | `SERVER_HOST` | 部署服务器 IP | `116.62.36.173` |
 | `SERVER_USER` | SSH 用户名 | `root` |
 | `SERVER_SSH_KEY` | SSH 私钥 | `-----BEGIN RSA PRIVATE KEY-----...` |
+| `JWT_SECRET` / `USER_JWT_SECRET` | App 用户登录 JWT 与 OAuth state 签名密钥，至少 32 字节 | `openssl rand -base64 48` |
+| `USER_BASE_URL` / `FRONTEND_URL` | 生产前端公开访问地址，用于邮件链接和 OAuth callback | `https://genpano.example.com` |
+| `USER_EMAIL_PROVIDER` / `EMAIL_PROVIDER` | 用户邮件服务商；阿里云 DM 使用 `aliyun_dm` | `aliyun_dm` |
+| `USER_EMAIL_FROM` / `EMAIL_FROM` | 用户邮件发件地址，需在邮件服务商侧完成验证 | `GenPano <noreply@example.com>` |
+| `ALIYUN_DM_SMTP_USER` | 阿里云 DirectMail SMTP 用户名；未配置时默认使用发件邮箱 | `noreply@example.com` |
+| `ALIYUN_DM_SMTP_PASSWORD` | 阿里云 DirectMail SMTP 密码 | 在阿里云 DM 控制台生成 |
+| `ALIYUN_DM_SMTP_HOST` | 阿里云 DM SMTP host，可不填使用默认值 | `smtpdm.aliyun.com` |
+| `ALIYUN_DM_SMTP_PORT` | 阿里云 DM SMTP 端口，可不填使用默认值 | `465` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 登录配置，可选 | Google Cloud Console |
+
+## App 注册登录部署
+
+- 合并到 `main` 后，`Build & Deploy` 会构建 `frontend`、`backend`、`worker`、`query-tool` 镜像，并在 `docker compose up` 前执行 `backend alembic upgrade head`。
+- 推送到 `preview/**` 分支后，`Build & Deploy (Preview)` 会构建并部署 `frontend-preview`、`backend-preview`、`query-tool-preview`，预览环境访问路径为 `/preview/`。
+- 预览环境会使用 `PREVIEW_USER_BASE_URL`、`PREVIEW_FRONTEND_URL`、`PREVIEW_GOOGLE_CALLBACK_URL`。未设置时默认使用 `http://<SERVER_HOST>/preview`。
+- 阿里云 DM 的发件域名、发件地址、SMTP 密码必须在阿里云控制台配置完成；GitHub Actions 只负责把这些 secrets 写入服务器 `.env`。
 
 ## 常见问题
 

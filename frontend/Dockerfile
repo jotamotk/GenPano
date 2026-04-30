@@ -6,7 +6,9 @@ RUN npm ci
 COPY . .
 # VITE_BASE_PATH is empty for the prod image and '/preview/' for the preview image.
 ARG VITE_BASE_PATH=/
+ARG VITE_API_BASE=/api
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
+ENV VITE_API_BASE=$VITE_API_BASE
 RUN npm run build
 
 # Stage 2: Nginx serve + reverse proxy

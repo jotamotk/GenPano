@@ -3,8 +3,8 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d
 #
-# Adds two services (query-tool-preview, frontend-preview) and overlays a
-# routes file into the prod nginx container. Prod services are untouched.
+# Adds preview services and overlays a routes file into the prod nginx
+# container. Prod services are untouched.
 # Shares the existing postgres + redis.
 
 services:
@@ -17,8 +17,33 @@ services:
     depends_on:
       - backend
       - query-tool
+      - backend-preview
       - query-tool-preview
       - frontend-preview
+
+  backend-preview:
+    image: ${ACR_REGISTRY}/genpano:backend-preview-${PREVIEW_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 512m
+    env_file: .env
+    environment:
+      GENPANO_ENVIRONMENT: preview
+      GENPANO_DATABASE_URL: postgresql+asyncpg://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
+      DATABASE_URL: postgresql+asyncpg://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
+      REDIS_URL: redis://redis:6379/0
+      USER_BASE_URL: ${PREVIEW_USER_BASE_URL}
+      FRONTEND_URL: ${PREVIEW_FRONTEND_URL}
+      GOOGLE_CALLBACK_URL: ${PREVIEW_GOOGLE_CALLBACK_URL}
+      USER_EMAIL_PROVIDER: ${PREVIEW_USER_EMAIL_PROVIDER}
+      USER_EMAIL_FROM: ${PREVIEW_USER_EMAIL_FROM}
+      EMAIL_FROM: ${PREVIEW_USER_EMAIL_FROM}
+      USER_EMAIL_REPLY_TO: ${PREVIEW_USER_EMAIL_REPLY_TO}
+      EMAIL_REPLY_TO: ${PREVIEW_USER_EMAIL_REPLY_TO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   query-tool-preview:
     image: ${ACR_REGISTRY}/genpano:query-tool-preview-${PREVIEW_IMAGE_TAG:-latest}
