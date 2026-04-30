@@ -48,10 +48,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve ACR login registry
+        id: acr
+        shell: bash
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          registry="${ACR_REGISTRY#http://}"
+          registry="${registry#https://}"
+          registry="${registry%/}"
+          if [ -z "$registry" ]; then
+            echo "ACR_REGISTRY secret is empty" >&2
+            exit 1
+          fi
+          echo "login_registry=${registry%%/*}" >> "$GITHUB_OUTPUT"
+
       - name: Login to Alibaba Cloud ACR
         uses: docker/login-action@v3
         with:
-          registry: crpi-vklfeye8td1r1mei.cn-shanghai.personal.cr.aliyuncs.com
+          registry: ${{ steps.acr.outputs.login_registry }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 

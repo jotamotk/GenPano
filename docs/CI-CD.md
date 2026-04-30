@@ -12,7 +12,7 @@
 |--------|------|--------|
 | `ACR_USERNAME` | 阿里云账号或 RAM 用户名 | `tomatokillerman` |
 | `ACR_PASSWORD` | ACR 访问密码 | 在 ACR 控制台 → 访问凭证 设置 |
-| `ACR_REGISTRY` | 镜像仓库地址（含命名空间） | `crpi-xxx.cn-shanghai.personal.cr.aliyuncs.com/lianwei_ai_lab` |
+| `ACR_REGISTRY` | 镜像仓库地址（含命名空间）；workflow 会从这里自动解析登录域名 | `crpi-xxx.cn-shanghai.personal.cr.aliyuncs.com/lianwei_ai_lab` |
 | `SERVER_HOST` | 部署服务器 IP | `116.62.36.173` |
 | `SERVER_USER` | SSH 用户名 | `root` |
 | `SERVER_SSH_KEY` | SSH 私钥 | `-----BEGIN RSA PRIVATE KEY-----...` |
