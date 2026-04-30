@@ -38,16 +38,6 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Mirror runtime images
-        run: |
-          docker pull postgres:16-alpine
-          docker tag postgres:16-alpine ${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
-
-          docker pull redis:7-alpine
-          docker tag redis:7-alpine ${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
-
       - name: Build & push frontend
         run: |
           docker build \
@@ -111,8 +101,6 @@ jobs:
             cat > .env <<'ENVEOF'
             ACR_REGISTRY=${{ secrets.ACR_REGISTRY }}
             IMAGE_TAG=${{ env.IMAGE_TAG }}
-            POSTGRES_IMAGE=${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
-            REDIS_IMAGE=${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
