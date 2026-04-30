@@ -18,6 +18,9 @@ jobs:
 
       - name: Build production images
         run: |
+          docker pull postgres:16-alpine
+          docker pull redis:7-alpine
+
           docker build \
             --build-arg VITE_BASE_PATH=/ \
             --build-arg VITE_API_BASE=/api \
@@ -28,6 +31,8 @@ jobs:
           docker build -t genpano-local/genpano:query-tool-${IMAGE_TAG} ./query_tool
 
           docker save \
+            postgres:16-alpine \
+            redis:7-alpine \
             genpano-local/genpano:frontend-${IMAGE_TAG} \
             genpano-local/genpano:backend-${IMAGE_TAG} \
             genpano-local/genpano:worker-${IMAGE_TAG} \
@@ -57,7 +62,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON
           script_stop: true
-          command_timeout: 45m
+          command_timeout: 60m
           script: |
             cd /opt/genpano
 
@@ -149,11 +154,16 @@ jobs:
             fi
 
             IMAGE_ARCHIVE="genpano-images-${{ env.IMAGE_TAG }}.tar.gz"
+            echo "Loading Docker image bundle..."
             gzip -dc "$IMAGE_ARCHIVE" | docker load
             rm -f "$IMAGE_ARCHIVE"
+            docker image ls | grep -E 'genpano-local/genpano|postgres|redis' || true
 
+            echo "Starting postgres and redis..."
             docker compose up -d postgres redis
+            echo "Running database migrations..."
             docker compose run --rm backend alembic upgrade head
+            echo "Starting application services..."
             docker compose up -d --remove-orphans --force-recreate
 
             docker compose ps
