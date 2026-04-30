@@ -35,6 +35,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON
+          script_stop: true
+          command_timeout: 45m
           script: |
             cd /opt/genpano
 
@@ -137,6 +139,32 @@ jobs:
             docker compose up -d postgres redis
             docker compose run --rm backend alembic upgrade head
             docker compose up -d --remove-orphans --force-recreate
+
+            docker compose ps
+
+            check_url() {
+              local label="$1"
+              local url="$2"
+              local attempts=30
+              local delay=2
+
+              for i in $(seq 1 "$attempts"); do
+                if curl -fsS "$url" >/dev/null; then
+                  echo "OK: ${label}"
+                  return 0
+                fi
+                sleep "$delay"
+              done
+
+              echo "FAILED: ${label} (${url})" >&2
+              docker compose ps >&2
+              docker compose logs --tail=80 nginx backend query-tool >&2
+              return 1
+            }
+
+            check_url "backend health" "http://127.0.0.1/health"
+            check_url "frontend login route" "http://127.0.0.1/login"
+            check_url "admin route" "http://127.0.0.1/admin"
 
             # 清理 Docker 垃圾释放磁盘空间
             # 1. 删除所有未被使用的镜像（不只是 dangling）
