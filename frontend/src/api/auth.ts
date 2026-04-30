@@ -1,4 +1,8 @@
-const API_BASE = '/api'
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
+
+const appBase = trimTrailingSlash(import.meta.env.BASE_URL || '')
+const configuredApiBase = import.meta.env.VITE_API_BASE
+const API_BASE = trimTrailingSlash(configuredApiBase || `${appBase}/api` || '/api')
 
 export interface LoginResponse {
   token: string
@@ -112,7 +116,7 @@ export const authApi = {
   },
 
   getGoogleOAuthUrl(): string {
-    return '/api/auth/google'
+    return `${API_BASE}/auth/google`
   },
 
   async checkEmail(email: string): Promise<{ exists: boolean }> {

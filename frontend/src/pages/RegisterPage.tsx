@@ -46,7 +46,7 @@ export default function RegisterPage() {
   }
 
   const handleGoogleRegister = () => {
-    window.location.href = '/api/auth/google'
+    window.location.href = authApi.getGoogleOAuthUrl()
   }
 
   return (
