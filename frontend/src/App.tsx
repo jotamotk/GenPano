@@ -85,8 +85,11 @@ function AppRoutes() {
 }
 
 export default function App() {
+  const base = import.meta.env.BASE_URL.replace(/\/+$/, '')
+  const basename = base === '' ? undefined : base
+
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <LanguageProvider>
         <AuthProvider>
           <AppRoutes />

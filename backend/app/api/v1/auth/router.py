@@ -593,4 +593,4 @@ async def google_callback(
     await db.commit()
     await db.refresh(user)
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
-    return RedirectResponse(f"{base}/auth/callback?token={quote(token)}")
+    return RedirectResponse(f"{base}/dashboard?token={quote(token)}")

@@ -1,7 +1,7 @@
 name: Build & Deploy (Preview)
 
-# Builds and deploys the preview (merge-frontend-pages) environment alongside
-# prod on the same host. Shares postgres/redis/backend/worker with prod.
+# Builds and deploys the preview environment alongside prod on the same host.
+# Shares postgres/redis/worker with prod, but runs preview frontend/backend/query-tool images.
 # Reachable at http://<host>/preview/.
 #
 # Triggers (gated per job):
@@ -13,7 +13,8 @@ name: Build & Deploy (Preview)
 #     (Step 10 / Session 0' Python backend gate; runs lint + types + migration
 #     only, no docker push, no SSH deploy)
 #
-# Images:   genpano:query-tool-preview-<sha>, genpano:frontend-preview-<sha>
+# Images:   genpano:backend-preview-<sha>, genpano:query-tool-preview-<sha>,
+#           genpano:frontend-preview-<sha>
 # Tag var:  PREVIEW_IMAGE_TAG (written into .env on the host, merged with prod .env)
 
 on:
@@ -58,9 +59,17 @@ jobs:
         run: |
           docker build \
             --build-arg VITE_BASE_PATH=/preview/ \
+            --build-arg VITE_API_BASE=/preview/api \
             -t ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }} \
             ./frontend
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:frontend-preview-${{ env.PREVIEW_IMAGE_TAG }}
+
+      - name: Build & push backend-preview
+        run: |
+          docker build \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:backend-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./backend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:backend-preview-${{ env.PREVIEW_IMAGE_TAG }}
 
       - name: Build & push query-tool-preview
         run: |
@@ -96,21 +105,62 @@ jobs:
           script: |
             cd /opt/genpano
 
-            # Merge PREVIEW_IMAGE_TAG into the shared .env (prod workflow owns the rest)
-            if [ -f .env ]; then
-              grep -v '^PREVIEW_IMAGE_TAG=' .env > .env.tmp || true
+            touch .env
+            for key in \
+              PREVIEW_IMAGE_TAG USER_JWT_SECRET ADMIN_JWT_SECRET ADMIN_SESSION_SECRET \
+              PREVIEW_USER_BASE_URL PREVIEW_FRONTEND_URL PREVIEW_GOOGLE_CALLBACK_URL \
+              PREVIEW_USER_EMAIL_PROVIDER PREVIEW_USER_EMAIL_FROM PREVIEW_USER_EMAIL_REPLY_TO \
+              EMAIL_PROVIDER USER_EMAIL_PROVIDER USER_EMAIL_FROM EMAIL_FROM \
+              USER_EMAIL_REPLY_TO EMAIL_REPLY_TO RESEND_API_KEY \
+              ALIYUN_DM_SMTP_USER ALIYUN_DM_SMTP_PASSWORD ALIYUN_DM_SMTP_HOST \
+              ALIYUN_DM_SMTP_PORT ALIYUN_DM_SMTP_SSL ALIYUN_DM_SMTP_STARTTLS \
+              GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+            do
+              grep -v "^${key}=" .env > .env.tmp || true
               mv .env.tmp .env
-            fi
-            echo "PREVIEW_IMAGE_TAG=${{ env.PREVIEW_IMAGE_TAG }}" >> .env
+            done
+            cat >> .env <<'ENVEOF'
+            PREVIEW_IMAGE_TAG=${{ env.PREVIEW_IMAGE_TAG }}
+            USER_JWT_SECRET=${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET || secrets.ADMIN_JWT_SECRET }}
+            ADMIN_JWT_SECRET=${{ secrets.ADMIN_JWT_SECRET || secrets.JWT_SECRET }}
+            ADMIN_SESSION_SECRET=${{ secrets.ADMIN_SESSION_SECRET || secrets.ADMIN_JWT_SECRET || secrets.JWT_SECRET }}
+            PREVIEW_USER_BASE_URL=${{ secrets.PREVIEW_USER_BASE_URL || format('http://{0}/preview', secrets.SERVER_HOST) }}
+            PREVIEW_FRONTEND_URL=${{ secrets.PREVIEW_FRONTEND_URL || secrets.PREVIEW_USER_BASE_URL || format('http://{0}/preview', secrets.SERVER_HOST) }}
+            PREVIEW_GOOGLE_CALLBACK_URL=${{ secrets.PREVIEW_GOOGLE_CALLBACK_URL || format('http://{0}/preview/api/auth/google/callback', secrets.SERVER_HOST) }}
+            PREVIEW_USER_EMAIL_PROVIDER=${{ secrets.PREVIEW_USER_EMAIL_PROVIDER || secrets.USER_EMAIL_PROVIDER || secrets.EMAIL_PROVIDER || 'aliyun_dm' }}
+            PREVIEW_USER_EMAIL_FROM=${{ secrets.PREVIEW_USER_EMAIL_FROM || secrets.USER_EMAIL_FROM || secrets.EMAIL_FROM }}
+            PREVIEW_USER_EMAIL_REPLY_TO=${{ secrets.PREVIEW_USER_EMAIL_REPLY_TO || secrets.USER_EMAIL_REPLY_TO || secrets.EMAIL_REPLY_TO }}
+            EMAIL_PROVIDER=${{ secrets.USER_EMAIL_PROVIDER || secrets.EMAIL_PROVIDER || 'aliyun_dm' }}
+            USER_EMAIL_PROVIDER=${{ secrets.USER_EMAIL_PROVIDER || secrets.EMAIL_PROVIDER || 'aliyun_dm' }}
+            USER_EMAIL_FROM=${{ secrets.USER_EMAIL_FROM || secrets.EMAIL_FROM }}
+            EMAIL_FROM=${{ secrets.USER_EMAIL_FROM || secrets.EMAIL_FROM }}
+            USER_EMAIL_REPLY_TO=${{ secrets.USER_EMAIL_REPLY_TO || secrets.EMAIL_REPLY_TO }}
+            EMAIL_REPLY_TO=${{ secrets.USER_EMAIL_REPLY_TO || secrets.EMAIL_REPLY_TO }}
+            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+            ALIYUN_DM_SMTP_USER=${{ secrets.ALIYUN_DM_SMTP_USER }}
+            ALIYUN_DM_SMTP_PASSWORD=${{ secrets.ALIYUN_DM_SMTP_PASSWORD }}
+            ALIYUN_DM_SMTP_HOST=${{ secrets.ALIYUN_DM_SMTP_HOST || 'smtpdm.aliyun.com' }}
+            ALIYUN_DM_SMTP_PORT=${{ secrets.ALIYUN_DM_SMTP_PORT || '465' }}
+            ALIYUN_DM_SMTP_SSL=${{ secrets.ALIYUN_DM_SMTP_SSL || 'true' }}
+            ALIYUN_DM_SMTP_STARTTLS=${{ secrets.ALIYUN_DM_SMTP_STARTTLS || 'false' }}
+            GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+            GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+            ENVEOF
+            sed -i 's/^[[:space:]]*//' .env
 
             # Pull new preview images and apply the overlay without touching prod services.
             # --no-recreate for unchanged services keeps prod containers running as-is.
             docker compose -f docker-compose.yml -f docker-compose.preview.yml pull \
-              query-tool-preview frontend-preview
+              backend-preview query-tool-preview frontend-preview
+
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d postgres redis
+
+            docker compose -f docker-compose.yml -f docker-compose.preview.yml run --rm \
+              backend-preview alembic upgrade head
 
             docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
               --no-deps \
-              query-tool-preview frontend-preview
+              backend-preview query-tool-preview frontend-preview
 
             # nginx needs the extra volume mount (routes.conf) — recreate only nginx.
             docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
