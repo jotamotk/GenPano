@@ -8,37 +8,78 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  deploy:
-    name: Deploy to Server
+  build-and-push:
+    name: Build & Push Images
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build production images
+      - name: Resolve ACR login registry
+        id: acr
+        shell: bash
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          registry="${ACR_REGISTRY#http://}"
+          registry="${registry#https://}"
+          registry="${registry%/}"
+          if [ -z "$registry" ]; then
+            echo "ACR_REGISTRY secret is empty" >&2
+            exit 1
+          fi
+          echo "login_registry=${registry%%/*}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Alibaba Cloud ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.acr.outputs.login_registry }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror runtime images
         run: |
           docker pull postgres:16-alpine
-          docker pull redis:7-alpine
+          docker tag postgres:16-alpine ${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
 
+          docker pull redis:7-alpine
+          docker tag redis:7-alpine ${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
+
+      - name: Build & push frontend
+        run: |
           docker build \
             --build-arg VITE_BASE_PATH=/ \
             --build-arg VITE_API_BASE=/api \
-            -t genpano-local/genpano:frontend-${IMAGE_TAG} \
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:frontend-${{ env.IMAGE_TAG }} \
             ./frontend
-          docker build -t genpano-local/genpano:backend-${IMAGE_TAG} ./backend
-          docker build -t genpano-local/genpano:worker-${IMAGE_TAG} ./geo_tracker
-          docker build -t genpano-local/genpano:query-tool-${IMAGE_TAG} ./query_tool
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:frontend-${{ env.IMAGE_TAG }}
 
-          docker save \
-            postgres:16-alpine \
-            redis:7-alpine \
-            genpano-local/genpano:frontend-${IMAGE_TAG} \
-            genpano-local/genpano:backend-${IMAGE_TAG} \
-            genpano-local/genpano:worker-${IMAGE_TAG} \
-            genpano-local/genpano:query-tool-${IMAGE_TAG} \
-            | gzip -1 > genpano-images-${IMAGE_TAG}.tar.gz
-          ls -lh genpano-images-${IMAGE_TAG}.tar.gz
+      - name: Build & push backend
+        run: |
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:backend-${{ env.IMAGE_TAG }} ./backend
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:backend-${{ env.IMAGE_TAG }}
+
+      - name: Build & push worker
+        run: |
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
+
+      - name: Build & push query-tool
+        run: |
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }}
+
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Copy files to server
         uses: appleboy/scp-action@v0.1.7
@@ -46,32 +87,32 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "docker-compose.yml,clash/,frontend/nginx.conf,genpano-images-${{ env.IMAGE_TAG }}.tar.gz"
+          source: "docker-compose.yml,clash/,frontend/nginx.conf"
           target: /opt/genpano
-          timeout: 60m
-          command_timeout: 60m
 
       - name: Deploy
         uses: appleboy/ssh-action@v1.0.3
         env:
           GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
           DOUBAO_COOKIES_JSON: ${{ secrets.DOUBAO_COOKIES_JSON }}
+          ACR_REGISTRY_SECRET: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON
+          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD
           script_stop: true
-          command_timeout: 60m
+          command_timeout: 30m
           script: |
             cd /opt/genpano
 
-            # 创建完整的 .env 文件
-            # 使用 quoted heredoc 防止 shell 展开密码中的 $
-            # heredoc 内容必须缩进（YAML block scalar 要求），写入后用 sed 去除前导空格
             cat > .env <<'ENVEOF'
-            ACR_REGISTRY=genpano-local
+            ACR_REGISTRY=${{ secrets.ACR_REGISTRY }}
             IMAGE_TAG=${{ env.IMAGE_TAG }}
+            POSTGRES_IMAGE=${{ secrets.ACR_REGISTRY }}/genpano:postgres-16-alpine
+            REDIS_IMAGE=${{ secrets.ACR_REGISTRY }}/genpano:redis-7-alpine
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
@@ -115,8 +156,6 @@ jobs:
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
 
-            # 单独写入 cookies JSON，用 Python 压缩为单行 JSON 再写入
-            # 转义 $ 为 $$ 防止 docker compose 将 cookie 值中的 $xx 当作变量
             printf '%s' "${GEMINI_COOKIES_JSON}" | python3 -c \
               "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('GEMINI_COOKIES_JSON=' + s)" \
               >> .env
@@ -127,45 +166,37 @@ jobs:
                 >> .env
             fi
 
-            # 确保 V-Ninja 代理服务正在运行（宿主机 systemd 服务）
-            # 更新 allow-lan 脚本和 systemd 服务文件
             cp /opt/genpano/clash/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh
             chmod +x /usr/local/bin/vninja-allow-lan.sh
             cp /opt/genpano/clash/vninja.service /etc/systemd/system/vninja.service
             systemctl daemon-reload
 
-            # 确保 socat 已安装（API 端口转发需要）
             which socat >/dev/null 2>&1 || apt-get install -y -qq socat
 
             if systemctl is-active --quiet vninja; then
-              echo "✓ V-Ninja 代理服务正在运行"
-              # 确保 allow-lan 和 API 转发
+              echo "V-Ninja proxy service is running"
               curl -s -X PATCH http://127.0.0.1:9097/configs \
                 -H "Content-Type: application/json" \
                 -H "Authorization: Bearer set-your-secret" \
                 -d '{"allow-lan": true}' || true
-              # 确保 socat API 转发在运行
               if ! pgrep -f "socat.*TCP-LISTEN:9098" >/dev/null; then
                 socat TCP-LISTEN:9098,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9097 &
               fi
             else
-              echo "⚠ V-Ninja 未运行，尝试启动..."
-              systemctl start vninja || echo "✗ V-Ninja 启动失败，海外 LLM 将无法使用代理"
+              echo "V-Ninja is not running; attempting to start it"
+              systemctl start vninja || echo "V-Ninja start failed; overseas LLM proxy may be unavailable"
             fi
 
-            IMAGE_ARCHIVE="genpano-images-${{ env.IMAGE_TAG }}.tar.gz"
-            echo "Loading Docker image bundle..."
-            gzip -dc "$IMAGE_ARCHIVE" | docker load
-            rm -f "$IMAGE_ARCHIVE"
-            docker image ls | grep -E 'genpano-local/genpano|postgres|redis' || true
+            login_registry="${ACR_REGISTRY_SECRET#http://}"
+            login_registry="${login_registry#https://}"
+            login_registry="${login_registry%/}"
+            login_registry="${login_registry%%/*}"
+            printf '%s' "$ACR_PASSWORD" | docker login "$login_registry" -u "$ACR_USERNAME" --password-stdin
 
-            echo "Starting postgres and redis..."
+            docker compose pull postgres redis backend worker worker-analysis beat nginx query-tool
             docker compose up -d postgres redis
-            echo "Running database migrations..."
             docker compose run --rm backend alembic upgrade head
-            echo "Starting application services..."
             docker compose up -d --remove-orphans --force-recreate
-
             docker compose ps
 
             check_url() {
@@ -192,12 +223,7 @@ jobs:
             check_url "frontend login route" "http://127.0.0.1/login"
             check_url "admin route" "http://127.0.0.1/admin"
 
-            # 清理 Docker 垃圾释放磁盘空间
-            # 1. 删除所有未被使用的镜像（不只是 dangling）
             docker image prune -af --filter "until=72h"
-            # 2. 清理构建缓存
             docker builder prune -af --keep-storage=2GB
-            # 3. 清理无主的 volume（排除正在使用的）
             docker volume prune -f
-            # 4. 显示清理后的磁盘使用情况
             df -h / && docker system df

@@ -5,7 +5,7 @@ services:
   # 设置方法见 clash/setup-vninja-host.sh
 
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
     mem_limit: 1g
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
     mem_limit: 256m
     healthcheck:
