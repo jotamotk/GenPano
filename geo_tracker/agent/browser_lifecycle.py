@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,45 @@ CAMOUFOX_EXIT_TIMEOUT_S = 10.0
 PLAYWRIGHT_STOP_TIMEOUT_S = 5.0
 PAGE_CLOSE_TIMEOUT_S = 5.0
 CONTEXT_CLOSE_TIMEOUT_S = 5.0
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def should_block_heavy_resources() -> bool:
+    return _env_flag("BROWSER_BLOCK_HEAVY_RESOURCES", True)
+
+
+async def install_resource_blocker(
+    context: Any,
+    *,
+    block_images: bool = True,
+) -> None:
+    """Abort non-essential browser assets before any pages are opened."""
+    if context is None or not should_block_heavy_resources():
+        return
+
+    blocked_types = {"media", "font"}
+    if block_images:
+        blocked_types.add("image")
+
+    async def _route(route: Any) -> None:
+        try:
+            if route.request.resource_type in blocked_types:
+                await route.abort()
+                return
+            await route.continue_()
+        except Exception:
+            try:
+                await route.continue_()
+            except Exception:
+                pass
+
+    await context.route("**/*", _route)
 
 
 async def _await_with_timeout(
@@ -63,6 +104,95 @@ async def _await_with_timeout(
             f"{type(e).__name__}: {e}; continuing cleanup"
         )
         return False
+
+
+def _maybe_call(value: Any) -> Any:
+    try:
+        return value() if callable(value) else value
+    except TypeError:
+        return value
+    except Exception:
+        return None
+
+
+def _extract_pid_from_browser(browser: Optional[Any]) -> Optional[int]:
+    if browser is None:
+        return None
+
+    process = _maybe_call(getattr(browser, "process", None))
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int) and pid > 0:
+        return pid
+
+    candidates = [
+        ("_impl_obj", "_connection", "_transport", "_proc"),
+        ("_connection", "_transport", "_proc"),
+    ]
+    for path in candidates:
+        value = browser
+        for attr in path:
+            value = getattr(value, attr, None)
+            if value is None:
+                break
+        pid = getattr(value, "pid", None)
+        if isinstance(pid, int) and pid > 0:
+            return pid
+    return None
+
+
+def _linux_child_pids(parent_pid: int) -> list[int]:
+    children: list[int] = []
+    proc_root = "/proc"
+    try:
+        entries = os.listdir(proc_root)
+    except Exception:
+        return children
+
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        stat_path = os.path.join(proc_root, entry, "stat")
+        try:
+            with open(stat_path, "r", encoding="utf-8") as stat_file:
+                stat = stat_file.read()
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except Exception:
+            continue
+        if ppid == parent_pid:
+            pid = int(entry)
+            children.extend(_linux_child_pids(pid))
+            children.append(pid)
+    return children
+
+
+async def _terminate_process_tree(pid: Optional[int], label: str) -> None:
+    if not pid or pid <= 0:
+        return
+
+    if os.name == "nt":
+        logger.warning(
+            f"[browser_lifecycle] {label} close failed; process tree cleanup "
+            f"for pid={pid} is skipped on Windows"
+        )
+        return
+
+    pids = _linux_child_pids(pid) + [pid]
+    logger.warning(
+        f"[browser_lifecycle] {label} close failed; terminating browser "
+        f"process tree pids={pids}"
+    )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for child_pid in pids:
+            try:
+                os.kill(child_pid, sig)
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(
+                    f"[browser_lifecycle] failed to send {sig.name} to "
+                    f"pid={child_pid}: {e}"
+                )
+        await asyncio.sleep(0.5)
 
 
 async def safe_close_page(page: Optional[Any]) -> None:
@@ -107,11 +237,14 @@ async def safe_close_browser(browser: Optional[Any]) -> None:
             return
     except Exception:
         pass
-    await _await_with_timeout(
+    browser_pid = _extract_pid_from_browser(browser)
+    closed = await _await_with_timeout(
         browser.close(),
         BROWSER_CLOSE_TIMEOUT_S,
         "browser.close",
     )
+    if not closed:
+        await _terminate_process_tree(browser_pid, "browser")
 
 
 async def safe_exit_camoufox(camoufox_ctx: Optional[Any]) -> None:

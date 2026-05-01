@@ -16,7 +16,10 @@ from typing import Optional
 
 from playwright.async_api import Page, async_playwright
 
-from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
+from geo_tracker.agent.browser_lifecycle import (
+    cleanup_browser_resources,
+    install_resource_blocker,
+)
 from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
 from geo_tracker.agent.sms_login.phone_blacklist import (
     add_to_blacklist,
@@ -147,6 +150,8 @@ class BaseSMSLoginHandler(ABC):
 
         sms_client = None
         browser = None
+        context = None
+        page = None
         _camoufox_ctx = None
         _playwright = None
         # 所有本次申请过的手机号，流程结束后统一释放
@@ -164,6 +169,11 @@ class BaseSMSLoginHandler(ABC):
         def _fail(reason: str) -> dict:
             logger.error(f"[{self.platform}] {reason}")
             return {"status": "failed", "reason": reason}
+
+        if phone and not is_valid_phone and existing_cookies:
+            return _fail(
+                f"invalid phone for re-login: {phone}; refusing to request a new SMS number"
+            )
 
         try:
             sms_client = LubanSMSClient()
@@ -192,6 +202,8 @@ class BaseSMSLoginHandler(ABC):
 
             # 启动浏览器
             browser, _camoufox_ctx, _playwright, context = await self._launch_browser()
+            # Keep CAPTCHA images available for SMS login, but drop heavier assets.
+            await install_resource_blocker(context, block_images=False)
 
             # 注入已有 cookies（可能帮助跳过部分登录步骤）
             if existing_cookies:
@@ -440,6 +452,8 @@ class BaseSMSLoginHandler(ABC):
             # SMS 登录路径同样会 hang, 而且这条路径每次失败都会再要新手机号 → 鲁班扣费.
             # 必须先安全清理浏览器, 再释放手机号, 顺序不可换.
             await cleanup_browser_resources(
+                page=page,
+                context=context,
                 browser=browser,
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,

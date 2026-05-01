@@ -18,6 +18,11 @@ from typing import Optional
 from camoufox.async_api import AsyncCamoufox
 from playwright.async_api import BrowserContext, Page
 
+from geo_tracker.agent.browser_lifecycle import (
+    cleanup_browser_resources,
+    install_resource_blocker,
+    should_block_heavy_resources,
+)
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve
 from geo_tracker.agent.human_behavior import (
     human_type, human_scroll_read, pre_query_pause,
@@ -171,10 +176,17 @@ class QueryExecutor:
         # 构建 Camoufox 参数
         browser_profile = account.profile.browser_profile if account.profile else None
         camoufox_kwargs = _build_camoufox_kwargs(browser_profile, proxy)
+        browser = None
+        context = None
+        page = None
+        camoufox_ctx = None
 
         try:
-            async with AsyncCamoufox(**camoufox_kwargs) as browser:
+            camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
+            browser = await camoufox_ctx.__aenter__()
+            if True:
                 context: BrowserContext = await _prepare_context(browser, account, config)
+                await install_resource_blocker(context)
                 page: Page = await context.new_page()
 
                 response_text = await self._run_query(page, config, query.query_text)
@@ -211,6 +223,13 @@ class QueryExecutor:
             if proxy:
                 await self.proxy_pool.report_failure(proxy.id, ban=is_ban)
             return None
+        finally:
+            await cleanup_browser_resources(
+                page=page,
+                context=context,
+                browser=browser,
+                camoufox_ctx=camoufox_ctx,
+            )
 
     async def _run_query(
         self, page: Page, config: dict, query_text: str
@@ -304,7 +323,7 @@ def _build_camoufox_kwargs(browser_profile, proxy) -> dict:
     kwargs: dict = {
         "headless":  True,
         "humanize":  True,           # Camoufox 内置人类行为注入
-        "block_images": False,       # 不屏蔽图片，避免触发异常检测
+        "block_images": should_block_heavy_resources(),
     }
 
     if browser_profile:

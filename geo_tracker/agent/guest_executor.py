@@ -48,6 +48,31 @@ SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 从环境变量加载各 LLM 的 cookies（JSON 数组格式）
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _block_heavy_resources() -> bool:
+    return _env_flag("BROWSER_BLOCK_HEAVY_RESOURCES", True)
+
+
+async def _install_resource_blocker(context: BrowserContext) -> None:
+    """Drop non-essential assets to keep browser workers inside cgroup limits."""
+    if not _block_heavy_resources():
+        return
+
+    async def _route(route):
+        if route.request.resource_type in {"image", "media", "font"}:
+            await route.abort()
+            return
+        await route.continue_()
+
+    await context.route("**/*", _route)
+
+
 def _load_cookies_from_env(env_var: str) -> list:
     raw = os.getenv(env_var, "").strip()
     if not raw:
@@ -253,6 +278,7 @@ class GuestQueryExecutor:
             logger.info(f"[{llm}] 使用代理: {self.proxy_url}")
 
         page_obj = None
+        context = None
         browser = None
         _camoufox_ctx = None
         _playwright = None
@@ -268,7 +294,7 @@ class GuestQueryExecutor:
                 camoufox_kwargs = {
                     "headless": True,
                     "humanize": True,
-                    "block_images": False,
+                    "block_images": _block_heavy_resources(),
                     "os": "windows",
                     "locale": "zh-CN" if is_domestic else "en-US",
                 }
@@ -280,6 +306,7 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] Camoufox 启动成功")
 
                 context = await browser.new_context()
+                await _install_resource_blocker(context)
             else:
                 # 国内 LLM 或无 Camoufox 时用普通 Playwright
                 logger.info(f"[{llm}] 启动 Playwright 浏览器...")
@@ -312,6 +339,7 @@ class GuestQueryExecutor:
                     bypass_csp=True,
                     reduced_motion="reduce",
                 )
+                await _install_resource_blocker(context)
 
             # 注入 LLM 专属 cookies + localStorage
             # 支持两种格式:
@@ -733,6 +761,7 @@ class GuestQueryExecutor:
             # 统一走 browser_lifecycle.cleanup_browser_resources, 每段独立超时.
             await cleanup_browser_resources(
                 page=page_obj,
+                context=context,
                 browser=browser,
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,
