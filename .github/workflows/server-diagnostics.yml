@@ -112,16 +112,19 @@ jobs:
             docker compose logs --tail=220 backend || true
 
             echo "=== Repair: reclaim Docker disk without deleting volumes ==="
+            docker compose stop backend nginx query-tool worker worker-analysis beat || true
             docker container prune -f || true
-            docker image prune -af --filter "until=24h" || true
-            docker builder prune -af --keep-storage=512MB || true
+            docker image prune -af || true
+            docker builder prune -af || true
             df -h /var/lib/docker || true
             docker system df || true
 
             echo "=== Repair: restart production services ==="
             docker compose up -d postgres redis || true
-            sleep 12
-            docker compose up -d --remove-orphans || true
-            sleep 12
+            sleep 20
+            docker compose up -d backend query-tool nginx || true
+            sleep 10
+            docker compose up -d beat worker worker-analysis || true
+            sleep 10
             docker compose ps || true
             docker compose logs --tail=80 postgres backend nginx query-tool || true
