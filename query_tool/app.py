@@ -4,13 +4,44 @@ LLM 响应查询工具 - 带手动触发 Query
 import os
 import re
 import sys
-from datetime import datetime
-from flask import Flask, render_template, render_template_string, request, jsonify, Response
+import uuid
+import json
+from datetime import datetime, timedelta
+from flask import Flask, render_template, render_template_string, request, jsonify, Response, session
+
+try:
+    from .topic_plan import (
+        DoubaoTopicPlanClient,
+        TopicPlanLLMError,
+        dedupe_topic_candidates,
+        load_doubao_config,
+        normalize_topic_title,
+        transition_candidate_status,
+    )
+except ImportError:
+    from topic_plan import (
+        DoubaoTopicPlanClient,
+        TopicPlanLLMError,
+        dedupe_topic_candidates,
+        load_doubao_config,
+        normalize_topic_title,
+        transition_candidate_status,
+    )
 
 # Add parent directory to path so we can import geo_tracker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 app = Flask(__name__)
+app.secret_key = os.getenv(
+    "ADMIN_SESSION_SECRET",
+    os.getenv("FLASK_SECRET_KEY", "query-tool-admin-dev-secret-change-me"),
+)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE=os.getenv("ADMIN_COOKIE_SECURE", "0") == "1",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -444,6 +475,1106 @@ def get_db():
             last_err = e
             time.sleep(2 ** attempt)  # 1, 2, 4, 8, 16 秒
     raise last_err
+
+
+def _isoformat(value):
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_default(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _client_ip():
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.remote_addr
+
+
+def _table_exists(cur, table_name):
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+        )
+        """,
+        (table_name,),
+    )
+    row = cur.fetchone()
+    if isinstance(row, dict):
+        return bool(row.get("exists"))
+    return bool(row[0])
+
+
+def _table_columns(cur, table_name):
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        """,
+        (table_name,),
+    )
+    cols = set()
+    for row in cur.fetchall():
+        cols.add(row.get("column_name") if isinstance(row, dict) else row[0])
+    return cols
+
+
+def _ensure_query_admin_tables():
+    """Ensure additive user-admin tables/columns used by the query_tool Admin.
+
+    `admin_audit_log` is append-only by application convention: this module only
+    inserts through `_insert_admin_audit_log` and never exposes update/delete
+    code paths. Product user status is deliberately derived, not stored on
+    `users`.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                if _table_exists(cur, "users"):
+                    cur.execute(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMP"
+                    )
+                    cur.execute(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_confirmed_at TIMESTAMP"
+                    )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_moderation_actions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        user_id VARCHAR(36) NOT NULL,
+                        operator_id VARCHAR(36),
+                        action VARCHAR(32) NOT NULL
+                            CHECK (action IN (
+                                'freeze',
+                                'unfreeze',
+                                'force_password_reset',
+                                'soft_delete'
+                            )),
+                        reason TEXT,
+                        expires_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_user_moderation_user_created
+                    ON user_moderation_actions (user_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_user_moderation_action_created
+                    ON user_moderation_actions (action, created_at DESC)
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS admin_audit_log (
+                        id VARCHAR(36) PRIMARY KEY,
+                        operator_id VARCHAR(36),
+                        action VARCHAR(64) NOT NULL,
+                        target_type VARCHAR(64) NOT NULL,
+                        target_id VARCHAR(255),
+                        diff_json JSONB,
+                        reason TEXT,
+                        ip VARCHAR(45),
+                        ua TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created
+                    ON admin_audit_log (target_type, target_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_admin_audit_operator_created
+                    ON admin_audit_log (operator_id, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS admin_login_attempts (
+                        id VARCHAR(36) PRIMARY KEY,
+                        email VARCHAR(255) NOT NULL,
+                        ip_address VARCHAR(45),
+                        success BOOLEAN NOT NULL,
+                        failure_code VARCHAR(32),
+                        user_agent VARCHAR(512),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    "ALTER TABLE admin_login_attempts ADD COLUMN IF NOT EXISTS user_agent VARCHAR(512)"
+                )
+            conn.commit()
+            print("DB migration: query admin user-management tables ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+def _verify_admin_password(password, password_hash):
+    if not password or not password_hash:
+        return False
+    try:
+        if password_hash.startswith("$2"):
+            import bcrypt
+            return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+        from werkzeug.security import check_password_hash
+        return check_password_hash(password_hash, password)
+    except Exception:
+        return False
+
+
+def _record_admin_login_attempt(cur, email, success, failure_code=None):
+    cur.execute(
+        """
+        INSERT INTO admin_login_attempts
+            (id, email, ip_address, success, failure_code, user_agent, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        """,
+        (
+            str(uuid.uuid4()),
+            email,
+            _client_ip(),
+            success,
+            failure_code,
+            (request.headers.get("user-agent") or "")[:512],
+        ),
+    )
+
+
+def _current_admin():
+    admin_user_id = session.get("admin_user_id")
+    if not admin_user_id:
+        return None
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, email, role, status
+                FROM admin_users
+                WHERE id = %s
+                """,
+                (admin_user_id,),
+            )
+            admin = cur.fetchone()
+            if not admin or admin.get("status") != "active":
+                session.clear()
+                return None
+            return dict(admin)
+    finally:
+        conn.close()
+
+
+def _require_admin():
+    admin = _current_admin()
+    if admin is None:
+        return None, (jsonify({"error": "admin_session_required"}), 401)
+    return admin, None
+
+
+def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id, diff, reason):
+    import json as json_mod
+    cur.execute(
+        """
+        INSERT INTO admin_audit_log
+            (id, operator_id, action, target_type, target_id, diff_json,
+             reason, ip, ua, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, NOW())
+        """,
+        (
+            str(uuid.uuid4()),
+            operator_id,
+            action,
+            target_type,
+            str(target_id) if target_id is not None else None,
+            json_mod.dumps(diff or {}, default=_json_default),
+            reason,
+            _client_ip(),
+            request.headers.get("user-agent"),
+        ),
+    )
+
+
+def _ensure_topic_plan_tables():
+    """Ensure the minimal Topic Plan persistence tables exist."""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS topic_plan_runs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        admin_id VARCHAR(36),
+                        industry_id VARCHAR(128),
+                        category_id VARCHAR(128),
+                        brand_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        status VARCHAR(16) NOT NULL DEFAULT 'running'
+                            CHECK (status IN ('running', 'completed', 'failed')),
+                        request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        coverage_snapshot JSONB,
+                        llm_model VARCHAR(128),
+                        llm_usage_json JSONB,
+                        llm_error TEXT,
+                        candidates_generated INTEGER NOT NULL DEFAULT 0,
+                        started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        completed_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_topic_plan_runs_created
+                    ON topic_plan_runs (created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS topic_candidates (
+                        id VARCHAR(36) PRIMARY KEY,
+                        run_id VARCHAR(36) REFERENCES topic_plan_runs(id),
+                        brand_id INTEGER,
+                        brand_name VARCHAR(256) NOT NULL,
+                        title VARCHAR(256) NOT NULL,
+                        dimension VARCHAR(32) NOT NULL,
+                        reason TEXT,
+                        confidence FLOAT,
+                        coverage_gap VARCHAR(256),
+                        normalized_title VARCHAR(256) NOT NULL,
+                        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'approved', 'rejected')),
+                        reviewed_by VARCHAR(36),
+                        reviewed_at TIMESTAMP,
+                        review_reason TEXT,
+                        approved_topic_id INTEGER,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_topic_candidates_status_created
+                    ON topic_candidates (status, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_topic_candidates_brand_status
+                    ON topic_candidates (brand_id, status)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_topic_candidates_run
+                    ON topic_candidates (run_id)
+                    """
+                )
+            conn.commit()
+            print("DB migration: topic plan tables ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+def _topic_plan_json(value):
+    return json.dumps(value, ensure_ascii=False, default=_json_default)
+
+
+def _parse_int_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = str(value).split(",")
+    result = []
+    for item in raw_items:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            result.append(int(text))
+        except ValueError:
+            raise ValueError("invalid integer list")
+    return list(dict.fromkeys(result))
+
+
+def _clamp_int(value, default, min_value, max_value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(min_value, min(number, max_value))
+
+
+def _topic_plan_dimension(raw_category):
+    value = (raw_category or "").strip().lower()
+    if value in {"brand", "product", "category", "scenario", "question"}:
+        return value
+    legacy_map = {
+        "awareness": "brand",
+        "comparison": "category",
+        "recommendation": "scenario",
+        "problem_solving": "question",
+        "problem-solving": "question",
+        "non_brand": "category",
+        "brand": "brand",
+    }
+    return legacy_map.get(value, "brand")
+
+
+def _fetch_topic_plan_brands(cur):
+    if not _table_exists(cur, "brands"):
+        return []
+
+    cols = _table_columns(cur, "brands")
+    name_expr = "name" if "name" in cols else "('Brand #' || id::text)"
+    industry_expr = (
+        "COALESCE(NULLIF(industry, ''), 'Uncategorized')"
+        if "industry" in cols
+        else "'Uncategorized'"
+    )
+    target_market_expr = (
+        "COALESCE(NULLIF(target_market, ''), '')"
+        if "target_market" in cols
+        else "''"
+    )
+    description_expr = "COALESCE(description, '')" if "description" in cols else "''"
+
+    cur.execute(
+        f"""
+        SELECT id, {name_expr} AS name, {industry_expr} AS industry,
+               {target_market_expr} AS target_market,
+               {description_expr} AS description
+        FROM brands
+        ORDER BY id
+        """
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+
+    topic_counts = {}
+    primary_categories = {}
+    if _table_exists(cur, "topics"):
+        topic_cols = _table_columns(cur, "topics")
+        if "brand_id" in topic_cols:
+            cur.execute(
+                """
+                SELECT brand_id, COUNT(*) AS topic_count
+                FROM topics
+                GROUP BY brand_id
+                """
+            )
+            topic_counts = {row["brand_id"]: row["topic_count"] for row in cur.fetchall()}
+            if "category" in topic_cols:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (brand_id) brand_id, category
+                    FROM topics
+                    WHERE category IS NOT NULL AND category <> ''
+                    ORDER BY brand_id, created_at DESC NULLS LAST, id DESC
+                    """
+                )
+                primary_categories = {row["brand_id"]: row["category"] for row in cur.fetchall()}
+
+    for row in rows:
+        industry = row.get("industry") or "Uncategorized"
+        category = primary_categories.get(row["id"]) or ""
+        row["id"] = int(row["id"])
+        row["industry_id"] = industry
+        row["industry_name"] = industry
+        row["category_id"] = category
+        row["category_name"] = category
+        row["topic_count"] = int(topic_counts.get(row["id"], 0) or 0)
+        row["selected"] = False
+    return rows
+
+
+def _fetch_topic_plan_categories(cur):
+    if not _table_exists(cur, "topics"):
+        return []
+    cols = _table_columns(cur, "topics")
+    if "category" not in cols:
+        return []
+    cur.execute(
+        """
+        SELECT DISTINCT category
+        FROM topics
+        WHERE category IS NOT NULL AND category <> ''
+        ORDER BY category
+        LIMIT 200
+        """
+    )
+    return [{"id": row["category"], "name": row["category"]} for row in cur.fetchall()]
+
+
+def _fetch_topic_rows_for_brands(cur, brand_ids, category_id=None):
+    if not brand_ids or not _table_exists(cur, "topics"):
+        return []
+    cols = _table_columns(cur, "topics")
+    if not {"id", "brand_id", "text"}.issubset(cols):
+        return []
+    category_select = "category" if "category" in cols else "NULL::text AS category"
+    where = ["brand_id = ANY(%s)"]
+    params = [brand_ids]
+    if category_id and "category" in cols:
+        where.append("category = %s")
+        params.append(category_id)
+    cur.execute(
+        f"""
+        SELECT id, brand_id, text, {category_select}
+        FROM topics
+        WHERE {" AND ".join(where)}
+        ORDER BY brand_id, id
+        """,
+        params,
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def _topic_plan_no_prompt_count(cur, brand_ids):
+    if not brand_ids or not _table_exists(cur, "topics") or not _table_exists(cur, "prompts"):
+        return 0
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM topics t
+        LEFT JOIN prompts p ON p.topic_id = t.id
+        WHERE t.brand_id = ANY(%s) AND p.id IS NULL
+        """,
+        (brand_ids,),
+    )
+    return int(cur.fetchone()["cnt"] or 0)
+
+
+def _topic_plan_pending_summary(cur, brand_ids):
+    if not _table_exists(cur, "topic_candidates"):
+        return {"pending": 0, "low_confidence": 0}
+    params = []
+    where = ["status = 'pending'"]
+    if brand_ids:
+        where.append("brand_id = ANY(%s)")
+        params.append(brand_ids)
+    cur.execute(
+        f"""
+        SELECT COUNT(*) AS pending,
+               SUM(CASE WHEN COALESCE(confidence, 0) < 0.75 THEN 1 ELSE 0 END) AS low_confidence
+        FROM topic_candidates
+        WHERE {" AND ".join(where)}
+        """,
+        params,
+    )
+    row = cur.fetchone()
+    return {
+        "pending": int(row["pending"] or 0),
+        "low_confidence": int(row["low_confidence"] or 0),
+    }
+
+
+def _build_topic_plan_coverage(cur, brands, category_id=None, max_per_brand=40):
+    selected_brand_ids = [int(b["id"]) for b in brands]
+    topic_rows = _fetch_topic_rows_for_brands(cur, selected_brand_ids, category_id)
+    topics_by_brand = {brand_id: [] for brand_id in selected_brand_ids}
+    for topic in topic_rows:
+        topics_by_brand.setdefault(int(topic["brand_id"]), []).append(topic)
+
+    desired_dimensions = ["brand", "product", "category", "scenario", "question"]
+    per_dimension_target = max(1, round(max_per_brand / len(desired_dimensions)))
+    rows = []
+    gaps = []
+    total_rate = 0
+    for brand in brands:
+        brand_id = int(brand["id"])
+        brand_topics = topics_by_brand.get(brand_id, [])
+        dim_counts = {dimension: 0 for dimension in desired_dimensions}
+        for topic in brand_topics:
+            dim = _topic_plan_dimension(topic.get("category"))
+            dim_counts[dim] = dim_counts.get(dim, 0) + 1
+
+        coverage_rate = min(1.0, len(brand_topics) / max(max_per_brand, 1))
+        total_rate += coverage_rate
+        brand_gap_count = 0
+        for dimension in desired_dimensions:
+            missing = max(per_dimension_target - dim_counts.get(dimension, 0), 0)
+            if missing <= 0:
+                continue
+            brand_gap_count += missing
+            priority = "P1" if coverage_rate < 0.6 else "P2"
+            gaps.append(
+                {
+                    "brand_id": brand_id,
+                    "brand": brand["name"],
+                    "type": dimension,
+                    "count": missing,
+                    "priority": priority,
+                    "coverage_gap": f"{brand['name']}:{dimension}",
+                }
+            )
+
+        rows.append(
+            {
+                "brand_id": brand_id,
+                "brand": brand["name"],
+                "topics": len(brand_topics),
+                "coverage_rate": round(coverage_rate, 4),
+                "coverage": f"{round(coverage_rate * 100)}%",
+                "gaps": brand_gap_count,
+                "status": "达标" if coverage_rate >= 0.8 else "待补齐",
+                "status_key": "ok" if coverage_rate >= 0.8 else "gap",
+                "dimension_counts": dim_counts,
+            }
+        )
+
+    pending = _topic_plan_pending_summary(cur, selected_brand_ids)
+    no_prompt = _topic_plan_no_prompt_count(cur, selected_brand_ids)
+    avg_rate = total_rate / len(brands) if brands else 0
+    summary = {
+        "brand_count": len(brands),
+        "topic_count": sum(row["topics"] for row in rows),
+        "average_coverage": round(avg_rate, 4),
+        "coverage_label": f"{round(avg_rate * 100)}%",
+        "gap_count": sum(row["gaps"] for row in rows),
+        "pending_candidates": pending["pending"],
+        "low_confidence": pending["low_confidence"],
+        "no_prompt_topics": no_prompt,
+    }
+    return {"rows": rows, "gaps": gaps, "summary": summary, "existing_topics": topic_rows}
+
+
+def _topic_plan_scope_brands(all_brands, industry_id=None, brand_ids=None):
+    brand_id_set = {int(x) for x in brand_ids or []}
+    result = []
+    for brand in all_brands:
+        if industry_id and brand.get("industry_id") != industry_id:
+            continue
+        if brand_id_set and int(brand["id"]) not in brand_id_set:
+            continue
+        result.append(brand)
+    return result
+
+
+def _topic_plan_candidate_row(row):
+    item = dict(row)
+    return {
+        "id": item.get("id"),
+        "run_id": item.get("run_id"),
+        "title": item.get("title"),
+        "brand_id": item.get("brand_id"),
+        "brand": item.get("brand_name"),
+        "dimension": item.get("dimension"),
+        "reason": item.get("reason"),
+        "confidence": float(item.get("confidence") or 0),
+        "coverage_gap": item.get("coverage_gap"),
+        "status": item.get("status"),
+        "review_reason": item.get("review_reason"),
+        "approved_topic_id": item.get("approved_topic_id"),
+        "created_at": _isoformat(item.get("created_at")),
+        "reviewed_at": _isoformat(item.get("reviewed_at")),
+    }
+
+
+def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, limit=100):
+    if not _table_exists(cur, "topic_candidates"):
+        return []
+    where = []
+    params = []
+    if status and status != "all":
+        where.append("status = %s")
+        params.append(status)
+    if brand_ids:
+        where.append("brand_id = ANY(%s)")
+        params.append(brand_ids)
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    cur.execute(
+        f"""
+        SELECT *
+        FROM topic_candidates
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        params + [limit],
+    )
+    return [_topic_plan_candidate_row(row) for row in cur.fetchall()]
+
+
+def _topic_plan_error_response(error, status_code=400):
+    if isinstance(error, TopicPlanLLMError):
+        return jsonify({"success": False, "error": error.code, "message": error.message}), status_code
+    return jsonify({"success": False, "error": str(error)}), status_code
+
+
+def _user_name_expr(columns):
+    candidates = []
+    if "name" in columns:
+        candidates.append("NULLIF(u.name, '')")
+    if "name_zh" in columns:
+        candidates.append("NULLIF(u.name_zh, '')")
+    if "name_en" in columns:
+        candidates.append("NULLIF(u.name_en, '')")
+    if not candidates:
+        return "NULL::text"
+    return "COALESCE(" + ", ".join(candidates) + ")"
+
+
+def _user_company_expr(columns):
+    candidates = []
+    if "company" in columns:
+        candidates.append("NULLIF(u.company, '')")
+    if "preferences" in columns:
+        candidates.append("NULLIF(u.preferences->>'company', '')")
+    if not candidates:
+        return "NULL::text"
+    return "COALESCE(" + ", ".join(candidates) + ")"
+
+
+def _user_locale_expr(columns):
+    candidates = []
+    if "locale" in columns:
+        candidates.append("NULLIF(u.locale, '')")
+    if "preferences" in columns:
+        candidates.append("NULLIF(u.preferences->>'locale', '')")
+    if not candidates:
+        return "'zh-CN'::text"
+    return "COALESCE(" + ", ".join(candidates) + ", 'zh-CN')"
+
+
+def _user_provider_expr(columns):
+    candidates = []
+    if "provider" in columns:
+        candidates.append("NULLIF(u.provider, '')")
+    if "preferences" in columns:
+        candidates.append("NULLIF(u.preferences->>'provider', '')")
+    if not candidates:
+        return "'email'::text"
+    return "COALESCE(" + ", ".join(candidates) + ", 'email')"
+
+
+def _user_email_verified_expr(columns):
+    if "email_verified" in columns:
+        return "COALESCE(u.email_verified, FALSE)"
+    if "email_verified_at" in columns:
+        return "(u.email_verified_at IS NOT NULL)"
+    return "FALSE"
+
+
+def _build_project_counts_cte(cur):
+    if not _table_exists(cur, "projects"):
+        return (
+            "project_counts AS ("
+            "SELECT NULL::varchar AS user_id, 0::int AS project_count, "
+            "NULL::text AS industry WHERE FALSE)"
+        )
+    cols = _table_columns(cur, "projects")
+    user_id_expr = "p.user_id::text" if "user_id" in cols else "NULL::text"
+    if "industry_id" in cols and _table_exists(cur, "kg_industries"):
+        industry_expr = "MIN(COALESCE(ki.name_zh, ki.name_en, p.industry_id::text))"
+        join_sql = "LEFT JOIN kg_industries ki ON ki.id::text = p.industry_id::text"
+    elif "industry_id" in cols:
+        industry_expr = "MIN(p.industry_id::text)"
+        join_sql = ""
+    else:
+        industry_expr = "NULL::text"
+        join_sql = ""
+    return f"""
+        project_counts AS (
+            SELECT {user_id_expr} AS user_id,
+                   COUNT(*)::int AS project_count,
+                   {industry_expr} AS industry
+            FROM projects p
+            {join_sql}
+            GROUP BY {user_id_expr}
+        )
+    """
+
+
+def _build_activity_cte(cur):
+    if not _table_exists(cur, "user_activity_stats"):
+        return (
+            "activity_stats AS ("
+            "SELECT NULL::varchar AS user_id, NULL::timestamp AS last_login_at, "
+            "0::int AS login_count_30d, 0::int AS query_count_30d, "
+            "NULL::timestamp AS last_active_at WHERE FALSE)"
+        )
+    return """
+        activity_stats AS (
+            SELECT user_id::text AS user_id,
+                   last_login_at,
+                   COALESCE(login_count_30d, 0)::int AS login_count_30d,
+                   COALESCE(query_count_30d, 0)::int AS query_count_30d,
+                   last_active_at
+            FROM user_activity_stats
+        )
+    """
+
+
+def _users_base_sql(cur):
+    user_cols = _table_columns(cur, "users")
+    name_expr = _user_name_expr(user_cols)
+    company_expr = _user_company_expr(user_cols)
+    locale_expr = _user_locale_expr(user_cols)
+    provider_expr = _user_provider_expr(user_cols)
+    verified_expr = _user_email_verified_expr(user_cols)
+    last_login_expr = (
+        "COALESCE(u.last_login_at, ast.last_login_at)"
+        if "last_login_at" in user_cols
+        else "ast.last_login_at"
+    )
+    deleted_expr = (
+        "u.deletion_requested_at"
+        if "deletion_requested_at" in user_cols
+        else "NULL::timestamp"
+    )
+    updated_expr = "u.updated_at" if "updated_at" in user_cols else "NULL::timestamp"
+    project_cte = _build_project_counts_cte(cur)
+    activity_cte = _build_activity_cte(cur)
+
+    return f"""
+        WITH
+        {project_cte},
+        {activity_cte},
+        user_base AS (
+            SELECT
+                u.id::text AS id,
+                u.email,
+                {name_expr} AS name,
+                {company_expr} AS company,
+                {locale_expr} AS locale,
+                {provider_expr} AS provider,
+                {verified_expr} AS email_verified,
+                u.created_at,
+                {updated_expr} AS updated_at,
+                {deleted_expr} AS deletion_requested_at,
+                {last_login_expr} AS last_login_at,
+                COALESCE(pc.project_count, 0)::int AS project_count,
+                pc.industry,
+                COALESCE(ast.login_count_30d, 0)::int AS login_count_30d,
+                COALESCE(ast.query_count_30d, 0)::int AS query_count_30d,
+                ast.last_active_at,
+                latest_mod.action AS latest_moderation_action,
+                latest_mod.reason AS latest_moderation_reason,
+                latest_mod.expires_at AS latest_moderation_expires_at,
+                latest_mod.created_at AS latest_moderation_at
+            FROM users u
+            LEFT JOIN project_counts pc ON pc.user_id = u.id::text
+            LEFT JOIN activity_stats ast ON ast.user_id = u.id::text
+            LEFT JOIN LATERAL (
+                SELECT action, reason, expires_at, created_at
+                FROM user_moderation_actions uma
+                WHERE uma.user_id = u.id::text
+                  AND uma.action IN ('freeze', 'unfreeze')
+                ORDER BY uma.created_at DESC
+                LIMIT 1
+            ) latest_mod ON TRUE
+        ),
+        users_enriched AS (
+            SELECT *,
+                CASE
+                    WHEN deletion_requested_at IS NOT NULL THEN 'deleted'
+                    WHEN latest_moderation_action = 'freeze'
+                         AND (latest_moderation_expires_at IS NULL
+                              OR latest_moderation_expires_at > NOW()) THEN 'frozen'
+                    ELSE 'active'
+                END AS status,
+                CASE
+                    WHEN last_login_at IS NULL THEN 'dormant'
+                    WHEN last_login_at >= NOW() - INTERVAL '7 days' THEN 'hot'
+                    WHEN last_login_at >= NOW() - INTERVAL '30 days' THEN 'warm'
+                    WHEN last_login_at >= NOW() - INTERVAL '90 days' THEN 'cold'
+                    ELSE 'dormant'
+                END AS activity_level
+            FROM user_base
+        )
+    """
+
+
+def _normalize_user_row(row):
+    email = row.get("email") or ""
+    name = row.get("name") or (email.split("@", 1)[0] if email else row.get("id"))
+    initials = "".join(part[:1] for part in str(name).replace(".", " ").split()[:2]).upper()
+    if not initials:
+        initials = (email[:2] or "U").upper()
+    return {
+        "id": row.get("id"),
+        "email": email,
+        "name": name,
+        "company": row.get("company"),
+        "initials": initials[:2],
+        "status": row.get("status") or "active",
+        "industry": row.get("industry"),
+        "project_count": row.get("project_count") or 0,
+        "projects": row.get("project_count") or 0,
+        "last_login_at": _isoformat(row.get("last_login_at")),
+        "last_active_at": _isoformat(row.get("last_active_at")),
+        "created_at": _isoformat(row.get("created_at")),
+        "updated_at": _isoformat(row.get("updated_at")),
+        "deletion_requested_at": _isoformat(row.get("deletion_requested_at")),
+        "activity_level": row.get("activity_level") or "dormant",
+        "login_count_30d": row.get("login_count_30d") or 0,
+        "query_count_30d": row.get("query_count_30d") or 0,
+        "provider": row.get("provider") or "email",
+        "locale": row.get("locale") or "zh-CN",
+        "email_verified": bool(row.get("email_verified")),
+        "moderation": {
+            "is_frozen": row.get("status") == "frozen",
+            "latest_action": row.get("latest_moderation_action"),
+            "reason": row.get("latest_moderation_reason"),
+            "expires_at": _isoformat(row.get("latest_moderation_expires_at")),
+            "created_at": _isoformat(row.get("latest_moderation_at")),
+        },
+    }
+
+
+def _fetch_user_rows(cur, *, user_id=None, limit=20, offset=0, include_count=True):
+    if not _table_exists(cur, "users"):
+        return [], 0, ["users table is not present"]
+
+    base_sql = _users_base_sql(cur)
+    where = []
+    params = []
+    q = (request.args.get("q") or request.args.get("search") or "").strip()
+    email = (request.args.get("email") or "").strip()
+    name = (request.args.get("name") or "").strip()
+    company = (request.args.get("company") or "").strip()
+    status_filter = (request.args.get("status") or "").strip()
+    activity = (request.args.get("activity") or "").strip()
+    industry = (request.args.get("industry") or "").strip()
+    created_from = (
+        request.args.get("created_from")
+        or request.args.get("created_at_from")
+        or request.args.get("date_from")
+    )
+    created_to = (
+        request.args.get("created_to")
+        or request.args.get("created_at_to")
+        or request.args.get("date_to")
+    )
+
+    if user_id:
+        where.append("id = %s")
+        params.append(str(user_id))
+    if q:
+        where.append("(email ILIKE %s OR COALESCE(name, '') ILIKE %s OR COALESCE(company, '') ILIKE %s)")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+    if email:
+        where.append("email ILIKE %s")
+        params.append(f"%{email}%")
+    if name:
+        where.append("COALESCE(name, '') ILIKE %s")
+        params.append(f"%{name}%")
+    if company:
+        where.append("COALESCE(company, '') ILIKE %s")
+        params.append(f"%{company}%")
+    if status_filter:
+        where.append("status = %s")
+        params.append(status_filter)
+    if activity:
+        where.append("activity_level = %s")
+        params.append(activity)
+    if industry:
+        where.append("COALESCE(industry, '') ILIKE %s")
+        params.append(f"%{industry}%")
+    if created_from:
+        where.append("created_at >= %s")
+        params.append(created_from)
+    if created_to:
+        where.append("created_at < (%s::date + INTERVAL '1 day')")
+        params.append(created_to)
+
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    sort_param = (request.args.get("sort") or "created_at_desc").strip()
+    direction = (request.args.get("order") or request.args.get("direction") or "").lower()
+    if sort_param.endswith("_asc"):
+        sort_key = sort_param[:-4]
+        direction = "asc"
+    elif sort_param.endswith("_desc"):
+        sort_key = sort_param[:-5]
+        direction = "desc"
+    else:
+        sort_key = sort_param
+    sort_map = {
+        "created_at": "created_at",
+        "last_login_at": "last_login_at",
+        "project_count": "project_count",
+    }
+    sort_sql = sort_map.get(sort_key, "created_at")
+    direction_sql = "ASC" if direction == "asc" else "DESC"
+    order_sql = f"{sort_sql} {direction_sql} NULLS LAST, created_at DESC, id ASC"
+
+    if include_count:
+        cur.execute(
+            f"{base_sql} SELECT COUNT(*) AS cnt FROM users_enriched {where_clause}",
+            params,
+        )
+        total = cur.fetchone()["cnt"]
+    else:
+        total = None
+
+    cur.execute(
+        f"""
+        {base_sql}
+        SELECT *
+        FROM users_enriched
+        {where_clause}
+        ORDER BY {order_sql}
+        LIMIT %s OFFSET %s
+        """,
+        params + [limit, offset],
+    )
+    return [_normalize_user_row(dict(row)) for row in cur.fetchall()], total, []
+
+
+def _fetch_user_projects(cur, user_id):
+    if not _table_exists(cur, "projects"):
+        return [], ["projects table is not present; returning an empty read-only list"]
+
+    cols = _table_columns(cur, "projects")
+    select_parts = ["p.id::text AS id"]
+    for col in ("name", "status", "description"):
+        select_parts.append(f"p.{col} AS {col}" if col in cols else f"NULL::text AS {col}")
+    select_parts.append(
+        "p.industry_id::text AS industry_id" if "industry_id" in cols else "NULL::text AS industry_id"
+    )
+    select_parts.append(
+        "p.primary_brand_id::text AS primary_brand_id"
+        if "primary_brand_id" in cols
+        else "NULL::text AS primary_brand_id"
+    )
+    select_parts.append(
+        "p.competitor_brand_ids::text AS competitor_brand_ids"
+        if "competitor_brand_ids" in cols
+        else "NULL::text AS competitor_brand_ids"
+    )
+    select_parts.append(
+        "p.preferences::text AS preferences" if "preferences" in cols else "NULL::text AS preferences"
+    )
+    select_parts.append(
+        "p.created_at AS created_at" if "created_at" in cols else "NULL::timestamp AS created_at"
+    )
+    select_parts.append(
+        "p.updated_at AS updated_at" if "updated_at" in cols else "NULL::timestamp AS updated_at"
+    )
+    joins = []
+    if "primary_brand_id" in cols and _table_exists(cur, "brands"):
+        select_parts.append("b.name AS primary_brand_name")
+        joins.append("LEFT JOIN brands b ON b.id::text = p.primary_brand_id::text")
+    else:
+        select_parts.append("NULL::text AS primary_brand_name")
+
+    where_user = "p.user_id::text = %s" if "user_id" in cols else "FALSE"
+    cur.execute(
+        f"""
+        SELECT {", ".join(select_parts)}
+        FROM projects p
+        {" ".join(joins)}
+        WHERE {where_user}
+        ORDER BY p.created_at DESC NULLS LAST, p.id
+        LIMIT 100
+        """,
+        (str(user_id),),
+    )
+    projects = []
+    for row in cur.fetchall():
+        item = dict(row)
+        item["created_at"] = _isoformat(item.get("created_at"))
+        item["updated_at"] = _isoformat(item.get("updated_at"))
+        projects.append(item)
+    return projects, []
+
+
+def _fetch_user_actions(cur, user_id=None, limit=50, offset=0):
+    conditions = ["target_type = 'user'"]
+    params = []
+    if user_id:
+        conditions.append("target_id = %s")
+        params.append(str(user_id))
+    where_clause = " AND ".join(conditions)
+    cur.execute(
+        f"""
+        SELECT al.id, al.operator_id, au.email AS operator_email, au.role AS operator_role,
+               al.action, al.target_type, al.target_id, al.diff_json,
+               al.reason, al.ip, al.ua, al.created_at
+        FROM admin_audit_log al
+        LEFT JOIN admin_users au ON au.id = al.operator_id
+        WHERE {where_clause}
+        ORDER BY al.created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        params + [limit, offset],
+    )
+    rows = []
+    for row in cur.fetchall():
+        item = dict(row)
+        item["created_at"] = _isoformat(item.get("created_at"))
+        item["operator"] = item.get("operator_email") or item.get("operator_id") or "system"
+        item["source"] = "admin_audit_log"
+        rows.append(item)
+
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM admin_audit_log WHERE {where_clause}", params)
+    total = cur.fetchone()["cnt"]
+    if rows or total:
+        return rows, total
+
+    mod_conditions = []
+    mod_params = []
+    if user_id:
+        mod_conditions.append("uma.user_id = %s")
+        mod_params.append(str(user_id))
+    mod_where = "WHERE " + " AND ".join(mod_conditions) if mod_conditions else ""
+    cur.execute(
+        f"""
+        SELECT uma.id, uma.operator_id, au.email AS operator_email, au.role AS operator_role,
+               uma.action, 'user'::text AS target_type, uma.user_id AS target_id,
+               NULL::jsonb AS diff_json, uma.reason, NULL::text AS ip,
+               NULL::text AS ua, uma.created_at
+        FROM user_moderation_actions uma
+        LEFT JOIN admin_users au ON au.id = uma.operator_id
+        {mod_where}
+        ORDER BY uma.created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        mod_params + [limit, offset],
+    )
+    rows = []
+    for row in cur.fetchall():
+        item = dict(row)
+        item["created_at"] = _isoformat(item.get("created_at"))
+        item["operator"] = item.get("operator_email") or item.get("operator_id") or "system"
+        item["source"] = "user_moderation_actions"
+        rows.append(item)
+    cur.execute(
+        f"SELECT COUNT(*) AS cnt FROM user_moderation_actions uma {mod_where}",
+        mod_params,
+    )
+    return rows, cur.fetchone()["cnt"]
 
 
 HTML_TEMPLATE = """
@@ -2558,6 +3689,873 @@ def admin_page():
     return render_template('admin.html')
 
 
+@app.route('/api/admin/session')
+def admin_session_api():
+    admin = _current_admin()
+    if not admin:
+        return jsonify({"authenticated": False})
+    return jsonify({"authenticated": True, "admin": admin})
+
+
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login_api():
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+    if not email or not password:
+        return jsonify({"success": False, "error": "email_and_password_required"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, email, password_hash, role, status
+                FROM admin_users
+                WHERE LOWER(email) = LOWER(%s)
+                """,
+                (email,),
+            )
+            admin = cur.fetchone()
+            if not admin:
+                _record_admin_login_attempt(cur, email, False, "UNKNOWN_EMAIL")
+                conn.commit()
+                return jsonify({"success": False, "error": "invalid_credentials"}), 401
+
+            if admin.get("status") != "active":
+                _record_admin_login_attempt(cur, email, False, "USER_SUSPENDED")
+                conn.commit()
+                return jsonify({"success": False, "error": "admin_suspended"}), 403
+
+            if not _verify_admin_password(password, admin.get("password_hash")):
+                _record_admin_login_attempt(cur, email, False, "WRONG_PASSWORD")
+                conn.commit()
+                return jsonify({"success": False, "error": "invalid_credentials"}), 401
+
+            cur.execute(
+                "UPDATE admin_users SET last_login_at = NOW(), updated_at = NOW() WHERE id = %s",
+                (admin["id"],),
+            )
+            _record_admin_login_attempt(cur, email, True, None)
+            conn.commit()
+
+            session.clear()
+            session.permanent = True
+            session["admin_user_id"] = admin["id"]
+            return jsonify({
+                "success": True,
+                "admin": {
+                    "id": admin["id"],
+                    "email": admin["email"],
+                    "role": admin["role"],
+                    "status": admin["status"],
+                },
+            })
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/logout', methods=['POST'])
+def admin_logout_api():
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route('/api/admin/topic-plan/config')
+def admin_topic_plan_config_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            brands = _fetch_topic_plan_brands(cur)
+            industries = [
+                {"id": value, "name": value}
+                for value in sorted({b.get("industry_id") or "Uncategorized" for b in brands})
+            ]
+            categories = _fetch_topic_plan_categories(cur)
+            default_industry = request.args.get("industry_id") or (
+                industries[0]["id"] if industries else ""
+            )
+            default_category = request.args.get("category_id") or ""
+            scoped = _topic_plan_scope_brands(brands, industry_id=default_industry)
+            selected_ids = {
+                int(b["id"])
+                for b in sorted(scoped, key=lambda item: item.get("topic_count", 0), reverse=True)[:4]
+            }
+            for brand in brands:
+                brand["selected"] = int(brand["id"]) in selected_ids
+
+            pending = _topic_plan_pending_summary(cur, [int(x) for x in selected_ids])
+            try:
+                load_doubao_config()
+                llm_configured = True
+            except TopicPlanLLMError:
+                llm_configured = False
+
+        return jsonify(
+            {
+                "success": True,
+                "industries": industries,
+                "categories": categories,
+                "brands": brands,
+                "defaults": {
+                    "industryId": default_industry,
+                    "categoryId": default_category,
+                    "maxPerBrand": 40,
+                    "maxTopics": 180,
+                    "gapPriority": "p12",
+                    "overflowPolicy": "review",
+                },
+                "summary": {
+                    "pending_candidates": pending["pending"],
+                    "low_confidence": pending["low_confidence"],
+                    "llm_configured": llm_configured,
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/coverage')
+def admin_topic_plan_coverage_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        brand_ids = _parse_int_list(request.args.get("brand_ids"))
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
+
+    industry_id = (request.args.get("industry_id") or "").strip() or None
+    category_id = (request.args.get("category_id") or "").strip() or None
+    max_per_brand = _clamp_int(request.args.get("max_per_brand"), 40, 1, 200)
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            all_brands = _fetch_topic_plan_brands(cur)
+            brands = _topic_plan_scope_brands(
+                all_brands,
+                industry_id=industry_id,
+                brand_ids=brand_ids,
+            )
+            coverage = _build_topic_plan_coverage(
+                cur,
+                brands,
+                category_id=category_id,
+                max_per_brand=max_per_brand,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "rows": coverage["rows"],
+                "gaps": coverage["gaps"],
+                "summary": coverage["summary"],
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/candidates')
+def admin_topic_plan_candidates_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    status = (request.args.get("status") or "pending").strip().lower()
+    if status not in {"pending", "approved", "rejected", "all"}:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    try:
+        brand_ids = _parse_int_list(request.args.get("brand_ids"))
+        limit = _clamp_int(request.args.get("limit"), 100, 1, 200)
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows = _fetch_topic_plan_candidates(
+                cur,
+                status=status,
+                brand_ids=brand_ids,
+                limit=limit,
+            )
+            pending = _topic_plan_pending_summary(cur, brand_ids)
+        return jsonify(
+            {
+                "success": True,
+                "rows": rows,
+                "summary": {
+                    "pending_candidates": pending["pending"],
+                    "low_confidence": pending["low_confidence"],
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/generate', methods=['POST'])
+def admin_topic_plan_generate_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        brand_ids = _parse_int_list(payload.get("brand_ids"))
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
+    if not brand_ids:
+        return jsonify({"success": False, "error": "brand_ids_required"}), 400
+
+    industry_id = (payload.get("industry_id") or "").strip() or None
+    category_id = (payload.get("category_id") or "").strip() or None
+    max_per_brand = _clamp_int(payload.get("max_per_brand"), 40, 1, 200)
+    max_topics = _clamp_int(payload.get("max_topics"), 180, 1, 300)
+    gap_priority = (payload.get("gap_priority") or "p12").strip()
+    overflow_policy = (payload.get("overflow_policy") or "review").strip()
+    request_config = {
+        "industry_id": industry_id,
+        "category_id": category_id,
+        "brand_ids": brand_ids,
+        "max_per_brand": max_per_brand,
+        "max_topics": max_topics,
+        "gap_priority": gap_priority,
+        "overflow_policy": overflow_policy,
+    }
+
+    run_id = str(uuid.uuid4())
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            all_brands = _fetch_topic_plan_brands(cur)
+            brands = _topic_plan_scope_brands(
+                all_brands,
+                industry_id=industry_id,
+                brand_ids=brand_ids,
+            )
+            if not brands:
+                return jsonify({"success": False, "error": "selected_brands_not_found"}), 404
+
+            coverage = _build_topic_plan_coverage(
+                cur,
+                brands,
+                category_id=category_id,
+                max_per_brand=max_per_brand,
+            )
+            allowed_priorities = {
+                "p1": {"P1"},
+                "p12": {"P1", "P2"},
+            }.get(gap_priority)
+            llm_gaps = [
+                gap for gap in coverage["gaps"]
+                if allowed_priorities is None or gap.get("priority") in allowed_priorities
+            ]
+            if not llm_gaps:
+                llm_gaps = coverage["gaps"]
+            existing_titles = [row.get("text") or "" for row in coverage["existing_topics"]]
+            if _table_exists(cur, "topic_candidates"):
+                cur.execute(
+                    """
+                    SELECT title
+                    FROM topic_candidates
+                    WHERE brand_id = ANY(%s) AND status = 'pending'
+                    """,
+                    (brand_ids,),
+                )
+                existing_titles.extend([row["title"] for row in cur.fetchall()])
+
+            cur.execute(
+                """
+                INSERT INTO topic_plan_runs
+                    (id, admin_id, industry_id, category_id, brand_ids, status,
+                     request_config, coverage_snapshot, started_at, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, 'running',
+                        %s::jsonb, %s::jsonb, NOW(), NOW(), NOW())
+                """,
+                (
+                    run_id,
+                    admin["id"],
+                    industry_id,
+                    category_id,
+                    _topic_plan_json(brand_ids),
+                    _topic_plan_json(request_config),
+                    _topic_plan_json(
+                        {
+                            "rows": coverage["rows"],
+                            "gaps": coverage["gaps"],
+                            "summary": coverage["summary"],
+                        }
+                    ),
+                ),
+            )
+        conn.commit()
+
+        try:
+            doubao_config = load_doubao_config()
+            client = DoubaoTopicPlanClient(doubao_config)
+            llm_topics, llm_meta = client.generate_topics(
+                industry=industry_id or "All industries",
+                category=category_id or "All categories",
+                brands=[
+                    {
+                        "id": brand["id"],
+                        "name": brand["name"],
+                        "industry": brand.get("industry_name") or brand.get("industry_id"),
+                        "topic_count": brand.get("topic_count", 0),
+                    }
+                    for brand in brands
+                ],
+                coverage_gaps=llm_gaps,
+                max_topics=max_topics,
+                existing_topics=existing_titles,
+            )
+            accepted, skipped = dedupe_topic_candidates(llm_topics, existing_titles, max_topics)
+
+            brand_by_norm = {
+                normalize_topic_title(brand["name"]): brand
+                for brand in brands
+                if normalize_topic_title(brand["name"])
+            }
+            inserted = []
+            for item in accepted:
+                brand = brand_by_norm.get(normalize_topic_title(item.brand))
+                if brand is None:
+                    item_norm = normalize_topic_title(item.brand)
+                    matches = [
+                        candidate
+                        for candidate in brands
+                        if item_norm
+                        and (
+                            item_norm in normalize_topic_title(candidate["name"])
+                            or normalize_topic_title(candidate["name"]) in item_norm
+                        )
+                    ]
+                    if len(matches) == 1:
+                        brand = matches[0]
+                    elif len(brands) == 1:
+                        brand = brands[0]
+                if brand is None:
+                    skipped.append({"title": item.title, "reason": "brand_not_selected"})
+                    continue
+                candidate_id = str(uuid.uuid4())
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO topic_candidates
+                            (id, run_id, brand_id, brand_name, title, dimension,
+                             reason, confidence, coverage_gap, normalized_title,
+                             status, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                'pending', NOW(), NOW())
+                        RETURNING *
+                        """,
+                        (
+                            candidate_id,
+                            run_id,
+                            int(brand["id"]),
+                            brand["name"],
+                            item.title,
+                            item.dimension,
+                            item.reason,
+                            item.confidence,
+                            item.coverage_gap,
+                            normalize_topic_title(item.title),
+                        ),
+                    )
+                    inserted.append(_topic_plan_candidate_row(cur.fetchone()))
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'completed',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_meta.get("model"),
+                        _topic_plan_json(llm_meta.get("usage") or {}),
+                        len(inserted),
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="generate_topic_plan",
+                    target_type="topic_plan_run",
+                    target_id=run_id,
+                    diff={
+                        "request_config": request_config,
+                        "candidates_generated": len(inserted),
+                        "skipped": skipped,
+                    },
+                    reason="topic_plan_generate",
+                )
+            conn.commit()
+            return jsonify(
+                {
+                    "success": True,
+                    "run_id": run_id,
+                    "candidates": inserted,
+                    "summary": {
+                        "generated": len(inserted),
+                        "skipped": skipped,
+                        "coverage": coverage["summary"],
+                    },
+                }
+            )
+        except TopicPlanLLMError as error:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'failed',
+                        llm_model = %s,
+                        llm_error = %s,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL"),
+                        error.code,
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="generate_topic_plan_failed",
+                    target_type="topic_plan_run",
+                    target_id=run_id,
+                    diff={"request_config": request_config, "error": error.code},
+                    reason="topic_plan_generate",
+                )
+            conn.commit()
+            code = 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
+            return jsonify(
+                {
+                    "success": False,
+                    "run_id": run_id,
+                    "error": error.code,
+                    "message": error.message,
+                }
+            ), code
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/candidates/<candidate_id>/review', methods=['POST'])
+def admin_topic_plan_candidate_review_api(candidate_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    requested_status = (payload.get("status") or "").strip().lower()
+    reason = (payload.get("reason") or "").strip() or None
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM topic_candidates WHERE id = %s FOR UPDATE",
+                (candidate_id,),
+            )
+            candidate = cur.fetchone()
+            if not candidate:
+                return jsonify({"success": False, "error": "candidate_not_found"}), 404
+
+            try:
+                new_status = transition_candidate_status(candidate["status"], requested_status)
+            except TopicPlanLLMError as error:
+                return _topic_plan_error_response(error, 400)
+
+            approved_topic_id = candidate.get("approved_topic_id")
+            if new_status == "approved":
+                if not _table_exists(cur, "topics"):
+                    return jsonify({"success": False, "error": "topics_table_missing"}), 503
+                existing = _fetch_topic_rows_for_brands(cur, [int(candidate["brand_id"])])
+                duplicate = next(
+                    (
+                        row
+                        for row in existing
+                        if normalize_topic_title(row.get("text") or "")
+                        == candidate.get("normalized_title")
+                    ),
+                    None,
+                )
+                if duplicate:
+                    approved_topic_id = duplicate["id"]
+                else:
+                    topic_cols = _table_columns(cur, "topics")
+                    columns = ["brand_id", "text"]
+                    values = [candidate["brand_id"], candidate["title"]]
+                    placeholders = ["%s", "%s"]
+                    if "category" in topic_cols:
+                        columns.append("category")
+                        values.append(candidate["dimension"])
+                        placeholders.append("%s")
+                    if "generated_by" in topic_cols:
+                        columns.append("generated_by")
+                        values.append("topic-plan")
+                        placeholders.append("%s")
+                    if "status" in topic_cols:
+                        columns.append("status")
+                        values.append("active")
+                        placeholders.append("%s")
+                    if "created_at" in topic_cols:
+                        columns.append("created_at")
+                        placeholders.append("NOW()")
+                    cur.execute(
+                        f"""
+                        INSERT INTO topics ({", ".join(columns)})
+                        VALUES ({", ".join(placeholders)})
+                        RETURNING id
+                        """,
+                        values,
+                    )
+                    approved_topic_id = cur.fetchone()["id"]
+
+            cur.execute(
+                """
+                UPDATE topic_candidates
+                SET status = %s,
+                    reviewed_by = %s,
+                    reviewed_at = NOW(),
+                    review_reason = %s,
+                    approved_topic_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (
+                    new_status,
+                    admin["id"],
+                    reason,
+                    approved_topic_id,
+                    candidate_id,
+                ),
+            )
+            updated = _topic_plan_candidate_row(cur.fetchone())
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="review_topic_candidate",
+                target_type="topic_candidate",
+                target_id=candidate_id,
+                diff={
+                    "status": {"before": candidate["status"], "after": new_status},
+                    "approved_topic_id": approved_topic_id,
+                },
+                reason=reason or "topic_candidate_review",
+            )
+        conn.commit()
+        return jsonify({"success": True, "candidate": updated})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/users')
+def admin_users_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        per_page = min(max(int(request.args.get("per_page", request.args.get("limit", 20))), 1), 100)
+        if request.args.get("offset") is not None:
+            offset = max(int(request.args.get("offset", 0)), 0)
+            page = (offset // per_page) + 1
+        else:
+            offset = (page - 1) * per_page
+    except ValueError:
+        return jsonify({"error": "invalid_pagination"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total, notes = _fetch_user_rows(
+                cur,
+                limit=per_page,
+                offset=offset,
+                include_count=True,
+            )
+        return jsonify({
+            "rows": rows,
+            "total": total or 0,
+            "page": page,
+            "per_page": per_page,
+            "notes": notes,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/actions')
+def admin_user_actions_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except ValueError:
+        return jsonify({"error": "invalid_pagination"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total = _fetch_user_actions(cur, limit=limit, offset=offset)
+        return jsonify({"rows": rows, "total": total, "limit": limit, "offset": offset})
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/login-audit')
+def admin_user_login_audit_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            audit_table = None
+            for candidate in ("user_login_audit", "user_login_attempts"):
+                if _table_exists(cur, candidate):
+                    audit_table = candidate
+                    break
+
+            if not audit_table:
+                # Product auth currently records users.last_login_at / user_activity_stats
+                # only. Keep a stable empty shape until per-login audit persistence lands.
+                return jsonify({
+                    "rows": [],
+                    "total": 0,
+                    "available": False,
+                    "message": "No user login audit table is present yet.",
+                })
+
+            limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+            offset = max(int(request.args.get("offset", 0)), 0)
+            cols = _table_columns(cur, audit_table)
+            select_parts = [
+                "id::text AS id" if "id" in cols else "NULL::text AS id",
+                "user_id::text AS user_id" if "user_id" in cols else "NULL::text AS user_id",
+                "email" if "email" in cols else "NULL::text AS email",
+                "ip_address" if "ip_address" in cols else ("ip AS ip_address" if "ip" in cols else "NULL::text AS ip_address"),
+                "user_agent" if "user_agent" in cols else ("ua AS user_agent" if "ua" in cols else "NULL::text AS user_agent"),
+                "result" if "result" in cols else ("status AS result" if "status" in cols else "NULL::text AS result"),
+                "failure_reason" if "failure_reason" in cols else ("failure_code AS failure_reason" if "failure_code" in cols else "NULL::text AS failure_reason"),
+                "created_at" if "created_at" in cols else "NULL::timestamp AS created_at",
+            ]
+            filters = []
+            params = []
+            if request.args.get("user_id") and "user_id" in cols:
+                filters.append("user_id::text = %s")
+                params.append(request.args["user_id"])
+            if request.args.get("ip") and ("ip_address" in cols or "ip" in cols):
+                filters.append(("ip_address" if "ip_address" in cols else "ip") + " = %s")
+                params.append(request.args["ip"])
+            where_clause = "WHERE " + " AND ".join(filters) if filters else ""
+            cur.execute(
+                f"SELECT COUNT(*) AS cnt FROM {audit_table} {where_clause}",
+                params,
+            )
+            total = cur.fetchone()["cnt"]
+            cur.execute(
+                f"""
+                SELECT {", ".join(select_parts)}
+                FROM {audit_table}
+                {where_clause}
+                ORDER BY created_at DESC NULLS LAST
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = []
+            for row in cur.fetchall():
+                item = dict(row)
+                item["created_at"] = _isoformat(item.get("created_at"))
+                rows.append(item)
+            return jsonify({
+                "rows": rows,
+                "total": total,
+                "available": True,
+                "limit": limit,
+                "offset": offset,
+            })
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/<user_id>')
+def admin_user_detail_api(user_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total, notes = _fetch_user_rows(
+                cur,
+                user_id=user_id,
+                limit=1,
+                offset=0,
+                include_count=False,
+            )
+            if not rows:
+                return jsonify({"error": "user_not_found"}), 404
+            projects, project_notes = _fetch_user_projects(cur, user_id)
+            actions, _ = _fetch_user_actions(cur, user_id=user_id, limit=10, offset=0)
+            user = rows[0]
+        return jsonify({
+            "user": user,
+            "projects": projects,
+            "activity": {
+                "level": user["activity_level"],
+                "last_login_at": user["last_login_at"],
+                "last_active_at": user["last_active_at"],
+                "login_count_30d": user["login_count_30d"],
+                "query_count_30d": user["query_count_30d"],
+            },
+            "moderation": user["moderation"],
+            "recent_admin_actions": actions,
+            "notes": notes + project_notes,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/<user_id>/actions')
+def admin_user_detail_actions_api(user_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 100)
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except ValueError:
+        return jsonify({"error": "invalid_pagination"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total = _fetch_user_actions(cur, user_id=user_id, limit=limit, offset=offset)
+        return jsonify({"rows": rows, "total": total, "limit": limit, "offset": offset})
+    finally:
+        conn.close()
+
+
+def _moderate_user(user_id, action):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    if action not in ("freeze", "unfreeze"):
+        return jsonify({"error": "unsupported_action"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    reason = (payload.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"success": False, "error": "reason_required"}), 400
+
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, _, _ = _fetch_user_rows(
+                cur,
+                user_id=user_id,
+                limit=1,
+                offset=0,
+                include_count=False,
+            )
+            if not rows:
+                return jsonify({"success": False, "error": "user_not_found"}), 404
+            before = rows[0]
+            moderation_id = str(uuid.uuid4())
+            cur.execute(
+                """
+                INSERT INTO user_moderation_actions
+                    (id, user_id, operator_id, action, reason, expires_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, NULL, NOW())
+                """,
+                (moderation_id, str(user_id), admin["id"], action, reason),
+            )
+            after_status = "frozen" if action == "freeze" else "active"
+            audit_action = "freeze_user" if action == "freeze" else "unfreeze_user"
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action=audit_action,
+                target_type="user",
+                target_id=user_id,
+                diff={
+                    "status": {"before": before["status"], "after": after_status},
+                    "moderation_action_id": moderation_id,
+                },
+                reason=reason,
+            )
+        conn.commit()
+        return jsonify({"success": True, "user_id": str(user_id), "status": after_status})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/users/<user_id>/freeze', methods=['POST'])
+def admin_user_freeze_api(user_id):
+    return _moderate_user(user_id, "freeze")
+
+
+@app.route('/api/users/<user_id>/unfreeze', methods=['POST'])
+def admin_user_unfreeze_api(user_id):
+    return _moderate_user(user_id, "unfreeze")
+
+
 @app.route('/api/stats')
 def stats():
     conn = get_db()
@@ -4116,6 +6114,8 @@ def analyzer_rerun_single(response_id):
 _ensure_citations_column()
 _ensure_analyzer_tables()
 _ensure_preview_columns()
+_ensure_query_admin_tables()
+_ensure_topic_plan_tables()
 _normalize_query_data()
 
 

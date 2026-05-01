@@ -3,6 +3,8 @@
 Canonical product and implementation references:
 
 - `PRD.md`
+- `PRD_CODEX_READY.md`
+- `DEVELOPMENT_PLAN.md`
 - `ADMIN_PRD.md`
 - `ADMIN_PRD_B_PIPELINE.md`
 - `ADMIN_PRD_C_KG.md`

@@ -54,6 +54,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
       - SCREENSHOT_DIR=/data/screenshots
+      - ARK_API_KEY=${ARK_API_KEY}
+      - ARK_BASE_URL=${ARK_BASE_URL}
+      - ARK_MODEL=${ARK_MODEL}
       - PREVIEW_MODE=1
     volumes:
       - screenshots_data:/data/screenshots
