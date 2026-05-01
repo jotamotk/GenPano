@@ -300,8 +300,9 @@
         <div class="mb-4">
           <div class="px-5 text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5" x-text="group.title"></div>
           <template x-for="item in group.items" :key="item.key">
-            <button
-              @click="goto(item.key)"
+            <a
+              :href="routeUrl(item.key)"
+              @click.prevent="goto(item.key)"
               class="w-full text-left pl-5 pr-3 py-2 flex items-center gap-2.5 text-[13.5px] font-medium transition-colors"
               :class="page===item.key ? 'nav-item-active' : 'text-ink-body-soft hover:text-ink hover:bg-surface-page'">
               <i :data-lucide="item.icon" class="w-4 h-4"></i>
@@ -313,7 +314,7 @@
                             : 'bg-accent/10 text-accent'"
                       x-text="item.badge"></span>
               </template>
-            </button>
+            </a>
           </template>
         </div>
       </template>
@@ -1689,14 +1690,14 @@
                   <div class="topic-plan-heading">
                     <h3 class="text-[15px] font-bold text-ink">Topic Plan</h3>
                     <p class="text-[12px] text-ink-muted mt-1" x-text="topicPlanHeaderText()"></p>
-                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedTopicPlanBrands().length + ' 个品牌 · 预计生成 ' + estimatedTopicCount() + ' 个 Topic · 覆盖率 78%'"></p>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedTopicPlanBrands().length + ' 个品牌 · 覆盖率 ' + (topicPlanStats.coverageLabel || '0%') + ' · 待审核 ' + topicPlanStats.pendingCandidates"></p>
                   </div>
                   <div class="flex items-center gap-2">
-                    <button @click="openTopicPlanPanel('coverage')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                    <button @click="focusTopicPlanSection('coverage')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                       覆盖度检查
                     </button>
-                    <button @click="openTopicPlanPanel('generate')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
-                      生成 Topic
+                    <button @click="startTopicPlanGenerate()" :disabled="topicPlanGenerateLoading || selectedTopicPlanBrands().length === 0" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <span x-text="topicPlanGenerateLoading ? '生成中...' : '生成 Topic'"></span>
                     </button>
                   </div>
                 </div>
@@ -1710,38 +1711,27 @@
                   <div class="rounded-card bg-surface-page border border-b-card p-4">
                     <div class="flex items-center justify-between">
                       <div>
-                        <div class="text-[12.5px] font-bold text-ink">运行配置</div>
+                        <div class="text-[12.5px] font-bold text-ink">范围配置</div>
                       </div>
-                      <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">ready</span>
+                      <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">已就绪</span>
                     </div>
                     <div class="mt-3 grid grid-cols-4 gap-2">
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted uppercase">Industry</span>
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">行业</span>
                         <select x-model="topicPlanConfig.industryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="">All</option>
                           <template x-for="industry in topicPlanIndustries" :key="industry.id">
                             <option :value="industry.id" x-text="industry.name"></option>
                           </template>
                         </select>
-                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option>美妆个护</option>
-                          <option>奢侈品</option>
-                          <option>食品饮料</option>
-                          <option>服装时尚</option>
-                        </select>
                       </label>
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted uppercase">Category</span>
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">品类</span>
                         <select x-model="topicPlanConfig.categoryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="">All</option>
                           <template x-for="category in topicPlanCategories" :key="category.id">
                             <option :value="category.id" x-text="category.name"></option>
                           </template>
-                        </select>
-                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option>护肤 / 精华</option>
-                          <option>彩妆 / 口红</option>
-                          <option>香水 / 香氛</option>
                         </select>
                       </label>
                       <div class="space-y-2 col-span-4">
@@ -1763,9 +1753,9 @@
                             <label class="h-8 px-2 rounded-btn border border-b-card bg-surface-page hover:bg-surface flex items-center gap-2 cursor-pointer">
                               <input type="checkbox" class="rounded border-b-default"
                                      :checked="brand.selected"
-                                     @change="brand.selected = $event.target.checked" />
+                                     @change="brand.selected = $event.target.checked; onTopicPlanBrandSelectionChanged()" />
                               <span class="text-[12px] font-medium text-ink truncate" x-text="brand.name"></span>
-                              <span class="ml-auto text-[10px] text-ink-muted truncate" x-text="brand.category"></span>
+                              <span class="ml-auto text-[10px] text-ink-muted truncate" x-text="topicPlanBrandMeta(brand)"></span>
                             </label>
                           </template>
                           <template x-if="filteredTopicPlanBrands().length === 0">
@@ -1773,28 +1763,40 @@
                           </template>
                         </div>
                       </div>
-                      <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted uppercase">发布方式</span>
-                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option>先审核后发布</option>
-                          <option>门禁通过后自动发布</option>
-                        </select>
-                      </label>
-                      <div class="space-y-2 col-span-4 rounded-card bg-white border border-b-card p-3">
+                      <div class="col-span-4 grid grid-cols-4 gap-2">
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">品牌范围</div>
+                          <div class="text-[16px] font-bold text-ink mt-1" x-text="selectedTopicPlanBrands().length"></div>
+                        </div>
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">覆盖率</div>
+                          <div class="text-[16px] font-bold text-accent mt-1" x-text="topicPlanStats.coverageLabel || '0%'"></div>
+                        </div>
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">缺口维度</div>
+                          <div class="text-[16px] font-bold text-warning mt-1" x-text="topicPlanCoverageGaps.length"></div>
+                        </div>
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">生成预估</div>
+                          <div class="text-[16px] font-bold text-ink mt-1" x-text="estimatedTopicCount()"></div>
+                        </div>
+                      </div>
+                      <div class="col-span-4 rounded-card bg-white border border-b-card p-3">
                         <div class="flex items-center justify-between gap-3">
                           <div>
                             <div class="text-[12.5px] font-bold text-ink">生成数量</div>
-                            <div class="text-[10px] text-ink-muted mt-1 font-mono" x-text="topicCountFormulaText()"></div>
+                            <div class="text-[10px] text-ink-muted mt-1" x-text="topicCountFormulaText()"></div>
                           </div>
                           <div class="text-right">
                             <div class="text-[20px] font-bold text-accent" x-text="estimatedTopicCount()"></div>
-                            <div class="text-[10px] text-ink-muted">预计 Topic</div>
+                            <div class="text-[10px] text-ink-muted">预计候选</div>
                           </div>
                         </div>
-                        <div class="grid grid-cols-4 gap-2">
+                        <div class="mt-3 grid grid-cols-4 gap-2">
                           <label class="space-y-1">
                             <span class="text-[10px] font-semibold text-ink-muted uppercase">每品牌上限</span>
-                            <select x-model="topicPlanConfig.maxPerBrand" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <select x-model="topicPlanConfig.maxPerBrand" @change="onTopicPlanGenerationConfigChanged()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                              <option value="10">10</option>
                               <option value="20">20</option>
                               <option value="40">40</option>
                               <option value="60">60</option>
@@ -1803,13 +1805,13 @@
                           </label>
                           <label class="space-y-1">
                             <span class="text-[10px] font-semibold text-ink-muted uppercase">总上限</span>
-                            <input x-model="topicPlanConfig.maxTopics" type="number" min="20" step="20"
+                            <input x-model="topicPlanConfig.maxTopics" @change="onTopicPlanGenerationConfigChanged()" type="number" min="10" step="10"
                                    class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                           </label>
                           <label class="space-y-1">
                             <span class="text-[10px] font-semibold text-ink-muted uppercase">缺口优先级</span>
                             <select x-model="topicPlanConfig.gapPriority" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                              <option value="p1">P1 only</option>
+                              <option value="p1">仅 P1</option>
                               <option value="p12">P1 + P2</option>
                               <option value="all">全部缺口</option>
                             </select>
@@ -1833,7 +1835,7 @@
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">审核状态</h3>
                   </div>
-                  <button @click="openTopicPlanPanel('pending')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                  <button @click="focusTopicPlanSection('pending')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                     查看待处理
                   </button>
                 </div>
@@ -1853,210 +1855,332 @@
                 </div>
               </div>
 
-              <template x-if="topicPlanActionPanel">
-                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+              <div class="grid grid-cols-12 gap-4">
+                <section x-ref="topicPlanCoverage" class="col-span-8 rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
                   <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
                     <div>
-                      <h3 class="text-[15px] font-bold text-ink" x-text="topicPlanPanelTitle()"></h3>
-                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选品牌 ' + selectedTopicPlanBrands().length + ' · ' + selectedTopicPlanBrands().map(b => b.name).join('、')"></div>
+                      <h3 class="text-[15px] font-bold text-ink">覆盖度结果</h3>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="selectedTopicPlanBrands().length + ' 个品牌 · ' + (topicPlanStats.coverageLabel || '0%') + ' 覆盖 · ' + topicPlanCoverageGaps.length + ' 类缺口'"></div>
                     </div>
                     <div class="flex items-center gap-2">
-                      <button @click="openTopicPlanPanel('coverage')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
-                              :class="topicPlanActionPanel==='coverage' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">覆盖检查</button>
-                      <button @click="openTopicPlanPanel('generate')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
-                              :class="topicPlanActionPanel==='generate' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">生成任务</button>
-                      <button @click="openTopicPlanPanel('pending')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
-                              :class="topicPlanActionPanel==='pending' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">待处理</button>
-                      <button @click="topicPlanActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
-                        <i data-lucide="x" class="w-4 h-4"></i>
+                      <button @click="loadTopicPlanCoverage()" :disabled="topicPlanCoverageLoading" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-50">
+                        <span x-text="topicPlanCoverageLoading ? '检查中...' : '重新检查'"></span>
                       </button>
                     </div>
                   </div>
-
-                  <template x-if="topicPlanActionPanel==='coverage'">
-                    <div class="p-5 space-y-4">
-                      <template x-if="topicPlanCoverageLoading">
-                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">Loading coverage...</div>
-                      </template>
-                      <template x-if="topicPlanCoverageError">
-                        <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanCoverageError"></div>
-                      </template>
-                      <template x-if="!topicPlanCoverageLoading && !topicPlanCoverageError && topicPlanCoverageRows.length === 0">
-                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">No coverage data for the selected scope.</div>
-                      </template>
-                      <div class="grid grid-cols-4 gap-3">
-                        <template x-for="row in topicPlanCoverageRows" :key="row.brand">
-                          <div class="rounded-card bg-surface-page border border-b-card p-3">
-                            <div class="flex items-center justify-between gap-2">
-                              <span class="text-[12px] font-semibold text-ink" x-text="row.brand"></span>
-                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
-                                    :class="row.status_key==='ok' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                                    x-text="row.status"></span>
-                            </div>
-                            <div class="mt-3 grid grid-cols-3 gap-2 text-center">
-                              <div><div class="text-[16px] font-bold text-ink" x-text="row.topics"></div><div class="text-[10px] text-ink-muted">Topic</div></div>
-                              <div><div class="text-[16px] font-bold text-accent" x-text="row.coverage"></div><div class="text-[10px] text-ink-muted">覆盖</div></div>
-                              <div><div class="text-[16px] font-bold" :class="row.gaps > 0 ? 'text-warning' : 'text-success'" x-text="row.gaps"></div><div class="text-[10px] text-ink-muted">缺口</div></div>
-                            </div>
+                  <div class="p-5 space-y-4">
+                    <template x-if="topicPlanCoverageError">
+                      <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanCoverageError"></div>
+                    </template>
+                    <template x-if="!topicPlanCoverageLoading && !topicPlanCoverageError && topicPlanCoverageRows.length === 0">
+                      <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">当前品牌范围内暂无覆盖度数据。</div>
+                    </template>
+                    <div class="grid grid-cols-2 gap-3">
+                      <template x-for="row in topicPlanCoverageRows" :key="row.brand">
+                        <div class="rounded-card bg-surface-page border border-b-card p-4">
+                          <div class="flex items-center justify-between gap-2">
+                            <span class="text-[13px] font-bold text-ink truncate" x-text="row.brand"></span>
+                            <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                  :class="row.status_key==='ok' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
+                                  x-text="row.status"></span>
                           </div>
-                        </template>
-                      </div>
-                      <div class="rounded-card border border-b-card overflow-hidden">
-                        <div class="px-4 py-3 bg-surface-page border-b border-b-card flex items-center justify-between">
-                          <div class="text-[12.5px] font-semibold text-ink">覆盖缺口</div>
-                          <button @click="openTopicPlanPanel('generate')" class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold">生成缺口 Topic</button>
+                          <div class="mt-4 grid grid-cols-3 gap-3 text-center">
+                            <div><div class="text-[18px] font-bold text-ink" x-text="row.topics"></div><div class="text-[10px] text-ink-muted">已有 Topic</div></div>
+                            <div><div class="text-[18px] font-bold text-accent" x-text="row.coverage"></div><div class="text-[10px] text-ink-muted">覆盖率</div></div>
+                            <div><div class="text-[18px] font-bold" :class="row.gaps > 0 ? 'text-warning' : 'text-success'" x-text="row.gaps"></div><div class="text-[10px] text-ink-muted">缺口</div></div>
+                          </div>
                         </div>
-                        <table class="w-full text-[12px]">
-                          <thead><tr class="border-b border-b-card"><th class="px-4 py-2 text-left text-ink-muted">品牌</th><th class="px-4 py-2 text-left text-ink-muted">缺口类型</th><th class="px-4 py-2 text-left text-ink-muted">数量</th><th class="px-4 py-2 text-left text-ink-muted">优先级</th></tr></thead>
-                          <tbody>
-                            <template x-for="gap in topicPlanCoverageGaps" :key="gap.brand + gap.type">
-                              <tr class="border-b border-b-card">
-                                <td class="px-4 py-2 font-semibold text-ink" x-text="gap.brand"></td>
-                                <td class="px-4 py-2 text-ink-body" x-text="gap.type"></td>
-                                <td class="px-4 py-2 tabular-nums text-ink-body" x-text="gap.count"></td>
-                                <td class="px-4 py-2"><span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="gap.priority"></span></td>
-                              </tr>
-                            </template>
-                          </tbody>
-                        </table>
-                      </div>
+                      </template>
                     </div>
-                  </template>
+                    <div class="rounded-card border border-b-card overflow-hidden">
+                      <div class="px-4 py-3 bg-surface-page border-b border-b-card flex items-center justify-between">
+                        <div>
+                          <div class="text-[12.5px] font-semibold text-ink">需要补齐的维度</div>
+                          <div class="text-[10px] text-ink-muted mt-0.5">按当前品牌和生成上限计算</div>
+                        </div>
+                      </div>
+                      <table class="w-full text-[12px]">
+                        <thead>
+                          <tr class="border-b border-b-card">
+                            <th class="px-4 py-2 text-left text-ink-muted">品牌</th>
+                            <th class="px-4 py-2 text-left text-ink-muted">维度</th>
+                            <th class="px-4 py-2 text-left text-ink-muted">建议补齐</th>
+                            <th class="px-4 py-2 text-left text-ink-muted">优先级</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="gap in topicPlanCoverageGaps" :key="gap.brand + gap.type">
+                            <tr class="border-b border-b-card">
+                              <td class="px-4 py-2 font-semibold text-ink" x-text="gap.brand"></td>
+                              <td class="px-4 py-2 text-ink-body" x-text="topicPlanDimensionLabel(gap.type)"></td>
+                              <td class="px-4 py-2 tabular-nums text-ink-body" x-text="gap.count + ' 个'"></td>
+                              <td class="px-4 py-2"><span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="gap.priority"></span></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </section>
 
-                  <template x-if="topicPlanActionPanel==='generate'">
-                    <div class="p-5 space-y-4">
+                <aside class="col-span-4 space-y-4">
+                  <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                    <div class="px-5 py-4 border-b border-b-card">
+                      <h3 class="text-[15px] font-bold text-ink">任务进度</h3>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="topicPlanGenerateStarted ? '最近一次生成已同步' : '尚未运行生成任务'"></div>
+                    </div>
+                    <div class="p-5 space-y-3">
                       <template x-if="topicPlanGenerateError">
                         <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanGenerateError"></div>
                       </template>
-                      <div class="grid grid-cols-4 gap-3">
-                        <template x-for="step in topicPlanGenerateSteps" :key="step.name">
-                          <div class="rounded-card bg-surface-page border border-b-card p-3">
-                            <div class="flex items-center justify-between">
-                              <span class="text-[12px] font-semibold text-ink" x-text="step.name"></span>
-                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
-                                    :class="step.status==='done' ? 'bg-success/10 text-success' : step.status==='running' ? 'bg-accent/10 text-accent' : 'bg-ink-muted/10 text-ink-muted'"
-                                    x-text="step.label"></span>
-                            </div>
-                            <div class="text-[18px] font-bold text-ink mt-3" x-text="step.value"></div>
+                      <template x-for="step in topicPlanGenerateSteps" :key="step.name">
+                        <div class="flex items-center justify-between rounded-card bg-surface-page border border-b-card px-3 py-2">
+                          <div>
+                            <div class="text-[12px] font-semibold text-ink" x-text="step.name"></div>
+                            <div class="text-[10px] text-ink-muted mt-0.5" x-text="step.value"></div>
                           </div>
-                        </template>
-                      </div>
-                      <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between gap-3">
-                        <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
-                          <div><div class="text-ink-muted">生成模式</div><div class="font-semibold text-ink mt-1">Draft review</div></div>
-                          <div><div class="text-ink-muted">预计新增</div><div class="font-semibold text-ink mt-1" x-text="estimatedTopicCount() + ' topics'"></div></div>
-                          <div><div class="text-ink-muted">进入审核</div><div class="font-semibold text-warning mt-1" x-text="topicPlanStats.pendingCandidates + ' candidates'"></div></div>
-                          <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="topicPlanGenerateStarted ? '刚刚' : '未运行'"></div></div>
+                          <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                :class="step.status==='done' ? 'bg-success/10 text-success' : step.status==='running' ? 'bg-accent/10 text-accent' : 'bg-ink-muted/10 text-ink-muted'"
+                                x-text="step.label"></span>
                         </div>
-                        <button @click="startTopicPlanGenerate()" :disabled="topicPlanGenerateLoading || selectedTopicPlanBrands().length === 0" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-50 disabled:cursor-not-allowed">
-                          <span x-text="topicPlanGenerateLoading ? 'Generating...' : (topicPlanGenerateStarted ? '重新生成' : '开始生成')"></span>
-                        </button>
-                      </div>
+                      </template>
                     </div>
-                  </template>
+                  </section>
 
-                  <template x-if="topicPlanActionPanel==='pending'">
-                    <div class="p-5">
-                      <template x-if="topicPlanCandidatesLoading">
-                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted mb-3">Loading candidates...</div>
-                      </template>
-                      <template x-if="topicPlanCandidatesError">
-                        <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger mb-3" x-text="topicPlanCandidatesError"></div>
-                      </template>
-                      <template x-if="!topicPlanCandidatesLoading && !topicPlanCandidatesError && topicPlanPendingItems.length === 0">
-                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted mb-3">No pending candidates.</div>
-                      </template>
-                      <div class="rounded-card border border-b-card overflow-hidden">
-                        <table class="w-full text-[12px]">
-                          <thead>
-                            <tr class="border-b border-b-card bg-surface-page">
-                              <th class="px-4 py-2.5 text-left text-ink-muted">候选 Topic</th>
-                              <th class="px-4 py-2.5 text-left text-ink-muted">品牌</th>
-                              <th class="px-4 py-2.5 text-left text-ink-muted">原因</th>
-                              <th class="px-4 py-2.5 text-left text-ink-muted">置信度</th>
-                              <th class="px-4 py-2.5 text-right text-ink-muted">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <template x-for="item in topicPlanPendingItems" :key="item.id">
-                              <tr class="border-b border-b-card hover:bg-surface-page">
-                                <td class="px-4 py-3">
-                                  <div class="font-semibold text-ink" x-text="item.title"></div>
-                                  <div class="font-mono text-[10px] text-ink-muted mt-0.5" x-text="item.id"></div>
-                                </td>
-                                <td class="px-4 py-3 text-ink-body" x-text="item.brand"></td>
-                                <td class="px-4 py-3 text-ink-body" x-text="item.reason"></td>
-                                <td class="px-4 py-3">
-                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
-                                        :class="item.confidence >= 0.8 ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                                        x-text="Math.round(item.confidence * 100) + '%'"></span>
-                                </td>
-                                <td class="px-4 py-3 text-right">
-                                  <button @click="reviewTopicCandidate(item, 'approved')" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold">通过</button>
-                                  <button @click="reviewTopicCandidate(item, 'rejected')" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1">拒绝</button>
-                                </td>
-                              </tr>
-                            </template>
-                          </tbody>
-                        </table>
+                  <section x-ref="topicPlanPending" class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                    <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                      <div>
+                        <h3 class="text-[15px] font-bold text-ink">待审核候选</h3>
+                        <div class="text-[11px] text-ink-muted mt-1" x-text="topicPlanStats.pendingCandidates + ' 个待处理'"></div>
                       </div>
+                      <button @click="focusTopicPlanSection('candidates')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page">查看表格</button>
                     </div>
-                  </template>
+                    <div class="p-5 space-y-3">
+                      <template x-if="topicPlanCandidatesLoading">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">候选加载中...</div>
+                      </template>
+                      <div class="grid grid-cols-2 gap-2">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">待处理</div>
+                          <div class="text-[20px] font-bold text-warning mt-1" x-text="topicPlanStats.pendingCandidates"></div>
+                        </div>
+                        <div class="rounded-card bg-surface-page border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted uppercase">低置信</div>
+                          <div class="text-[20px] font-bold text-ink mt-1" x-text="topicPlanStats.lowConfidence"></div>
+                        </div>
+                      </div>
+                      <button @click="focusTopicPlanSection('candidates')" class="w-full h-8 rounded-btn bg-accent/10 text-accent text-[12px] font-semibold">进入审核表格</button>
+                    </div>
+                  </section>
+                </aside>
+              </div>
+
+              <section x-ref="topicPlanCandidatesForm" class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">候选 Topic 审核</h3>
+                    <div class="text-[11px] text-ink-muted mt-1" x-text="topicPlanCandidateTableSummary()"></div>
+                  </div>
+                  <button @click="loadTopicPlanCandidates()" :disabled="topicPlanCandidatesLoading" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-50">
+                    <span x-text="topicPlanCandidatesLoading ? '刷新中...' : '刷新'"></span>
+                  </button>
                 </div>
-              </template>
+
+                <div class="p-3 border-b border-b-card bg-surface-page">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <select x-model="topicPlanCandidateStatus" @change="onTopicPlanCandidateFilterChanged()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[112px]">
+                      <option value="pending">待处理</option>
+                      <option value="all">全部状态</option>
+                      <option value="approved">已通过</option>
+                      <option value="rejected">已拒绝</option>
+                    </select>
+                    <select x-model="topicPlanCandidateBrandId" @change="onTopicPlanCandidateFilterChanged()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[124px]">
+                      <option value="">全部品牌</option>
+                      <template x-for="brand in topicPlanCandidateBrandOptions()" :key="brand.id">
+                        <option :value="String(brand.id)" x-text="brand.name"></option>
+                      </template>
+                    </select>
+                    <div class="relative flex-1 min-w-[280px]">
+                      <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                      <input x-model="topicPlanCandidateQuery" @input.debounce.350ms="onTopicPlanCandidateFilterChanged()" placeholder="搜索候选 Topic / 品牌 / 缺口..."
+                             class="w-full h-8 pl-8 pr-3 rounded-btn border border-b-default text-[12px] bg-white" />
+                    </div>
+                    <button @click="resetTopicPlanCandidateFilters()" class="h-8 px-3 rounded-btn border border-b-default bg-white text-[12px] font-semibold text-ink-body hover:bg-surface-page">重置</button>
+                    <button @click="bulkReviewTopicCandidates('approved')" :disabled="topicPlanCandidateReviewing || selectedTopicPlanCandidateIds().length === 0"
+                            class="h-8 px-3 rounded-btn bg-success/10 text-success text-[12px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed">批量通过</button>
+                    <button @click="bulkReviewTopicCandidates('rejected')" :disabled="topicPlanCandidateReviewing || selectedTopicPlanCandidateIds().length === 0"
+                            class="h-8 px-3 rounded-btn bg-danger/10 text-danger text-[12px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed">批量拒绝</button>
+                  </div>
+                </div>
+
+                <template x-if="topicPlanCandidatesError">
+                  <div class="p-4 text-[12px] text-danger bg-danger/5 border-b border-danger/20" x-text="topicPlanCandidatesError"></div>
+                </template>
+                <template x-if="!topicPlanCandidatesLoading && !topicPlanCandidatesError && filteredTopicPlanCandidates().length === 0">
+                  <div class="p-4 text-[12px] text-ink-muted border-b border-b-card">当前筛选下暂无候选 Topic。</div>
+                </template>
+
+                <div class="overflow-x-auto">
+                  <table class="w-full text-[12px]">
+                    <thead>
+                      <tr class="border-b border-b-card bg-surface-page">
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted w-9">
+                          <input type="checkbox" class="rounded border-b-default"
+                                 :checked="allTopicPlanCandidatesSelected()"
+                                 :disabled="selectableTopicPlanCandidates().length === 0"
+                                 @click.stop="toggleAllTopicPlanCandidates()" />
+                        </th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">候选 Topic</th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">品牌</th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">维度</th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">覆盖缺口</th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">置信度</th>
+                        <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
+                        <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="item in filteredTopicPlanCandidates()" :key="item.id">
+                        <tr class="border-b border-b-card hover:bg-surface-page">
+                          <td class="px-3 py-2.5">
+                            <input type="checkbox" class="rounded border-b-default"
+                                   :disabled="item.status !== 'pending'"
+                                   :checked="isTopicPlanCandidateSelected(item)"
+                                   @change="toggleTopicPlanCandidate(item)" />
+                          </td>
+                          <td class="px-3 py-2.5 min-w-[260px]">
+                            <div class="font-semibold text-ink leading-snug" x-text="item.title"></div>
+                            <div class="text-[10px] text-ink-muted mt-0.5" x-text="item.reason || item.id"></div>
+                          </td>
+                          <td class="px-3 py-2.5 text-ink-body font-medium" x-text="item.brand"></td>
+                          <td class="px-3 py-2.5">
+                            <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="topicPlanDimensionLabel(item.dimension)"></span>
+                          </td>
+                          <td class="px-3 py-2.5 text-ink-muted max-w-[160px] truncate" x-text="item.coverage_gap || '-'"></td>
+                          <td class="px-3 py-2.5">
+                            <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                  :class="item.confidence >= 0.8 ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
+                                  x-text="Math.round(item.confidence * 100) + '%'"></span>
+                          </td>
+                          <td class="px-3 py-2.5">
+                            <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                  :class="item.status==='approved' ? 'bg-success/10 text-success' : item.status==='rejected' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning'"
+                                  x-text="topicPlanCandidateStatusLabel(item.status)"></span>
+                          </td>
+                          <td class="px-3 py-2.5 text-right">
+                            <template x-if="item.status === 'pending'">
+                              <span class="inline-flex items-center gap-1">
+                                <button @click="reviewTopicCandidate(item, 'approved')" :disabled="topicPlanCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-50">通过</button>
+                                <button @click="reviewTopicCandidate(item, 'rejected')" :disabled="topicPlanCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold disabled:opacity-50">拒绝</button>
+                              </span>
+                            </template>
+                            <template x-if="item.status !== 'pending'">
+                              <span class="text-[11px] text-ink-muted" x-text="item.reviewed_at || '-'"></span>
+                            </template>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
               <!-- KPI row -->
               <div class="grid grid-cols-5 gap-3">
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-                  <div class="text-[10px] text-ink-muted font-semibold uppercase">总 Topics</div>
-                  <div class="text-[22px] font-bold text-accent mt-1">3,420</div>
+                  <div class="text-[10px] text-ink-muted font-semibold uppercase">当前 Topic</div>
+                  <div class="text-[22px] font-bold text-accent mt-1" x-text="Number(topicPlanTopicStats.totalTopics || 0).toLocaleString()"></div>
+                  <div class="text-[10px] text-ink-muted" x-text="selectedTopicPlanBrands().length + ' 个品牌范围'"></div>
                 </div>
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
                   <div class="text-[10px] text-ink-muted font-semibold uppercase">品类维度</div>
-                  <div class="text-[22px] font-bold text-success mt-1">42%</div>
-                  <div class="text-[10px] text-success">≥ 40% 配额</div>
+                  <div class="text-[22px] font-bold text-success mt-1" x-text="topicPlanTopicStats.categoryShareLabel"></div>
+                  <div class="text-[10px] text-ink-muted">当前筛选结果</div>
                 </div>
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
                   <div class="text-[10px] text-ink-muted font-semibold uppercase">有 Prompt</div>
-                  <div class="text-[22px] font-bold text-ink mt-1">93.1%</div>
-                  <div class="text-[10px] text-ink-muted">3,182 / 3,420</div>
+                  <div class="text-[22px] font-bold text-ink mt-1" x-text="topicPlanTopicStats.promptCoverageLabel"></div>
+                  <div class="text-[10px] text-ink-muted" x-text="topicPlanTopicStats.promptCoverageMeta"></div>
                 </div>
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
                   <div class="text-[10px] text-ink-muted font-semibold uppercase">LLM 生成</div>
-                  <div class="text-[22px] font-bold text-accent mt-1">84%</div>
+                  <div class="text-[22px] font-bold text-accent mt-1" x-text="topicPlanTopicStats.llmGeneratedLabel"></div>
                 </div>
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-                  <div class="text-[10px] text-ink-muted font-semibold uppercase">Response 挖掘</div>
-                  <div class="text-[22px] font-bold text-info mt-1">16%</div>
+                  <div class="text-[10px] text-ink-muted font-semibold uppercase">待审核</div>
+                  <div class="text-[22px] font-bold text-warning mt-1" x-text="topicPlanStats.pendingCandidates"></div>
                 </div>
               </div>
 
               <!-- Filter bar -->
-              <div class="flex items-center gap-2 flex-wrap">
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                  <option value="">全部维度</option>
-                  <option>品类</option><option>品牌</option><option>产品</option>
-                </select>
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                  <option value="">全部行业</option>
-                  <option>美妆个护</option><option>奢侈品</option><option>食品饮料</option><option>服装时尚</option>
-                </select>
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                  <option value="">全部来源</option>
-                  <option>LLM 初始化</option><option>Response 挖掘</option>
-                </select>
-                <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                  <option value="">全部状态</option>
-                  <option>active</option><option>draft</option><option>archived</option>
-                </select>
-                <input placeholder="搜索 Topic ID / 标题 / 品牌..." class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-56" />
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <select x-model="topicPlanTopicDimension" @change="onTopicPlanTopicFilterChanged()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[112px]">
+                    <option value="">全部维度</option>
+                    <option value="brand">品牌认知</option>
+                    <option value="product">产品选择</option>
+                    <option value="category">品类比较</option>
+                    <option value="scenario">使用场景</option>
+                    <option value="question">用户问题</option>
+                  </select>
+                  <select x-model="topicPlanTopicIndustry" @change="onTopicPlanTopicFilterChanged('industry')" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[124px]">
+                    <option value="">全部行业</option>
+                    <template x-for="industry in topicPlanTopicIndustryOptions()" :key="industry.id">
+                      <option :value="industry.id" x-text="industry.name"></option>
+                    </template>
+                  </select>
+                  <select x-model="topicPlanTopicBrandId" @change="onTopicPlanTopicFilterChanged()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[124px]">
+                    <option value="">全部品牌</option>
+                    <template x-for="brand in topicPlanTopicBrandOptions()" :key="brand.id">
+                      <option :value="String(brand.id)" x-text="brand.name"></option>
+                    </template>
+                  </select>
+                  <select x-model="topicPlanTopicStatus" @change="onTopicPlanTopicFilterChanged()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white min-w-[112px]">
+                    <option value="all">全部状态</option>
+                    <option value="active">已启用</option>
+                    <option value="draft">草稿</option>
+                    <option value="archived">已归档</option>
+                  </select>
+                  <div class="relative flex-1 min-w-[260px]">
+                    <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                    <input x-model="topicPlanTopicQuery" @input.debounce.350ms="onTopicPlanTopicFilterChanged()" placeholder="搜索 Topic ID / 标题 / 品牌..."
+                           class="w-full h-8 pl-8 pr-3 rounded-btn border border-b-default text-[12px] bg-white" />
+                  </div>
+                  <button @click="resetTopicPlanTopicFilters()" class="h-8 px-3 rounded-btn border border-b-default bg-white text-[12px] font-semibold text-ink-body hover:bg-surface-page">
+                    重置
+                  </button>
+                  <button @click="deleteSelectedTopicPlanTopics()" :disabled="topicPlanDeleting || selectedTopicPlanTopicKeys().length === 0"
+                          class="h-8 px-3 rounded-btn border border-danger/30 bg-white text-[12px] font-semibold text-danger hover:bg-danger/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    <span x-text="'批量删除 ' + selectedTopicPlanTopicKeys().length"></span>
+                  </button>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-3 text-[11px] text-ink-muted">
+                  <span x-text="topicPlanTopicFilterSummary()"></span>
+                  <span x-show="topicPlanTopicBrandId" x-text="'当前品牌：' + topicPlanTopicBrandName(topicPlanTopicBrandId)"></span>
+                </div>
               </div>
 
               <!-- Topic table -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                <template x-if="topicPlanTopicsLoading">
+                  <div class="p-4 text-[12px] text-ink-muted border-b border-b-card">Loading topics...</div>
+                </template>
+                <template x-if="topicPlanTopicsError">
+                  <div class="p-4 text-[12px] text-danger bg-danger/5 border-b border-danger/20" x-text="topicPlanTopicsError"></div>
+                </template>
+                <template x-if="!topicPlanTopicsLoading && !topicPlanTopicsError && topicsList.length === 0">
+                  <div class="p-4 text-[12px] text-ink-muted border-b border-b-card">当前品牌范围内暂无 Topic。</div>
+                </template>
                 <table class="w-full text-[12px]">
                   <thead>
                     <tr class="border-b border-b-card bg-surface-page">
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted w-9">
+                        <input type="checkbox" class="rounded border-b-default"
+                               :checked="allTopicPlanTopicsSelected()"
+                               :disabled="topicsList.length === 0"
+                               @click.stop="toggleAllTopicPlanTopics()" />
+                      </th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Topic ID</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">标题</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">维度</th>
@@ -2067,21 +2191,27 @@
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Query</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">置信度</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
+                      <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     <template x-for="t in topicsList" :key="t.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors cursor-pointer" @click="selectedTopic=t; $nextTick(()=>lucide.createIcons())">
+                        <td class="px-3 py-2.5" @click.stop>
+                          <input type="checkbox" class="rounded border-b-default"
+                                 :checked="isTopicPlanTopicSelected(t)"
+                                 @change="toggleTopicPlanTopic(t)" />
+                        </td>
                         <td class="px-3 py-2.5 font-mono text-[10px] font-semibold text-ink" x-text="t.id"></td>
                         <td class="px-3 py-2.5 text-ink-body font-medium max-w-[220px]" x-text="t.title"></td>
                         <td class="px-3 py-2.5">
                           <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
-                                :class="t.dimension==='品类' ? 'bg-success/10 text-success' : t.dimension==='品牌' ? 'bg-accent/10 text-accent' : t.dimension==='产品' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'"
+                                :class="t.dimension_key==='category' ? 'bg-success/10 text-success' : t.dimension_key==='brand' ? 'bg-accent/10 text-accent' : t.dimension_key==='product' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'"
                                 x-text="t.dimension"></span>
                         </td>
                         <td class="px-3 py-2.5 text-[11px] text-ink-muted" x-text="t.industry"></td>
                         <td class="px-3 py-2.5 text-[11px]">
-                          <span :class="t.source==='LLM 初始化' ? 'text-accent' : 'text-info'" x-text="t.source"></span>
+                          <span :class="t.source==='初始化' || t.source==='审核通过' ? 'text-accent' : 'text-info'" x-text="t.source"></span>
                         </td>
                         <td class="px-3 py-2.5 text-[10px] text-ink-muted max-w-[140px] truncate" x-text="t.brands.join(', ')"></td>
                         <td class="px-3 py-2.5 tabular-nums text-ink-body" x-text="t.promptCount"></td>
@@ -2097,7 +2227,14 @@
                         <td class="px-3 py-2.5">
                           <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
                                 :class="t.status==='active' ? 'bg-success/10 text-success' : t.status==='draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
-                                x-text="t.status"></span>
+                                x-text="topicPlanTopicStatusLabel(t.status)"></span>
+                        </td>
+                        <td class="px-3 py-2.5 text-right" @click.stop>
+                          <button @click="deleteTopicPlanTopic(t)" :disabled="topicPlanDeleting"
+                                  class="w-7 h-7 rounded-btn text-danger hover:bg-danger/10 disabled:opacity-50 inline-flex items-center justify-center"
+                                  title="删除 Topic">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                          </button>
                         </td>
                       </tr>
                     </template>
@@ -2115,6 +2252,9 @@
                     </div>
                     <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="selectedTopic=null">
                       <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                    <button class="w-7 h-7 rounded-btn hover:bg-danger/10 text-danger flex items-center justify-center" @click="deleteTopicPlanTopic(selectedTopic)" title="删除 Topic">
+                      <i data-lucide="trash-2" class="w-4 h-4"></i>
                     </button>
                   </div>
 
@@ -5711,7 +5851,14 @@
 // served from the preview overlay (/preview/admin) or directly from the
 // query-tool service in dev (/admin). Strips the trailing /admin segment and
 // appends /api — both '' and '/preview' variants route correctly through nginx.
-const API_BASE = (window.location.pathname.replace(/\/admin\/?$/, '') || '') + '/api';
+const ADMIN_BASE_PATH = (() => {
+  const marker = '/admin';
+  const path = window.location.pathname || '';
+  const index = path.indexOf(marker);
+  return index >= 0 ? path.slice(0, index + marker.length) : '/admin';
+})();
+const APP_BASE_PATH = ADMIN_BASE_PATH.replace(/\/admin$/, '') || '';
+const API_BASE = APP_BASE_PATH + '/api';
 
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
@@ -5920,6 +6067,28 @@ function adminApp() {
     topicPlanGenerateError: '',
     topicPlanCandidatesLoading: false,
     topicPlanCandidatesError: '',
+    topicPlanCandidateReviewing: false,
+    topicPlanCandidateQuery: '',
+    topicPlanCandidateStatus: 'pending',
+    topicPlanCandidateBrandId: '',
+    topicPlanSelectedCandidateIds: {},
+    topicPlanTopicsLoading: false,
+    topicPlanTopicsError: '',
+    topicPlanDeleting: false,
+    topicPlanSelectedTopicIds: {},
+    topicPlanTopicQuery: '',
+    topicPlanTopicDimension: '',
+    topicPlanTopicIndustry: '',
+    topicPlanTopicBrandId: '',
+    topicPlanTopicStatus: 'all',
+    topicPlanTopicStats: {
+      totalTopics: 0,
+      visibleTopics: 0,
+      promptCoverageLabel: '0%',
+      promptCoverageMeta: '0 / 0',
+      categoryShareLabel: '0%',
+      llmGeneratedLabel: '0%',
+    },
     topicPlanIndustries: [],
     topicPlanCategories: [],
     topicPlanStats: { coverageLabel:'0%', pendingCandidates:0, lowConfidence:0, noPromptTopics:0 },
@@ -5942,32 +6111,16 @@ function adminApp() {
       gapPriority: 'p12',
       overflowPolicy: 'review',
     },
-    topicPlanActionPanel: '',
     topicPlanGenerateStarted: false,
-    topicPlanCoverageRows: [
-      { brand:'薇诺娜', topics:412, coverage:'91%', gaps:3, status:'达标' },
-      { brand:'理肤泉', topics:386, coverage:'88%', gaps:4, status:'达标' },
-      { brand:'珂润', topics:264, coverage:'72%', gaps:8, status:'待补齐' },
-      { brand:'雅漾', topics:238, coverage:'69%', gaps:9, status:'待补齐' },
-    ],
-    topicPlanCoverageGaps: [
-      { brand:'珂润', type:'功效场景', count:5, priority:'P1' },
-      { brand:'雅漾', type:'价格带', count:4, priority:'P1' },
-      { brand:'薇诺娜', type:'新品线', count:3, priority:'P2' },
-      { brand:'理肤泉', type:'用户问题', count:4, priority:'P2' },
-    ],
+    topicPlanCoverageRows: [],
+    topicPlanCoverageGaps: [],
     topicPlanGenerateSteps: [
-      { name:'配置检查', status:'done', label:'通过', value:'4 个品牌' },
-      { name:'缺口读取', status:'done', label:'12 个缺口', value:'12' },
-      { name:'候选生成', status:'idle', label:'待运行', value:'+182' },
-      { name:'进入审核', status:'idle', label:'待运行', value:'126' },
+      { name:'配置检查', status:'done', label:'通过', value:'0 个品牌' },
+      { name:'缺口读取', status:'idle', label:'待检查', value:'0' },
+      { name:'候选生成', status:'idle', label:'待运行', value:'+0' },
+      { name:'进入审核', status:'idle', label:'待运行', value:'0' },
     ],
-    topicPlanPendingItems: [
-      { id:'TC-9021', title:'敏感肌屏障修护精华推荐', brand:'薇诺娜', reason:'低置信', confidence:0.72 },
-      { id:'TC-9022', title:'泛红修护面霜使用场景', brand:'理肤泉', reason:'待审核', confidence:0.81 },
-      { id:'TC-9023', title:'干敏肌换季保湿方案', brand:'珂润', reason:'覆盖缺口', confidence:0.76 },
-      { id:'TC-9024', title:'喷雾舒缓场景推荐', brand:'雅漾', reason:'无 Prompt', confidence:0.68 },
-    ],
+    topicPlanPendingItems: [],
     promptMatrixConfig: {
       intentCount: 2,
       languageCount: 2,
@@ -6269,20 +6422,7 @@ function adminApp() {
     // ====== DETAILED MOCK DATA: Topics, Prompts, Queries, AI Responses ======
 
     // === Topics 列表 (Planner 产出) ===
-    topicsList: [
-      { id:'T-1204', title:'敏感肌护肤品推荐对比', dimension:'品类', industry:'美妆个护', source:'LLM 初始化', sourceStep:'品类推荐 (L2)', status:'active', promptCount:4, queryCount:14, brands:['薇诺娜','理肤泉','珂润','雅漾'], createdAt:'2026-04-10', confidence:0.94 },
-      { id:'T-1205', title:'2026 年抗衰老精华液排行', dimension:'品类', industry:'美妆个护', source:'LLM 初始化', sourceStep:'品类推荐 (L1)', status:'active', promptCount:4, queryCount:16, brands:['雅诗兰黛','兰蔻','SK-II','海蓝之谜'], createdAt:'2026-04-10', confidence:0.97 },
-      { id:'T-1206', title:'兰蔻 vs 雅诗兰黛 眼霜哪个好', dimension:'品牌', industry:'美妆个护', source:'LLM 初始化', sourceStep:'品牌对比 (COMPETES_WITH)', status:'active', promptCount:4, queryCount:12, brands:['兰蔻','雅诗兰黛'], createdAt:'2026-04-10', confidence:0.96 },
-      { id:'T-1210', title:'学生党平价口红推荐', dimension:'品类', industry:'美妆个护', source:'Response 挖掘', sourceStep:'长尾化变体', status:'active', promptCount:3, queryCount:10, brands:['完美日记','橘朵','COLORKEY','花西子'], createdAt:'2026-04-12', confidence:0.88 },
-      { id:'T-1215', title:'Hermès 铂金包保值率分析', dimension:'品牌', industry:'奢侈品', source:'LLM 初始化', sourceStep:'品牌评价/口碑', status:'active', promptCount:4, queryCount:14, brands:['Hermès','Chanel','Louis Vuitton','Dior'], createdAt:'2026-04-10', confidence:0.95 },
-      { id:'T-1220', title:'送女朋友什么奢侈品包好', dimension:'品类', industry:'奢侈品', source:'LLM 初始化', sourceStep:'场景化变体', status:'active', promptCount:3, queryCount:12, brands:['Chanel','Gucci','Celine','Prada'], createdAt:'2026-04-11', confidence:0.91 },
-      { id:'T-1225', title:'元气森林 vs 农夫山泉气泡水', dimension:'品牌', industry:'食品饮料', source:'LLM 初始化', sourceStep:'品牌对比 (COMPETES_WITH)', status:'active', promptCount:4, queryCount:14, brands:['元气森林','农夫山泉'], createdAt:'2026-04-10', confidence:0.93 },
-      { id:'T-1230', title:'精品咖啡品牌推荐 上海', dimension:'品类', industry:'食品饮料', source:'Response 挖掘', sourceStep:'地域化变体', status:'active', promptCount:3, queryCount:10, brands:['Manner','Seesaw','% Arabica','Blue Bottle'], createdAt:'2026-04-13', confidence:0.86 },
-      { id:'T-1235', title:'优衣库 HeatTech vs 迪卡侬保暖内衣', dimension:'产品', industry:'服装时尚', source:'LLM 初始化', sourceStep:'产品对比 (COMPETES_WITH)', status:'active', promptCount:4, queryCount:12, brands:['优衣库','迪卡侬'], createdAt:'2026-04-10', confidence:0.92 },
-      { id:'T-1240', title:'2026 春季女装搭配趋势', dimension:'品类', industry:'服装时尚', source:'LLM 初始化', sourceStep:'场景×品类', status:'active', promptCount:3, queryCount:10, brands:['ZARA','H&M','COS','& Other Stories'], createdAt:'2026-04-11', confidence:0.89 },
-      { id:'T-1245', title:'完美日记眼影盘测评', dimension:'产品', industry:'美妆个护', source:'Response 挖掘', sourceStep:'产品评价', status:'draft', promptCount:0, queryCount:0, brands:['完美日记'], createdAt:'2026-04-15', confidence:0.72 },
-      { id:'T-1250', title:'无糖饮料对健康的影响', dimension:'品类', industry:'食品饮料', source:'LLM 初始化', sourceStep:'品类推荐 (L1)', status:'active', promptCount:4, queryCount:14, brands:['元气森林','可口可乐','百事可乐','农夫山泉'], createdAt:'2026-04-10', confidence:0.90 },
-    ],
+    topicsList: [],
 
     // === Prompt 模板详细内容 (含完整模板文本) ===
     promptDetailList: [
@@ -7184,6 +7324,76 @@ function adminApp() {
       return all.filter(c => c.label.toLowerCase().includes(q) || c.group.toLowerCase().includes(q) || c.key.includes(q));
     },
 
+    allNavItems(){
+      return this.nav.flatMap(group => group.items);
+    },
+
+    validRouteKeys(){
+      return new Set(this.allNavItems().map(item => item.key));
+    },
+
+    normalizeRouteKey(key){
+      const value = String(key || '').trim();
+      if (!value) return 'overview';
+      if (value === 'planner-generation') {
+        if (this.genTab === 'prompt') return 'planner-prompt-matrix';
+        if (this.genTab === 'query') return 'planner-query-pool';
+        return 'planner-topics';
+      }
+      return this.validRouteKeys().has(value) ? value : 'overview';
+    },
+
+    syncPlannerTabForPage(key){
+      if (key === 'planner-topics') this.genTab = 'topic';
+      if (key === 'planner-prompt-matrix') this.genTab = 'prompt';
+      if (key === 'planner-query-pool') this.genTab = 'query';
+    },
+
+    routeUrl(key){
+      const routeKey = this.normalizeRouteKey(key);
+      return ADMIN_BASE_PATH + '/' + encodeURIComponent(routeKey);
+    },
+
+    routeKeyFromLocation(){
+      const params = new URLSearchParams(window.location.search || '');
+      const tab = (params.get('tab') || '').trim();
+      if (['topic', 'prompt', 'query'].includes(tab)) this.genTab = tab;
+      const fromQuery = params.get('page');
+      if (fromQuery) return this.normalizeRouteKey(fromQuery);
+      const marker = '/admin';
+      const path = window.location.pathname || '';
+      const index = path.indexOf(marker);
+      if (index < 0) return 'overview';
+      const rest = path.slice(index + marker.length).replace(/^\/+|\/+$/g, '');
+      const first = decodeURIComponent((rest.split('/')[0] || '').trim());
+      return this.normalizeRouteKey(first || 'overview');
+    },
+
+    applyRouteFromLocation(){
+      const key = this.routeKeyFromLocation();
+      this.syncPlannerTabForPage(key);
+      this.page = key;
+      this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
+      if (this.isLoggedIn) this.runPageLoaders(key);
+    },
+
+    updateRoute(key, replace = false){
+      const nextUrl = this.routeUrl(key);
+      const current = window.location.pathname + window.location.search + window.location.hash;
+      if (current === nextUrl) return;
+      const method = replace ? 'replaceState' : 'pushState';
+      window.history[method]({ page:key }, '', nextUrl);
+    },
+
+    runPageLoaders(key = this.page){
+      if (key === 'users-list') this.loadUsers(this.userPagination.page || 1);
+      if (key === 'users-login') this.loadLoginAudit();
+      if (key === 'users-audit') this.loadUserAudit();
+      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
+      if (key === 'planner-resources') this.loadAccounts();
+      if (key === 'planner-topics' || key === 'planner-prompt-matrix' || key === 'planner-query-pool') this.loadTopicPlanConfig();
+    },
+
     currentNav(){
       for (const g of this.nav) for (const i of g.items) if (i.key===this.page) return i;
       return this.nav[0].items[0];
@@ -7223,56 +7433,6 @@ function adminApp() {
       return status || '未知';
     },
 
-    selectedTopicPlanBrands(){
-      return this.topicPlanBrands.filter(b => b.selected);
-    },
-
-    filteredTopicPlanBrands(){
-      const q = this.topicPlanBrandQuery.trim().toLowerCase();
-      if (!q) return this.topicPlanBrands;
-      return this.topicPlanBrands.filter(b =>
-        b.name.toLowerCase().includes(q) ||
-        b.category.toLowerCase().includes(q) ||
-        b.id.toLowerCase().includes(q)
-      );
-    },
-
-    setTopicPlanBrands(selected){
-      const visible = new Set(this.filteredTopicPlanBrands().map(b => b.id));
-      this.topicPlanBrands.forEach(b => {
-        if (visible.has(b.id)) b.selected = selected;
-      });
-    },
-
-    openTopicPlanPanel(panel){
-      this.topicPlanActionPanel = panel;
-      this.$nextTick(()=>lucide.createIcons());
-    },
-
-    topicPlanPanelTitle(){
-      if (this.topicPlanActionPanel === 'coverage') return '覆盖度检查';
-      if (this.topicPlanActionPanel === 'generate') return '生成 Topic';
-      if (this.topicPlanActionPanel === 'pending') return '待处理候选';
-      return '';
-    },
-
-    startTopicPlanGenerate(){
-      this.topicPlanGenerateStarted = true;
-      this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map(step => {
-        if (step.name === '候选生成') return { ...step, status:'done', label:'完成' };
-        if (step.name === '进入审核') return { ...step, status:'done', label:'完成' };
-        return step;
-      });
-      this.toast('Topic 生成任务已完成');
-    },
-
-    reviewTopicCandidate(item, status){
-      this.topicPlanPendingItems = this.topicPlanPendingItems.filter(i => i.id !== item.id);
-      const pendingGate = this.topicPlanQualityGates.find(g => g.title === '待审核');
-      if (pendingGate) pendingGate.value = String(this.topicPlanPendingItems.length);
-      this.toast(status === 'approved' ? '已通过候选 Topic' : '已拒绝候选 Topic');
-    },
-
     topicCountRaw(){
       const brandCount = this.selectedTopicPlanBrands().length;
       const maxPerBrand = Number(this.topicPlanConfig.maxPerBrand) || 0;
@@ -7296,20 +7456,79 @@ function adminApp() {
       this.topicPlanCoverageRows = [];
       this.topicPlanCoverageGaps = [];
       this.topicPlanPendingItems = [];
+      this.topicsList = [];
+      this.selectedTopic = null;
+      this.topicPlanSelectedTopicIds = {};
+      this.topicPlanSelectedCandidateIds = {};
+      this.topicPlanCandidateQuery = '';
+      this.topicPlanCandidateStatus = 'pending';
+      this.topicPlanCandidateBrandId = '';
+      this.topicPlanTopicQuery = '';
+      this.topicPlanTopicDimension = '';
+      this.topicPlanTopicIndustry = '';
+      this.topicPlanTopicBrandId = '';
+      this.topicPlanTopicStatus = 'all';
       this.topicPlanStats = { coverageLabel:'0%', pendingCandidates:0, lowConfidence:0, noPromptTopics:0 };
+      this.topicPlanTopicStats = {
+        totalTopics: 0,
+        visibleTopics: 0,
+        promptCoverageLabel: '0%',
+        promptCoverageMeta: '0 / 0',
+        categoryShareLabel: '0%',
+        llmGeneratedLabel: '0%',
+      };
       this.updateTopicPlanGates();
     },
 
     topicPlanHeaderText(){
-      return 'Selected ' + this.selectedTopicPlanBrands().length
-        + ' brands · Estimated ' + this.estimatedTopicCount()
-        + ' topics · Coverage ' + (this.topicPlanStats.coverageLabel || '0%');
+      return '按品牌范围检查覆盖缺口，候选生成后进入待审核';
     },
 
     topicPlanBrandInScope(brand){
       const industryId = this.topicPlanConfig.industryId || '';
       if (industryId && brand.industry_id !== industryId) return false;
       return true;
+    },
+
+    topicPlanBrandMeta(brand){
+      const industry = brand.industry || brand.industry_name || brand.industry_id || '';
+      const topicCount = Number(brand.topic_count || 0);
+      const parts = [];
+      if (industry) parts.push(industry);
+      parts.push(topicCount.toLocaleString() + ' Topic');
+      return parts.join(' · ');
+    },
+
+    topicPlanDimensionLabel(value){
+      return {
+        brand: '品牌认知',
+        product: '产品选择',
+        category: '品类比较',
+        scenario: '使用场景',
+        question: '用户问题',
+      }[String(value || '').toLowerCase()] || value || '未分类';
+    },
+
+    topicPlanSelectedBrandSummary(){
+      const names = this.selectedTopicPlanBrands().map(b => b.name);
+      if (names.length === 0) return '未选择品牌';
+      const shown = names.slice(0, 4).join('、');
+      return names.length > 4 ? shown + ' 等 ' + names.length + ' 个品牌' : shown;
+    },
+
+    focusTopicPlanSection(section){
+      const refs = {
+        coverage: this.$refs.topicPlanCoverage,
+        pending: this.$refs.topicPlanPending,
+        candidates: this.$refs.topicPlanCandidatesForm,
+      };
+      if (section === 'coverage') this.loadTopicPlanCoverage();
+      if (section === 'pending') this.loadTopicPlanCandidates();
+      this.$nextTick(() => {
+        const target = refs[section];
+        if (target && target.scrollIntoView) target.scrollIntoView({ behavior:'smooth', block:'start' });
+        lucide.createIcons();
+      });
     },
 
     selectedTopicPlanBrands(){
@@ -7328,12 +7547,100 @@ function adminApp() {
       });
     },
 
+    topicPlanTopicIndustryOptions(){
+      const byId = new Map();
+      this.selectedTopicPlanBrands().forEach(brand => {
+        const id = String(brand.industry_id || brand.industry || '').trim();
+        if (!id) return;
+        byId.set(id, { id, name: brand.industry || id });
+      });
+      return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+    },
+
+    topicPlanTopicBrandOptions(){
+      const industry = this.topicPlanTopicIndustry || '';
+      return this.selectedTopicPlanBrands()
+        .filter(brand => !industry || String(brand.industry_id || brand.industry || '') === industry)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
+    },
+
+    topicPlanTopicBrandName(id){
+      const brand = this.topicPlanBrands.find(item => String(item.id) === String(id));
+      return brand ? brand.name : '';
+    },
+
+    topicPlanTopicStatusLabel(status){
+      return {
+        active: '已启用',
+        draft: '草稿',
+        archived: '已归档',
+        all: '全部状态',
+      }[String(status || '').toLowerCase()] || status || '';
+    },
+
+    topicPlanTopicBrandIds(){
+      if (this.topicPlanTopicBrandId) {
+        const brand = this.topicPlanTopicBrandOptions().find(item => String(item.id) === String(this.topicPlanTopicBrandId));
+        return brand ? [brand.id] : [];
+      }
+      return this.topicPlanTopicBrandOptions().map(brand => brand.id);
+    },
+
+    topicPlanTopicBrandIdsParam(){
+      return this.topicPlanTopicBrandIds().join(',');
+    },
+
+    syncTopicPlanTopicFilters(){
+      const industryOptions = new Set(this.topicPlanTopicIndustryOptions().map(item => item.id));
+      if (this.topicPlanTopicIndustry && !industryOptions.has(this.topicPlanTopicIndustry)) {
+        this.topicPlanTopicIndustry = '';
+      }
+      const brandOptions = new Set(this.topicPlanTopicBrandOptions().map(item => String(item.id)));
+      if (this.topicPlanTopicBrandId && !brandOptions.has(String(this.topicPlanTopicBrandId))) {
+        this.topicPlanTopicBrandId = '';
+      }
+    },
+
+    onTopicPlanTopicFilterChanged(changed){
+      if (changed === 'industry') this.topicPlanTopicBrandId = '';
+      this.syncTopicPlanTopicFilters();
+      this.selectedTopic = null;
+      this.topicPlanSelectedTopicIds = {};
+      this.loadTopicPlanTopics();
+    },
+
+    resetTopicPlanTopicFilters(){
+      this.topicPlanTopicQuery = '';
+      this.topicPlanTopicDimension = '';
+      this.topicPlanTopicIndustry = '';
+      this.topicPlanTopicBrandId = '';
+      this.topicPlanTopicStatus = 'all';
+      this.selectedTopic = null;
+      this.topicPlanSelectedTopicIds = {};
+      this.loadTopicPlanTopics();
+    },
+
+    topicPlanTopicFilterSummary(){
+      const brandCount = this.topicPlanTopicBrandIds().length;
+      const topicCount = Number(this.topicPlanTopicStats.visibleTopics || this.topicsList.length || 0).toLocaleString();
+      const filters = [];
+      if (this.topicPlanTopicDimension) filters.push(this.topicPlanDimensionLabel(this.topicPlanTopicDimension));
+      if (this.topicPlanTopicIndustry) {
+        const industry = this.topicPlanTopicIndustryOptions().find(item => item.id === this.topicPlanTopicIndustry);
+        filters.push(industry ? industry.name : this.topicPlanTopicIndustry);
+      }
+      if (this.topicPlanTopicBrandId) filters.push(this.topicPlanTopicBrandName(this.topicPlanTopicBrandId));
+      if (this.topicPlanTopicStatus && this.topicPlanTopicStatus !== 'all') filters.push(this.topicPlanTopicStatusLabel(this.topicPlanTopicStatus));
+      if (this.topicPlanTopicQuery.trim()) filters.push('关键词');
+      return `${brandCount} 个品牌 · ${topicCount} 个 Topic${filters.length ? ' · ' + filters.join(' / ') : ''}`;
+    },
+
     setTopicPlanBrands(selected){
       const visible = new Set(this.filteredTopicPlanBrands().map(b => b.id));
       this.topicPlanBrands.forEach(b => {
         if (visible.has(b.id)) b.selected = selected;
       });
-      this.loadTopicPlanCoverage();
+      this.onTopicPlanBrandSelectionChanged();
     },
 
     updateTopicPlanGates(summary = null){
@@ -7393,6 +7700,7 @@ function adminApp() {
         this.updateTopicPlanGates(body.summary || {});
         await this.loadTopicPlanCoverage();
         await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanTopics();
       } catch (e) {
         this.resetTopicPlanState();
         this.topicPlanError = e.message || 'Topic Plan config failed';
@@ -7434,16 +7742,23 @@ function adminApp() {
       this.topicPlanCandidatesLoading = true;
       this.topicPlanCandidatesError = '';
       try {
-        const qp = new URLSearchParams({ status:'pending', limit:'100' });
-        const brandIds = this.topicPlanBrandIdsParam();
+        this.syncTopicPlanCandidateFilters();
+        const qp = new URLSearchParams({ status:this.topicPlanCandidateStatus || 'pending', limit:'500' });
+        const brandIds = this.topicPlanCandidateBrandIdsParam();
         if (brandIds) qp.set('brand_ids', brandIds);
+        if (this.topicPlanCandidateQuery.trim()) qp.set('q', this.topicPlanCandidateQuery.trim());
         const res = await fetch(API_BASE + '/admin/topic-plan/candidates?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
         this.topicPlanPendingItems = body.rows || [];
+        const visibleIds = new Set(this.topicPlanPendingItems.map(item => String(item.id)));
+        this.topicPlanSelectedCandidateIds = Object.fromEntries(
+          Object.entries(this.topicPlanSelectedCandidateIds).filter(([id, selected]) => selected && visibleIds.has(id))
+        );
         this.updateTopicPlanGates(body.summary || {});
       } catch (e) {
         this.topicPlanPendingItems = [];
+        this.topicPlanSelectedCandidateIds = {};
         this.topicPlanCandidatesError = e.message || 'Candidate load failed';
       } finally {
         this.topicPlanCandidatesLoading = false;
@@ -7451,17 +7766,306 @@ function adminApp() {
       }
     },
 
-    onTopicPlanScopeChanged(){
-      this.loadTopicPlanCoverage();
+    topicPlanCandidateBrandOptions(){
+      return this.selectedTopicPlanBrands()
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
+    },
+
+    syncTopicPlanCandidateFilters(){
+      const options = new Set(this.topicPlanCandidateBrandOptions().map(item => String(item.id)));
+      if (this.topicPlanCandidateBrandId && !options.has(String(this.topicPlanCandidateBrandId))) {
+        this.topicPlanCandidateBrandId = '';
+      }
+    },
+
+    topicPlanCandidateBrandIds(){
+      if (this.topicPlanCandidateBrandId) return [this.topicPlanCandidateBrandId];
+      return this.topicPlanCandidateBrandOptions().map(brand => brand.id);
+    },
+
+    topicPlanCandidateBrandIdsParam(){
+      return this.topicPlanCandidateBrandIds().join(',');
+    },
+
+    onTopicPlanCandidateFilterChanged(){
+      this.topicPlanSelectedCandidateIds = {};
       this.loadTopicPlanCandidates();
     },
 
-    openTopicPlanPanel(panel){
-      this.topicPlanActionPanel = panel;
-      if (panel === 'coverage') this.loadTopicPlanCoverage();
-      if (panel === 'pending') this.loadTopicPlanCandidates();
-      if (panel === 'generate' && this.topicPlanCoverageRows.length === 0) this.loadTopicPlanCoverage();
-      this.$nextTick(()=>lucide.createIcons());
+    resetTopicPlanCandidateFilters(){
+      this.topicPlanCandidateQuery = '';
+      this.topicPlanCandidateStatus = 'pending';
+      this.topicPlanCandidateBrandId = '';
+      this.topicPlanSelectedCandidateIds = {};
+      this.loadTopicPlanCandidates();
+    },
+
+    topicPlanCandidateStatusLabel(status){
+      return {
+        pending: '待处理',
+        approved: '已通过',
+        rejected: '已拒绝',
+        all: '全部状态',
+      }[String(status || '').toLowerCase()] || status || '';
+    },
+
+    filteredTopicPlanCandidates(){
+      const q = this.topicPlanCandidateQuery.trim().toLowerCase();
+      if (!q) return this.topicPlanPendingItems;
+      return this.topicPlanPendingItems.filter(item => {
+        return String(item.title || '').toLowerCase().includes(q)
+          || String(item.brand || '').toLowerCase().includes(q)
+          || String(item.coverage_gap || '').toLowerCase().includes(q)
+          || String(item.reason || '').toLowerCase().includes(q)
+          || String(item.id || '').toLowerCase().includes(q);
+      });
+    },
+
+    selectableTopicPlanCandidates(){
+      return this.filteredTopicPlanCandidates().filter(item => item.status === 'pending');
+    },
+
+    selectedTopicPlanCandidateIds(){
+      return Object.keys(this.topicPlanSelectedCandidateIds || {}).filter(id => this.topicPlanSelectedCandidateIds[id]);
+    },
+
+    isTopicPlanCandidateSelected(item){
+      return !!this.topicPlanSelectedCandidateIds[String(item.id)];
+    },
+
+    toggleTopicPlanCandidate(item){
+      if (!item || item.status !== 'pending') return;
+      const id = String(item.id);
+      const next = { ...this.topicPlanSelectedCandidateIds };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      this.topicPlanSelectedCandidateIds = next;
+    },
+
+    allTopicPlanCandidatesSelected(){
+      const ids = this.selectableTopicPlanCandidates().map(item => String(item.id));
+      return ids.length > 0 && ids.every(id => this.topicPlanSelectedCandidateIds[id]);
+    },
+
+    toggleAllTopicPlanCandidates(){
+      const ids = this.selectableTopicPlanCandidates().map(item => String(item.id));
+      if (ids.length === 0) return;
+      const allSelected = ids.every(id => this.topicPlanSelectedCandidateIds[id]);
+      const next = { ...this.topicPlanSelectedCandidateIds };
+      if (allSelected) ids.forEach(id => { delete next[id]; });
+      else ids.forEach(id => { next[id] = true; });
+      this.topicPlanSelectedCandidateIds = next;
+    },
+
+    topicPlanCandidateTableSummary(){
+      const visible = this.filteredTopicPlanCandidates().length;
+      const selected = this.selectedTopicPlanCandidateIds().length;
+      return visible + ' 个候选 · 已选 ' + selected + ' 个';
+    },
+
+    async loadTopicPlanTopics(){
+      if (!this.isLoggedIn) return;
+      this.syncTopicPlanTopicFilters();
+      const selectedBrands = this.selectedTopicPlanBrands();
+      const tableBrandIds = this.topicPlanTopicBrandIds();
+      if (selectedBrands.length === 0 || tableBrandIds.length === 0) {
+        this.topicsList = [];
+        this.selectedTopic = null;
+        this.topicPlanSelectedTopicIds = {};
+        this.topicPlanTopicStats = {
+          totalTopics: 0,
+          visibleTopics: 0,
+          promptCoverageLabel: '0%',
+          promptCoverageMeta: '0 / 0',
+          categoryShareLabel: '0%',
+          llmGeneratedLabel: '0%',
+        };
+        return;
+      }
+      this.topicPlanTopicsLoading = true;
+      this.topicPlanTopicsError = '';
+      try {
+        const qp = new URLSearchParams({ limit:'200' });
+        const brandIds = this.topicPlanTopicBrandIdsParam();
+        if (this.topicPlanTopicIndustry) qp.set('industry_id', this.topicPlanTopicIndustry);
+        if (this.topicPlanConfig.categoryId) qp.set('category_id', this.topicPlanConfig.categoryId);
+        if (brandIds) qp.set('brand_ids', brandIds);
+        if (this.topicPlanTopicDimension) qp.set('dimension', this.topicPlanTopicDimension);
+        qp.set('status', this.topicPlanTopicStatus || 'all');
+        if (this.topicPlanTopicQuery.trim()) qp.set('q', this.topicPlanTopicQuery.trim());
+        const res = await fetch(API_BASE + '/admin/topic-plan/topics?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic load failed');
+        this.topicsList = body.rows || [];
+        const visibleIds = new Set(this.topicsList.map(t => this.topicPlanTopicKey(t)));
+        this.topicPlanSelectedTopicIds = Object.fromEntries(
+          Object.entries(this.topicPlanSelectedTopicIds).filter(([id, selected]) => selected && visibleIds.has(id))
+        );
+        this.topicPlanTopicStats = {
+          ...this.topicPlanTopicStats,
+          ...(body.summary || {}),
+        };
+        if (this.selectedTopic && !this.topicsList.some(t => t.id === this.selectedTopic.id)) {
+          this.selectedTopic = null;
+        }
+      } catch (e) {
+        this.topicsList = [];
+        this.selectedTopic = null;
+        this.topicPlanSelectedTopicIds = {};
+        this.topicPlanTopicsError = e.message || 'Topic load failed';
+      } finally {
+        this.topicPlanTopicsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    topicPlanTopicKey(topic){
+      const rawId = topic && (topic.raw_id ?? topic.id);
+      return String(rawId || '').replace(/^T-/i, '');
+    },
+
+    selectedTopicPlanTopicKeys(){
+      return Object.keys(this.topicPlanSelectedTopicIds || {}).filter(id => this.topicPlanSelectedTopicIds[id]);
+    },
+
+    isTopicPlanTopicSelected(topic){
+      return !!this.topicPlanSelectedTopicIds[this.topicPlanTopicKey(topic)];
+    },
+
+    toggleTopicPlanTopic(topic){
+      const id = this.topicPlanTopicKey(topic);
+      if (!id) return;
+      this.topicPlanSelectedTopicIds = {
+        ...this.topicPlanSelectedTopicIds,
+        [id]: !this.topicPlanSelectedTopicIds[id],
+      };
+      if (!this.topicPlanSelectedTopicIds[id]) {
+        const next = { ...this.topicPlanSelectedTopicIds };
+        delete next[id];
+        this.topicPlanSelectedTopicIds = next;
+      }
+    },
+
+    allTopicPlanTopicsSelected(){
+      const ids = this.topicsList.map(t => this.topicPlanTopicKey(t)).filter(Boolean);
+      return ids.length > 0 && ids.every(id => this.topicPlanSelectedTopicIds[id]);
+    },
+
+    toggleAllTopicPlanTopics(){
+      const ids = this.topicsList.map(t => this.topicPlanTopicKey(t)).filter(Boolean);
+      if (ids.length === 0) return;
+      const allSelected = ids.every(id => this.topicPlanSelectedTopicIds[id]);
+      if (allSelected) {
+        const next = { ...this.topicPlanSelectedTopicIds };
+        ids.forEach(id => { delete next[id]; });
+        this.topicPlanSelectedTopicIds = next;
+      } else {
+        const next = { ...this.topicPlanSelectedTopicIds };
+        ids.forEach(id => { next[id] = true; });
+        this.topicPlanSelectedTopicIds = next;
+      }
+    },
+
+    topicPlanDeleteBlockedMessage(blocked){
+      const first = (blocked || [])[0];
+      if (!first) return '';
+      return `有 ${blocked.length} 个 Topic 已关联 Prompt/Query，暂不能删除`;
+    },
+
+    async deleteTopicPlanTopic(topic){
+      const id = this.topicPlanTopicKey(topic);
+      if (!id) return;
+      if (!window.confirm('确定删除这个 Topic？此操作不可撤销。')) return;
+      this.topicPlanDeleting = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/topics/' + encodeURIComponent(id), {
+          method:'DELETE',
+          credentials:'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          const blockedMessage = this.topicPlanDeleteBlockedMessage(body.blocked);
+          throw new Error(blockedMessage || body.message || body.error || 'Topic delete failed');
+        }
+        if (this.selectedTopic && this.topicPlanTopicKey(this.selectedTopic) === id) this.selectedTopic = null;
+        const next = { ...this.topicPlanSelectedTopicIds };
+        delete next[id];
+        this.topicPlanSelectedTopicIds = next;
+        await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanTopics();
+        this.toast('Topic 已删除');
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
+      } finally {
+        this.topicPlanDeleting = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async deleteSelectedTopicPlanTopics(){
+      const ids = this.selectedTopicPlanTopicKeys();
+      if (ids.length === 0) return;
+      if (!window.confirm('确定删除选中的 ' + ids.length + ' 个 Topic？此操作不可撤销。')) return;
+      this.topicPlanDeleting = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/topics/bulk-delete', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ topic_ids: ids }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          const blockedMessage = this.topicPlanDeleteBlockedMessage(body.blocked);
+          throw new Error(blockedMessage || body.message || body.error || 'Bulk delete failed');
+        }
+        this.topicPlanSelectedTopicIds = {};
+        if (this.selectedTopic && ids.includes(this.topicPlanTopicKey(this.selectedTopic))) this.selectedTopic = null;
+        await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanTopics();
+        const summary = body.summary || {};
+        const blocked = Number(summary.blocked_count || 0);
+        this.toast('已删除 ' + (summary.deleted_count || 0) + ' 个 Topic' + (blocked ? '，' + blocked + ' 个因有关联未删除' : ''));
+      } catch (e) {
+        this.toast('批量删除失败: ' + (e.message || e));
+      } finally {
+        this.topicPlanDeleting = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    onTopicPlanBrandSelectionChanged(){
+      this.selectedTopic = null;
+      this.topicPlanSelectedTopicIds = {};
+      this.topicPlanSelectedCandidateIds = {};
+      this.syncTopicPlanTopicFilters();
+      this.syncTopicPlanCandidateFilters();
+      this.loadTopicPlanCoverage();
+      this.loadTopicPlanCandidates();
+      this.loadTopicPlanTopics();
+    },
+
+    onTopicPlanScopeChanged(){
+      this.selectedTopic = null;
+      this.topicPlanSelectedTopicIds = {};
+      this.topicPlanSelectedCandidateIds = {};
+      this.topicPlanTopicIndustry = '';
+      this.topicPlanTopicBrandId = '';
+      this.topicPlanCandidateBrandId = '';
+      this.loadTopicPlanCoverage();
+      this.loadTopicPlanCandidates();
+      this.loadTopicPlanTopics();
+    },
+
+    onTopicPlanGenerationConfigChanged(){
+      const maxPerBrand = Number(this.topicPlanConfig.maxPerBrand) || 10;
+      const maxTopics = Number(this.topicPlanConfig.maxTopics) || maxPerBrand;
+      this.topicPlanConfig.maxPerBrand = String(Math.max(1, Math.min(maxPerBrand, 200)));
+      this.topicPlanConfig.maxTopics = String(Math.max(1, Math.min(maxTopics, 2000)));
+      this.loadTopicPlanCoverage();
     },
 
     async startTopicPlanGenerate(){
@@ -7473,11 +8077,12 @@ function adminApp() {
       this.topicPlanGenerateStarted = true;
       this.topicPlanGenerateLoading = true;
       this.topicPlanGenerateError = '';
-      this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => ({
-        ...step,
-        status: index < 2 ? 'done' : (index === 2 ? 'running' : 'idle'),
-        label: index < 2 ? '完成' : (index === 2 ? '运行中' : '等待'),
-      }));
+      this.topicPlanGenerateSteps = [
+        { name:'配置检查', status:'done', label:'完成', value:this.selectedTopicPlanBrands().length + ' 个品牌' },
+        { name:'缺口读取', status:'done', label:'完成', value:this.topicPlanCoverageGaps.length + ' 类缺口' },
+        { name:'候选生成', status:'running', label:'运行中', value:'+' + this.estimatedTopicCount() },
+        { name:'进入审核', status:'idle', label:'等待', value:'0' },
+      ];
       try {
         const res = await fetch(API_BASE + '/admin/topic-plan/generate', {
           method:'POST',
@@ -7501,8 +8106,11 @@ function adminApp() {
           if (index === 3) return { ...step, status:'done', label:'完成', value:String(generated) };
           return step;
         });
+        this.topicPlanCandidateStatus = 'pending';
+        this.topicPlanSelectedCandidateIds = {};
         await this.loadTopicPlanCandidates();
         await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanTopics();
         this.toast('Topic 生成任务已完成');
       } catch (e) {
         this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => (
@@ -7517,6 +8125,8 @@ function adminApp() {
     },
 
     async reviewTopicCandidate(item, status){
+      if (this.topicPlanCandidateReviewing) return;
+      this.topicPlanCandidateReviewing = true;
       try {
         const res = await fetch(API_BASE + '/admin/topic-plan/candidates/' + encodeURIComponent(item.id) + '/review', {
           method:'POST',
@@ -7527,11 +8137,54 @@ function adminApp() {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Review failed');
         this.topicPlanPendingItems = this.topicPlanPendingItems.filter(i => i.id !== item.id);
+        const next = { ...this.topicPlanSelectedCandidateIds };
+        delete next[String(item.id)];
+        this.topicPlanSelectedCandidateIds = next;
         await this.loadTopicPlanCandidates();
         await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanTopics();
         this.toast(status === 'approved' ? '已通过候选 Topic' : '已拒绝候选 Topic');
       } catch (e) {
         this.toast('审核失败: ' + (e.message || e));
+      } finally {
+        this.topicPlanCandidateReviewing = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async bulkReviewTopicCandidates(status){
+      const ids = this.selectedTopicPlanCandidateIds();
+      if (ids.length === 0 || this.topicPlanCandidateReviewing) return;
+      const label = status === 'approved' ? '通过' : '拒绝';
+      if (!window.confirm('确认批量' + label + '选中的 ' + ids.length + ' 个候选 Topic？')) return;
+      this.topicPlanCandidateReviewing = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/candidates/bulk-review', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            candidate_ids: ids,
+            status,
+            reason: 'topic_candidate_bulk_review',
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          const failed = body.summary && body.summary.failed_count ? '，失败 ' + body.summary.failed_count + ' 个' : '';
+          throw new Error((body.message || body.error || 'Bulk review failed') + failed);
+        }
+        this.topicPlanSelectedCandidateIds = {};
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanTopics();
+        const count = body.summary && body.summary.updated_count ? body.summary.updated_count : ids.length;
+        this.toast('已批量' + label + ' ' + count + ' 个候选 Topic');
+      } catch (e) {
+        this.toast('批量审核失败: ' + (e.message || e));
+      } finally {
+        this.topicPlanCandidateReviewing = false;
+        this.$nextTick(()=>lucide.createIcons());
       }
     },
 
@@ -7733,18 +8386,13 @@ function adminApp() {
       this.toast('Query 组装任务已完成');
     },
 
-    goto(key){
-      if (key === 'planner-topics') this.genTab = 'topic';
-      if (key === 'planner-prompt-matrix') this.genTab = 'prompt';
-      if (key === 'planner-query-pool') this.genTab = 'query';
-      this.page = key;
+    goto(key, options = {}){
+      const routeKey = this.normalizeRouteKey(key);
+      this.syncPlannerTabForPage(routeKey);
+      this.page = routeKey;
+      if (!options.skipRoute) this.updateRoute(routeKey, !!options.replace);
       this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-      if (key === 'users-list') this.loadUsers(this.userPagination.page || 1);
-      if (key === 'users-login') this.loadLoginAudit();
-      if (key === 'users-audit') this.loadUserAudit();
-      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
-      if (key === 'planner-resources') this.loadAccounts();
-      if (key === 'planner-topics' || key === 'planner-generation') this.loadTopicPlanConfig();
+      if (this.isLoggedIn) this.runPageLoaders(routeKey);
     },
 
     openUserDrawer(u){
@@ -7796,8 +8444,7 @@ function adminApp() {
         this.adminUser = body.admin || null;
         if (this.isLoggedIn) {
           this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-          if (this.page === 'users-list') this.loadUsers(1);
-          this.loadTopicPlanConfig();
+          this.runPageLoaders(this.page);
         }
       } catch (e) {
         this.isLoggedIn = false;
@@ -7824,8 +8471,7 @@ function adminApp() {
         this.isLoggedIn = true;
         this.loginPassword = '';
         this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-        if (this.page === 'users-list') this.loadUsers(1);
-        this.loadTopicPlanConfig();
+        this.runPageLoaders(this.page);
       } catch (e) {
         this.loginError = e.message || '登录失败';
       } finally {
@@ -8027,11 +8673,13 @@ function adminApp() {
     init() {
       this.resetTopicPlanState();
       this.seedPromptMatrixTopics();
+      this.applyRouteFromLocation();
       // palette shortcut
       window.addEventListener('keydown', (e) => {
         if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k') { e.preventDefault(); this.palette=true; }
         if (e.key==='Escape') { this.palette=false; this.userDrawer=null; this.brandDrawer=null; this.crDrawer=null; this.qaDrawer=null; this.attemptDrawer=null; this.debugDrawer=null; this.confirmAction=null; this.analyzerSelectedQuery=null; this.selectedTopic=null; }
       });
+      window.addEventListener('popstate', () => this.applyRouteFromLocation());
       this.$nextTick(()=>{ lucide.createIcons(); });
       this.checkAdminSession();
     },

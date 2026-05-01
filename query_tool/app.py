@@ -1101,7 +1101,293 @@ def _topic_plan_candidate_row(row):
     }
 
 
-def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, limit=100):
+def _topic_plan_dimension_label(dimension):
+    return {
+        "brand": "品牌",
+        "product": "产品",
+        "category": "品类",
+        "scenario": "场景",
+        "question": "问题",
+    }.get(dimension or "", dimension or "未分类")
+
+
+def _topic_plan_source_label(generated_by):
+    value = (generated_by or "").strip().lower()
+    if value == "topic_plan":
+        return "审核通过"
+    if value.startswith("seed"):
+        return "初始化"
+    return "已有 Topic"
+
+
+def _topic_plan_topics_summary(rows):
+    total = len(rows)
+    with_prompt = sum(1 for row in rows if row.get("promptCount", 0) > 0)
+    category_count = sum(1 for row in rows if row.get("dimension_key") == "category")
+    generated_count = sum(
+        1 for row in rows
+        if row.get("source") in {"初始化", "审核通过"}
+    )
+    prompt_rate = (with_prompt / total) if total else 0
+    category_rate = (category_count / total) if total else 0
+    generated_rate = (generated_count / total) if total else 0
+    return {
+        "totalTopics": total,
+        "visibleTopics": total,
+        "promptCoverageLabel": f"{round(prompt_rate * 100)}%",
+        "promptCoverageMeta": f"{with_prompt} / {total}",
+        "categoryShareLabel": f"{round(category_rate * 100)}%",
+        "llmGeneratedLabel": f"{round(generated_rate * 100)}%",
+    }
+
+
+def _topic_plan_topic_row(row):
+    item = dict(row)
+    dimension = _topic_plan_dimension(item.get("category"))
+    prompt_count = int(item.get("prompt_count") or 0)
+    query_count = int(item.get("query_count") or 0)
+    brand_name = item.get("brand_name") or f"Brand #{item.get('brand_id')}"
+    return {
+        "id": f"T-{item.get('id')}",
+        "raw_id": item.get("id"),
+        "title": item.get("text") or "",
+        "dimension": _topic_plan_dimension_label(dimension),
+        "dimension_key": dimension,
+        "industry": item.get("industry") or "Uncategorized",
+        "source": _topic_plan_source_label(item.get("generated_by")),
+        "status": item.get("status") or "active",
+        "promptCount": prompt_count,
+        "queryCount": query_count,
+        "brands": [brand_name],
+        "brand": brand_name,
+        "brand_id": item.get("brand_id"),
+        "createdAt": _isoformat(item.get("created_at")),
+        "confidence": 1.0,
+    }
+
+
+def _fetch_topic_plan_topics(
+    cur,
+    industry_id=None,
+    category_id=None,
+    brand_ids=None,
+    dimension=None,
+    status=None,
+    query=None,
+    limit=200,
+):
+    if not _table_exists(cur, "topics") or not _table_exists(cur, "brands"):
+        return [], _topic_plan_topics_summary([])
+
+    topic_cols = _table_columns(cur, "topics")
+    if not {"id", "brand_id", "text"}.issubset(topic_cols):
+        return [], _topic_plan_topics_summary([])
+
+    category_select = "t.category" if "category" in topic_cols else "NULL::text AS category"
+    generated_select = (
+        "t.generated_by" if "generated_by" in topic_cols else "NULL::text AS generated_by"
+    )
+    status_select = (
+        "COALESCE(t.status, 'active') AS status"
+        if "status" in topic_cols
+        else "'active'::text AS status"
+    )
+    created_select = (
+        "t.created_at" if "created_at" in topic_cols else "NULL::timestamp AS created_at"
+    )
+
+    prompt_join = "LEFT JOIN (SELECT NULL::int AS topic_id, 0::int AS prompt_count WHERE FALSE) pc ON pc.topic_id = t.id"
+    query_join = "LEFT JOIN (SELECT NULL::int AS topic_id, 0::int AS query_count WHERE FALSE) qc ON qc.topic_id = t.id"
+    if _table_exists(cur, "prompts") and {"id", "topic_id"}.issubset(_table_columns(cur, "prompts")):
+        prompt_join = """
+            LEFT JOIN (
+                SELECT topic_id, COUNT(*)::int AS prompt_count
+                FROM prompts
+                GROUP BY topic_id
+            ) pc ON pc.topic_id = t.id
+        """
+        if _table_exists(cur, "queries") and "prompt_id" in _table_columns(cur, "queries"):
+            query_join = """
+                LEFT JOIN (
+                    SELECT p.topic_id, COUNT(q.id)::int AS query_count
+                    FROM prompts p
+                    LEFT JOIN queries q ON q.prompt_id = p.id
+                    GROUP BY p.topic_id
+                ) qc ON qc.topic_id = t.id
+            """
+
+    where = ["1=1"]
+    params = []
+    if brand_ids:
+        where.append("t.brand_id = ANY(%s)")
+        params.append(brand_ids)
+    if industry_id:
+        where.append("b.industry = %s")
+        params.append(industry_id)
+    if category_id and "category" in topic_cols:
+        where.append("t.category = %s")
+        params.append(category_id)
+    if status and status != "all" and "status" in topic_cols:
+        where.append("COALESCE(t.status, 'active') = %s")
+        params.append(status)
+    if query:
+        like = f"%{query}%"
+        where.append("(t.text ILIKE %s OR b.name ILIKE %s OR ('T-' || t.id::text) ILIKE %s)")
+        params.extend([like, like, like])
+
+    cur.execute(
+        f"""
+        SELECT t.id, t.brand_id, t.text, {category_select}, {generated_select},
+               {status_select}, {created_select},
+               b.name AS brand_name,
+               COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry,
+               COALESCE(pc.prompt_count, 0) AS prompt_count,
+               COALESCE(qc.query_count, 0) AS query_count
+        FROM topics t
+        JOIN brands b ON b.id = t.brand_id
+        {prompt_join}
+        {query_join}
+        WHERE {" AND ".join(where)}
+        ORDER BY t.created_at DESC NULLS LAST, t.id DESC
+        LIMIT %s
+        """,
+        params + [limit],
+    )
+    rows = [_topic_plan_topic_row(row) for row in cur.fetchall()]
+    if dimension:
+        rows = [row for row in rows if row.get("dimension_key") == dimension]
+    return rows, _topic_plan_topics_summary(rows)
+
+
+def _parse_topic_plan_topic_id(value):
+    text = str(value or "").strip()
+    if text.upper().startswith("T-"):
+        text = text[2:]
+    if not text.isdigit():
+        raise ValueError("invalid_topic_id")
+    return int(text)
+
+
+def _parse_topic_plan_topic_ids(value):
+    if not isinstance(value, list):
+        raise ValueError("topic_ids_required")
+    topic_ids = []
+    for item in value:
+        topic_id = _parse_topic_plan_topic_id(item)
+        if topic_id not in topic_ids:
+            topic_ids.append(topic_id)
+    return topic_ids
+
+
+def _topic_plan_topic_dependency_counts(cur, topic_ids):
+    counts = {int(topic_id): {"prompt_count": 0, "query_count": 0} for topic_id in topic_ids}
+    if not topic_ids or not _table_exists(cur, "prompts"):
+        return counts
+    prompt_cols = _table_columns(cur, "prompts")
+    if not {"id", "topic_id"}.issubset(prompt_cols):
+        return counts
+    has_queries = _table_exists(cur, "queries") and "prompt_id" in _table_columns(cur, "queries")
+    query_count_expr = "COUNT(q.id)::int" if has_queries else "0::int"
+    query_join = "LEFT JOIN queries q ON q.prompt_id = p.id" if has_queries else ""
+    cur.execute(
+        f"""
+        SELECT p.topic_id,
+               COUNT(DISTINCT p.id)::int AS prompt_count,
+               {query_count_expr} AS query_count
+        FROM prompts p
+        {query_join}
+        WHERE p.topic_id = ANY(%s)
+        GROUP BY p.topic_id
+        """,
+        (topic_ids,),
+    )
+    for row in cur.fetchall():
+        topic_id = int(row["topic_id"])
+        counts[topic_id] = {
+            "prompt_count": int(row.get("prompt_count") or 0),
+            "query_count": int(row.get("query_count") or 0),
+        }
+    return counts
+
+
+def _delete_topic_plan_topics(cur, topic_ids):
+    if not topic_ids or not _table_exists(cur, "topics"):
+        return {"deleted": [], "blocked": [], "missing": topic_ids or []}
+
+    cur.execute(
+        """
+        SELECT t.id, t.brand_id, t.text, t.category, t.status,
+               b.name AS brand_name,
+               COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry
+        FROM topics t
+        LEFT JOIN brands b ON b.id = t.brand_id
+        WHERE t.id = ANY(%s)
+        ORDER BY t.id
+        """,
+        (topic_ids,),
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    found_ids = {int(row["id"]) for row in rows}
+    missing = [topic_id for topic_id in topic_ids if topic_id not in found_ids]
+    dependencies = _topic_plan_topic_dependency_counts(cur, list(found_ids))
+
+    blocked = []
+    deletable_ids = []
+    for row in rows:
+        topic_id = int(row["id"])
+        dep = dependencies.get(topic_id, {"prompt_count": 0, "query_count": 0})
+        if dep["prompt_count"] > 0 or dep["query_count"] > 0:
+            blocked.append(
+                {
+                    "id": f"T-{topic_id}",
+                    "raw_id": topic_id,
+                    "title": row.get("text"),
+                    "brand": row.get("brand_name"),
+                    "prompt_count": dep["prompt_count"],
+                    "query_count": dep["query_count"],
+                    "reason": "has_downstream_dependencies",
+                }
+            )
+        else:
+            deletable_ids.append(topic_id)
+
+    deleted = []
+    if deletable_ids:
+        if _table_exists(cur, "topic_candidates"):
+            cur.execute(
+                """
+                UPDATE topic_candidates
+                SET approved_topic_id = NULL,
+                    updated_at = NOW()
+                WHERE approved_topic_id = ANY(%s)
+                """,
+                (deletable_ids,),
+            )
+        cur.execute(
+            """
+            DELETE FROM topics
+            WHERE id = ANY(%s)
+            RETURNING id
+            """,
+            (deletable_ids,),
+        )
+        deleted_ids = {int(row["id"]) for row in cur.fetchall()}
+        deleted = [
+            {
+                "id": f"T-{int(row['id'])}",
+                "raw_id": int(row["id"]),
+                "title": row.get("text"),
+                "brand": row.get("brand_name"),
+                "industry": row.get("industry"),
+            }
+            for row in rows
+            if int(row["id"]) in deleted_ids
+        ]
+
+    return {"deleted": deleted, "blocked": blocked, "missing": missing}
+
+
+def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, query=None, limit=100):
     if not _table_exists(cur, "topic_candidates"):
         return []
     where = []
@@ -1112,6 +1398,12 @@ def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, limit=10
     if brand_ids:
         where.append("brand_id = ANY(%s)")
         params.append(brand_ids)
+    if query:
+        like = f"%{query}%"
+        where.append(
+            "(title ILIKE %s OR brand_name ILIKE %s OR reason ILIKE %s OR coverage_gap ILIKE %s OR id ILIKE %s)"
+        )
+        params.extend([like, like, like, like, like])
     where_clause = "WHERE " + " AND ".join(where) if where else ""
     cur.execute(
         f"""
@@ -1124,6 +1416,98 @@ def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, limit=10
         params + [limit],
     )
     return [_topic_plan_candidate_row(row) for row in cur.fetchall()]
+
+
+def _review_topic_plan_candidate(cur, candidate_id, requested_status, admin_id, reason=None):
+    cur.execute(
+        "SELECT * FROM topic_candidates WHERE id = %s FOR UPDATE",
+        (candidate_id,),
+    )
+    candidate = cur.fetchone()
+    if not candidate:
+        return None
+
+    new_status = transition_candidate_status(candidate["status"], requested_status)
+    approved_topic_id = candidate.get("approved_topic_id")
+    if new_status == "approved":
+        if not _table_exists(cur, "topics"):
+            raise TopicPlanLLMError("topics_table_missing", "Topics table is missing")
+        existing = _fetch_topic_rows_for_brands(cur, [int(candidate["brand_id"])])
+        duplicate = next(
+            (
+                row
+                for row in existing
+                if normalize_topic_title(row.get("text") or "")
+                == candidate.get("normalized_title")
+            ),
+            None,
+        )
+        if duplicate:
+            approved_topic_id = duplicate["id"]
+        else:
+            topic_cols = _table_columns(cur, "topics")
+            columns = ["brand_id", "text"]
+            values = [candidate["brand_id"], candidate["title"]]
+            placeholders = ["%s", "%s"]
+            if "category" in topic_cols:
+                columns.append("category")
+                values.append(candidate["dimension"])
+                placeholders.append("%s")
+            if "generated_by" in topic_cols:
+                columns.append("generated_by")
+                values.append("topic-plan")
+                placeholders.append("%s")
+            if "status" in topic_cols:
+                columns.append("status")
+                values.append("active")
+                placeholders.append("%s")
+            if "created_at" in topic_cols:
+                columns.append("created_at")
+                placeholders.append("NOW()")
+            cur.execute(
+                f"""
+                INSERT INTO topics ({", ".join(columns)})
+                VALUES ({", ".join(placeholders)})
+                RETURNING id
+                """,
+                values,
+            )
+            approved_topic_id = cur.fetchone()["id"]
+
+    cur.execute(
+        """
+        UPDATE topic_candidates
+        SET status = %s,
+            reviewed_by = %s,
+            reviewed_at = NOW(),
+            review_reason = %s,
+            approved_topic_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        RETURNING *
+        """,
+        (
+            new_status,
+            admin_id,
+            reason,
+            approved_topic_id,
+            candidate_id,
+        ),
+    )
+    updated = _topic_plan_candidate_row(cur.fetchone())
+    _insert_admin_audit_log(
+        cur,
+        operator_id=admin_id,
+        action="review_topic_candidate",
+        target_type="topic_candidate",
+        target_id=candidate_id,
+        diff={
+            "status": {"before": candidate["status"], "after": new_status},
+            "approved_topic_id": approved_topic_id,
+        },
+        reason=reason or "topic_candidate_review",
+    )
+    return updated
 
 
 def _topic_plan_error_response(error, status_code=400):
@@ -3680,7 +4064,8 @@ def index():
 
 
 @app.route('/admin')
-def admin_page():
+@app.route('/admin/<path:admin_path>')
+def admin_page(admin_path=None):
     """Preview admin console — prototype-based layout that merges the query
     tool's live data (执行追踪, 账号池, Debug HTML) into one view.
     The template lives in templates/admin.html; all APIs it consumes already
@@ -3881,9 +4266,10 @@ def admin_topic_plan_candidates_api():
         return jsonify({"success": False, "error": "invalid_status"}), 400
     try:
         brand_ids = _parse_int_list(request.args.get("brand_ids"))
-        limit = _clamp_int(request.args.get("limit"), 100, 1, 200)
+        limit = _clamp_int(request.args.get("limit"), 100, 1, 500)
     except ValueError:
         return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
+    query = (request.args.get("q") or "").strip() or None
 
     conn = get_db()
     try:
@@ -3892,6 +4278,7 @@ def admin_topic_plan_candidates_api():
                 cur,
                 status=status,
                 brand_ids=brand_ids,
+                query=query,
                 limit=limit,
             )
             pending = _topic_plan_pending_summary(cur, brand_ids)
@@ -3905,6 +4292,146 @@ def admin_topic_plan_candidates_api():
                 },
             }
         )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/topics')
+def admin_topic_plan_topics_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        brand_ids = _parse_int_list(request.args.get("brand_ids"))
+        limit = _clamp_int(request.args.get("limit"), 200, 1, 500)
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
+
+    industry_id = (request.args.get("industry_id") or "").strip() or None
+    category_id = (request.args.get("category_id") or "").strip() or None
+    dimension = (request.args.get("dimension") or "").strip().lower() or None
+    if dimension and dimension not in {"brand", "product", "category", "scenario", "question"}:
+        return jsonify({"success": False, "error": "invalid_dimension"}), 400
+    status = (request.args.get("status") or "all").strip().lower()
+    if status not in {"active", "draft", "archived", "all"}:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    query = (request.args.get("q") or "").strip() or None
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, summary = _fetch_topic_plan_topics(
+                cur,
+                industry_id=industry_id,
+                category_id=category_id,
+                brand_ids=brand_ids,
+                dimension=dimension,
+                status=status,
+                query=query,
+                limit=limit,
+            )
+        return jsonify({"success": True, "rows": rows, "summary": summary})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/topics/bulk-delete', methods=['POST'])
+def admin_topic_plan_topics_bulk_delete_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        topic_ids = _parse_topic_plan_topic_ids(payload.get("topic_ids"))
+    except ValueError as error:
+        return jsonify({"success": False, "error": str(error)}), 400
+    if not topic_ids:
+        return jsonify({"success": False, "error": "topic_ids_required"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            result = _delete_topic_plan_topics(cur, topic_ids)
+            if result["deleted"]:
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="delete_topic_plan_topics",
+                    target_type="topic",
+                    target_id="bulk",
+                    diff={
+                        "deleted": result["deleted"],
+                        "blocked": result["blocked"],
+                        "missing": result["missing"],
+                    },
+                    reason="topic_plan_delete",
+                )
+        conn.commit()
+        success = bool(result["deleted"]) or not result["blocked"]
+        status_code = 200 if success else 409
+        return jsonify(
+            {
+                "success": success,
+                "deleted": result["deleted"],
+                "blocked": result["blocked"],
+                "missing": result["missing"],
+                "summary": {
+                    "deleted_count": len(result["deleted"]),
+                    "blocked_count": len(result["blocked"]),
+                    "missing_count": len(result["missing"]),
+                },
+            }
+        ), status_code
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/topics/<topic_id>', methods=['DELETE'])
+def admin_topic_plan_topic_delete_api(topic_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        parsed_id = _parse_topic_plan_topic_id(topic_id)
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_topic_id"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            result = _delete_topic_plan_topics(cur, [parsed_id])
+            if result["missing"]:
+                conn.rollback()
+                return jsonify({"success": False, "error": "topic_not_found"}), 404
+            if result["blocked"]:
+                conn.rollback()
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "topic_has_downstream_dependencies",
+                        "blocked": result["blocked"],
+                    }
+                ), 409
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="delete_topic_plan_topic",
+                target_type="topic",
+                target_id=str(parsed_id),
+                diff={"deleted": result["deleted"]},
+                reason="topic_plan_delete",
+            )
+        conn.commit()
+        return jsonify({"success": True, "deleted": result["deleted"]})
     finally:
         conn.close()
 
@@ -4186,100 +4713,88 @@ def admin_topic_plan_candidate_review_api(candidate_id):
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT * FROM topic_candidates WHERE id = %s FOR UPDATE",
-                (candidate_id,),
-            )
-            candidate = cur.fetchone()
-            if not candidate:
-                return jsonify({"success": False, "error": "candidate_not_found"}), 404
-
             try:
-                new_status = transition_candidate_status(candidate["status"], requested_status)
+                updated = _review_topic_plan_candidate(
+                    cur,
+                    candidate_id,
+                    requested_status,
+                    admin["id"],
+                    reason=reason,
+                )
             except TopicPlanLLMError as error:
                 return _topic_plan_error_response(error, 400)
-
-            approved_topic_id = candidate.get("approved_topic_id")
-            if new_status == "approved":
-                if not _table_exists(cur, "topics"):
-                    return jsonify({"success": False, "error": "topics_table_missing"}), 503
-                existing = _fetch_topic_rows_for_brands(cur, [int(candidate["brand_id"])])
-                duplicate = next(
-                    (
-                        row
-                        for row in existing
-                        if normalize_topic_title(row.get("text") or "")
-                        == candidate.get("normalized_title")
-                    ),
-                    None,
-                )
-                if duplicate:
-                    approved_topic_id = duplicate["id"]
-                else:
-                    topic_cols = _table_columns(cur, "topics")
-                    columns = ["brand_id", "text"]
-                    values = [candidate["brand_id"], candidate["title"]]
-                    placeholders = ["%s", "%s"]
-                    if "category" in topic_cols:
-                        columns.append("category")
-                        values.append(candidate["dimension"])
-                        placeholders.append("%s")
-                    if "generated_by" in topic_cols:
-                        columns.append("generated_by")
-                        values.append("topic-plan")
-                        placeholders.append("%s")
-                    if "status" in topic_cols:
-                        columns.append("status")
-                        values.append("active")
-                        placeholders.append("%s")
-                    if "created_at" in topic_cols:
-                        columns.append("created_at")
-                        placeholders.append("NOW()")
-                    cur.execute(
-                        f"""
-                        INSERT INTO topics ({", ".join(columns)})
-                        VALUES ({", ".join(placeholders)})
-                        RETURNING id
-                        """,
-                        values,
-                    )
-                    approved_topic_id = cur.fetchone()["id"]
-
-            cur.execute(
-                """
-                UPDATE topic_candidates
-                SET status = %s,
-                    reviewed_by = %s,
-                    reviewed_at = NOW(),
-                    review_reason = %s,
-                    approved_topic_id = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING *
-                """,
-                (
-                    new_status,
-                    admin["id"],
-                    reason,
-                    approved_topic_id,
-                    candidate_id,
-                ),
-            )
-            updated = _topic_plan_candidate_row(cur.fetchone())
-            _insert_admin_audit_log(
-                cur,
-                operator_id=admin["id"],
-                action="review_topic_candidate",
-                target_type="topic_candidate",
-                target_id=candidate_id,
-                diff={
-                    "status": {"before": candidate["status"], "after": new_status},
-                    "approved_topic_id": approved_topic_id,
-                },
-                reason=reason or "topic_candidate_review",
-            )
+            if not updated:
+                return jsonify({"success": False, "error": "candidate_not_found"}), 404
         conn.commit()
         return jsonify({"success": True, "candidate": updated})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/candidates/bulk-review', methods=['POST'])
+def admin_topic_plan_candidates_bulk_review_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    requested_status = (payload.get("status") or "").strip().lower()
+    reason = (payload.get("reason") or "").strip() or None
+    candidate_ids = payload.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
+    candidate_ids = [str(item).strip() for item in candidate_ids if str(item).strip()]
+    if not candidate_ids:
+        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
+    if len(candidate_ids) > 200:
+        return jsonify({"success": False, "error": "too_many_candidates"}), 400
+
+    conn = get_db()
+    updated = []
+    missing = []
+    failed = []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for candidate_id in candidate_ids:
+                try:
+                    row = _review_topic_plan_candidate(
+                        cur,
+                        candidate_id,
+                        requested_status,
+                        admin["id"],
+                        reason=reason,
+                    )
+                    if row:
+                        updated.append(row)
+                    else:
+                        missing.append(candidate_id)
+                except TopicPlanLLMError as error:
+                    failed.append(
+                        {
+                            "id": candidate_id,
+                            "error": error.code,
+                            "message": error.message,
+                        }
+                    )
+        conn.commit()
+        return jsonify(
+            {
+                "success": len(failed) == 0,
+                "rows": updated,
+                "summary": {
+                    "updated_count": len(updated),
+                    "missing_count": len(missing),
+                    "failed_count": len(failed),
+                },
+                "missing": missing,
+                "failed": failed,
+            }
+        ), 200 if not failed else 409
     except Exception:
         conn.rollback()
         raise
