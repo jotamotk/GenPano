@@ -187,40 +187,63 @@ CREATE TABLE pipeline_global_pause (
 
 ## 1.2 生成管线 `/admin/pipeline/planner/generation`
 
-**目的**。Topic → Prompt → Query 三层生成的"生产进度 + 失败定位 + 手动触发"。
+**目的**。Topic → Prompt → Query 三层生成的"配置、数量把控、质量门禁、候选审核和手动触发"。本页面向运营操作者，不在主视图展示内部生成路径、run artifact、候选表名或研发调试字段；这些信息如需保留，应进入某次运行记录的 Debug 抽屉。
 
 **IA — 三层 Tab**:
 
 ### Tab 1: Topic 生成
 
-- Planner 运行历史列表（scope / 生成数 / 品类占比 / 来源分布 / 状态 / 时间）
-- 品类 vs 品牌 vs 产品 Topic 占比饼图（品类 ≥ 40% 合规指标）
-- "立即运行 Planner" 按钮（同 §1.1，跳转到同一 Modal）
+- **运行配置**: 选择 Industry / Category 后，直接选择本次要生成 Topic 的 Brand 列表；此处不出现 competitor scope，竞品只作为 KG 关系和下游分析维度。
+- **数量把控**: 每品牌 Topic 上限、总 Topic 上限、缺口优先级、超出上限策略。页面实时显示预计生成量。
+- **质量门禁**: 发布覆盖、待审核、低置信、无 Prompt。主页面用运营语言解释指标，不展示 SQL 字段或阈值表达式；精确字段口径进入 Debug 抽屉。
+- **按钮流程**:
+  - "覆盖度检查" → 页面内展开覆盖缺口面板，列出品牌、覆盖率、缺口类型和优先级。
+  - "生成 Topic" → 页面内展开生成任务面板，展示配置检查、缺口读取、候选生成、进入审核的状态。
+  - "查看待处理" → 页面内展开候选审核列表，可通过 / 拒绝单条 Topic。
+- **CTA 规则**: 主页面只保留一个主要"生成 Topic"入口；流程面板内的按钮只作为当前流程下一步。
+- **列表与详情**: Topic KPI、筛选、Topic 列表、审核详情保留在主工作台。
 
 ### Tab 2: Prompt 生成
 
-- 统计面板: 总 Prompt / 今日新增 / 失败 / Intent 分布 / 语言分布
-- 失败列表（可折叠）: Topic ID / 标题 / Intent / 语言 / 失败原因 / 重试按钮
-- 覆盖度检查: 缺 Prompt 的 Topic 数 + 缺某 Intent 的 Topic 数 → 点击跳 Prompt 模板
-- "生成 Prompt" 按钮 → Modal: scope(all/industry/topic) + intent 过滤 + 语言 → 后端 enqueue → 进度条
+- **矩阵配置**: 直接选择本次要展开 Prompt 的 Topic 集合，不能用小型 checkbox 卡片承载。Topic 选择器必须支持搜索、品牌筛选、覆盖状态筛选、分页、当前页选择、全部匹配选择、清空当前页、清空全部，并在页面上持续显示已选数量和已选集合摘要；后端实现时按服务端分页返回 Topic，不一次性加载全量。
+- **数量把控**: Intent 数、语言数、每 Topic 上限、总 Prompt 上限、超出上限策略。预计生成量按 `selected_topics × min(intent × language, per_topic_cap)` 计算。
+- **质量门禁**: 意图覆盖、模板状态、品牌纯净、相似重复。主页面只展示运营能理解的解释，例如"每个 Topic 至少 2 类意图"、"品类题不混入品牌名"；后台字段和相似度阈值不直接露出。
+- **按钮流程**:
+  - "缺口列表" → 页面内展开 Topic × Intent / Language 缺口表。
+  - "生成 Prompt" → 页面内展开生成任务面板，展示 Topic 校验、模板匹配、候选生成、进入审核。
+  - "审查候选" → 页面内展开候选 Prompt 审核表，可通过 / 拒绝。
+- **CTA 规则**: 主页面只保留一个主要"生成 Prompt"入口；统计/KPI 区不再重复放同名按钮。
+- **运营视图**: 总 Prompt、覆盖率、无 Prompt Topic、Intent 分布、语言分布、Prompt 内容列表保留。
 
 ### Tab 3: Query 组装
 
-- 统计面板: 总 Query / 今日新增 / 待执行 / 执行中 / 已完成 / 失败
-- Query 队列堆栈图（3 日滚动，按状态）
-- **Query 组装展示**: 展示 Prompt × Profile → Query 的组合逻辑，显示各 ProfileGroup 的 Query 分布
-- "组装 Query" 按钮 → Modal: scope(by_date/by_topic/by_industry) + ProfileGroup 选择 + 预估数量 & 成本 → 后端分批生成
-- Per-engine 暂停 / 恢复控制（3 个开关：ChatGPT / 豆包 / DeepSeek）
+- **组装配置**: 直接选择本次要入池的 Prompt 列表，支持搜索、全选、清空；配置项包含人群采样、引擎策略、预算上限、入队窗口、去重策略、执行优先级。
+- **数量把控**: 每 Prompt Profile 数、Engine 数、总 Query 上限、超出上限策略。预计组装量按 `selected_prompts × profiles_per_prompt × engine_count` 计算。
+- **预检状态**: 渲染成功、画像覆盖、引擎可用、成本上限。主页面用运营语言描述影响，不显示内部路由状态或字段名。
+- **按钮流程**:
+  - "预估成本" → 页面内展开按 Engine 的 Query 数、单价和成本预估。
+  - "组装 Query" → 页面内展开组装任务面板，展示 Prompt 校验、画像采样、Query 渲染、预检入池。
+  - "预检报告" → 页面内展开模板变量、重复 Query、账号水位、成本上限等检查结果。
+- **CTA 规则**: 主页面只保留一个主要"组装 Query"入口；统计/KPI 区不再重复放同名按钮。
+- **运营视图**: 总 Query、今日新增、待执行、执行中、已完成、失败、Query 列表和每引擎暂停 / 恢复控制保留。
 
 **数据模型**:
+Topic Plan 复用 §1.1 `planner_runs`，需记录 `industry_id`、`category_id`、`brand_ids`、`max_per_brand`、`max_topics`、`gap_priority`、`overflow_policy`、`topics_generated`、`pending_candidates`、`coverage_snapshot`。
+
 ```sql
 CREATE TABLE prompt_generation_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  scope enum('full','industry','topic') NOT NULL,
   industry_id UUID,
-  topic_id UUID,
+  category_id UUID,
+  topic_ids UUID[] NOT NULL,
+  intent_count INT NOT NULL DEFAULT 2,
+  language_count INT NOT NULL DEFAULT 2,
+  max_per_topic INT NOT NULL DEFAULT 4,
+  max_prompts INT NOT NULL DEFAULT 8000,
+  overflow_policy TEXT NOT NULL DEFAULT 'split',
   intent_filter TEXT[],
   language_filter TEXT[],
+  prompts_estimated INT DEFAULT 0,
   prompts_generated INT DEFAULT 0,
   prompts_failed INT DEFAULT 0,
   started_at TIMESTAMPTZ,
@@ -233,13 +256,19 @@ CREATE TABLE prompt_generation_runs (
 
 CREATE TABLE query_generation_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  scope enum('by_date','by_topic','by_industry') NOT NULL,
-  from_date DATE,
-  to_date DATE,
   industry_id UUID,
-  topic_id UUID,
+  category_id UUID,
+  prompt_ids UUID[] NOT NULL,
   profile_groups_selected TEXT[],
+  profiles_per_prompt INT NOT NULL DEFAULT 3,
+  engine_count INT NOT NULL DEFAULT 2,
+  engine_filter TEXT[],
+  max_queries INT NOT NULL DEFAULT 12000,
+  overflow_policy TEXT NOT NULL DEFAULT 'split',
+  queries_estimated INT DEFAULT 0,
   queries_assembled INT DEFAULT 0,
+  estimated_cost NUMERIC,
+  preflight_summary JSONB,
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
   status enum('pending','running','completed','failed') NOT NULL DEFAULT 'pending',
@@ -253,8 +282,10 @@ CREATE INDEX ON query_generation_runs (created_at DESC);
 
 **边界**:
 - 某 Intent 的 Prompt 生成失败率 > 20% → 自动标 warning
+- Prompt / Query 预计生成量超过上限 → 按 overflow_policy 自动拆批或进入审批
 - Query 组装预估 > 10000 → 后端自动分批（max 5000/batch）
 - Prompt 版本已 deactivated → 新 Query 不绑定
+- 主页面禁止展示 `*_run`、`*_candidates`、`*_release_set`、`rendered_queries` 等内部对象名；需要排障时从运行记录进入 Debug 抽屉
 
 ---
 

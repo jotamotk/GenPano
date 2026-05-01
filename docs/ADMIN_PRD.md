@@ -294,6 +294,8 @@ user_activity_stats  (user_id, last_login_at, login_count_30d, query_count_30d, 
 > **⚠️ §4.2 为摘要 (6 子页)。完整实现 (10 子页 · 含 Prompt 模板管理 / Response 质检 / Trace & Lineage / 变更审批 4 个延伸)、失败场景 F1-F10、以及新增 8 张数据表，见 [`ADMIN_PRD_B_PIPELINE.md`](./ADMIN_PRD_B_PIPELINE.md)。本摘要与深化文档出现冲突时，以深化文档为准。**
 >
 > **📌 Adapter 行为真相源**: 引擎健康 / 账号池 / 代理池 / 失败重试分组的底层数据模型、错误码定义、状态机、自动化动作的副作用边界, 全部以 [`docs/ADAPTER_CONTRACT.md`](./ADAPTER_CONTRACT.md) 为准。Admin 这层只是 **把 Adapter 已暴露的能力可视化** — 任何想新加的监控字段或告警规则, 必须先落在 ADAPTER_CONTRACT, 再接入 Admin 看板。
+>
+> **Planner 生成管线原则**: Topic / Prompt / Query 三层主页面必须面向运营操作者，提供明确的对象选择、数量上限、质量门禁和页面内操作流程；内部 run artifact、候选表名、release set 名称、字段表达式和生成路径只进入运行详情 / Debug 抽屉，不放在主工作台。每个页面只保留一个主 CTA，避免"生成"按钮重复出现。
 
 #### 4.2.1 Pipeline 全景 `/admin/pipeline/overview`
 

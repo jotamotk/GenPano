@@ -95,6 +95,7 @@
   }
 
   html, body { font-family: 'Nunito','Inter','Noto Sans SC',system-ui,sans-serif; background: var(--color-bg-page); color: var(--color-text-primary); }
+  [x-cloak] { display: none !important; }
 
   /* Scrollbar polish */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -156,6 +157,8 @@
 
   /* Health ring */
   .ring-track { stroke: #F2F4F7; }
+  .topic-plan-heading h3 + p + p { display: none; }
+  .topic-plan-api-select + select { display: none; }
 </style>
 </head>
 
@@ -217,9 +220,10 @@
           <input x-model="loginPassword" type="password" placeholder="••••••••••••"
                  class="w-full h-10 px-3 rounded-lg border border-gray-300 bg-white text-[14px] text-ink shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-colors" />
         </div>
-        <button @click="if(loginEmail && loginPassword){ isLoggedIn=true; loginError=''; $nextTick(()=>{ lucide.createIcons(); renderForPage(); }); } else { loginError='请输入邮箱和密码'; }"
-                class="w-full h-10 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white font-semibold text-[14px] shadow-md hover:shadow-lg transition-shadow">
-          登 录
+        <button @click="adminLogin()"
+                :disabled="loginLoading"
+                class="w-full h-10 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white font-semibold text-[14px] shadow-md hover:shadow-lg transition-shadow disabled:opacity-60">
+          <span x-text="loginLoading ? '登录中...' : '登 录'"></span>
         </button>
       </div>
 
@@ -273,12 +277,12 @@
 
     <!-- Operator chip -->
     <div class="flex items-center gap-2 pl-3 border-l border-b-card">
-      <div class="w-8 h-8 rounded-full bg-gradient-accent text-white flex items-center justify-center text-[12px] font-bold">FW</div>
+      <div class="w-8 h-8 rounded-full bg-gradient-accent text-white flex items-center justify-center text-[12px] font-bold" x-text="initials(adminUser && adminUser.email ? adminUser.email : 'Admin')"></div>
       <div class="leading-tight hidden md:block">
-        <div class="text-[13px] font-semibold text-ink">Frank W.</div>
-        <div class="text-[11px] text-ink-muted">super_admin</div>
+        <div class="text-[13px] font-semibold text-ink" x-text="adminUser && adminUser.email ? adminUser.email : 'Admin'"></div>
+        <div class="text-[11px] text-ink-muted" x-text="adminUser && adminUser.role ? adminUser.role : 'super_admin'"></div>
       </div>
-      <button @click="isLoggedIn=false; loginEmail=''; loginPassword=''; loginError='';"
+      <button @click="adminLogout()"
               class="ml-2 h-8 px-2.5 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors text-[12px]"
               title="登出">
         <i data-lucide="log-out" class="w-4 h-4"></i>
@@ -390,14 +394,14 @@
           <div class="grid grid-cols-3 gap-4">
 
             <!-- Planner 摘要 -->
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5 cursor-pointer card-lift" @click="goto('planner-scheduler')">
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5 cursor-pointer card-lift" @click="goto('planner-topics')">
               <div class="flex items-center justify-between mb-3">
                 <div class="text-[12px] font-semibold text-accent uppercase tracking-wider">Planner · 规划</div>
                 <i data-lucide="calendar-clock" class="w-4 h-4 text-accent/50"></i>
               </div>
               <div class="space-y-3">
                 <div>
-                  <div class="text-[11px] text-ink-muted mb-1">今日批次进度</div>
+                  <div class="text-[11px] text-ink-muted mb-1">Topic Plan 覆盖度</div>
                   <div class="flex items-center gap-3">
                     <div class="flex-1 h-2 rounded-pill bg-surface-page overflow-hidden">
                       <div class="h-full bg-accent rounded-pill" style="width:78%"></div>
@@ -675,34 +679,46 @@
           <!-- Filters -->
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4 flex items-center gap-3 flex-wrap">
             <div class="relative">
-              <input type="text" placeholder="搜索邮箱 / 用户 ID / 昵称"
+              <input type="text" x-model.debounce.350ms="userFilters.q" @input.debounce.350ms="loadUsers(1)" placeholder="搜索邮箱 / 姓名 / 公司"
                      class="h-9 pl-9 pr-3 rounded-input border border-b-default bg-white text-[13px] w-72 shadow-input focus:outline-none focus:shadow-focus-accent" />
               <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
             </div>
-            <select class="h-9 rounded-input border border-b-default bg-white text-[13px] px-2.5 shadow-input">
-              <option>全部状态</option><option>active</option><option>suspended</option><option>deleted</option>
+            <select x-model="userFilters.status" @change="loadUsers(1)" class="h-9 rounded-input border border-b-default bg-white text-[13px] px-2.5 shadow-input">
+              <option value="">全部状态</option><option value="active">active</option><option value="frozen">frozen</option><option value="deleted">deleted</option>
             </select>
-            <select class="h-9 rounded-input border border-b-default bg-white text-[13px] px-2.5 shadow-input">
-              <option>全部行业</option><option>美妆个护</option><option>奢侈品</option><option>食品饮料</option><option>服装时尚</option>
+            <select x-model="userFilters.activity" @change="loadUsers(1)" class="h-9 rounded-input border border-b-default bg-white text-[13px] px-2.5 shadow-input">
+              <option value="">全部活跃度</option><option value="hot">hot</option><option value="warm">warm</option><option value="cold">cold</option><option value="dormant">dormant</option>
             </select>
-            <div class="flex items-center gap-1.5 text-[12px] text-ink-muted ml-1">
-              <input type="checkbox" class="rounded" /> 仅 24h 注册
-            </div>
+            <input type="text" x-model.debounce.350ms="userFilters.industry" @input.debounce.350ms="loadUsers(1)" placeholder="行业筛选"
+                   class="h-9 px-3 rounded-input border border-b-default bg-white text-[13px] w-32 shadow-input focus:outline-none focus:shadow-focus-accent" />
+            <select x-model="userFilters.sort" @change="loadUsers(1)" class="h-9 rounded-input border border-b-default bg-white text-[13px] px-2.5 shadow-input">
+              <option value="created_at_desc">注册时间 ↓</option>
+              <option value="created_at_asc">注册时间 ↑</option>
+              <option value="last_login_at_desc">最后登录 ↓</option>
+              <option value="project_count_desc">Project 数 ↓</option>
+            </select>
             <div class="ml-auto flex items-center gap-2">
-              <button class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-body hover:bg-surface-page shadow-btn flex items-center gap-1.5">
-                <i data-lucide="download" class="w-3.5 h-3.5"></i> CSV
+              <button @click="loadUsers(userPagination.page)" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-body hover:bg-surface-page shadow-btn flex items-center gap-1.5">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 刷新
+              </button>
+              <button disabled title="CSV 导出后置：需要审计与 1000 行上限"
+                      class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-muted opacity-50 cursor-not-allowed shadow-btn flex items-center gap-1.5">
+                <i data-lucide="download" class="w-3.5 h-3.5"></i> CSV 后置
               </button>
             </div>
           </div>
 
           <!-- Table -->
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <template x-if="usersError">
+              <div class="px-4 py-3 border-b border-b-card bg-danger/5 text-danger text-[13px]" x-text="usersError"></div>
+            </template>
             <table class="t-admin-table w-full">
               <thead>
                 <tr>
-                  <th class="w-8"><input type="checkbox" class="rounded" /></th>
                   <th>用户</th>
                   <th>状态</th>
+                  <th>活跃度</th>
                   <th>行业</th>
                   <th>Projects</th>
                   <th>最近登录</th>
@@ -711,32 +727,49 @@
                 </tr>
               </thead>
               <tbody>
+                <template x-if="usersLoading">
+                  <tr>
+                    <td colspan="8" class="!py-10 text-center text-ink-muted">
+                      <span class="inline-flex items-center gap-2"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> 加载用户中...</span>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!usersLoading && !usersError && users.length===0">
+                  <tr>
+                    <td colspan="8" class="!py-10 text-center text-ink-muted">暂无用户数据</td>
+                  </tr>
+                </template>
                 <template x-for="u in users" :key="u.id">
                   <tr class="cursor-pointer" @click="openUserDrawer(u)">
-                    <td @click.stop><input type="checkbox" class="rounded" /></td>
                     <td>
                       <div class="flex items-center gap-2.5">
                         <div class="w-8 h-8 rounded-full bg-gradient-accent text-white flex items-center justify-center text-[11px] font-bold" x-text="u.initials"></div>
                         <div>
                           <div class="font-semibold text-ink text-[13.5px]" x-text="u.name"></div>
-                          <div class="text-[12px] text-ink-muted" x-text="u.email"></div>
+                          <div class="text-[12px] text-ink-muted">
+                            <span x-text="u.email"></span>
+                            <span x-show="u.company" x-text="' · ' + u.company"></span>
+                          </div>
                         </div>
                       </div>
                     </td>
                     <td>
                       <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[11px] font-semibold"
-                            :class="u.status==='active' ? 'bg-success/10 text-success' : u.status==='suspended' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'">
-                        <span class="dot" :class="u.status==='active' ? 'bg-success' : u.status==='suspended' ? 'bg-warning' : 'bg-ink-muted'"></span>
+                            :class="u.status==='active' ? 'bg-success/10 text-success' : u.status==='frozen' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'">
+                        <span class="dot" :class="u.status==='active' ? 'bg-success' : u.status==='frozen' ? 'bg-warning' : 'bg-ink-muted'"></span>
                         <span x-text="u.status"></span>
                       </span>
                     </td>
-                    <td class="text-ink-body" x-text="u.industry"></td>
-                    <td class="tabular-nums" x-text="u.projects"></td>
-                    <td class="text-ink-body-soft text-[12.5px]" x-text="u.lastLogin"></td>
-                    <td class="text-ink-body-soft text-[12.5px]" x-text="u.registered"></td>
+                    <td>
+                      <span class="inline-flex px-2 h-5 rounded-badge bg-surface-page text-[11px] font-semibold text-ink-body" x-text="u.activity_level"></span>
+                    </td>
+                    <td class="text-ink-body" x-text="u.industry || '—'"></td>
+                    <td class="tabular-nums" x-text="u.project_count"></td>
+                    <td class="text-ink-body-soft text-[12.5px]" x-text="formatDateTime(u.last_login_at)"></td>
+                    <td class="text-ink-body-soft text-[12.5px]" x-text="formatDate(u.created_at)"></td>
                     <td class="text-right" @click.stop>
-                      <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
-                        <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+                      <button @click="openUserDrawer(u)" class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="查看详情">
+                        <i data-lucide="panel-right-open" class="w-4 h-4"></i>
                       </button>
                     </td>
                   </tr>
@@ -745,17 +778,74 @@
             </table>
             <!-- Pagination -->
             <div class="flex items-center justify-between px-4 py-3 border-t border-b-card bg-surface-page">
-              <div class="text-[12.5px] text-ink-muted">共 <b class="text-ink">2,184</b> 名用户 · 显示 1–20</div>
+              <div class="text-[12.5px] text-ink-muted">
+                共 <b class="text-ink" x-text="userPagination.total"></b> 名用户 ·
+                <span x-text="userPageRangeText()"></span>
+              </div>
               <div class="flex items-center gap-1">
-                <button class="h-8 w-8 rounded-btn border border-b-default bg-surface text-ink-muted hover:bg-surface-page"><i data-lucide="chevron-left" class="w-3.5 h-3.5 inline"></i></button>
-                <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold">1</button>
-                <button class="h-8 w-8 rounded-btn text-ink-body text-[12.5px] hover:bg-surface-page">2</button>
-                <button class="h-8 w-8 rounded-btn text-ink-body text-[12.5px] hover:bg-surface-page">3</button>
-                <span class="text-ink-muted px-1">…</span>
-                <button class="h-8 w-8 rounded-btn text-ink-body text-[12.5px] hover:bg-surface-page">110</button>
-                <button class="h-8 w-8 rounded-btn border border-b-default bg-surface text-ink-body hover:bg-surface-page"><i data-lucide="chevron-right" class="w-3.5 h-3.5 inline"></i></button>
+                <button :disabled="userPagination.page<=1 || usersLoading" @click="loadUsers(userPagination.page-1)" class="h-8 w-8 rounded-btn border border-b-default bg-surface text-ink-muted hover:bg-surface-page disabled:opacity-40"><i data-lucide="chevron-left" class="w-3.5 h-3.5 inline"></i></button>
+                <span class="h-8 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold inline-flex items-center" x-text="userPagination.page"></span>
+                <button :disabled="userPagination.page>=userTotalPages() || usersLoading" @click="loadUsers(userPagination.page+1)" class="h-8 w-8 rounded-btn border border-b-default bg-surface text-ink-body hover:bg-surface-page disabled:opacity-40"><i data-lucide="chevron-right" class="w-3.5 h-3.5 inline"></i></button>
               </div>
             </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ============ PAGE: USERS LOGIN AUDIT ============ -->
+      <template x-if="page==='users-login'">
+        <div class="space-y-4">
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4 flex items-center gap-3">
+            <i data-lucide="log-in" class="w-5 h-5 text-accent"></i>
+            <div class="flex-1">
+              <div class="text-[13px] font-semibold text-ink">用户登录审计</div>
+              <div class="text-[12px] text-ink-muted">按用户 / IP / 时间段筛选会在登录审计表接入后启用。</div>
+            </div>
+            <button @click="loadLoginAudit()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-body hover:bg-surface-page shadow-btn flex items-center gap-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 刷新
+            </button>
+          </div>
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <template x-if="loginAuditError">
+              <div class="px-4 py-3 border-b border-b-card bg-danger/5 text-danger text-[13px]" x-text="loginAuditError"></div>
+            </template>
+            <table class="t-admin-table w-full">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>User</th>
+                  <th>Email</th>
+                  <th>IP</th>
+                  <th>User-Agent</th>
+                  <th>结果</th>
+                  <th>失败原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-if="loginAuditLoading">
+                  <tr><td colspan="7" class="!py-10 text-center text-ink-muted">加载登录审计中...</td></tr>
+                </template>
+                <template x-if="!loginAuditLoading && !loginAuditError && loginAuditRows.length===0">
+                  <tr>
+                    <td colspan="7" class="!py-12 text-center">
+                      <div class="text-[13px] font-semibold text-ink">暂无登录审计数据</div>
+                      <div class="text-[12px] text-ink-muted mt-1">待接入用户登录审计</div>
+                    </td>
+                  </tr>
+                </template>
+                <template x-for="row in loginAuditRows" :key="row.id || row.created_at">
+                  <tr>
+                    <td class="text-[12px] text-ink-muted" x-text="formatDateTime(row.created_at)"></td>
+                    <td class="font-mono text-[12px] text-ink-body" x-text="row.user_id || '—'"></td>
+                    <td class="text-[12.5px] text-ink-body" x-text="row.email || '—'"></td>
+                    <td class="font-mono text-[11.5px] text-ink-muted" x-text="row.ip_address || '—'"></td>
+                    <td class="text-[12px] text-ink-muted max-w-[280px] truncate" x-text="row.user_agent || '—'"></td>
+                    <td><span class="inline-flex px-2 h-5 rounded-badge bg-surface-page text-[11px] font-semibold" x-text="row.result || '—'"></span></td>
+                    <td class="text-[12px] text-ink-muted" x-text="row.failure_reason || '—'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
           </div>
         </div>
       </template>
@@ -1055,44 +1145,56 @@
         <div class="space-y-4">
           <div class="rounded-card-lg bg-accent-bg-light/60 border border-accent/20 p-4 flex items-center gap-3">
             <i data-lucide="shield-check" class="w-5 h-5 text-accent"></i>
-            <div class="text-[13px] text-ink">所有管理员特权写操作均会落入此表 · 该表在数据库层 <code class="px-1.5 py-0.5 rounded bg-white/80 text-[12px]">REVOKE UPDATE, DELETE</code> · 仅追加，不可改</div>
+            <div class="text-[13px] text-ink flex-1">用户相关管理员操作记录 · freeze / unfreeze 必须填写 reason 并写入 <code class="px-1.5 py-0.5 rounded bg-white/80 text-[12px]">admin_audit_log</code></div>
+            <button @click="loadUserAudit()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-body hover:bg-surface-page shadow-btn flex items-center gap-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 刷新
+            </button>
           </div>
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <template x-if="userAuditError">
+              <div class="px-4 py-3 border-b border-b-card bg-danger/5 text-danger text-[13px]" x-text="userAuditError"></div>
+            </template>
             <table class="t-admin-table w-full">
               <thead>
                 <tr>
                   <th>操作员</th>
                   <th>动作</th>
                   <th>资源</th>
-                  <th>Before → After</th>
+                  <th>Diff</th>
                   <th>原因</th>
                   <th>IP</th>
                   <th>时间</th>
                 </tr>
               </thead>
               <tbody>
-                <template x-for="a in auditLog" :key="a.id">
+                <template x-if="userAuditLoading">
+                  <tr><td colspan="7" class="!py-10 text-center text-ink-muted">加载操作审计中...</td></tr>
+                </template>
+                <template x-if="!userAuditLoading && !userAuditError && userAuditRows.length===0">
+                  <tr><td colspan="7" class="!py-10 text-center text-ink-muted">暂无用户操作记录</td></tr>
+                </template>
+                <template x-for="a in userAuditRows" :key="a.id">
                   <tr>
                     <td>
                       <div class="flex items-center gap-2">
-                        <div class="w-7 h-7 rounded-full bg-gradient-accent text-white flex items-center justify-center text-[10px] font-bold" x-text="a.operatorInitials"></div>
+                        <div class="w-7 h-7 rounded-full bg-gradient-accent text-white flex items-center justify-center text-[10px] font-bold" x-text="initials(a.operator)"></div>
                         <div>
                           <div class="text-[13px] font-semibold text-ink" x-text="a.operator"></div>
-                          <div class="text-[11px] text-ink-muted" x-text="a.role"></div>
+                          <div class="text-[11px] text-ink-muted" x-text="a.operator_role || a.source"></div>
                         </div>
                       </div>
                     </td>
                     <td>
                       <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[11px] font-semibold"
-                            :class="a.actionTone==='danger' ? 'bg-danger/10 text-danger' : a.actionTone==='warning' ? 'bg-warning/10 text-warning' : 'bg-accent/10 text-accent'">
+                            :class="a.action && a.action.includes('freeze') ? 'bg-warning/10 text-warning' : 'bg-accent/10 text-accent'">
                         <span x-text="a.action"></span>
                       </span>
                     </td>
-                    <td class="font-mono text-[12px] text-ink-body" x-text="a.resource"></td>
-                    <td class="text-[12px] text-ink-muted max-w-[260px] truncate" x-text="a.diff"></td>
+                    <td class="font-mono text-[12px] text-ink-body" x-text="(a.target_type || 'user') + ':' + (a.target_id || '—')"></td>
+                    <td class="text-[12px] text-ink-muted max-w-[260px] truncate" x-text="auditDiffText(a.diff_json)"></td>
                     <td class="text-[12.5px] text-ink-body max-w-[180px] truncate" x-text="a.reason"></td>
                     <td class="font-mono text-[11.5px] text-ink-muted" x-text="a.ip"></td>
-                    <td class="text-[12px] text-ink-muted" x-text="a.at"></td>
+                    <td class="text-[12px] text-ink-muted" x-text="formatDateTime(a.created_at)"></td>
                   </tr>
                 </template>
               </tbody>
@@ -1104,6 +1206,130 @@
       <!-- ============ PAGE: PIPELINE SCHEDULER ============ -->
       <template x-if="page==='planner-scheduler'">
         <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-[12px]">
+              <button @click="goto('planner-topics')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
+                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">1</span>
+                <span class="font-semibold">Topic Plan</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <button @click="goto('planner-prompt-matrix')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
+                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">2</span>
+                <span class="font-semibold">Prompt Matrix</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <button @click="goto('planner-query-pool')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
+                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">3</span>
+                <span class="font-semibold">Query Pool</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <div class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn bg-accent/5 text-accent">
+                <span class="w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center">4</span>
+                <span class="font-semibold">Collection Schedule</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-[1.05fr_1.35fr] gap-4">
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">调度配置</h3>
+                </div>
+                <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">auto</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Intake Batch</span>
+                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option>scheduler_intake_0429_pm</option>
+                    <option>scheduler_intake_0429_am</option>
+                  </select>
+                </label>
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Window</span>
+                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option>18:00-22:00 UTC+8</option>
+                    <option>06:00-10:00 UTC+8</option>
+                  </select>
+                </label>
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Budget Policy</span>
+                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option>brand weighted cap</option>
+                    <option>equal distribution</option>
+                    <option>priority first</option>
+                  </select>
+                </label>
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Resource Policy</span>
+                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option>healthy accounts only</option>
+                    <option>include warm-up accounts</option>
+                    <option>manual assignment</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">调度逻辑</h3>
+                </div>
+                <span class="text-[10px] font-mono text-ink-muted">collection_schedule_run.v1</span>
+              </div>
+              <div class="grid grid-cols-4 gap-2">
+                <template x-for="step in schedulerWorkflow" :key="step.title">
+                  <div class="rounded-card bg-surface-page border border-b-card p-3">
+                    <div class="flex items-center justify-between">
+                      <span class="text-[10px] font-bold text-accent" x-text="step.no"></span>
+                      <i :data-lucide="step.icon" class="w-3.5 h-3.5 text-accent"></i>
+                    </div>
+                    <div class="text-[12px] font-semibold text-ink mt-2" x-text="step.title"></div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-[1fr_1fr] gap-4">
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">调度门禁</h3>
+                </div>
+                <button class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">资源检查</button>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <template x-for="gate in schedulerQualityGates" :key="gate.title">
+                  <div class="rounded-card bg-surface-page border border-b-card p-3">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
+                      <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">调度产物</h3>
+                </div>
+                <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold">tracker-ready</span>
+              </div>
+              <div class="space-y-2">
+                <template x-for="artifact in schedulerArtifacts" :key="artifact.name">
+                  <div class="flex items-start gap-3 rounded-card bg-surface-page border border-b-card p-3">
+                    <i :data-lucide="artifact.icon" class="w-4 h-4 text-accent mt-0.5 shrink-0"></i>
+                    <div class="min-w-0">
+                      <div class="text-[12px] font-semibold text-ink font-mono" x-text="artifact.name"></div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
 
           <!-- ① 今日采集批次 -->
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
@@ -1417,19 +1643,368 @@
         </div>
       </template>
 
-      <!-- ============ PAGE: PIPELINE GENERATION ============ -->
-      <template x-if="page==='planner-generation'">
+      <!-- ============ PAGE: PLANNER GENERATION WORKFLOW ============ -->
+      <template x-if="['planner-topics','planner-prompt-matrix','planner-query-pool','planner-generation'].includes(page)">
         <div class="space-y-4">
-          <!-- Tabs: Topic → Prompt → Query (three-layer pipeline) -->
-          <div class="flex items-center gap-2 p-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
-            <button class="seg-tab" :class="{active: genTab==='topic'}" @click="genTab='topic'">Topic 管理</button>
-            <button class="seg-tab" :class="{active: genTab==='prompt'}" @click="genTab='prompt'">Prompt 生成</button>
-            <button class="seg-tab" :class="{active: genTab==='query'}" @click="genTab='query'">Query 组装</button>
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-[12px]">
+              <button @click="goto('planner-topics')"
+                      class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn transition-colors"
+                      :class="page==='planner-topics' || (page==='planner-generation' && genTab==='topic') ? 'bg-accent/5 text-accent' : 'text-ink-muted hover:text-ink hover:bg-surface-page'">
+                <span class="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center"
+                      :class="page==='planner-topics' || (page==='planner-generation' && genTab==='topic') ? 'bg-accent text-white' : 'border border-b-card bg-surface'">1</span>
+                <span class="font-semibold">Topic Plan</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <button @click="goto('planner-prompt-matrix')"
+                      class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn transition-colors"
+                      :class="page==='planner-prompt-matrix' || (page==='planner-generation' && genTab==='prompt') ? 'bg-accent/5 text-accent' : 'text-ink-muted hover:text-ink hover:bg-surface-page'">
+                <span class="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center"
+                      :class="page==='planner-prompt-matrix' || (page==='planner-generation' && genTab==='prompt') ? 'bg-accent text-white' : 'border border-b-card bg-surface'">2</span>
+                <span class="font-semibold">Prompt Matrix</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <button @click="goto('planner-query-pool')"
+                      class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn transition-colors"
+                      :class="page==='planner-query-pool' || (page==='planner-generation' && genTab==='query') ? 'bg-accent/5 text-accent' : 'text-ink-muted hover:text-ink hover:bg-surface-page'">
+                <span class="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center"
+                      :class="page==='planner-query-pool' || (page==='planner-generation' && genTab==='query') ? 'bg-accent text-white' : 'border border-b-card bg-surface'">3</span>
+                <span class="font-semibold">Query Pool</span>
+              </button>
+              <span class="w-6 h-px bg-b-card"></span>
+              <button @click="goto('planner-scheduler')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
+                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">4</span>
+                <span class="font-semibold">Collection Schedule</span>
+              </button>
+            </div>
           </div>
 
+          <!-- Tabs: Topic → Prompt → Query (three-layer pipeline) -->
+
           <!-- ===== Topic tab: full topic list with detail ===== -->
-          <template x-if="genTab==='topic'">
+          <template x-if="page==='planner-topics' || (page==='planner-generation' && genTab==='topic')">
             <div class="space-y-4">
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div class="topic-plan-heading">
+                    <h3 class="text-[15px] font-bold text-ink">Topic Plan</h3>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="topicPlanHeaderText()"></p>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedTopicPlanBrands().length + ' 个品牌 · 预计生成 ' + estimatedTopicCount() + ' 个 Topic · 覆盖率 78%'"></p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button @click="openTopicPlanPanel('coverage')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                      覆盖度检查
+                    </button>
+                    <button @click="openTopicPlanPanel('generate')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
+                      生成 Topic
+                    </button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 gap-3">
+                  <template x-if="topicPlanLoading">
+                    <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">Loading Topic Plan...</div>
+                  </template>
+                  <template x-if="topicPlanError">
+                    <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanError"></div>
+                  </template>
+                  <div class="rounded-card bg-surface-page border border-b-card p-4">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <div class="text-[12.5px] font-bold text-ink">运行配置</div>
+                      </div>
+                      <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">ready</span>
+                    </div>
+                    <div class="mt-3 grid grid-cols-4 gap-2">
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">Industry</span>
+                        <select x-model="topicPlanConfig.industryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="">All</option>
+                          <template x-for="industry in topicPlanIndustries" :key="industry.id">
+                            <option :value="industry.id" x-text="industry.name"></option>
+                          </template>
+                        </select>
+                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option>美妆个护</option>
+                          <option>奢侈品</option>
+                          <option>食品饮料</option>
+                          <option>服装时尚</option>
+                        </select>
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">Category</span>
+                        <select x-model="topicPlanConfig.categoryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="">All</option>
+                          <template x-for="category in topicPlanCategories" :key="category.id">
+                            <option :value="category.id" x-text="category.name"></option>
+                          </template>
+                        </select>
+                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option>护肤 / 精华</option>
+                          <option>彩妆 / 口红</option>
+                          <option>香水 / 香氛</option>
+                        </select>
+                      </label>
+                      <div class="space-y-2 col-span-4">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-[10px] font-semibold text-ink-muted uppercase">品牌</span>
+                          <span class="text-[10px] font-semibold text-accent tabular-nums" x-text="'已选 ' + selectedTopicPlanBrands().length"></span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <div class="relative flex-1">
+                            <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                            <input x-model="topicPlanBrandQuery" placeholder="搜索品牌"
+                                   class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                          </div>
+                          <button @click="setTopicPlanBrands(true)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">全选</button>
+                          <button @click="setTopicPlanBrands(false)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空</button>
+                        </div>
+                        <div class="grid grid-cols-4 gap-2 max-h-[116px] overflow-y-auto rounded-card border border-b-card bg-white p-2">
+                          <template x-for="brand in filteredTopicPlanBrands()" :key="brand.id">
+                            <label class="h-8 px-2 rounded-btn border border-b-card bg-surface-page hover:bg-surface flex items-center gap-2 cursor-pointer">
+                              <input type="checkbox" class="rounded border-b-default"
+                                     :checked="brand.selected"
+                                     @change="brand.selected = $event.target.checked" />
+                              <span class="text-[12px] font-medium text-ink truncate" x-text="brand.name"></span>
+                              <span class="ml-auto text-[10px] text-ink-muted truncate" x-text="brand.category"></span>
+                            </label>
+                          </template>
+                          <template x-if="filteredTopicPlanBrands().length === 0">
+                            <div class="col-span-4 h-8 flex items-center text-[12px] text-ink-muted px-2">无匹配品牌</div>
+                          </template>
+                        </div>
+                      </div>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">发布方式</span>
+                        <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option>先审核后发布</option>
+                          <option>门禁通过后自动发布</option>
+                        </select>
+                      </label>
+                      <div class="space-y-2 col-span-4 rounded-card bg-white border border-b-card p-3">
+                        <div class="flex items-center justify-between gap-3">
+                          <div>
+                            <div class="text-[12.5px] font-bold text-ink">生成数量</div>
+                            <div class="text-[10px] text-ink-muted mt-1 font-mono" x-text="topicCountFormulaText()"></div>
+                          </div>
+                          <div class="text-right">
+                            <div class="text-[20px] font-bold text-accent" x-text="estimatedTopicCount()"></div>
+                            <div class="text-[10px] text-ink-muted">预计 Topic</div>
+                          </div>
+                        </div>
+                        <div class="grid grid-cols-4 gap-2">
+                          <label class="space-y-1">
+                            <span class="text-[10px] font-semibold text-ink-muted uppercase">每品牌上限</span>
+                            <select x-model="topicPlanConfig.maxPerBrand" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                              <option value="20">20</option>
+                              <option value="40">40</option>
+                              <option value="60">60</option>
+                              <option value="80">80</option>
+                            </select>
+                          </label>
+                          <label class="space-y-1">
+                            <span class="text-[10px] font-semibold text-ink-muted uppercase">总上限</span>
+                            <input x-model="topicPlanConfig.maxTopics" type="number" min="20" step="20"
+                                   class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
+                          </label>
+                          <label class="space-y-1">
+                            <span class="text-[10px] font-semibold text-ink-muted uppercase">缺口优先级</span>
+                            <select x-model="topicPlanConfig.gapPriority" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                              <option value="p1">P1 only</option>
+                              <option value="p12">P1 + P2</option>
+                              <option value="all">全部缺口</option>
+                            </select>
+                          </label>
+                          <label class="space-y-1">
+                            <span class="text-[10px] font-semibold text-ink-muted uppercase">超出上限</span>
+                            <select x-model="topicPlanConfig.overflowPolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                              <option value="truncate">截断候选</option>
+                              <option value="review">进入审核</option>
+                            </select>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">审核状态</h3>
+                  </div>
+                  <button @click="openTopicPlanPanel('pending')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                    查看待处理
+                  </button>
+                </div>
+                <div class="grid grid-cols-4 gap-3">
+                  <template x-for="gate in topicPlanQualityGates" :key="gate.title">
+                    <div class="rounded-card bg-surface-page border border-b-card p-3">
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                          <i :data-lucide="gate.icon" class="w-4 h-4" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'"></i>
+                          <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
+                        </div>
+                        <span class="text-[10px] font-semibold tabular-nums" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
+                      </div>
+                      <div class="text-[10px] text-ink-muted mt-2 font-mono" x-text="gate.meta"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <template x-if="topicPlanActionPanel">
+                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+                  <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                    <div>
+                      <h3 class="text-[15px] font-bold text-ink" x-text="topicPlanPanelTitle()"></h3>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选品牌 ' + selectedTopicPlanBrands().length + ' · ' + selectedTopicPlanBrands().map(b => b.name).join('、')"></div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button @click="openTopicPlanPanel('coverage')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="topicPlanActionPanel==='coverage' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">覆盖检查</button>
+                      <button @click="openTopicPlanPanel('generate')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="topicPlanActionPanel==='generate' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">生成任务</button>
+                      <button @click="openTopicPlanPanel('pending')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="topicPlanActionPanel==='pending' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">待处理</button>
+                      <button @click="topicPlanActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                      </button>
+                    </div>
+                  </div>
+
+                  <template x-if="topicPlanActionPanel==='coverage'">
+                    <div class="p-5 space-y-4">
+                      <template x-if="topicPlanCoverageLoading">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">Loading coverage...</div>
+                      </template>
+                      <template x-if="topicPlanCoverageError">
+                        <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanCoverageError"></div>
+                      </template>
+                      <template x-if="!topicPlanCoverageLoading && !topicPlanCoverageError && topicPlanCoverageRows.length === 0">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">No coverage data for the selected scope.</div>
+                      </template>
+                      <div class="grid grid-cols-4 gap-3">
+                        <template x-for="row in topicPlanCoverageRows" :key="row.brand">
+                          <div class="rounded-card bg-surface-page border border-b-card p-3">
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="text-[12px] font-semibold text-ink" x-text="row.brand"></span>
+                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                    :class="row.status_key==='ok' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
+                                    x-text="row.status"></span>
+                            </div>
+                            <div class="mt-3 grid grid-cols-3 gap-2 text-center">
+                              <div><div class="text-[16px] font-bold text-ink" x-text="row.topics"></div><div class="text-[10px] text-ink-muted">Topic</div></div>
+                              <div><div class="text-[16px] font-bold text-accent" x-text="row.coverage"></div><div class="text-[10px] text-ink-muted">覆盖</div></div>
+                              <div><div class="text-[16px] font-bold" :class="row.gaps > 0 ? 'text-warning' : 'text-success'" x-text="row.gaps"></div><div class="text-[10px] text-ink-muted">缺口</div></div>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="rounded-card border border-b-card overflow-hidden">
+                        <div class="px-4 py-3 bg-surface-page border-b border-b-card flex items-center justify-between">
+                          <div class="text-[12.5px] font-semibold text-ink">覆盖缺口</div>
+                          <button @click="openTopicPlanPanel('generate')" class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold">生成缺口 Topic</button>
+                        </div>
+                        <table class="w-full text-[12px]">
+                          <thead><tr class="border-b border-b-card"><th class="px-4 py-2 text-left text-ink-muted">品牌</th><th class="px-4 py-2 text-left text-ink-muted">缺口类型</th><th class="px-4 py-2 text-left text-ink-muted">数量</th><th class="px-4 py-2 text-left text-ink-muted">优先级</th></tr></thead>
+                          <tbody>
+                            <template x-for="gap in topicPlanCoverageGaps" :key="gap.brand + gap.type">
+                              <tr class="border-b border-b-card">
+                                <td class="px-4 py-2 font-semibold text-ink" x-text="gap.brand"></td>
+                                <td class="px-4 py-2 text-ink-body" x-text="gap.type"></td>
+                                <td class="px-4 py-2 tabular-nums text-ink-body" x-text="gap.count"></td>
+                                <td class="px-4 py-2"><span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="gap.priority"></span></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="topicPlanActionPanel==='generate'">
+                    <div class="p-5 space-y-4">
+                      <template x-if="topicPlanGenerateError">
+                        <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanGenerateError"></div>
+                      </template>
+                      <div class="grid grid-cols-4 gap-3">
+                        <template x-for="step in topicPlanGenerateSteps" :key="step.name">
+                          <div class="rounded-card bg-surface-page border border-b-card p-3">
+                            <div class="flex items-center justify-between">
+                              <span class="text-[12px] font-semibold text-ink" x-text="step.name"></span>
+                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                    :class="step.status==='done' ? 'bg-success/10 text-success' : step.status==='running' ? 'bg-accent/10 text-accent' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="step.label"></span>
+                            </div>
+                            <div class="text-[18px] font-bold text-ink mt-3" x-text="step.value"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between gap-3">
+                        <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
+                          <div><div class="text-ink-muted">生成模式</div><div class="font-semibold text-ink mt-1">Draft review</div></div>
+                          <div><div class="text-ink-muted">预计新增</div><div class="font-semibold text-ink mt-1" x-text="estimatedTopicCount() + ' topics'"></div></div>
+                          <div><div class="text-ink-muted">进入审核</div><div class="font-semibold text-warning mt-1" x-text="topicPlanStats.pendingCandidates + ' candidates'"></div></div>
+                          <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="topicPlanGenerateStarted ? '刚刚' : '未运行'"></div></div>
+                        </div>
+                        <button @click="startTopicPlanGenerate()" :disabled="topicPlanGenerateLoading || selectedTopicPlanBrands().length === 0" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-50 disabled:cursor-not-allowed">
+                          <span x-text="topicPlanGenerateLoading ? 'Generating...' : (topicPlanGenerateStarted ? '重新生成' : '开始生成')"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="topicPlanActionPanel==='pending'">
+                    <div class="p-5">
+                      <template x-if="topicPlanCandidatesLoading">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted mb-3">Loading candidates...</div>
+                      </template>
+                      <template x-if="topicPlanCandidatesError">
+                        <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger mb-3" x-text="topicPlanCandidatesError"></div>
+                      </template>
+                      <template x-if="!topicPlanCandidatesLoading && !topicPlanCandidatesError && topicPlanPendingItems.length === 0">
+                        <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted mb-3">No pending candidates.</div>
+                      </template>
+                      <div class="rounded-card border border-b-card overflow-hidden">
+                        <table class="w-full text-[12px]">
+                          <thead>
+                            <tr class="border-b border-b-card bg-surface-page">
+                              <th class="px-4 py-2.5 text-left text-ink-muted">候选 Topic</th>
+                              <th class="px-4 py-2.5 text-left text-ink-muted">品牌</th>
+                              <th class="px-4 py-2.5 text-left text-ink-muted">原因</th>
+                              <th class="px-4 py-2.5 text-left text-ink-muted">置信度</th>
+                              <th class="px-4 py-2.5 text-right text-ink-muted">操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <template x-for="item in topicPlanPendingItems" :key="item.id">
+                              <tr class="border-b border-b-card hover:bg-surface-page">
+                                <td class="px-4 py-3">
+                                  <div class="font-semibold text-ink" x-text="item.title"></div>
+                                  <div class="font-mono text-[10px] text-ink-muted mt-0.5" x-text="item.id"></div>
+                                </td>
+                                <td class="px-4 py-3 text-ink-body" x-text="item.brand"></td>
+                                <td class="px-4 py-3 text-ink-body" x-text="item.reason"></td>
+                                <td class="px-4 py-3">
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                        :class="item.confidence >= 0.8 ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
+                                        x-text="Math.round(item.confidence * 100) + '%'"></span>
+                                </td>
+                                <td class="px-4 py-3 text-right">
+                                  <button @click="reviewTopicCandidate(item, 'approved')" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold">通过</button>
+                                  <button @click="reviewTopicCandidate(item, 'rejected')" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1">拒绝</button>
+                                </td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
               <!-- KPI row -->
               <div class="grid grid-cols-5 gap-3">
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
@@ -1460,7 +2035,7 @@
               <div class="flex items-center gap-2 flex-wrap">
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                   <option value="">全部维度</option>
-                  <option>品类</option><option>品牌</option><option>产品</option><option>竞品</option>
+                  <option>品类</option><option>品牌</option><option>产品</option>
                 </select>
                 <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                   <option value="">全部行业</option>
@@ -1605,22 +2180,344 @@
           </template>
 
           <!-- Prompt section -->
-          <template x-if="genTab==='prompt'">
+          <template x-if="page==='planner-prompt-matrix' || (page==='planner-generation' && genTab==='prompt')">
             <div class="space-y-4">
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">Prompt Matrix</h3>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + promptMatrixSelectedTopicCount() + ' 个 Topic · 预计生成 ' + estimatedPromptCount() + ' 个 Prompt · 覆盖率 93.1%'"></p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button @click="openPromptMatrixPanel('gaps')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                      缺口列表
+                    </button>
+                    <button @click="openPromptMatrixPanel('generate')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
+                      生成 Prompt
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4">
+                <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                  <div class="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 class="text-[15px] font-bold text-ink">矩阵配置</h3>
+                    </div>
+                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold">配置中</span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-3">
+                    <div class="space-y-3 col-span-3 rounded-card border border-b-card bg-surface-page p-3">
+                      <div class="flex items-center justify-between gap-2">
+                        <div>
+                          <div class="text-[12.5px] font-bold text-ink">Topic 选择</div>
+                          <div class="text-[10px] text-ink-muted mt-0.5" x-text="'匹配 ' + promptMatrixFilteredTopicCount().toLocaleString() + ' 个 · 第 ' + promptMatrixCurrentPage() + ' / ' + promptMatrixTopicTotalPages() + ' 页'"></div>
+                        </div>
+                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold tabular-nums" x-text="'已选 ' + promptMatrixSelectedTopicCount().toLocaleString()"></span>
+                      </div>
+                      <div class="grid grid-cols-[1fr_140px_140px_92px] gap-2">
+                        <div class="relative flex-1">
+                          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                          <input x-model="promptMatrixTopicQuery" @input="promptMatrixTopicPage=1" placeholder="搜索 Topic / 品牌"
+                                 class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                        </div>
+                        <select x-model="promptMatrixTopicBrand" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="all">全部品牌</option>
+                          <template x-for="brand in promptMatrixTopicBrands()" :key="brand">
+                            <option :value="brand" x-text="brand"></option>
+                          </template>
+                        </select>
+                        <select x-model="promptMatrixTopicCoverage" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="all">全部覆盖</option>
+                          <option value="gap">缺 Prompt</option>
+                          <option value="partial">意图不足</option>
+                          <option value="covered">已覆盖</option>
+                        </select>
+                        <select x-model.number="promptMatrixTopicPerPage" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="20">20 / 页</option>
+                          <option value="50">50 / 页</option>
+                          <option value="100">100 / 页</option>
+                        </select>
+                      </div>
+                      <div class="rounded-card border border-b-card bg-white overflow-hidden">
+                        <table class="w-full text-[12px]">
+                          <thead>
+                            <tr class="bg-surface-page border-b border-b-card">
+                              <th class="w-9 px-3 py-2 text-left">
+                                <input type="checkbox" class="rounded border-b-default"
+                                       :checked="promptMatrixPageTopics().length > 0 && promptMatrixPageTopics().every(t => t.selected)"
+                                       @change="setPromptMatrixTopics($event.target.checked, 'page')" />
+                              </th>
+                              <th class="px-3 py-2 text-left text-ink-muted font-semibold">Topic</th>
+                              <th class="px-3 py-2 text-left text-ink-muted font-semibold">品牌</th>
+                              <th class="px-3 py-2 text-left text-ink-muted font-semibold">覆盖</th>
+                              <th class="px-3 py-2 text-left text-ink-muted font-semibold">优先级</th>
+                              <th class="px-3 py-2 text-right text-ink-muted font-semibold">最近更新</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <template x-for="topic in promptMatrixPageTopics()" :key="topic.id">
+                              <tr class="border-b border-b-card hover:bg-surface-page">
+                                <td class="px-3 py-2">
+                                  <input type="checkbox" class="rounded border-b-default"
+                                         :checked="topic.selected"
+                                         @change="topic.selected = $event.target.checked" />
+                                </td>
+                                <td class="px-3 py-2">
+                                  <div class="font-semibold text-ink truncate max-w-[360px]" x-text="topic.title"></div>
+                                </td>
+                                <td class="px-3 py-2 text-ink-body" x-text="topic.brand"></td>
+                                <td class="px-3 py-2">
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                        :class="topic.coverage === 'covered' ? 'bg-success/10 text-success' : topic.coverage === 'partial' ? 'bg-warning/10 text-warning' : 'bg-danger/10 text-danger'"
+                                        x-text="topic.coverageLabel"></span>
+                                </td>
+                                <td class="px-3 py-2 text-ink-body" x-text="topic.priority"></td>
+                                <td class="px-3 py-2 text-right text-ink-muted" x-text="topic.updatedAt"></td>
+                              </tr>
+                            </template>
+                            <template x-if="promptMatrixPageTopics().length === 0">
+                              <tr>
+                                <td colspan="6" class="px-3 py-8 text-center text-ink-muted">没有匹配的 Topic</td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-2">
+                          <button @click="setPromptMatrixTopics(true, 'page')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">选择本页</button>
+                          <button @click="setPromptMatrixTopics(true, 'filtered')" class="h-8 px-2.5 rounded-btn border border-accent/30 bg-accent/5 text-[11px] font-semibold text-accent hover:bg-accent/10">选择全部匹配</button>
+                          <button @click="setPromptMatrixTopics(false, 'page')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空本页</button>
+                          <button @click="setPromptMatrixTopics(false, 'all')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空全部</button>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <span class="text-[11px] text-ink-muted" x-text="promptMatrixTopicPageRangeText()"></span>
+                          <button @click="promptMatrixTopicPage=Math.max(1, promptMatrixTopicPage-1)" :disabled="promptMatrixCurrentPage()<=1" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                          </button>
+                          <button @click="promptMatrixTopicPage=Math.min(promptMatrixTopicTotalPages(), promptMatrixTopicPage+1)" :disabled="promptMatrixCurrentPage()>=promptMatrixTopicTotalPages()" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-2 flex-wrap min-h-7">
+                        <template x-for="topic in selectedPromptMatrixTopics().slice(0, 8)" :key="topic.id">
+                          <span class="inline-flex items-center gap-1 h-6 px-2 rounded-badge bg-white border border-b-card text-[11px] text-ink-body">
+                            <span x-text="topic.title"></span>
+                            <button @click="topic.selected=false" class="text-ink-muted hover:text-danger">×</button>
+                          </span>
+                        </template>
+                        <template x-if="promptMatrixSelectedTopicCount() > 8">
+                          <span class="text-[11px] text-ink-muted" x-text="'+' + (promptMatrixSelectedTopicCount() - 8).toLocaleString() + ' 个已选'"></span>
+                        </template>
+                      </div>
+                    </div>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">Topic 优先级</span>
+                      <select x-model="promptMatrixConfig.topicPriority" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="gap_first">优先补齐缺口</option>
+                        <option value="high_value">优先高价值 Topic</option>
+                        <option value="balanced">品牌均衡</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">意图覆盖</span>
+                      <select x-model="promptMatrixConfig.intentCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="2">基础 2 类</option>
+                        <option value="3">均衡 3 类</option>
+                        <option value="4">完整 4 类</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">目标市场</span>
+                      <select x-model="promptMatrixConfig.languageCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="2">中国 + 英文市场</option>
+                        <option value="1">仅中国市场</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">模板策略</span>
+                      <select x-model="promptMatrixConfig.templateStrategy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="latest">使用最新已审核模板</option>
+                        <option value="stable">使用稳定模板</option>
+                        <option value="experiment">小流量实验模板</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">问法风格</span>
+                      <select x-model="promptMatrixConfig.promptStyle" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="natural">自然提问</option>
+                        <option value="comparison">对比决策</option>
+                        <option value="recommendation">推荐导向</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">人群语境</span>
+                      <select x-model="promptMatrixConfig.audienceMode" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="general">通用消费者</option>
+                        <option value="new_user">新手用户</option>
+                        <option value="expert">成分/功效关注者</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="mt-4 rounded-card bg-surface-page border border-b-card p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <div class="text-[12.5px] font-bold text-ink">生成数量</div>
+                        <div class="text-[10px] text-ink-muted mt-1 font-mono" x-text="promptCountFormulaText()"></div>
+                      </div>
+                      <div class="text-right">
+                        <div class="text-[20px] font-bold text-accent" x-text="estimatedPromptCount()"></div>
+                        <div class="text-[10px] text-ink-muted">预计 Prompt</div>
+                      </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-3 gap-2">
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">每 Topic 上限</span>
+                        <select x-model="promptMatrixConfig.maxPerTopic" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="2">2</option>
+                          <option value="4">4</option>
+                          <option value="6">6</option>
+                          <option value="8">8</option>
+                        </select>
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">生成上限</span>
+                        <input x-model="promptMatrixConfig.maxPrompts" type="number" min="100" step="100"
+                               class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">超出上限</span>
+                        <select x-model="promptMatrixConfig.overflowPolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="split">自动拆批</option>
+                          <option value="hold">进入审批</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">审核状态</h3>
+                  </div>
+                  <button @click="openPromptMatrixPanel('pending')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">审查候选</button>
+                </div>
+                <div class="grid grid-cols-4 gap-3">
+                  <template x-for="gate in promptMatrixQualityGates" :key="gate.title">
+                    <div class="rounded-card bg-surface-page border border-b-card p-3">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
+                        <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
+                      </div>
+                      <div class="text-[10px] text-ink-muted mt-2 font-mono" x-text="gate.meta"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <template x-if="promptMatrixActionPanel">
+                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+                  <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                    <div>
+                      <h3 class="text-[15px] font-bold text-ink" x-text="promptMatrixPanelTitle()"></h3>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Topic ' + promptMatrixSelectedTopicCount() + ' · 预计 ' + estimatedPromptCount() + ' prompts'"></div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button @click="openPromptMatrixPanel('gaps')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="promptMatrixActionPanel==='gaps' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">缺口列表</button>
+                      <button @click="openPromptMatrixPanel('generate')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="promptMatrixActionPanel==='generate' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">生成任务</button>
+                      <button @click="openPromptMatrixPanel('pending')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="promptMatrixActionPanel==='pending' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">待审核</button>
+                      <button @click="promptMatrixActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <template x-if="promptMatrixActionPanel==='gaps'">
+                    <div class="p-5">
+                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">Topic</th><th class="px-4 py-2.5 text-left text-ink-muted">缺口</th><th class="px-4 py-2.5 text-left text-ink-muted">优先级</th><th class="px-4 py-2.5 text-right text-ink-muted">预计 Prompt</th></tr></thead>
+                        <tbody>
+                          <template x-for="gap in promptMatrixGapItems" :key="gap.id">
+                            <tr class="border-b border-b-card">
+                              <td class="px-4 py-3 font-semibold text-ink" x-text="gap.topic"></td>
+                              <td class="px-4 py-3 text-ink-body" x-text="gap.gap"></td>
+                              <td class="px-4 py-3"><span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="gap.priority"></span></td>
+                              <td class="px-4 py-3 text-right tabular-nums text-ink" x-text="gap.estimate"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                  <template x-if="promptMatrixActionPanel==='generate'">
+                    <div class="p-5 space-y-4">
+                      <div class="grid grid-cols-4 gap-3">
+                        <template x-for="step in promptMatrixGenerateSteps" :key="step.name">
+                          <div class="rounded-card bg-surface-page border border-b-card p-3">
+                            <div class="flex items-center justify-between">
+                              <span class="text-[12px] font-semibold text-ink" x-text="step.name"></span>
+                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                    :class="step.status==='done' ? 'bg-success/10 text-success' : step.status==='running' ? 'bg-accent/10 text-accent' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="step.label"></span>
+                            </div>
+                            <div class="text-[18px] font-bold text-ink mt-3" x-text="step.value"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between">
+                        <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
+                          <div><div class="text-ink-muted">预计生成</div><div class="font-semibold text-ink mt-1" x-text="estimatedPromptCount() + ' prompts'"></div></div>
+                          <div><div class="text-ink-muted">Topic</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixSelectedTopicCount()"></div></div>
+                          <div><div class="text-ink-muted">生成上限</div><div class="font-semibold text-ink mt-1" x-text="Number(promptMatrixConfig.maxPrompts).toLocaleString()"></div></div>
+                          <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixGenerateStarted ? '刚刚' : '未运行'"></div></div>
+                        </div>
+                        <button @click="startPromptMatrixGenerate()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
+                          <span x-text="promptMatrixGenerateStarted ? '重新生成' : '开始生成'"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="promptMatrixActionPanel==='pending'">
+                    <div class="p-5">
+                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">Prompt</th><th class="px-4 py-2.5 text-left text-ink-muted">Topic</th><th class="px-4 py-2.5 text-left text-ink-muted">原因</th><th class="px-4 py-2.5 text-right text-ink-muted">操作</th></tr></thead>
+                        <tbody>
+                          <template x-for="item in promptMatrixPendingItems" :key="item.id">
+                            <tr class="border-b border-b-card hover:bg-surface-page">
+                              <td class="px-4 py-3"><div class="font-mono text-[11px] text-ink" x-text="item.id"></div><div class="text-ink-body mt-0.5" x-text="item.text"></div></td>
+                              <td class="px-4 py-3 text-ink-body" x-text="item.topic"></td>
+                              <td class="px-4 py-3 text-ink-body" x-text="item.reason"></td>
+                              <td class="px-4 py-3 text-right">
+                                <button @click="reviewPromptCandidate(item, 'approved')" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold">通过</button>
+                                <button @click="reviewPromptCandidate(item, 'rejected')" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1">拒绝</button>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
               <!-- KPI row -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
                 <div class="flex items-center justify-between mb-4">
                   <div>
-                    <h3 class="text-[15px] font-bold text-ink">Prompt 生成 · Topic × Intent 矩阵</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">上次运行: <span class="text-ink-body" x-text="generationPromptStats.lastRunAt"></span> · 同一 Topic 至少覆盖 2 种 Intent (§4.2.2)</p>
+                    <h3 class="text-[15px] font-bold text-ink">Prompt 覆盖状态</h3>
+                    <p class="text-[12px] text-ink-muted mt-1">上次运行: <span class="text-ink-body" x-text="generationPromptStats.lastRunAt"></span> · 同一 Topic 至少覆盖 2 种 Intent</p>
                   </div>
-                  <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn flex items-center gap-1.5">
-                    <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> 运行 Prompt 生成
-                  </button>
                 </div>
                 <div class="grid grid-cols-5 gap-3">
                   <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[10px] text-ink-muted font-semibold uppercase">总 Prompts</div>
+                    <div class="text-[10px] text-ink-muted font-semibold">总 Prompt</div>
                     <div class="text-[20px] font-bold text-accent mt-1" x-text="generationPromptStats.totalPrompts.toLocaleString()"></div>
                   </div>
                   <div class="p-3 rounded-card bg-surface-page border border-b-card">
@@ -1629,11 +2526,11 @@
                     <div class="text-[10px] text-ink-muted" x-text="generationPromptStats.topicsWithPrompt + ' / ' + generationPromptStats.topicsTotal"></div>
                   </div>
                   <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[10px] text-ink-muted font-semibold uppercase">无 Prompt Topics</div>
+                    <div class="text-[10px] text-ink-muted font-semibold">未覆盖 Topic</div>
                     <div class="text-[20px] font-bold" :class="generationPromptStats.topicsNoPrompt > 0 ? 'text-danger' : 'text-success'" x-text="generationPromptStats.topicsNoPrompt"></div>
                   </div>
                   <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[10px] text-ink-muted font-semibold uppercase">Intent < 2 Topics</div>
+                    <div class="text-[10px] text-ink-muted font-semibold">意图不足 Topic</div>
                     <div class="text-[20px] font-bold" :class="generationPromptStats.topicsPartialIntent > 0 ? 'text-warning' : 'text-success'" x-text="generationPromptStats.topicsPartialIntent"></div>
                   </div>
                   <div class="p-3 rounded-card bg-surface-page border border-b-card">
@@ -1652,7 +2549,7 @@
               <div class="grid grid-cols-2 gap-4">
                 <!-- 4 Intent 分布 -->
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-                  <div class="text-[13px] font-semibold text-ink mb-3">Intent 分布 (4 类)</div>
+                  <div class="text-[13px] font-semibold text-ink mb-3">意图分布</div>
                   <div class="space-y-2.5">
                     <template x-for="d in generationPromptStats.intentDist" :key="d.intent">
                       <div>
@@ -1660,7 +2557,6 @@
                           <div class="flex items-center gap-2">
                             <span class="w-2 h-2 rounded-full" :style="'background:' + d.color"></span>
                             <span class="font-medium text-ink" x-text="d.label"></span>
-                            <span class="text-ink-faint text-[10px]" x-text="d.intent"></span>
                           </div>
                           <span class="text-ink-muted tabular-nums" x-text="d.count.toLocaleString() + ' (' + d.pct + '%)'"></span>
                         </div>
@@ -1671,7 +2567,7 @@
                     </template>
                   </div>
                   <div class="mt-3 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                    每 Topic 必选: informational + commercial (§4.2.2)
+                    每个 Topic 至少覆盖信息了解和购买决策
                   </div>
                 </div>
 
@@ -1684,7 +2580,6 @@
                         <div class="flex items-center justify-between mb-2">
                           <div>
                             <span class="text-[13px] font-semibold text-ink" x-text="l.label"></span>
-                            <span class="text-[11px] text-ink-muted ml-1.5" x-text="l.lang"></span>
                           </div>
                           <div class="text-right">
                             <span class="text-[17px] font-bold text-accent" x-text="l.pct + '%'"></span>
@@ -1696,7 +2591,7 @@
                     </template>
                   </div>
                   <div class="mt-3 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                    ChatGPT 中英双版本; 豆包/DeepSeek 默认中文 (§4.2.2)
+                    中文覆盖全部引擎，英文优先覆盖 ChatGPT
                   </div>
                 </div>
               </div>
@@ -1707,8 +2602,8 @@
                   <h3 class="text-[14px] font-semibold text-ink">Prompt 内容列表</h3>
                   <div class="flex items-center gap-2">
                     <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                      <option value="">全部 Intent</option>
-                      <option>informational</option><option>commercial</option><option>transactional</option><option>navigational</option>
+                      <option value="">全部意图</option>
+                      <option>信息了解</option><option>购买决策</option><option>行动导向</option><option>定向查找</option>
                     </select>
                     <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                       <option value="">全部语言</option>
@@ -1720,17 +2615,15 @@
                   <template x-for="p in promptDetailList" :key="p.id">
                     <div class="px-6 py-4 hover:bg-surface-page transition-colors">
                       <div class="flex items-center gap-2 mb-2 text-[11px]">
-                        <span class="font-mono font-semibold text-ink" x-text="p.id"></span>
-                        <span class="text-ink-faint">→</span>
-                        <span class="font-mono text-ink-muted" x-text="p.topicId"></span>
+                        <span class="font-semibold text-ink" x-text="topicTitle(p.topicId)"></span>
                         <span class="inline-flex items-center px-1.5 h-4 rounded-badge text-[9px] font-semibold"
                               :class="p.intent==='informational' ? 'bg-info/10 text-info' : p.intent==='commercial' ? 'bg-accent/10 text-accent' : p.intent==='transactional' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                              x-text="p.intent"></span>
-                        <span class="px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="p.lang"></span>
-                        <span class="text-ink-faint" x-text="'v' + p.version + ' · ' + p.engines.join(', ')"></span>
+                              x-text="intentLabel(p.intent)"></span>
+                        <span class="px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="languageLabel(p.lang)"></span>
+                        <span class="text-ink-faint" x-text="p.engines.join(' / ')"></span>
                         <span class="ml-auto inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
                               :class="p.status==='active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                              x-text="p.status"></span>
+                              x-text="promptStatusLabel(p.status)"></span>
                       </div>
                       <!-- Template text with variables highlighted -->
                       <div class="text-[12px] text-ink leading-relaxed p-3 rounded-card bg-surface-page border border-b-card/50 font-mono" x-text="p.templateText"></div>
@@ -1747,16 +2640,265 @@
           </template>
 
           <!-- Query section -->
-          <template x-if="genTab==='query'">
+          <template x-if="page==='planner-query-pool' || (page==='planner-generation' && genTab==='query')">
             <div class="space-y-4">
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">Query Pool</h3>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedQueryPoolPrompts().length + ' 个 Prompt · 预计组装 ' + estimatedQueryCount() + ' 个 Query · 就绪 4,680'"></p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button @click="openQueryPoolPanel('cost')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
+                      预估成本
+                    </button>
+                    <button @click="openQueryPoolPanel('assemble')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
+                      组装 Query
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4">
+                <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                  <div class="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 class="text-[15px] font-bold text-ink">组装配置</h3>
+                    </div>
+                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold">待预检</span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-3">
+                    <div class="space-y-2 col-span-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">Prompts</span>
+                        <span class="text-[10px] font-semibold text-accent tabular-nums" x-text="'已选 ' + selectedQueryPoolPrompts().length"></span>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <div class="relative flex-1">
+                          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                          <input x-model="queryPoolPromptQuery" placeholder="搜索 Prompt"
+                                 class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                        </div>
+                        <button @click="setQueryPoolPrompts(true)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">全选</button>
+                        <button @click="setQueryPoolPrompts(false)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空</button>
+                      </div>
+                      <div class="grid grid-cols-2 gap-2 max-h-[118px] overflow-y-auto rounded-card border border-b-card bg-white p-2">
+                        <template x-for="prompt in filteredQueryPoolPrompts()" :key="prompt.id">
+                          <label class="h-8 px-2 rounded-btn border border-b-card bg-surface-page hover:bg-surface flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" class="rounded border-b-default"
+                                   :checked="prompt.selected"
+                                   @change="prompt.selected = $event.target.checked" />
+                            <span class="text-[12px] font-medium text-ink truncate" x-text="prompt.title"></span>
+                            <span class="ml-auto text-[10px] text-ink-muted" x-text="intentLabel(prompt.intent)"></span>
+                          </label>
+                        </template>
+                      </div>
+                    </div>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">人群采样</span>
+                      <select x-model="queryPoolConfig.profileStrategy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="balanced">核心人群 + 补充人群</option>
+                        <option value="core">仅核心人群</option>
+                        <option value="full">完整人群覆盖</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">引擎策略</span>
+                      <select x-model="queryPoolConfig.engineRouting" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="balanced">成本与质量均衡</option>
+                        <option value="quality">优先高质量引擎</option>
+                        <option value="domestic">仅国内引擎</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">预算上限</span>
+                      <select x-model="queryPoolConfig.budgetCap" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="180">$180 / 批次</option>
+                        <option value="320">$320 / 批次</option>
+                        <option value="schedule">使用调度预算</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">入队窗口</span>
+                      <select x-model="queryPoolConfig.scheduleWindow" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="next">下一采集窗口</option>
+                        <option value="today">今日剩余额度</option>
+                        <option value="manual">只生成不入队</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">去重策略</span>
+                      <select x-model="queryPoolConfig.dedupePolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="merge">相似问法合并</option>
+                        <option value="review">相似问法进入审核</option>
+                        <option value="allow">允许小差异重复</option>
+                      </select>
+                    </label>
+                    <label class="space-y-1">
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">执行优先级</span>
+                      <select x-model="queryPoolConfig.priorityMode" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="gap">覆盖缺口优先</option>
+                        <option value="brand">品牌权重优先</option>
+                        <option value="balanced">均衡入队</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="mt-4 rounded-card bg-surface-page border border-b-card p-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <div class="text-[12.5px] font-bold text-ink">组装数量</div>
+                        <div class="text-[10px] text-ink-muted mt-1 font-mono" x-text="queryCountFormulaText()"></div>
+                      </div>
+                      <div class="text-right">
+                        <div class="text-[20px] font-bold text-accent" x-text="estimatedQueryCount()"></div>
+                        <div class="text-[10px] text-ink-muted">预计 Query</div>
+                      </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-4 gap-2">
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted">每条画像数</span>
+                        <select x-model="queryPoolConfig.profilesPerPrompt" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="5">5</option>
+                        </select>
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted">引擎数量</span>
+                        <select x-model="queryPoolConfig.engineCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="1">1</option>
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                        </select>
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">总上限</span>
+                        <input x-model="queryPoolConfig.maxQueries" type="number" min="100" step="100"
+                               class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
+                      </label>
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">超出上限</span>
+                        <select x-model="queryPoolConfig.overflowPolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="split">自动拆批</option>
+                          <option value="hold">进入审批</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">预检状态</h3>
+                  </div>
+                  <button @click="openQueryPoolPanel('preflight')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">预检报告</button>
+                </div>
+                <div class="grid grid-cols-4 gap-3">
+                  <template x-for="gate in queryPoolQualityGates" :key="gate.title">
+                    <div class="rounded-card bg-surface-page border border-b-card p-3">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
+                        <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
+                      </div>
+                      <div class="text-[10px] text-ink-muted mt-2 font-mono" x-text="gate.meta"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <template x-if="queryPoolActionPanel">
+                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+                  <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                    <div>
+                      <h3 class="text-[15px] font-bold text-ink" x-text="queryPoolPanelTitle()"></h3>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Prompt ' + selectedQueryPoolPrompts().length + ' · 预计 ' + estimatedQueryCount() + ' queries'"></div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button @click="openQueryPoolPanel('cost')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="queryPoolActionPanel==='cost' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">成本</button>
+                      <button @click="openQueryPoolPanel('assemble')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="queryPoolActionPanel==='assemble' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">组装</button>
+                      <button @click="openQueryPoolPanel('preflight')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                              :class="queryPoolActionPanel==='preflight' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">预检</button>
+                      <button @click="queryPoolActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <template x-if="queryPoolActionPanel==='cost'">
+                    <div class="p-5">
+                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">Engine</th><th class="px-4 py-2.5 text-left text-ink-muted">Queries</th><th class="px-4 py-2.5 text-left text-ink-muted">单价</th><th class="px-4 py-2.5 text-right text-ink-muted">预估成本</th></tr></thead>
+                        <tbody>
+                          <template x-for="row in queryPoolCostRows" :key="row.engine">
+                            <tr class="border-b border-b-card">
+                              <td class="px-4 py-3 font-semibold text-ink" x-text="row.engine"></td>
+                              <td class="px-4 py-3 text-ink-body tabular-nums" x-text="row.queries.toLocaleString()"></td>
+                              <td class="px-4 py-3 text-ink-body" x-text="row.unit"></td>
+                              <td class="px-4 py-3 text-right font-semibold text-ink" x-text="row.cost"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                  <template x-if="queryPoolActionPanel==='assemble'">
+                    <div class="p-5 space-y-4">
+                      <div class="grid grid-cols-4 gap-3">
+                        <template x-for="step in queryPoolAssembleSteps" :key="step.name">
+                          <div class="rounded-card bg-surface-page border border-b-card p-3">
+                            <div class="flex items-center justify-between">
+                              <span class="text-[12px] font-semibold text-ink" x-text="step.name"></span>
+                              <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                                    :class="step.status==='done' ? 'bg-success/10 text-success' : step.status==='running' ? 'bg-accent/10 text-accent' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="step.label"></span>
+                            </div>
+                            <div class="text-[18px] font-bold text-ink mt-3" x-text="step.value"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between">
+                        <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
+                          <div><div class="text-ink-muted">预计组装</div><div class="font-semibold text-ink mt-1" x-text="estimatedQueryCount() + ' queries'"></div></div>
+                          <div><div class="text-ink-muted">Prompt</div><div class="font-semibold text-ink mt-1" x-text="selectedQueryPoolPrompts().length"></div></div>
+                          <div><div class="text-ink-muted">总上限</div><div class="font-semibold text-ink mt-1" x-text="Number(queryPoolConfig.maxQueries).toLocaleString()"></div></div>
+                          <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="queryPoolAssembleStarted ? '刚刚' : '未运行'"></div></div>
+                        </div>
+                        <button @click="startQueryPoolAssemble()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
+                          <span x-text="queryPoolAssembleStarted ? '重新组装' : '开始组装'"></span>
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="queryPoolActionPanel==='preflight'">
+                    <div class="p-5">
+                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">检查项</th><th class="px-4 py-2.5 text-left text-ink-muted">结果</th><th class="px-4 py-2.5 text-left text-ink-muted">影响</th><th class="px-4 py-2.5 text-right text-ink-muted">处理</th></tr></thead>
+                        <tbody>
+                          <template x-for="item in queryPoolPreflightItems" :key="item.name">
+                            <tr class="border-b border-b-card">
+                              <td class="px-4 py-3 font-semibold text-ink" x-text="item.name"></td>
+                              <td class="px-4 py-3"><span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold" :class="item.tone==='success' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'" x-text="item.result"></span></td>
+                              <td class="px-4 py-3 text-ink-body" x-text="item.impact"></td>
+                              <td class="px-4 py-3 text-right text-ink-body" x-text="item.action"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
               <!-- ① KPI Cards: 5 metrics -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">Query 组装状态</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">Prompt × Profile 采样组装 · PRD §4.2.3</p>
+                    <p class="text-[12px] text-ink-muted mt-1">按画像和引擎生成可执行 Query</p>
                   </div>
-                  <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">运行 Query 组装</button>
                 </div>
 
                 <div class="grid grid-cols-5 gap-3 mb-6">
@@ -1787,7 +2929,7 @@
                   <div class="flex items-center gap-2">
                     <i data-lucide="shuffle" class="w-4 h-4 text-accent"></i>
                     <span class="text-[12px] text-ink-muted">采样策略:</span>
-                    <span class="text-[12px] font-semibold text-ink">每 Prompt × <span x-text="generationQueryStats.avgProfilesPerPrompt"></span> 个 Profile</span>
+                    <span class="text-[12px] font-semibold text-ink">每条 Prompt 覆盖 <span x-text="generationQueryStats.avgProfilesPerPrompt"></span> 个画像</span>
                   </div>
                   <div class="w-px h-5 bg-accent/20"></div>
                   <div class="flex items-center gap-2">
@@ -1808,7 +2950,7 @@
                         <div class="flex items-center justify-between mb-1 text-[12px]">
                           <span class="font-semibold text-ink" x-text="e.engine"></span>
                           <div class="flex items-center gap-3">
-                            <span class="text-[11px] text-ink-muted tabular-nums" x-text="e.queries.toLocaleString() + ' queries'"></span>
+                    <span class="text-[11px] text-ink-muted tabular-nums" x-text="e.queries.toLocaleString() + ' 条 Query'"></span>
                             <span class="text-accent font-semibold tabular-nums" x-text="e.rate + '%'"></span>
                           </div>
                         </div>
@@ -1822,14 +2964,14 @@
 
                 <!-- Right: By ProfileGroup -->
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-                  <div class="text-[13px] font-semibold text-ink mb-4">按 ProfileGroup 成功率</div>
+                  <div class="text-[13px] font-semibold text-ink mb-4">按画像组成功率</div>
                   <div class="space-y-3">
                     <template x-for="p in generationQueryStats.successRateByProfile" :key="p.group">
                       <div>
                         <div class="flex items-center justify-between mb-1 text-[12px]">
                           <span class="font-semibold text-ink" x-text="p.group"></span>
                           <div class="flex items-center gap-3">
-                            <span class="text-[11px] text-ink-muted tabular-nums" x-text="p.queries.toLocaleString() + ' queries'"></span>
+                            <span class="text-[11px] text-ink-muted tabular-nums" x-text="p.queries.toLocaleString() + ' 条 Query'"></span>
                             <span class="text-accent font-semibold tabular-nums" x-text="p.rate + '%'"></span>
                           </div>
                         </div>
@@ -1861,7 +3003,7 @@
               <!-- ④ Query 详细列表 (Prompt × Profile 组合) -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
                 <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
-                  <h3 class="text-[14px] font-semibold text-ink">Query 内容列表 (Prompt × Profile)</h3>
+                    <h3 class="text-[14px] font-semibold text-ink">Query 内容列表</h3>
                   <div class="flex items-center gap-2">
                     <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                       <option value="">全部引擎</option>
@@ -1869,7 +3011,7 @@
                     </select>
                     <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                       <option value="">全部状态</option>
-                      <option>completed</option><option>partial</option><option>failed</option>
+                      <option>已完成</option><option>部分完成</option><option>失败</option>
                     </select>
                   </div>
                 </div>
@@ -1878,17 +3020,12 @@
                     <div class="px-6 py-4 hover:bg-surface-page transition-colors">
                       <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center gap-2 text-[11px]">
-                          <span class="font-mono font-semibold text-ink" x-text="q.id"></span>
-                          <span class="text-ink-faint">←</span>
-                          <span class="font-mono text-ink-muted" x-text="q.promptId"></span>
-                          <span class="text-ink-faint">←</span>
-                          <span class="font-mono text-ink-muted" x-text="q.topicId"></span>
-                          <span class="w-px h-3 bg-b-card"></span>
+                          <span class="font-semibold text-ink" x-text="topicTitle(q.topicId)"></span>
                           <span class="font-medium text-ink" x-text="q.engine"></span>
                         </div>
                         <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
                               :class="q.status==='completed' ? 'bg-success/10 text-success' : q.status==='failed' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning'"
-                              x-text="q.status"></span>
+                              x-text="queryStatusLabel(q.status)"></span>
                       </div>
                       <!-- Profile context -->
                       <div class="flex items-center gap-2 mb-2 text-[11px]">
@@ -1901,7 +3038,7 @@
                       <!-- Response link -->
                       <div class="mt-2 text-[10px]">
                         <template x-if="q.responseId">
-                          <span class="text-accent cursor-pointer hover:underline" x-text="'→ Response: ' + q.responseId"></span>
+                          <span class="text-accent cursor-pointer hover:underline">查看采集结果</span>
                         </template>
                         <template x-if="!q.responseId">
                           <span class="text-danger">无 Response（执行失败）</span>
@@ -4067,61 +5204,127 @@
         <div class="grid grid-cols-3 gap-3">
           <div class="p-3 rounded-card bg-surface-page border border-b-card">
             <div class="text-[11px] text-ink-muted">Projects</div>
-            <div class="text-[18px] font-bold text-ink" x-text="userDrawer.projects"></div>
+            <div class="text-[18px] font-bold text-ink" x-text="userDrawer.project_count || 0"></div>
           </div>
           <div class="p-3 rounded-card bg-surface-page border border-b-card">
             <div class="text-[11px] text-ink-muted">行业</div>
-            <div class="text-[14px] font-semibold text-ink mt-0.5" x-text="userDrawer.industry"></div>
+            <div class="text-[14px] font-semibold text-ink mt-0.5" x-text="userDrawer.industry || '—'"></div>
           </div>
           <div class="p-3 rounded-card bg-surface-page border border-b-card">
             <div class="text-[11px] text-ink-muted">状态</div>
             <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[11px] font-semibold mt-0.5"
-                  :class="userDrawer.status==='active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">
+                  :class="userDrawer.status==='active' ? 'bg-success/10 text-success' : userDrawer.status==='frozen' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'">
               <span x-text="userDrawer.status"></span>
             </span>
           </div>
         </div>
 
+        <template x-if="userDrawer.detailError">
+          <div class="rounded-card border border-danger/20 bg-danger/5 px-3 py-2 text-[13px] text-danger" x-text="userDrawer.detailError"></div>
+        </template>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div class="p-3 rounded-card bg-surface-page border border-b-card">
+            <div class="text-[11px] text-ink-muted">公司</div>
+            <div class="text-[13px] font-semibold text-ink mt-0.5" x-text="userDrawer.company || '—'"></div>
+          </div>
+          <div class="p-3 rounded-card bg-surface-page border border-b-card">
+            <div class="text-[11px] text-ink-muted">注册来源 / 语言</div>
+            <div class="text-[13px] font-semibold text-ink mt-0.5" x-text="(userDrawer.provider || 'email') + ' · ' + (userDrawer.locale || 'zh-CN')"></div>
+          </div>
+          <div class="p-3 rounded-card bg-surface-page border border-b-card">
+            <div class="text-[11px] text-ink-muted">注册时间</div>
+            <div class="text-[13px] font-semibold text-ink mt-0.5" x-text="formatDateTime(userDrawer.created_at)"></div>
+          </div>
+          <div class="p-3 rounded-card bg-surface-page border border-b-card">
+            <div class="text-[11px] text-ink-muted">最后登录</div>
+            <div class="text-[13px] font-semibold text-ink mt-0.5" x-text="formatDateTime(userDrawer.last_login_at)"></div>
+          </div>
+        </div>
+
         <div>
-          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">近 30 天登录</div>
-          <div class="h-24 w-full relative"><canvas id="drawer-login" class="absolute inset-0"></canvas></div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">activity</div>
+          <div class="grid grid-cols-3 gap-3">
+            <div class="p-3 rounded-card bg-surface-page border border-b-card">
+              <div class="text-[11px] text-ink-muted">等级</div>
+              <div class="text-[14px] font-semibold text-ink" x-text="userDrawer.activity_level || 'dormant'"></div>
+            </div>
+            <div class="p-3 rounded-card bg-surface-page border border-b-card">
+              <div class="text-[11px] text-ink-muted">30d 登录</div>
+              <div class="text-[14px] font-semibold text-ink" x-text="userDrawer.login_count_30d || 0"></div>
+            </div>
+            <div class="p-3 rounded-card bg-surface-page border border-b-card">
+              <div class="text-[11px] text-ink-muted">30d Query</div>
+              <div class="text-[14px] font-semibold text-ink" x-text="userDrawer.query_count_30d || 0"></div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">moderation</div>
+          <div class="p-3 rounded-card bg-surface-page border border-b-card text-[12.5px] text-ink-body">
+            <div class="flex items-center justify-between">
+              <span>冻结状态</span>
+              <span class="font-semibold" x-text="userDrawer.moderation && userDrawer.moderation.is_frozen ? 'frozen' : 'not frozen'"></span>
+            </div>
+            <div class="mt-1 text-ink-muted" x-show="userDrawer.moderation && userDrawer.moderation.reason" x-text="'原因: ' + userDrawer.moderation.reason"></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">Projects 只读</div>
+          <template x-if="!userDrawer.projectsList || userDrawer.projectsList.length===0">
+            <div class="p-3 rounded-card bg-surface-page border border-b-card text-[12.5px] text-ink-muted">暂无 Project 数据</div>
+          </template>
+          <div class="space-y-2">
+            <template x-for="p in userDrawer.projectsList || []" :key="p.id">
+              <div class="p-3 rounded-card bg-surface-page border border-b-card">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-[13px] font-semibold text-ink" x-text="p.name || ('Project ' + p.id)"></div>
+                  <span class="text-[11px] text-ink-muted" x-text="p.status || 'active'"></span>
+                </div>
+                <div class="text-[12px] text-ink-muted mt-1">
+                  <span x-text="'Primary: ' + (p.primary_brand_name || p.primary_brand_id || '—')"></span>
+                </div>
+                <div class="text-[12px] text-ink-muted mt-1 truncate" x-text="'Competitors: ' + (p.competitor_brand_ids || '—')"></div>
+              </div>
+            </template>
+          </div>
         </div>
 
         <div>
           <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">操作</div>
           <div class="space-y-2">
-            <button class="w-full h-10 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[13px] font-medium text-ink-body flex items-center justify-between px-3">
-              <span class="flex items-center gap-2"><i data-lucide="mail" class="w-4 h-4"></i> 发送密码重置邮件</span>
+            <button disabled title="后置：需安全复用 user_auth token/email 机制"
+                    class="w-full h-10 rounded-btn border border-b-default bg-surface text-[13px] font-medium text-ink-muted flex items-center justify-between px-3 opacity-50 cursor-not-allowed">
+              <span class="flex items-center gap-2"><i data-lucide="mail" class="w-4 h-4"></i> 强制密码重置（后置）</span>
               <i data-lucide="chevron-right" class="w-4 h-4 text-ink-muted"></i>
             </button>
             <button class="w-full h-10 rounded-btn border border-warning/30 bg-warning/5 hover:bg-warning/10 text-[13px] font-semibold text-warning flex items-center justify-between px-3"
-                    @click="confirmAction = {title:'暂停账号 ' + userDrawer.email, desc:'暂停后用户无法登录，已有 Projects 数据保留；支持恢复。', danger:false, action:()=>{ userDrawer.status='suspended'; toast('已暂停') }}">
-              <span class="flex items-center gap-2"><i data-lucide="pause-circle" class="w-4 h-4"></i> 暂停账号</span>
+                    @click="confirmUserModeration((userDrawer.moderation && userDrawer.moderation.is_frozen) ? 'unfreeze' : 'freeze')">
+              <span class="flex items-center gap-2"><i data-lucide="pause-circle" class="w-4 h-4"></i> <span x-text="userDrawer.moderation && userDrawer.moderation.is_frozen ? '解冻账号' : '冻结账号'"></span></span>
               <i data-lucide="chevron-right" class="w-4 h-4"></i>
             </button>
-            <button class="w-full h-10 rounded-btn border border-danger/30 bg-danger/5 hover:bg-danger/10 text-[13px] font-semibold text-danger flex items-center justify-between px-3"
-                    @click="confirmAction = {title:'删除账号 ' + userDrawer.email, desc:'删除后用户数据将匿名化（保留平台数据），操作写入审计且不可逆。需输入用户邮箱再次确认。', danger:true, action:()=>{ userDrawer=null; toast('已标记删除（软删）') }}">
-              <span class="flex items-center gap-2"><i data-lucide="trash-2" class="w-4 h-4"></i> 删除账号</span>
+            <button disabled title="soft delete 后置高风险操作"
+                    class="w-full h-10 rounded-btn border border-danger/30 bg-danger/5 text-[13px] font-semibold text-danger flex items-center justify-between px-3 opacity-50 cursor-not-allowed">
+              <span class="flex items-center gap-2"><i data-lucide="trash-2" class="w-4 h-4"></i> 删除账号（后置高风险）</span>
               <i data-lucide="chevron-right" class="w-4 h-4"></i>
             </button>
           </div>
         </div>
 
         <div>
-          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">最近审计</div>
+          <div class="text-[12px] font-semibold uppercase tracking-wider text-ink-muted mb-2">操作记录</div>
           <ul class="space-y-2 text-[12.5px]">
-            <li class="p-2.5 rounded-card bg-surface-page border border-b-card">
-              <div class="flex justify-between"><span class="font-medium text-ink">更新行业偏好</span><span class="text-ink-muted">1h 前</span></div>
-              <div class="text-ink-muted">美妆个护 → 奢侈品</div>
-            </li>
-            <li class="p-2.5 rounded-card bg-surface-page border border-b-card">
-              <div class="flex justify-between"><span class="font-medium text-ink">创建 Project "雅诗兰黛竞品追踪"</span><span class="text-ink-muted">昨天 16:22</span></div>
-              <div class="text-ink-muted">主品牌 Estée Lauder · 5 个竞品</div>
-            </li>
-            <li class="p-2.5 rounded-card bg-surface-page border border-b-card">
-              <div class="flex justify-between"><span class="font-medium text-ink">登录</span><span class="text-ink-muted">昨天 09:05</span></div>
-              <div class="text-ink-muted font-mono">203.0.113.42 · Chrome 131 / macOS</div>
-            </li>
+            <template x-if="!userDrawer.recent_admin_actions || userDrawer.recent_admin_actions.length===0">
+              <li class="p-2.5 rounded-card bg-surface-page border border-b-card text-ink-muted">暂无操作记录</li>
+            </template>
+            <template x-for="a in userDrawer.recent_admin_actions || []" :key="a.id">
+              <li class="p-2.5 rounded-card bg-surface-page border border-b-card">
+                <div class="flex justify-between gap-2"><span class="font-medium text-ink" x-text="a.action"></span><span class="text-ink-muted" x-text="formatDateTime(a.created_at)"></span></div>
+                <div class="text-ink-muted truncate" x-text="(a.operator || 'system') + ' · ' + (a.reason || '—')"></div>
+              </li>
+            </template>
           </ul>
         </div>
       </div>
@@ -4343,7 +5546,7 @@
           <button class="h-9 px-4 rounded-btn text-white text-[13px] font-semibold shadow-btn"
                   :class="[confirmAction.danger ? 'bg-danger' : 'bg-warning', (!confirmChecked || !confirmReason) ? 'opacity-50 cursor-not-allowed' : '']"
                   :disabled="!confirmChecked || !confirmReason"
-                  @click="if (confirmAction.action) confirmAction.action(); confirmAction=null; confirmChecked=false; confirmReason='';">
+                  @click="confirmAction.action && confirmAction.action(confirmReason); confirmAction=null; confirmChecked=false; confirmReason='';">
             确认执行
           </button>
         </div>
@@ -4698,7 +5901,9 @@ function summarizeAttempts(rows, total, byStatus) {
 function adminApp() {
   return {
     // state
-    isLoggedIn: true,
+    isLoggedIn: false,
+    adminUser: null,
+    loginLoading: false,
     loginEmail: '',
     loginPassword: '',
     loginError: '',
@@ -4707,6 +5912,187 @@ function adminApp() {
     range: '7d',
     queueTab: '全部',
     genTab: 'topic',
+    topicPlanLoading: false,
+    topicPlanError: '',
+    topicPlanCoverageLoading: false,
+    topicPlanCoverageError: '',
+    topicPlanGenerateLoading: false,
+    topicPlanGenerateError: '',
+    topicPlanCandidatesLoading: false,
+    topicPlanCandidatesError: '',
+    topicPlanIndustries: [],
+    topicPlanCategories: [],
+    topicPlanStats: { coverageLabel:'0%', pendingCandidates:0, lowConfidence:0, noPromptTopics:0 },
+    topicPlanBrandQuery: '',
+    topicPlanBrands: [
+      { id:'brand-winona', name:'薇诺娜', category:'敏感肌', selected:true },
+      { id:'brand-lrp', name:'理肤泉', category:'敏感肌', selected:true },
+      { id:'brand-curel', name:'珂润', category:'敏感肌', selected:true },
+      { id:'brand-avene', name:'雅漾', category:'敏感肌', selected:true },
+      { id:'brand-florasis', name:'花西子', category:'彩妆', selected:false },
+      { id:'brand-perfect-diary', name:'完美日记', category:'彩妆', selected:false },
+      { id:'brand-proya', name:'珀莱雅', category:'护肤', selected:false },
+      { id:'brand-osm', name:'欧诗漫', category:'护肤', selected:false },
+    ],
+    topicPlanConfig: {
+      industryId: '',
+      categoryId: '',
+      maxPerBrand: 40,
+      maxTopics: 180,
+      gapPriority: 'p12',
+      overflowPolicy: 'review',
+    },
+    topicPlanActionPanel: '',
+    topicPlanGenerateStarted: false,
+    topicPlanCoverageRows: [
+      { brand:'薇诺娜', topics:412, coverage:'91%', gaps:3, status:'达标' },
+      { brand:'理肤泉', topics:386, coverage:'88%', gaps:4, status:'达标' },
+      { brand:'珂润', topics:264, coverage:'72%', gaps:8, status:'待补齐' },
+      { brand:'雅漾', topics:238, coverage:'69%', gaps:9, status:'待补齐' },
+    ],
+    topicPlanCoverageGaps: [
+      { brand:'珂润', type:'功效场景', count:5, priority:'P1' },
+      { brand:'雅漾', type:'价格带', count:4, priority:'P1' },
+      { brand:'薇诺娜', type:'新品线', count:3, priority:'P2' },
+      { brand:'理肤泉', type:'用户问题', count:4, priority:'P2' },
+    ],
+    topicPlanGenerateSteps: [
+      { name:'配置检查', status:'done', label:'通过', value:'4 个品牌' },
+      { name:'缺口读取', status:'done', label:'12 个缺口', value:'12' },
+      { name:'候选生成', status:'idle', label:'待运行', value:'+182' },
+      { name:'进入审核', status:'idle', label:'待运行', value:'126' },
+    ],
+    topicPlanPendingItems: [
+      { id:'TC-9021', title:'敏感肌屏障修护精华推荐', brand:'薇诺娜', reason:'低置信', confidence:0.72 },
+      { id:'TC-9022', title:'泛红修护面霜使用场景', brand:'理肤泉', reason:'待审核', confidence:0.81 },
+      { id:'TC-9023', title:'干敏肌换季保湿方案', brand:'珂润', reason:'覆盖缺口', confidence:0.76 },
+      { id:'TC-9024', title:'喷雾舒缓场景推荐', brand:'雅漾', reason:'无 Prompt', confidence:0.68 },
+    ],
+    promptMatrixConfig: {
+      intentCount: 2,
+      languageCount: 2,
+      topicPriority: 'gap_first',
+      templateStrategy: 'latest',
+      promptStyle: 'natural',
+      audienceMode: 'general',
+      maxPerTopic: 4,
+      maxPrompts: 8000,
+      overflowPolicy: 'split',
+    },
+    promptMatrixTopicQuery: '',
+    promptMatrixTopicBrand: 'all',
+    promptMatrixTopicCoverage: 'all',
+    promptMatrixTopicPage: 1,
+    promptMatrixTopicPerPage: 20,
+    promptMatrixTopicTotal: 3420,
+    promptMatrixTopics: [
+      { id:'T-1204', title:'敏感肌屏障修护精华推荐', brand:'薇诺娜', coverage:'partial', coverageLabel:'意图不足', priority:'P1', updatedAt:'今天', selected:true },
+      { id:'T-1205', title:'泛红修护面霜使用场景', brand:'理肤泉', coverage:'partial', coverageLabel:'意图不足', priority:'P1', updatedAt:'今天', selected:true },
+      { id:'T-1206', title:'干敏肌换季保湿方案', brand:'珂润', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P1', updatedAt:'昨天', selected:true },
+      { id:'T-1207', title:'喷雾舒缓场景推荐', brand:'雅漾', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P2', updatedAt:'昨天', selected:true },
+      { id:'T-1211', title:'国货防晒性价比对比', brand:'珀莱雅', coverage:'covered', coverageLabel:'已覆盖', priority:'P2', updatedAt:'2 天前', selected:false },
+      { id:'T-1212', title:'美白精华成分差异', brand:'欧诗漫', coverage:'partial', coverageLabel:'意图不足', priority:'P2', updatedAt:'2 天前', selected:false },
+      { id:'T-1213', title:'底妆持妆场景选择', brand:'完美日记', coverage:'covered', coverageLabel:'已覆盖', priority:'P3', updatedAt:'3 天前', selected:false },
+      { id:'T-1214', title:'花西子散粉肤质适配', brand:'花西子', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P2', updatedAt:'3 天前', selected:false },
+    ],
+    promptMatrixActionPanel: '',
+    promptMatrixGenerateStarted: false,
+    promptMatrixGapItems: [
+      { id:'PG-01', topic:'干敏肌换季保湿方案', gap:'缺 commercial / en-US', priority:'P1', estimate:4 },
+      { id:'PG-02', topic:'喷雾舒缓场景推荐', gap:'缺 informational / zh-CN', priority:'P1', estimate:2 },
+      { id:'PG-03', topic:'敏感肌屏障修护精华推荐', gap:'缺 transactional', priority:'P2', estimate:2 },
+      { id:'PG-04', topic:'泛红修护面霜使用场景', gap:'缺 en-US', priority:'P2', estimate:2 },
+    ],
+    promptMatrixGenerateSteps: [
+      { name:'Topic 校验', status:'done', label:'通过', value:'4 个 Topic' },
+      { name:'模板匹配', status:'done', label:'已审核', value:'2 类意图' },
+      { name:'候选生成', status:'idle', label:'待运行', value:'+16' },
+      { name:'进入审核', status:'idle', label:'待运行', value:'6' },
+    ],
+    promptMatrixPendingItems: [
+      { id:'P-9301', text:'敏感肌用户如何选择屏障修护精华？', topic:'敏感肌屏障修护精华推荐', reason:'相似 Prompt 需合并' },
+      { id:'P-9302', text:'泛红肌肤适合哪些修护面霜？', topic:'泛红修护面霜使用场景', reason:'需要确认品牌变量' },
+      { id:'P-9303', text:'换季干敏肌应该怎么搭配保湿产品？', topic:'干敏肌换季保湿方案', reason:'低置信候选' },
+    ],
+    queryPoolPromptQuery: '',
+    queryPoolPrompts: [
+      { id:'P-7741', title:'敏感肌用户如何选择屏障修护精华？', intent:'commercial', selected:true },
+      { id:'P-7742', title:'泛红肌肤适合哪些修护面霜？', intent:'informational', selected:true },
+      { id:'P-7743', title:'换季干敏肌应该怎么搭配保湿产品？', intent:'commercial', selected:true },
+      { id:'P-7744', title:'舒缓喷雾适合在哪些场景使用？', intent:'informational', selected:true },
+      { id:'P-7751', title:'国货防晒霜有哪些性价比选择？', intent:'commercial', selected:false },
+      { id:'P-7752', title:'美白精华成分应该怎么比较？', intent:'informational', selected:false },
+      { id:'P-7753', title:'通勤底妆怎样更持久？', intent:'transactional', selected:false },
+      { id:'P-7754', title:'散粉适合油皮还是干皮？', intent:'commercial', selected:false },
+    ],
+    queryPoolConfig: {
+      profileStrategy: 'balanced',
+      engineRouting: 'balanced',
+      budgetCap: '180',
+      scheduleWindow: 'next',
+      dedupePolicy: 'merge',
+      priorityMode: 'gap',
+      profilesPerPrompt: 3,
+      engineCount: 2,
+      maxQueries: 12000,
+      overflowPolicy: 'split',
+    },
+    queryPoolActionPanel: '',
+    queryPoolAssembleStarted: false,
+    queryPoolCostRows: [
+      { engine:'ChatGPT', queries:24, unit:'$0.006 / query', cost:'$0.14' },
+      { engine:'豆包', queries:24, unit:'¥0.018 / query', cost:'¥0.43' },
+      { engine:'DeepSeek', queries:0, unit:'¥0.012 / query', cost:'¥0.00' },
+    ],
+    queryPoolAssembleSteps: [
+      { name:'Prompt 校验', status:'done', label:'通过', value:'4 个 Prompt' },
+      { name:'画像采样', status:'done', label:'每条 3 个', value:'12 个画像' },
+      { name:'Query 渲染', status:'idle', label:'待运行', value:'+24' },
+      { name:'预检入池', status:'idle', label:'待运行', value:'待入池' },
+    ],
+    queryPoolPreflightItems: [
+      { name:'模板变量', result:'通过', tone:'success', impact:'0 failed', action:'无需处理' },
+      { name:'重复 Query', result:'3 review', tone:'warning', impact:'相似问法过高', action:'自动合并' },
+      { name:'账号水位', result:'通过', tone:'success', impact:'可执行', action:'无需处理' },
+      { name:'成本上限', result:'通过', tone:'success', impact:'低于预算', action:'无需处理' },
+    ],
+    topicPlanQualityGates: [
+      { title:'发布覆盖', value:'78%', tone:'success', icon:'radar', meta:'目标 80% · 当前接近达标' },
+      { title:'待审核', value:'126', tone:'warning', icon:'list-checks', meta:'候选 Topic 需人工确认' },
+      { title:'低置信', value:'12', tone:'warning', icon:'search-check', meta:'语义或覆盖不足' },
+      { title:'无 Prompt', value:'238', tone:'accent', icon:'message-square-off', meta:'需进入 Prompt Matrix' },
+    ],
+    promptMatrixQualityGates: [
+      { title:'意图覆盖', value:'96%', tone:'success', meta:'每个 Topic 至少 2 类意图' },
+      { title:'模板状态', value:'已审核', tone:'success', meta:'只使用通过审核的模板' },
+      { title:'品牌纯净', value:'0 泄露', tone:'success', meta:'品类题不混入品牌名' },
+      { title:'相似重复', value:'18 待看', tone:'warning', meta:'相近问法进入审核' },
+    ],
+    queryPoolQualityGates: [
+      { title:'渲染成功', value:'99.2%', tone:'success', meta:'变量都能生成完整 Query' },
+      { title:'画像覆盖', value:'4.6 平均', tone:'success', meta:'核心人群覆盖充足' },
+      { title:'引擎可用', value:'23 暂缓', tone:'warning', meta:'账号或地域不匹配' },
+      { title:'成本上限', value:'$142', tone:'success', meta:'低于本批预算' },
+    ],
+    schedulerWorkflow: [
+      { no:'01', title:'接收批次', icon:'inbox', desc:'读取 scheduler_intake_batch，并按窗口合并或拆分。' },
+      { no:'02', title:'优先级排序', icon:'list-ordered', desc:'按品牌权重、Topic 价值、SLA 和失败重试计算优先级。' },
+      { no:'03', title:'资源分配', icon:'key-round', desc:'匹配账号、代理、引擎和并发额度，跳过低健康资源。' },
+      { no:'04', title:'派发追踪', icon:'activity', desc:'写入 dispatch job，交给 Tracker 执行并回收状态。' },
+    ],
+    schedulerQualityGates: [
+      { title:'Budget Guard', value:'64% used', tone:'success', desc:'按日预算、brand cap 和 engine cap 控制派发量。' },
+      { title:'Resource Guard', value:'7 warn', tone:'warning', desc:'账号健康度、代理失败率和冷却时间不达标则不分配。' },
+      { title:'Duplicate Lock', value:'pass', tone:'success', desc:'同一 rendered_query 在窗口内只能进入一个执行批次。' },
+      { title:'Retry Policy', value:'3 tiers', tone:'accent', desc:'按失败类型选择立即重试、换资源重试或进入人工队列。' },
+    ],
+    schedulerArtifacts: [
+      { name:'collection_batch', icon:'calendar-clock', desc:'调度批次，包含窗口、预算、策略和任务统计。' },
+      { name:'dispatch_jobs', icon:'send', desc:'Tracker 可执行任务，包含 query_id、engine、account、proxy 和 priority。' },
+      { name:'resource_allocation', icon:'key-round', desc:'账号池、代理池和并发额度的分配记录。' },
+      { name:'retry_policy_snapshot', icon:'repeat', desc:'本批次使用的重试规则和失败分流策略快照。' },
+      { name:'schedule_audit', icon:'file-check-2', desc:'每次入队、跳过、限流、取消和人工干预的审计记录。' },
+    ],
     selectedTopic: null,
     resourceTab: 'accounts',
     trackerTab: 'attempts',
@@ -4721,6 +6107,18 @@ function adminApp() {
     paletteQuery: '',
     selectedKg: [],
     toastMsg: '',
+    users: [],
+    usersLoading: false,
+    usersError: null,
+    userFilters: { q:'', status:'', activity:'', industry:'', sort:'created_at_desc' },
+    userPagination: { page:1, perPage:20, total:0 },
+    userDetailLoading: false,
+    loginAuditRows: [],
+    loginAuditLoading: false,
+    loginAuditError: null,
+    userAuditRows: [],
+    userAuditLoading: false,
+    userAuditError: null,
 
     // nav
     nav: [
@@ -4737,8 +6135,10 @@ function adminApp() {
         { key:'pipeline-dashboard', label:'管道总览', icon:'layout-dashboard', group:'数据管道', subtitle:'Planner · Tracker · Analyzer 三模块健康一屏' },
       ]},
       { title: 'Planner · 规划', items: [
-        { key:'planner-scheduler',  label:'采集调度',     icon:'calendar-clock', group:'Planner', subtitle:'今日批次进度 · Planner 运行状态 · 全局开关' },
-        { key:'planner-generation', label:'生成管线',     icon:'workflow',       group:'Planner', subtitle:'Topic → Prompt → Query 三层生成 · 覆盖度' },
+        { key:'planner-topics',        label:'Topic Plan',          icon:'layers-3',            group:'Planner', subtitle:'行业基线 + 品牌 / 产品覆盖' },
+        { key:'planner-prompt-matrix', label:'Prompt Matrix',       icon:'message-square-text', group:'Planner', subtitle:'Intent × Language × Template 生成矩阵' },
+        { key:'planner-query-pool',    label:'Query Pool',          icon:'send-horizontal',     group:'Planner', subtitle:'Prompt × Profile × Engine 可执行任务池' },
+        { key:'planner-scheduler',     label:'采集调度',             icon:'calendar-clock',      group:'Planner', subtitle:'预算 / 资源 / 优先级 · Query 入队控制' },
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
         { key:'planner-profiles',   label:'ProfileGroup', icon:'users',          group:'Planner', subtitle:'用户画像分组 · 权重 · LLM 生成 Profile 池' },
         { key:'planner-resources',  label:'采集资源',     icon:'key-round',      badge:'P0', badgeTone:'danger', group:'Planner', subtitle:'账号池 + 代理池 · 生命周期 · 健康评分' },
@@ -4810,19 +6210,7 @@ function adminApp() {
       { id:6, label:'商务线索',    title:'某美妆 DTC 品牌咨询报告',   meta:'来自落地页 · bizdev 待跟进',              time:'昨天',   tone:'accent',  type:'lead' },
     ],
 
-    // Users
-    users: [
-      { id:1, name:'张明珠',  email:'mingzhu.z@vogue-cn.com',  initials:'ZM', status:'active',    industry:'美妆个护',   projects:5, lastLogin:'12m 前',      registered:'2026-02-14' },
-      { id:2, name:'Chen Li', email:'chen.li@brand-intel.io',  initials:'CL', status:'active',    industry:'奢侈品',     projects:12,lastLogin:'1h 前',        registered:'2026-01-20' },
-      { id:3, name:'王晓燕',  email:'wxy@seoteam.cn',          initials:'WX', status:'active',    industry:'服装时尚',   projects:3, lastLogin:'昨天 20:11',   registered:'2026-03-01' },
-      { id:4, name:'Rahul M.',email:'rahul@geoinsights.com',   initials:'RM', status:'suspended', industry:'食品饮料',   projects:1, lastLogin:'4 天前',       registered:'2026-03-18' },
-      { id:5, name:'刘嘉豪',  email:'jiahao.liu@estee-cn.com', initials:'LJ', status:'active',    industry:'美妆个护',   projects:8, lastLogin:'30m 前',       registered:'2025-12-05' },
-      { id:6, name:'Sophie B.',email:'sophie@lvmh-digital.fr',  initials:'SB',status:'active',    industry:'奢侈品',     projects:6, lastLogin:'2h 前',        registered:'2026-02-28' },
-      { id:7, name:'林若曦',  email:'ruoxi.l@gmail.com',       initials:'LR', status:'active',    industry:'服装时尚',   projects:2, lastLogin:'3h 前',        registered:'2026-04-03' },
-      { id:8, name:'Marcus T.',email:'marcus.t@haleon.com',    initials:'MT', status:'active',    industry:'食品饮料',   projects:4, lastLogin:'1h 前',        registered:'2026-01-11' },
-      { id:9, name:'周心怡',  email:'xinyi.z@florasis.cn',     initials:'ZX', status:'active',    industry:'美妆个护',   projects:9, lastLogin:'18m 前',       registered:'2025-11-22' },
-      { id:10,name:'Test Account',email:'qa@genpano.internal', initials:'QA', status:'deleted',   industry:'—',         projects:0, lastLogin:'2026-02-02',   registered:'2026-02-01' },
-    ],
+    // Users are loaded from /api/users; no prototype mock truth here.
 
     // Queue
     queue: [
@@ -5801,17 +7189,794 @@ function adminApp() {
       return this.nav[0].items[0];
     },
 
-    goto(key){
-      this.page = key;
-      this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
-      if (key === 'planner-resources') this.loadAccounts();
+    topicTitle(topicId){
+      const topic = this.topicsList.find(t => t.id === topicId) || this.promptMatrixTopics.find(t => t.id === topicId);
+      return topic ? topic.title : '未命名 Topic';
     },
 
-    openUserDrawer(u){ this.userDrawer = u; this.$nextTick(()=>{ lucide.createIcons(); this.renderDrawerLogin(); }); },
+    intentLabel(intent){
+      const labels = {
+        informational: '信息了解',
+        commercial: '购买决策',
+        transactional: '行动导向',
+        navigational: '定向查找',
+      };
+      return labels[intent] || intent;
+    },
+
+    languageLabel(lang){
+      if (lang === 'zh-CN') return '中文';
+      if (lang === 'en-US') return '英文';
+      return lang || '默认语言';
+    },
+
+    promptStatusLabel(status){
+      if (status === 'active') return '可用';
+      if (status === 'draft') return '待审核';
+      return status || '未知';
+    },
+
+    queryStatusLabel(status){
+      if (status === 'completed') return '已完成';
+      if (status === 'partial') return '部分完成';
+      if (status === 'failed') return '失败';
+      return status || '未知';
+    },
+
+    selectedTopicPlanBrands(){
+      return this.topicPlanBrands.filter(b => b.selected);
+    },
+
+    filteredTopicPlanBrands(){
+      const q = this.topicPlanBrandQuery.trim().toLowerCase();
+      if (!q) return this.topicPlanBrands;
+      return this.topicPlanBrands.filter(b =>
+        b.name.toLowerCase().includes(q) ||
+        b.category.toLowerCase().includes(q) ||
+        b.id.toLowerCase().includes(q)
+      );
+    },
+
+    setTopicPlanBrands(selected){
+      const visible = new Set(this.filteredTopicPlanBrands().map(b => b.id));
+      this.topicPlanBrands.forEach(b => {
+        if (visible.has(b.id)) b.selected = selected;
+      });
+    },
+
+    openTopicPlanPanel(panel){
+      this.topicPlanActionPanel = panel;
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    topicPlanPanelTitle(){
+      if (this.topicPlanActionPanel === 'coverage') return '覆盖度检查';
+      if (this.topicPlanActionPanel === 'generate') return '生成 Topic';
+      if (this.topicPlanActionPanel === 'pending') return '待处理候选';
+      return '';
+    },
+
+    startTopicPlanGenerate(){
+      this.topicPlanGenerateStarted = true;
+      this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map(step => {
+        if (step.name === '候选生成') return { ...step, status:'done', label:'完成' };
+        if (step.name === '进入审核') return { ...step, status:'done', label:'完成' };
+        return step;
+      });
+      this.toast('Topic 生成任务已完成');
+    },
+
+    reviewTopicCandidate(item, status){
+      this.topicPlanPendingItems = this.topicPlanPendingItems.filter(i => i.id !== item.id);
+      const pendingGate = this.topicPlanQualityGates.find(g => g.title === '待审核');
+      if (pendingGate) pendingGate.value = String(this.topicPlanPendingItems.length);
+      this.toast(status === 'approved' ? '已通过候选 Topic' : '已拒绝候选 Topic');
+    },
+
+    topicCountRaw(){
+      const brandCount = this.selectedTopicPlanBrands().length;
+      const maxPerBrand = Number(this.topicPlanConfig.maxPerBrand) || 0;
+      return brandCount * maxPerBrand;
+    },
+
+    estimatedTopicCount(){
+      const maxTopics = Number(this.topicPlanConfig.maxTopics) || 0;
+      return Math.min(this.topicCountRaw(), maxTopics).toLocaleString();
+    },
+
+    topicCountFormulaText(){
+      const brandCount = this.selectedTopicPlanBrands().length;
+      return `${brandCount} 个品牌 × 每品牌 ${this.topicPlanConfig.maxPerBrand} 个 · 总上限 ${Number(this.topicPlanConfig.maxTopics).toLocaleString()}`;
+    },
+
+    resetTopicPlanState(){
+      this.topicPlanIndustries = [];
+      this.topicPlanCategories = [];
+      this.topicPlanBrands = [];
+      this.topicPlanCoverageRows = [];
+      this.topicPlanCoverageGaps = [];
+      this.topicPlanPendingItems = [];
+      this.topicPlanStats = { coverageLabel:'0%', pendingCandidates:0, lowConfidence:0, noPromptTopics:0 };
+      this.updateTopicPlanGates();
+    },
+
+    topicPlanHeaderText(){
+      return 'Selected ' + this.selectedTopicPlanBrands().length
+        + ' brands · Estimated ' + this.estimatedTopicCount()
+        + ' topics · Coverage ' + (this.topicPlanStats.coverageLabel || '0%');
+    },
+
+    topicPlanBrandInScope(brand){
+      const industryId = this.topicPlanConfig.industryId || '';
+      if (industryId && brand.industry_id !== industryId) return false;
+      return true;
+    },
+
+    selectedTopicPlanBrands(){
+      return this.topicPlanBrands.filter(b => b.selected && this.topicPlanBrandInScope(b));
+    },
+
+    filteredTopicPlanBrands(){
+      const q = this.topicPlanBrandQuery.trim().toLowerCase();
+      return this.topicPlanBrands.filter(b => {
+        if (!this.topicPlanBrandInScope(b)) return false;
+        if (!q) return true;
+        return String(b.name || '').toLowerCase().includes(q)
+          || String(b.category || b.category_name || '').toLowerCase().includes(q)
+          || String(b.industry || b.industry_name || '').toLowerCase().includes(q)
+          || String(b.id || '').toLowerCase().includes(q);
+      });
+    },
+
+    setTopicPlanBrands(selected){
+      const visible = new Set(this.filteredTopicPlanBrands().map(b => b.id));
+      this.topicPlanBrands.forEach(b => {
+        if (visible.has(b.id)) b.selected = selected;
+      });
+      this.loadTopicPlanCoverage();
+    },
+
+    updateTopicPlanGates(summary = null){
+      const s = summary || {};
+      const coverage = s.coverage_label || this.topicPlanStats.coverageLabel || '0%';
+      const pending = s.pending_candidates ?? this.topicPlanStats.pendingCandidates ?? 0;
+      const low = s.low_confidence ?? this.topicPlanStats.lowConfidence ?? 0;
+      const noPrompt = s.no_prompt_topics ?? this.topicPlanStats.noPromptTopics ?? 0;
+      this.topicPlanStats = {
+        coverageLabel: coverage,
+        pendingCandidates: pending,
+        lowConfidence: low,
+        noPromptTopics: noPrompt,
+      };
+      this.topicPlanQualityGates = [
+        { title:'发布覆盖', value:coverage, tone:Number(String(coverage).replace('%','')) >= 80 ? 'success' : 'warning', icon:'radar', meta:'目标 80%' },
+        { title:'待审核', value:String(pending), tone:pending > 0 ? 'warning' : 'success', icon:'list-checks', meta:'候选 Topic 待确认' },
+        { title:'低置信', value:String(low), tone:low > 0 ? 'warning' : 'success', icon:'search-check', meta:'需要重点复核' },
+        { title:'无 Prompt', value:String(noPrompt), tone:noPrompt > 0 ? 'accent' : 'success', icon:'message-square-off', meta:'后续进入 Prompt Matrix' },
+      ];
+    },
+
+    topicPlanBrandIdsParam(){
+      return this.selectedTopicPlanBrands().map(b => b.id).join(',');
+    },
+
+    async loadTopicPlanConfig(){
+      if (!this.isLoggedIn) return;
+      this.topicPlanLoading = true;
+      this.topicPlanError = '';
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/config', { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic Plan config failed');
+        this.topicPlanIndustries = body.industries || [];
+        this.topicPlanCategories = body.categories || [];
+        const defaults = body.defaults || {};
+        this.topicPlanConfig = {
+          ...this.topicPlanConfig,
+          industryId: defaults.industryId || '',
+          categoryId: defaults.categoryId || '',
+          maxPerBrand: defaults.maxPerBrand || this.topicPlanConfig.maxPerBrand,
+          maxTopics: defaults.maxTopics || this.topicPlanConfig.maxTopics,
+          gapPriority: defaults.gapPriority || this.topicPlanConfig.gapPriority,
+          overflowPolicy: defaults.overflowPolicy || this.topicPlanConfig.overflowPolicy,
+        };
+        this.topicPlanBrands = (body.brands || []).map(b => ({
+          id: b.id,
+          name: b.name,
+          category: b.category_name || b.category_id || '',
+          category_id: b.category_id || '',
+          industry: b.industry_name || b.industry_id || '',
+          industry_id: b.industry_id || '',
+          topic_count: b.topic_count || 0,
+          selected: !!b.selected,
+        }));
+        this.updateTopicPlanGates(body.summary || {});
+        await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanCandidates();
+      } catch (e) {
+        this.resetTopicPlanState();
+        this.topicPlanError = e.message || 'Topic Plan config failed';
+      } finally {
+        this.topicPlanLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async loadTopicPlanCoverage(){
+      if (!this.isLoggedIn) return;
+      const brandIds = this.topicPlanBrandIdsParam();
+      this.topicPlanCoverageLoading = true;
+      this.topicPlanCoverageError = '';
+      try {
+        const qp = new URLSearchParams();
+        if (this.topicPlanConfig.industryId) qp.set('industry_id', this.topicPlanConfig.industryId);
+        if (this.topicPlanConfig.categoryId) qp.set('category_id', this.topicPlanConfig.categoryId);
+        if (brandIds) qp.set('brand_ids', brandIds);
+        qp.set('max_per_brand', this.topicPlanConfig.maxPerBrand || 40);
+        const res = await fetch(API_BASE + '/admin/topic-plan/coverage?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Coverage check failed');
+        this.topicPlanCoverageRows = body.rows || [];
+        this.topicPlanCoverageGaps = body.gaps || [];
+        this.updateTopicPlanGates(body.summary || {});
+      } catch (e) {
+        this.topicPlanCoverageRows = [];
+        this.topicPlanCoverageGaps = [];
+        this.topicPlanCoverageError = e.message || 'Coverage check failed';
+      } finally {
+        this.topicPlanCoverageLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async loadTopicPlanCandidates(){
+      if (!this.isLoggedIn) return;
+      this.topicPlanCandidatesLoading = true;
+      this.topicPlanCandidatesError = '';
+      try {
+        const qp = new URLSearchParams({ status:'pending', limit:'100' });
+        const brandIds = this.topicPlanBrandIdsParam();
+        if (brandIds) qp.set('brand_ids', brandIds);
+        const res = await fetch(API_BASE + '/admin/topic-plan/candidates?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
+        this.topicPlanPendingItems = body.rows || [];
+        this.updateTopicPlanGates(body.summary || {});
+      } catch (e) {
+        this.topicPlanPendingItems = [];
+        this.topicPlanCandidatesError = e.message || 'Candidate load failed';
+      } finally {
+        this.topicPlanCandidatesLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    onTopicPlanScopeChanged(){
+      this.loadTopicPlanCoverage();
+      this.loadTopicPlanCandidates();
+    },
+
+    openTopicPlanPanel(panel){
+      this.topicPlanActionPanel = panel;
+      if (panel === 'coverage') this.loadTopicPlanCoverage();
+      if (panel === 'pending') this.loadTopicPlanCandidates();
+      if (panel === 'generate' && this.topicPlanCoverageRows.length === 0) this.loadTopicPlanCoverage();
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    async startTopicPlanGenerate(){
+      if (this.topicPlanGenerateLoading) return;
+      if (this.selectedTopicPlanBrands().length === 0) {
+        this.toast('请选择品牌');
+        return;
+      }
+      this.topicPlanGenerateStarted = true;
+      this.topicPlanGenerateLoading = true;
+      this.topicPlanGenerateError = '';
+      this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => ({
+        ...step,
+        status: index < 2 ? 'done' : (index === 2 ? 'running' : 'idle'),
+        label: index < 2 ? '完成' : (index === 2 ? '运行中' : '等待'),
+      }));
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/generate', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            industry_id: this.topicPlanConfig.industryId || null,
+            category_id: this.topicPlanConfig.categoryId || null,
+            brand_ids: this.selectedTopicPlanBrands().map(b => b.id),
+            max_per_brand: Number(this.topicPlanConfig.maxPerBrand) || 40,
+            max_topics: Number(this.topicPlanConfig.maxTopics) || 180,
+            gap_priority: this.topicPlanConfig.gapPriority,
+            overflow_policy: this.topicPlanConfig.overflowPolicy,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic generation failed');
+        const generated = (body.summary && body.summary.generated) || (body.candidates || []).length || 0;
+        this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => {
+          if (index === 2) return { ...step, status:'done', label:'完成', value:'+' + generated };
+          if (index === 3) return { ...step, status:'done', label:'完成', value:String(generated) };
+          return step;
+        });
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanCoverage();
+        this.toast('Topic 生成任务已完成');
+      } catch (e) {
+        this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => (
+          index === 2 ? { ...step, status:'idle', label:'失败' } : step
+        ));
+        this.topicPlanGenerateError = e.message || 'Topic generation failed';
+        this.toast('Topic 生成失败: ' + this.topicPlanGenerateError);
+      } finally {
+        this.topicPlanGenerateLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async reviewTopicCandidate(item, status){
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/candidates/' + encodeURIComponent(item.id) + '/review', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ status }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Review failed');
+        this.topicPlanPendingItems = this.topicPlanPendingItems.filter(i => i.id !== item.id);
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanCoverage();
+        this.toast(status === 'approved' ? '已通过候选 Topic' : '已拒绝候选 Topic');
+      } catch (e) {
+        this.toast('审核失败: ' + (e.message || e));
+      }
+    },
+
+    selectedPromptMatrixTopics(){
+      return this.promptMatrixTopics.filter(t => t.selected);
+    },
+
+    promptMatrixSelectedTopicCount(){
+      return this.selectedPromptMatrixTopics().length;
+    },
+
+    seedPromptMatrixTopics(){
+      if (this.promptMatrixTopics.length >= this.promptMatrixTopicTotal) return;
+      const brands = ['薇诺娜','理肤泉','珂润','雅漾','珀莱雅','欧诗漫','完美日记','花西子','兰蔻','雅诗兰黛','资生堂','SK-II'];
+      const patterns = ['屏障修护', '泛红舒缓', '换季保湿', '防晒选择', '美白精华', '底妆持妆', '成分对比', '价格带推荐', '新品评价', '功效场景'];
+      const coverageMap = [
+        { value:'gap', label:'缺 Prompt' },
+        { value:'partial', label:'意图不足' },
+        { value:'covered', label:'已覆盖' },
+      ];
+      const existing = this.promptMatrixTopics.length;
+      for (let i = existing; i < this.promptMatrixTopicTotal; i += 1) {
+        const brand = brands[i % brands.length];
+        const pattern = patterns[i % patterns.length];
+        const coverage = coverageMap[i % coverageMap.length];
+        this.promptMatrixTopics.push({
+          id: 'T-' + String(2000 + i).padStart(5, '0'),
+          title: `${brand}${pattern} Topic ${i + 1}`,
+          brand,
+          coverage: coverage.value,
+          coverageLabel: coverage.label,
+          priority: i % 5 === 0 ? 'P1' : i % 3 === 0 ? 'P2' : 'P3',
+          updatedAt: i % 4 === 0 ? '今天' : i % 4 === 1 ? '昨天' : `${(i % 7) + 2} 天前`,
+          selected: false,
+        });
+      }
+    },
+
+    promptMatrixTopicBrands(){
+      return [...new Set(this.promptMatrixTopics.map(t => t.brand).filter(Boolean))].sort((a,b)=>a.localeCompare(b, 'zh-Hans-CN'));
+    },
+
+    filteredPromptMatrixTopics(){
+      const q = this.promptMatrixTopicQuery.trim().toLowerCase();
+      return this.promptMatrixTopics.filter(t => {
+        const matchesQuery = !q ||
+          t.title.toLowerCase().includes(q) ||
+          t.brand.toLowerCase().includes(q) ||
+          t.id.toLowerCase().includes(q);
+        const matchesBrand = this.promptMatrixTopicBrand === 'all' || t.brand === this.promptMatrixTopicBrand;
+        const matchesCoverage = this.promptMatrixTopicCoverage === 'all' || t.coverage === this.promptMatrixTopicCoverage;
+        return matchesQuery && matchesBrand && matchesCoverage;
+      });
+    },
+
+    promptMatrixFilteredTopicCount(){
+      return this.filteredPromptMatrixTopics().length;
+    },
+
+    promptMatrixTopicTotalPages(){
+      return Math.max(1, Math.ceil(this.promptMatrixFilteredTopicCount() / this.promptMatrixTopicPerPage));
+    },
+
+    promptMatrixCurrentPage(){
+      return Math.min(this.promptMatrixTopicPage, this.promptMatrixTopicTotalPages());
+    },
+
+    promptMatrixPageTopics(){
+      const page = this.promptMatrixCurrentPage();
+      const start = (page - 1) * this.promptMatrixTopicPerPage;
+      return this.filteredPromptMatrixTopics().slice(start, start + this.promptMatrixTopicPerPage);
+    },
+
+    promptMatrixTopicPageRangeText(){
+      const total = this.promptMatrixFilteredTopicCount();
+      if (!total) return '显示 0';
+      const page = this.promptMatrixCurrentPage();
+      const start = (page - 1) * this.promptMatrixTopicPerPage + 1;
+      const end = Math.min(total, page * this.promptMatrixTopicPerPage);
+      return `显示 ${start}-${end} / ${total.toLocaleString()}`;
+    },
+
+    setPromptMatrixTopics(selected, scope = 'filtered'){
+      const targets = scope === 'page'
+        ? this.promptMatrixPageTopics()
+        : scope === 'all'
+          ? this.promptMatrixTopics
+          : this.filteredPromptMatrixTopics();
+      targets.forEach(t => { t.selected = selected; });
+    },
+
+    openPromptMatrixPanel(panel){
+      this.promptMatrixActionPanel = panel;
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    promptMatrixPanelTitle(){
+      if (this.promptMatrixActionPanel === 'gaps') return 'Prompt 缺口列表';
+      if (this.promptMatrixActionPanel === 'generate') return '生成 Prompt';
+      if (this.promptMatrixActionPanel === 'pending') return '待审核 Prompt';
+      return '';
+    },
+
+    startPromptMatrixGenerate(){
+      this.promptMatrixGenerateStarted = true;
+      this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map(step => {
+        if (step.name === '候选生成') return { ...step, status:'done', label:'完成', value:'+' + this.estimatedPromptCount() };
+        if (step.name === '进入审核') return { ...step, status:'done', label:'完成' };
+        return step;
+      });
+      this.toast('Prompt 生成任务已完成');
+    },
+
+    reviewPromptCandidate(item, status){
+      this.promptMatrixPendingItems = this.promptMatrixPendingItems.filter(i => i.id !== item.id);
+      const duplicateGate = this.promptMatrixQualityGates.find(g => g.title === '相似重复');
+      if (duplicateGate) duplicateGate.value = this.promptMatrixPendingItems.length + ' 待看';
+      this.toast(status === 'approved' ? '已通过候选 Prompt' : '已拒绝候选 Prompt');
+    },
+
+    promptCountRaw(){
+      const cfg = this.promptMatrixConfig;
+      const topicCount = this.promptMatrixSelectedTopicCount();
+      const intentCount = Number(cfg.intentCount) || 0;
+      const languageCount = Number(cfg.languageCount) || 0;
+      const maxPerTopic = Number(cfg.maxPerTopic) || 0;
+      return Math.min(topicCount * intentCount * languageCount, topicCount * maxPerTopic);
+    },
+
+    estimatedPromptCount(){
+      const maxPrompts = Number(this.promptMatrixConfig.maxPrompts) || 0;
+      return Math.min(this.promptCountRaw(), maxPrompts).toLocaleString();
+    },
+
+    promptCountFormulaText(){
+      const cfg = this.promptMatrixConfig;
+      const topicCount = this.promptMatrixSelectedTopicCount();
+      return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${cfg.maxPerTopic} 条 · 总上限 ${Number(cfg.maxPrompts).toLocaleString()}`;
+    },
+
+    selectedQueryPoolPrompts(){
+      return this.queryPoolPrompts.filter(p => p.selected);
+    },
+
+    filteredQueryPoolPrompts(){
+      const q = this.queryPoolPromptQuery.trim().toLowerCase();
+      if (!q) return this.queryPoolPrompts;
+      return this.queryPoolPrompts.filter(p =>
+        p.title.toLowerCase().includes(q) ||
+        p.intent.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q)
+      );
+    },
+
+    setQueryPoolPrompts(selected){
+      const visible = new Set(this.filteredQueryPoolPrompts().map(p => p.id));
+      this.queryPoolPrompts.forEach(p => {
+        if (visible.has(p.id)) p.selected = selected;
+      });
+    },
+
+    queryCountRaw(){
+      const promptCount = this.selectedQueryPoolPrompts().length;
+      const profiles = Number(this.queryPoolConfig.profilesPerPrompt) || 0;
+      const engines = Number(this.queryPoolConfig.engineCount) || 0;
+      return promptCount * profiles * engines;
+    },
+
+    estimatedQueryCount(){
+      const maxQueries = Number(this.queryPoolConfig.maxQueries) || 0;
+      return Math.min(this.queryCountRaw(), maxQueries).toLocaleString();
+    },
+
+    queryCountFormulaText(){
+      const cfg = this.queryPoolConfig;
+      const promptCount = this.selectedQueryPoolPrompts().length;
+      return `${promptCount} 个 Prompt × 每条 ${cfg.profilesPerPrompt} 个画像 × ${cfg.engineCount} 个引擎 · 总上限 ${Number(cfg.maxQueries).toLocaleString()}`;
+    },
+
+    openQueryPoolPanel(panel){
+      this.queryPoolActionPanel = panel;
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    queryPoolPanelTitle(){
+      if (this.queryPoolActionPanel === 'cost') return '预估成本';
+      if (this.queryPoolActionPanel === 'assemble') return '组装 Query';
+      if (this.queryPoolActionPanel === 'preflight') return '预检报告';
+      return '';
+    },
+
+    startQueryPoolAssemble(){
+      this.queryPoolAssembleStarted = true;
+      this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
+        if (step.name === 'Query 渲染') return { ...step, status:'done', label:'完成', value:'+' + this.estimatedQueryCount() };
+        if (step.name === '预检入池') return { ...step, status:'done', label:'完成' };
+        return step;
+      });
+      this.toast('Query 组装任务已完成');
+    },
+
+    goto(key){
+      if (key === 'planner-topics') this.genTab = 'topic';
+      if (key === 'planner-prompt-matrix') this.genTab = 'prompt';
+      if (key === 'planner-query-pool') this.genTab = 'query';
+      this.page = key;
+      this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
+      if (key === 'users-list') this.loadUsers(this.userPagination.page || 1);
+      if (key === 'users-login') this.loadLoginAudit();
+      if (key === 'users-audit') this.loadUserAudit();
+      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
+      if (key === 'planner-resources') this.loadAccounts();
+      if (key === 'planner-topics' || key === 'planner-generation') this.loadTopicPlanConfig();
+    },
+
+    openUserDrawer(u){
+      this.userDrawer = { ...u, detailLoading:true, projectsList:[], recent_admin_actions:[] };
+      this.$nextTick(()=>{ lucide.createIcons(); this.renderDrawerLogin(); });
+      this.loadUserDetail(u.id);
+    },
     openBrandDrawer(b){ this.brandDrawer = b; this.$nextTick(()=>{ lucide.createIcons(); }); },
 
     toast(msg){ this.toastMsg = msg; setTimeout(()=>this.toastMsg='', 2200); },
+
+    initials(value) {
+      const text = String(value || '').trim();
+      if (!text) return 'AD';
+      const left = text.includes('@') ? text.split('@')[0] : text;
+      const parts = left.replace(/[._-]+/g, ' ').split(/\s+/).filter(Boolean);
+      const out = parts.slice(0, 2).map(p => p[0]).join('').toUpperCase();
+      return (out || left.slice(0, 2).toUpperCase() || 'AD').slice(0, 2);
+    },
+
+    formatDate(v) {
+      if (!v) return '—';
+      const d = new Date(v);
+      if (isNaN(d)) return String(v);
+      return d.toLocaleDateString();
+    },
+
+    formatDateTime(v) {
+      if (!v) return '—';
+      const d = new Date(v);
+      if (isNaN(d)) return String(v);
+      return d.toLocaleString([], { hour12:false });
+    },
+
+    auditDiffText(diff) {
+      if (!diff) return '—';
+      if (typeof diff === 'string') return diff;
+      if (diff.status && typeof diff.status === 'object') {
+        return 'status: ' + (diff.status.before || '—') + ' -> ' + (diff.status.after || '—');
+      }
+      try { return JSON.stringify(diff); } catch (e) { return String(diff); }
+    },
+
+    async checkAdminSession() {
+      try {
+        const res = await fetch(API_BASE + '/admin/session', { credentials:'same-origin' });
+        const body = await res.json();
+        this.isLoggedIn = !!body.authenticated;
+        this.adminUser = body.admin || null;
+        if (this.isLoggedIn) {
+          this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
+          if (this.page === 'users-list') this.loadUsers(1);
+          this.loadTopicPlanConfig();
+        }
+      } catch (e) {
+        this.isLoggedIn = false;
+      }
+    },
+
+    async adminLogin() {
+      if (!this.loginEmail || !this.loginPassword) {
+        this.loginError = '请输入邮箱和密码';
+        return;
+      }
+      this.loginLoading = true;
+      this.loginError = '';
+      try {
+        const res = await fetch(API_BASE + '/admin/login', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ email:this.loginEmail, password:this.loginPassword }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || '登录失败');
+        this.adminUser = body.admin;
+        this.isLoggedIn = true;
+        this.loginPassword = '';
+        this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
+        if (this.page === 'users-list') this.loadUsers(1);
+        this.loadTopicPlanConfig();
+      } catch (e) {
+        this.loginError = e.message || '登录失败';
+      } finally {
+        this.loginLoading = false;
+      }
+    },
+
+    async adminLogout() {
+      try {
+        await fetch(API_BASE + '/admin/logout', { method:'POST', credentials:'same-origin' });
+      } catch (e) {}
+      this.isLoggedIn = false;
+      this.adminUser = null;
+      this.loginEmail = '';
+      this.loginPassword = '';
+      this.loginError = '';
+    },
+
+    userTotalPages() {
+      return Math.max(1, Math.ceil((this.userPagination.total || 0) / this.userPagination.perPage));
+    },
+
+    userPageRangeText() {
+      const total = this.userPagination.total || 0;
+      if (!total) return '显示 0';
+      const start = (this.userPagination.page - 1) * this.userPagination.perPage + 1;
+      const end = Math.min(total, this.userPagination.page * this.userPagination.perPage);
+      return '显示 ' + start + '-' + end;
+    },
+
+    async loadUsers(page = 1) {
+      if (!this.isLoggedIn) return;
+      this.usersLoading = true;
+      this.usersError = null;
+      const qp = new URLSearchParams({
+        page,
+        per_page: this.userPagination.perPage,
+        sort: this.userFilters.sort || 'created_at_desc',
+      });
+      for (const key of ['q','status','activity','industry']) {
+        if (this.userFilters[key]) qp.set(key, this.userFilters[key]);
+      }
+      try {
+        const res = await fetch(API_BASE + '/users?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        this.users = (body.rows || []).map(u => ({ ...u, initials: u.initials || this.initials(u.name || u.email) }));
+        this.userPagination.page = body.page || page;
+        this.userPagination.perPage = body.per_page || this.userPagination.perPage;
+        this.userPagination.total = body.total || 0;
+      } catch (e) {
+        this.usersError = e.message || '加载用户失败';
+        this.users = [];
+      } finally {
+        this.usersLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async loadUserDetail(userId) {
+      if (!userId) return;
+      this.userDetailLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/users/' + encodeURIComponent(userId), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        this.userDrawer = {
+          ...body.user,
+          initials: body.user.initials || this.initials(body.user.name || body.user.email),
+          activity: body.activity || {},
+          moderation: body.moderation || body.user.moderation || {},
+          projectsList: body.projects || [],
+          recent_admin_actions: body.recent_admin_actions || [],
+          notes: body.notes || [],
+          detailLoading:false,
+        };
+      } catch (e) {
+        if (this.userDrawer) this.userDrawer.detailError = e.message || '加载详情失败';
+      } finally {
+        this.userDetailLoading = false;
+        this.$nextTick(()=>{ lucide.createIcons(); this.renderDrawerLogin(); });
+      }
+    },
+
+    confirmUserModeration(action) {
+      if (!this.userDrawer) return;
+      const isFreeze = action === 'freeze';
+      this.confirmAction = {
+        title: (isFreeze ? '冻结账号 ' : '解冻账号 ') + this.userDrawer.email,
+        desc: isFreeze ? '冻结后用户状态从 moderation actions 派生，已有数据保持只读。' : '解冻会写入 unfreeze moderation action，并保留完整审计。',
+        danger: false,
+        action: (reason) => this.moderateUser(action, reason),
+      };
+    },
+
+    async moderateUser(action, reason) {
+      if (!this.userDrawer) return;
+      try {
+        const res = await fetch(API_BASE + '/users/' + encodeURIComponent(this.userDrawer.id) + '/' + action, {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast(action === 'freeze' ? '已冻结用户' : '已解冻用户');
+        await this.loadUsers(this.userPagination.page);
+        await this.loadUserDetail(this.userDrawer.id);
+        await this.loadUserAudit();
+      } catch (e) {
+        this.toast(e.message || '操作失败');
+      }
+    },
+
+    async loadLoginAudit() {
+      if (!this.isLoggedIn) return;
+      this.loginAuditLoading = true;
+      this.loginAuditError = null;
+      try {
+        const res = await fetch(API_BASE + '/users/login-audit?limit=50', { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        this.loginAuditRows = body.rows || [];
+      } catch (e) {
+        this.loginAuditError = e.message || '加载登录审计失败';
+        this.loginAuditRows = [];
+      } finally {
+        this.loginAuditLoading = false;
+      }
+    },
+
+    async loadUserAudit() {
+      if (!this.isLoggedIn) return;
+      this.userAuditLoading = true;
+      this.userAuditError = null;
+      try {
+        const res = await fetch(API_BASE + '/users/actions?limit=50', { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
+        if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+        this.userAuditRows = body.rows || [];
+      } catch (e) {
+        this.userAuditError = e.message || '加载操作审计失败';
+        this.userAuditRows = [];
+      } finally {
+        this.userAuditLoading = false;
+      }
+    },
 
     // Format an ISO-ish timestamp (or null) to HH:MM:SS local time. Falls back to '—'.
     fmtTs(v) {
@@ -5860,15 +8025,15 @@ function adminApp() {
     // ======== CHARTS ========
     charts: {},
     init() {
+      this.resetTopicPlanState();
+      this.seedPromptMatrixTopics();
       // palette shortcut
       window.addEventListener('keydown', (e) => {
         if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k') { e.preventDefault(); this.palette=true; }
         if (e.key==='Escape') { this.palette=false; this.userDrawer=null; this.brandDrawer=null; this.crDrawer=null; this.qaDrawer=null; this.attemptDrawer=null; this.debugDrawer=null; this.confirmAction=null; this.analyzerSelectedQuery=null; this.selectedTopic=null; }
       });
-      this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
-      // Eager-load real data for sections that replace prototype mocks
-      if (this.page === 'tracker-attempts') this.loadAttempts();
-      if (this.page === 'planner-resources') this.loadAccounts();
+      this.$nextTick(()=>{ lucide.createIcons(); });
+      this.checkAdminSession();
     },
 
     renderForPage(){
