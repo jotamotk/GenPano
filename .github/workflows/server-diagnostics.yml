@@ -24,11 +24,24 @@ jobs:
 
             echo "=== Host resources ==="
             df -h / || true
+            df -i / || true
+            df -h /var/lib/docker || true
+            df -i /var/lib/docker || true
             free -h || true
             docker system df || true
+            docker system df -v || true
 
             echo "=== Postgres status and logs ==="
             docker compose ps postgres || true
+            docker volume inspect genpano_postgres_data || true
+            POSTGRES_VOLUME_PATH="$(docker volume inspect genpano_postgres_data --format '{{ .Mountpoint }}' 2>/dev/null || true)"
+            if [ -n "$POSTGRES_VOLUME_PATH" ]; then
+              echo "POSTGRES_VOLUME_PATH=$POSTGRES_VOLUME_PATH"
+              df -h "$POSTGRES_VOLUME_PATH" || true
+              df -i "$POSTGRES_VOLUME_PATH" || true
+              du -sh "$POSTGRES_VOLUME_PATH" || true
+              ls -lah "$POSTGRES_VOLUME_PATH" | head -60 || true
+            fi
             docker compose logs --tail=180 postgres || true
             docker inspect genpano-postgres-1 --format '{{json .State}}' || true
 
