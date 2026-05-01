@@ -16,11 +16,21 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -euo pipefail
+            set -uo pipefail
             cd /opt/genpano
 
             echo "=== Docker compose status ==="
-            docker compose ps
+            docker compose ps || true
+
+            echo "=== Host resources ==="
+            df -h / || true
+            free -h || true
+            docker system df || true
+
+            echo "=== Postgres status and logs ==="
+            docker compose ps postgres || true
+            docker compose logs --tail=180 postgres || true
+            docker inspect genpano-postgres-1 --format '{{json .State}}' || true
 
             echo "=== Backend email env (password masked) ==="
             docker compose exec -T backend python - <<'PY'
@@ -86,4 +96,4 @@ jobs:
             PY
 
             echo "=== Recent backend logs ==="
-            docker compose logs --tail=220 backend
+            docker compose logs --tail=220 backend || true
