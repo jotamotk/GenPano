@@ -237,7 +237,7 @@ jobs:
             elif "industry_benchmark_daily" in tables:
                 print("cdfdaab4088e")
             PY
-            existing_revision="$(docker compose run --rm -T -v /tmp/genpano_detect_existing_revision.py:/tmp/genpano_detect_existing_revision.py:ro backend python /tmp/genpano_detect_existing_revision.py)"
+            existing_revision="$(docker compose run --rm -T -v /tmp/genpano_detect_existing_revision.py:/app/genpano_detect_existing_revision.py:ro backend python /app/genpano_detect_existing_revision.py)"
             if [ -n "$existing_revision" ]; then
               echo "Stamping existing database schema as Alembic revision $existing_revision"
               docker compose run --rm backend alembic stamp "$existing_revision"
