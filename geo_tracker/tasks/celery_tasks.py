@@ -17,7 +17,10 @@ from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import delete as sa_delete, select
 
-from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
+from geo_tracker.agent.browser_lifecycle import (
+    cleanup_browser_resources,
+    install_resource_blocker,
+)
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
 from geo_tracker.agent.sms_login.registration_lock import (
     should_enqueue_new_account,
@@ -38,6 +41,18 @@ from geo_tracker.config import create_task_engine, get_task_async_session, REDIS
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _keep_alive_auto_relogin_enabled() -> bool:
+    return _env_flag("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", False)
+
+
 app = Celery("geo_tracker", broker=REDIS_URL, backend=REDIS_URL)
 
 _beat_schedule = {
@@ -47,7 +62,7 @@ _beat_schedule = {
     },
     "cookie-keep-alive": {
         "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
-        "schedule": crontab(hour="*/2", minute=30),
+        "schedule": crontab(hour="*/6", minute=30),
     },
 }
 
@@ -64,7 +79,8 @@ app.conf.update(
     timezone          = "UTC",
     task_max_retries  = 3,
     task_default_retry_delay = 60,
-    worker_concurrency = 2,
+    worker_concurrency = 5,
+    worker_prefetch_multiplier = 1,
     # 硬超时：Playwright/代理极端 hang 时强杀 worker child，避免 query 永久停在 running
     task_time_limit      = 600,
     task_soft_time_limit = 540,
@@ -463,10 +479,18 @@ def cookie_keep_alive() -> dict:
                         )
                         # 触发自动重新登录 (生产事故 2026-04-27: 加去重锁,
                         # 防止 keep-alive 周期性反复触发同账号登录)
-                        if await should_enqueue_relogin(account.id):
+                        if (
+                            _keep_alive_auto_relogin_enabled()
+                            and await should_enqueue_relogin(account.id)
+                        ):
                             auto_login.apply_async(
                                 kwargs={"account_id": account.id},
                                 queue="account_login",
+                            )
+                        else:
+                            logger.info(
+                                "cookie_keep_alive: auto re-login skipped "
+                                "after refresh failure"
                             )
 
                     # 随机间隔，避免同时访问多个平台被检测
@@ -794,6 +818,8 @@ async def _visit_and_refresh(
     needs_stealth = bool(executor.account_cookies)
     use_camoufox = has_camoufox and (use_proxy or needs_stealth)
 
+    page = None
+    context = None
     browser = None
     _camoufox_ctx = None
     _playwright = None
@@ -815,6 +841,7 @@ async def _visit_and_refresh(
             _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
             browser = await _camoufox_ctx.__aenter__()
             context = await browser.new_context()
+            await install_resource_blocker(context)
         else:
             _playwright = await async_playwright().start()
             browser = await _playwright.chromium.launch(
@@ -830,6 +857,7 @@ async def _visit_and_refresh(
                 locale="zh-CN" if is_domestic else "en-US",
                 timezone_id="Asia/Shanghai" if is_domestic else "America/New_York",
             )
+            await install_resource_blocker(context)
 
         # 注入 cookies（支持新旧两种格式）
         parsed = json_mod.loads(executor.account_cookies)
@@ -929,6 +957,8 @@ async def _visit_and_refresh(
         # 生产事故 2026-04-27 根因修复 (与 guest_executor.py 同根因):
         # browser.close() 偶尔 hang, 原 try/except 捕不了 → finally 链断 → 进程泄漏.
         await cleanup_browser_resources(
+            page=page,
+            context=context,
             browser=browser,
             camoufox_ctx=_camoufox_ctx,
             playwright=_playwright,
