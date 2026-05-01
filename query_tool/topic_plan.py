@@ -12,6 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
 
 try:
@@ -60,10 +61,58 @@ class LLMTopic:
         }
 
 
+def _parse_env_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _read_dotenv_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists() or not path.is_file():
+        return values
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip().lstrip("\ufeff")
+            if key:
+                values[key] = _parse_env_value(raw_value)
+    except OSError:
+        return values
+    return values
+
+
+def _topic_plan_env() -> dict[str, str]:
+    module_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / ".env",
+        module_dir / ".env",
+        module_dir.parent / ".env",
+    ]
+    source: dict[str, str] = {}
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        source.update(_read_dotenv_file(resolved))
+    source.update(os.environ)
+    return source
+
+
 def load_doubao_config(env: dict[str, str] | None = None) -> DoubaoConfig:
     """Load Volcengine Ark / Doubao 2 settings from environment variables."""
 
-    source = env or os.environ
+    source = env or _topic_plan_env()
     api_key = (
         source.get("ARK_API_KEY")
         or source.get("VOLCENGINE_ARK_API_KEY")
@@ -303,34 +352,61 @@ def build_topic_plan_messages(
             }
         ]
     }
+    banned_title_terms = [
+        "\u4f1a\u5458",
+        "\u79c1\u57df",
+        "\u590d\u8d2d",
+        "\u6e20\u9053",
+        "\u89e6\u8fbe",
+        "CRM",
+        "\u6570\u636e\u8fd0\u8425",
+        "\u8f6c\u5316",
+        "\u95e8\u5e97\u8fd0\u8425",
+        "\u5ba2\u6237\u5206\u5c42",
+        "\u751f\u547d\u5468\u671f",
+        "\u52a8\u9500",
+    ]
+    consumer_title_examples = [
+        "\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009",
+        "NIKE\u8dd1\u978b\u9002\u5408\u65b0\u624b\u6162\u8dd1\u5417",
+        "\u53ef\u53e3\u53ef\u4e50\u65e0\u7cd6\u548c\u666e\u901a\u7248\u53e3\u611f\u533a\u522b",
+        "\u5b9d\u9a6c\u65b0\u80fd\u6e90\u8f66\u65e5\u5e38\u901a\u52e4\u4f53\u9a8c\u600e\u4e48\u6837",
+    ]
     payload = {
         "industry": industry,
         "category": category,
         "selected_brands": selected_brand_payload,
         "allowed_brand_names": allowed_brand_names,
-        "allowed_brand_names_text": "、".join(allowed_brand_names),
+        "allowed_brand_names_text": ", ".join(allowed_brand_names),
         "coverage_gaps": coverage_gaps,
         "max_topics": max_topics,
         "existing_topics": existing_topics[:300],
+        "generation_perspective": "consumer_search_and_shopping_intent",
+        "banned_title_terms": banned_title_terms,
+        "consumer_title_examples": consumer_title_examples,
         "output_schema": schema,
     }
     system = (
-        "You are the GENPANO Topic Plan generator for operations users. "
+        "You are the GENPANO Topic Plan generator for consumer-facing topics. "
+        "Operators use the admin UI, but every topic title must represent real consumer demand. "
         "Return strict JSON only. No markdown. No explanations. "
         "Never introduce unselected brands, competitors, prompts, queries, table names, or engineering notes."
     )
     user = (
-        "Generate Topic Plan candidates.\n"
+        "Generate consumer-facing Topic Plan candidates.\n"
         "Hard rules:\n"
         f"1. The only allowed brand values are: {payload['allowed_brand_names_text']}.\n"
         "2. topics[].brand must copy exactly one allowed brand value. Do not use brand id, numbers, aliases, or any other brand.\n"
-        "3. Write title and reason in Chinese for an operations user.\n"
-        "4. Each title must be about the selected brand, industry, category, and coverage_gaps.\n"
-        "5. Avoid duplicates or near-duplicates with existing_topics.\n"
-        "6. dimension must be one of brand, product, category, scenario, question.\n"
-        "7. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"
-        "8. If allowed_brand_names and coverage_gaps are non-empty, return at least 1 candidate.\n"
-        "9. Return at most max_topics items and match output_schema exactly.\n"
+        "3. topics[].title must be Chinese and sound like a real consumer search, shopping, comparison, review, usage, gifting, or troubleshooting question.\n"
+        "4. Do not write topics for brand operators, CRM teams, retail teams, private-domain operations, member operations, or channel operations.\n"
+        "5. Never include banned_title_terms in topics[].title. Especially avoid member, private-domain, repurchase, channel, CRM, conversion, data-operations, and lifecycle wording.\n"
+        "6. topics[].reason must be Chinese for an admin reviewer, but it should explain consumer intent and coverage gap, not an internal operations plan.\n"
+        "7. Each title must be about the selected brand, industry, category, and coverage_gaps, but must not expose internal coverage mechanics.\n"
+        "8. Avoid duplicates or near-duplicates with existing_topics.\n"
+        "9. dimension must be one of brand, product, category, scenario, question.\n"
+        "10. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"
+        "11. If allowed_brand_names and coverage_gaps are non-empty, return at least 1 candidate.\n"
+        "12. Return at most max_topics items and match output_schema exactly.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

@@ -3,6 +3,7 @@ import unittest
 from query_tool.topic_plan import (
     LLMTopic,
     TopicPlanLLMError,
+    build_topic_plan_messages,
     dedupe_topic_candidates,
     parse_llm_topics,
     repair_single_brand_placeholders,
@@ -105,6 +106,24 @@ class TopicPlanUtilsTest(unittest.TestCase):
 
         self.assertEqual(repaired[0].brand, "薇诺娜")
         self.assertEqual(repaired[0].title, "薇诺娜敏感肌护理场景")
+
+    def test_build_topic_plan_messages_uses_consumer_perspective(self):
+        messages = build_topic_plan_messages(
+            industry="\u65f6\u5c1a\u5962\u54c1",
+            category="All categories",
+            brands=[{"name": "CHANEL", "industry": "\u65f6\u5c1a\u5962\u54c1", "topic_count": 2}],
+            coverage_gaps=[{"brand": "CHANEL", "type": "product", "count": 3, "priority": "P1"}],
+            max_topics=3,
+            existing_topics=[],
+        )
+        combined = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("consumer-facing", combined)
+        self.assertIn("real consumer search", combined)
+        self.assertIn("consumer_search_and_shopping_intent", combined)
+        self.assertIn("\u79c1\u57df", combined)
+        self.assertIn("\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009", combined)
+        self.assertNotIn("for operations users", combined)
 
 
 if __name__ == "__main__":
