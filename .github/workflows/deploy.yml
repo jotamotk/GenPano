@@ -94,7 +94,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD
           script_stop: true
-          command_timeout: 30m
+          command_timeout: 45m
           script: |
             cd /opt/genpano
 
@@ -184,14 +184,26 @@ jobs:
             echo "Pre-deploy relief: stop old browser workers before pulling images"
             timeout 90s docker compose stop -t 10 worker worker-analysis beat || true
             timeout 60s docker compose kill worker worker-analysis beat || true
-            for proc_name in camoufox firefox firefox-bin firefox-esr chrome chromium chromium-browser chrome_crashpad_handler "Web Content" WebExtensions; do pkill -9 -x "$proc_name" || true; done
+            for proc_name in camoufox camoufox-bin firefox firefox-bin firefox-esr chrome chromium chromium-browser chrome_crashpad_handler "Web Content" WebExtensions; do pkill -9 -x "$proc_name" || true; done
             free -h || true
             ps -eo pid,ppid,pcpu,pmem,rss,comm,args --sort=-pcpu | head -30 || true
+            df -h / || true
+            docker system df || true
+            docker image prune -af --filter "until=24h" || true
+            docker builder prune -af --keep-storage=2GB || true
+            docker system df || true
 
-            # Pull only application images from ACR. Base services use stable
-            # public images and can hang on Docker Hub when the server network
-            # is degraded; existing postgres/redis containers are reused.
-            timeout 600s docker compose pull backend worker worker-analysis beat nginx query-tool
+            # Pull only unique application images from ACR. Base services use
+            # stable public images and can hang on Docker Hub when the server
+            # network is degraded; existing postgres/redis containers are reused.
+            echo "Pulling backend image"
+            timeout 900s docker compose pull backend
+            echo "Pulling worker image"
+            timeout 1200s docker compose pull worker
+            echo "Pulling frontend image"
+            timeout 900s docker compose pull nginx
+            echo "Pulling query-tool image"
+            timeout 900s docker compose pull query-tool
             docker compose up -d postgres redis
             docker compose run --rm backend alembic upgrade head
             docker compose up -d --remove-orphans --force-recreate
