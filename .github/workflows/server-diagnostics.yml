@@ -1,0 +1,89 @@
+name: Server Diagnostics
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostics:
+    name: Inspect production server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run read-only diagnostics
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/genpano
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            echo "=== Backend email env (password masked) ==="
+            docker compose exec -T backend python - <<'PY'
+            import os
+
+            keys = [
+                "USER_EMAIL_PROVIDER",
+                "EMAIL_PROVIDER",
+                "USER_EMAIL_FROM",
+                "EMAIL_FROM",
+                "USER_EMAIL_REPLY_TO",
+                "EMAIL_REPLY_TO",
+                "ALIYUN_DM_SMTP_USER",
+                "ALIYUN_DM_SMTP_HOST",
+                "ALIYUN_DM_SMTP_PORT",
+                "ALIYUN_DM_SMTP_SSL",
+                "ALIYUN_DM_SMTP_STARTTLS",
+                "ALIYUN_DM_SMTP_PASSWORD",
+                "USER_BASE_URL",
+                "FRONTEND_URL",
+            ]
+            for key in keys:
+                value = os.getenv(key, "")
+                if "PASSWORD" in key and value:
+                    value = "***"
+                print(f"{key}={value}")
+            PY
+
+            echo "=== Aliyun DM SMTP login probe (no email is sent) ==="
+            docker compose exec -T backend python - <<'PY'
+            import os
+            import smtplib
+            import ssl
+
+            def env_bool(name: str, default: bool) -> bool:
+                raw = os.getenv(name)
+                if raw is None:
+                    return default
+                return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+            host = os.getenv("ALIYUN_DM_SMTP_HOST", "smtpdm.aliyun.com")
+            port = int(os.getenv("ALIYUN_DM_SMTP_PORT", "465"))
+            user = os.getenv("ALIYUN_DM_SMTP_USER", "")
+            password = os.getenv("ALIYUN_DM_SMTP_PASSWORD", "")
+            use_ssl = env_bool("ALIYUN_DM_SMTP_SSL", port == 465)
+            use_starttls = env_bool("ALIYUN_DM_SMTP_STARTTLS", not use_ssl)
+
+            print(f"SMTP_TARGET={host}:{port} ssl={use_ssl} starttls={use_starttls} user={user} password_set={bool(password)}")
+            try:
+                context = ssl.create_default_context()
+                if use_ssl:
+                    smtp = smtplib.SMTP_SSL(host, port, timeout=15, context=context)
+                else:
+                    smtp = smtplib.SMTP(host, port, timeout=15)
+                    if use_starttls:
+                        smtp.starttls(context=context)
+                with smtp:
+                    smtp.ehlo()
+                    smtp.login(user, password)
+                print("SMTP_LOGIN_OK")
+            except Exception as exc:
+                print(f"SMTP_LOGIN_FAIL {type(exc).__name__}: {exc}")
+            PY
+
+            echo "=== Recent backend logs ==="
+            docker compose logs --tail=220 backend
