@@ -184,20 +184,7 @@ jobs:
             echo "Pre-deploy relief: stop old browser workers before pulling images"
             timeout 90s docker compose stop -t 10 worker worker-analysis beat || true
             timeout 60s docker compose kill worker worker-analysis beat || true
-            for proc_name in \
-              camoufox \
-              firefox \
-              firefox-bin \
-              firefox-esr \
-              chrome \
-              chromium \
-              chromium-browser \
-              chrome_crashpad_handler \
-              "Web Content" \
-              WebExtensions
-            do
-              pkill -9 -x "$proc_name" || true
-            done
+            for proc_name in camoufox firefox firefox-bin firefox-esr chrome chromium chromium-browser chrome_crashpad_handler "Web Content" WebExtensions; do pkill -9 -x "$proc_name" || true; done
             free -h || true
             ps -eo pid,ppid,pcpu,pmem,rss,comm,args --sort=-pcpu | head -30 || true
 
