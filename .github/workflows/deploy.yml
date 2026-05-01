@@ -181,10 +181,17 @@ jobs:
             login_registry="${login_registry%%/*}"
             printf '%s' "$ACR_PASSWORD" | docker login "$login_registry" -u "$ACR_USERNAME" --password-stdin
 
+            echo "Pre-deploy relief: stop old browser workers before pulling images"
+            docker compose stop worker worker-analysis beat || true
+            docker compose kill worker worker-analysis beat || true
+            pkill -9 -f 'camoufox|firefox|chromium|chrome|Web Content|WebExtensions' || true
+            free -h || true
+            ps -eo pid,ppid,pcpu,pmem,rss,comm,args --sort=-pcpu | head -30 || true
+
             # Pull only application images from ACR. Base services use stable
             # public images and can hang on Docker Hub when the server network
             # is degraded; existing postgres/redis containers are reused.
-            docker compose pull backend worker worker-analysis beat nginx query-tool
+            timeout 600s docker compose pull backend worker worker-analysis beat nginx query-tool
             docker compose up -d postgres redis
             docker compose run --rm backend alembic upgrade head
             docker compose up -d --remove-orphans --force-recreate
