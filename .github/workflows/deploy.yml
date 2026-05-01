@@ -211,6 +211,37 @@ jobs:
             echo "Pulling query-tool image"
             timeout 900s docker pull "$pull_registry/genpano:query-tool-$image_tag"
             docker compose up -d postgres redis
+            cat > /tmp/genpano_detect_existing_revision.py <<'PY'
+            import sys
+
+            from sqlalchemy import create_engine, inspect
+
+            from app.core.config import get_settings
+
+            url = get_settings().database_url
+            if url.startswith("postgresql+asyncpg://"):
+                url = "postgresql+psycopg://" + url[len("postgresql+asyncpg://"):]
+            if url.startswith("sqlite+aiosqlite://"):
+                url = "sqlite://" + url[len("sqlite+aiosqlite://"):]
+
+            engine = create_engine(url)
+            with engine.connect() as connection:
+                tables = set(inspect(connection).get_table_names())
+
+            if "alembic_version" in tables:
+                sys.exit(0)
+            if {"users", "user_auth_tokens"}.issubset(tables):
+                print("20260429_user_auth")
+            elif {"admin_users", "admin_sessions", "admin_password_resets", "admin_login_attempts"}.issubset(tables):
+                print("55a628f2bb7d")
+            elif "industry_benchmark_daily" in tables:
+                print("cdfdaab4088e")
+            PY
+            existing_revision="$(docker compose run --rm -T -v /tmp/genpano_detect_existing_revision.py:/tmp/genpano_detect_existing_revision.py:ro backend python /tmp/genpano_detect_existing_revision.py)"
+            if [ -n "$existing_revision" ]; then
+              echo "Stamping existing database schema as Alembic revision $existing_revision"
+              docker compose run --rm backend alembic stamp "$existing_revision"
+            fi
             docker compose run --rm backend alembic upgrade head
             docker compose up -d --remove-orphans --force-recreate
             docker compose ps
