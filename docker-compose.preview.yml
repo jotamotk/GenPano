@@ -16,9 +16,9 @@ services:
       - ./nginx-preview.conf:/etc/nginx/preview/routes.conf:ro
     depends_on:
       - backend
-      - query-tool
+      - admin-console
       - backend-preview
-      - query-tool-preview
+      - admin-console-preview
       - frontend-preview
 
   backend-preview:
@@ -48,8 +48,8 @@ services:
       redis:
         condition: service_healthy
 
-  query-tool-preview:
-    image: ${ACR_REGISTRY}/genpano:query-tool-preview-${PREVIEW_IMAGE_TAG:-latest}
+  admin-console-preview:
+    image: ${ACR_REGISTRY}/genpano:admin-console-preview-${PREVIEW_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano

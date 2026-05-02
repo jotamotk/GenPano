@@ -1,4 +1,8 @@
 # GENPANO Codex 可执行 PRD
+> 2026-05-02 override: the orange `admin_console` Admin is the only Admin system.
+> The legacy FastAPI Admin auth/API package has been removed. Historical
+> references in this file to a separate FastAPI Admin backend are superseded.
+> Do not restore a second Admin frontend or backend.
 
 > 日期：2026-04-30
 > 目标读者：Codex / 后续研发 Session
@@ -29,12 +33,12 @@ Codex 后续研发时，应先读本文档，再按需查更长的 PRD / Admin P
 
 ### 2.1 Admin 决策
 
-- 唯一 Admin 是 `query_tool` Admin。
-- Admin 入口是 `query_tool/app.py` + `query_tool/templates/admin.html`。
+- 唯一 Admin 是 `admin_console` Admin。
+- Admin 入口是 `admin_console/app.py` + `admin_console/templates/admin.html`。
 - `http://localhost:5000/admin` 可视为 Admin 高保真原型。
 - 不再建设独立 `frontend/src/admin` React Admin。
-- 不再建设独立 `backend/app/admin` FastAPI Admin 主路径。
-- 未来 Admin 的页面、交互和接口优先在 `query_tool` 中演进。
+- Legacy FastAPI Admin backend has been removed; do not recreate a second Admin backend.
+- 未来 Admin 的页面、交互和接口优先在 `admin_console` 中演进。
 
 ### 2.2 产品 App 决策
 
@@ -87,11 +91,11 @@ GENPANO 是一个 GEO（Generative Engine Optimization）监测平台。
 
 技术路径：
 
-- 后端 + 页面：`query_tool/app.py`
-- 模板：`query_tool/templates/admin.html`
-- 密码重置脚本：`query_tool/scripts/admin_reset_password.py`
+- 后端 + 页面：`admin_console/app.py`
+- 模板：`admin_console/templates/admin.html`
+- 密码重置脚本：`admin_console/scripts/admin_reset_password.py`
 - 正式入口：`/admin`
-- Query Tool API：`/api/*`，在正式 Admin mount 下应通过 `/admin/api/*` 代理到 query_tool。
+- Admin Console API：`/api/*`，在正式 Admin mount 下应通过 `/admin/api/*` 代理到 admin_console。
 
 ### 4.3 Worker / Adapter
 
@@ -272,7 +276,7 @@ Project 至少需要：
 
 ## 7. Query Admin 信息架构
 
-Admin 原型以 `query_tool/templates/admin.html` 的 navigation 为准。
+Admin 原型以 `admin_console/templates/admin.html` 的 navigation 为准。
 
 ### 7.1 顶层分组
 
@@ -403,7 +407,7 @@ Overview 必须回答：“今天平台有没有问题？”
 
 数据优先级：
 
-1. query_tool 已有 API 的真实数据
+1. admin_console 已有 API 的真实数据
 2. 明确空状态
 3. 临时 demo 数据，仅可在代码里标注为 prototype，不可伪装成真实状态
 
@@ -557,7 +561,7 @@ Codex 每次改动必须遵守：
 2. `docs/DEVELOPMENT_PLAN.md`
 3. 与任务相关的原型源码：
    - 产品 App：`frontend/src/App.jsx`、对应 page/component
-   - Admin：`query_tool/app.py`、`query_tool/templates/admin.html`
+   - Admin：`admin_console/app.py`、`admin_console/templates/admin.html`
 4. 与任务相关的权威文档：
    - `docs/DATA_MODEL.md`
    - `docs/ADAPTER_CONTRACT.md`

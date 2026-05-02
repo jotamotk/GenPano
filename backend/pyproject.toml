@@ -66,14 +66,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
-
-[tool.coverage.run]
-# Exclude deferred modules that are Resend / live-DB coupled and are
-# covered by the Step 5 endpoint replay tests, not by unit tests.
-omit = [
-    "app/admin/auth/email.py",
-    "app/admin/auth/session_repo.py",
-    "app/admin/auth/rate_limit_config.py",
-]

@@ -12,16 +12,16 @@
 
 - 产品主 App 前端原型：`http://localhost:3000/`
 - Admin 原型：`http://localhost:5000/admin`
-- Query Admin 实现：`query_tool/app.py` + `query_tool/templates/admin.html`
+- Admin 实现（橙色 `/admin`）：`admin_console/app.py` + `admin_console/templates/admin.html`
 - 已跑通的 3 个 LLM adapter 业务代码：`geo_tracker`
 - 用户认证 FastAPI：`backend/app/api/v1/auth`
 
 研发策略：
 
 1. 先冻结“原型即需求”的事实。
-2. 先审计 adapter 和 query_tool Admin，不盲改。
+2. 先审计 adapter 和 admin_console Admin，不盲改。
 3. 用真实 API 替换产品 App 的 mock truth。
-4. 用 Query Admin 承担运营闭环。
+4. 用 Admin 承担运营闭环。
 5. 每个阶段都以可运行、可验收、可回滚为目标。
 
 ## 2. 并行研发泳道
@@ -37,12 +37,12 @@
 - 维护 `docs/PRD_CODEX_READY.md`。
 - 维护 `docs/PRD_ADMIN_IMPLEMENTATION_PLAN.md`。
 - 对 3 个 adapter 做 contract 差异审计。
-- 梳理 DATA_MODEL 与当前真实 DB / query_tool 代码差异。
+- 梳理 DATA_MODEL 与当前真实 DB / admin_console 代码差异。
 
 产出：
 
 - Adapter 差异矩阵。
-- Query Admin mutation audit matrix。
+- Admin mutation audit matrix。
 - DATA_MODEL drift 清单。
 
 ### B. 产品 App 泳道
@@ -64,7 +64,7 @@
 - 用户可登录、设置项目、查看品牌 / 行业数据。
 - Brand Mode / Industry Mode 页面读取真实 API 或明确空状态。
 
-### C. Query Admin 泳道
+### C. Admin 泳道
 
 目标：
 
@@ -108,13 +108,13 @@
 
 - 对齐 `DATA_MODEL.md` 与当前真实表。
 - 补产品端 `/api/*` 或 `/api/v1/*`。
-- 明确哪些 API 属于 FastAPI，哪些属于 query_tool。
+- 明确哪些 API 属于 FastAPI，哪些属于 admin_console。
 - 更新 `docs/openapi.yaml` 或记录暂不更新原因。
 
 产出：
 
 - 产品侧受保护 API。
-- Admin 侧 query_tool API。
+- Admin 侧 admin_console API。
 - 数据口径可追踪。
 
 ### F. QA / 部署泳道
@@ -127,7 +127,7 @@
 
 - 后端 targeted tests。
 - 前端 build。
-- query_tool smoke。
+- admin_console smoke。
 - localhost 页面验收。
 - Docker / nginx / GitHub workflow 对齐。
 
@@ -147,7 +147,7 @@
 
 任务：
 
-- 确认 `query_tool` Admin 是唯一 Admin。
+- 确认橙色 `/admin` 是唯一 Admin。
 - 确认产品主 App 当前入口是 `main.jsx -> App.jsx`。
 - 标注 `App.tsx/main.tsx` 的定位，避免误用。
 - 更新文档入口。
@@ -156,11 +156,11 @@
 
 - 新 session 只读 `PRD_CODEX_READY.md` 就不会去新建 React Admin / FastAPI Admin。
 
-### Phase 1：P0 Query Admin 基础
+### Phase 1：P0 Admin 基础
 
 目标：
 
-- 把现有 Query Admin 的基础边界补齐。
+- 把现有 Admin 的基础边界补齐。
 
 任务：
 
@@ -185,7 +185,7 @@
 
 验收：
 
-- 有 Query Admin P0 审计报告。
+- 有 Admin P0 审计报告。
 - 正式 `/admin` 被登录保护。
 - 高风险 mutation 清单明确。
 
@@ -216,7 +216,7 @@
 - 标出“可低风险修复”和“需人工决策”。
 - 不直接重写 adapter。
 
-### Phase 3：P1 Query Admin 运营主干
+### Phase 3：P1 Admin 运营主干
 
 目标：
 
@@ -379,11 +379,11 @@
 
 ## 4. 建议新开 Session 分工
 
-### Session 1：P0 Query Admin 基础
+### Session 1：P0 Admin 基础
 
 目标：
 
-- 只做 Query Admin 基础审计与最小补洞。
+- 只做 Admin 基础审计与最小补洞。
 
 禁止：
 
@@ -402,7 +402,7 @@
 - 不直接改 adapter。
 - 不根据 PRD 盲目重写。
 
-### Session 3：P1 Query Admin 运营主干
+### Session 3：P1 Admin 运营主干
 
 目标：
 
@@ -443,18 +443,18 @@
 
 如果只做两个 session，推荐：
 
-1. **P0 Query Admin 基础**
+1. **P0 Admin 基础**
 2. **Adapter Contract 审计**
 
 原因：
 
-- Query Admin 是唯一 Admin，必须先防止后续 session 建错方向。
+- 橙色 `/admin` 是唯一 Admin，必须先防止后续 session 建错方向。
 - Adapter 是已跑通的核心资产，必须先保护。
 - P1 Admin 运营主干依赖这两个结论，否则容易把可运行链路改坏。
 
 如果必须并行 P0 + P1：
 
-- P1 只能做 query_tool Overview / Attempts / Account / Analyzer 的薄切片。
+- P1 只能做 admin_console Overview / Attempts / Account / Analyzer 的薄切片。
 - P1 不碰 adapter 深层逻辑。
 - P1 不新建 Admin 技术栈。
 - P1 遇到 contract 冲突必须列为人工决策。

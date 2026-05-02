@@ -8,10 +8,10 @@ shared platform dataset.
 ## Current Architecture
 
 ```text
-frontend/                 React + Vite product and admin UI
-backend/                  FastAPI control plane and Admin API
+frontend/                 React + Vite product UI; proxies the current Admin
+backend/                  FastAPI control plane for product APIs and user auth
 geo_tracker/              Celery workers for engine collection and analysis
-query_tool/               Internal operational query console
+admin_console/            Internal Admin console and query execution operations
 docs/                     PRD, Admin PRD, data model, adapter contract
 migrations/               Legacy/raw SQL migrations for tracker/analyzer work
 prototypes/node-auth-backend/
@@ -25,6 +25,7 @@ backend.
 
 ## Architecture Source Documents
 
+- `docs/ACTIVE_SURFACES.md` - current route ownership and Admin surface rules
 - `docs/PRD.md` - product and GEO monitoring model
 - `docs/ADMIN_PRD.md` - internal Admin console requirements
 - `docs/ADMIN_PRD_B_PIPELINE.md` - Planner / Tracker / Analyzer design
@@ -40,7 +41,7 @@ backend.
 cd backend
 uv sync --frozen
 cp .env.example .env
-# Edit .env and set ADMIN_JWT_SECRET to a 32+ byte value.
+# Edit .env for database, auth, and provider settings.
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 4000
 ```
@@ -58,14 +59,9 @@ Health endpoints:
 - `GET /healthz`
 - `GET /healthz/db`
 
-Implemented Admin auth endpoints currently live under:
-
-- `POST /admin/api/v1/auth/login`
-- `POST /admin/api/v1/auth/refresh`
-- `POST /admin/api/v1/auth/logout`
-- `POST /admin/api/v1/auth/forgot-password`
-- `POST /admin/api/v1/auth/reset-password`
-- `POST /admin/api/v1/auth/change-password`
+The active Admin is the orange Admin service in `admin_console/`. The old FastAPI
+Admin auth/API package has been removed; do not restore it as a second Admin
+backend.
 
 ### Frontend
 
@@ -75,8 +71,11 @@ npm install
 npm run dev
 ```
 
-The Vite dev server runs on port `3000` and proxies `/api/*` and
-`/admin/api/*` to the FastAPI backend on port `4000`.
+The Vite dev server defaults to port `3000` and proxies `/api/*` to the FastAPI
+backend on port `4000`. Local `/admin` is proxied to the orange Admin service on
+port `5000`. Do not create a second Admin frontend under `frontend/src/admin`,
+`frontend/src/pages/admin`, `frontend-admin`, or Next.js `app/admin`; see
+`docs/ACTIVE_SURFACES.md`.
 
 ### Worker Stack
 
@@ -101,7 +100,7 @@ Minimum backend runtime variables:
 | --- | --- |
 | `DATABASE_URL` or `GENPANO_DATABASE_URL` | SQLAlchemy async database URL |
 | `REDIS_URL` or `GENPANO_REDIS_URL` | Celery broker/result backend |
-| `ADMIN_JWT_SECRET` | Admin access/refresh token signing secret |
+| `USER_JWT_SECRET` | Product user access token signing secret |
 | `GENPANO_ENVIRONMENT` | `development` or `production` |
 
 ## Deployment
@@ -111,10 +110,10 @@ Minimum backend runtime variables:
 - `frontend` from `frontend/`
 - `backend` from `backend/` using FastAPI
 - `worker` from `geo_tracker/`
-- `query-tool` from `query_tool/`
+- `admin-console` from `admin_console/`
 
-`frontend/nginx.conf` routes `/api`, `/admin/api`, and `/health` to the
-FastAPI backend service on port `4000`.
+`frontend/nginx.conf` routes product `/api` and `/health` to FastAPI on port
+`4000`, and routes `/admin` plus `/admin/api` to `admin-console` on port `5000`.
 
 ## Prototype Notice
 
@@ -122,6 +121,10 @@ FastAPI backend service on port `4000`.
 signup/login/email/OAuth flows. It uses an in-memory store and is not part of
 the production backend path. Migrate any still-needed public auth behavior into
 FastAPI before relying on it in production.
+
+For Admin work, check `AGENTS.md` and `docs/ACTIVE_SURFACES.md` first. The
+orange `/admin` console is the only Admin UI; old React/Next/frontend-admin
+Admin surfaces must not be restored.
 
 ## Current Implementation Boundary
 

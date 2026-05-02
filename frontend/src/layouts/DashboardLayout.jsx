@@ -63,7 +63,7 @@ const icons = {
   industry:   <Icon><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></Icon>,
   ranking:    <Icon><path d="M6 9l6-6 6 6"/><path d="M6 15l6 6 6-6"/></Icon>,
   kg:         <Icon><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 6h8M6 8v8M18 8v8M8 18h8"/></Icon>,
-  /* Tools — external Flask query_tool (served by nginx at /query/) */
+  /* Tools — external Flask admin_console (served by nginx at /query/) */
   terminal:   <Icon><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></Icon>,
   /* Topbar */
   search:     <Icon><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></Icon>,

@@ -1,9 +1,8 @@
 """Product user auth models.
 
-These tables back the public GENPANO registration/login flow. Admin auth keeps
-its own isolated tables under `app.models.admin`; product users use bearer JWTs
-and one-time hashed tokens for email verification, OAuth profile completion,
-and password reset.
+These tables back the public GENPANO registration/login flow. Product users use
+bearer JWTs and one-time hashed tokens for email verification, OAuth profile
+completion, and password reset.
 """
 
 from __future__ import annotations

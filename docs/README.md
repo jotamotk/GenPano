@@ -2,6 +2,7 @@
 
 Canonical product and implementation references:
 
+- `ACTIVE_SURFACES.md`
 - `PRD.md`
 - `PRD_CODEX_READY.md`
 - `DEVELOPMENT_PLAN.md`

@@ -137,7 +137,7 @@ When extraction fails, save the full page HTML for offline debugging:
 await _save_html(page, -1, f"{llm_name}_extract_fail")
 ```
 
-This saves to `/data/screenshots/{llm_name}_extract_fail_{timestamp}.html`. The `query_tool` web UI has an HTML viewer to browse these files without needing to access the server directly.
+This saves to `/data/screenshots/{llm_name}_extract_fail_{timestamp}.html`. The `admin_console` web UI has an HTML viewer to browse these files without needing to access the server directly.
 
 ---
 
@@ -168,6 +168,6 @@ When triggering queries manually from the server (e.g., via Django shell or cele
 | Page crashed on GPU sites | `--disable-software-rasterizer` + `--disable-gpu` | Remove `--disable-software-rasterizer` |
 | Quill editor not fillable | `contenteditable` div, not input | 3-method JS injection |
 | Multi-paragraph response truncated | Taking only longest single element | Concatenate all `<p>` + `<li>` |
-| Container not updating | `build: ./query_tool` (local only) | Push to ACR, use `image:` in compose |
+| Container not updating | `build: ./admin_console` (local only) | Push to ACR, use `image:` in compose |
 | 502 after restart | nginx cached old container IP | `docker compose restart nginx` |
 | Disk full → postgres crash | Docker image accumulation | `docker system prune -af` |
