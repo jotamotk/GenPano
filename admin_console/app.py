@@ -40,6 +40,10 @@ try:
         selected_languages,
         transition_candidate_status as transition_prompt_candidate_status,
     )
+    from .segment_profiles import (
+        SegmentProfileGenerationError,
+        SegmentProfileGenerationService,
+    )
 except ImportError:
     from topic_plan import (
         DoubaoTopicPlanClient,
@@ -68,6 +72,10 @@ except ImportError:
         selected_intents,
         selected_languages,
         transition_candidate_status as transition_prompt_candidate_status,
+    )
+    from segment_profiles import (
+        SegmentProfileGenerationError,
+        SegmentProfileGenerationService,
     )
 
 # Add parent directory to path so we can import geo_tracker
@@ -5151,6 +5159,23 @@ def admin_logout_api():
     return jsonify({"success": True})
 
 
+@app.route('/api/admin/brands')
+def admin_brand_options_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            brands = _fetch_topic_plan_brands(cur)
+        return jsonify({"success": True, "brands": brands})
+    finally:
+        conn.close()
+
+
 @app.route('/api/admin/topic-plan/config')
 def admin_topic_plan_config_api():
     admin, error_response = _require_admin()
@@ -7998,7 +8023,1241 @@ def backfill_citations():
         finally:
             conn.close()
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# --- Segment/Profile Admin API ----------------------------------------------
+
+SEGMENT_STATUSES = {"active", "draft", "paused"}
+PROFILE_STATUSES = {"active", "draft", "paused"}
+
+
+def _ensure_segment_profile_tables():
+    """Ensure additive Segment/Profile tables and compatibility columns exist."""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS segments (
+                        id VARCHAR(64) PRIMARY KEY,
+                        code VARCHAR(64) UNIQUE,
+                        name TEXT NOT NULL,
+                        industry_id VARCHAR(128),
+                        industry TEXT,
+                        status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                        weight NUMERIC NOT NULL DEFAULT 0,
+                        age_range TEXT,
+                        income TEXT,
+                        regions TEXT,
+                        sampling_rate TEXT,
+                        note TEXT,
+                        is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                        deleted_at TIMESTAMP,
+                        created_by VARCHAR(36),
+                        updated_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS code VARCHAR(64)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry_id VARCHAR(128)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS updated_by VARCHAR(36)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_segments_status_industry
+                    ON segments (status, industry_id)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_segments_deleted_updated
+                    ON segments (is_deleted, updated_at DESC)
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS profiles (
+                        id VARCHAR(64) PRIMARY KEY DEFAULT (
+                            'pf_' || substr(md5(random()::text || clock_timestamp()::text), 1, 16)
+                        ),
+                        segment_id VARCHAR(64),
+                        code VARCHAR(64),
+                        name TEXT NOT NULL,
+                        demographic TEXT,
+                        need TEXT,
+                        weight NUMERIC NOT NULL DEFAULT 1,
+                        status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                        persona_json JSONB,
+                        is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                        deleted_at TIMESTAMP,
+                        created_by VARCHAR(36),
+                        updated_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS segment_id VARCHAR(64)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS code VARCHAR(64)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS demographic TEXT")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS need TEXT")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS weight NUMERIC NOT NULL DEFAULT 1")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'draft'")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS persona_json JSONB")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS updated_by VARCHAR(36)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_profiles_segment_status
+                    ON profiles (segment_id, status)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_profiles_deleted_updated
+                    ON profiles (is_deleted, updated_at DESC)
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS segment_generation_logs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        brand_id VARCHAR(128),
+                        brand_name TEXT,
+                        industry_id VARCHAR(128),
+                        llm_model TEXT NOT NULL,
+                        prompt_used TEXT,
+                        input_params JSONB,
+                        output_json JSONB,
+                        segments_generated INTEGER DEFAULT 0,
+                        segments_skipped INTEGER DEFAULT 0,
+                        tokens_used INTEGER DEFAULT 0,
+                        estimated_cost NUMERIC,
+                        created_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS profile_generation_logs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        segment_id VARCHAR(64) NOT NULL,
+                        llm_model TEXT NOT NULL,
+                        prompt_used TEXT,
+                        input_params JSONB,
+                        output_json JSONB,
+                        profiles_generated INTEGER DEFAULT 0,
+                        profiles_skipped INTEGER DEFAULT 0,
+                        tokens_used INTEGER DEFAULT 0,
+                        estimated_cost NUMERIC,
+                        created_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            conn.commit()
+            print("DB migration: Segment/Profile Admin tables ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+def _admin_float(value, default=0.0):
+    if value in (None, ""):
+        return default
+    raw = str(value).strip()
+    try:
+        number = float(raw.rstrip("%"))
+    except (TypeError, ValueError):
+        return default
+    if raw.endswith("%"):
+        number = number / 100.0
+    return max(0.0, number)
+
+
+def _admin_json(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+def _pagination(page, per_page, total):
+    total_pages = (int(total) + per_page - 1) // per_page if per_page else 0
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": int(total or 0),
+        "total_pages": total_pages,
+    }
+
+
+def _segment_payload(data, existing_id=None):
+    data = data or {}
+    segment_id = str(data.get("id") or data.get("code") or existing_id or "").strip().upper()
+    if not segment_id:
+        segment_id = "SEG-" + str(uuid.uuid4())[:8].upper()
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise ValueError("segment_name_required")
+    status = str(data.get("status") or "draft").strip().lower()
+    if status == "deleted":
+        status = "paused"
+    if status not in SEGMENT_STATUSES:
+        raise ValueError("invalid_segment_status")
+    return {
+        "id": segment_id,
+        "code": str(data.get("code") or segment_id).strip().upper(),
+        "name": name,
+        "industry_id": str(data.get("industry_id") or "").strip() or None,
+        "industry": str(data.get("industry") or data.get("industry_name") or "").strip(),
+        "status": status,
+        "weight": _admin_float(data.get("weight"), 0.0),
+        "age_range": str(data.get("age_range") or data.get("ageRange") or "").strip(),
+        "income": str(data.get("income") or "").strip(),
+        "regions": str(data.get("regions") or "").strip(),
+        "sampling_rate": str(data.get("sampling_rate") or data.get("samplingRate") or "").strip(),
+        "note": str(data.get("note") or "").strip(),
+    }
+
+
+def _profile_payload(data, segment_id, existing_id=None):
+    data = data or {}
+    profile_id = str(data.get("id") or data.get("code") or existing_id or "").strip().upper()
+    if not profile_id:
+        suffix = str(segment_id or "SEG").replace("SEG-", "").replace(" ", "-")
+        profile_id = f"P-{suffix}-{str(uuid.uuid4())[:6].upper()}"
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise ValueError("profile_name_required")
+    status = str(data.get("status") or "draft").strip().lower()
+    if status == "deleted":
+        status = "paused"
+    if status not in PROFILE_STATUSES:
+        raise ValueError("invalid_profile_status")
+    return {
+        "id": profile_id,
+        "code": str(data.get("code") or profile_id).strip().upper(),
+        "segment_id": str(segment_id).strip().upper(),
+        "name": name,
+        "demographic": str(data.get("demographic") or "").strip(),
+        "need": str(data.get("need") or "").strip(),
+        "weight": _admin_float(data.get("weight"), 1.0),
+        "status": status,
+        "persona_json": _admin_json(data.get("persona_json"), {}) or {},
+    }
+
+
+def _segment_row(row):
+    item = dict(row or {})
+    weight = item.get("weight")
+    try:
+        weight = float(weight or 0)
+    except (TypeError, ValueError):
+        weight = 0.0
+    profile_count = int(item.get("profile_count") or 0)
+    active_profile_count = int(item.get("active_profile_count") or 0)
+    return {
+        "id": item.get("id"),
+        "code": item.get("code") or item.get("id"),
+        "name": item.get("name"),
+        "industry_id": item.get("industry_id"),
+        "industry": item.get("industry") or item.get("industry_id") or "",
+        "status": item.get("status") or "draft",
+        "weight": weight,
+        "age_range": item.get("age_range") or "",
+        "ageRange": item.get("age_range") or "",
+        "income": item.get("income") or "",
+        "regions": item.get("regions") or "",
+        "sampling_rate": item.get("sampling_rate") or "",
+        "samplingRate": item.get("sampling_rate") or "",
+        "note": item.get("note") or "",
+        "profile_count": profile_count,
+        "profileCount": profile_count,
+        "active_profile_count": active_profile_count,
+        "activeProfileCount": active_profile_count,
+        "created_at": _isoformat(item.get("created_at")),
+        "updated_at": _isoformat(item.get("updated_at")),
+    }
+
+
+def _profile_row(row):
+    item = dict(row or {})
+    weight = item.get("weight")
+    try:
+        weight = float(weight or 0)
+    except (TypeError, ValueError):
+        weight = 0.0
+    persona_json = _admin_json(item.get("persona_json"), {}) or {}
+    api_id = item.get("api_id") or item.get("code") or item.get("id")
+    return {
+        "id": str(api_id),
+        "code": item.get("code") or str(api_id),
+        "segment_id": item.get("segment_id"),
+        "name": item.get("name"),
+        "demographic": item.get("demographic") or "",
+        "need": item.get("need") or "",
+        "weight": weight,
+        "status": item.get("status") or "draft",
+        "persona_json": persona_json,
+        "created_at": _isoformat(item.get("created_at")),
+        "updated_at": _isoformat(item.get("updated_at")),
+    }
+
+
+def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_id=None):
+    page = max(int(page or 1), 1)
+    per_page = max(1, min(int(per_page or 50), 200))
+    offset = (page - 1) * per_page
+    where = ["COALESCE(s.is_deleted, FALSE) = FALSE", "COALESCE(s.status, 'draft') <> 'deleted'"]
+    params = []
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        where.append(
+            "(s.id ILIKE %s OR COALESCE(s.code, '') ILIKE %s OR s.name ILIKE %s "
+            "OR COALESCE(s.industry, '') ILIKE %s OR COALESCE(s.status, '') ILIKE %s "
+            "OR COALESCE(s.note, '') ILIKE %s)"
+        )
+        params.extend([like, like, like, like, like, like])
+    status = (status or "").strip().lower()
+    if status and status != "all":
+        where.append("s.status = %s")
+        params.append(status)
+    industry_id = (industry_id or "").strip()
+    if industry_id:
+        where.append("(COALESCE(s.industry_id, '') = %s OR COALESCE(s.industry, '') = %s)")
+        params.extend([industry_id, industry_id])
+    where_clause = "WHERE " + " AND ".join(where)
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM segments s {where_clause}", params)
+    total = int(cur.fetchone()["cnt"] or 0)
+    cur.execute(
+        f"""
+        SELECT s.*,
+               COALESCE(pc.profile_count, 0) AS profile_count,
+               COALESCE(pc.active_profile_count, 0) AS active_profile_count
+        FROM segments s
+        LEFT JOIN (
+            SELECT segment_id,
+                   COUNT(*) AS profile_count,
+                   COUNT(*) FILTER (WHERE status = 'active') AS active_profile_count
+            FROM profiles
+            WHERE COALESCE(is_deleted, FALSE) = FALSE
+            GROUP BY segment_id
+        ) pc ON pc.segment_id = s.id
+        {where_clause}
+        ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST, s.id
+        LIMIT %s OFFSET %s
+        """,
+        params + [per_page, offset],
+    )
+    rows = [_segment_row(row) for row in cur.fetchall()]
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS segment_count,
+            COUNT(*) FILTER (WHERE status = 'active') AS active_segment_count,
+            COALESCE(SUM(weight) FILTER (WHERE status = 'active'), 0) AS active_weight_sum
+        FROM segments
+        WHERE COALESCE(is_deleted, FALSE) = FALSE AND COALESCE(status, 'draft') <> 'deleted'
+        """
+    )
+    summary = dict(cur.fetchone() or {})
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS profile_count,
+            COUNT(*) FILTER (WHERE status = 'active') AS active_profile_count
+        FROM profiles
+        WHERE COALESCE(is_deleted, FALSE) = FALSE
+        """
+    )
+    profile_summary = dict(cur.fetchone() or {})
+    summary.update(profile_summary)
+    summary["active_weight_sum"] = float(summary.get("active_weight_sum") or 0)
+    return rows, total, summary
+
+
+def _get_segment(cur, segment_id):
+    cur.execute(
+        """
+        SELECT s.*,
+               COALESCE(pc.profile_count, 0) AS profile_count,
+               COALESCE(pc.active_profile_count, 0) AS active_profile_count
+        FROM segments s
+        LEFT JOIN (
+            SELECT segment_id,
+                   COUNT(*) AS profile_count,
+                   COUNT(*) FILTER (WHERE status = 'active') AS active_profile_count
+            FROM profiles
+            WHERE COALESCE(is_deleted, FALSE) = FALSE
+            GROUP BY segment_id
+        ) pc ON pc.segment_id = s.id
+        WHERE s.id = %s AND COALESCE(s.is_deleted, FALSE) = FALSE
+          AND COALESCE(s.status, 'draft') <> 'deleted'
+        """,
+        (str(segment_id).strip().upper(),),
+    )
+    row = cur.fetchone()
+    return _segment_row(row) if row else None
+
+
+def _create_segment(cur, payload, admin_id):
+    data = _segment_payload(payload)
+    cur.execute(
+        """
+        SELECT 1
+        FROM segments
+        WHERE id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (data["id"],),
+    )
+    if cur.fetchone():
+        raise ValueError("segment_id_exists")
+    cur.execute(
+        """
+        INSERT INTO segments
+            (id, code, name, industry_id, industry, status, weight, age_range,
+             income, regions, sampling_rate, note, is_deleted, created_by,
+             updated_by, created_at, updated_at)
+        VALUES
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, NOW(), NOW())
+        """,
+        (
+            data["id"],
+            data["code"],
+            data["name"],
+            data["industry_id"],
+            data["industry"],
+            data["status"],
+            data["weight"],
+            data["age_range"],
+            data["income"],
+            data["regions"],
+            data["sampling_rate"],
+            data["note"],
+            admin_id,
+            admin_id,
+        ),
+    )
+    return _get_segment(cur, data["id"])
+
+
+def _update_segment(cur, segment_id, payload, admin_id):
+    data = _segment_payload(payload, existing_id=segment_id)
+    data["id"] = str(segment_id).strip().upper()
+    cur.execute(
+        """
+        UPDATE segments
+        SET code = %s, name = %s, industry_id = %s, industry = %s, status = %s,
+            weight = %s, age_range = %s, income = %s, regions = %s,
+            sampling_rate = %s, note = %s, updated_by = %s, updated_at = NOW()
+        WHERE id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (
+            data["code"],
+            data["name"],
+            data["industry_id"],
+            data["industry"],
+            data["status"],
+            data["weight"],
+            data["age_range"],
+            data["income"],
+            data["regions"],
+            data["sampling_rate"],
+            data["note"],
+            admin_id,
+            data["id"],
+        ),
+    )
+    if cur.rowcount == 0:
+        return None
+    return _get_segment(cur, data["id"])
+
+
+def _soft_delete_segment(cur, segment_id, admin_id):
+    segment_id = str(segment_id).strip().upper()
+    before = _get_segment(cur, segment_id)
+    if not before:
+        return None
+    cur.execute(
+        """
+        UPDATE segments
+        SET status = 'deleted', is_deleted = TRUE, deleted_at = NOW(),
+            updated_by = %s, updated_at = NOW()
+        WHERE id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (admin_id, segment_id),
+    )
+    cur.execute(
+        """
+        UPDATE profiles
+        SET status = 'deleted', is_deleted = TRUE, deleted_at = NOW(),
+            updated_by = %s, updated_at = NOW()
+        WHERE segment_id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (admin_id, segment_id),
+    )
+    return before
+
+
+def _upsert_segment(cur, payload, admin_id):
+    data = _segment_payload(payload)
+    cur.execute("SELECT 1 FROM segments WHERE id = %s", (data["id"],))
+    exists = bool(cur.fetchone())
+    if exists:
+        cur.execute(
+            """
+            UPDATE segments
+            SET code = %s, name = %s, industry_id = %s, industry = %s, status = %s,
+                weight = %s, age_range = %s, income = %s, regions = %s,
+                sampling_rate = %s, note = %s, is_deleted = FALSE, deleted_at = NULL,
+                updated_by = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (
+                data["code"],
+                data["name"],
+                data["industry_id"],
+                data["industry"],
+                data["status"],
+                data["weight"],
+                data["age_range"],
+                data["income"],
+                data["regions"],
+                data["sampling_rate"],
+                data["note"],
+                admin_id,
+                data["id"],
+            ),
+        )
+        return "updated", _get_segment(cur, data["id"])
+    return "added", _create_segment(cur, data, admin_id)
+
+
+def _import_segments(cur, rows, admin_id):
+    added = updated = skipped = 0
+    output = []
+    for row in rows or []:
+        try:
+            outcome, segment = _upsert_segment(cur, row, admin_id)
+            if outcome == "added":
+                added += 1
+            else:
+                updated += 1
+            output.append(segment)
+        except ValueError:
+            skipped += 1
+    return {"added": added, "updated": updated, "skipped": skipped, "rows": output}
+
+
+def _fetch_profiles(cur, segment_id, *, page=1, per_page=100, q=None, status=None):
+    page = max(int(page or 1), 1)
+    per_page = max(1, min(int(per_page or 100), 100000))
+    offset = (page - 1) * per_page
+    where = ["p.segment_id = %s", "COALESCE(p.is_deleted, FALSE) = FALSE", "COALESCE(p.status, 'draft') <> 'deleted'"]
+    params = [str(segment_id).strip().upper()]
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        where.append(
+            "(COALESCE(p.code, '') ILIKE %s OR CAST(p.id AS TEXT) ILIKE %s OR p.name ILIKE %s "
+            "OR COALESCE(p.demographic, '') ILIKE %s OR COALESCE(p.need, '') ILIKE %s "
+            "OR COALESCE(p.status, '') ILIKE %s)"
+        )
+        params.extend([like, like, like, like, like, like])
+    status = (status or "").strip().lower()
+    if status and status != "all":
+        where.append("p.status = %s")
+        params.append(status)
+    where_clause = "WHERE " + " AND ".join(where)
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM profiles p {where_clause}", params)
+    total = int(cur.fetchone()["cnt"] or 0)
+    cur.execute(
+        f"""
+        SELECT COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id, p.*
+        FROM profiles p
+        {where_clause}
+        ORDER BY p.updated_at DESC NULLS LAST, p.created_at DESC NULLS LAST, p.id
+        LIMIT %s OFFSET %s
+        """,
+        params + [per_page, offset],
+    )
+    return [_profile_row(row) for row in cur.fetchall()], total
+
+
+def _get_profile(cur, segment_id, profile_id):
+    cur.execute(
+        """
+        SELECT COALESCE(code, CAST(id AS TEXT)) AS api_id, *
+        FROM profiles
+        WHERE segment_id = %s
+          AND (code = %s OR CAST(id AS TEXT) = %s)
+          AND COALESCE(is_deleted, FALSE) = FALSE
+          AND COALESCE(status, 'draft') <> 'deleted'
+        """,
+        (
+            str(segment_id).strip().upper(),
+            str(profile_id).strip().upper(),
+            str(profile_id).strip(),
+        ),
+    )
+    row = cur.fetchone()
+    return _profile_row(row) if row else None
+
+
+def _create_profile(cur, segment_id, payload, admin_id):
+    segment = _get_segment(cur, segment_id)
+    if not segment:
+        raise ValueError("segment_not_found")
+    data = _profile_payload(payload, segment_id)
+    cur.execute(
+        """
+        SELECT 1
+        FROM profiles
+        WHERE segment_id = %s
+          AND (code = %s OR CAST(id AS TEXT) = %s)
+          AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (data["segment_id"], data["code"], data["id"]),
+    )
+    if cur.fetchone():
+        raise ValueError("profile_id_exists")
+    cur.execute(
+        """
+        INSERT INTO profiles
+            (code, segment_id, name, demographic, need, weight, status,
+             persona_json, is_deleted, created_by, updated_by, created_at, updated_at)
+        VALUES
+            (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, FALSE, %s, %s, NOW(), NOW())
+        RETURNING COALESCE(code, CAST(id AS TEXT)) AS api_id, *
+        """,
+        (
+            data["code"],
+            data["segment_id"],
+            data["name"],
+            data["demographic"],
+            data["need"],
+            data["weight"],
+            data["status"],
+            json.dumps(data["persona_json"], default=_json_default),
+            admin_id,
+            admin_id,
+        ),
+    )
+    return _profile_row(cur.fetchone())
+
+
+def _update_profile(cur, segment_id, profile_id, payload, admin_id):
+    if not _get_segment(cur, segment_id):
+        raise ValueError("segment_not_found")
+    existing = _get_profile(cur, segment_id, profile_id)
+    if not existing:
+        return None
+    data = _profile_payload(payload, segment_id, existing_id=profile_id)
+    cur.execute(
+        """
+        UPDATE profiles
+        SET code = %s, name = %s, demographic = %s, need = %s, weight = %s,
+            status = %s, persona_json = %s::jsonb, updated_by = %s, updated_at = NOW()
+        WHERE segment_id = %s
+          AND (code = %s OR CAST(id AS TEXT) = %s)
+          AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (
+            data["code"],
+            data["name"],
+            data["demographic"],
+            data["need"],
+            data["weight"],
+            data["status"],
+            json.dumps(data["persona_json"], default=_json_default),
+            admin_id,
+            data["segment_id"],
+            str(profile_id).strip().upper(),
+            str(profile_id).strip(),
+        ),
+    )
+    return _get_profile(cur, segment_id, data["code"])
+
+
+def _soft_delete_profile(cur, segment_id, profile_id, admin_id):
+    before = _get_profile(cur, segment_id, profile_id)
+    if not before:
+        return None
+    cur.execute(
+        """
+        UPDATE profiles
+        SET status = 'deleted', is_deleted = TRUE, deleted_at = NOW(),
+            updated_by = %s, updated_at = NOW()
+        WHERE segment_id = %s
+          AND (code = %s OR CAST(id AS TEXT) = %s)
+          AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (
+            admin_id,
+            str(segment_id).strip().upper(),
+            str(profile_id).strip().upper(),
+            str(profile_id).strip(),
+        ),
+    )
+    return before
+
+
+def _import_profiles(cur, segment_id, rows, admin_id):
+    if not _get_segment(cur, segment_id):
+        raise ValueError("segment_not_found")
+    added = updated = skipped = 0
+    output = []
+    for row in rows or []:
+        try:
+            payload = {**dict(row), "segment_id": segment_id}
+            data = _profile_payload(payload, segment_id)
+            existing = _get_profile(cur, segment_id, data["id"])
+            if existing:
+                output.append(_update_profile(cur, segment_id, data["id"], data, admin_id))
+                updated += 1
+            else:
+                output.append(_create_profile(cur, segment_id, data, admin_id))
+                added += 1
+        except ValueError:
+            skipped += 1
+    return {"added": added, "updated": updated, "skipped": skipped, "rows": output}
+
+
+def _write_segment_generation_log(cur, admin_id, payload, result):
+    cur.execute(
+        """
+        INSERT INTO segment_generation_logs
+            (id, brand_id, brand_name, industry_id, llm_model, prompt_used,
+             input_params, output_json, segments_generated, segments_skipped,
+             tokens_used, estimated_cost, created_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, NOW())
+        """,
+        (
+            str(uuid.uuid4()),
+            payload.get("brand_id"),
+            payload.get("brand_name") or payload.get("brand"),
+            payload.get("industry_id"),
+            result.model,
+            result.prompt,
+            json.dumps(payload, default=_json_default),
+            json.dumps(result.items, default=_json_default),
+            len(result.items),
+            0,
+            int((result.usage or {}).get("total_tokens") or 0),
+            result.estimated_cost,
+            admin_id,
+        ),
+    )
+
+
+def _write_profile_generation_log(cur, admin_id, segment_id, payload, result):
+    cur.execute(
+        """
+        INSERT INTO profile_generation_logs
+            (id, segment_id, llm_model, prompt_used, input_params, output_json,
+             profiles_generated, profiles_skipped, tokens_used, estimated_cost,
+             created_by, created_at)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, NOW())
+        """,
+        (
+            str(uuid.uuid4()),
+            str(segment_id).strip().upper(),
+            result.model,
+            result.prompt,
+            json.dumps(payload, default=_json_default),
+            json.dumps(result.items, default=_json_default),
+            len(result.items),
+            0,
+            int((result.usage or {}).get("total_tokens") or 0),
+            result.estimated_cost,
+            admin_id,
+        ),
+    )
+
+
+def _segment_profile_generation_status(error):
+    return 503 if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"} else 502
+
+
+@app.route('/api/segments')
+def admin_segments_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    page = _clamp_int(request.args.get("page"), 1, 1, 100000)
+    per_page = _clamp_int(request.args.get("per_page"), 50, 1, 200)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total, summary = _fetch_segments(
+                cur,
+                page=page,
+                per_page=per_page,
+                q=request.args.get("q"),
+                status=request.args.get("status"),
+                industry_id=request.args.get("industry_id"),
+            )
+        return jsonify({"success": True, "rows": rows, "pagination": _pagination(page, per_page, total), "summary": summary})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments', methods=['POST'])
+def admin_segment_create_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                row = _create_segment(cur, payload, admin["id"])
+            except ValueError as error:
+                conn.rollback()
+                return jsonify({"success": False, "error": str(error)}), 400
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="create_segment",
+                target_type="segment",
+                target_id=row["id"],
+                diff={"after": row},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, "segment": row}), 201
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/import', methods=['POST'])
+def admin_segments_import_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows") or payload.get("segments") or []
+    if not isinstance(rows, list):
+        return jsonify({"success": False, "error": "rows_must_be_array"}), 400
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            result = _import_segments(cur, rows, admin["id"])
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="import_segments",
+                target_type="segment",
+                target_id=None,
+                diff={"summary": {k: result[k] for k in ("added", "updated", "skipped")}},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, **result})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/generate', methods=['POST'])
+def admin_segments_generate_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    if not brand_name:
+        return jsonify({"success": False, "error": "brand_name_required"}), 400
+    service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+    try:
+        result = service.generate_segments(
+            brand_name=brand_name,
+            industry=(payload.get("industry") or payload.get("industry_id") or "").strip(),
+            count=_clamp_int(payload.get("count"), 6, 1, 20),
+            status=(payload.get("status") or "draft").strip().lower(),
+            positioning=payload.get("positioning") or "",
+            goal=payload.get("goal") or "",
+            constraints=payload.get("constraints") or "",
+        )
+    except SegmentProfileGenerationError as error:
+        return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            _write_segment_generation_log(cur, admin["id"], payload, result)
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="generate_segments",
+                target_type="segment",
+                target_id=None,
+                diff={"count": len(result.items), "model": result.model},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"success": True, "drafts": result.items, "model": result.model, "usage": result.usage})
+
+
+@app.route('/api/segments/<segment_id>')
+def admin_segment_detail_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            row = _get_segment(cur, segment_id)
+        if not row:
+            return jsonify({"success": False, "error": "segment_not_found"}), 404
+        return jsonify({"success": True, "segment": row})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>', methods=['PUT'])
+def admin_segment_update_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            before = _get_segment(cur, segment_id)
+            if not before:
+                conn.rollback()
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            try:
+                row = _update_segment(cur, segment_id, payload, admin["id"])
+            except ValueError as error:
+                conn.rollback()
+                return jsonify({"success": False, "error": str(error)}), 400
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="update_segment",
+                target_type="segment",
+                target_id=segment_id,
+                diff={"before": before, "after": row},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, "segment": row})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>', methods=['DELETE'])
+def admin_segment_delete_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            before = _soft_delete_segment(cur, segment_id, admin["id"])
+            if not before:
+                conn.rollback()
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="delete_segment",
+                target_type="segment",
+                target_id=segment_id,
+                diff={"before": before, "after": {"is_deleted": True, "status": "deleted"}},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles')
+def admin_segment_profiles_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    page = _clamp_int(request.args.get("page"), 1, 1, 100000)
+    per_page = _clamp_int(request.args.get("per_page"), 100, 1, 500)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            rows, total = _fetch_profiles(
+                cur,
+                segment_id,
+                page=page,
+                per_page=per_page,
+                q=request.args.get("q"),
+                status=request.args.get("status"),
+            )
+        return jsonify({"success": True, "segment": segment, "rows": rows, "pagination": _pagination(page, per_page, total)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles', methods=['POST'])
+def admin_segment_profile_create_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                row = _create_profile(cur, segment_id, payload, admin["id"])
+            except ValueError as error:
+                conn.rollback()
+                status_code = 404 if str(error) == "segment_not_found" else 400
+                return jsonify({"success": False, "error": str(error)}), status_code
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="create_profile",
+                target_type="profile",
+                target_id=row["id"],
+                diff={"after": row},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, "profile": row}), 201
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles/import', methods=['POST'])
+def admin_segment_profiles_import_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get("rows") or payload.get("profiles") or []
+    if not isinstance(rows, list):
+        return jsonify({"success": False, "error": "rows_must_be_array"}), 400
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                result = _import_profiles(cur, segment_id, rows, admin["id"])
+            except ValueError as error:
+                conn.rollback()
+                return jsonify({"success": False, "error": str(error)}), 404
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="import_profiles",
+                target_type="segment",
+                target_id=segment_id,
+                diff={"summary": {k: result[k] for k in ("added", "updated", "skipped")}},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, **result})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles/export')
+def admin_segment_profiles_export_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+    import csv
+    import io
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            rows, _total = _fetch_profiles(cur, segment_id, page=1, per_page=100000)
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "segment_id", "name", "demographic", "need", "weight", "status"])
+        for profile in rows:
+            writer.writerow([
+                profile["id"],
+                segment["id"],
+                profile["name"],
+                profile["demographic"],
+                profile["need"],
+                profile["weight"],
+                profile["status"],
+            ])
+        filename = f"{segment['id']}-profiles.csv"
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles/generate', methods=['POST'])
+def admin_segment_profiles_generate_api(segment_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    if not brand_name:
+        return jsonify({"success": False, "error": "brand_name_required"}), 400
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+            try:
+                result = service.generate_profiles(
+                    segment=segment,
+                    brand_name=brand_name,
+                    count=_clamp_int(payload.get("count"), 6, 1, 50),
+                    goal=payload.get("goal") or "",
+                    constraints=payload.get("constraints") or payload.get("notes") or "",
+                )
+            except SegmentProfileGenerationError as error:
+                conn.rollback()
+                return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
+            _write_profile_generation_log(cur, admin["id"], segment_id, payload, result)
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="generate_profiles",
+                target_type="segment",
+                target_id=segment_id,
+                diff={"count": len(result.items), "model": result.model},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"success": True, "drafts": result.items, "model": result.model, "usage": result.usage})
+
+
+@app.route('/api/segments/<segment_id>/profiles/<profile_id>', methods=['PUT'])
+def admin_segment_profile_update_api(segment_id, profile_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            before = _get_profile(cur, segment_id, profile_id)
+            if not before:
+                conn.rollback()
+                return jsonify({"success": False, "error": "profile_not_found"}), 404
+            try:
+                row = _update_profile(cur, segment_id, profile_id, payload, admin["id"])
+            except ValueError as error:
+                conn.rollback()
+                status_code = 404 if str(error) == "segment_not_found" else 400
+                return jsonify({"success": False, "error": str(error)}), status_code
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="update_profile",
+                target_type="profile",
+                target_id=profile_id,
+                diff={"before": before, "after": row},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, "profile": row})
+    finally:
+        conn.close()
+
+
+@app.route('/api/segments/<segment_id>/profiles/<profile_id>', methods=['DELETE'])
+def admin_segment_profile_delete_api(segment_id, profile_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            before = _soft_delete_profile(cur, segment_id, profile_id, admin["id"])
+            if not before:
+                conn.rollback()
+                return jsonify({"success": False, "error": "profile_not_found"}), 404
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="delete_profile",
+                target_type="profile",
+                target_id=profile_id,
+                diff={"before": before, "after": {"is_deleted": True, "status": "deleted"}},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 # ─── Segments API ─────────────────────────────────────────────────────────────
@@ -8689,6 +9948,7 @@ def _run_startup_migrations():
     _ensure_admin_tables()
     _ensure_topic_plan_tables()
     _ensure_prompt_matrix_tables()
+    _ensure_segment_profile_tables()
     _normalize_query_data()
 
 
