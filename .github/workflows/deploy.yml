@@ -57,10 +57,10 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
-      - name: Build & push query-tool
+      - name: Build & push admin-console
         run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }} ./query_tool
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-${{ env.IMAGE_TAG }}
+          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-${{ env.IMAGE_TAG }} ./admin_console
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-${{ env.IMAGE_TAG }}
 
   deploy:
     name: Deploy to Server
@@ -106,10 +106,10 @@ jobs:
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
             GENPANO_ENVIRONMENT=production
-            ADMIN_JWT_SECRET=${{ secrets.ADMIN_JWT_SECRET || secrets.JWT_SECRET }}
+            ADMIN_SESSION_SECRET=${{ secrets.ADMIN_SESSION_SECRET || secrets.JWT_SECRET }}
             ADMIN_BASE_URL=${{ secrets.ADMIN_BASE_URL }}
             ADMIN_EMAIL_FROM=${{ secrets.ADMIN_EMAIL_FROM }}
-            USER_JWT_SECRET=${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET || secrets.ADMIN_JWT_SECRET }}
+            USER_JWT_SECRET=${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
             USER_BASE_URL=${{ secrets.USER_BASE_URL || vars.USER_BASE_URL || secrets.FRONTEND_URL || vars.FRONTEND_URL || format('http://{0}', secrets.SERVER_HOST) }}
             FRONTEND_URL=${{ secrets.FRONTEND_URL || vars.FRONTEND_URL || secrets.USER_BASE_URL || vars.USER_BASE_URL || format('http://{0}', secrets.SERVER_HOST) }}
             USER_EMAIL_PROVIDER=${{ secrets.USER_EMAIL_PROVIDER || vars.USER_EMAIL_PROVIDER || secrets.EMAIL_PROVIDER || vars.EMAIL_PROVIDER || 'aliyun_dm' }}
@@ -208,8 +208,8 @@ jobs:
             timeout 1200s docker pull "$pull_registry/genpano:worker-$image_tag"
             echo "Pulling frontend image"
             timeout 900s docker pull "$pull_registry/genpano:frontend-$image_tag"
-            echo "Pulling query-tool image"
-            timeout 900s docker pull "$pull_registry/genpano:query-tool-$image_tag"
+            echo "Pulling admin-console image"
+            timeout 900s docker pull "$pull_registry/genpano:admin-console-$image_tag"
             docker compose up -d postgres redis
             cat > /tmp/genpano_detect_existing_revision.py <<'PY'
             import sys
@@ -233,7 +233,7 @@ jobs:
             if {"users", "user_auth_tokens"}.issubset(tables):
                 print("20260429_user_auth")
             elif {"admin_users", "admin_sessions", "admin_password_resets", "admin_login_attempts"}.issubset(tables):
-                print("55a628f2bb7d")
+                print("cdfdaab4088e")
             elif "industry_benchmark_daily" in tables:
                 print("cdfdaab4088e")
             PY
@@ -262,7 +262,7 @@ jobs:
 
               echo "FAILED: ${label} (${url})" >&2
               docker compose ps >&2
-              docker compose logs --tail=80 nginx backend query-tool >&2
+              docker compose logs --tail=80 nginx backend admin-console >&2
               return 1
             }
 

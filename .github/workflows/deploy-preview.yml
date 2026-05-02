@@ -1,7 +1,7 @@
 name: Build & Deploy (Preview)
 
 # Builds and deploys the preview environment alongside prod on the same host.
-# Shares postgres/redis/worker with prod, but runs preview frontend/backend/query-tool images.
+# Shares postgres/redis/worker with prod, but runs preview frontend/backend/admin-console images.
 # Reachable at http://<host>/preview/.
 #
 # Triggers (gated per job):
@@ -13,7 +13,7 @@ name: Build & Deploy (Preview)
 #     (Step 10 / Session 0' Python backend gate; runs lint + types + migration
 #     only, no docker push, no SSH deploy)
 #
-# Images:   genpano:backend-preview-<sha>, genpano:query-tool-preview-<sha>,
+# Images:   genpano:backend-preview-<sha>, genpano:admin-console-preview-<sha>,
 #           genpano:frontend-preview-<sha>
 # Tag var:  PREVIEW_IMAGE_TAG (written into .env on the host, merged with prod .env)
 
@@ -86,12 +86,12 @@ jobs:
             ./backend
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:backend-preview-${{ env.PREVIEW_IMAGE_TAG }}
 
-      - name: Build & push query-tool-preview
+      - name: Build & push admin-console-preview
         run: |
           docker build \
-            -t ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }} \
-            ./query_tool
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:query-tool-preview-${{ env.PREVIEW_IMAGE_TAG }}
+            -t ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-preview-${{ env.PREVIEW_IMAGE_TAG }} \
+            ./admin_console
+          docker push ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-preview-${{ env.PREVIEW_IMAGE_TAG }}
 
   deploy:
     name: Deploy Preview to Server
@@ -122,7 +122,7 @@ jobs:
 
             touch .env
             for key in \
-              PREVIEW_IMAGE_TAG USER_JWT_SECRET ADMIN_JWT_SECRET ADMIN_SESSION_SECRET \
+              PREVIEW_IMAGE_TAG USER_JWT_SECRET ADMIN_SESSION_SECRET \
               PREVIEW_USER_BASE_URL PREVIEW_FRONTEND_URL PREVIEW_GOOGLE_CALLBACK_URL \
               PREVIEW_USER_EMAIL_PROVIDER PREVIEW_USER_EMAIL_FROM PREVIEW_USER_EMAIL_REPLY_TO \
               EMAIL_PROVIDER USER_EMAIL_PROVIDER USER_EMAIL_FROM EMAIL_FROM \
@@ -136,9 +136,8 @@ jobs:
             done
             cat >> .env <<'ENVEOF'
             PREVIEW_IMAGE_TAG=${{ env.PREVIEW_IMAGE_TAG }}
-            USER_JWT_SECRET=${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET || secrets.ADMIN_JWT_SECRET }}
-            ADMIN_JWT_SECRET=${{ secrets.ADMIN_JWT_SECRET || secrets.JWT_SECRET }}
-            ADMIN_SESSION_SECRET=${{ secrets.ADMIN_SESSION_SECRET || secrets.ADMIN_JWT_SECRET || secrets.JWT_SECRET }}
+            USER_JWT_SECRET=${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
+            ADMIN_SESSION_SECRET=${{ secrets.ADMIN_SESSION_SECRET || secrets.JWT_SECRET }}
             PREVIEW_USER_BASE_URL=${{ secrets.PREVIEW_USER_BASE_URL || vars.PREVIEW_USER_BASE_URL || format('http://{0}/preview', secrets.SERVER_HOST) }}
             PREVIEW_FRONTEND_URL=${{ secrets.PREVIEW_FRONTEND_URL || vars.PREVIEW_FRONTEND_URL || secrets.PREVIEW_USER_BASE_URL || vars.PREVIEW_USER_BASE_URL || format('http://{0}/preview', secrets.SERVER_HOST) }}
             PREVIEW_GOOGLE_CALLBACK_URL=${{ secrets.PREVIEW_GOOGLE_CALLBACK_URL || vars.PREVIEW_GOOGLE_CALLBACK_URL || format('http://{0}/preview/api/auth/google/callback', secrets.SERVER_HOST) }}
@@ -166,7 +165,7 @@ jobs:
             # Pull new preview images and apply the overlay without touching prod services.
             # --no-recreate for unchanged services keeps prod containers running as-is.
             docker compose -f docker-compose.yml -f docker-compose.preview.yml pull \
-              backend-preview query-tool-preview frontend-preview
+              backend-preview admin-console-preview frontend-preview
 
             docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d postgres redis
 
@@ -175,7 +174,7 @@ jobs:
 
             docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \
               --no-deps \
-              backend-preview query-tool-preview frontend-preview
+              backend-preview admin-console-preview frontend-preview
 
             # nginx needs the extra volume mount (routes.conf) — recreate only nginx.
             docker compose -f docker-compose.yml -f docker-compose.preview.yml up -d \

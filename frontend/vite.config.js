@@ -14,16 +14,23 @@ export default defineConfig({
     port: 3000,
     open: true,
     // /api/*        - main FastAPI backend on :4000
-    // /admin/api/*  - admin console backend on :4000, Path=/admin cookie scope
+    // /admin*       - existing complete Admin system on :5000.
     proxy: {
       '/api': {
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
       '/admin/api': {
-        target: 'http://localhost:4000',
-        changeOrigin: false,
+        target: 'http://localhost:5000',
+        changeOrigin: true,
         secure: false,
+        rewrite: (path) => path.replace(/^\/admin\/api/, '/api'),
+      },
+      '/admin': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        secure: false,
+        rewrite: () => '/admin',
       },
     },
   },

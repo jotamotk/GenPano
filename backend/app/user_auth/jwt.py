@@ -38,7 +38,7 @@ class UserAccessTokenPayload:
 
 
 def _load_secret() -> str:
-    raw = os.environ.get("USER_JWT_SECRET") or os.environ.get("ADMIN_JWT_SECRET")
+    raw = os.environ.get("USER_JWT_SECRET")
     if raw is None or len(raw.encode("utf-8")) < _MIN_SECRET_BYTES:
         raise UserJwtSecretMissingError(
             f"USER_JWT_SECRET must be set and >= {_MIN_SECRET_BYTES} bytes"

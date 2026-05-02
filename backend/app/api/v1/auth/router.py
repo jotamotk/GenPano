@@ -68,7 +68,7 @@ def _api_error(status_code: int, code: str, message: str) -> HTTPException:
 
 
 def _oauth_state_secret() -> bytes | None:
-    raw = os.environ.get("USER_JWT_SECRET") or os.environ.get("ADMIN_JWT_SECRET")
+    raw = os.environ.get("USER_JWT_SECRET")
     if raw is None:
         return None
     encoded = raw.encode("utf-8")

@@ -39,17 +39,6 @@ import BrandCompetitorsPage from './pages/brand/BrandCompetitorsPage'
 import IndustryRankingPage from './pages/industry/IndustryRankingPage'
 import IndustryTopicsPage from './pages/industry/IndustryTopicsPage'
 
-/* Admin Console pages.
-   Admin surfaces live under /admin/* and are gated by a separate Next.js
-   middleware (Step 8). For Phase Gate A0 only the three auth-front pages
-   are mounted; the authenticated /admin/dashboard target is a Step 8 stub. */
-import AdminLoginPage from './admin/pages/AdminLoginPage'
-import AdminChangePasswordPage from './admin/pages/AdminChangePasswordPage'
-import AdminForgotPasswordPage from './admin/pages/AdminForgotPasswordPage'
-import AdminDashboardPage from './admin/pages/AdminDashboardPage'
-import AdminAuthShell from './admin/components/AdminAuthShell'
-import AdminRouteGuard from './admin/components/AdminRouteGuard'
-
 /* ─────────────────────────────────────────────────────────────
    Legacy-path redirect helpers
    §4.6-IA-v2.D — 301 map from pre-2026-04-20 paths to Brand/Industry Mode
@@ -172,24 +161,6 @@ export default function App() {
         <Route path="/reset-password-success" element={<PublicOnly><ResetPasswordSuccessPage /></PublicOnly>} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/onboarding" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
-
-        {/* ── Admin Console (Session A0) ──
-             Admin routes are wrapped by <AdminAuthShell /> which mounts
-             AdminAuthProvider (silent refresh + BroadcastChannel) and the
-             global SessionExpiredModal. Inside the shell, gated pages sit
-             behind <AdminRouteGuard /> (Step 8) which enforces the
-             authenticated + force-password-change state machine. */}
-        <Route element={<AdminAuthShell />}>
-          {/* Anonymous-allowed admin routes */}
-          <Route path="/admin/login" element={<AdminLoginPage />} />
-          <Route path="/admin/forgot-password" element={<AdminForgotPasswordPage />} />
-
-          {/* Gated admin routes (require valid session) */}
-          <Route element={<AdminRouteGuard />}>
-            <Route path="/admin/change-password" element={<AdminChangePasswordPage />} />
-            <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
-          </Route>
-        </Route>
 
         {/* ══════════════════════════════════════════════════════════
             Authenticated app shell (Brand/Industry Mode IA v2.0)

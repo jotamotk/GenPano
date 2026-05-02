@@ -136,7 +136,7 @@ Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
 
 ### 上传 Cookies
 
-1. 打开 Query Tool → Accounts tab → Upload Cookies
+1. 打开 Admin Console → Accounts tab → Upload Cookies
 2. Platform 选择 `Doubao (豆包)`
 3. Account Label 填手机号或标识
 4. 粘贴 EditThisCookie 导出的 JSON（自动转换格式）
@@ -168,7 +168,7 @@ Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
 | `geo_tracker/pool/account_pool.py` | 账号轮换调度，失败处理，cookie 持久化 |
 | `geo_tracker/tasks/celery_tasks.py` | Celery 任务定义，cookie 保活，每日重置 |
 | `geo_tracker/db/models.py` | LLMAccount 模型定义 |
-| `query_tool/app.py` | Web UI，Accounts 管理，cookie 上传 API |
+| `admin_console/app.py` | Web UI，Accounts 管理，cookie 上传 API |
 
 ## 六、Celery Beat 定时任务
 

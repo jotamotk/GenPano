@@ -240,7 +240,7 @@ class D8NoHardcodedJwtSecret:
     id = "D8"
     description = "JWT/SECRET assignment must come from env/settings, not a string literal"
 
-    _TARGET_NAMES = frozenset({"JWT_SECRET", "SECRET_KEY", "ADMIN_JWT_SECRET"})
+    _TARGET_NAMES = frozenset({"JWT_SECRET", "SECRET_KEY", "USER_JWT_SECRET"})
 
     def scan(self, files: list[Path]) -> list[Violation]:
         out: list[Violation] = []
@@ -275,10 +275,7 @@ class D9BcryptCostAtLeast12:
     Walks call-sites for `bcrypt.gensalt(...)`/`gensalt(...)` and inspects
     the `rounds=` kwarg. A constant int < 12 is the violation. Non-literals
     (e.g. `rounds=BCRYPT_COST`) are allowed — those route through the
-    constants module which is the single canonical source. Files under
-    `app/admin/auth/password.py` are NOT whitelisted: they MUST use
-    `BCRYPT_COST` (the constant), not a literal — so they pass naturally
-    without a special-case here.
+    constants module which is the single canonical source.
     """
 
     id = "D9"
@@ -332,7 +329,7 @@ class D10CookieSameSiteStrict:
     """
 
     id = "D10"
-    description = "admin auth cookies must use SameSite=Strict (no 'lax' / 'none')"
+    description = "auth cookies must use SameSite=Strict (no 'lax' / 'none')"
 
     _SAMESITE_NAMES = ("samesite", "same_site")
 

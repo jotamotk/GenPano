@@ -1,7 +1,7 @@
 """user_auth_module
 
 Revision ID: 20260429_user_auth
-Revises: 55a628f2bb7d
+Revises: cdfdaab4088e
 Create Date: 2026-04-29 22:30:00.000000+00:00
 
 """
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "20260429_user_auth"
-down_revision: Union[str, Sequence[str], None] = "55a628f2bb7d"
+down_revision: Union[str, Sequence[str], None] = "cdfdaab4088e"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
