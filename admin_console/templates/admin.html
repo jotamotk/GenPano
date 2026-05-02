@@ -7706,6 +7706,7 @@ function segmentCrudPanel() {
     segmentLlmError: '',
     segmentLlmLoading: false,
     profileLlmDrafts: [],
+    profileLlmDraftSegmentId: '',
     profileLlmError: '',
     profileLlmLoading: false,
     editingSegmentId: null,
@@ -8030,7 +8031,6 @@ function segmentCrudPanel() {
     },
     openSegmentLlmPanel() {
       this.segmentLlmError = '';
-      this.segmentLlmDrafts = [];
       this.segmentLlmModalOpen = true;
       this.refreshIcons();
     },
@@ -8048,6 +8048,7 @@ function segmentCrudPanel() {
       const brandOption = this.selectedBrandOption(brand);
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
+      this.segmentLlmDrafts = [];
       try {
         const body = await this.apiJson(API_BASE + '/segments/generate', {
           method: 'POST',
@@ -8078,6 +8079,7 @@ function segmentCrudPanel() {
           body: JSON.stringify({ rows: this.segmentLlmDrafts.map(row => this.toApiSegment(row)), reason: 'confirm_llm_segment_drafts' }),
         });
         this.selectedSegmentId = this.segmentLlmDrafts[0].id;
+        this.segmentLlmDrafts = [];
         this.closeSegmentLlmPanel();
         await this.loadSegments(1);
         this.setNotice('Segment drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));
@@ -8200,8 +8202,12 @@ function segmentCrudPanel() {
       this.setNotice('Profile export started');
     },
     openLlmPanel() {
-      if (!this.currentSegment()) return;
-      this.profileLlmDrafts = [];
+      const segment = this.currentSegment();
+      if (!segment) return;
+      if (this.profileLlmDraftSegmentId && this.profileLlmDraftSegmentId !== segment.id) {
+        this.profileLlmDrafts = [];
+      }
+      this.profileLlmDraftSegmentId = segment.id;
       this.profileLlmError = '';
       this.llmPanelOpen = true;
       this.refreshIcons();
@@ -8220,6 +8226,8 @@ function segmentCrudPanel() {
       const brandOption = this.selectedBrandOption(this.llmForm.brand);
       this.profileLlmLoading = true;
       this.profileLlmError = '';
+      this.profileLlmDraftSegmentId = segment.id;
+      this.profileLlmDrafts = [];
       try {
         const body = await this.apiJson(API_BASE + '/segments/' + encodeURIComponent(segment.id) + '/profiles/generate', {
           method: 'POST',
@@ -8232,6 +8240,7 @@ function segmentCrudPanel() {
           }),
         });
         this.profileLlmDrafts = (body.drafts || []).map(row => this.fromProfile(row));
+        this.profileLlmDraftSegmentId = segment.id;
       } catch (error) {
         this.profileLlmError = error.message || 'Profile generation failed';
       } finally {
@@ -8248,6 +8257,7 @@ function segmentCrudPanel() {
           body: JSON.stringify({ rows: this.profileLlmDrafts.map(row => this.toApiProfile(row)), reason: 'confirm_llm_profile_drafts' }),
         });
         this.profileLlmDrafts = [];
+        this.profileLlmDraftSegmentId = '';
         await this.loadProfiles(1);
         await this.loadSegments(this.segmentPagination.page);
         this.setNotice('Profile drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));

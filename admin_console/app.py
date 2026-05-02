@@ -8063,8 +8063,16 @@ def _ensure_segment_profile_tables():
                     """
                 )
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS code VARCHAR(64)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS name TEXT")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry_id VARCHAR(128)")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'draft'")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS weight NUMERIC NOT NULL DEFAULT 0")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS age_range TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS income TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS regions TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS sampling_rate TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS note TEXT")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)")
@@ -8874,7 +8882,18 @@ def admin_segments_import_api():
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            result = _import_segments(cur, rows, admin["id"])
+            try:
+                result = _import_segments(cur, rows, admin["id"])
+            except Exception as error:
+                conn.rollback()
+                app.logger.exception("Segment import failed: %s", error)
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "segment_import_failed",
+                        "message": "Segment import failed. Please check generated draft fields and database schema.",
+                    }
+                ), 500
             _insert_admin_audit_log(
                 cur,
                 operator_id=admin["id"],
@@ -9095,6 +9114,16 @@ def admin_segment_profiles_import_api(segment_id):
             except ValueError as error:
                 conn.rollback()
                 return jsonify({"success": False, "error": str(error)}), 404
+            except Exception as error:
+                conn.rollback()
+                app.logger.exception("Profile import failed: %s", error)
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "profile_import_failed",
+                        "message": "Profile import failed. Please check generated draft fields and database schema.",
+                    }
+                ), 500
             _insert_admin_audit_log(
                 cur,
                 operator_id=admin["id"],

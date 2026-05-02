@@ -72,6 +72,22 @@ def fake_db(monkeypatch):
     return conn
 
 
+def test_segment_table_migration_backfills_legacy_columns(monkeypatch):
+    conn = fake_db(monkeypatch)
+
+    app_mod._ensure_segment_profile_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS name TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS status VARCHAR(16)" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS weight NUMERIC" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS age_range TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS income TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS regions TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS sampling_rate TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS note TEXT" in statements
+
+
 def test_segment_list_pagination_and_search(client, monkeypatch):
     login(monkeypatch)
     fake_db(monkeypatch)
@@ -139,6 +155,22 @@ def test_segment_import(client, monkeypatch):
     assert body["added"] == 1
     assert body["updated"] == 1
     assert any("import_segments" in str(params) for _sql, params in conn.statements)
+
+
+def test_segment_import_returns_json_error_on_unexpected_failure(client, monkeypatch):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    def broken_import(*_args, **_kwargs):
+        raise RuntimeError("missing column")
+
+    monkeypatch.setattr(app_mod, "_import_segments", broken_import)
+    response = client.post("/api/segments/import", json={"rows": [{"id": "SEG-001", "name": "A"}]})
+    body = response.get_json()
+
+    assert response.status_code == 500
+    assert body["error"] == "segment_import_failed"
+    assert conn.rollbacks == 1
 
 
 def test_llm_segment_generation_service_boundary(client, monkeypatch):
@@ -243,6 +275,22 @@ def test_profile_create_update_soft_delete_import_export(client, monkeypatch):
     csv_text = response.get_data(as_text=True)
     assert "id,segment_id,name,demographic,need,weight,status" in csv_text
     assert "P-1,SEG-001,New" in csv_text
+
+
+def test_profile_import_returns_json_error_on_unexpected_failure(client, monkeypatch):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    def broken_import(*_args, **_kwargs):
+        raise RuntimeError("missing column")
+
+    monkeypatch.setattr(app_mod, "_import_profiles", broken_import)
+    response = client.post("/api/segments/SEG-001/profiles/import", json={"rows": [{"id": "P-1", "name": "A"}]})
+    body = response.get_json()
+
+    assert response.status_code == 500
+    assert body["error"] == "profile_import_failed"
+    assert conn.rollbacks == 1
 
 
 def test_llm_profile_generation_service_boundary(client, monkeypatch):
