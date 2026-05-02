@@ -2020,23 +2020,23 @@ Prompt: "想买精华液，小棕瓶和小黑瓶选哪个性价比更高？"
         → "小棕瓶和小黑瓶哪个性价比高？"
 ```
 
-##### 4.2.3a Profile Group — 一等公民的分析维度 (2026-04-16 补)
+##### 4.2.3a Segment / Profile Group — 一等公民的分析维度 (2026-04-16 补, 2026-05-02 术语更新)
 
 > **设计动机**: Query 本身是基于 Profile 执行的, 所以"不同 Profile 下我的品牌表现"本就是核心分析问题。Profile 不应只沉在 Pipeline 底层, 要作为**跨面板 / 品牌详情 / Topics 全链路的一等筛选维度**出现。和"引擎筛选"并列。
 
-**Profile Group (ProfileGroup)** = 对 Profile 池的语义化分组。单个 Profile 字段过细 (年龄 × 性别 × 地域 × 开场 × 追问 × 语言 = 数百组合), 直接做 UI filter 选项过多。MVP 预置 6-10 个命名 cohort, 后续可由 LLM 自动聚类扩展。
+**Segment** = Admin 里对 Profile 池的语义化分组；旧文档和部分分析 API 中的 `ProfileGroup` 是同一概念的兼容字段。单个 Profile 字段过细 (年龄 × 性别 × 地域 × 开场 × 追问 × 语言 = 数百组合), 直接做 UI filter 选项过多。MVP 预置 6-10 个命名 cohort, 后续可由 LLM 自动生成和人工审核扩展。
 
-> **来源**: ProfileGroup 由 Admin 后台统一管理 (详见 `ADMIN_PRD_B_PIPELINE.md` B12), App 端只读消费、展示、下拉筛选。
+> **来源**: Segment 由 Admin 后台统一管理 (详见 `ADMIN_PRD_B_PIPELINE.md` §1.4), App/Analyzer 端只读消费、展示、下拉筛选；历史 `profileGroup` URL/API 参数可继续兼容，但新 Admin UI 不再展示 `ProfileGroup` 文案。
 
-**MVP 预置 Profile Group** (按行业可重定义):
+**MVP 预置 Segment** (按行业可重定义):
 
 ```typescript
-interface ProfileGroup {
+interface Segment {
   id: string;                        // 'pg_young_female_tier1'
   nameZh: string;                    // '一线年轻女性'
   nameEn: string;                    // 'Young Female · Tier 1 City'
   description: string;               // 用于 UI tooltip
-  filterRules: {                     // Profile → Group 匹配规则
+  filterRules: {                     // Profile → Segment 匹配规则
     gender?: 'F' | 'M' | 'any';
     ageBandIn?: ('18-24' | '25-34' | '35-44' | '45+')[];
     regionIn?: ('tier1' | 'tier2-3' | 'overseas')[];
@@ -2048,7 +2048,7 @@ interface ProfileGroup {
 }
 ```
 
-**MVP 默认组** (所有行业通用):
+**MVP 默认 Segment** (所有行业通用):
 - `all` — 全部 Profile (聚合基线, 默认选中)
 - `young_female_tier1` — 一线年轻女性 (18-34, F, tier1)
 - `mid_age_female_tier23` — 下沉市场中年女性 (35-44, F, tier2-3)
@@ -2066,29 +2066,30 @@ interface ProfileGroup {
 ```typescript
 interface AgentProfile {
   // ... 原有字段
-  groupIds: string[];                // 该 Profile 命中的 ProfileGroup id 列表 (一个 Profile 可属多组)
+  segmentIds: string[];              // 该 Profile 命中的 Segment id 列表 (一个 Profile 可属多组)
 }
 
 interface Query {
   // ... 原有字段
   profileId: string;
-  profileGroupIds: string[];         // 冗余存储, 便于后续按 group 聚合查询
+  segmentIds: string[];              // 冗余存储, 便于后续按 segment 聚合查询
+  profileGroupIds?: string[];        // 旧 API 兼容字段, 等价于 segmentIds
 }
 ```
 
 **聚合语义**:
-- 当 UI 选中 `profileGroup=young_female_tier1`, 后端聚合只统计 `Query.profileGroupIds ⊇ ['young_female_tier1']` 的 Response
+- 当 UI 选中 `segment=young_female_tier1` 或兼容参数 `profileGroup=young_female_tier1`, 后端聚合只统计 `Query.segmentIds ⊇ ['young_female_tier1']` 的 Response
 - 聚合 SoV / 情感 / 引用份额等指标时, 分母/分子都在该 Group 的 Query 子集内计算, 避免与全量聚合混淆
-- 每个 Group 需达到最小样本量 (MVP: ≥50 Queries / 30 天) 才能在 UI 显示指标, 否则显示"样本不足, 请扩大时间范围"
+- 每个 Segment 需达到最小样本量 (MVP: ≥50 Queries / 30 天) 才能在 UI 显示指标, 否则显示"样本不足, 请扩大时间范围"
 
 **生成/维护责任**:
-- **Session 2**: 落地默认 ProfileGroup 清单 (seed script), 每个 Profile 在插入时计算 `groupIds`
-- **Session 3**: 后端聚合 API 支持 `?profileGroups=` 参数, 指标计算纳入 cohort 视角
-- **Session 4b**: 面板 / 品牌详情 / Topics 增加 Profile Group 筛选器 (见 §4.6.1a, §4.6.1b, §4.2.5)
+- **Session 2**: 落地默认 Segment 清单 (seed script), 每个 Profile 在插入时计算 `segmentIds`
+- **Session 3**: 后端聚合 API 支持 `?segments=` 参数，并兼容旧 `?profileGroups=` 参数，指标计算纳入 cohort 视角
+- **Session 4b**: 面板 / 品牌详情 / Topics 增加 Segment 筛选器 (见 §4.6.1a, §4.6.1b, §4.2.5)
 
 **LLM 自动聚类 (Phase 2)**:
 - 定期扫描近 30 天 Response, 按"品牌表现差异显著"自动聚类出新 Group, 人工审核入库
-- 例: 发现"低价带 + 儿童用品"这个 cohort 在回答中常出现, 而现有 Group 不覆盖, 建议新增
+- 例: 发现"低价带 + 儿童用品"这个 cohort 在回答中常出现, 而现有 Segment 不覆盖, 建议新增
 
 **分析维度扩展**:
 - 所有核心指标 (提及率、排名、情感) 可按 Profile 维度切分

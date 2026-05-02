@@ -12,7 +12,7 @@
 
 ## 0. 重组动机
 
-v1 的 13 个子页（引擎健康、账号池、代理池、重试中心、Prompt 模板、Response QA、Trace、变更审批、调度、ProfileGroup、生成管线……）是按 **运维资源** 分类的 — 适合基础设施工程师，但不适合需要"看一条 Query 从规划到结果全链路"的运营。
+v1 的 13 个子页（引擎健康、账号池、代理池、重试中心、Prompt 模板、Response QA、Trace、变更审批、调度、Segment/Profile、生成管线……）是按 **运维资源** 分类的 — 适合基础设施工程师，但不适合需要"看一条 Query 从规划到结果全链路"的运营。
 
 v2 按 **data pipeline 的生命周期** 重组：
 
@@ -43,7 +43,7 @@ v2 按 **data pipeline 的生命周期** 重组：
 | B9 Trace & Lineage | Tracker §2.4 | Query 全链路追溯 |
 | B10 变更审批 | **横切** §4.3 | 跨模块的审批中心 |
 | B11 调度 & Planner | Planner §1.1 | Pipeline 调度总控 |
-| B12 ProfileGroup | Planner §1.4 | 画像管理 |
+| B12 Segment/Profile | Planner §1.4 | 画像管理 |
 | B13 生成管线 | Planner §1.2 | Topic→Prompt→Query 生成 |
 
 ---
@@ -62,7 +62,7 @@ v2 按 **data pipeline 的生命周期** 重组：
 | F8 | 凌晨跑批失败需批量重跑 | Tracker | Tracker 批量选择失败 Attempt → 重试 |
 | F9 | Response 有明显幻觉 | Analyzer → Tracker | Analyzer QA 标注 → Tracker 找原始 HAR |
 | F10 | 引擎情感分类系统性偏差 | Analyzer | Analyzer 质量面板引擎对比 |
-| F11 | 新 ProfileGroup 采样不均 | Planner → Analyzer | Planner 权重调整 → Analyzer 采样分布验证 |
+| F11 | 新 Segment 采样不均 | Planner → Analyzer | Planner 权重调整 → Analyzer 采样分布验证 |
 | F12 | Query 生成覆盖度不足 | Planner | Planner 生成管线覆盖度检查 |
 
 ---
@@ -76,7 +76,7 @@ v2 按 **data pipeline 的生命周期** 重组：
 │   ├── 📅 采集调度      /admin/pipeline/planner/scheduler
 │   ├── 🔗 生成管线（单页，三层 Tab）      /admin/pipeline/planner/generation
 │   ├── 📝 Prompt 模板   /admin/pipeline/planner/prompts
-│   ├── 👥 ProfileGroup  /admin/pipeline/planner/profiles
+│   ├── 👥 Segment       /admin/planner-profiles
 │   └── 🔑 采集资源      /admin/pipeline/planner/resources    (账号池 + 代理池)
 ├── ── Tracker ──
 │   ├── 📋 执行追踪      /admin/pipeline/tracker/attempts     (核心: 每次 attempt)
@@ -94,7 +94,7 @@ v2 按 **data pipeline 的生命周期** 重组：
 
 > **核心问题**: "今天采什么、怎么采、用什么资源"
 
-Planner 覆盖 Pipeline 的上游：从知识图谱到 Topic → Prompt → Query 的完整生成链路，以及执行这些 Query 所需的账号、代理、Profile 等资源的管理。
+Planner 覆盖 Pipeline 的上游：从知识图谱到 Topic → Prompt → Query 的完整生成链路，以及执行这些 Query 所需的账号、代理、Segment/Profile 等资源的管理。
 
 ## 1.1 采集调度总控 `/admin/pipeline/planner/scheduler`
 
@@ -259,7 +259,7 @@ CREATE TABLE query_generation_runs (
   industry_id UUID,
   category_id UUID,
   prompt_ids UUID[] NOT NULL,
-  profile_groups_selected TEXT[],
+  segment_ids_selected UUID[],
   profiles_per_prompt INT NOT NULL DEFAULT 3,
   engine_count INT NOT NULL DEFAULT 2,
   engine_filter TEXT[],
@@ -348,30 +348,69 @@ CREATE TABLE prompt_ab_experiments (
 
 ---
 
-## 1.4 ProfileGroup & Profile `/admin/pipeline/planner/profiles`
+## 1.4 Segment & Profile `/admin/planner-profiles`
 
-**目的**。管理 Query 采样的用户画像组。CRUD ProfileGroup + LLM 生成 Profile 池。
+**目的**。Segment 是 Query 采样的人群分层，Profile 是某个 Segment 下的具体用户画像。Admin 操作者需要先管理品牌/行业对应的 Segment，再进入单个 Segment 管理 Profile 池，供 Query Pool 在 `Prompt × Profile × Engine` 组装时采样。产品 UI 统一使用 **Segment**，不再对运营展示 `ProfileGroup`。
 
-**IA**:
-1. **ProfileGroup 列表**: 名称(zh/en) / 行业 / 活跃 Profile 数 / 采样权重 / 状态
-2. **详情抽屉** — 4 Tab:
-   - 基本信息: 名称、行业、权重(0-100)、最小采样阈值(默认50)
-   - 人口属性: age_range / gender[] / region_tier[] / income / device[] / interests
-   - Profile 池: 已生成 Profile 列表 + "重新生成" 按钮(LLM 生成 N 个)
-   - 采样策略: 权重、阈值、平均每日 Query 采样量（只读）
+**当前 Admin 前端 IA**:
+1. **Segment 列表页**:
+   - 顶部仅在外层列表页展示 Segment 概览: Segment 数、Profile 总数、active Profile 数、当前选中 Profile 数。
+   - 操作区: `导入 Segment`、`LLM 生成 Segment`、`手动新建`。
+   - Segment 搜索: 按 Segment 名称、行业、状态、备注搜索。
+   - Segment 表格: ID / Segment 名称与状态 / 行业 / Profile 数与 active 数 / 采样权重 / 采样范围 / 操作。
+   - 点击 Segment 行或 `Profile` 操作按钮，进入该 Segment 的 Profile 子页。
+2. **LLM 生成 Segment**:
+   - 入口在 Segment 列表页。
+   - 输入: 品牌、行业、生成数量、默认状态、品牌定位/产品线、覆盖目标、约束。
+   - 输出: Segment 草稿列表，含 ID、名称、状态、权重、年龄段、收入、区域、采样率、说明。
+   - 操作者确认后将草稿加入 Segment 列表；新增 Segment 默认创建空 Profile 池。
+3. **Segment 手动 CRUD / 导入**:
+   - 手动新建/编辑字段: ID、名称、行业、状态、权重、年龄段、收入、区域、采样率、备注。
+   - 删除 Segment 时必须同时处理其 Profile 池；正式后端实现必须软删除，不能破坏历史 Query lineage。
+   - 导入支持 CSV/JSON 粘贴，字段需兼容 `id,name,industry,status,weight,age_range,income,regions,sampling_rate,note`。
+4. **Profile 子页**:
+   - 子页顶部只保留一条紧凑上下文栏: 返回 Segment、当前 Segment ID、状态、Profile 数、active 数、Segment 名称和说明。
+   - 子页不再重复展示外层 Segment banner 或大型 Segment 指标卡，主体应直接是 Profile 列表。
+   - 操作区: `LLM 生成 Profile`、`导出`、`导入`、`新建 Profile`。
+   - Profile 搜索: 仅搜索当前 Segment 下的 Profile。
+   - Profile 表格: ID / Profile 名称与状态 / 画像 / 需求 / 权重 / 操作。
+5. **LLM 生成 Profile**:
+   - 入口在单个 Segment 的 Profile 子页。
+   - 输入: 品牌、数量、生成目标、约束。
+   - 生成结果直接进入当前 Segment 的 Profile 池，初始状态可为 draft。
+   - 注意: Profile 子页不提供 `LLM 生成 Query` 按钮，Query 生成归 Query Pool 页面负责。
+6. **Profile CRUD / 导入 / 导出**:
+   - 手动新建/编辑字段: ID、名称、画像、需求、权重、状态。
+   - 删除 Profile 在原型中可直接移除；正式后端实现需保留历史引用。
+   - 导入支持当前 Segment 的 Profile CSV/JSON。
+   - 导出当前 Segment 的 Profile CSV，字段至少包括 `id,segment_id,name,demographic,need,weight,status`。
+
+**海量数据要求**:
+- Segment 列表与 Profile 列表正式实现必须使用服务端搜索、筛选、排序和分页；前端不可一次性加载全量。
+- 默认分页建议: Segment 每页 50；Profile 每页 100。需要支持当前页选择、全部匹配选择、清空当前页、清空全部时，选择状态必须以服务端过滤条件表达，不依赖浏览器内全量数据。
+- 搜索输入需要 debounce；分页、搜索、状态筛选应进入 URL query，便于刷新和分享。
+- Profile 子页应保持紧凑布局，保证表格可视区域优先，避免 banner/卡片挤压列表。
+
+**术语与兼容**:
+- UI、文案、路由统一叫 Segment；不再出现 `ProfileGroup`。
+- 如果后端沿用旧表 `profile_groups`，需要在 API 层映射为 Segment，不把旧术语泄漏到前端。
+- App/Analyzer 中已有 `profileGroup` query 参数可作为兼容字段保留，但 Admin 新接口应优先暴露 `segment_id` / `segment_ids`。
 
 **数据模型**:
 ```sql
-CREATE TABLE profile_groups (
+CREATE TABLE segments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name_zh TEXT NOT NULL,
-  name_en TEXT NOT NULL,
-  description TEXT,
-  industry_id UUID NOT NULL REFERENCES kg_industries(id),
-  demographic_filters JSONB NOT NULL DEFAULT '{}',
-  sampling_weight INT DEFAULT 50,
-  min_sample_threshold INT DEFAULT 50,
-  is_active BOOLEAN DEFAULT TRUE,
+  code TEXT UNIQUE,
+  name TEXT NOT NULL,
+  industry_id UUID REFERENCES kg_industries(id),
+  status TEXT NOT NULL DEFAULT 'draft',
+  weight NUMERIC NOT NULL DEFAULT 0,
+  age_range TEXT,
+  income TEXT,
+  regions TEXT,
+  sampling_rate TEXT,
+  note TEXT,
+  is_deleted BOOLEAN DEFAULT FALSE,
   created_by UUID REFERENCES admin_users(id),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_by UUID REFERENCES admin_users(id),
@@ -380,15 +419,24 @@ CREATE TABLE profile_groups (
 
 CREATE TABLE profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  profile_group_id UUID NOT NULL REFERENCES profile_groups(id),
-  persona_json JSONB NOT NULL,
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMPTZ DEFAULT now()
+  segment_id UUID NOT NULL REFERENCES segments(id),
+  code TEXT,
+  name TEXT NOT NULL,
+  demographic TEXT,
+  need TEXT,
+  weight NUMERIC NOT NULL DEFAULT 1.0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  persona_json JSONB NOT NULL DEFAULT '{}',
+  is_deleted BOOLEAN DEFAULT FALSE,
+  created_by UUID REFERENCES admin_users(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_by UUID REFERENCES admin_users(id),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE profile_generation_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  profile_group_id UUID NOT NULL REFERENCES profile_groups(id),
+  segment_id UUID NOT NULL REFERENCES segments(id),
   llm_model TEXT NOT NULL,
   prompt_used TEXT,
   profiles_generated INT DEFAULT 0,
@@ -399,11 +447,47 @@ CREATE TABLE profile_generation_logs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX ON profiles (profile_group_id);
-CREATE INDEX ON profile_groups (industry_id);
+CREATE TABLE segment_generation_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  brand_id UUID,
+  brand_name TEXT,
+  industry_id UUID,
+  llm_model TEXT NOT NULL,
+  prompt_used TEXT,
+  segments_generated INT DEFAULT 0,
+  segments_skipped INT DEFAULT 0,
+  tokens_used INT DEFAULT 0,
+  estimated_cost NUMERIC,
+  created_by UUID REFERENCES admin_users(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX ON segments (industry_id, status);
+CREATE INDEX ON profiles (segment_id, status);
 ```
 
-**边界**: 30 天采样 < threshold → PIPE-12 告警。删除仅标 inactive，不破坏已有 Query lineage。
+**API 方向**:
+- `GET /admin/api/segments?page=&per_page=&q=&status=&industry_id=`
+- `POST /admin/api/segments`
+- `PUT /admin/api/segments/:id`
+- `DELETE /admin/api/segments/:id` soft delete
+- `POST /admin/api/segments/import`
+- `POST /admin/api/segments/generate`
+- `GET /admin/api/segments/:id/profiles?page=&per_page=&q=&status=`
+- `POST /admin/api/segments/:id/profiles`
+- `PUT /admin/api/segments/:id/profiles/:profile_id`
+- `DELETE /admin/api/segments/:id/profiles/:profile_id` soft delete
+- `POST /admin/api/segments/:id/profiles/import`
+- `GET /admin/api/segments/:id/profiles/export`
+- `POST /admin/api/segments/:id/profiles/generate`
+
+**边界**:
+- 30 天采样 < threshold → PIPE-12 告警。
+- 删除 Segment/Profile 只做 soft delete，不破坏已有 Query lineage。
+- Segment 权重全为 0 时，Query Pool 组装必须阻断并提示。
+- LLM 生成 Segment/Profile 必须保存生成参数、prompt、模型、成本和操作者。
+- LLM 生成结果进入草稿态，正式入池前允许人工编辑。
+- Query 组装只消费 active Segment/Profile。
 
 ---
 
@@ -564,7 +648,7 @@ CREATE TABLE query_execution_attempts (
   proxy_node_id UUID REFERENCES proxy_nodes(id),
   proxy_region TEXT,
   profile_id UUID REFERENCES profiles(id),
-  profile_group_id UUID REFERENCES profile_groups(id),
+  segment_id UUID REFERENCES segments(id),
   prompt_version_id UUID REFERENCES prompt_template_versions(id),
   adapter_mode TEXT,                             -- web | api
   
@@ -1032,7 +1116,7 @@ POST   /admin/api/v1/pipeline/generation/prompts/retry   { failure_ids[], reason
 GET    /admin/api/v1/pipeline/generation/prompts/coverage
 GET    /admin/api/v1/pipeline/generation/queries
 GET    /admin/api/v1/pipeline/generation/queries/queue   ?status=&page=&limit=
-POST   /admin/api/v1/pipeline/generation/queries/trigger { scope, from_date?, to_date?, profile_groups[], reason }
+POST   /admin/api/v1/pipeline/generation/queries/trigger { scope, from_date?, to_date?, segment_ids[], reason }
 POST   /admin/api/v1/pipeline/generation/queries/engine-control { engine, action:'pause'|'resume', reason }
 
 -- Prompt 模板
@@ -1041,14 +1125,21 @@ POST   /admin/api/v1/pipeline/prompts/:id/versions       { body, variables, roll
 POST   /admin/api/v1/pipeline/prompts/:id/versions/:v/activate { reason }
 POST   /admin/api/v1/pipeline/prompts/ab/:id/conclude    { decision }
 
--- ProfileGroup
-GET    /admin/api/v1/pipeline/profiles/groups            ?industry=&active=
-POST   /admin/api/v1/pipeline/profiles/groups            { name_zh, name_en, ... }
-GET    /admin/api/v1/pipeline/profiles/groups/:id
-POST   /admin/api/v1/pipeline/profiles/groups/:id        { ... }
-POST   /admin/api/v1/pipeline/profiles/groups/:id/toggle { is_active, reason }
-GET    /admin/api/v1/pipeline/profiles/groups/:id/profiles ?page=&limit=
-POST   /admin/api/v1/pipeline/profiles/groups/:id/regenerate { count, llm_model, reason }
+-- Segment / Profile
+GET    /admin/api/segments                               ?page=&per_page=&q=&status=&industry_id=
+POST   /admin/api/segments                               { name, industry_id?, status, weight, age_range?, income?, regions?, sampling_rate?, note? }
+GET    /admin/api/segments/:id
+PUT    /admin/api/segments/:id                           { ... }
+DELETE /admin/api/segments/:id                           soft delete
+POST   /admin/api/segments/import                         { format, rows }
+POST   /admin/api/segments/generate                       { brand_id?, brand_name, industry_id?, count, status, positioning, goal, constraints }
+GET    /admin/api/segments/:id/profiles                   ?page=&per_page=&q=&status=
+POST   /admin/api/segments/:id/profiles                   { name, demographic, need, weight, status, persona_json? }
+PUT    /admin/api/segments/:id/profiles/:profile_id       { ... }
+DELETE /admin/api/segments/:id/profiles/:profile_id       soft delete
+POST   /admin/api/segments/:id/profiles/import            { format, rows }
+GET    /admin/api/segments/:id/profiles/export            CSV
+POST   /admin/api/segments/:id/profiles/generate          { brand_name, count, goal, constraints, llm_model?, reason }
 
 -- 资源
 GET    /admin/api/v1/pipeline/accounts                   ?engine=&tags=&health_min=
@@ -1147,7 +1238,7 @@ GET    /admin/api/v1/pipeline/dashboard
 | PIPE-09c | DLQ > 500条 | P0 | Tracker |
 | PIPE-10 | Change request pending > 4h | P2 | 变更审批 |
 | PIPE-11 | 代理订阅失效 | P0 | Planner (资源) |
-| PIPE-12 | ProfileGroup 30天采样 < threshold | P2 | Planner |
+| PIPE-12 | Segment 30天采样 < threshold | P2 | Planner |
 | PIPE-14 | Attempt 重试队列积压 > 1000 | P1 | Tracker |
 | PIPE-15 | Attempt 失败率 > 20% 持续 30min | P0 | Tracker |
 
@@ -1158,7 +1249,7 @@ GET    /admin/api/v1/pipeline/dashboard
 | Session | 交付 | 工时估算 (AI/human) |
 |---------|------|---------|
 | **A2** (重写) | Dashboard + Planner (§1.1 调度 + §1.2 生成管线 + §1.5 资源) + 基础数据模型 | 12h / 3h |
-| **A2.1** | Planner §1.3 Prompt 模板 (含 A/B + 回归) + §1.4 ProfileGroup | 6h / 2h |
+| **A2.1** | Planner §1.3 Prompt 模板 (含 A/B + 回归) + §1.4 Segment/Profile | 6h / 2h |
 | **A2.2** | Tracker §2.1 核心表 + §2.2 Attempt 列表 + §2.3 引擎健康 | 10h / 3h |
 | **A2.3** | Tracker §2.4 Trace & Lineage + 变更审批中心 | 5h / 2h |
 | **A2.4** | Analyzer §3.1 质量分析 + §3.2 人工质检 | 6h / 2h |
