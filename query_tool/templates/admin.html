@@ -141,6 +141,7 @@
   .t-admin-table tbody td { padding: 14px 16px; border-bottom: 1px solid #F2F4F7; font-size: 14px; color: #1C1D22; }
   .t-admin-table tbody tr { transition: background .12s; }
   .t-admin-table tbody tr:hover { background: rgba(96,91,255,0.025); }
+  .query-pool-prompt-table-body { height: 72vh; min-height: 720px; overflow-y: auto; }
 
   /* Danger confirm animation */
   @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-3px)} 40%,80%{transform:translateX(3px)} }
@@ -212,7 +213,7 @@
       <div class="space-y-4">
         <div>
           <label class="block text-[13px] font-medium text-ink mb-1.5">邮箱</label>
-          <input x-model="loginEmail" type="email" placeholder="admin@genpano.internal"
+          <input x-model="loginEmail" type="email" placeholder="请输入管理员邮箱"
                  class="w-full h-10 px-3 rounded-lg border border-gray-300 bg-white text-[14px] text-ink shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition-colors" />
         </div>
         <div>
@@ -1580,9 +1581,386 @@
 
       <!-- ============ PAGE: PIPELINE PROFILES ============ -->
       <template x-if="page==='planner-profiles'">
+        <div x-data="segmentCrudPanel()" x-init="refreshIcons()" class="space-y-4">
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <div class="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">SEGMENTS</div>
+                <h2 class="mt-1 text-[20px] font-bold text-ink">Segment</h2>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="openImport('segments')"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface-page inline-flex items-center gap-1.5"
+                        title="导入 Segment">
+                  <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                  <span>导入 Segment</span>
+                </button>
+                <button @click="openSegmentForm()"
+                        class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5"
+                        title="新建 Segment">
+                  <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                  <span>新建 Segment</span>
+                </button>
+              </div>
+            </div>
+
+            <div x-show="notice" x-cloak class="mt-4 rounded-btn border border-success/20 bg-success/10 px-3 py-2 text-[12px] font-semibold text-success" x-text="notice"></div>
+
+            <div class="mt-5 grid grid-cols-4 gap-3">
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">Segment</div>
+                <div class="mt-1 text-[22px] font-bold text-ink tabular-nums" x-text="segments.length"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">Profile</div>
+                <div class="mt-1 text-[22px] font-bold text-ink tabular-nums" x-text="totalProfiles()"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">Active</div>
+                <div class="mt-1 text-[22px] font-bold text-success tabular-nums" x-text="segments.filter(segment => segment.status === 'active').length"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">Selected Profiles</div>
+                <div class="mt-1 text-[22px] font-bold text-accent tabular-nums" x-text="segmentProfiles(selectedSegmentId).length"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-[minmax(360px,0.85fr)_minmax(0,1.35fr)] gap-4">
+            <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+              <div class="px-4 py-3 border-b border-b-card bg-surface-page">
+                <div class="relative">
+                  <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                  <input x-model="segmentQuery"
+                         class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
+                         placeholder="搜索 Segment / 行业 / 状态">
+                </div>
+              </div>
+              <div class="max-h-[calc(100vh-360px)] min-h-[520px] overflow-y-auto divide-y divide-b-card">
+                <template x-for="segment in filteredSegments()" :key="segment.id">
+                  <div @click="selectSegment(segment.id)"
+                       class="p-4 cursor-pointer transition-colors"
+                       :class="selectedSegmentId === segment.id ? 'bg-accent/5 border-l-2 border-l-accent' : 'hover:bg-surface-page'">
+                    <div class="flex items-start justify-between gap-3">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="font-mono text-[11px] font-semibold text-ink-muted" x-text="segment.id"></span>
+                          <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                :class="segment.status === 'active' ? 'bg-success/10 text-success' : segment.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                x-text="segment.status"></span>
+                        </div>
+                        <div class="mt-1 text-[14px] font-bold text-ink truncate" x-text="segment.name"></div>
+                        <div class="mt-1 text-[12px] text-ink-muted truncate" x-text="segment.industry || '未设置行业'"></div>
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <button @click.stop="openSegmentForm(segment)"
+                                class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-accent hover:border-accent/30 inline-flex items-center justify-center"
+                                title="编辑 Segment">
+                          <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button @click.stop="deleteSegment(segment)"
+                                class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-danger hover:border-danger/30 inline-flex items-center justify-center"
+                                title="删除 Segment">
+                          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                      <div class="rounded-btn bg-surface px-2 py-1.5 border border-b-card">
+                        <span class="text-ink-muted">Profile</span>
+                        <span class="ml-1 font-semibold text-ink tabular-nums" x-text="segmentProfiles(segment.id).length"></span>
+                      </div>
+                      <div class="rounded-btn bg-surface px-2 py-1.5 border border-b-card">
+                        <span class="text-ink-muted">权重</span>
+                        <span class="ml-1 font-semibold text-ink tabular-nums" x-text="Math.round(segment.weight * 100) + '%'"></span>
+                      </div>
+                      <div class="rounded-btn bg-surface px-2 py-1.5 border border-b-card truncate">
+                        <span class="text-ink-muted" x-text="segment.samplingRate || '采样率'"></span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="filteredSegments().length === 0" class="p-8 text-center text-[12px] text-ink-muted">没有匹配的 Segment</div>
+              </div>
+            </section>
+
+            <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+              <template x-if="currentSegment()">
+                <div>
+                  <div class="px-5 py-4 border-b border-b-card bg-surface-page">
+                    <div class="flex items-start justify-between gap-4">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="font-mono text-[11px] font-semibold text-ink-muted" x-text="currentSegment().id"></span>
+                          <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                :class="currentSegment().status === 'active' ? 'bg-success/10 text-success' : currentSegment().status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                x-text="currentSegment().status"></span>
+                        </div>
+                        <h3 class="mt-1 text-[18px] font-bold text-ink truncate" x-text="currentSegment().name"></h3>
+                        <div class="mt-1 text-[12px] text-ink-muted truncate" x-text="currentSegment().note || currentSegment().industry"></div>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <button @click="openSegmentForm(currentSegment())"
+                                class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface inline-flex items-center gap-1.5"
+                                title="编辑 Segment">
+                          <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                          <span>编辑</span>
+                        </button>
+                        <button @click="openImport('profiles', currentSegment().id)"
+                                class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface inline-flex items-center gap-1.5"
+                                title="导入 Profile">
+                          <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                          <span>导入 Profile</span>
+                        </button>
+                        <button @click="openProfileForm(currentSegment().id)"
+                                class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5"
+                                title="新建 Profile">
+                          <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                          <span>新建 Profile</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div class="mt-4 grid grid-cols-4 gap-3 text-[12px]">
+                      <div class="rounded-btn border border-b-card bg-surface px-3 py-2">
+                        <div class="text-[10px] font-semibold text-ink-muted uppercase">Age</div>
+                        <div class="mt-1 font-semibold text-ink" x-text="currentSegment().ageRange || '-'"></div>
+                      </div>
+                      <div class="rounded-btn border border-b-card bg-surface px-3 py-2">
+                        <div class="text-[10px] font-semibold text-ink-muted uppercase">Income</div>
+                        <div class="mt-1 font-semibold text-ink" x-text="currentSegment().income || '-'"></div>
+                      </div>
+                      <div class="rounded-btn border border-b-card bg-surface px-3 py-2">
+                        <div class="text-[10px] font-semibold text-ink-muted uppercase">Region</div>
+                        <div class="mt-1 font-semibold text-ink truncate" x-text="currentSegment().regions || '-'"></div>
+                      </div>
+                      <div class="rounded-btn border border-b-card bg-surface px-3 py-2">
+                        <div class="text-[10px] font-semibold text-ink-muted uppercase">Sampling</div>
+                        <div class="mt-1 font-semibold text-ink" x-text="currentSegment().samplingRate || '-'"></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                    <div class="relative flex-1">
+                      <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                      <input x-model="profileQuery"
+                             class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
+                             placeholder="搜索当前 Segment 的 Profile">
+                    </div>
+                    <div class="text-[12px] text-ink-muted whitespace-nowrap">
+                      <span class="font-semibold text-ink tabular-nums" x-text="filteredProfiles(currentSegment().id).length"></span>
+                      <span>/</span>
+                      <span class="tabular-nums" x-text="segmentProfiles(currentSegment().id).length"></span>
+                    </div>
+                  </div>
+
+                  <div class="overflow-x-auto max-h-[calc(100vh-430px)] min-h-[460px]">
+                    <table class="w-full text-left text-[12px]">
+                      <thead class="sticky top-0 z-10 bg-surface-page text-[10px] font-semibold uppercase text-ink-muted border-b border-b-card">
+                        <tr>
+                          <th class="px-4 py-2.5 w-[120px]">ID</th>
+                          <th class="px-4 py-2.5 min-w-[220px]">Profile</th>
+                          <th class="px-4 py-2.5 min-w-[260px]">画像</th>
+                          <th class="px-4 py-2.5 min-w-[280px]">需求</th>
+                          <th class="px-4 py-2.5 w-[90px]">权重</th>
+                          <th class="px-4 py-2.5 w-[130px] text-right">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-b-card">
+                        <tr x-show="filteredProfiles(currentSegment().id).length === 0">
+                          <td colspan="6" class="px-4 py-10 text-center text-[12px] text-ink-muted">暂无 Profile</td>
+                        </tr>
+                        <template x-for="profile in filteredProfiles(currentSegment().id)" :key="profile.id">
+                          <tr class="hover:bg-surface-page">
+                            <td class="px-4 py-3 font-mono font-semibold text-ink-muted" x-text="profile.id"></td>
+                            <td class="px-4 py-3">
+                              <div class="font-semibold text-ink" x-text="profile.name"></div>
+                              <span class="mt-1 inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                    :class="profile.status === 'active' ? 'bg-success/10 text-success' : profile.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="profile.status"></span>
+                            </td>
+                            <td class="px-4 py-3 text-ink-body" x-text="profile.demographic"></td>
+                            <td class="px-4 py-3 text-ink-body" x-text="profile.need"></td>
+                            <td class="px-4 py-3 font-semibold text-ink tabular-nums" x-text="profile.weight"></td>
+                            <td class="px-4 py-3">
+                              <div class="flex items-center justify-end gap-1">
+                                <button @click="openProfileForm(currentSegment().id, profile)"
+                                        class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-accent hover:border-accent/30 inline-flex items-center justify-center"
+                                        title="编辑 Profile">
+                                  <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                                </button>
+                                <button @click="deleteProfile(currentSegment().id, profile.id)"
+                                        class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-danger hover:border-danger/30 inline-flex items-center justify-center"
+                                        title="删除 Profile">
+                                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </template>
+              <div x-show="!currentSegment()" class="p-10 text-center text-[12px] text-ink-muted">请先新建 Segment</div>
+            </section>
+          </div>
+
+          <div x-show="segmentModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6" @keydown.escape.window="closeSegmentForm()">
+            <form @submit.prevent="saveSegment" class="bg-surface rounded-card-lg shadow-elevated w-full max-w-2xl border border-b-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div class="text-[15px] font-bold text-ink" x-text="editingSegmentId ? '编辑 Segment' : '新建 Segment'"></div>
+                <button type="button" @click="closeSegmentForm()" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="关闭">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="p-5 grid grid-cols-2 gap-4 text-[12px]">
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">Segment ID</span>
+                  <input x-model="segmentForm.id" :disabled="!!editingSegmentId" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:bg-surface-page">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">名称</span>
+                  <input x-model="segmentForm.name" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">行业</span>
+                  <input x-model="segmentForm.industry" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">状态</span>
+                  <select x-model="segmentForm.status" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    <option value="active">active</option>
+                    <option value="draft">draft</option>
+                    <option value="paused">paused</option>
+                  </select>
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">权重</span>
+                  <input x-model.number="segmentForm.weight" type="number" min="0" max="1" step="0.01" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">采样率</span>
+                  <input x-model="segmentForm.samplingRate" placeholder="30%" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">年龄范围</span>
+                  <input x-model="segmentForm.ageRange" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">收入水平</span>
+                  <input x-model="segmentForm.income" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5 col-span-2">
+                  <span class="font-semibold text-ink-muted">地域</span>
+                  <input x-model="segmentForm.regions" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5 col-span-2">
+                  <span class="font-semibold text-ink-muted">备注</span>
+                  <textarea x-model="segmentForm.note" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                </label>
+              </div>
+              <div class="px-5 py-4 border-t border-b-card bg-surface-page flex justify-end gap-2">
+                <button type="button" @click="closeSegmentForm()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink">取消</button>
+                <button type="submit" class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">保存</button>
+              </div>
+            </form>
+          </div>
+
+          <div x-show="profileModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6" @keydown.escape.window="closeProfileForm()">
+            <form @submit.prevent="saveProfile" class="bg-surface rounded-card-lg shadow-elevated w-full max-w-2xl border border-b-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div>
+                  <div class="text-[15px] font-bold text-ink" x-text="editingProfileId ? '编辑 Profile' : '新建 Profile'"></div>
+                  <div class="text-[11px] text-ink-muted mt-0.5" x-text="profileSegmentId"></div>
+                </div>
+                <button type="button" @click="closeProfileForm()" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="关闭">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="p-5 grid grid-cols-2 gap-4 text-[12px]">
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">Profile ID</span>
+                  <input x-model="profileForm.id" :disabled="!!editingProfileId" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:bg-surface-page">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">名称</span>
+                  <input x-model="profileForm.name" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">权重</span>
+                  <input x-model="profileForm.weight" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">状态</span>
+                  <select x-model="profileForm.status" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    <option value="active">active</option>
+                    <option value="draft">draft</option>
+                    <option value="paused">paused</option>
+                  </select>
+                </label>
+                <label class="space-y-1.5 col-span-2">
+                  <span class="font-semibold text-ink-muted">画像</span>
+                  <input x-model="profileForm.demographic" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </label>
+                <label class="space-y-1.5 col-span-2">
+                  <span class="font-semibold text-ink-muted">需求</span>
+                  <textarea x-model="profileForm.need" rows="4" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                </label>
+              </div>
+              <div class="px-5 py-4 border-t border-b-card bg-surface-page flex justify-end gap-2">
+                <button type="button" @click="closeProfileForm()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink">取消</button>
+                <button type="submit" class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">保存</button>
+              </div>
+            </form>
+          </div>
+
+          <div x-show="importModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6" @keydown.escape.window="closeImportPanel()">
+            <div class="bg-surface rounded-card-lg shadow-elevated w-full max-w-3xl border border-b-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div>
+                  <div class="text-[15px] font-bold text-ink" x-text="importMode === 'segments' ? '导入 Segment' : '导入 Profile'"></div>
+                  <div class="text-[11px] text-ink-muted mt-0.5" x-show="importMode === 'profiles'" x-text="'目标 Segment: ' + importSegmentId"></div>
+                </div>
+                <button type="button" @click="closeImportPanel()" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="关闭">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="p-5 space-y-4">
+                <textarea x-model="importText" rows="10"
+                          class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 text-[12px] font-mono outline-none focus:ring-2 focus:ring-accent/20"
+                          :placeholder="importMode === 'segments' ? '粘贴 Segment CSV 或 JSON' : '粘贴 Profile CSV 或 JSON'"></textarea>
+                <div class="rounded-card border border-b-card bg-surface-page p-3">
+                  <div class="text-[11px] font-semibold text-ink-muted mb-2">CSV</div>
+                  <template x-if="importMode === 'segments'">
+                    <pre class="text-[11px] text-ink-body overflow-x-auto">id,name,industry,status,weight,age_range,income,regions,sampling_rate,note
+SEG-010,Gen Z 美妆,美妆,active,0.2,18-24,中等,"一线、新一线",20%,关注新品和社媒口碑</pre>
+                  </template>
+                  <template x-if="importMode === 'profiles'">
+                    <pre class="text-[11px] text-ink-body overflow-x-auto">id,segment_id,name,demographic,need,weight,status
+P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1,active</pre>
+                  </template>
+                </div>
+                <div x-show="importError" x-cloak class="rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="importError"></div>
+              </div>
+              <div class="px-5 py-4 border-t border-b-card bg-surface-page flex justify-end gap-2">
+                <button type="button" @click="closeImportPanel()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink">取消</button>
+                <button type="button" @click="runImport()" class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5">
+                  <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                  <span>导入</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="page==='planner-profiles-legacy'">
         <div class="space-y-4">
           <div class="flex items-center justify-between mb-2">
-            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">+ 新建 ProfileGroup</button>
+            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">+ 新建 Segment</button>
           </div>
 
           <div class="space-y-3">
@@ -1601,7 +1979,7 @@
                   </div>
                   <div class="flex items-center gap-6 text-[12px]">
                     <div class="text-center">
-                      <div class="text-[11px] text-ink-muted">Profile 数</div>
+                      <div class="text-[11px] text-ink-muted">Profiles</div>
                       <div class="text-[16px] font-bold text-accent mt-1" x-text="profileGroupDemographics[pg.id].profileCount"></div>
                     </div>
                     <div class="text-center">
@@ -1634,6 +2012,33 @@
                       <div>
                         <div class="text-ink-muted font-semibold mb-1">采样率</div>
                         <div class="text-ink-body" x-text="profileGroupDemographics[pg.id].samplingRate"></div>
+                      </div>
+                    </div>
+                    <div class="rounded-card border border-b-card bg-white overflow-hidden">
+                      <div class="px-4 py-3 border-b border-b-card bg-surface-page flex items-center justify-between">
+                        <div>
+                          <div class="text-[12px] font-bold text-ink">Profiles</div>
+                          <div class="text-[10px] text-ink-muted mt-0.5">Segment 内用于 Query 采样的单个 Profile</div>
+                        </div>
+                        <span class="text-[11px] font-semibold text-accent tabular-nums" x-text="(segmentProfiles[pg.id] || []).length + ' shown'"></span>
+                      </div>
+                      <div class="divide-y divide-b-card">
+                        <template x-for="profile in segmentProfiles[pg.id] || []" :key="profile.id">
+                          <div class="px-4 py-3 grid grid-cols-[140px_1fr_220px_120px] gap-4 items-center text-[12px]">
+                            <div>
+                              <div class="font-semibold text-ink" x-text="profile.id"></div>
+                              <div class="text-[10px] text-ink-muted mt-0.5" x-text="profile.weight"></div>
+                            </div>
+                            <div class="min-w-0">
+                              <div class="font-semibold text-ink truncate" x-text="profile.name"></div>
+                              <div class="text-[11px] text-ink-muted truncate mt-0.5" x-text="profile.need"></div>
+                            </div>
+                            <div class="text-ink-body truncate" x-text="profile.demographic"></div>
+                            <div class="flex justify-end">
+                              <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="profile.status"></span>
+                            </div>
+                          </div>
+                        </template>
                       </div>
                     </div>
                   </div>
@@ -2281,9 +2686,10 @@
                                   x-text="p.intent"></span>
                             <span class="text-ink-muted" x-text="p.lang"></span>
                             <span class="text-ink-faint" x-text="'v' + p.version"></span>
-                            <span class="text-ink-faint" x-text="'→ ' + p.engines.join(', ')"></span>
+                            <span class="text-ink-faint" x-text="promptRoutingLabel(p)"></span>
                           </div>
                           <div class="text-[12px] text-ink leading-relaxed font-mono bg-white/50 p-2 rounded border border-b-card/30" x-text="p.templateText"></div>
+                          <div class="text-[10px] text-ink-muted mt-2" x-text="promptMatrixGenerationTrace(p)"></div>
                         </div>
                       </template>
                       <template x-if="promptDetailList.filter(p => p.topicId === selectedTopic.id).length === 0">
@@ -2326,17 +2732,20 @@
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">Prompt Matrix</h3>
-                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + promptMatrixSelectedTopicCount() + ' 个 Topic · 预计生成 ' + estimatedPromptCount() + ' 个 Prompt · 覆盖率 93.1%'"></p>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + promptMatrixSelectedTopicCount() + ' 个 Topic · 预计生成 ' + estimatedPromptCount() + ' 个 Prompt · 覆盖率 ' + generationPromptStats.coveragePct + '%'"></p>
                   </div>
                   <div class="flex items-center gap-2">
                     <button @click="openPromptMatrixPanel('gaps')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                       缺口列表
                     </button>
-                    <button @click="openPromptMatrixPanel('generate')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
-                      生成 Prompt
+                    <button @click="startPromptMatrixGenerate()" :disabled="promptMatrixGenerateLoading" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40">
+                      <span x-text="promptMatrixGenerateLoading ? '生成中...' : '生成 Prompt'"></span>
                     </button>
                   </div>
                 </div>
+                <template x-if="promptMatrixError">
+                  <div class="text-[12px] text-danger" x-text="promptMatrixError"></div>
+                </template>
               </div>
 
               <div class="grid grid-cols-1 gap-4">
@@ -2359,22 +2768,22 @@
                       <div class="grid grid-cols-[1fr_140px_140px_92px] gap-2">
                         <div class="relative flex-1">
                           <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
-                          <input x-model="promptMatrixTopicQuery" @input="promptMatrixTopicPage=1" placeholder="搜索 Topic / 品牌"
+                          <input x-model="promptMatrixTopicQuery" @input.debounce.350ms="onPromptMatrixTopicFilterChanged()" placeholder="搜索 Topic / 品牌"
                                  class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
                         </div>
-                        <select x-model="promptMatrixTopicBrand" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <select x-model="promptMatrixTopicBrand" @change="onPromptMatrixTopicFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="all">全部品牌</option>
-                          <template x-for="brand in promptMatrixTopicBrands()" :key="brand">
-                            <option :value="brand" x-text="brand"></option>
+                          <template x-for="brand in promptMatrixTopicBrands()" :key="brand.id">
+                            <option :value="brand.id" x-text="brand.name"></option>
                           </template>
                         </select>
-                        <select x-model="promptMatrixTopicCoverage" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <select x-model="promptMatrixTopicCoverage" @change="onPromptMatrixTopicFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="all">全部覆盖</option>
                           <option value="gap">缺 Prompt</option>
                           <option value="partial">意图不足</option>
                           <option value="covered">已覆盖</option>
                         </select>
-                        <select x-model.number="promptMatrixTopicPerPage" @change="promptMatrixTopicPage=1" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <select x-model.number="promptMatrixTopicPerPage" @change="onPromptMatrixPageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="20">20 / 页</option>
                           <option value="50">50 / 页</option>
                           <option value="100">100 / 页</option>
@@ -2386,7 +2795,7 @@
                             <tr class="bg-surface-page border-b border-b-card">
                               <th class="w-9 px-3 py-2 text-left">
                                 <input type="checkbox" class="rounded border-b-default"
-                                       :checked="promptMatrixPageTopics().length > 0 && promptMatrixPageTopics().every(t => t.selected)"
+                                       :checked="promptMatrixPageTopics().length > 0 && promptMatrixPageTopics().every(t => isPromptMatrixTopicSelected(t))"
                                        @change="setPromptMatrixTopics($event.target.checked, 'page')" />
                               </th>
                               <th class="px-3 py-2 text-left text-ink-muted font-semibold">Topic</th>
@@ -2401,8 +2810,8 @@
                               <tr class="border-b border-b-card hover:bg-surface-page">
                                 <td class="px-3 py-2">
                                   <input type="checkbox" class="rounded border-b-default"
-                                         :checked="topic.selected"
-                                         @change="topic.selected = $event.target.checked" />
+                                         :checked="isPromptMatrixTopicSelected(topic)"
+                                         @change="togglePromptMatrixTopic(topic, $event.target.checked)" />
                                 </td>
                                 <td class="px-3 py-2">
                                   <div class="font-semibold text-ink truncate max-w-[360px]" x-text="topic.title"></div>
@@ -2417,7 +2826,17 @@
                                 <td class="px-3 py-2 text-right text-ink-muted" x-text="topic.updatedAt"></td>
                               </tr>
                             </template>
-                            <template x-if="promptMatrixPageTopics().length === 0">
+                            <template x-if="promptMatrixTopicsLoading">
+                              <tr>
+                                <td colspan="6" class="px-3 py-8 text-center text-ink-muted">加载 Topic...</td>
+                              </tr>
+                            </template>
+                            <template x-if="!promptMatrixTopicsLoading && promptMatrixTopicsError">
+                              <tr>
+                                <td colspan="6" class="px-3 py-8 text-center text-danger" x-text="promptMatrixTopicsError"></td>
+                              </tr>
+                            </template>
+                            <template x-if="!promptMatrixTopicsLoading && !promptMatrixTopicsError && promptMatrixPageTopics().length === 0">
                               <tr>
                                 <td colspan="6" class="px-3 py-8 text-center text-ink-muted">没有匹配的 Topic</td>
                               </tr>
@@ -2427,17 +2846,17 @@
                       </div>
                       <div class="flex items-center justify-between gap-3">
                         <div class="flex items-center gap-2">
-                          <button @click="setPromptMatrixTopics(true, 'page')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">选择本页</button>
-                          <button @click="setPromptMatrixTopics(true, 'filtered')" class="h-8 px-2.5 rounded-btn border border-accent/30 bg-accent/5 text-[11px] font-semibold text-accent hover:bg-accent/10">选择全部匹配</button>
-                          <button @click="setPromptMatrixTopics(false, 'page')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空本页</button>
+                          <button @click="setPromptMatrixTopics(true, 'page')" :disabled="promptMatrixTopicsLoading || promptMatrixPageTopics().length===0" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-40">选择本页</button>
+                          <button @click="setPromptMatrixTopics(true, 'filtered')" :disabled="promptMatrixTopicsLoading || promptMatrixFilteredTopicCount()===0" class="h-8 px-2.5 rounded-btn border border-accent/30 bg-accent/5 text-[11px] font-semibold text-accent hover:bg-accent/10 disabled:opacity-40">选择全部匹配</button>
+                          <button @click="setPromptMatrixTopics(false, 'page')" :disabled="promptMatrixTopicsLoading || promptMatrixPageTopics().length===0" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-40">清空本页</button>
                           <button @click="setPromptMatrixTopics(false, 'all')" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空全部</button>
                         </div>
                         <div class="flex items-center gap-2">
                           <span class="text-[11px] text-ink-muted" x-text="promptMatrixTopicPageRangeText()"></span>
-                          <button @click="promptMatrixTopicPage=Math.max(1, promptMatrixTopicPage-1)" :disabled="promptMatrixCurrentPage()<=1" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                          <button @click="changePromptMatrixTopicPage(-1)" :disabled="promptMatrixCurrentPage()<=1 || promptMatrixTopicsLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
                             <i data-lucide="chevron-left" class="w-4 h-4"></i>
                           </button>
-                          <button @click="promptMatrixTopicPage=Math.min(promptMatrixTopicTotalPages(), promptMatrixTopicPage+1)" :disabled="promptMatrixCurrentPage()>=promptMatrixTopicTotalPages()" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                          <button @click="changePromptMatrixTopicPage(1)" :disabled="promptMatrixCurrentPage()>=promptMatrixTopicTotalPages() || promptMatrixTopicsLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
                             <i data-lucide="chevron-right" class="w-4 h-4"></i>
                           </button>
                         </div>
@@ -2446,7 +2865,7 @@
                         <template x-for="topic in selectedPromptMatrixTopics().slice(0, 8)" :key="topic.id">
                           <span class="inline-flex items-center gap-1 h-6 px-2 rounded-badge bg-white border border-b-card text-[11px] text-ink-body">
                             <span x-text="topic.title"></span>
-                            <button @click="topic.selected=false" class="text-ink-muted hover:text-danger">×</button>
+                            <button @click="togglePromptMatrixTopic(topic, false)" class="text-ink-muted hover:text-danger">×</button>
                           </span>
                         </template>
                         <template x-if="promptMatrixSelectedTopicCount() > 8">
@@ -2464,7 +2883,7 @@
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">意图覆盖</span>
-                      <select x-model="promptMatrixConfig.intentCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                      <select x-model="promptMatrixConfig.intentCount" @change="loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                         <option value="2">基础 2 类</option>
                         <option value="3">均衡 3 类</option>
                         <option value="4">完整 4 类</option>
@@ -2472,7 +2891,7 @@
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">目标市场</span>
-                      <select x-model="promptMatrixConfig.languageCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                      <select x-model="promptMatrixConfig.languageCount" @change="loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                         <option value="2">中国 + 英文市场</option>
                         <option value="1">仅中国市场</option>
                       </select>
@@ -2516,7 +2935,7 @@
                     <div class="mt-3 grid grid-cols-3 gap-2">
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">每 Topic 上限</span>
-                        <select x-model="promptMatrixConfig.maxPerTopic" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <select x-model="promptMatrixConfig.maxPerTopic" @change="if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="2">2</option>
                           <option value="4">4</option>
                           <option value="6">6</option>
@@ -2540,19 +2959,33 @@
                 </div>
               </div>
 
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-1 flex items-center gap-1">
+                <button @click="setPromptMatrixWorkspaceTab('review')" class="flex-1 h-10 rounded-btn text-[13px] font-semibold"
+                        :class="promptMatrixWorkspaceTab==='review' ? 'bg-accent text-white shadow-btn' : 'text-ink-body hover:bg-surface-page'">
+                  生成与审核
+                  <span class="ml-1 text-[11px] tabular-nums" x-text="'(' + (promptMatrixCandidateStatusCounts.pending || 0) + ')'"></span>
+                </button>
+                <button @click="setPromptMatrixWorkspaceTab('coverage')" class="flex-1 h-10 rounded-btn text-[13px] font-semibold"
+                        :class="promptMatrixWorkspaceTab==='coverage' ? 'bg-accent text-white shadow-btn' : 'text-ink-body hover:bg-surface-page'">
+                  Prompt 覆盖
+                  <span class="ml-1 text-[11px] tabular-nums" x-text="'(' + Number(generationPromptStats.totalPrompts || 0).toLocaleString() + ')'"></span>
+                </button>
+              </div>
+
+              <div x-show="promptMatrixWorkspaceTab==='review'" class="space-y-4">
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">审核状态</h3>
+                    <p class="text-[11px] text-ink-muted mt-1" x-text="'待审核 ' + (promptMatrixCandidateStatusCounts.pending || 0) + ' 条 · 已通过 ' + (promptMatrixCandidateStatusCounts.approved || 0) + ' 条'"></p>
                   </div>
-                  <button @click="openPromptMatrixPanel('pending')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">审查候选</button>
                 </div>
                 <div class="grid grid-cols-4 gap-3">
                   <template x-for="gate in promptMatrixQualityGates" :key="gate.title">
                     <div class="rounded-card bg-surface-page border border-b-card p-3">
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
-                        <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
+                        <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : gate.tone === 'danger' ? 'text-danger' : 'text-accent'" x-text="gate.value"></span>
                       </div>
                       <div class="text-[10px] text-ink-muted mt-2 font-mono" x-text="gate.meta"></div>
                     </div>
@@ -2561,7 +2994,7 @@
               </div>
 
               <template x-if="promptMatrixActionPanel">
-                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+                <div id="prompt-matrix-action-panel" class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
                   <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
                     <div>
                       <h3 class="text-[15px] font-bold text-ink" x-text="promptMatrixPanelTitle()"></h3>
@@ -2572,8 +3005,6 @@
                               :class="promptMatrixActionPanel==='gaps' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">缺口列表</button>
                       <button @click="openPromptMatrixPanel('generate')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
                               :class="promptMatrixActionPanel==='generate' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">生成任务</button>
-                      <button @click="openPromptMatrixPanel('pending')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
-                              :class="promptMatrixActionPanel==='pending' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">待审核</button>
                       <button @click="promptMatrixActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
                         <i data-lucide="x" class="w-4 h-4"></i>
                       </button>
@@ -2592,12 +3023,41 @@
                               <td class="px-4 py-3 text-right tabular-nums text-ink" x-text="gap.estimate"></td>
                             </tr>
                           </template>
+                          <template x-if="promptMatrixGapsLoading">
+                            <tr><td colspan="4" class="px-4 py-8 text-center text-ink-muted">加载缺口...</td></tr>
+                          </template>
+                          <template x-if="!promptMatrixGapsLoading && promptMatrixGapsError">
+                            <tr><td colspan="4" class="px-4 py-8 text-center text-danger" x-text="promptMatrixGapsError"></td></tr>
+                          </template>
+                          <template x-if="!promptMatrixGapsLoading && !promptMatrixGapsError && promptMatrixGapItems.length===0">
+                            <tr><td colspan="4" class="px-4 py-8 text-center text-ink-muted">当前筛选下没有缺口</td></tr>
+                          </template>
                         </tbody>
                       </table>
                     </div>
                   </template>
                   <template x-if="promptMatrixActionPanel==='generate'">
                     <div class="p-5 space-y-4">
+                      <div class="rounded-card border border-b-card bg-surface-page p-4 flex items-center justify-between gap-4">
+                        <div>
+                          <div class="text-[12.5px] font-bold text-ink">Topic 选择状态</div>
+                          <div class="text-[11px] text-ink-muted mt-1"
+                               x-text="'当前筛选匹配 ' + promptMatrixFilteredTopicCount().toLocaleString() + ' 个 · 本页 ' + promptMatrixPageTopics().length + ' 个 · 已选 ' + promptMatrixSelectedTopicCount().toLocaleString() + ' 个'"></div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <button @click="setPromptMatrixTopics(true, 'page')"
+                                  :disabled="promptMatrixTopicsLoading || promptMatrixPageTopics().length===0"
+                                  class="h-8 px-3 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface disabled:opacity-40">选择本页</button>
+                          <button @click="setPromptMatrixTopics(true, 'filtered')"
+                                  :disabled="promptMatrixTopicsLoading || promptMatrixFilteredTopicCount()===0"
+                                  class="h-8 px-3 rounded-btn border border-accent/30 bg-accent/5 text-[11px] font-semibold text-accent hover:bg-accent/10 disabled:opacity-40">选择全部匹配</button>
+                        </div>
+                      </div>
+                      <template x-if="promptMatrixSelectedTopicCount()===0">
+                        <div class="rounded-card border border-warning/30 bg-warning/5 p-3 text-[12px] text-warning">
+                          还没有选择 Topic。请选择本页或全部匹配后再开始生成。
+                        </div>
+                      </template>
                       <div class="grid grid-cols-4 gap-3">
                         <template x-for="step in promptMatrixGenerateSteps" :key="step.name">
                           <div class="rounded-card bg-surface-page border border-b-card p-3">
@@ -2618,36 +3078,154 @@
                           <div><div class="text-ink-muted">生成上限</div><div class="font-semibold text-ink mt-1" x-text="Number(promptMatrixConfig.maxPrompts).toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixGenerateStarted ? '刚刚' : '未运行'"></div></div>
                         </div>
-                        <button @click="startPromptMatrixGenerate()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
-                          <span x-text="promptMatrixGenerateStarted ? '重新生成' : '开始生成'"></span>
+                        <button @click="startPromptMatrixGenerate()" :disabled="promptMatrixGenerateLoading" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-40">
+                          <span x-text="promptMatrixGenerateLoading ? '生成中...' : (promptMatrixGenerateStarted ? '重新生成' : '开始生成')"></span>
                         </button>
                       </div>
-                    </div>
-                  </template>
-                  <template x-if="promptMatrixActionPanel==='pending'">
-                    <div class="p-5">
-                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
-                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">Prompt</th><th class="px-4 py-2.5 text-left text-ink-muted">Topic</th><th class="px-4 py-2.5 text-left text-ink-muted">原因</th><th class="px-4 py-2.5 text-right text-ink-muted">操作</th></tr></thead>
-                        <tbody>
-                          <template x-for="item in promptMatrixPendingItems" :key="item.id">
-                            <tr class="border-b border-b-card hover:bg-surface-page">
-                              <td class="px-4 py-3"><div class="font-mono text-[11px] text-ink" x-text="item.id"></div><div class="text-ink-body mt-0.5" x-text="item.text"></div></td>
-                              <td class="px-4 py-3 text-ink-body" x-text="item.topic"></td>
-                              <td class="px-4 py-3 text-ink-body" x-text="item.reason"></td>
-                              <td class="px-4 py-3 text-right">
-                                <button @click="reviewPromptCandidate(item, 'approved')" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold">通过</button>
-                                <button @click="reviewPromptCandidate(item, 'rejected')" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1">拒绝</button>
-                              </td>
-                            </tr>
-                          </template>
-                        </tbody>
-                      </table>
+                      <template x-if="promptMatrixGenerateError">
+                        <div class="text-[12px] text-danger" x-text="promptMatrixGenerateError"></div>
+                      </template>
                     </div>
                   </template>
                 </div>
               </template>
 
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">候选 Prompt</h3>
+                    <div class="text-[11px] text-ink-muted mt-1" x-text="'待审核 ' + (promptMatrixCandidateStatusCounts.pending || 0) + ' · 全部候选 ' + (promptMatrixCandidateStatusCounts.all || 0)"></div>
+                  </div>
+                  <button @click="loadPromptMatrixCandidates()" :disabled="promptMatrixCandidatesLoading" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-40">
+                    <span x-text="promptMatrixCandidatesLoading ? '刷新中...' : '刷新'"></span>
+                  </button>
+                </div>
+                <div class="p-5 space-y-4">
+                      <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div class="inline-flex items-center rounded-btn border border-b-default bg-surface-page p-1">
+                          <template x-for="tab in promptMatrixCandidateTabs()" :key="tab.status">
+                            <button @click="setPromptMatrixCandidateStatus(tab.status)"
+                                    class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                                    :class="promptMatrixCandidateStatus===tab.status ? 'bg-surface text-accent shadow-btn' : 'text-ink-body hover:bg-surface'"
+                                    x-text="tab.label + ' ' + tab.count"></button>
+                          </template>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <div class="relative">
+                            <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                            <input x-model="promptMatrixCandidateQuery" @input.debounce.350ms="onPromptMatrixCandidateFilterChanged()" placeholder="搜索候选 Prompt"
+                                   class="w-56 h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                          </div>
+                          <select x-model.number="promptMatrixCandidatePerPage" @change="onPromptMatrixCandidatePageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="10">10 / 页</option>
+                            <option value="20">20 / 页</option>
+                            <option value="50">50 / 页</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div x-show="promptMatrixCandidateStatus === 'pending' || promptMatrixSelectedCandidateCount() > 0"
+                           class="rounded-card border border-b-card bg-surface-page px-3 py-2 flex flex-wrap items-center justify-between gap-3">
+                        <label class="inline-flex items-center gap-2 text-[12px] text-ink-body">
+                          <input type="checkbox"
+                                 :checked="isPromptMatrixCandidatePageSelected()"
+                                 @change="setPromptMatrixCandidatePageSelection($event.target.checked)"
+                                 :disabled="promptMatrixSelectablePageCandidates().length===0 || promptMatrixCandidateReviewing"
+                                 class="w-3.5 h-3.5 rounded border-b-default text-accent focus:ring-accent/30 disabled:opacity-40">
+                          <span x-text="'已选 ' + promptMatrixSelectedCandidateCount() + ' 条待审 Prompt'"></span>
+                        </label>
+                        <div class="flex items-center gap-2">
+                          <button @click="bulkReviewPromptCandidates('approved')"
+                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  class="h-8 px-3 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5">
+                            <i data-lucide="check" class="w-3.5 h-3.5"></i>
+                            批量通过
+                          </button>
+                          <button @click="bulkReviewPromptCandidates('rejected')"
+                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  class="h-8 px-3 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5">
+                            <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                            批量拒绝
+                          </button>
+                          <button @click="clearPromptMatrixCandidateSelection()"
+                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  class="h-8 px-3 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface disabled:opacity-40">
+                            清空选择
+                          </button>
+                        </div>
+                      </div>
+                      <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="w-10 px-3 py-2.5 text-left text-ink-muted"></th><th class="px-4 py-2.5 text-left text-ink-muted">Topic → Prompt</th><th class="px-4 py-2.5 text-left text-ink-muted">生成逻辑</th><th class="px-4 py-2.5 text-left text-ink-muted">状态</th><th class="px-4 py-2.5 text-right text-ink-muted">操作</th></tr></thead>
+                        <tbody>
+                          <template x-for="item in promptMatrixPendingItems" :key="item.id">
+                            <tr class="border-b border-b-card hover:bg-surface-page">
+                              <td class="px-3 py-3 align-top">
+                                <input type="checkbox"
+                                       :checked="isPromptMatrixCandidateSelected(item)"
+                                       @change="togglePromptMatrixCandidate(item, $event.target.checked)"
+                                       :disabled="item.status !== 'pending' || promptMatrixCandidateReviewing"
+                                       class="w-3.5 h-3.5 rounded border-b-default text-accent focus:ring-accent/30 disabled:opacity-30">
+                              </td>
+                              <td class="px-4 py-3">
+                                <div class="font-mono text-[11px] text-ink" x-text="item.id"></div>
+                                <div class="text-[11px] text-ink-muted mt-1" x-text="item.topic"></div>
+                                <div class="text-ink-body mt-1 leading-relaxed" x-text="item.text"></div>
+                              </td>
+                              <td class="px-4 py-3 min-w-[260px]">
+                                <div class="text-[11px] text-ink-body leading-relaxed" x-text="promptMatrixGenerationTrace(item)"></div>
+                                <div class="text-[11px] text-ink-muted mt-1 leading-relaxed" x-text="item.reason || '质量门通过，覆盖当前矩阵缺口'"></div>
+                                <div class="mt-2 flex flex-wrap gap-1.5">
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="item.intent"></span>
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="item.language"></span>
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="promptMatrixSourceLabel(item)"></span>
+                                </div>
+                              </td>
+                              <td class="px-4 py-3">
+                                <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                      :class="item.status === 'pending' ? 'bg-warning/10 text-warning' : item.status === 'approved' ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'"
+                                      x-text="promptMatrixCandidateStatusLabel(item.status)"></span>
+                              </td>
+                              <td class="px-4 py-3 text-right">
+                                <template x-if="item.status === 'pending'">
+                                  <div>
+                                    <button @click="reviewPromptCandidate(item, 'approved')" :disabled="promptMatrixCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40">通过</button>
+                                    <button @click="reviewPromptCandidate(item, 'rejected')" :disabled="promptMatrixCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1 disabled:opacity-40">拒绝</button>
+                                  </div>
+                                </template>
+                                <template x-if="item.status !== 'pending'">
+                                  <span class="text-[11px] text-ink-muted" x-text="item.approved_prompt_id ? 'Prompt #' + item.approved_prompt_id : '已审核'"></span>
+                                </template>
+                              </td>
+                            </tr>
+                          </template>
+                          <template x-if="promptMatrixCandidatesLoading">
+                            <tr><td colspan="5" class="px-4 py-8 text-center text-ink-muted">加载候选...</td></tr>
+                          </template>
+                          <template x-if="!promptMatrixCandidatesLoading && promptMatrixCandidatesError">
+                            <tr><td colspan="5" class="px-4 py-8 text-center text-danger" x-text="promptMatrixCandidatesError"></td></tr>
+                          </template>
+                          <template x-if="!promptMatrixCandidatesLoading && !promptMatrixCandidatesError && promptMatrixPendingItems.length===0">
+                            <tr><td colspan="5" class="px-4 py-8 text-center text-ink-muted" x-text="'没有' + promptMatrixCandidateStatusLabel(promptMatrixCandidateStatus) + ' Prompt'"></td></tr>
+                          </template>
+                        </tbody>
+                      </table>
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="text-[11px] text-ink-muted" x-text="promptMatrixCandidatePageRangeText()"></div>
+                        <div class="flex items-center gap-2">
+                          <button @click="changePromptMatrixCandidatePage(-1)" :disabled="promptMatrixCandidatePage<=1 || promptMatrixCandidatesLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                          </button>
+                          <span class="text-[11px] text-ink-muted tabular-nums" x-text="promptMatrixCandidatePage + ' / ' + promptMatrixCandidateTotalPages()"></span>
+                          <button @click="changePromptMatrixCandidatePage(1)" :disabled="promptMatrixCandidatePage>=promptMatrixCandidateTotalPages() || promptMatrixCandidatesLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                          </button>
+                        </div>
+                      </div>
+                </div>
+              </div>
+              </div>
+
               <!-- KPI row -->
+              <div x-show="promptMatrixWorkspaceTab==='coverage'" class="space-y-4">
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
                 <div class="flex items-center justify-between mb-4">
                   <div>
@@ -2726,12 +3304,12 @@
                             <span class="text-[11px] text-ink-muted ml-1" x-text="l.count.toLocaleString()"></span>
                           </div>
                         </div>
-                        <div class="text-[10px] text-ink-muted" x-text="'适用: ' + l.engines"></div>
+                        <div class="text-[10px] text-ink-muted" x-text="'路由: ' + (l.routing === 'deferred_to_query_pool' ? '调度时决定' : l.engines)"></div>
                       </div>
                     </template>
                   </div>
                   <div class="mt-3 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                    中文覆盖全部引擎，英文优先覆盖 ChatGPT
+                    Prompt Matrix 只记录语言；具体引擎在 Query Pool / Tracker 调度时决定
                   </div>
                 </div>
               </div>
@@ -2741,13 +3319,13 @@
                 <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
                   <h3 class="text-[14px] font-semibold text-ink">Prompt 内容列表</h3>
                   <div class="flex items-center gap-2">
-                    <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                    <select x-model="promptMatrixPromptIntent" @change="loadPromptMatrixPrompts()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                       <option value="">全部意图</option>
-                      <option>信息了解</option><option>购买决策</option><option>行动导向</option><option>定向查找</option>
+                      <option value="informational">信息了解</option><option value="commercial">购买决策</option><option value="transactional">行动导向</option><option value="navigational">定向查找</option>
                     </select>
-                    <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                    <select x-model="promptMatrixPromptLanguage" @change="loadPromptMatrixPrompts()" class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                       <option value="">全部语言</option>
-                      <option>zh-CN</option><option>en-US</option>
+                      <option value="zh-CN">zh-CN</option><option value="en-US">en-US</option>
                     </select>
                   </div>
                 </div>
@@ -2760,7 +3338,7 @@
                               :class="p.intent==='informational' ? 'bg-info/10 text-info' : p.intent==='commercial' ? 'bg-accent/10 text-accent' : p.intent==='transactional' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
                               x-text="intentLabel(p.intent)"></span>
                         <span class="px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="languageLabel(p.lang)"></span>
-                        <span class="text-ink-faint" x-text="p.engines.join(' / ')"></span>
+                        <span class="text-ink-faint" x-text="promptRoutingLabel(p)"></span>
                         <span class="ml-auto inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
                               :class="p.status==='active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
                               x-text="promptStatusLabel(p.status)"></span>
@@ -2772,9 +3350,24 @@
                         <div class="text-[10px] text-ink-faint mb-1">实际发送示例:</div>
                         <div class="text-[11px] text-ink-body leading-relaxed pl-3 border-l-2 border-accent/30" x-text="p.resolvedExample"></div>
                       </div>
+                      <div class="mt-3 rounded-card bg-surface-page border border-b-card p-3">
+                        <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1">生成逻辑</div>
+                        <div class="text-[11px] text-ink-body leading-relaxed" x-text="promptMatrixGenerationTrace(p)"></div>
+                        <div class="text-[11px] text-ink-muted leading-relaxed mt-1" x-text="promptMatrixTopicToPromptText(p)"></div>
+                      </div>
                     </div>
                   </template>
+                  <template x-if="promptMatrixPromptsLoading">
+                    <div class="px-6 py-8 text-center text-ink-muted text-[12px]">加载 Prompt...</div>
+                  </template>
+                  <template x-if="!promptMatrixPromptsLoading && promptMatrixPromptsError">
+                    <div class="px-6 py-8 text-center text-danger text-[12px]" x-text="promptMatrixPromptsError"></div>
+                  </template>
+                  <template x-if="!promptMatrixPromptsLoading && !promptMatrixPromptsError && promptDetailList.length===0">
+                    <div class="px-6 py-8 text-center text-ink-muted text-[12px]">没有匹配的 Prompt</div>
+                  </template>
                 </div>
+              </div>
               </div>
             </div>
           </template>
@@ -2786,7 +3379,7 @@
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">Query Pool</h3>
-                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedQueryPoolPrompts().length + ' 个 Prompt · 预计组装 ' + estimatedQueryCount() + ' 个 Query · 就绪 4,680'"></p>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + queryPoolSelectedPromptCount().toLocaleString() + ' 个 Prompt · 预计组装 ' + estimatedQueryCount() + ' 个 Query · 就绪 4,680'"></p>
                   </div>
                   <div class="flex items-center gap-2">
                     <button @click="openQueryPoolPanel('cost')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
@@ -2807,39 +3400,102 @@
                     </div>
                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold">待预检</span>
                   </div>
-                  <div class="grid grid-cols-3 gap-3">
-                    <div class="space-y-2 col-span-2">
+                  <div class="space-y-4">
+                    <div class="space-y-2">
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">Prompts</span>
-                        <span class="text-[10px] font-semibold text-accent tabular-nums" x-text="'已选 ' + selectedQueryPoolPrompts().length"></span>
+                        <div class="flex items-center gap-2">
+                          <span class="text-[10px] text-ink-muted tabular-nums" x-text="'匹配 ' + queryPoolPromptTotal.toLocaleString() + ' · 第 ' + queryPoolPromptCurrentPage() + ' / ' + queryPoolPromptTotalPages() + ' 页'"></span>
+                          <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold tabular-nums" x-text="'已选 ' + queryPoolSelectedPromptCount().toLocaleString()"></span>
+                        </div>
                       </div>
                       <div class="flex items-center gap-2">
                         <div class="relative flex-1">
                           <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
-                          <input x-model="queryPoolPromptQuery" placeholder="搜索 Prompt"
+                          <input x-model="queryPoolPromptQuery" @input.debounce.350ms="onQueryPoolPromptFilterChanged()" placeholder="搜索 Prompt / Topic"
                                  class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
                         </div>
-                        <button @click="setQueryPoolPrompts(true)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">全选</button>
-                        <button @click="setQueryPoolPrompts(false)" class="h-8 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空</button>
+                        <select x-model="queryPoolPromptIntent" @change="onQueryPoolPromptFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="">全部 Intent</option>
+                          <option value="informational">信息了解</option>
+                          <option value="commercial">购买决策</option>
+                          <option value="transactional">行动导向</option>
+                          <option value="navigational">定向查找</option>
+                        </select>
+                        <select x-model="queryPoolPromptLanguage" @change="onQueryPoolPromptFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="">全部语言</option>
+                          <option value="zh-CN">zh-CN</option>
+                          <option value="en-US">en-US</option>
+                        </select>
+                        <select x-model.number="queryPoolPromptPerPage" @change="onQueryPoolPromptPageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option :value="100">100 / 页</option>
+                          <option :value="50">50 / 页</option>
+                          <option :value="20">20 / 页</option>
+                        </select>
                       </div>
-                      <div class="grid grid-cols-2 gap-2 max-h-[118px] overflow-y-auto rounded-card border border-b-card bg-white p-2">
-                        <template x-for="prompt in filteredQueryPoolPrompts()" :key="prompt.id">
-                          <label class="h-8 px-2 rounded-btn border border-b-card bg-surface-page hover:bg-surface flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" class="rounded border-b-default"
-                                   :checked="prompt.selected"
-                                   @change="prompt.selected = $event.target.checked" />
-                            <span class="text-[12px] font-medium text-ink truncate" x-text="prompt.title"></span>
-                            <span class="ml-auto text-[10px] text-ink-muted" x-text="intentLabel(prompt.intent)"></span>
-                          </label>
-                        </template>
+                      <div class="rounded-card border border-b-card bg-white overflow-hidden">
+                        <div class="px-3 py-2 border-b border-b-card bg-surface-page flex items-center justify-between gap-3">
+                          <div class="flex items-center gap-2">
+                            <label class="inline-flex items-center gap-2 text-[11px] font-semibold text-ink-body">
+                              <input type="checkbox" class="rounded border-b-default"
+                                     :checked="isQueryPoolPromptPageSelected()"
+                                     @change="setQueryPoolPrompts($event.target.checked, 'page')" />
+                              本页
+                            </label>
+                            <span x-show="queryPoolSelectionMode==='filtered'" class="text-[10px] text-accent font-semibold" x-text="'已选择全部匹配，排除 ' + queryPoolExcludedPromptCount().toLocaleString() + ' 条'"></span>
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <button @click="setQueryPoolPrompts(true, 'filtered')" :disabled="queryPoolPromptsLoading || queryPoolPromptTotal===0" class="h-7 px-2.5 rounded-btn border border-accent/30 bg-accent/5 text-[11px] font-semibold text-accent hover:bg-accent/10 disabled:opacity-40">选择全部匹配</button>
+                            <button @click="setQueryPoolPrompts(false, 'page')" :disabled="queryPoolPromptsLoading || queryPoolPrompts.length===0" class="h-7 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-40">清空本页</button>
+                            <button @click="setQueryPoolPrompts(false, 'all')" class="h-7 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page">清空全部</button>
+                          </div>
+                        </div>
+                        <div class="query-pool-prompt-table-body divide-y divide-b-card">
+                          <template x-for="prompt in queryPoolPrompts" :key="prompt.id">
+                            <label class="px-4 py-3 min-h-[60px] hover:bg-surface-page flex items-start gap-3 cursor-pointer">
+                              <input type="checkbox" class="mt-1 rounded border-b-default"
+                                     :checked="isQueryPoolPromptSelected(prompt)"
+                                     @change="toggleQueryPoolPrompt(prompt, $event.target.checked)" />
+                              <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2">
+                                  <span class="text-[13px] font-semibold text-ink truncate" x-text="prompt.title || prompt.templateText"></span>
+                                  <span class="shrink-0 inline-flex items-center px-1.5 h-4 rounded-badge bg-accent/10 text-accent text-[9px] font-semibold" x-text="intentLabel(prompt.intent)"></span>
+                                  <span class="shrink-0 px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="languageLabel(prompt.lang || prompt.language)"></span>
+                                </div>
+                                <div class="text-[11px] text-ink-muted truncate mt-1.5" x-text="queryPoolPromptMeta(prompt)"></div>
+                              </div>
+                            </label>
+                          </template>
+                          <template x-if="queryPoolPromptsLoading">
+                            <div class="px-3 py-6 text-center text-ink-muted text-[12px]">加载 Prompt...</div>
+                          </template>
+                          <template x-if="!queryPoolPromptsLoading && queryPoolPromptsError">
+                            <div class="px-3 py-6 text-center text-danger text-[12px]" x-text="queryPoolPromptsError"></div>
+                          </template>
+                          <template x-if="!queryPoolPromptsLoading && !queryPoolPromptsError && queryPoolPrompts.length===0">
+                            <div class="px-3 py-6 text-center text-ink-muted text-[12px]">没有匹配的 Prompt</div>
+                          </template>
+                        </div>
+                        <div class="px-3 py-2 border-t border-b-card bg-surface-page flex items-center justify-between">
+                          <span class="text-[11px] text-ink-muted" x-text="queryPoolPromptPageRangeText()"></span>
+                          <div class="flex items-center gap-2">
+                            <button @click="changeQueryPoolPromptPage(-1)" :disabled="queryPoolPromptCurrentPage()<=1 || queryPoolPromptsLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                              <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                            </button>
+                            <button @click="changeQueryPoolPromptPage(1)" :disabled="queryPoolPromptCurrentPage()>=queryPoolPromptTotalPages() || queryPoolPromptsLoading" class="w-8 h-8 rounded-btn border border-b-default bg-white text-ink-muted disabled:opacity-40 inline-flex items-center justify-center">
+                              <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
+                    <div class="grid grid-cols-3 gap-3">
                     <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">人群采样</span>
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">Segment 采样</span>
                       <select x-model="queryPoolConfig.profileStrategy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="balanced">核心人群 + 补充人群</option>
-                        <option value="core">仅核心人群</option>
-                        <option value="full">完整人群覆盖</option>
+                        <option value="balanced">核心 Segment + 补充 Segment</option>
+                        <option value="core">仅核心 Segment</option>
+                        <option value="full">完整 Segment 覆盖</option>
                       </select>
                     </label>
                     <label class="space-y-1">
@@ -2852,11 +3508,12 @@
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">预算上限</span>
-                      <select x-model="queryPoolConfig.budgetCap" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="180">$180 / 批次</option>
-                        <option value="320">$320 / 批次</option>
-                        <option value="schedule">使用调度预算</option>
-                      </select>
+                      <div class="relative">
+                        <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[12px] text-ink-muted">$</span>
+                        <input x-model.number="queryPoolConfig.budgetCap" type="number" min="1" step="10" inputmode="decimal" placeholder="180" aria-label="预算上限金额"
+                               class="w-full h-8 rounded-input border border-b-default bg-white pl-6 pr-12 text-[12px] text-ink" />
+                        <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-ink-muted">/ 批次</span>
+                      </div>
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">入队窗口</span>
@@ -2882,6 +3539,7 @@
                         <option value="balanced">均衡入队</option>
                       </select>
                     </label>
+                    </div>
                   </div>
                   <div class="mt-4 rounded-card bg-surface-page border border-b-card p-3">
                     <div class="flex items-center justify-between gap-3">
@@ -2896,7 +3554,7 @@
                     </div>
                     <div class="mt-3 grid grid-cols-4 gap-2">
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted">每条画像数</span>
+                        <span class="text-[10px] font-semibold text-ink-muted">每 Prompt 采样 Profile</span>
                         <select x-model="queryPoolConfig.profilesPerPrompt" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="2">2</option>
                           <option value="3">3</option>
@@ -2953,7 +3611,7 @@
                   <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
                     <div>
                       <h3 class="text-[15px] font-bold text-ink" x-text="queryPoolPanelTitle()"></h3>
-                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Prompt ' + selectedQueryPoolPrompts().length + ' · 预计 ' + estimatedQueryCount() + ' queries'"></div>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Prompt ' + queryPoolSelectedPromptCount().toLocaleString() + ' · 预计 ' + estimatedQueryCount() + ' queries'"></div>
                     </div>
                     <div class="flex items-center gap-2">
                       <button @click="openQueryPoolPanel('cost')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
@@ -3002,7 +3660,7 @@
                       <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between">
                         <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
                           <div><div class="text-ink-muted">预计组装</div><div class="font-semibold text-ink mt-1" x-text="estimatedQueryCount() + ' queries'"></div></div>
-                          <div><div class="text-ink-muted">Prompt</div><div class="font-semibold text-ink mt-1" x-text="selectedQueryPoolPrompts().length"></div></div>
+                          <div><div class="text-ink-muted">Prompt</div><div class="font-semibold text-ink mt-1" x-text="queryPoolSelectedPromptCount().toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">总上限</div><div class="font-semibold text-ink mt-1" x-text="Number(queryPoolConfig.maxQueries).toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="queryPoolAssembleStarted ? '刚刚' : '未运行'"></div></div>
                         </div>
@@ -3037,7 +3695,7 @@
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">Query 组装状态</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">按画像和引擎生成可执行 Query</p>
+                    <p class="text-[12px] text-ink-muted mt-1">按 Segment、Profile 和引擎生成可执行 Query</p>
                   </div>
                 </div>
 
@@ -3069,7 +3727,7 @@
                   <div class="flex items-center gap-2">
                     <i data-lucide="shuffle" class="w-4 h-4 text-accent"></i>
                     <span class="text-[12px] text-ink-muted">采样策略:</span>
-                    <span class="text-[12px] font-semibold text-ink">每条 Prompt 覆盖 <span x-text="generationQueryStats.avgProfilesPerPrompt"></span> 个画像</span>
+                    <span class="text-[12px] font-semibold text-ink">每条 Prompt 覆盖 <span x-text="generationQueryStats.avgProfilesPerPrompt"></span> 个 Profile</span>
                   </div>
                   <div class="w-px h-5 bg-accent/20"></div>
                   <div class="flex items-center gap-2">
@@ -3079,7 +3737,7 @@
                 </div>
               </div>
 
-              <!-- ② Two-column: Engine success + ProfileGroup success -->
+              <!-- ② Two-column: Engine success + Segment success -->
               <div class="grid grid-cols-2 gap-4">
                 <!-- Left: By engine -->
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
@@ -3102,9 +3760,9 @@
                   </div>
                 </div>
 
-                <!-- Right: By ProfileGroup -->
+                <!-- Right: By Segment -->
                 <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-                  <div class="text-[13px] font-semibold text-ink mb-4">按画像组成功率</div>
+                  <div class="text-[13px] font-semibold text-ink mb-4">按 Segment 成功率</div>
                   <div class="space-y-3">
                     <template x-for="p in generationQueryStats.successRateByProfile" :key="p.group">
                       <div>
@@ -5201,7 +5859,7 @@
             <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">引擎</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.engine"></div></div>
             <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">账号</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.accountId"></div></div>
             <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">代理区域</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.proxyRegion"></div></div>
-            <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">Profile</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.profileGroup"></div></div>
+            <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">Segment</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.profileGroup"></div></div>
             <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">Prompt</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.promptVersion"></div></div>
             <div class="p-2 rounded bg-surface-page"><span class="text-ink-muted">Adapter</span><div class="font-semibold text-ink mt-0.5" x-text="attemptDrawer.adapterMode"></div></div>
           </div>
@@ -5858,7 +6516,9 @@ const ADMIN_BASE_PATH = (() => {
   return index >= 0 ? path.slice(0, index + marker.length) : '/admin';
 })();
 const APP_BASE_PATH = ADMIN_BASE_PATH.replace(/\/admin$/, '') || '';
-const API_BASE = APP_BASE_PATH + '/api';
+const API_BASE = window.location.port === '5173'
+  ? ADMIN_BASE_PATH + '/api'
+  : APP_BASE_PATH + '/api';
 
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
@@ -6045,6 +6705,385 @@ function summarizeAttempts(rows, total, byStatus) {
   };
 }
 
+function segmentCrudPanel() {
+  return {
+    segmentQuery: '',
+    profileQuery: '',
+    selectedSegmentId: 'SEG-001',
+    notice: '',
+    noticeTimer: null,
+    segmentModalOpen: false,
+    profileModalOpen: false,
+    importModalOpen: false,
+    editingSegmentId: null,
+    editingProfileId: null,
+    profileSegmentId: null,
+    importMode: 'segments',
+    importSegmentId: null,
+    importText: '',
+    importError: '',
+    segmentForm: {
+      id: '',
+      name: '',
+      industry: '',
+      status: 'active',
+      weight: 0.25,
+      ageRange: '',
+      income: '',
+      regions: '',
+      samplingRate: '',
+      note: '',
+    },
+    profileForm: {
+      id: '',
+      name: '',
+      demographic: '',
+      need: '',
+      weight: '1.0',
+      status: 'active',
+    },
+    segments: [
+      { id:'SEG-001', name:'一线年轻女性', industry:'美妆个护', status:'active', weight:0.35, ageRange:'18-30', income:'中高收入', regions:'北京、上海、广州、深圳', samplingRate:'30%', note:'关注成分、肤感、口碑和折扣组合。' },
+      { id:'SEG-002', name:'价格敏感型家庭用户', industry:'食品饮料', status:'active', weight:0.25, ageRange:'28-42', income:'中等收入', regions:'新一线、二线城市', samplingRate:'24%', note:'对促销、囤货、性价比和渠道可信度敏感。' },
+      { id:'SEG-003', name:'高收入男性 35-45', industry:'奢侈品', status:'active', weight:0.22, ageRange:'35-45', income:'高收入', regions:'北京、上海、杭州、深圳', samplingRate:'18%', note:'关注品牌稀缺性、场景体面感和服务体验。' },
+      { id:'SEG-004', name:'年轻白领通勤人群', industry:'服装时尚', status:'draft', weight:0.18, ageRange:'24-34', income:'中等以上', regions:'一线、新一线城市', samplingRate:'16%', note:'看重通勤、材质、搭配效率和价格稳定性。' },
+    ],
+    profiles: {
+      'SEG-001': [
+        { id:'P-001-01', name:'成分党护肤用户', demographic:'女性 24-30 / 一线城市 / 中高收入', need:'比较成分、功效证据、敏感肌风险和复购口碑。', weight:'1.3', status:'active' },
+        { id:'P-001-02', name:'礼物型香氛购买者', demographic:'女性 26-35 / 一线城市 / 高收入', need:'寻找适合送礼、包装有质感且不容易踩雷的选择。', weight:'0.9', status:'active' },
+        { id:'P-001-03', name:'大促囤货用户', demographic:'女性 22-32 / 新一线城市 / 中等收入', need:'在大促前比较套装、折扣力度和真实到手价。', weight:'1.1', status:'paused' },
+      ],
+      'SEG-002': [
+        { id:'P-002-01', name:'家庭囤货决策者', demographic:'30-42 / 已婚有孩 / 二线城市', need:'判断大包装是否划算、保质期和家庭成员口味适配。', weight:'1.2', status:'active' },
+        { id:'P-002-02', name:'即时零售补货用户', demographic:'28-38 / 新一线城市 / 中等收入', need:'比较即时配送、平台优惠和替代品牌。', weight:'0.8', status:'active' },
+      ],
+      'SEG-003': [
+        { id:'P-003-01', name:'商务场景购买者', demographic:'男性 36-45 / 高收入 / 一线城市', need:'寻找低调但有识别度、适合商务场合的单品。', weight:'1.4', status:'active' },
+        { id:'P-003-02', name:'收藏入门用户', demographic:'男性 32-42 / 高收入 / 新一线城市', need:'了解保值、限量款、入门预算和购买渠道。', weight:'0.7', status:'draft' },
+      ],
+      'SEG-004': [
+        { id:'P-004-01', name:'通勤胶囊衣橱用户', demographic:'女性 25-34 / 白领 / 新一线城市', need:'寻找好搭配、易打理、适合办公室的基础款。', weight:'1.0', status:'active' },
+      ],
+    },
+
+    filteredSegments() {
+      const q = this.segmentQuery.trim().toLowerCase();
+      if (!q) return this.segments;
+      return this.segments.filter(segment =>
+        [segment.id, segment.name, segment.industry, segment.status, segment.ageRange, segment.income, segment.regions, segment.note]
+          .some(value => String(value || '').toLowerCase().includes(q))
+      );
+    },
+    currentSegment() {
+      return this.segments.find(segment => segment.id === this.selectedSegmentId) || this.segments[0] || null;
+    },
+    segmentProfiles(segmentId) {
+      return this.profiles[segmentId] || [];
+    },
+    filteredProfiles(segmentId) {
+      const id = segmentId || this.selectedSegmentId;
+      const q = this.profileQuery.trim().toLowerCase();
+      const rows = this.segmentProfiles(id);
+      if (!q) return rows;
+      return rows.filter(profile =>
+        [profile.id, profile.name, profile.demographic, profile.need, profile.status, profile.weight]
+          .some(value => String(value || '').toLowerCase().includes(q))
+      );
+    },
+    totalProfiles() {
+      return Object.values(this.profiles).reduce((sum, rows) => sum + rows.length, 0);
+    },
+    refreshIcons() {
+      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+    },
+    setNotice(message) {
+      this.notice = message;
+      window.clearTimeout(this.noticeTimer);
+      this.noticeTimer = window.setTimeout(() => { this.notice = ''; }, 2800);
+    },
+    selectSegment(id) {
+      this.selectedSegmentId = id;
+      this.profileQuery = '';
+      this.refreshIcons();
+    },
+    nextSegmentId() {
+      const maxId = this.segments.reduce((max, segment) => {
+        const n = parseInt(String(segment.id || '').replace(/\D/g, ''), 10);
+        return Number.isFinite(n) ? Math.max(max, n) : max;
+      }, 0);
+      return 'SEG-' + String(maxId + 1).padStart(3, '0');
+    },
+    nextProfileId(segmentId) {
+      const prefix = String(segmentId || this.selectedSegmentId || 'SEG-000').replace(/^SEG-/, '');
+      const maxId = this.segmentProfiles(segmentId).reduce((max, profile) => {
+        const n = parseInt(String(profile.id || '').split('-').pop(), 10);
+        return Number.isFinite(n) ? Math.max(max, n) : max;
+      }, 0);
+      return 'P-' + prefix + '-' + String(maxId + 1).padStart(2, '0');
+    },
+    openSegmentForm(segment) {
+      this.editingSegmentId = segment ? segment.id : null;
+      this.segmentForm = segment
+        ? { ...segment }
+        : { id:this.nextSegmentId(), name:'', industry:'', status:'active', weight:0.25, ageRange:'', income:'', regions:'', samplingRate:'', note:'' };
+      this.segmentModalOpen = true;
+      this.refreshIcons();
+    },
+    closeSegmentForm() {
+      this.segmentModalOpen = false;
+      this.editingSegmentId = null;
+    },
+    saveSegment() {
+      const wasEditing = !!this.editingSegmentId;
+      const form = { ...this.segmentForm };
+      form.id = String(form.id || '').trim().toUpperCase();
+      form.name = String(form.name || '').trim();
+      form.industry = String(form.industry || '').trim();
+      form.status = form.status || 'active';
+      form.weight = Number(form.weight || 0);
+      form.ageRange = String(form.ageRange || '').trim();
+      form.income = String(form.income || '').trim();
+      form.regions = String(form.regions || '').trim();
+      form.samplingRate = String(form.samplingRate || '').trim();
+      form.note = String(form.note || '').trim();
+      if (!form.id || !form.name) {
+        this.setNotice('Segment ID 和名称不能为空');
+        return;
+      }
+      if (!this.editingSegmentId && this.segments.some(segment => segment.id === form.id)) {
+        this.setNotice('Segment ID 已存在');
+        return;
+      }
+      if (this.editingSegmentId) {
+        this.segments = this.segments.map(segment => segment.id === this.editingSegmentId ? form : segment);
+      } else {
+        this.segments = [form, ...this.segments];
+        this.profiles[form.id] = [];
+        this.selectedSegmentId = form.id;
+      }
+      this.closeSegmentForm();
+      this.setNotice(wasEditing ? 'Segment 已更新' : 'Segment 已创建');
+      this.refreshIcons();
+    },
+    deleteSegment(segment) {
+      if (!segment) return;
+      if (!window.confirm('删除这个 Segment 会同时移除它下面的 Profile，确认继续吗？')) return;
+      this.segments = this.segments.filter(item => item.id !== segment.id);
+      delete this.profiles[segment.id];
+      if (this.selectedSegmentId === segment.id) {
+        this.selectedSegmentId = this.segments[0]?.id || '';
+      }
+      this.setNotice('Segment 已删除');
+      this.refreshIcons();
+    },
+    openProfileForm(segmentId, profile) {
+      const targetSegmentId = segmentId || this.selectedSegmentId;
+      this.profileSegmentId = targetSegmentId;
+      this.editingProfileId = profile ? profile.id : null;
+      this.profileForm = profile
+        ? { ...profile }
+        : { id:this.nextProfileId(targetSegmentId), name:'', demographic:'', need:'', weight:'1.0', status:'active' };
+      this.profileModalOpen = true;
+      this.refreshIcons();
+    },
+    closeProfileForm() {
+      this.profileModalOpen = false;
+      this.editingProfileId = null;
+      this.profileSegmentId = null;
+    },
+    saveProfile() {
+      const wasEditing = !!this.editingProfileId;
+      const segmentId = this.profileSegmentId || this.selectedSegmentId;
+      if (!segmentId) {
+        this.setNotice('请先选择 Segment');
+        return;
+      }
+      if (!this.profiles[segmentId]) this.profiles[segmentId] = [];
+      const form = { ...this.profileForm };
+      form.id = String(form.id || '').trim();
+      form.name = String(form.name || '').trim();
+      form.demographic = String(form.demographic || '').trim();
+      form.need = String(form.need || '').trim();
+      form.weight = String(form.weight || '').trim() || '1.0';
+      form.status = form.status || 'active';
+      if (!form.id || !form.name) {
+        this.setNotice('Profile ID 和名称不能为空');
+        return;
+      }
+      const exists = this.profiles[segmentId].some(profile => profile.id === form.id);
+      if (!this.editingProfileId && exists) {
+        this.setNotice('Profile ID 已存在');
+        return;
+      }
+      if (this.editingProfileId) {
+        this.profiles[segmentId] = this.profiles[segmentId].map(profile => profile.id === this.editingProfileId ? form : profile);
+      } else {
+        this.profiles[segmentId] = [form, ...this.profiles[segmentId]];
+      }
+      this.closeProfileForm();
+      this.setNotice(wasEditing ? 'Profile 已更新' : 'Profile 已创建');
+      this.refreshIcons();
+    },
+    deleteProfile(segmentId, profileId) {
+      if (!window.confirm('删除这个 Profile？')) return;
+      this.profiles[segmentId] = this.segmentProfiles(segmentId).filter(profile => profile.id !== profileId);
+      this.setNotice('Profile 已删除');
+      this.refreshIcons();
+    },
+    openImport(mode, segmentId) {
+      this.importMode = mode;
+      this.importSegmentId = segmentId || this.selectedSegmentId;
+      this.importText = '';
+      this.importError = '';
+      this.importModalOpen = true;
+      this.refreshIcons();
+    },
+    closeImportPanel() {
+      this.importModalOpen = false;
+      this.importError = '';
+    },
+    parseCsvLine(line) {
+      const cells = [];
+      let cell = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const next = line[i + 1];
+        if (char === '"' && inQuotes && next === '"') {
+          cell += '"';
+          i += 1;
+        } else if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          cells.push(cell.trim());
+          cell = '';
+        } else {
+          cell += char;
+        }
+      }
+      cells.push(cell.trim());
+      return cells;
+    },
+    parseImportRows(text) {
+      const raw = String(text || '').trim();
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+        if (this.importMode === 'segments' && Array.isArray(parsed.segments)) return parsed.segments;
+        if (this.importMode === 'profiles' && Array.isArray(parsed.profiles)) return parsed.profiles;
+      } catch (error) {
+        // Fall back to CSV parsing below.
+      }
+      const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      if (lines.length < 2) return [];
+      const headers = this.parseCsvLine(lines[0]).map(header => header.trim().toLowerCase());
+      return lines.slice(1).map(line => {
+        const cells = this.parseCsvLine(line);
+        return headers.reduce((row, header, index) => {
+          row[header] = cells[index] || '';
+          return row;
+        }, {});
+      });
+    },
+    rowValue(row, keys) {
+      for (const key of keys) {
+        if (row[key] != null && row[key] !== '') return row[key];
+        const found = Object.keys(row).find(name => name.toLowerCase() === key.toLowerCase());
+        if (found && row[found] != null && row[found] !== '') return row[found];
+      }
+      return '';
+    },
+    normalizeWeight(value, fallback) {
+      if (value == null || value === '') return fallback;
+      const raw = String(value).trim();
+      if (raw.endsWith('%')) {
+        const pct = parseFloat(raw.slice(0, -1));
+        return Number.isFinite(pct) ? pct / 100 : fallback;
+      }
+      const n = parseFloat(raw);
+      return Number.isFinite(n) ? n : fallback;
+    },
+    importSegments(rows) {
+      let added = 0;
+      let updated = 0;
+      for (const row of rows) {
+        const name = String(this.rowValue(row, ['name', 'segment_name', 'segment', '名称']) || '').trim();
+        if (!name) continue;
+        const id = String(this.rowValue(row, ['id', 'segment_id', 'segmentid', 'Segment ID']) || this.nextSegmentId()).trim().toUpperCase();
+        const segment = {
+          id,
+          name,
+          industry: String(this.rowValue(row, ['industry', 'category', '行业']) || '').trim(),
+          status: String(this.rowValue(row, ['status', '状态']) || 'active').trim() || 'active',
+          weight: this.normalizeWeight(this.rowValue(row, ['weight', '权重']), 0.2),
+          ageRange: String(this.rowValue(row, ['age_range', 'agerange', 'ageRange', '年龄范围']) || '').trim(),
+          income: String(this.rowValue(row, ['income', '收入']) || '').trim(),
+          regions: String(this.rowValue(row, ['regions', 'region', '地域']) || '').trim(),
+          samplingRate: String(this.rowValue(row, ['sampling_rate', 'samplingRate', '采样率']) || '').trim(),
+          note: String(this.rowValue(row, ['note', '备注']) || '').trim(),
+        };
+        const index = this.segments.findIndex(item => item.id === id);
+        if (index >= 0) {
+          this.segments.splice(index, 1, segment);
+          updated += 1;
+        } else {
+          this.segments.unshift(segment);
+          this.profiles[id] = this.profiles[id] || [];
+          added += 1;
+        }
+      }
+      if (this.segments.length && !this.selectedSegmentId) this.selectedSegmentId = this.segments[0].id;
+      return { added, updated };
+    },
+    importProfiles(rows) {
+      let added = 0;
+      let updated = 0;
+      const fallbackSegmentId = this.importSegmentId || this.selectedSegmentId;
+      for (const row of rows) {
+        const segmentId = String(this.rowValue(row, ['segment_id', 'segmentid', 'segment', 'Segment ID']) || fallbackSegmentId).trim().toUpperCase();
+        if (!segmentId || !this.segments.some(segment => segment.id === segmentId)) continue;
+        if (!this.profiles[segmentId]) this.profiles[segmentId] = [];
+        const name = String(this.rowValue(row, ['name', 'profile_name', 'profile', '名称']) || '').trim();
+        if (!name) continue;
+        const id = String(this.rowValue(row, ['id', 'profile_id', 'profileid', 'Profile ID']) || this.nextProfileId(segmentId)).trim();
+        const profile = {
+          id,
+          name,
+          demographic: String(this.rowValue(row, ['demographic', 'persona', '人群画像']) || '').trim(),
+          need: String(this.rowValue(row, ['need', 'job', '需求']) || '').trim(),
+          weight: String(this.rowValue(row, ['weight', '权重']) || '1.0').trim(),
+          status: String(this.rowValue(row, ['status', '状态']) || 'active').trim() || 'active',
+        };
+        const index = this.profiles[segmentId].findIndex(item => item.id === id);
+        if (index >= 0) {
+          this.profiles[segmentId].splice(index, 1, profile);
+          updated += 1;
+        } else {
+          this.profiles[segmentId].unshift(profile);
+          added += 1;
+        }
+        this.selectedSegmentId = segmentId;
+      }
+      return { added, updated };
+    },
+    runImport() {
+      try {
+        const rows = this.parseImportRows(this.importText);
+        if (!rows.length) throw new Error('没有识别到可导入的数据');
+        const result = this.importMode === 'segments' ? this.importSegments(rows) : this.importProfiles(rows);
+        if (!result.added && !result.updated) throw new Error('数据格式正确，但没有可导入的有效记录');
+        this.closeImportPanel();
+        this.setNotice('导入完成：新增 ' + result.added + '，更新 ' + result.updated);
+        this.refreshIcons();
+      } catch (error) {
+        this.importError = error.message || '导入失败';
+      }
+    },
+  };
+}
+
 function adminApp() {
   return {
     // state
@@ -6112,6 +7151,12 @@ function adminApp() {
       overflowPolicy: 'review',
     },
     topicPlanGenerateStarted: false,
+    topicPlanGenerateLoading: false,
+    topicPlanGenerateError: '',
+    topicPlanActiveRunId: '',
+    topicPlanRunStatus: '',
+    topicPlanRunPollTimer: null,
+    topicPlanRunPollDelay: 3000,
     topicPlanCoverageRows: [],
     topicPlanCoverageGaps: [],
     topicPlanGenerateSteps: [
@@ -6122,7 +7167,7 @@ function adminApp() {
     ],
     topicPlanPendingItems: [],
     promptMatrixConfig: {
-      intentCount: 2,
+      intentCount: 4,
       languageCount: 2,
       topicPriority: 'gap_first',
       templateStrategy: 'latest',
@@ -6132,56 +7177,78 @@ function adminApp() {
       maxPrompts: 8000,
       overflowPolicy: 'split',
     },
+    promptMatrixLoading: false,
+    promptMatrixError: '',
+    promptMatrixTopicsLoading: false,
+    promptMatrixTopicsError: '',
+    promptMatrixGapsLoading: false,
+    promptMatrixGapsError: '',
+    promptMatrixCandidatesLoading: false,
+    promptMatrixCandidatesError: '',
+    promptMatrixPromptsLoading: false,
+    promptMatrixPromptsError: '',
+    promptMatrixGenerateLoading: false,
+    promptMatrixGenerateError: '',
+    promptMatrixActiveRunId: '',
+    promptMatrixRunStatus: '',
+    promptMatrixRunPollTimer: null,
+    promptMatrixRunPollDelay: 3000,
+    promptMatrixCandidateReviewing: false,
+    promptMatrixBrands: [],
+    promptMatrixIndustries: [],
     promptMatrixTopicQuery: '',
     promptMatrixTopicBrand: 'all',
     promptMatrixTopicCoverage: 'all',
     promptMatrixTopicPage: 1,
     promptMatrixTopicPerPage: 20,
-    promptMatrixTopicTotal: 3420,
-    promptMatrixTopics: [
-      { id:'T-1204', title:'敏感肌屏障修护精华推荐', brand:'薇诺娜', coverage:'partial', coverageLabel:'意图不足', priority:'P1', updatedAt:'今天', selected:true },
-      { id:'T-1205', title:'泛红修护面霜使用场景', brand:'理肤泉', coverage:'partial', coverageLabel:'意图不足', priority:'P1', updatedAt:'今天', selected:true },
-      { id:'T-1206', title:'干敏肌换季保湿方案', brand:'珂润', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P1', updatedAt:'昨天', selected:true },
-      { id:'T-1207', title:'喷雾舒缓场景推荐', brand:'雅漾', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P2', updatedAt:'昨天', selected:true },
-      { id:'T-1211', title:'国货防晒性价比对比', brand:'珀莱雅', coverage:'covered', coverageLabel:'已覆盖', priority:'P2', updatedAt:'2 天前', selected:false },
-      { id:'T-1212', title:'美白精华成分差异', brand:'欧诗漫', coverage:'partial', coverageLabel:'意图不足', priority:'P2', updatedAt:'2 天前', selected:false },
-      { id:'T-1213', title:'底妆持妆场景选择', brand:'完美日记', coverage:'covered', coverageLabel:'已覆盖', priority:'P3', updatedAt:'3 天前', selected:false },
-      { id:'T-1214', title:'花西子散粉肤质适配', brand:'花西子', coverage:'gap', coverageLabel:'缺 Prompt', priority:'P2', updatedAt:'3 天前', selected:false },
-    ],
+    promptMatrixTopicTotal: 0,
+    promptMatrixTopicTotalPagesValue: 1,
+    promptMatrixTopics: [],
+    promptMatrixSelectionMode: 'explicit',
+    promptMatrixSelectedTopicIds: {},
+    promptMatrixExcludedTopicIds: {},
+    promptMatrixSelectedTopicCache: {},
+    promptMatrixSelectionFilters: null,
     promptMatrixActionPanel: '',
+    promptMatrixWorkspaceTab: 'review',
     promptMatrixGenerateStarted: false,
-    promptMatrixGapItems: [
-      { id:'PG-01', topic:'干敏肌换季保湿方案', gap:'缺 commercial / en-US', priority:'P1', estimate:4 },
-      { id:'PG-02', topic:'喷雾舒缓场景推荐', gap:'缺 informational / zh-CN', priority:'P1', estimate:2 },
-      { id:'PG-03', topic:'敏感肌屏障修护精华推荐', gap:'缺 transactional', priority:'P2', estimate:2 },
-      { id:'PG-04', topic:'泛红修护面霜使用场景', gap:'缺 en-US', priority:'P2', estimate:2 },
-    ],
+    promptMatrixGapItems: [],
     promptMatrixGenerateSteps: [
-      { name:'Topic 校验', status:'done', label:'通过', value:'4 个 Topic' },
-      { name:'模板匹配', status:'done', label:'已审核', value:'2 类意图' },
-      { name:'候选生成', status:'idle', label:'待运行', value:'+16' },
-      { name:'进入审核', status:'idle', label:'待运行', value:'6' },
+      { name:'Topic 校验', status:'idle', label:'等待', value:'0 Topic' },
+      { name:'模板匹配', status:'idle', label:'等待', value:'0 组合' },
+      { name:'候选生成', status:'idle', label:'等待', value:'+0' },
+      { name:'进入审核', status:'idle', label:'等待', value:'0' },
     ],
-    promptMatrixPendingItems: [
-      { id:'P-9301', text:'敏感肌用户如何选择屏障修护精华？', topic:'敏感肌屏障修护精华推荐', reason:'相似 Prompt 需合并' },
-      { id:'P-9302', text:'泛红肌肤适合哪些修护面霜？', topic:'泛红修护面霜使用场景', reason:'需要确认品牌变量' },
-      { id:'P-9303', text:'换季干敏肌应该怎么搭配保湿产品？', topic:'干敏肌换季保湿方案', reason:'低置信候选' },
-    ],
+    promptMatrixPendingItems: [],
+    promptMatrixCandidateStatus: 'pending',
+    promptMatrixCandidatePage: 1,
+    promptMatrixCandidatePerPage: 20,
+    promptMatrixCandidateTotal: 0,
+    promptMatrixCandidateTotalPagesValue: 1,
+    promptMatrixCandidateStatusCounts: { pending: 0, approved: 0, rejected: 0, all: 0 },
+    promptMatrixCandidateQuery: '',
+    promptMatrixSelectedCandidateIds: {},
+    promptMatrixPromptIntent: '',
+    promptMatrixPromptLanguage: '',
     queryPoolPromptQuery: '',
-    queryPoolPrompts: [
-      { id:'P-7741', title:'敏感肌用户如何选择屏障修护精华？', intent:'commercial', selected:true },
-      { id:'P-7742', title:'泛红肌肤适合哪些修护面霜？', intent:'informational', selected:true },
-      { id:'P-7743', title:'换季干敏肌应该怎么搭配保湿产品？', intent:'commercial', selected:true },
-      { id:'P-7744', title:'舒缓喷雾适合在哪些场景使用？', intent:'informational', selected:true },
-      { id:'P-7751', title:'国货防晒霜有哪些性价比选择？', intent:'commercial', selected:false },
-      { id:'P-7752', title:'美白精华成分应该怎么比较？', intent:'informational', selected:false },
-      { id:'P-7753', title:'通勤底妆怎样更持久？', intent:'transactional', selected:false },
-      { id:'P-7754', title:'散粉适合油皮还是干皮？', intent:'commercial', selected:false },
-    ],
+    queryPoolPromptIntent: '',
+    queryPoolPromptLanguage: '',
+    queryPoolPromptPage: 1,
+    queryPoolPromptPerPage: 100,
+    queryPoolPromptTotal: 0,
+    queryPoolPromptTotalPagesValue: 1,
+    queryPoolPromptsLoading: false,
+    queryPoolPromptsError: '',
+    queryPoolPrompts: [],
+    queryPoolSelectionMode: 'explicit',
+    queryPoolSelectedPromptIds: {},
+    queryPoolExcludedPromptIds: {},
+    queryPoolSelectedPromptCache: {},
+    queryPoolSelectionFilters: null,
     queryPoolConfig: {
       profileStrategy: 'balanced',
       engineRouting: 'balanced',
-      budgetCap: '180',
+      budgetCap: 180,
       scheduleWindow: 'next',
       dedupePolicy: 'merge',
       priorityMode: 'gap',
@@ -6198,9 +7265,9 @@ function adminApp() {
       { engine:'DeepSeek', queries:0, unit:'¥0.012 / query', cost:'¥0.00' },
     ],
     queryPoolAssembleSteps: [
-      { name:'Prompt 校验', status:'done', label:'通过', value:'4 个 Prompt' },
-      { name:'画像采样', status:'done', label:'每条 3 个', value:'12 个画像' },
-      { name:'Query 渲染', status:'idle', label:'待运行', value:'+24' },
+      { name:'Prompt 校验', status:'idle', label:'等待', value:'0 个 Prompt' },
+      { name:'Segment Profile 采样', status:'idle', label:'等待', value:'0 个 Profile' },
+      { name:'Query 渲染', status:'idle', label:'待运行', value:'+0' },
       { name:'预检入池', status:'idle', label:'待运行', value:'待入池' },
     ],
     queryPoolPreflightItems: [
@@ -6216,14 +7283,14 @@ function adminApp() {
       { title:'无 Prompt', value:'238', tone:'accent', icon:'message-square-off', meta:'需进入 Prompt Matrix' },
     ],
     promptMatrixQualityGates: [
-      { title:'意图覆盖', value:'96%', tone:'success', meta:'每个 Topic 至少 2 类意图' },
-      { title:'模板状态', value:'已审核', tone:'success', meta:'只使用通过审核的模板' },
-      { title:'品牌纯净', value:'0 泄露', tone:'success', meta:'品类题不混入品牌名' },
-      { title:'相似重复', value:'18 待看', tone:'warning', meta:'相近问法进入审核' },
+      { title:'矩阵覆盖', value:'0%', tone:'warning', meta:'0 / 0 topics' },
+      { title:'待审核', value:'0', tone:'success', meta:'Prompt candidates' },
+      { title:'品类纯净', value:'0 泄露', tone:'success', meta:'Category topics must not mention brands' },
+      { title:'相似重复', value:'0', tone:'success', meta:'Duplicate candidates / prompts' },
     ],
     queryPoolQualityGates: [
       { title:'渲染成功', value:'99.2%', tone:'success', meta:'变量都能生成完整 Query' },
-      { title:'画像覆盖', value:'4.6 平均', tone:'success', meta:'核心人群覆盖充足' },
+      { title:'Segment 覆盖', value:'4.6 平均', tone:'success', meta:'核心 Segment 覆盖充足' },
       { title:'引擎可用', value:'23 暂缓', tone:'warning', meta:'账号或地域不匹配' },
       { title:'成本上限', value:'$142', tone:'success', meta:'低于本批预算' },
     ],
@@ -6293,7 +7360,7 @@ function adminApp() {
         { key:'planner-query-pool',    label:'Query Pool',          icon:'send-horizontal',     group:'Planner', subtitle:'Prompt × Profile × Engine 可执行任务池' },
         { key:'planner-scheduler',     label:'采集调度',             icon:'calendar-clock',      group:'Planner', subtitle:'预算 / 资源 / 优先级 · Query 入队控制' },
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
-        { key:'planner-profiles',   label:'ProfileGroup', icon:'users',          group:'Planner', subtitle:'用户画像分组 · 权重 · LLM 生成 Profile 池' },
+        { key:'planner-profiles',   label:'Segment', icon:'users',          group:'Planner', subtitle:'人群 Segment · 权重 · 单个 Profile 池' },
         { key:'planner-resources',  label:'采集资源',     icon:'key-round',      badge:'P0', badgeTone:'danger', group:'Planner', subtitle:'账号池 + 代理池 · 生命周期 · 健康评分' },
       ]},
       { title: 'Tracker · 执行', items: [
@@ -6342,7 +7409,7 @@ function adminApp() {
     funnel: [
       { stage:'Topic',    hint:'知识图谱生成',         count: 3420,  rate: 100,   failed: 0,    color:'#605BFF' },
       { stage:'Prompt',   hint:'× 4 Intent',           count: 12840, rate: 94.0,  failed: 0,    color:'#8B5CF6' },
-      { stage:'Query',    hint:'× Profile 采样',       count: 45820, rate: 78.0,  failed: 182,  color:'#3B82F6' },
+      { stage:'Query',    hint:'× Segment Profile 采样', count: 45820, rate: 78.0,  failed: 182,  color:'#3B82F6' },
       { stage:'Response', hint:'Browser 执行',         count: 41892, rate: 65.5,  failed: 3928, color:'#0ABB87' },
     ],
 
@@ -6425,32 +7492,7 @@ function adminApp() {
     topicsList: [],
 
     // === Prompt 模板详细内容 (含完整模板文本) ===
-    promptDetailList: [
-      { id:'PM-3001', topicId:'T-1205', intent:'informational', lang:'zh-CN', engines:['豆包','DeepSeek'], version:3, status:'active',
-        templateText:'请推荐 2026 年最值得购买的抗衰老精华液。从成分、功效、性价比、用户口碑四个维度给出分析，并按推荐程度排序。',
-        resolvedExample:'请推荐 2026 年最值得购买的抗衰老精华液。从成分、功效、性价比、用户口碑四个维度给出分析，并按推荐程度排序。' },
-      { id:'PM-3002', topicId:'T-1205', intent:'commercial', lang:'zh-CN', engines:['豆包','DeepSeek'], version:3, status:'active',
-        templateText:'我想买一瓶抗衰老精华，预算在 {{price_range}} 之间，{{skin_type}} 肤质，请问哪款最适合我？',
-        resolvedExample:'我想买一瓶抗衰老精华，预算在 500-1500 元之间，混合偏干肤质，请问哪款最适合我？' },
-      { id:'PM-3003', topicId:'T-1205', intent:'informational', lang:'en-US', engines:['ChatGPT'], version:5, status:'active',
-        templateText:'What are the best anti-aging serums in 2026? Compare top brands including {{brand_name}} and {{competitor_ids}} in terms of ingredients, efficacy, value for money, and user reviews. Rank them by recommendation level.',
-        resolvedExample:'What are the best anti-aging serums in 2026? Compare top brands including Estée Lauder and Lancôme, SK-II, La Mer in terms of ingredients, efficacy, value for money, and user reviews. Rank them by recommendation level.' },
-      { id:'PM-3004', topicId:'T-1206', intent:'commercial', lang:'zh-CN', engines:['豆包','DeepSeek'], version:2, status:'active',
-        templateText:'兰蔻小黑瓶和雅诗兰黛小棕瓶，哪个抗皱效果更好？我 {{age}} 岁，{{skin_concern}}，请详细对比推荐。',
-        resolvedExample:'兰蔻小黑瓶和雅诗兰黛小棕瓶，哪个抗皱效果更好？我 32 岁，有细纹和暗沉问题，请详细对比推荐。' },
-      { id:'PM-3005', topicId:'T-1225', intent:'informational', lang:'zh-CN', engines:['豆包','DeepSeek'], version:2, status:'active',
-        templateText:'元气森林和农夫山泉的气泡水有什么区别？从口感、成分、含糖量、价格方面对比一下。',
-        resolvedExample:'元气森林和农夫山泉的气泡水有什么区别？从口感、成分、含糖量、价格方面对比一下。' },
-      { id:'PM-3006', topicId:'T-1215', intent:'commercial', lang:'en-US', engines:['ChatGPT'], version:4, status:'active',
-        templateText:'Is the Hermès Birkin bag a good investment in 2026? Compare its resale value and appreciation rate with {{competitor_ids}}. What factors affect its value retention?',
-        resolvedExample:'Is the Hermès Birkin bag a good investment in 2026? Compare its resale value and appreciation rate with Chanel Classic Flap, Louis Vuitton Neverfull. What factors affect its value retention?' },
-      { id:'PM-3007', topicId:'T-1204', intent:'transactional', lang:'zh-CN', engines:['豆包','DeepSeek'], version:1, status:'active',
-        templateText:'我是敏感肌，最近换季皮肤泛红脱皮，推荐几款温和的护肤品，最好能在 {{channel}} 买到。',
-        resolvedExample:'我是敏感肌，最近换季皮肤泛红脱皮，推荐几款温和的护肤品，最好能在天猫旗舰店买到。' },
-      { id:'PM-3008', topicId:'T-1240', intent:'navigational', lang:'zh-CN', engines:['豆包','DeepSeek'], version:1, status:'active',
-        templateText:'ZARA 2026 春季新款女装有哪些值得买的？最近有什么流行的搭配趋势？',
-        resolvedExample:'ZARA 2026 春季新款女装有哪些值得买的？最近有什么流行的搭配趋势？' },
-    ],
+    promptDetailList: [],
 
     // === Query 列表 (Prompt × Profile 组合, 含实际发送文本) ===
     queryDetailList: [
@@ -6592,7 +7634,7 @@ function adminApp() {
     ],
     plannerRunScope: 'full', // for modal: full / industry / brand
 
-    // ====== B12 ProfileGroup ======
+    // ====== B12 Segments ======
     profileGroups: [
       { id:'PG-001', name:'年轻女性一线城市', industry:'美妆个护', memberCount:8, weight:0.35, status:'active' },
       { id:'PG-002', name:'价格敏感型', industry:'食品饮料', memberCount:5, weight:0.25, status:'active' },
@@ -6605,30 +7647,50 @@ function adminApp() {
       'PG-003': { ageRange:'35-55', income:'高', regions:['北上广深', '杭州', '成都'], profileCount:140, samplingRate:'40%' },
       'PG-004': { ageRange:'22-35', income:'中等', regions:['一二线城市'], profileCount:110, samplingRate:'28%' },
     },
+    segmentProfiles: {
+      'PG-001': [
+        { id:'PF-001-01', name:'深圳护肤达人', demographic:'29 岁 · 女 · 深圳 · 月入 20k', need:'关注抗衰、屏障修护和新品成分对比', weight:'weight 0.16', status:'active' },
+        { id:'PF-001-02', name:'上海敏感肌白领', demographic:'26 岁 · 女 · 上海 · 月入 15k', need:'换季泛红，偏好温和修护和低刺激产品', weight:'weight 0.14', status:'active' },
+        { id:'PF-001-03', name:'广州初抗老用户', demographic:'31 岁 · 女 · 广州 · 月入 12k', need:'想比较精华、面霜和医研品牌口碑', weight:'weight 0.11', status:'active' },
+      ],
+      'PG-002': [
+        { id:'PF-002-01', name:'成都性价比用户', demographic:'28 岁 · 女 · 成都 · 月入 8k', need:'优先看价格、促销和同功效平替', weight:'weight 0.18', status:'active' },
+        { id:'PF-002-02', name:'武汉学生党', demographic:'24 岁 · 女 · 武汉 · 学生', need:'预算有限，关注入门款和小样体验', weight:'weight 0.13', status:'active' },
+        { id:'PF-002-03', name:'长沙家庭消费用户', demographic:'35 岁 · 男 · 长沙 · 月入 10k', need:'关注实用、耐用和复购成本', weight:'weight 0.10', status:'active' },
+      ],
+      'PG-003': [
+        { id:'PF-003-01', name:'北京高净值男士', demographic:'42 岁 · 男 · 北京 · 高收入', need:'关注品牌调性、稀缺性和礼赠场景', weight:'weight 0.20', status:'active' },
+        { id:'PF-003-02', name:'杭州商务决策者', demographic:'38 岁 · 男 · 杭州 · 企业管理', need:'偏好高端服务、权威评价和效率', weight:'weight 0.12', status:'active' },
+      ],
+      'PG-004': [
+        { id:'PF-004-01', name:'杭州通勤白领', demographic:'27 岁 · 女 · 杭州 · 月入 11k', need:'关注通勤、耐用和日常搭配', weight:'weight 0.15', status:'active' },
+        { id:'PF-004-02', name:'南京职场新人', demographic:'23 岁 · 女 · 南京 · 月入 7k', need:'偏好清晰推荐和低决策成本', weight:'weight 0.09', status:'active' },
+      ],
+    },
 
     // ====== B13 Generation Pipeline ======
     generationPromptStats: {
-      lastRunAt: '2026-04-16 13:30',
-      topicsWithPrompt: 3182,
-      topicsTotal: 3420,
-      topicsNoPrompt: 238,
-      topicsPartialIntent: 412,
-      coveragePct: 93.1,
-      totalPrompts: 12840,
+      lastRunAt: 'Never',
+      topicsWithPrompt: 0,
+      topicsTotal: 0,
+      topicsNoPrompt: 0,
+      topicsPartialIntent: 0,
+      coveragePct: 0,
+      totalPrompts: 0,
       // 4 种 Intent (PRD §4.2.2)
       intentDist: [
-        { intent:'informational', label:'信息了解', count:4280, pct:33, color:'#3B82F6' },
-        { intent:'commercial', label:'购买决策', count:3960, pct:31, color:'#8B5CF6' },
-        { intent:'transactional', label:'行动导向', count:2820, pct:22, color:'#0ABB87' },
-        { intent:'navigational', label:'定向查找', count:1780, pct:14, color:'#F5A623' },
+        { intent:'informational', label:'信息了解', count:0, pct:0, color:'#3B82F6' },
+        { intent:'commercial', label:'购买决策', count:0, pct:0, color:'#8B5CF6' },
+        { intent:'transactional', label:'行动导向', count:0, pct:0, color:'#0ABB87' },
+        { intent:'navigational', label:'定向查找', count:0, pct:0, color:'#F5A623' },
       ],
-      // 多语言分布 (PRD §4.2.2: ChatGPT 中英双版; 豆包/DS 中文)
+      // 多语言分布：Prompt Matrix 只记录语言，引擎在 Query Pool / Tracker 调度时决定
       langDist: [
-        { lang:'zh-CN', label:'中文', count:9462, pct:74, engines:'全部引擎' },
-        { lang:'en-US', label:'英文', count:3378, pct:26, engines:'仅 ChatGPT' },
+        { lang:'zh-CN', label:'中文', count:0, pct:0, engines:'调度时路由', routing:'deferred_to_query_pool' },
+        { lang:'en-US', label:'英文', count:0, pct:0, engines:'调度时路由', routing:'deferred_to_query_pool' },
       ],
       // 品类 Prompt 纯净度 (PRD §4.2.2: 品类 Topic 的 Prompt 禁止品牌名)
-      categoryPromptPurity: { total:5340, brandLeaks:0, status:'pass' },
+      categoryPromptPurity: { total:0, brandLeaks:0, status:'pass' },
     },
     generationQueryStats: {
       queued: 1240,
@@ -6644,7 +7706,7 @@ function adminApp() {
         { engine:'豆包', rate:78.1, queries:16340 },
         { engine:'DeepSeek', rate:96.3, queries:14200 },
       ],
-      // 按 ProfileGroup 成功率 (新增)
+      // 按 Segment 成功率
       successRateByProfile: [
         { group:'一线年轻女性', rate:92.4, queries:12840 },
         { group:'价格敏感型', rate:88.1, queries:9620 },
@@ -7392,6 +8454,8 @@ function adminApp() {
       if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
       if (key === 'planner-resources') this.loadAccounts();
       if (key === 'planner-topics' || key === 'planner-prompt-matrix' || key === 'planner-query-pool') this.loadTopicPlanConfig();
+      if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
+      if (key === 'planner-query-pool') this.loadQueryPoolPrompts();
     },
 
     currentNav(){
@@ -7401,7 +8465,9 @@ function adminApp() {
 
     topicTitle(topicId){
       const topic = this.topicsList.find(t => t.id === topicId) || this.promptMatrixTopics.find(t => t.id === topicId);
-      return topic ? topic.title : '未命名 Topic';
+      if (topic) return topic.title;
+      const prompt = this.promptDetailList.find(p => p.topicId === topicId && p.topicTitle);
+      return prompt ? prompt.topicTitle : '未命名 Topic';
     },
 
     intentLabel(intent){
@@ -8068,22 +9134,106 @@ function adminApp() {
       this.loadTopicPlanCoverage();
     },
 
+    clearTopicPlanRunPolling(){
+      if (this.topicPlanRunPollTimer) {
+        clearTimeout(this.topicPlanRunPollTimer);
+        this.topicPlanRunPollTimer = null;
+      }
+    },
+
+    topicPlanApplyRunProgress(run){
+      const estimated = Number(run.estimated_topics || this.estimatedTopicCount() || 0);
+      const generated = Number(run.candidates_generated || 0);
+      const status = run.status || 'running';
+      const finished = status === 'completed';
+      const failed = status === 'failed';
+      this.topicPlanRunStatus = status;
+      this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => {
+        if (index === 2) {
+          return {
+            ...step,
+            status: failed ? 'idle' : (finished ? 'done' : 'running'),
+            label: failed ? '失败' : (finished ? '完成' : '运行中'),
+            value: generated + ' / ' + estimated,
+          };
+        }
+        if (index === 3) {
+          return {
+            ...step,
+            status: failed ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
+            label: failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待'),
+            value: String(generated),
+          };
+        }
+        return step;
+      });
+      if (failed) this.topicPlanGenerateError = run.llm_error || 'Topic generation failed';
+    },
+
+    async loadTopicPlanRun(runId){
+      const res = await fetch(API_BASE + '/admin/topic-plan/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Run load failed');
+      return body.run || {};
+    },
+
+    startTopicPlanRunPolling(runId){
+      this.clearTopicPlanRunPolling();
+      const poll = async () => {
+        if (!runId || this.topicPlanActiveRunId !== runId) return;
+        let keepPolling = false;
+        try {
+          const run = await this.loadTopicPlanRun(runId);
+          this.topicPlanApplyRunProgress(run);
+          this.topicPlanCandidateStatus = 'pending';
+          await this.loadTopicPlanCandidates();
+          if (run.status === 'completed') {
+            this.topicPlanGenerateLoading = false;
+            this.topicPlanActiveRunId = '';
+            await this.loadTopicPlanCoverage();
+            await this.loadTopicPlanTopics();
+            this.toast('Topic 生成完成，已分批进入待审核列表');
+          } else if (run.status === 'failed') {
+            this.topicPlanGenerateLoading = false;
+            this.topicPlanActiveRunId = '';
+            this.toast('Topic 生成失败: ' + (run.llm_error || 'unknown_error'));
+          } else {
+            keepPolling = true;
+          }
+        } catch (e) {
+          this.topicPlanGenerateError = e.message || 'Run polling failed';
+          keepPolling = true;
+        } finally {
+          if (keepPolling) {
+            this.topicPlanRunPollTimer = setTimeout(poll, Number(this.topicPlanRunPollDelay || 3000));
+          } else {
+            this.topicPlanRunPollTimer = null;
+          }
+          this.$nextTick(()=>lucide.createIcons());
+        }
+      };
+      this.topicPlanRunPollTimer = setTimeout(poll, 800);
+    },
+
     async startTopicPlanGenerate(){
       if (this.topicPlanGenerateLoading) return;
       if (this.selectedTopicPlanBrands().length === 0) {
         this.toast('请选择品牌');
         return;
       }
+      this.clearTopicPlanRunPolling();
       this.topicPlanGenerateStarted = true;
       this.topicPlanGenerateLoading = true;
       this.topicPlanGenerateError = '';
+      const estimatedBeforeRun = this.estimatedTopicCount();
       this.topicPlanGenerateSteps = [
         { name:'配置检查', status:'done', label:'完成', value:this.selectedTopicPlanBrands().length + ' 个品牌' },
         { name:'缺口读取', status:'done', label:'完成', value:this.topicPlanCoverageGaps.length + ' 类缺口' },
-        { name:'候选生成', status:'running', label:'运行中', value:'+' + this.estimatedTopicCount() },
+        { name:'候选生成', status:'running', label:'运行中', value:'0 / ' + estimatedBeforeRun },
         { name:'进入审核', status:'idle', label:'等待', value:'0' },
       ];
       try {
+        this.toast('Topic 生成任务已提交，候选会分批进入待审核列表');
         const res = await fetch(API_BASE + '/admin/topic-plan/generate', {
           method:'POST',
           credentials:'same-origin',
@@ -8100,26 +9250,38 @@ function adminApp() {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic generation failed');
-        const generated = (body.summary && body.summary.generated) || (body.candidates || []).length || 0;
+        const estimated = (body.summary && (body.summary.estimated || body.summary.max_topics)) || estimatedBeforeRun;
+        const generated = (body.summary && body.summary.generated) || 0;
+        this.topicPlanActiveRunId = body.run_id || '';
+        this.topicPlanRunStatus = body.status || 'running';
         this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => {
-          if (index === 2) return { ...step, status:'done', label:'完成', value:'+' + generated };
-          if (index === 3) return { ...step, status:'done', label:'完成', value:String(generated) };
+          if (index === 2) return { ...step, status: body.status === 'completed' ? 'done' : 'running', label: body.status === 'completed' ? '完成' : '运行中', value:generated + ' / ' + estimated };
+          if (index === 3) return { ...step, status:generated > 0 ? 'done' : 'idle', label:generated > 0 ? '已入队' : '等待', value:String(generated) };
           return step;
         });
         this.topicPlanCandidateStatus = 'pending';
         this.topicPlanSelectedCandidateIds = {};
         await this.loadTopicPlanCandidates();
-        await this.loadTopicPlanCoverage();
-        await this.loadTopicPlanTopics();
-        this.toast('Topic 生成任务已完成');
+        if (body.status === 'completed') {
+          this.topicPlanGenerateLoading = false;
+          this.topicPlanActiveRunId = '';
+          await this.loadTopicPlanCoverage();
+          await this.loadTopicPlanTopics();
+        } else if (this.topicPlanActiveRunId) {
+          this.startTopicPlanRunPolling(this.topicPlanActiveRunId);
+        } else {
+          throw new Error('missing_run_id');
+        }
       } catch (e) {
+        this.clearTopicPlanRunPolling();
         this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => (
           index === 2 ? { ...step, status:'idle', label:'失败' } : step
         ));
         this.topicPlanGenerateError = e.message || 'Topic generation failed';
+        this.topicPlanGenerateLoading = false;
+        this.topicPlanActiveRunId = '';
         this.toast('Topic 生成失败: ' + this.topicPlanGenerateError);
       } finally {
-        this.topicPlanGenerateLoading = false;
         this.$nextTick(()=>lucide.createIcons());
       }
     },
@@ -8188,64 +9350,42 @@ function adminApp() {
       }
     },
 
-    selectedPromptMatrixTopics(){
-      return this.promptMatrixTopics.filter(t => t.selected);
+    promptMatrixTopicKey(topic){
+      const rawId = topic && (topic.raw_id ?? topic.rawId ?? topic.id);
+      return String(rawId || '').replace(/^T-/i, '');
     },
 
-    promptMatrixSelectedTopicCount(){
-      return this.selectedPromptMatrixTopics().length;
-    },
-
-    seedPromptMatrixTopics(){
-      if (this.promptMatrixTopics.length >= this.promptMatrixTopicTotal) return;
-      const brands = ['薇诺娜','理肤泉','珂润','雅漾','珀莱雅','欧诗漫','完美日记','花西子','兰蔻','雅诗兰黛','资生堂','SK-II'];
-      const patterns = ['屏障修护', '泛红舒缓', '换季保湿', '防晒选择', '美白精华', '底妆持妆', '成分对比', '价格带推荐', '新品评价', '功效场景'];
-      const coverageMap = [
-        { value:'gap', label:'缺 Prompt' },
-        { value:'partial', label:'意图不足' },
-        { value:'covered', label:'已覆盖' },
-      ];
-      const existing = this.promptMatrixTopics.length;
-      for (let i = existing; i < this.promptMatrixTopicTotal; i += 1) {
-        const brand = brands[i % brands.length];
-        const pattern = patterns[i % patterns.length];
-        const coverage = coverageMap[i % coverageMap.length];
-        this.promptMatrixTopics.push({
-          id: 'T-' + String(2000 + i).padStart(5, '0'),
-          title: `${brand}${pattern} Topic ${i + 1}`,
-          brand,
-          coverage: coverage.value,
-          coverageLabel: coverage.label,
-          priority: i % 5 === 0 ? 'P1' : i % 3 === 0 ? 'P2' : 'P3',
-          updatedAt: i % 4 === 0 ? '今天' : i % 4 === 1 ? '昨天' : `${(i % 7) + 2} 天前`,
-          selected: false,
-        });
-      }
+    promptMatrixCurrentFilters(){
+      return {
+        q: this.promptMatrixTopicQuery.trim(),
+        brand_id: this.promptMatrixTopicBrand === 'all' ? '' : this.promptMatrixTopicBrand,
+        coverage: this.promptMatrixTopicCoverage,
+        intent_count: Number(this.promptMatrixConfig.intentCount) || 4,
+        language_count: Number(this.promptMatrixConfig.languageCount) || 2,
+      };
     },
 
     promptMatrixTopicBrands(){
-      return [...new Set(this.promptMatrixTopics.map(t => t.brand).filter(Boolean))].sort((a,b)=>a.localeCompare(b, 'zh-Hans-CN'));
+      return (this.promptMatrixBrands || []).slice().sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
     },
 
-    filteredPromptMatrixTopics(){
-      const q = this.promptMatrixTopicQuery.trim().toLowerCase();
-      return this.promptMatrixTopics.filter(t => {
-        const matchesQuery = !q ||
-          t.title.toLowerCase().includes(q) ||
-          t.brand.toLowerCase().includes(q) ||
-          t.id.toLowerCase().includes(q);
-        const matchesBrand = this.promptMatrixTopicBrand === 'all' || t.brand === this.promptMatrixTopicBrand;
-        const matchesCoverage = this.promptMatrixTopicCoverage === 'all' || t.coverage === this.promptMatrixTopicCoverage;
-        return matchesQuery && matchesBrand && matchesCoverage;
-      });
+    selectedPromptMatrixTopics(){
+      return Object.values(this.promptMatrixSelectedTopicCache || {});
+    },
+
+    promptMatrixSelectedTopicCount(){
+      if (this.promptMatrixSelectionMode === 'all_matching') {
+        return Math.max(0, Number(this.promptMatrixTopicTotal || 0) - Object.keys(this.promptMatrixExcludedTopicIds || {}).length);
+      }
+      return Object.keys(this.promptMatrixSelectedTopicIds || {}).filter(id => this.promptMatrixSelectedTopicIds[id]).length;
     },
 
     promptMatrixFilteredTopicCount(){
-      return this.filteredPromptMatrixTopics().length;
+      return Number(this.promptMatrixTopicTotal || 0);
     },
 
     promptMatrixTopicTotalPages(){
-      return Math.max(1, Math.ceil(this.promptMatrixFilteredTopicCount() / this.promptMatrixTopicPerPage));
+      return Math.max(1, Number(this.promptMatrixTopicTotalPagesValue || 1));
     },
 
     promptMatrixCurrentPage(){
@@ -8253,56 +9393,138 @@ function adminApp() {
     },
 
     promptMatrixPageTopics(){
-      const page = this.promptMatrixCurrentPage();
-      const start = (page - 1) * this.promptMatrixTopicPerPage;
-      return this.filteredPromptMatrixTopics().slice(start, start + this.promptMatrixTopicPerPage);
+      return this.promptMatrixTopics || [];
     },
 
     promptMatrixTopicPageRangeText(){
       const total = this.promptMatrixFilteredTopicCount();
       if (!total) return '显示 0';
       const page = this.promptMatrixCurrentPage();
-      const start = (page - 1) * this.promptMatrixTopicPerPage + 1;
-      const end = Math.min(total, page * this.promptMatrixTopicPerPage);
+      const start = (page - 1) * Number(this.promptMatrixTopicPerPage || 20) + 1;
+      const end = Math.min(total, page * Number(this.promptMatrixTopicPerPage || 20));
       return `显示 ${start}-${end} / ${total.toLocaleString()}`;
     },
 
+    isPromptMatrixTopicSelected(topic){
+      const id = this.promptMatrixTopicKey(topic);
+      if (!id) return false;
+      if (this.promptMatrixSelectionMode === 'all_matching') return !this.promptMatrixExcludedTopicIds[id];
+      return !!this.promptMatrixSelectedTopicIds[id];
+    },
+
+    togglePromptMatrixTopic(topic, selected){
+      const id = this.promptMatrixTopicKey(topic);
+      if (!id) return;
+      if (this.promptMatrixSelectionMode === 'all_matching') {
+        const excluded = { ...this.promptMatrixExcludedTopicIds };
+        if (selected) delete excluded[id];
+        else excluded[id] = true;
+        this.promptMatrixExcludedTopicIds = excluded;
+      } else {
+        const next = { ...this.promptMatrixSelectedTopicIds };
+        const cache = { ...this.promptMatrixSelectedTopicCache };
+        if (selected) {
+          next[id] = true;
+          cache[id] = topic;
+        } else {
+          delete next[id];
+          delete cache[id];
+        }
+        this.promptMatrixSelectedTopicIds = next;
+        this.promptMatrixSelectedTopicCache = cache;
+      }
+    },
+
+    clearPromptMatrixSelection(){
+      this.promptMatrixSelectionMode = 'explicit';
+      this.promptMatrixSelectedTopicIds = {};
+      this.promptMatrixExcludedTopicIds = {};
+      this.promptMatrixSelectedTopicCache = {};
+      this.promptMatrixSelectionFilters = null;
+    },
+
     setPromptMatrixTopics(selected, scope = 'filtered'){
-      const targets = scope === 'page'
-        ? this.promptMatrixPageTopics()
-        : scope === 'all'
-          ? this.promptMatrixTopics
-          : this.filteredPromptMatrixTopics();
-      targets.forEach(t => { t.selected = selected; });
+      if (scope === 'all') {
+        this.clearPromptMatrixSelection();
+        return;
+      }
+      if (scope === 'filtered') {
+        if (selected) {
+          this.promptMatrixSelectionMode = 'all_matching';
+          this.promptMatrixSelectionFilters = this.promptMatrixCurrentFilters();
+          this.promptMatrixExcludedTopicIds = {};
+          const cache = {};
+          this.promptMatrixPageTopics().forEach(topic => { cache[this.promptMatrixTopicKey(topic)] = topic; });
+          this.promptMatrixSelectedTopicCache = cache;
+        } else {
+          this.clearPromptMatrixSelection();
+        }
+        return;
+      }
+      this.promptMatrixPageTopics().forEach(topic => this.togglePromptMatrixTopic(topic, selected));
+    },
+
+    onPromptMatrixTopicFilterChanged(){
+      this.promptMatrixTopicPage = 1;
+      this.clearPromptMatrixSelection();
+      this.loadPromptMatrixTopics();
+    },
+
+    onPromptMatrixPageSizeChanged(){
+      this.promptMatrixTopicPage = 1;
+      this.loadPromptMatrixTopics();
+    },
+
+    changePromptMatrixTopicPage(delta){
+      const next = Math.max(1, Math.min(this.promptMatrixTopicTotalPages(), this.promptMatrixCurrentPage() + delta));
+      if (next === this.promptMatrixTopicPage) return;
+      this.promptMatrixTopicPage = next;
+      this.loadPromptMatrixTopics();
+    },
+
+    setPromptMatrixWorkspaceTab(tab){
+      this.promptMatrixWorkspaceTab = tab;
+      if (tab === 'review') {
+        this.loadPromptMatrixCandidates();
+      }
+      if (tab === 'coverage') {
+        this.loadPromptMatrixPrompts();
+      }
+      this.$nextTick(()=>lucide.createIcons());
     },
 
     openPromptMatrixPanel(panel){
+      this.promptMatrixWorkspaceTab = 'review';
       this.promptMatrixActionPanel = panel;
-      this.$nextTick(()=>lucide.createIcons());
+      if (panel === 'gaps') this.loadPromptMatrixGaps();
+      this.$nextTick(()=>{
+        lucide.createIcons();
+        const target = document.getElementById('prompt-matrix-action-panel');
+        if (target) target.scrollIntoView({ behavior:'smooth', block:'start' });
+        if (panel === 'generate' && this.promptMatrixSelectedTopicCount() === 0) {
+          this.toast('请先选择 Topic');
+        }
+      });
     },
 
     promptMatrixPanelTitle(){
       if (this.promptMatrixActionPanel === 'gaps') return 'Prompt 缺口列表';
       if (this.promptMatrixActionPanel === 'generate') return '生成 Prompt';
-      if (this.promptMatrixActionPanel === 'pending') return '待审核 Prompt';
       return '';
     },
 
-    startPromptMatrixGenerate(){
-      this.promptMatrixGenerateStarted = true;
-      this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map(step => {
-        if (step.name === '候选生成') return { ...step, status:'done', label:'完成', value:'+' + this.estimatedPromptCount() };
-        if (step.name === '进入审核') return { ...step, status:'done', label:'完成' };
-        return step;
-      });
-      this.toast('Prompt 生成任务已完成');
-    },
-
-    reviewPromptCandidate(item, status){
-      this.promptMatrixPendingItems = this.promptMatrixPendingItems.filter(i => i.id !== item.id);
-      const duplicateGate = this.promptMatrixQualityGates.find(g => g.title === '相似重复');
-      if (duplicateGate) duplicateGate.value = this.promptMatrixPendingItems.length + ' 待看';
-      this.toast(status === 'approved' ? '已通过候选 Prompt' : '已拒绝候选 Prompt');
+    promptMatrixSelectionPayload(){
+      if (this.promptMatrixSelectionMode === 'all_matching') {
+        return {
+          mode: 'all_matching',
+          filters: this.promptMatrixSelectionFilters || this.promptMatrixCurrentFilters(),
+          excluded_topic_ids: Object.keys(this.promptMatrixExcludedTopicIds || {}),
+        };
+      }
+      return {
+        mode: 'explicit',
+        topic_ids: Object.keys(this.promptMatrixSelectedTopicIds || {}).filter(id => this.promptMatrixSelectedTopicIds[id]),
+      };
     },
 
     promptCountRaw(){
@@ -8325,29 +9547,740 @@ function adminApp() {
       return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${cfg.maxPerTopic} 条 · 总上限 ${Number(cfg.maxPrompts).toLocaleString()}`;
     },
 
-    selectedQueryPoolPrompts(){
-      return this.queryPoolPrompts.filter(p => p.selected);
+    updatePromptMatrixQualityGates(body = {}){
+      if (body.stats) this.generationPromptStats = { ...this.generationPromptStats, ...body.stats };
+      if (Array.isArray(body.qualityGates)) this.promptMatrixQualityGates = body.qualityGates;
+      this.$nextTick(()=>lucide.createIcons());
     },
 
-    filteredQueryPoolPrompts(){
-      const q = this.queryPoolPromptQuery.trim().toLowerCase();
-      if (!q) return this.queryPoolPrompts;
-      return this.queryPoolPrompts.filter(p =>
-        p.title.toLowerCase().includes(q) ||
-        p.intent.toLowerCase().includes(q) ||
-        p.id.toLowerCase().includes(q)
-      );
+    async loadPromptMatrixConfig(){
+      if (!this.isLoggedIn) return;
+      this.promptMatrixLoading = true;
+      this.promptMatrixError = '';
+      try {
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/config', { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt Matrix config failed');
+        const defaults = body.defaults || {};
+        this.promptMatrixConfig = {
+          ...this.promptMatrixConfig,
+          intentCount: defaults.intentCount || this.promptMatrixConfig.intentCount,
+          languageCount: defaults.languageCount || this.promptMatrixConfig.languageCount,
+          topicPriority: defaults.topicPriority || this.promptMatrixConfig.topicPriority,
+          templateStrategy: defaults.templateStrategy || this.promptMatrixConfig.templateStrategy,
+          promptStyle: defaults.promptStyle || this.promptMatrixConfig.promptStyle,
+          audienceMode: defaults.audienceMode || this.promptMatrixConfig.audienceMode,
+          maxPerTopic: defaults.maxPerTopic || this.promptMatrixConfig.maxPerTopic,
+          maxPrompts: defaults.maxPrompts || this.promptMatrixConfig.maxPrompts,
+          overflowPolicy: defaults.overflowPolicy || this.promptMatrixConfig.overflowPolicy,
+        };
+        this.promptMatrixBrands = body.brands || [];
+        this.promptMatrixIndustries = body.industries || [];
+        this.updatePromptMatrixQualityGates(body);
+        await this.loadPromptMatrixTopics();
+        await this.loadPromptMatrixPrompts();
+        await this.loadPromptMatrixCandidates();
+      } catch (e) {
+        this.promptMatrixError = e.message || 'Prompt Matrix config failed';
+      } finally {
+        this.promptMatrixLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
-    setQueryPoolPrompts(selected){
-      const visible = new Set(this.filteredQueryPoolPrompts().map(p => p.id));
-      this.queryPoolPrompts.forEach(p => {
-        if (visible.has(p.id)) p.selected = selected;
+    async loadPromptMatrixTopics(){
+      if (!this.isLoggedIn) return;
+      this.promptMatrixTopicsLoading = true;
+      this.promptMatrixTopicsError = '';
+      try {
+        const qp = new URLSearchParams();
+        Object.entries(this.promptMatrixCurrentFilters()).forEach(([key, value]) => {
+          if (value !== '' && value !== null && value !== undefined) qp.set(key, value);
+        });
+        qp.set('page', this.promptMatrixTopicPage || 1);
+        qp.set('per_page', this.promptMatrixTopicPerPage || 20);
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/topics?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic load failed');
+        this.promptMatrixTopics = (body.rows || []).map(topic => ({ ...topic, selected: this.isPromptMatrixTopicSelected(topic) }));
+        const pagination = body.pagination || {};
+        this.promptMatrixTopicTotal = pagination.total || 0;
+        this.promptMatrixTopicTotalPagesValue = pagination.total_pages || 1;
+        this.promptMatrixTopicPage = pagination.page || this.promptMatrixTopicPage;
+      } catch (e) {
+        this.promptMatrixTopics = [];
+        this.promptMatrixTopicTotal = 0;
+        this.promptMatrixTopicTotalPagesValue = 1;
+        this.promptMatrixTopicsError = e.message || 'Topic load failed';
+      } finally {
+        this.promptMatrixTopicsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async loadPromptMatrixGaps(){
+      if (!this.isLoggedIn) return;
+      this.promptMatrixGapsLoading = true;
+      this.promptMatrixGapsError = '';
+      try {
+        const qp = new URLSearchParams();
+        const selection = this.promptMatrixSelectionPayload();
+        if (selection.mode === 'explicit' && selection.topic_ids.length) qp.set('topic_ids', selection.topic_ids.join(','));
+        Object.entries(selection.mode === 'all_matching' ? (selection.filters || {}) : this.promptMatrixCurrentFilters()).forEach(([key, value]) => {
+          if (value !== '' && value !== null && value !== undefined) qp.set(key, value);
+        });
+        qp.set('max_per_topic', this.promptMatrixConfig.maxPerTopic || 4);
+        qp.set('max_prompts', this.promptMatrixConfig.maxPrompts || 8000);
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/gaps?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Gap load failed');
+        this.promptMatrixGapItems = body.rows || [];
+      } catch (e) {
+        this.promptMatrixGapItems = [];
+        this.promptMatrixGapsError = e.message || 'Gap load failed';
+      } finally {
+        this.promptMatrixGapsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    promptMatrixCandidateTabs(){
+      return [
+        { status:'pending', label:'待审核', count:this.promptMatrixCandidateStatusCounts.pending || 0 },
+        { status:'approved', label:'已通过', count:this.promptMatrixCandidateStatusCounts.approved || 0 },
+        { status:'rejected', label:'已拒绝', count:this.promptMatrixCandidateStatusCounts.rejected || 0 },
+        { status:'all', label:'全部', count:this.promptMatrixCandidateStatusCounts.all || 0 },
+      ];
+    },
+
+    promptMatrixCandidateStatusLabel(status){
+      const labels = { pending:'待审核', approved:'已通过', rejected:'已拒绝', all:'全部' };
+      return labels[status] || status || '';
+    },
+
+    promptMatrixSourceLabel(item){
+      if (!item) return '未知来源';
+      const source = item.source || (item.tags && item.tags.source) || 'prompt_matrix';
+      return source === 'prompt_matrix' ? 'LLM / Prompt Matrix' : source;
+    },
+
+    promptRoutingLabel(item){
+      const routing = (item && item.routing) || (item && item.tags && item.tags.routing);
+      if (routing && routing !== 'deferred_to_query_pool') return routing;
+      return '调度时路由';
+    },
+
+    promptMatrixGenerationTrace(item){
+      if (!item) return '';
+      const parts = [];
+      if (item.topicId || item.topic_id) parts.push(item.topicId || ('T-' + item.topic_id));
+      if (item.intent) parts.push(this.intentLabel(item.intent));
+      if (item.language || item.lang) parts.push(this.languageLabel(item.language || item.lang));
+      const strategy = item.template_strategy || item.templateStrategy || 'latest';
+      const version = item.template_version || item.version || 'v1';
+      parts.push('模板 ' + strategy + ' / ' + version);
+      parts.push(this.promptMatrixSourceLabel(item));
+      parts.push(this.promptRoutingLabel(item));
+      const confidence = Number(item.confidence || 0);
+      if (confidence > 0) parts.push('置信 ' + Math.round(confidence * 100) + '%');
+      return parts.join(' · ');
+    },
+
+    promptMatrixTopicToPromptText(item){
+      if (!item) return '';
+      const topic = item.topic || item.topicTitle || this.topicTitle(item.topicId || ('T-' + item.topic_id));
+      const prompt = item.text || item.templateText || item.resolvedExample || '';
+      if (!topic && !prompt) return '';
+      return topic + ' → ' + prompt;
+    },
+
+    promptMatrixCandidateTotalPages(){
+      return Math.max(1, Number(this.promptMatrixCandidateTotalPagesValue || 1));
+    },
+
+    promptMatrixCandidatePageRangeText(){
+      const total = Number(this.promptMatrixCandidateTotal || 0);
+      if (!total) return '显示 0';
+      const page = Number(this.promptMatrixCandidatePage || 1);
+      const perPage = Number(this.promptMatrixCandidatePerPage || 20);
+      const start = (page - 1) * perPage + 1;
+      const end = Math.min(total, page * perPage);
+      return `显示 ${start}-${end} / ${total.toLocaleString()}`;
+    },
+
+    promptMatrixCandidateKey(item){
+      return String((item && item.id) || '');
+    },
+
+    promptMatrixSelectablePageCandidates(){
+      return (this.promptMatrixPendingItems || []).filter(item => item.status === 'pending');
+    },
+
+    selectedPromptMatrixCandidateIds(){
+      return Object.keys(this.promptMatrixSelectedCandidateIds || {}).filter(id => this.promptMatrixSelectedCandidateIds[id]);
+    },
+
+    promptMatrixSelectedCandidateCount(){
+      return this.selectedPromptMatrixCandidateIds().length;
+    },
+
+    isPromptMatrixCandidateSelected(item){
+      const id = this.promptMatrixCandidateKey(item);
+      return !!id && !!(this.promptMatrixSelectedCandidateIds || {})[id];
+    },
+
+    isPromptMatrixCandidatePageSelected(){
+      const rows = this.promptMatrixSelectablePageCandidates();
+      return rows.length > 0 && rows.every(item => this.isPromptMatrixCandidateSelected(item));
+    },
+
+    togglePromptMatrixCandidate(item, selected){
+      const id = this.promptMatrixCandidateKey(item);
+      if (!id || item.status !== 'pending') return;
+      const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
+      if (selected) next[id] = true;
+      else delete next[id];
+      this.promptMatrixSelectedCandidateIds = next;
+    },
+
+    setPromptMatrixCandidatePageSelection(selected){
+      const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
+      this.promptMatrixSelectablePageCandidates().forEach(item => {
+        const id = this.promptMatrixCandidateKey(item);
+        if (!id) return;
+        if (selected) next[id] = true;
+        else delete next[id];
       });
+      this.promptMatrixSelectedCandidateIds = next;
+    },
+
+    clearPromptMatrixCandidateSelection(){
+      this.promptMatrixSelectedCandidateIds = {};
+    },
+
+    syncPromptMatrixCandidateSelection(){
+      const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
+      (this.promptMatrixPendingItems || []).forEach(item => {
+        if (item.status !== 'pending') delete next[this.promptMatrixCandidateKey(item)];
+      });
+      this.promptMatrixSelectedCandidateIds = next;
+    },
+
+    setPromptMatrixCandidateStatus(status){
+      if (this.promptMatrixCandidateStatus === status && this.promptMatrixCandidatePage === 1) return;
+      this.promptMatrixCandidateStatus = status;
+      this.promptMatrixCandidatePage = 1;
+      this.clearPromptMatrixCandidateSelection();
+      this.loadPromptMatrixCandidates();
+    },
+
+    onPromptMatrixCandidateFilterChanged(){
+      this.promptMatrixCandidatePage = 1;
+      this.clearPromptMatrixCandidateSelection();
+      this.loadPromptMatrixCandidates();
+    },
+
+    onPromptMatrixCandidatePageSizeChanged(){
+      this.promptMatrixCandidatePage = 1;
+      this.clearPromptMatrixCandidateSelection();
+      this.loadPromptMatrixCandidates();
+    },
+
+    changePromptMatrixCandidatePage(delta){
+      const next = Math.max(1, Math.min(this.promptMatrixCandidateTotalPages(), Number(this.promptMatrixCandidatePage || 1) + delta));
+      if (next === this.promptMatrixCandidatePage) return;
+      this.promptMatrixCandidatePage = next;
+      this.loadPromptMatrixCandidates();
+    },
+
+    async loadPromptMatrixCandidates(){
+      if (!this.isLoggedIn) return;
+      this.promptMatrixCandidatesLoading = true;
+      this.promptMatrixCandidatesError = '';
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutId = controller ? window.setTimeout(() => controller.abort(), 15000) : null;
+      try {
+        const qp = new URLSearchParams({
+          status:this.promptMatrixCandidateStatus || 'pending',
+          page:String(this.promptMatrixCandidatePage || 1),
+          per_page:String(this.promptMatrixCandidatePerPage || 20),
+        });
+        if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
+        const fetchOptions = { credentials:'same-origin' };
+        if (controller) fetchOptions.signal = controller.signal;
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
+        this.promptMatrixPendingItems = body.rows || [];
+        this.syncPromptMatrixCandidateSelection();
+        const pagination = body.pagination || {};
+        this.promptMatrixCandidatePage = pagination.page || this.promptMatrixCandidatePage;
+        this.promptMatrixCandidatePerPage = pagination.per_page || this.promptMatrixCandidatePerPage;
+        this.promptMatrixCandidateTotal = pagination.total || 0;
+        this.promptMatrixCandidateTotalPagesValue = pagination.total_pages || 1;
+        this.promptMatrixCandidateStatusCounts = (body.summary && body.summary.status_counts) || this.promptMatrixCandidateStatusCounts;
+        const duplicateGate = this.promptMatrixQualityGates.find(g => g.title === '相似重复');
+        if (duplicateGate) duplicateGate.value = String((body.summary && body.summary.duplicate_candidates) || 0);
+        const pendingGate = this.promptMatrixQualityGates.find(g => g.title === '待审核');
+        if (pendingGate) pendingGate.value = String((body.summary && body.summary.pending_candidates) || 0);
+      } catch (e) {
+        this.promptMatrixPendingItems = [];
+        this.promptMatrixCandidateTotal = 0;
+        this.promptMatrixCandidateTotalPagesValue = 1;
+        this.promptMatrixCandidatesError = e.name === 'AbortError'
+          ? '候选 Prompt 加载超时，请检查数据库连接后重试'
+          : (e.message || 'Candidate load failed');
+      } finally {
+        if (timeoutId) window.clearTimeout(timeoutId);
+        this.promptMatrixCandidatesLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async loadPromptMatrixPrompts(){
+      if (!this.isLoggedIn) return;
+      this.promptMatrixPromptsLoading = true;
+      this.promptMatrixPromptsError = '';
+      try {
+        const qp = new URLSearchParams({ page:'1', per_page:'60' });
+        if (this.promptMatrixPromptIntent) qp.set('intent', this.promptMatrixPromptIntent);
+        if (this.promptMatrixPromptLanguage) qp.set('language', this.promptMatrixPromptLanguage);
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt load failed');
+        this.promptDetailList = body.rows || [];
+        if (body.stats) this.generationPromptStats = { ...this.generationPromptStats, ...body.stats };
+      } catch (e) {
+        this.promptDetailList = [];
+        this.promptMatrixPromptsError = e.message || 'Prompt load failed';
+      } finally {
+        this.promptMatrixPromptsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    clearPromptMatrixRunPolling(){
+      if (this.promptMatrixRunPollTimer) {
+        clearTimeout(this.promptMatrixRunPollTimer);
+        this.promptMatrixRunPollTimer = null;
+      }
+    },
+
+    promptMatrixApplyRunProgress(run){
+      const estimated = Number(run.estimated_prompts || this.estimatedPromptCount() || 0);
+      const generated = Number(run.candidates_generated || 0);
+      const status = run.status || 'running';
+      const finished = status === 'completed';
+      const failed = status === 'failed';
+      this.promptMatrixRunStatus = status;
+      this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map((step, index) => {
+        if (index === 2) {
+          return {
+            ...step,
+            status: failed ? 'idle' : (finished ? 'done' : 'running'),
+            label: failed ? '失败' : (finished ? '完成' : '运行中'),
+            value: generated + ' / ' + estimated,
+          };
+        }
+        if (index === 3) {
+          return {
+            ...step,
+            status: failed ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
+            label: failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待'),
+            value: String(generated),
+          };
+        }
+        return step;
+      });
+      if (failed) this.promptMatrixGenerateError = run.llm_error || 'Prompt generation failed';
+    },
+
+    async loadPromptMatrixRun(runId){
+      const res = await fetch(API_BASE + '/admin/prompt-matrix/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Run load failed');
+      return body.run || {};
+    },
+
+    startPromptMatrixRunPolling(runId){
+      this.clearPromptMatrixRunPolling();
+      const poll = async () => {
+        if (!runId || this.promptMatrixActiveRunId !== runId) return;
+        let keepPolling = false;
+        try {
+          const run = await this.loadPromptMatrixRun(runId);
+          this.promptMatrixApplyRunProgress(run);
+          await this.loadPromptMatrixCandidates();
+          if (run.status === 'completed') {
+            this.promptMatrixGenerateLoading = false;
+            this.promptMatrixActiveRunId = '';
+            await this.loadPromptMatrixGaps();
+            await this.loadPromptMatrixPrompts();
+            await this.loadPromptMatrixTopics();
+            this.toast('Prompt 生成完成，已分批进入待审核列表');
+          } else if (run.status === 'failed') {
+            this.promptMatrixGenerateLoading = false;
+            this.promptMatrixActiveRunId = '';
+            this.toast('Prompt 生成失败: ' + (run.llm_error || 'unknown_error'));
+          } else {
+            keepPolling = true;
+          }
+        } catch (e) {
+          this.promptMatrixGenerateError = e.message || 'Run polling failed';
+          keepPolling = true;
+        } finally {
+          if (keepPolling) {
+            this.promptMatrixRunPollTimer = setTimeout(poll, Number(this.promptMatrixRunPollDelay || 3000));
+          } else {
+            this.promptMatrixRunPollTimer = null;
+          }
+          this.$nextTick(()=>lucide.createIcons());
+        }
+      };
+      this.promptMatrixRunPollTimer = setTimeout(poll, 800);
+    },
+
+    async startPromptMatrixGenerate(){
+      if (this.promptMatrixGenerateLoading) return;
+      this.promptMatrixWorkspaceTab = 'review';
+      if (this.promptMatrixSelectedTopicCount() === 0) {
+        this.promptMatrixActionPanel = 'generate';
+        this.promptMatrixGenerateError = '请选择至少 1 个 Topic 后再生成 Prompt';
+        this.toast(this.promptMatrixGenerateError);
+        this.$nextTick(()=>{
+          lucide.createIcons();
+          const target = document.getElementById('prompt-matrix-action-panel');
+          if (target) target.scrollIntoView({ behavior:'smooth', block:'start' });
+        });
+        return;
+      }
+      this.clearPromptMatrixRunPolling();
+      this.promptMatrixGenerateStarted = true;
+      this.promptMatrixGenerateLoading = true;
+      this.promptMatrixGenerateError = '';
+      const estimatedBeforeRun = this.estimatedPromptCount();
+      this.promptMatrixGenerateSteps = [
+        { name:'Topic 校验', status:'done', label:'完成', value:this.promptMatrixSelectedTopicCount() + ' Topic' },
+        { name:'模板匹配', status:'done', label:'完成', value:(Number(this.promptMatrixConfig.intentCount) * Number(this.promptMatrixConfig.languageCount)) + ' 组合' },
+        { name:'候选生成', status:'running', label:'运行中', value:'0 / ' + estimatedBeforeRun },
+        { name:'进入审核', status:'idle', label:'等待', value:'0' },
+      ];
+      try {
+        this.toast('Prompt 生成任务已启动，候选会分批进入待审核列表，待审核列表已刷新');
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/generate', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            selection: this.promptMatrixSelectionPayload(),
+            intent_count: Number(this.promptMatrixConfig.intentCount) || 4,
+            language_count: Number(this.promptMatrixConfig.languageCount) || 2,
+            topic_priority: this.promptMatrixConfig.topicPriority,
+            template_strategy: this.promptMatrixConfig.templateStrategy,
+            prompt_style: this.promptMatrixConfig.promptStyle,
+            audience_mode: this.promptMatrixConfig.audienceMode,
+            max_per_topic: Number(this.promptMatrixConfig.maxPerTopic) || 4,
+            max_prompts: Number(this.promptMatrixConfig.maxPrompts) || 8000,
+            overflow_policy: this.promptMatrixConfig.overflowPolicy,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt generation failed');
+        const estimated = (body.summary && body.summary.estimated) || estimatedBeforeRun;
+        const generated = (body.summary && body.summary.generated) || 0;
+        this.promptMatrixActiveRunId = body.run_id || '';
+        this.promptMatrixRunStatus = body.status || 'running';
+        this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map((step, index) => {
+          if (index === 2) return { ...step, status: body.status === 'completed' ? 'done' : 'running', label: body.status === 'completed' ? '完成' : '运行中', value:generated + ' / ' + estimated };
+          if (index === 3) return { ...step, status:generated > 0 ? 'done' : 'idle', label:generated > 0 ? '已入队' : '等待', value:String(generated) };
+          return step;
+        });
+        await this.loadPromptMatrixCandidates();
+        if (body.status === 'completed') {
+          this.promptMatrixGenerateLoading = false;
+          this.promptMatrixActiveRunId = '';
+          await this.loadPromptMatrixGaps();
+          await this.loadPromptMatrixPrompts();
+          await this.loadPromptMatrixTopics();
+        } else if (this.promptMatrixActiveRunId) {
+          this.startPromptMatrixRunPolling(this.promptMatrixActiveRunId);
+        } else {
+          throw new Error('missing_run_id');
+        }
+      } catch (e) {
+        this.clearPromptMatrixRunPolling();
+        this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map((step, index) => (
+          index === 2 ? { ...step, status:'idle', label:'失败' } : step
+        ));
+        this.promptMatrixGenerateError = e.message || 'Prompt generation failed';
+        this.promptMatrixGenerateLoading = false;
+        this.promptMatrixActiveRunId = '';
+        this.toast('Prompt 生成失败: ' + this.promptMatrixGenerateError);
+      } finally {
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async reviewPromptCandidate(item, status){
+      if (this.promptMatrixCandidateReviewing) return;
+      this.promptMatrixCandidateReviewing = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates/' + encodeURIComponent(item.id) + '/review', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ status }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Review failed');
+        const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
+        delete next[this.promptMatrixCandidateKey(item)];
+        this.promptMatrixSelectedCandidateIds = next;
+        await this.loadPromptMatrixCandidates();
+        await this.loadPromptMatrixPrompts();
+        await this.loadPromptMatrixTopics();
+        this.toast(status === 'approved' ? '已通过候选 Prompt' : '已拒绝候选 Prompt');
+      } catch (e) {
+        this.toast('审核失败: ' + (e.message || e));
+      } finally {
+        this.promptMatrixCandidateReviewing = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    async bulkReviewPromptCandidates(status){
+      const ids = this.selectedPromptMatrixCandidateIds();
+      if (ids.length === 0 || this.promptMatrixCandidateReviewing) return;
+      const label = status === 'approved' ? '通过' : '拒绝';
+      if (!window.confirm('确认批量' + label + '选中的 ' + ids.length + ' 条候选 Prompt？')) return;
+      this.promptMatrixCandidateReviewing = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates/bulk-review', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            candidate_ids: ids,
+            status,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        const failed = Array.isArray(body.failed) ? body.failed : [];
+        if (!res.ok || body.success === false) {
+          if (res.status !== 409) throw new Error(body.message || body.error || 'Bulk review failed');
+        }
+        const updatedCount = (body.summary && body.summary.updated_count) || (body.rows || []).length || 0;
+        this.clearPromptMatrixCandidateSelection();
+        await this.loadPromptMatrixCandidates();
+        await this.loadPromptMatrixPrompts();
+        await this.loadPromptMatrixTopics();
+        if (failed.length) {
+          this.toast('批量' + label + '部分完成：成功 ' + updatedCount + ' 条，失败 ' + failed.length + ' 条');
+        } else {
+          this.toast('已批量' + label + ' ' + updatedCount + ' 条候选 Prompt');
+        }
+      } catch (e) {
+        this.toast('批量审核失败: ' + (e.message || e));
+      } finally {
+        this.promptMatrixCandidateReviewing = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    queryPoolPromptId(prompt){
+      return prompt && prompt.id != null ? String(prompt.id) : '';
+    },
+
+    queryPoolPromptFilterPayload(){
+      const payload = {};
+      const q = String(this.queryPoolPromptQuery || '').trim();
+      if (q) payload.q = q;
+      if (this.queryPoolPromptIntent) payload.intent = this.queryPoolPromptIntent;
+      if (this.queryPoolPromptLanguage) payload.language = this.queryPoolPromptLanguage;
+      return payload;
+    },
+
+    queryPoolPromptCurrentPage(){
+      return Math.max(1, Number(this.queryPoolPromptPage || 1));
+    },
+
+    queryPoolPromptTotalPages(){
+      return Math.max(1, Number(this.queryPoolPromptTotalPagesValue || 1));
+    },
+
+    queryPoolPromptPageRangeText(){
+      const total = Number(this.queryPoolPromptTotal || 0);
+      if (!total) return '0 / 0';
+      const page = this.queryPoolPromptCurrentPage();
+      const perPage = Number(this.queryPoolPromptPerPage || 100);
+      const start = (page - 1) * perPage + 1;
+      const end = Math.min(total, start + perPage - 1);
+      return `${start.toLocaleString()}-${end.toLocaleString()} / ${total.toLocaleString()}`;
+    },
+
+    selectedQueryPoolPromptIds(){
+      return Object.keys(this.queryPoolSelectedPromptIds || {}).filter(id => this.queryPoolSelectedPromptIds[id]);
+    },
+
+    selectedQueryPoolPrompts(){
+      return Object.values(this.queryPoolSelectedPromptCache || {});
+    },
+
+    queryPoolExcludedPromptCount(){
+      return Object.keys(this.queryPoolExcludedPromptIds || {}).filter(id => this.queryPoolExcludedPromptIds[id]).length;
+    },
+
+    queryPoolSelectedPromptCount(){
+      if (this.queryPoolSelectionMode === 'filtered') {
+        return Math.max(0, Number(this.queryPoolPromptTotal || 0) - this.queryPoolExcludedPromptCount());
+      }
+      return this.selectedQueryPoolPromptIds().length;
+    },
+
+    isQueryPoolPromptSelected(prompt){
+      const id = this.queryPoolPromptId(prompt);
+      if (!id) return false;
+      if (this.queryPoolSelectionMode === 'filtered') return !(this.queryPoolExcludedPromptIds || {})[id];
+      return !!(this.queryPoolSelectedPromptIds || {})[id];
+    },
+
+    isQueryPoolPromptPageSelected(){
+      const rows = this.queryPoolPrompts || [];
+      return rows.length > 0 && rows.every(prompt => this.isQueryPoolPromptSelected(prompt));
+    },
+
+    queryPoolPromptMeta(prompt){
+      const parts = [];
+      if (prompt.topicTitle) parts.push(prompt.topicTitle);
+      if (prompt.topic_id) parts.push('Topic #' + prompt.topic_id);
+      parts.push(this.promptRoutingLabel(prompt));
+      return parts.join(' · ') || ('Prompt #' + this.queryPoolPromptId(prompt));
+    },
+
+    cacheQueryPoolPrompt(prompt){
+      const id = this.queryPoolPromptId(prompt);
+      if (!id) return;
+      this.queryPoolSelectedPromptCache = { ...(this.queryPoolSelectedPromptCache || {}), [id]: prompt };
+    },
+
+    toggleQueryPoolPrompt(prompt, selected){
+      const id = this.queryPoolPromptId(prompt);
+      if (!id) return;
+      if (this.queryPoolSelectionMode === 'filtered') {
+        const nextExcluded = { ...(this.queryPoolExcludedPromptIds || {}) };
+        if (selected) delete nextExcluded[id]; else nextExcluded[id] = true;
+        this.queryPoolExcludedPromptIds = nextExcluded;
+        return;
+      }
+      const nextSelected = { ...(this.queryPoolSelectedPromptIds || {}) };
+      const nextCache = { ...(this.queryPoolSelectedPromptCache || {}) };
+      if (selected) {
+        nextSelected[id] = true;
+        nextCache[id] = prompt;
+      } else {
+        delete nextSelected[id];
+        delete nextCache[id];
+      }
+      this.queryPoolSelectedPromptIds = nextSelected;
+      this.queryPoolSelectedPromptCache = nextCache;
+    },
+
+    clearQueryPoolPromptSelection(){
+      this.queryPoolSelectionMode = 'explicit';
+      this.queryPoolSelectedPromptIds = {};
+      this.queryPoolExcludedPromptIds = {};
+      this.queryPoolSelectedPromptCache = {};
+      this.queryPoolSelectionFilters = null;
+    },
+
+    setQueryPoolPrompts(selected, scope = 'page'){
+      if (scope === 'all' || (!selected && scope === 'filtered')) {
+        this.clearQueryPoolPromptSelection();
+        return;
+      }
+      if (selected && scope === 'filtered') {
+        this.queryPoolSelectionMode = 'filtered';
+        this.queryPoolSelectedPromptIds = {};
+        this.queryPoolExcludedPromptIds = {};
+        this.queryPoolSelectedPromptCache = {};
+        this.queryPoolSelectionFilters = this.queryPoolPromptFilterPayload();
+        return;
+      }
+      (this.queryPoolPrompts || []).forEach(prompt => this.toggleQueryPoolPrompt(prompt, selected));
+    },
+
+    queryPoolSelectionPayload(){
+      if (this.queryPoolSelectionMode === 'filtered') {
+        return {
+          mode: 'filtered',
+          filters: this.queryPoolSelectionFilters || this.queryPoolPromptFilterPayload(),
+          excluded_prompt_ids: Object.keys(this.queryPoolExcludedPromptIds || {}).filter(id => this.queryPoolExcludedPromptIds[id]),
+        };
+      }
+      return {
+        mode: 'explicit',
+        prompt_ids: this.selectedQueryPoolPromptIds(),
+      };
+    },
+
+    onQueryPoolPromptFilterChanged(){
+      this.queryPoolPromptPage = 1;
+      if (this.queryPoolSelectionMode === 'filtered') this.clearQueryPoolPromptSelection();
+      this.loadQueryPoolPrompts();
+    },
+
+    onQueryPoolPromptPageSizeChanged(){
+      this.queryPoolPromptPage = 1;
+      this.loadQueryPoolPrompts();
+    },
+
+    changeQueryPoolPromptPage(delta){
+      const next = Math.max(1, Math.min(this.queryPoolPromptTotalPages(), this.queryPoolPromptCurrentPage() + delta));
+      if (next === this.queryPoolPromptCurrentPage()) return;
+      this.queryPoolPromptPage = next;
+      this.loadQueryPoolPrompts();
+    },
+
+    async loadQueryPoolPrompts(){
+      if (!this.isLoggedIn) return;
+      this.queryPoolPromptsLoading = true;
+      this.queryPoolPromptsError = '';
+      try {
+        const qp = new URLSearchParams({
+          page: String(this.queryPoolPromptCurrentPage()),
+          per_page: String(this.queryPoolPromptPerPage || 100),
+        });
+        const filters = this.queryPoolPromptFilterPayload();
+        if (filters.q) qp.set('q', filters.q);
+        if (filters.intent) qp.set('intent', filters.intent);
+        if (filters.language) qp.set('language', filters.language);
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt load failed');
+        this.queryPoolPrompts = (body.rows || []).map(prompt => ({
+          ...prompt,
+          id: this.queryPoolPromptId(prompt),
+          title: prompt.title || prompt.templateText || prompt.text || ('Prompt #' + prompt.id),
+        }));
+        const pagination = body.pagination || {};
+        this.queryPoolPromptPage = pagination.page || this.queryPoolPromptPage;
+        this.queryPoolPromptPerPage = pagination.per_page || this.queryPoolPromptPerPage;
+        this.queryPoolPromptTotal = pagination.total || 0;
+        this.queryPoolPromptTotalPagesValue = pagination.total_pages || 1;
+      } catch (e) {
+        this.queryPoolPrompts = [];
+        this.queryPoolPromptTotal = 0;
+        this.queryPoolPromptTotalPagesValue = 1;
+        this.queryPoolPromptsError = e.message || 'Prompt load failed';
+      } finally {
+        this.queryPoolPromptsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
     queryCountRaw(){
-      const promptCount = this.selectedQueryPoolPrompts().length;
+      const promptCount = this.queryPoolSelectedPromptCount();
       const profiles = Number(this.queryPoolConfig.profilesPerPrompt) || 0;
       const engines = Number(this.queryPoolConfig.engineCount) || 0;
       return promptCount * profiles * engines;
@@ -8360,8 +10293,8 @@ function adminApp() {
 
     queryCountFormulaText(){
       const cfg = this.queryPoolConfig;
-      const promptCount = this.selectedQueryPoolPrompts().length;
-      return `${promptCount} 个 Prompt × 每条 ${cfg.profilesPerPrompt} 个画像 × ${cfg.engineCount} 个引擎 · 总上限 ${Number(cfg.maxQueries).toLocaleString()}`;
+      const promptCount = this.queryPoolSelectedPromptCount();
+      return `${promptCount} 个 Prompt × 每条 ${cfg.profilesPerPrompt} 个 Profile × ${cfg.engineCount} 个引擎 · 总上限 ${Number(cfg.maxQueries).toLocaleString()}`;
     },
 
     openQueryPoolPanel(panel){
@@ -8377,10 +10310,18 @@ function adminApp() {
     },
 
     startQueryPoolAssemble(){
+      const promptCount = this.queryPoolSelectedPromptCount();
+      if (promptCount === 0) {
+        this.toast('请先选择 Prompt');
+        return;
+      }
+      const payload = this.queryPoolSelectionPayload();
       this.queryPoolAssembleStarted = true;
       this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
+        if (step.name === 'Prompt 校验') return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
+        if (step.name === 'Segment Profile 采样') return { ...step, status:'done', label:'每条 ' + this.queryPoolConfig.profilesPerPrompt + ' 个', value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
         if (step.name === 'Query 渲染') return { ...step, status:'done', label:'完成', value:'+' + this.estimatedQueryCount() };
-        if (step.name === '预检入池') return { ...step, status:'done', label:'完成' };
+        if (step.name === '预检入池') return { ...step, status:'done', label:'完成', value:payload.mode === 'filtered' ? '全部匹配选择' : '显式选择' };
         return step;
       });
       this.toast('Query 组装任务已完成');
@@ -8466,7 +10407,7 @@ function adminApp() {
           body: JSON.stringify({ email:this.loginEmail, password:this.loginPassword }),
         });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.error || '登录失败');
+        if (!res.ok || body.success === false) throw new Error(this.adminLoginErrorMessage(body.error));
         this.adminUser = body.admin;
         this.isLoggedIn = true;
         this.loginPassword = '';
@@ -8477,6 +10418,13 @@ function adminApp() {
       } finally {
         this.loginLoading = false;
       }
+    },
+
+    adminLoginErrorMessage(code) {
+      if (code === 'invalid_credentials') return '邮箱或密码不正确';
+      if (code === 'admin_suspended') return '管理员账号已停用';
+      if (code === 'email_and_password_required') return '请输入邮箱和密码';
+      return code || '登录失败';
     },
 
     async adminLogout() {
@@ -8672,7 +10620,6 @@ function adminApp() {
     charts: {},
     init() {
       this.resetTopicPlanState();
-      this.seedPromptMatrixTopics();
       this.applyRouteFromLocation();
       // palette shortcut
       window.addEventListener('keydown', (e) => {

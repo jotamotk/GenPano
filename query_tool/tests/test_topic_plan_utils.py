@@ -4,7 +4,9 @@ from query_tool.topic_plan import (
     LLMTopic,
     TopicPlanLLMError,
     build_topic_plan_messages,
+    consumer_aliases_for_brand,
     dedupe_topic_candidates,
+    is_natural_consumer_topic,
     parse_llm_topics,
     repair_single_brand_placeholders,
     transition_candidate_status,
@@ -124,6 +126,18 @@ class TopicPlanUtilsTest(unittest.TestCase):
         self.assertIn("\u79c1\u57df", combined)
         self.assertIn("\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009", combined)
         self.assertNotIn("for operations users", combined)
+
+    def test_consumer_aliases_for_group_brand(self):
+        aliases = consumer_aliases_for_brand({"name": "LVMH", "aliases": ["路威酩轩"]})
+        self.assertIn("LV", aliases)
+        self.assertIn("大牌香水", aliases)
+
+    def test_natural_topic_rules_reject_corporate_group_wording(self):
+        self.assertFalse(is_natural_consumer_topic("LVMH旗下的香水线哪些性价比更高"))
+        self.assertFalse(is_natural_consumer_topic("LVMH集团旗下的奢品品牌档次是怎么划分的"))
+        self.assertFalse(is_natural_consumer_topic("LVMH珠宝腕表品类线上消费人群画像与转化路径分析"))
+        self.assertTrue(is_natural_consumer_topic("想买大牌香水送人哪种味道不容易踩雷"))
+        self.assertTrue(is_natural_consumer_topic("hiking有什么鞋子推荐"))
 
 
 if __name__ == "__main__":

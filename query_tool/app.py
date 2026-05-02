@@ -6,26 +6,67 @@ import re
 import sys
 import uuid
 import json
+import threading
 from datetime import datetime, timedelta
-from flask import Flask, render_template, render_template_string, request, jsonify, Response, session
+from flask import Flask, render_template, render_template_string, request, jsonify, Response, session, has_request_context
 
 try:
     from .topic_plan import (
         DoubaoTopicPlanClient,
         TopicPlanLLMError,
         dedupe_topic_candidates,
+        is_natural_consumer_topic,
         load_doubao_config,
         normalize_topic_title,
         transition_candidate_status,
+    )
+    from .prompt_matrix import (
+        ALLOWED_INTENTS,
+        ALLOWED_LANGUAGES,
+        PromptMatrixClient,
+        PromptMatrixError,
+        dedupe_prompt_candidates,
+        detect_brand_leaks,
+        estimate_generation_count,
+        has_prompt_language_mismatch,
+        intent_language_combinations,
+        is_natural_user_prompt,
+        is_valid_prompt_for_language,
+        merge_usage,
+        normalize_prompt_text,
+        prompt_generation_config,
+        selected_intents,
+        selected_languages,
+        transition_candidate_status as transition_prompt_candidate_status,
     )
 except ImportError:
     from topic_plan import (
         DoubaoTopicPlanClient,
         TopicPlanLLMError,
         dedupe_topic_candidates,
+        is_natural_consumer_topic,
         load_doubao_config,
         normalize_topic_title,
         transition_candidate_status,
+    )
+    from prompt_matrix import (
+        ALLOWED_INTENTS,
+        ALLOWED_LANGUAGES,
+        PromptMatrixClient,
+        PromptMatrixError,
+        dedupe_prompt_candidates,
+        detect_brand_leaks,
+        estimate_generation_count,
+        has_prompt_language_mismatch,
+        intent_language_combinations,
+        is_natural_user_prompt,
+        is_valid_prompt_for_language,
+        merge_usage,
+        normalize_prompt_text,
+        prompt_generation_config,
+        selected_intents,
+        selected_languages,
+        transition_candidate_status as transition_prompt_candidate_status,
     )
 
 # Add parent directory to path so we can import geo_tracker
@@ -699,6 +740,8 @@ def _require_admin():
 
 def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id, diff, reason):
     import json as json_mod
+    ip = _client_ip() if has_request_context() else None
+    user_agent = request.headers.get("user-agent") if has_request_context() else None
     cur.execute(
         """
         INSERT INTO admin_audit_log
@@ -714,8 +757,8 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
             str(target_id) if target_id is not None else None,
             json_mod.dumps(diff or {}, default=_json_default),
             reason,
-            _client_ip(),
-            request.headers.get("user-agent"),
+            ip,
+            user_agent,
         ),
     )
 
@@ -805,6 +848,105 @@ def _ensure_topic_plan_tables():
         print(f"DB migration warning (non-fatal): {e}")
 
 
+def _ensure_prompt_matrix_tables():
+    """Ensure additive Prompt Matrix tables and prompt metadata columns exist."""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prompt_generation_runs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        admin_id VARCHAR(36),
+                        status VARCHAR(16) NOT NULL DEFAULT 'running'
+                            CHECK (status IN ('running', 'completed', 'failed')),
+                        request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        selected_topic_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        estimated_prompts INTEGER NOT NULL DEFAULT 0,
+                        candidates_generated INTEGER NOT NULL DEFAULT 0,
+                        llm_model VARCHAR(128),
+                        llm_usage_json JSONB,
+                        llm_error TEXT,
+                        started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        completed_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_prompt_generation_runs_created
+                    ON prompt_generation_runs (created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prompt_candidates (
+                        id VARCHAR(36) PRIMARY KEY,
+                        run_id VARCHAR(36) REFERENCES prompt_generation_runs(id),
+                        topic_id INTEGER NOT NULL,
+                        topic_text TEXT,
+                        brand_id INTEGER,
+                        brand_name VARCHAR(256),
+                        dimension VARCHAR(32),
+                        intent VARCHAR(32) NOT NULL,
+                        language VARCHAR(16) NOT NULL,
+                        template_strategy VARCHAR(64),
+                        template_version VARCHAR(64),
+                        text TEXT NOT NULL,
+                        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'approved', 'rejected')),
+                        confidence FLOAT,
+                        reason TEXT,
+                        duplicate_of VARCHAR(64),
+                        tags JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        reviewed_by VARCHAR(36),
+                        reviewed_at TIMESTAMP,
+                        review_reason TEXT,
+                        approved_prompt_id INTEGER,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_prompt_candidates_status_created
+                    ON prompt_candidates (status, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_prompt_candidates_topic_status
+                    ON prompt_candidates (topic_id, status)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_prompt_candidates_run
+                    ON prompt_candidates (run_id)
+                    """
+                )
+                if _table_exists(cur, "prompts"):
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS intent VARCHAR(32)")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS language VARCHAR(16)")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS template_strategy VARCHAR(64)")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS template_version VARCHAR(64)")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS tags JSONB")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS generated_by VARCHAR(64)")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
+                    cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()")
+            conn.commit()
+            print("DB migration: prompt matrix tables ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
 def _topic_plan_json(value):
     return json.dumps(value, ensure_ascii=False, default=_json_default)
 
@@ -869,12 +1011,14 @@ def _fetch_topic_plan_brands(cur):
         else "''"
     )
     description_expr = "COALESCE(description, '')" if "description" in cols else "''"
+    aliases_expr = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
 
     cur.execute(
         f"""
         SELECT id, {name_expr} AS name, {industry_expr} AS industry,
                {target_market_expr} AS target_market,
-               {description_expr} AS description
+               {description_expr} AS description,
+               {aliases_expr}
         FROM brands
         ORDER BY id
         """
@@ -914,6 +1058,13 @@ def _fetch_topic_plan_brands(cur):
         row["category_id"] = category
         row["category_name"] = category
         row["topic_count"] = int(topic_counts.get(row["id"], 0) or 0)
+        aliases = row.get("aliases") or []
+        if isinstance(aliases, str):
+            try:
+                aliases = json.loads(aliases)
+            except Exception:
+                aliases = [aliases]
+        row["aliases"] = aliases if isinstance(aliases, list) else []
         row["selected"] = False
     return rows
 
@@ -1514,6 +1665,853 @@ def _topic_plan_error_response(error, status_code=400):
     if isinstance(error, TopicPlanLLMError):
         return jsonify({"success": False, "error": error.code, "message": error.message}), status_code
     return jsonify({"success": False, "error": str(error)}), status_code
+
+
+def _prompt_matrix_json(value):
+    return json.dumps(value, ensure_ascii=False, default=_json_default)
+
+
+def _prompt_matrix_error_response(error, status_code=400):
+    if isinstance(error, PromptMatrixError):
+        return jsonify({"success": False, "error": error.code, "message": error.message}), status_code
+    return jsonify({"success": False, "error": str(error)}), status_code
+
+
+def _prompt_matrix_json_value(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return default
+
+
+def _prompt_matrix_parse_topic_id(value):
+    text = str(value or "").strip()
+    if text.upper().startswith("T-"):
+        text = text[2:]
+    if not text.isdigit():
+        raise ValueError("invalid_topic_id")
+    return int(text)
+
+
+def _prompt_matrix_parse_topic_ids(value):
+    if value is None:
+        return []
+    raw_items = value if isinstance(value, list) else str(value).split(",")
+    result = []
+    for item in raw_items:
+        if str(item).strip() == "":
+            continue
+        topic_id = _prompt_matrix_parse_topic_id(item)
+        if topic_id not in result:
+            result.append(topic_id)
+    return result
+
+
+def _prompt_matrix_filter_payload(source):
+    try:
+        brand_id = source.get("brand_id")
+        if brand_id in ("", None, "all"):
+            brand_id = None
+        elif isinstance(brand_id, list):
+            brand_id = None
+        else:
+            brand_id = int(brand_id)
+    except (TypeError, ValueError):
+        raise ValueError("invalid_brand_id")
+
+    dimension = (source.get("dimension") or "").strip().lower() or None
+    if dimension and dimension not in {"brand", "product", "category", "scenario", "question"}:
+        raise ValueError("invalid_dimension")
+
+    coverage = (source.get("coverage") or "all").strip().lower()
+    if coverage not in {"all", "gap", "partial", "covered", "risk"}:
+        raise ValueError("invalid_coverage")
+
+    return {
+        "q": (source.get("q") or source.get("search") or "").strip(),
+        "brand_id": brand_id,
+        "industry_id": (source.get("industry_id") or "").strip() or None,
+        "dimension": dimension,
+        "coverage": coverage,
+        "intent_count": _clamp_int(source.get("intent_count"), 4, 1, len(ALLOWED_INTENTS)),
+        "language_count": _clamp_int(source.get("language_count"), 2, 1, len(ALLOWED_LANGUAGES)),
+    }
+
+
+def _prompt_matrix_topic_required(filters_or_config):
+    intent_count = filters_or_config.get("intent_count") or len(ALLOWED_INTENTS)
+    language_count = filters_or_config.get("language_count") or len(ALLOWED_LANGUAGES)
+    return set(selected_intents(intent_count)), set(selected_languages(language_count))
+
+
+def _prompt_matrix_brand_rows(cur):
+    if not _table_exists(cur, "brands"):
+        return []
+    cols = _table_columns(cur, "brands")
+    name_expr = "name" if "name" in cols else "('Brand #' || id::text)"
+    industry_expr = (
+        "COALESCE(NULLIF(industry, ''), 'Uncategorized')"
+        if "industry" in cols
+        else "'Uncategorized'"
+    )
+    aliases_expr = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
+    cur.execute(
+        f"""
+        SELECT id, {name_expr} AS name, {industry_expr} AS industry, {aliases_expr}
+        FROM brands
+        ORDER BY name
+        """
+    )
+    rows = []
+    for row in cur.fetchall():
+        item = dict(row)
+        rows.append(
+            {
+                "id": int(item.get("id")),
+                "name": item.get("name") or f"Brand #{item.get('id')}",
+                "industry_id": item.get("industry") or "Uncategorized",
+                "industry_name": item.get("industry") or "Uncategorized",
+                "aliases": _prompt_matrix_json_value(item.get("aliases"), []),
+            }
+        )
+    return rows
+
+
+def _prompt_matrix_prompt_meta_join(cur):
+    if not _table_exists(cur, "prompts"):
+        return "LEFT JOIN (SELECT NULL::int AS topic_id, 0::int AS prompt_count WHERE FALSE) pm ON pm.topic_id = t.id"
+    prompt_cols = _table_columns(cur, "prompts")
+    if not {"id", "topic_id"}.issubset(prompt_cols):
+        return "LEFT JOIN (SELECT NULL::int AS topic_id, 0::int AS prompt_count WHERE FALSE) pm ON pm.topic_id = t.id"
+    intent_expr = "NULLIF(intent, '')" if "intent" in prompt_cols else "NULL::text"
+    language_expr = "NULLIF(language, '')" if "language" in prompt_cols else "NULL::text"
+    status_where = "WHERE COALESCE(status, 'active') = 'active'" if "status" in prompt_cols else ""
+    return f"""
+        LEFT JOIN (
+            SELECT topic_id,
+                   COUNT(id)::int AS prompt_count,
+                   ARRAY_REMOVE(ARRAY_AGG(DISTINCT {intent_expr}), NULL) AS prompt_intents,
+                   ARRAY_REMOVE(ARRAY_AGG(DISTINCT {language_expr}), NULL) AS prompt_languages
+            FROM prompts
+            {status_where}
+            GROUP BY topic_id
+        ) pm ON pm.topic_id = t.id
+    """
+
+
+def _prompt_matrix_topic_row(row, required_intents, required_languages, known_brands=None):
+    item = dict(row)
+    raw_id = int(item.get("id"))
+    dimension = _topic_plan_dimension(item.get("category"))
+    prompt_intents = {
+        str(value)
+        for value in (item.get("prompt_intents") or [])
+        if value and str(value) in ALLOWED_INTENTS
+    }
+    prompt_languages = {
+        str(value)
+        for value in (item.get("prompt_languages") or [])
+        if value and str(value) in ALLOWED_LANGUAGES
+    }
+    prompt_count = int(item.get("prompt_count") or 0)
+    missing_intents = sorted(required_intents - prompt_intents)
+    missing_languages = sorted(required_languages - prompt_languages)
+    coverage = "covered"
+    if prompt_count == 0:
+        coverage = "gap"
+    elif missing_intents or missing_languages:
+        coverage = "partial"
+    leak_count = int(item.get("brand_leak_count") or 0)
+    if dimension == "category" and leak_count > 0:
+        coverage = "risk"
+
+    updated = item.get("updated_at") or item.get("created_at")
+    return {
+        "id": f"T-{raw_id}",
+        "raw_id": raw_id,
+        "title": item.get("text") or "",
+        "brand": item.get("brand_name") or f"Brand #{item.get('brand_id')}",
+        "brand_id": item.get("brand_id"),
+        "industry": item.get("industry") or "Uncategorized",
+        "industry_id": item.get("industry") or "Uncategorized",
+        "dimension": _topic_plan_dimension_label(dimension),
+        "dimension_key": dimension,
+        "coverage": coverage,
+        "coverageLabel": {
+            "gap": "No Prompt",
+            "partial": "Intent / language gap",
+            "risk": "Quality risk",
+            "covered": "Covered",
+        }.get(coverage, coverage),
+        "priority": "P0" if coverage == "risk" else "P1" if coverage == "gap" else "P2" if coverage == "partial" else "P3",
+        "updatedAt": _isoformat(updated) or "",
+        "prompt_count": prompt_count,
+        "prompt_intents": sorted(prompt_intents),
+        "prompt_languages": sorted(prompt_languages),
+        "missing_intents": missing_intents,
+        "missing_languages": missing_languages,
+        "brand_leak_count": leak_count,
+        "selected": False,
+    }
+
+
+def _fetch_prompt_matrix_topics(cur, filters=None, page=1, per_page=20, topic_ids=None):
+    filters = filters or {}
+    required_intents, required_languages = _prompt_matrix_topic_required(filters)
+    if not _table_exists(cur, "topics") or not _table_exists(cur, "brands"):
+        return [], 0, {"topicsTotal": 0, "matchingTopics": 0}
+
+    topic_cols = _table_columns(cur, "topics")
+    if not {"id", "brand_id", "text"}.issubset(topic_cols):
+        return [], 0, {"topicsTotal": 0, "matchingTopics": 0}
+
+    category_select = "t.category" if "category" in topic_cols else "NULL::text AS category"
+    created_select = "t.created_at AS created_at" if "created_at" in topic_cols else "NULL::timestamp AS created_at"
+    if "updated_at" in topic_cols:
+        updated_select = "t.updated_at AS updated_at"
+    elif "created_at" in topic_cols:
+        updated_select = "t.created_at AS updated_at"
+    else:
+        updated_select = "NULL::timestamp AS updated_at"
+    order_expr = "t.created_at DESC NULLS LAST, t.id DESC" if "created_at" in topic_cols else "t.id DESC"
+    status_condition = ""
+    if "status" in topic_cols:
+        status_condition = "AND COALESCE(t.status, 'active') <> 'archived'"
+
+    where = ["1=1"]
+    params = []
+    if topic_ids:
+        where.append("t.id = ANY(%s)")
+        params.append(topic_ids)
+    if filters.get("brand_id"):
+        where.append("t.brand_id = %s")
+        params.append(filters["brand_id"])
+    if filters.get("industry_id"):
+        where.append("COALESCE(NULLIF(b.industry, ''), 'Uncategorized') = %s")
+        params.append(filters["industry_id"])
+    query = filters.get("q")
+    if query:
+        like = f"%{query}%"
+        where.append("(t.text ILIKE %s OR b.name ILIKE %s OR ('T-' || t.id::text) ILIKE %s)")
+        params.extend([like, like, like])
+
+    prompt_join = _prompt_matrix_prompt_meta_join(cur)
+    cur.execute(
+        f"""
+        SELECT t.id, t.brand_id, t.text, {category_select},
+               {created_select}, {updated_select},
+               b.name AS brand_name,
+               COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry,
+               COALESCE(pm.prompt_count, 0) AS prompt_count,
+               COALESCE(pm.prompt_intents, ARRAY[]::text[]) AS prompt_intents,
+               COALESCE(pm.prompt_languages, ARRAY[]::text[]) AS prompt_languages,
+               0::int AS brand_leak_count
+        FROM topics t
+        JOIN brands b ON b.id = t.brand_id
+        {prompt_join}
+        WHERE {" AND ".join(where)}
+        {status_condition}
+        ORDER BY {order_expr}
+        """,
+        params,
+    )
+    rows = [
+        _prompt_matrix_topic_row(row, required_intents, required_languages)
+        for row in cur.fetchall()
+    ]
+    dimension = filters.get("dimension")
+    if dimension:
+        rows = [row for row in rows if row.get("dimension_key") == dimension]
+    coverage = filters.get("coverage") or "all"
+    if coverage != "all":
+        rows = [row for row in rows if row.get("coverage") == coverage]
+
+    total = len(rows)
+    page = max(int(page or 1), 1)
+    per_page = max(1, min(int(per_page or 20), 20000))
+    start = (page - 1) * per_page
+    paged = rows[start:start + per_page]
+    summary = {
+        "topicsTotal": total,
+        "matchingTopics": total,
+        "topicsNoPrompt": sum(1 for row in rows if row["coverage"] == "gap"),
+        "topicsPartialIntent": sum(1 for row in rows if row["coverage"] == "partial"),
+        "topicsRisk": sum(1 for row in rows if row["coverage"] == "risk"),
+    }
+    return paged, total, summary
+
+
+def _fetch_prompt_matrix_topic_ids(cur, filters):
+    rows, total, _summary = _fetch_prompt_matrix_topics(cur, filters=filters, page=1, per_page=100)
+    if len(rows) < total:
+        # Use a large server-side page only for explicit "all matching" operations.
+        rows, _total, _summary = _fetch_prompt_matrix_topics(
+            cur,
+            filters=filters,
+            page=1,
+            per_page=min(max(total, 1), 20000),
+        )
+    return [int(row["raw_id"]) for row in rows]
+
+
+def _fetch_prompt_matrix_topics_by_ids(cur, topic_ids, config=None):
+    if not topic_ids:
+        return []
+    filters = {
+        "intent_count": (config or {}).get("intent_count", len(ALLOWED_INTENTS)),
+        "language_count": (config or {}).get("language_count", len(ALLOWED_LANGUAGES)),
+    }
+    rows, _total, _summary = _fetch_prompt_matrix_topics(
+        cur,
+        filters=filters,
+        page=1,
+        per_page=min(max(len(topic_ids), 1), 20000),
+        topic_ids=topic_ids,
+    )
+    by_id = {int(row["raw_id"]): row for row in rows}
+    return [by_id[topic_id] for topic_id in topic_ids if topic_id in by_id]
+
+
+def _fetch_prompt_matrix_prompt_texts(cur, topic_ids=None):
+    if not _table_exists(cur, "prompts"):
+        return []
+    cols = _table_columns(cur, "prompts")
+    if "text" not in cols:
+        return []
+    where = []
+    params = []
+    if topic_ids and "topic_id" in cols:
+        where.append("topic_id = ANY(%s)")
+        params.append(topic_ids)
+    if "status" in cols:
+        where.append("COALESCE(status, 'active') = 'active'")
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    cur.execute(f"SELECT text FROM prompts {where_clause}", params)
+    return [row["text"] for row in cur.fetchall() if row.get("text")]
+
+
+def _prompt_matrix_selection_from_payload(cur, payload):
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    mode = selection.get("mode") or payload.get("selection_mode") or "explicit"
+    if mode == "all_matching":
+        try:
+            filters = _prompt_matrix_filter_payload(selection.get("filters") or payload.get("filters") or {})
+            excluded = set(_prompt_matrix_parse_topic_ids(selection.get("excluded_topic_ids") or []))
+        except ValueError as error:
+            raise PromptMatrixError(str(error), str(error)) from error
+        topic_ids = [topic_id for topic_id in _fetch_prompt_matrix_topic_ids(cur, filters) if topic_id not in excluded]
+        return topic_ids, {"mode": "all_matching", "filters": filters, "excluded_topic_ids": sorted(excluded)}
+    try:
+        topic_ids = _prompt_matrix_parse_topic_ids(selection.get("topic_ids") or payload.get("topic_ids") or [])
+    except ValueError as error:
+        raise PromptMatrixError(str(error), str(error)) from error
+    return topic_ids, {"mode": "explicit", "topic_ids": topic_ids}
+
+
+def _prompt_matrix_candidate_row(row):
+    item = dict(row)
+    tags = _prompt_matrix_json_value(item.get("tags"), {}) or {}
+    display_tags = {key: value for key, value in tags.items() if key != "engines"}
+    return {
+        "id": item.get("id"),
+        "run_id": item.get("run_id"),
+        "topic_id": item.get("topic_id"),
+        "topicId": f"T-{item.get('topic_id')}",
+        "topic": item.get("topic_text") or "",
+        "brand_id": item.get("brand_id"),
+        "brand": item.get("brand_name"),
+        "dimension": item.get("dimension"),
+        "intent": item.get("intent"),
+        "language": item.get("language"),
+        "lang": item.get("language"),
+        "template_strategy": item.get("template_strategy"),
+        "template_version": item.get("template_version"),
+        "text": item.get("text"),
+        "status": item.get("status"),
+        "confidence": float(item.get("confidence") or 0),
+        "reason": item.get("reason") or item.get("review_reason") or "",
+        "duplicate_of": item.get("duplicate_of"),
+        "tags": display_tags,
+        "engines": [],
+        "routing": display_tags.get("routing") or "deferred_to_query_pool",
+        "source": display_tags.get("source") or "prompt_matrix",
+        "approved_prompt_id": item.get("approved_prompt_id"),
+        "created_at": _isoformat(item.get("created_at")),
+        "reviewed_at": _isoformat(item.get("reviewed_at")),
+    }
+
+
+def _prompt_matrix_candidate_where(status="pending", query=None):
+    where = []
+    params = []
+    if status and status != "all":
+        where.append("status = %s")
+        params.append(status)
+    if query:
+        like = f"%{query}%"
+        where.append("(text ILIKE %s OR topic_text ILIKE %s OR reason ILIKE %s OR id ILIKE %s)")
+        params.extend([like, like, like, like])
+    return where, params
+
+
+def _fetch_prompt_matrix_candidates(
+    cur,
+    status="pending",
+    query=None,
+    limit=100,
+    offset=0,
+    include_total=False,
+):
+    if not _table_exists(cur, "prompt_candidates"):
+        return ([], 0) if include_total else []
+    where, params = _prompt_matrix_candidate_where(status=status, query=query)
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    cur.execute(
+        f"""
+        SELECT *, COUNT(*) OVER() AS __total
+        FROM prompt_candidates
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        params + [limit, offset],
+    )
+    raw_rows = cur.fetchall()
+    rows = [_prompt_matrix_candidate_row(row) for row in raw_rows]
+    total = int(raw_rows[0].get("__total") or 0) if raw_rows else 0
+    return (rows, total) if include_total else rows
+
+
+def _prompt_matrix_candidate_status_counts(cur, query=None):
+    counts = {"pending": 0, "approved": 0, "rejected": 0, "all": 0}
+    if not _table_exists(cur, "prompt_candidates"):
+        return counts
+    where, params = _prompt_matrix_candidate_where(status="all", query=query)
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    cur.execute(
+        f"""
+        SELECT status, COUNT(*)::int AS count
+        FROM prompt_candidates
+        {where_clause}
+        GROUP BY status
+        """,
+        params,
+    )
+    for row in cur.fetchall():
+        status = row.get("status")
+        count = int(row.get("count") or 0)
+        if status in counts:
+            counts[status] = count
+        counts["all"] += count
+    return counts
+
+
+def _prompt_matrix_category_purity(cur, known_brands):
+    if not _table_exists(cur, "topics") or not _table_exists(cur, "prompts"):
+        return {"total": 0, "brandLeaks": 0, "status": "pass"}
+    topic_cols = _table_columns(cur, "topics")
+    prompt_cols = _table_columns(cur, "prompts")
+    if "category" not in topic_cols or not {"topic_id", "text"}.issubset(prompt_cols):
+        return {"total": 0, "brandLeaks": 0, "status": "pass"}
+    status_where = "AND COALESCE(p.status, 'active') = 'active'" if "status" in prompt_cols else ""
+    cur.execute(
+        f"""
+        SELECT p.id, p.text, t.category
+        FROM prompts p
+        JOIN topics t ON t.id = p.topic_id
+        WHERE t.category IS NOT NULL
+        {status_where}
+        """
+    )
+    total = 0
+    leaks = 0
+    for row in cur.fetchall():
+        if _topic_plan_dimension(row.get("category")) != "category":
+            continue
+        total += 1
+        if detect_brand_leaks(row.get("text") or "", known_brands):
+            leaks += 1
+    return {"total": total, "brandLeaks": leaks, "status": "pass" if leaks == 0 else "fail"}
+
+
+def _prompt_matrix_distribution(cur, column, allowed_values):
+    if not _table_exists(cur, "prompts"):
+        return {value: 0 for value in allowed_values}
+    cols = _table_columns(cur, "prompts")
+    if column not in cols:
+        return {value: 0 for value in allowed_values}
+    status_where = "WHERE COALESCE(status, 'active') = 'active'" if "status" in cols else ""
+    cur.execute(
+        f"""
+        SELECT {column} AS value, COUNT(*)::int AS count
+        FROM prompts
+        {status_where}
+        GROUP BY {column}
+        """
+    )
+    result = {value: 0 for value in allowed_values}
+    for row in cur.fetchall():
+        value = row.get("value")
+        if value in result:
+            result[value] = int(row.get("count") or 0)
+    return result
+
+
+def _prompt_matrix_stats(cur):
+    known_brands = _prompt_matrix_brand_rows(cur)
+    all_rows, total_topics, topic_summary = _fetch_prompt_matrix_topics(
+        cur,
+        filters={"intent_count": len(ALLOWED_INTENTS), "language_count": len(ALLOWED_LANGUAGES)},
+        page=1,
+        per_page=20000,
+    )
+    total_prompts = 0
+    if _table_exists(cur, "prompts"):
+        cols = _table_columns(cur, "prompts")
+        if "id" in cols:
+            status_where = "WHERE COALESCE(status, 'active') = 'active'" if "status" in cols else ""
+            cur.execute(f"SELECT COUNT(*) AS cnt FROM prompts {status_where}")
+            total_prompts = int(cur.fetchone()["cnt"] or 0)
+
+    topics_with_prompt = sum(1 for row in all_rows if int(row.get("prompt_count") or 0) > 0)
+    coverage_pct = round((topics_with_prompt / total_topics) * 100, 1) if total_topics else 0
+    intent_counts = _prompt_matrix_distribution(cur, "intent", ALLOWED_INTENTS)
+    lang_counts = _prompt_matrix_distribution(cur, "language", ALLOWED_LANGUAGES)
+    total_intent = sum(intent_counts.values()) or 1
+    total_lang = sum(lang_counts.values()) or 1
+    colors = {
+        "informational": "#3B82F6",
+        "commercial": "#8B5CF6",
+        "transactional": "#0ABB87",
+        "navigational": "#F5A623",
+    }
+    labels = {
+        "informational": "信息了解",
+        "commercial": "购买决策",
+        "transactional": "行动导向",
+        "navigational": "定向查找",
+    }
+    lang_labels = {"zh-CN": "中文", "en-US": "英文"}
+    lang_routing = {"zh-CN": "调度时路由", "en-US": "调度时路由"}
+
+    last_run_at = None
+    if _table_exists(cur, "prompt_generation_runs"):
+        cur.execute("SELECT created_at FROM prompt_generation_runs ORDER BY created_at DESC LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            last_run_at = _isoformat(row.get("created_at"))
+
+    return {
+        "lastRunAt": last_run_at or "Never",
+        "topicsWithPrompt": topics_with_prompt,
+        "topicsTotal": total_topics,
+        "topicsNoPrompt": topic_summary.get("topicsNoPrompt", 0),
+        "topicsPartialIntent": topic_summary.get("topicsPartialIntent", 0),
+        "coveragePct": coverage_pct,
+        "totalPrompts": total_prompts,
+        "intentDist": [
+            {
+                "intent": intent,
+                "label": labels[intent],
+                "count": intent_counts[intent],
+                "pct": round((intent_counts[intent] / total_intent) * 100),
+                "color": colors[intent],
+            }
+            for intent in ALLOWED_INTENTS
+        ],
+        "langDist": [
+            {
+                "lang": language,
+                "label": lang_labels[language],
+                "count": lang_counts[language],
+                "pct": round((lang_counts[language] / total_lang) * 100),
+                "engines": lang_routing[language],
+                "routing": "deferred_to_query_pool",
+            }
+            for language in ALLOWED_LANGUAGES
+        ],
+        "categoryPromptPurity": _prompt_matrix_category_purity(cur, known_brands),
+    }
+
+
+def _prompt_matrix_quality_gates(stats, pending_count=0, duplicate_count=0):
+    purity = stats.get("categoryPromptPurity") or {}
+    brand_leaks = int(purity.get("brandLeaks") or 0)
+    return [
+        {
+            "title": "矩阵覆盖",
+            "value": f"{stats.get('coveragePct', 0)}%",
+            "tone": "success" if float(stats.get("coveragePct") or 0) >= 80 else "warning",
+            "meta": f"{stats.get('topicsWithPrompt', 0)} / {stats.get('topicsTotal', 0)} topics",
+        },
+        {
+            "title": "待审核",
+            "value": str(pending_count),
+            "tone": "warning" if pending_count else "success",
+            "meta": "Prompt candidates",
+        },
+        {
+            "title": "品类纯净",
+            "value": "0 泄露" if brand_leaks == 0 else f"{brand_leaks} 泄露",
+            "tone": "success" if brand_leaks == 0 else "danger",
+            "meta": "Category topics must not mention brands",
+        },
+        {
+            "title": "相似重复",
+            "value": str(duplicate_count),
+            "tone": "warning" if duplicate_count else "success",
+            "meta": "Duplicate candidates / prompts",
+        },
+    ]
+
+
+def _prompt_matrix_gaps_for_topics(cur, topic_ids=None, filters=None, config=None, limit=200):
+    config = config or {"intent_count": len(ALLOWED_INTENTS), "language_count": len(ALLOWED_LANGUAGES)}
+    if topic_ids:
+        topics = _fetch_prompt_matrix_topics_by_ids(cur, topic_ids, config)
+    else:
+        merged_filters = {
+            **(filters or {}),
+            "intent_count": config.get("intent_count", len(ALLOWED_INTENTS)),
+            "language_count": config.get("language_count", len(ALLOWED_LANGUAGES)),
+        }
+        topics, _total, _summary = _fetch_prompt_matrix_topics(cur, filters=merged_filters, page=1, per_page=limit)
+    combo_count = len(intent_language_combinations(
+        config.get("intent_count"),
+        config.get("language_count"),
+        config.get("max_per_topic", 4),
+    ))
+    gaps = []
+    for topic in topics:
+        reasons = []
+        if topic["coverage"] == "gap":
+            reasons.append("No Prompt")
+        if topic.get("missing_intents"):
+            reasons.append("Missing intent: " + ", ".join(topic["missing_intents"]))
+        if topic.get("missing_languages"):
+            reasons.append("Missing language: " + ", ".join(topic["missing_languages"]))
+        if topic.get("brand_leak_count"):
+            reasons.append("Category brand leak risk")
+        if not reasons:
+            continue
+        gaps.append(
+            {
+                "id": f"PG-{topic['raw_id']}",
+                "topic_id": topic["raw_id"],
+                "topic": topic["title"],
+                "gap": " / ".join(reasons),
+                "priority": topic["priority"],
+                "estimate": combo_count if topic["coverage"] == "gap" else max(1, len(topic.get("missing_intents") or []) + len(topic.get("missing_languages") or [])),
+            }
+        )
+    return gaps[:limit]
+
+
+def _fetch_prompt_matrix_prompts(cur, intent=None, language=None, query=None, page=1, per_page=50):
+    if not _table_exists(cur, "prompts"):
+        return [], 0
+    prompt_cols = _table_columns(cur, "prompts")
+    if not {"id", "topic_id", "text"}.issubset(prompt_cols):
+        return [], 0
+    topic_join = ""
+    topic_select = "NULL::text AS topic_text"
+    if _table_exists(cur, "topics") and "id" in _table_columns(cur, "topics"):
+        topic_join = "LEFT JOIN topics t ON t.id = p.topic_id"
+        topic_select = "t.text AS topic_text"
+    intent_select = "p.intent" if "intent" in prompt_cols else "NULL::text AS intent"
+    language_select = "p.language" if "language" in prompt_cols else "NULL::text AS language"
+    template_strategy_select = "p.template_strategy" if "template_strategy" in prompt_cols else "NULL::text AS template_strategy"
+    template_version_select = "p.template_version" if "template_version" in prompt_cols else "NULL::text AS template_version"
+    status_select = "COALESCE(p.status, 'active') AS status" if "status" in prompt_cols else "'active'::text AS status"
+    tags_select = "p.tags" if "tags" in prompt_cols else "NULL::jsonb AS tags"
+    created_select = "p.created_at AS created_at" if "created_at" in prompt_cols else "NULL::timestamp AS created_at"
+    order_expr = "p.created_at DESC NULLS LAST, p.id DESC" if "created_at" in prompt_cols else "p.id DESC"
+
+    where = []
+    params = []
+    if intent and "intent" in prompt_cols:
+        where.append("p.intent = %s")
+        params.append(intent)
+    if language and "language" in prompt_cols:
+        where.append("p.language = %s")
+        params.append(language)
+    query = (query or "").strip()
+    if query:
+        like_query = f"%{query}%"
+        search_parts = ["p.text ILIKE %s", "CAST(p.id AS TEXT) ILIKE %s"]
+        params.extend([like_query, like_query])
+        if topic_join:
+            search_parts.append("t.text ILIKE %s")
+            params.append(like_query)
+        where.append("(" + " OR ".join(search_parts) + ")")
+    if "status" in prompt_cols:
+        where.append("COALESCE(p.status, 'active') <> 'rejected'")
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    page = max(int(page or 1), 1)
+    per_page = max(1, min(int(per_page or 50), 100))
+    offset = (page - 1) * per_page
+
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM prompts p {topic_join} {where_clause}", params)
+    total = int(cur.fetchone()["cnt"] or 0)
+    cur.execute(
+        f"""
+        SELECT p.id, p.topic_id, p.text, {topic_select}, {intent_select}, {language_select},
+               {template_strategy_select}, {template_version_select}, {status_select},
+               {tags_select}, {created_select}
+        FROM prompts p
+        {topic_join}
+        {where_clause}
+        ORDER BY {order_expr}
+        LIMIT %s OFFSET %s
+        """,
+        params + [per_page, offset],
+    )
+    rows = []
+    for row in cur.fetchall():
+        item = dict(row)
+        tags = _prompt_matrix_json_value(item.get("tags"), {}) or {}
+        display_tags = {key: value for key, value in tags.items() if key != "engines"}
+        language_value = item.get("language") or "zh-CN"
+        rows.append(
+            {
+                "id": item.get("id"),
+                "topicId": f"T-{item.get('topic_id')}",
+                "topic_id": item.get("topic_id"),
+                "topicTitle": item.get("topic_text") or "",
+                "intent": item.get("intent") or "informational",
+                "lang": language_value,
+                "language": language_value,
+                "engines": [],
+                "routing": display_tags.get("routing") or "deferred_to_query_pool",
+                "tags": display_tags,
+                "source": display_tags.get("source") or "prompt_matrix",
+                "run_id": display_tags.get("run_id"),
+                "candidate_id": display_tags.get("candidate_id"),
+                "confidence": float(display_tags.get("confidence") or 0),
+                "version": item.get("template_version") or "v1",
+                "templateStrategy": item.get("template_strategy") or "latest",
+                "status": item.get("status") or "active",
+                "templateText": item.get("text") or "",
+                "resolvedExample": item.get("text") or "",
+                "createdAt": _isoformat(item.get("created_at")),
+            }
+        )
+    return rows, total
+
+
+def _review_prompt_matrix_candidate(cur, candidate_id, requested_status, admin_id, reason=None):
+    cur.execute("SELECT * FROM prompt_candidates WHERE id = %s FOR UPDATE", (candidate_id,))
+    candidate = cur.fetchone()
+    if not candidate:
+        return None
+    new_status = transition_prompt_candidate_status(candidate["status"], requested_status)
+    approved_prompt_id = candidate.get("approved_prompt_id")
+    if new_status == "approved":
+        if not _table_exists(cur, "prompts"):
+            raise PromptMatrixError("prompts_table_missing", "Prompts table is missing")
+        prompt_cols = _table_columns(cur, "prompts")
+        if not {"topic_id", "text"}.issubset(prompt_cols):
+            raise PromptMatrixError("prompts_schema_invalid", "Prompts table must contain topic_id and text")
+        if not is_natural_user_prompt(candidate.get("text") or ""):
+            raise PromptMatrixError("prompt_not_natural", "Prompt must be a natural consumer question")
+        if has_prompt_language_mismatch(candidate.get("text") or "", candidate.get("language") or ""):
+            raise PromptMatrixError(
+                "prompt_language_mismatch",
+                "Prompt language does not match its text",
+            )
+        if _table_exists(cur, "topics"):
+            topic_cols = _table_columns(cur, "topics")
+            if "category" in topic_cols:
+                cur.execute("SELECT category FROM topics WHERE id = %s", (candidate["topic_id"],))
+                topic_row = cur.fetchone()
+                if topic_row and _topic_plan_dimension(topic_row.get("category")) == "category":
+                    if detect_brand_leaks(candidate.get("text") or "", _prompt_matrix_brand_rows(cur)):
+                        raise PromptMatrixError(
+                            "category_brand_leak",
+                            "Category prompt leaks a known brand name",
+                        )
+        raw_tags = _prompt_matrix_json_value(candidate.get("tags"), {}) or {}
+        tags = {key: value for key, value in raw_tags.items() if key != "engines"}
+        tags.update(
+            {
+                "source": "prompt_matrix",
+                "routing": "deferred_to_query_pool",
+                "run_id": candidate.get("run_id"),
+                "candidate_id": candidate.get("id"),
+                "confidence": candidate.get("confidence"),
+            }
+        )
+        columns = ["topic_id", "text"]
+        placeholders = ["%s", "%s"]
+        values = [candidate["topic_id"], candidate["text"]]
+        optional_values = {
+            "intent": candidate.get("intent"),
+            "language": candidate.get("language"),
+            "template_strategy": candidate.get("template_strategy"),
+            "template_version": candidate.get("template_version"),
+            "status": "active",
+            "tags": _prompt_matrix_json(tags),
+            "generated_by": "prompt-matrix",
+        }
+        for col, value in optional_values.items():
+            if col not in prompt_cols:
+                continue
+            columns.append(col)
+            if col == "tags":
+                placeholders.append("%s::jsonb")
+            else:
+                placeholders.append("%s")
+            values.append(value)
+        if "created_at" in prompt_cols:
+            columns.append("created_at")
+            placeholders.append("NOW()")
+        if "updated_at" in prompt_cols:
+            columns.append("updated_at")
+            placeholders.append("NOW()")
+        cur.execute(
+            f"""
+            INSERT INTO prompts ({", ".join(columns)})
+            VALUES ({", ".join(placeholders)})
+            RETURNING id
+            """,
+            values,
+        )
+        approved_prompt_id = cur.fetchone()["id"]
+
+    cur.execute(
+        """
+        UPDATE prompt_candidates
+        SET status = %s,
+            reviewed_by = %s,
+            reviewed_at = NOW(),
+            review_reason = %s,
+            approved_prompt_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        RETURNING *
+        """,
+        (new_status, admin_id, reason, approved_prompt_id, candidate_id),
+    )
+    updated = _prompt_matrix_candidate_row(cur.fetchone())
+    _insert_admin_audit_log(
+        cur,
+        operator_id=admin_id,
+        action="review_prompt_candidate",
+        target_type="prompt_candidate",
+        target_id=candidate_id,
+        diff={
+            "status": {"before": candidate["status"], "after": new_status},
+            "approved_prompt_id": approved_prompt_id,
+        },
+        reason=reason or "prompt_candidate_review",
+    )
+    return updated
 
 
 def _user_name_expr(columns):
@@ -4436,6 +5434,330 @@ def admin_topic_plan_topic_delete_api(topic_id):
         conn.close()
 
 
+def _topic_plan_run_row(row):
+    item = dict(row)
+    request_config = _prompt_matrix_json_value(item.get("request_config"), {}) or {}
+    return {
+        "id": item.get("id"),
+        "status": item.get("status"),
+        "admin_id": item.get("admin_id"),
+        "industry_id": item.get("industry_id"),
+        "category_id": item.get("category_id"),
+        "brand_ids": _prompt_matrix_json_value(item.get("brand_ids"), []) or [],
+        "request_config": request_config,
+        "estimated_topics": int(request_config.get("max_topics") or 0),
+        "candidates_generated": int(item.get("candidates_generated") or 0),
+        "llm_model": item.get("llm_model"),
+        "llm_usage": _prompt_matrix_json_value(item.get("llm_usage_json"), {}) or {},
+        "llm_error": item.get("llm_error"),
+        "started_at": _isoformat(item.get("started_at")),
+        "completed_at": _isoformat(item.get("completed_at")),
+        "created_at": _isoformat(item.get("created_at")),
+        "updated_at": _isoformat(item.get("updated_at")),
+        "elapsed_seconds": float(item.get("elapsed_seconds") or 0),
+    }
+
+
+def _topic_plan_brand_batches(brands, gaps, *, max_topics, max_per_brand):
+    batch_size = _clamp_int(os.getenv("TOPIC_PLAN_LLM_BRANDS_PER_REQUEST"), 1, 1, 5)
+    for index in range(0, len(brands), batch_size):
+        batch_brands = brands[index : index + batch_size]
+        batch_brand_ids = {int(brand["id"]) for brand in batch_brands}
+        batch_gaps = [
+            gap for gap in gaps
+            if str(gap.get("brand_id") or "").isdigit() and int(gap.get("brand_id")) in batch_brand_ids
+        ]
+        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1))
+        yield batch_brands, batch_gaps, batch_cap
+
+
+def _insert_topic_plan_candidate_batch(
+    cur,
+    *,
+    run_id,
+    candidates,
+    brands,
+    existing_titles,
+    remaining,
+    skipped,
+):
+    if remaining <= 0:
+        return []
+    accepted, batch_skipped = dedupe_topic_candidates(candidates, existing_titles, remaining)
+    skipped.extend(batch_skipped)
+    brand_by_norm = {
+        normalize_topic_title(brand["name"]): brand
+        for brand in brands
+        if normalize_topic_title(brand["name"])
+    }
+    inserted = []
+    for item in accepted:
+        if not is_natural_consumer_topic(item.title):
+            skipped.append({"title": item.title, "reason": "topic_not_natural"})
+            continue
+        brand = brand_by_norm.get(normalize_topic_title(item.brand))
+        if brand is None:
+            item_norm = normalize_topic_title(item.brand)
+            matches = [
+                candidate
+                for candidate in brands
+                if item_norm
+                and (
+                    item_norm in normalize_topic_title(candidate["name"])
+                    or normalize_topic_title(candidate["name"]) in item_norm
+                )
+            ]
+            if len(matches) == 1:
+                brand = matches[0]
+            elif len(brands) == 1:
+                brand = brands[0]
+        if brand is None:
+            skipped.append({"title": item.title, "reason": "brand_not_selected"})
+            continue
+        candidate_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO topic_candidates
+                (id, run_id, brand_id, brand_name, title, dimension,
+                 reason, confidence, coverage_gap, normalized_title,
+                 status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'pending', NOW(), NOW())
+            RETURNING *
+            """,
+            (
+                candidate_id,
+                run_id,
+                int(brand["id"]),
+                brand["name"],
+                item.title,
+                item.dimension,
+                item.reason,
+                item.confidence,
+                item.coverage_gap,
+                normalize_topic_title(item.title),
+            ),
+        )
+        inserted.append(_topic_plan_candidate_row(cur.fetchone()))
+    return inserted
+
+
+def _topic_plan_run_failed_status(error):
+    return 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
+
+
+def _execute_topic_plan_generation(
+    *,
+    run_id,
+    admin_id,
+    industry_id,
+    category_id,
+    brands,
+    llm_gaps,
+    max_per_brand,
+    max_topics,
+    existing_titles,
+    request_config,
+    coverage_summary,
+    conn=None,
+):
+    from psycopg2.extras import RealDictCursor
+
+    own_conn = conn is None
+    conn = conn or get_db()
+    inserted = []
+    skipped = []
+    usage = {}
+    batches = 0
+    llm_model = os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL")
+    try:
+        doubao_config = load_doubao_config()
+        client = DoubaoTopicPlanClient(doubao_config)
+        llm_model = doubao_config.model
+        for batch_brands, batch_gaps, batch_cap in _topic_plan_brand_batches(
+            brands,
+            llm_gaps,
+            max_topics=max_topics,
+            max_per_brand=max_per_brand,
+        ):
+            remaining = max_topics - len(inserted)
+            if remaining <= 0:
+                break
+            batch_max = min(remaining, batch_cap)
+            llm_topics, llm_meta = client.generate_topics(
+                industry=industry_id or "All industries",
+                category=category_id or "All categories",
+                brands=[
+                    {
+                        "id": brand["id"],
+                        "name": brand["name"],
+                        "industry": brand.get("industry_name") or brand.get("industry_id"),
+                        "topic_count": brand.get("topic_count", 0),
+                    }
+                    for brand in batch_brands
+                ],
+                coverage_gaps=batch_gaps,
+                max_topics=batch_max,
+                existing_topics=existing_titles,
+            )
+            batches += 1
+            llm_model = (llm_meta or {}).get("model") or llm_model
+            usage = merge_usage(usage, (llm_meta or {}).get("usage") or {})
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                batch_inserted = _insert_topic_plan_candidate_batch(
+                    cur,
+                    run_id=run_id,
+                    candidates=llm_topics,
+                    brands=batch_brands,
+                    existing_titles=existing_titles,
+                    remaining=remaining,
+                    skipped=skipped,
+                )
+                inserted.extend(batch_inserted)
+                existing_titles.extend([row["title"] for row in batch_inserted if row.get("title")])
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _topic_plan_json(usage),
+                        len(inserted),
+                        run_id,
+                    ),
+                )
+            conn.commit()
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                UPDATE topic_plan_runs
+                SET status = 'completed',
+                    llm_model = %s,
+                    llm_usage_json = %s::jsonb,
+                    candidates_generated = %s,
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    llm_model,
+                    _topic_plan_json(usage),
+                    len(inserted),
+                    run_id,
+                ),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin_id,
+                action="generate_topic_plan",
+                target_type="topic_plan_run",
+                target_id=run_id,
+                diff={
+                    "request_config": request_config,
+                    "candidates_generated": len(inserted),
+                    "batches": batches,
+                    "skipped": skipped,
+                },
+                reason="topic_plan_generate",
+            )
+        conn.commit()
+        return {
+            "inserted": inserted,
+            "skipped": skipped,
+            "usage": usage,
+            "model": llm_model,
+            "batches": batches,
+            "coverage": coverage_summary,
+        }
+    except Exception as error:
+        topic_error = error if isinstance(error, TopicPlanLLMError) else TopicPlanLLMError(
+            "topic_plan_generation_failed",
+            str(error)[:500] or "Topic Plan generation failed",
+        )
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'failed',
+                        llm_model = %s,
+                        llm_error = %s,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        topic_error.code,
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="generate_topic_plan_failed",
+                    target_type="topic_plan_run",
+                    target_id=run_id,
+                    diff={"request_config": request_config, "error": topic_error.code},
+                    reason="topic_plan_generate",
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        raise topic_error from error
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _start_topic_plan_generation_thread(**kwargs):
+    def worker():
+        try:
+            _execute_topic_plan_generation(**kwargs)
+        except Exception as error:
+            app.logger.exception("Topic Plan generation worker failed: %s", error)
+
+    thread = threading.Thread(target=worker, name=f"topic-plan-{kwargs.get('run_id')}", daemon=True)
+    thread.start()
+    return thread
+
+
+@app.route('/api/admin/topic-plan/runs/<run_id>')
+def admin_topic_plan_run_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "topic_plan_runs"):
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            cur.execute(
+                """
+                SELECT *,
+                       EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                FROM topic_plan_runs
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            return jsonify({"success": True, "run": _topic_plan_run_row(row)})
+    finally:
+        conn.close()
+
+
 @app.route('/api/admin/topic-plan/generate', methods=['POST'])
 def admin_topic_plan_generate_api():
     admin, error_response = _require_admin()
@@ -4535,162 +5857,59 @@ def admin_topic_plan_generate_api():
             )
         conn.commit()
 
-        try:
-            doubao_config = load_doubao_config()
-            client = DoubaoTopicPlanClient(doubao_config)
-            llm_topics, llm_meta = client.generate_topics(
-                industry=industry_id or "All industries",
-                category=category_id or "All categories",
-                brands=[
+        generation_kwargs = {
+            "run_id": run_id,
+            "admin_id": admin["id"],
+            "industry_id": industry_id,
+            "category_id": category_id,
+            "brands": brands,
+            "llm_gaps": llm_gaps,
+            "max_per_brand": max_per_brand,
+            "max_topics": max_topics,
+            "existing_titles": existing_titles,
+            "request_config": request_config,
+            "coverage_summary": coverage["summary"],
+        }
+        if app.config.get("TESTING") or os.getenv("TOPIC_PLAN_SYNC_GENERATE") == "1":
+            try:
+                result = _execute_topic_plan_generation(**generation_kwargs, conn=conn)
+            except TopicPlanLLMError as error:
+                code = _topic_plan_run_failed_status(error)
+                return jsonify(
                     {
-                        "id": brand["id"],
-                        "name": brand["name"],
-                        "industry": brand.get("industry_name") or brand.get("industry_id"),
-                        "topic_count": brand.get("topic_count", 0),
+                        "success": False,
+                        "run_id": run_id,
+                        "error": error.code,
+                        "message": error.message,
                     }
-                    for brand in brands
-                ],
-                coverage_gaps=llm_gaps,
-                max_topics=max_topics,
-                existing_topics=existing_titles,
-            )
-            accepted, skipped = dedupe_topic_candidates(llm_topics, existing_titles, max_topics)
-
-            brand_by_norm = {
-                normalize_topic_title(brand["name"]): brand
-                for brand in brands
-                if normalize_topic_title(brand["name"])
-            }
-            inserted = []
-            for item in accepted:
-                brand = brand_by_norm.get(normalize_topic_title(item.brand))
-                if brand is None:
-                    item_norm = normalize_topic_title(item.brand)
-                    matches = [
-                        candidate
-                        for candidate in brands
-                        if item_norm
-                        and (
-                            item_norm in normalize_topic_title(candidate["name"])
-                            or normalize_topic_title(candidate["name"]) in item_norm
-                        )
-                    ]
-                    if len(matches) == 1:
-                        brand = matches[0]
-                    elif len(brands) == 1:
-                        brand = brands[0]
-                if brand is None:
-                    skipped.append({"title": item.title, "reason": "brand_not_selected"})
-                    continue
-                candidate_id = str(uuid.uuid4())
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO topic_candidates
-                            (id, run_id, brand_id, brand_name, title, dimension,
-                             reason, confidence, coverage_gap, normalized_title,
-                             status, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                'pending', NOW(), NOW())
-                        RETURNING *
-                        """,
-                        (
-                            candidate_id,
-                            run_id,
-                            int(brand["id"]),
-                            brand["name"],
-                            item.title,
-                            item.dimension,
-                            item.reason,
-                            item.confidence,
-                            item.coverage_gap,
-                            normalize_topic_title(item.title),
-                        ),
-                    )
-                    inserted.append(_topic_plan_candidate_row(cur.fetchone()))
-
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    UPDATE topic_plan_runs
-                    SET status = 'completed',
-                        llm_model = %s,
-                        llm_usage_json = %s::jsonb,
-                        candidates_generated = %s,
-                        completed_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        llm_meta.get("model"),
-                        _topic_plan_json(llm_meta.get("usage") or {}),
-                        len(inserted),
-                        run_id,
-                    ),
-                )
-                _insert_admin_audit_log(
-                    cur,
-                    operator_id=admin["id"],
-                    action="generate_topic_plan",
-                    target_type="topic_plan_run",
-                    target_id=run_id,
-                    diff={
-                        "request_config": request_config,
-                        "candidates_generated": len(inserted),
-                        "skipped": skipped,
-                    },
-                    reason="topic_plan_generate",
-                )
-            conn.commit()
+                ), code
+            inserted = result["inserted"]
             return jsonify(
                 {
                     "success": True,
                     "run_id": run_id,
+                    "status": "completed",
                     "candidates": inserted,
                     "summary": {
                         "generated": len(inserted),
-                        "skipped": skipped,
+                        "skipped": result["skipped"],
                         "coverage": coverage["summary"],
                     },
                 }
             )
-        except TopicPlanLLMError as error:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    UPDATE topic_plan_runs
-                    SET status = 'failed',
-                        llm_model = %s,
-                        llm_error = %s,
-                        completed_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL"),
-                        error.code,
-                        run_id,
-                    ),
-                )
-                _insert_admin_audit_log(
-                    cur,
-                    operator_id=admin["id"],
-                    action="generate_topic_plan_failed",
-                    target_type="topic_plan_run",
-                    target_id=run_id,
-                    diff={"request_config": request_config, "error": error.code},
-                    reason="topic_plan_generate",
-                )
-            conn.commit()
-            code = 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
-            return jsonify(
-                {
-                    "success": False,
-                    "run_id": run_id,
-                    "error": error.code,
-                    "message": error.message,
-                }
-            ), code
+        _start_topic_plan_generation_thread(**generation_kwargs)
+        return jsonify(
+            {
+                "success": True,
+                "run_id": run_id,
+                "status": "running",
+                "summary": {
+                    "generated": 0,
+                    "estimated": max_topics,
+                    "coverage": coverage["summary"],
+                },
+            }
+        )
     except Exception:
         conn.rollback()
         raise
@@ -4793,6 +6012,838 @@ def admin_topic_plan_candidates_bulk_review_api():
                 },
                 "missing": missing,
                 "failed": failed,
+            }
+        ), 200 if not failed else 409
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/config')
+def admin_prompt_matrix_config_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            brands = _prompt_matrix_brand_rows(cur)
+            industries = [
+                {"id": value, "name": value}
+                for value in sorted({brand.get("industry_id") or "Uncategorized" for brand in brands})
+            ]
+            stats = _prompt_matrix_stats(cur)
+            pending = 0
+            duplicates = 0
+            if _table_exists(cur, "prompt_candidates"):
+                cur.execute("SELECT COUNT(*) AS cnt FROM prompt_candidates WHERE status = 'pending'")
+                pending = int(cur.fetchone()["cnt"] or 0)
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM prompt_candidates
+                    WHERE status = 'pending' AND duplicate_of IS NOT NULL
+                    """
+                )
+                duplicates = int(cur.fetchone()["cnt"] or 0)
+            try:
+                load_doubao_config()
+                llm_configured = True
+            except TopicPlanLLMError:
+                llm_configured = False
+        return jsonify(
+            {
+                "success": True,
+                "brands": brands,
+                "industries": industries,
+                "defaults": {
+                    "intentCount": 4,
+                    "languageCount": 2,
+                    "topicPriority": "gap_first",
+                    "templateStrategy": "latest",
+                    "promptStyle": "natural",
+                    "audienceMode": "general",
+                    "maxPerTopic": 4,
+                    "maxPrompts": 8000,
+                    "overflowPolicy": "split",
+                },
+                "summary": {
+                    "pending_candidates": pending,
+                    "duplicate_candidates": duplicates,
+                    "llm_configured": llm_configured,
+                },
+                "stats": stats,
+                "qualityGates": _prompt_matrix_quality_gates(stats, pending, duplicates),
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/topics')
+def admin_prompt_matrix_topics_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        filters = _prompt_matrix_filter_payload(request.args)
+        page = _clamp_int(request.args.get("page"), 1, 1, 100000)
+        per_page = _clamp_int(request.args.get("per_page"), 20, 1, 100)
+    except ValueError as error:
+        return jsonify({"success": False, "error": str(error)}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total, summary = _fetch_prompt_matrix_topics(
+                cur,
+                filters=filters,
+                page=page,
+                per_page=per_page,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "rows": rows,
+                "summary": summary,
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": max(1, (total + per_page - 1) // per_page),
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/gaps')
+def admin_prompt_matrix_gaps_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        filters = _prompt_matrix_filter_payload(request.args)
+        topic_ids = _prompt_matrix_parse_topic_ids(request.args.get("topic_ids"))
+        config = {
+            **prompt_generation_config(
+                {
+                    "intent_count": request.args.get("intent_count"),
+                    "language_count": request.args.get("language_count"),
+                    "max_per_topic": request.args.get("max_per_topic"),
+                    "max_prompts": request.args.get("max_prompts") or 8000,
+                    "template_strategy": request.args.get("template_strategy") or "latest",
+                    "prompt_style": request.args.get("prompt_style") or "natural",
+                    "audience_mode": request.args.get("audience_mode") or "general",
+                    "overflow_policy": request.args.get("overflow_policy") or "split",
+                }
+            )
+        }
+        limit = _clamp_int(request.args.get("limit"), 200, 1, 500)
+    except (ValueError, PromptMatrixError) as error:
+        return jsonify({"success": False, "error": getattr(error, "code", str(error))}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            gaps = _prompt_matrix_gaps_for_topics(
+                cur,
+                topic_ids=topic_ids,
+                filters=filters,
+                config=config,
+                limit=limit,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "rows": gaps,
+                "summary": {
+                    "gap_count": len(gaps),
+                    "estimated_prompts": sum(int(item.get("estimate") or 0) for item in gaps),
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/prompts')
+def admin_prompt_matrix_prompts_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    intent = (request.args.get("intent") or "").strip().lower() or None
+    if intent and intent not in ALLOWED_INTENTS:
+        return jsonify({"success": False, "error": "invalid_intent"}), 400
+    language = (request.args.get("language") or request.args.get("lang") or "").strip() or None
+    if language and language not in ALLOWED_LANGUAGES:
+        return jsonify({"success": False, "error": "invalid_language"}), 400
+    query = (request.args.get("q") or "").strip() or None
+    page = _clamp_int(request.args.get("page"), 1, 1, 100000)
+    per_page = _clamp_int(request.args.get("per_page"), 50, 1, 100)
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total = _fetch_prompt_matrix_prompts(
+                cur,
+                intent=intent,
+                language=language,
+                query=query,
+                page=page,
+                per_page=per_page,
+            )
+            stats = _prompt_matrix_stats(cur)
+        return jsonify(
+            {
+                "success": True,
+                "rows": rows,
+                "stats": stats,
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": max(1, (total + per_page - 1) // per_page),
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/candidates')
+def admin_prompt_matrix_candidates_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    status = (request.args.get("status") or "pending").strip().lower()
+    if status not in {"pending", "approved", "rejected", "all"}:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    query = (request.args.get("q") or "").strip() or None
+    page = _clamp_int(request.args.get("page"), 1, 1, 100000)
+    per_page = _clamp_int(request.args.get("per_page") or request.args.get("limit"), 20, 1, 100)
+    offset = (page - 1) * per_page
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, total = _fetch_prompt_matrix_candidates(
+                cur,
+                status=status,
+                query=query,
+                limit=per_page,
+                offset=offset,
+                include_total=True,
+            )
+            status_counts = _prompt_matrix_candidate_status_counts(cur, query=query)
+        return jsonify(
+            {
+                "success": True,
+                "rows": rows,
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": max(1, (total + per_page - 1) // per_page),
+                },
+                "summary": {
+                    "pending_candidates": status_counts.get("pending", 0),
+                    "approved_candidates": status_counts.get("approved", 0),
+                    "rejected_candidates": status_counts.get("rejected", 0),
+                    "all_candidates": status_counts.get("all", 0),
+                    "duplicate_candidates": sum(1 for row in rows if row.get("duplicate_of")),
+                    "status_counts": status_counts,
+                },
+            }
+        )
+    except Exception as exc:
+        app.logger.exception("Prompt Matrix candidates load failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "candidate_load_failed",
+                "message": "候选 Prompt 加载失败，请检查数据库连接后重试",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _prompt_matrix_run_row(row):
+    item = dict(row)
+    return {
+        "id": item.get("id"),
+        "status": item.get("status"),
+        "admin_id": item.get("admin_id"),
+        "request_config": _prompt_matrix_json_value(item.get("request_config"), {}) or {},
+        "selected_topic_ids": _prompt_matrix_json_value(item.get("selected_topic_ids"), []) or [],
+        "estimated_prompts": int(item.get("estimated_prompts") or 0),
+        "candidates_generated": int(item.get("candidates_generated") or 0),
+        "llm_model": item.get("llm_model"),
+        "llm_usage": _prompt_matrix_json_value(item.get("llm_usage_json"), {}) or {},
+        "llm_error": item.get("llm_error"),
+        "started_at": _isoformat(item.get("started_at")),
+        "completed_at": _isoformat(item.get("completed_at")),
+        "created_at": _isoformat(item.get("created_at")),
+        "updated_at": _isoformat(item.get("updated_at")),
+        "elapsed_seconds": float(item.get("elapsed_seconds") or 0),
+    }
+
+
+def _prompt_matrix_candidate_batches(client, *, topics, config, known_brands, existing_prompts):
+    batch_method = getattr(client, "generate_prompt_batches", None)
+    if callable(batch_method):
+        yield from batch_method(
+            topics=topics,
+            config=config,
+            known_brands=known_brands,
+            existing_prompts=existing_prompts,
+        )
+        return
+    prompts, meta = client.generate_prompts(
+        topics=topics,
+        config=config,
+        known_brands=known_brands,
+        existing_prompts=existing_prompts,
+    )
+    yield prompts, meta
+
+
+def _insert_prompt_matrix_candidate_batch(
+    cur,
+    *,
+    run_id,
+    candidates,
+    topic_by_id,
+    config,
+    known_brands,
+    existing_prompts,
+    remaining,
+    skipped,
+):
+    if remaining <= 0:
+        return []
+    accepted, batch_skipped = dedupe_prompt_candidates(
+        candidates,
+        existing_prompts,
+        max_count=remaining,
+    )
+    skipped.extend(batch_skipped)
+    inserted = []
+    for candidate in accepted:
+        item = candidate.as_dict() if hasattr(candidate, "as_dict") else dict(candidate)
+        try:
+            topic_id = int(item.get("topic_id"))
+        except (TypeError, ValueError):
+            skipped.append({"text": item.get("text", ""), "reason": "invalid_topic_id"})
+            continue
+        topic = topic_by_id.get(topic_id)
+        if topic is None:
+            skipped.append({"text": item.get("text", ""), "reason": "topic_not_selected"})
+            continue
+        text = item.get("text") or ""
+        language = item.get("language") or ""
+        if not is_natural_user_prompt(text):
+            skipped.append({"text": text, "reason": "prompt_not_natural"})
+            continue
+        if has_prompt_language_mismatch(text, language):
+            skipped.append({"text": text, "reason": "prompt_language_mismatch"})
+            continue
+        if topic.get("dimension_key") == "category":
+            leaked_terms = detect_brand_leaks(text, known_brands)
+            if leaked_terms:
+                skipped.append(
+                    {
+                        "text": text,
+                        "reason": "category_brand_leak",
+                        "leaks": leaked_terms[:5],
+                    }
+                )
+                continue
+        candidate_id = str(uuid.uuid4())
+        raw_tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+        tags = {key: value for key, value in raw_tags.items() if key != "engines"}
+        tags = {
+            **tags,
+            "source": "prompt_matrix",
+            "routing": "deferred_to_query_pool",
+        }
+        cur.execute(
+            """
+            INSERT INTO prompt_candidates
+                (id, run_id, topic_id, topic_text, brand_id, brand_name,
+                 dimension, intent, language, template_strategy, template_version,
+                 text, status, confidence, reason, duplicate_of, tags,
+                 created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, 'pending', %s, %s, %s, %s::jsonb,
+                    NOW(), NOW())
+            RETURNING *
+            """,
+            (
+                candidate_id,
+                run_id,
+                topic_id,
+                topic["title"],
+                topic.get("brand_id"),
+                topic.get("brand"),
+                topic.get("dimension_key"),
+                item.get("intent"),
+                language,
+                item.get("template_strategy") or config["template_strategy"],
+                item.get("template_version") or "v1",
+                text,
+                item.get("confidence", 0.75),
+                item.get("reason") or "",
+                item.get("duplicate_of"),
+                _prompt_matrix_json(tags),
+            ),
+        )
+        inserted.append(_prompt_matrix_candidate_row(cur.fetchone()))
+    return inserted
+
+
+def _prompt_matrix_run_failed_status(error):
+    return 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
+
+
+def _execute_prompt_matrix_generation(
+    *,
+    run_id,
+    admin_id,
+    topics,
+    config,
+    known_brands,
+    existing_prompts,
+    estimated,
+    request_config,
+    conn=None,
+):
+    from psycopg2.extras import RealDictCursor
+
+    own_conn = conn is None
+    conn = conn or get_db()
+    topic_by_id = {int(topic["raw_id"]): topic for topic in topics}
+    inserted = []
+    skipped = []
+    usage = {}
+    batches = 0
+    llm_model = os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL")
+    try:
+        client = PromptMatrixClient()
+        llm_model = getattr(getattr(client, "config", None), "model", None) or llm_model
+        for llm_candidates, llm_meta in _prompt_matrix_candidate_batches(
+            client,
+            topics=topics,
+            config=config,
+            known_brands=known_brands,
+            existing_prompts=existing_prompts,
+        ):
+            batches += 1
+            llm_model = (llm_meta or {}).get("model") or llm_model
+            usage = merge_usage(usage, (llm_meta or {}).get("usage") or {})
+            remaining = estimated - len(inserted)
+            if remaining <= 0:
+                break
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                batch_inserted = _insert_prompt_matrix_candidate_batch(
+                    cur,
+                    run_id=run_id,
+                    candidates=llm_candidates,
+                    topic_by_id=topic_by_id,
+                    config=config,
+                    known_brands=known_brands,
+                    existing_prompts=existing_prompts,
+                    remaining=remaining,
+                    skipped=skipped,
+                )
+                inserted.extend(batch_inserted)
+                existing_prompts.extend([row["text"] for row in batch_inserted if row.get("text")])
+                cur.execute(
+                    """
+                    UPDATE prompt_generation_runs
+                    SET llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _prompt_matrix_json(usage),
+                        len(inserted),
+                        run_id,
+                    ),
+                )
+            conn.commit()
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                UPDATE prompt_generation_runs
+                SET status = 'completed',
+                    llm_model = %s,
+                    llm_usage_json = %s::jsonb,
+                    llm_error = NULL,
+                    candidates_generated = %s,
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    llm_model,
+                    _prompt_matrix_json(usage),
+                    len(inserted),
+                    run_id,
+                ),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin_id,
+                action="generate_prompt_matrix",
+                target_type="prompt_generation_run",
+                target_id=run_id,
+                diff={
+                    "request_config": request_config,
+                    "estimated_prompts": estimated,
+                    "candidates_generated": len(inserted),
+                    "batches": batches,
+                    "skipped": skipped,
+                },
+                reason="prompt_matrix_generate",
+            )
+        conn.commit()
+        return {"inserted": inserted, "skipped": skipped, "usage": usage, "model": llm_model, "batches": batches}
+    except Exception as error:
+        prompt_error = error if isinstance(error, PromptMatrixError) else PromptMatrixError(
+            "prompt_matrix_generation_failed",
+            str(error)[:500] or "Prompt Matrix generation failed",
+        )
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE prompt_generation_runs
+                    SET status = 'failed',
+                        llm_model = %s,
+                        llm_error = %s,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        prompt_error.code,
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="generate_prompt_matrix_failed",
+                    target_type="prompt_generation_run",
+                    target_id=run_id,
+                    diff={"request_config": request_config, "error": prompt_error.code},
+                    reason="prompt_matrix_generate",
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        raise prompt_error from error
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _start_prompt_matrix_generation_thread(**kwargs):
+    def worker():
+        try:
+            _execute_prompt_matrix_generation(**kwargs)
+        except Exception as error:
+            app.logger.exception("Prompt Matrix generation worker failed: %s", error)
+
+    thread = threading.Thread(target=worker, name=f"prompt-matrix-{kwargs.get('run_id')}", daemon=True)
+    thread.start()
+    return thread
+
+
+@app.route('/api/admin/prompt-matrix/runs/<run_id>')
+def admin_prompt_matrix_run_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "prompt_generation_runs"):
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            cur.execute(
+                """
+                SELECT *,
+                       EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                FROM prompt_generation_runs
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            return jsonify({"success": True, "run": _prompt_matrix_run_row(row)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/generate', methods=['POST'])
+def admin_prompt_matrix_generate_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    config = prompt_generation_config(
+        {
+            "intent_count": payload.get("intent_count") or payload.get("intentCount"),
+            "language_count": payload.get("language_count") or payload.get("languageCount"),
+            "topic_priority": payload.get("topic_priority") or payload.get("topicPriority"),
+            "template_strategy": payload.get("template_strategy") or payload.get("templateStrategy"),
+            "prompt_style": payload.get("prompt_style") or payload.get("promptStyle"),
+            "audience_mode": payload.get("audience_mode") or payload.get("audienceMode"),
+            "max_per_topic": payload.get("max_per_topic") or payload.get("maxPerTopic"),
+            "max_prompts": payload.get("max_prompts") or payload.get("maxPrompts"),
+            "overflow_policy": payload.get("overflow_policy") or payload.get("overflowPolicy"),
+        }
+    )
+
+    run_id = str(uuid.uuid4())
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                topic_ids, selection_snapshot = _prompt_matrix_selection_from_payload(cur, payload)
+            except PromptMatrixError as error:
+                return _prompt_matrix_error_response(error, 400)
+            if not topic_ids:
+                return jsonify({"success": False, "error": "topic_ids_required"}), 400
+            topics = _fetch_prompt_matrix_topics_by_ids(cur, topic_ids, config)
+            if not topics:
+                return jsonify({"success": False, "error": "selected_topics_not_found"}), 404
+            topic_ids = [int(topic["raw_id"]) for topic in topics]
+            estimated = estimate_generation_count(
+                selected_topics=len(topics),
+                intent_count=config["intent_count"],
+                language_count=config["language_count"],
+                max_per_topic=config["max_per_topic"],
+                max_prompts=config["max_prompts"],
+            )
+            if estimated <= 0:
+                return jsonify({"success": False, "error": "no_prompt_combinations"}), 400
+            known_brands = _prompt_matrix_brand_rows(cur)
+            existing_prompts = _fetch_prompt_matrix_prompt_texts(cur, topic_ids=topic_ids)
+            if _table_exists(cur, "prompt_candidates"):
+                cur.execute(
+                    """
+                    SELECT text
+                    FROM prompt_candidates
+                    WHERE topic_id = ANY(%s) AND status = 'pending'
+                    """,
+                    (topic_ids,),
+                )
+                existing_prompts.extend([row["text"] for row in cur.fetchall()])
+            request_config = {
+                **config,
+                "selection": selection_snapshot,
+            }
+            cur.execute(
+                """
+                INSERT INTO prompt_generation_runs
+                    (id, admin_id, status, request_config, selected_topic_ids,
+                     estimated_prompts, started_at, created_at, updated_at)
+                VALUES (%s, %s, 'running', %s::jsonb, %s::jsonb,
+                        %s, NOW(), NOW(), NOW())
+                """,
+                (
+                    run_id,
+                    admin["id"],
+                    _prompt_matrix_json(request_config),
+                    _prompt_matrix_json(topic_ids),
+                    estimated,
+                ),
+            )
+        conn.commit()
+
+        generation_kwargs = {
+            "run_id": run_id,
+            "admin_id": admin["id"],
+            "topics": topics,
+            "config": config,
+            "known_brands": known_brands,
+            "existing_prompts": existing_prompts,
+            "estimated": estimated,
+            "request_config": request_config,
+        }
+        if app.config.get("TESTING") or os.getenv("PROMPT_MATRIX_SYNC_GENERATE") == "1":
+            try:
+                result = _execute_prompt_matrix_generation(**generation_kwargs, conn=conn)
+            except PromptMatrixError as error:
+                code = _prompt_matrix_run_failed_status(error)
+                return jsonify(
+                    {
+                        "success": False,
+                        "run_id": run_id,
+                        "error": error.code,
+                        "message": error.message,
+                    }
+                ), code
+            inserted = result["inserted"]
+            return jsonify(
+                {
+                    "success": True,
+                    "run_id": run_id,
+                    "status": "completed",
+                    "candidates": inserted,
+                    "summary": {
+                        "estimated": estimated,
+                        "generated": len(inserted),
+                        "skipped": result["skipped"],
+                    },
+                }
+            )
+        _start_prompt_matrix_generation_thread(**generation_kwargs)
+        return jsonify(
+            {
+                "success": True,
+                "run_id": run_id,
+                "status": "running",
+                "summary": {
+                    "estimated": estimated,
+                    "generated": 0,
+                    "skipped": [],
+                },
+            }
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/candidates/<candidate_id>/review', methods=['POST'])
+def admin_prompt_matrix_candidate_review_api(candidate_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    requested_status = (payload.get("status") or "").strip().lower()
+    reason = (payload.get("reason") or "").strip() or None
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                updated = _review_prompt_matrix_candidate(
+                    cur,
+                    candidate_id,
+                    requested_status,
+                    admin["id"],
+                    reason=reason,
+                )
+            except PromptMatrixError as error:
+                return _prompt_matrix_error_response(error, 400)
+            if not updated:
+                return jsonify({"success": False, "error": "candidate_not_found"}), 404
+        conn.commit()
+        return jsonify({"success": True, "candidate": updated})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/candidates/bulk-review', methods=['POST'])
+def admin_prompt_matrix_candidates_bulk_review_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    requested_status = (payload.get("status") or "").strip().lower()
+    reason = (payload.get("reason") or "").strip() or None
+    candidate_ids = payload.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
+    candidate_ids = [str(item).strip() for item in candidate_ids if str(item).strip()]
+    if len(candidate_ids) > 200:
+        return jsonify({"success": False, "error": "too_many_candidates"}), 400
+
+    conn = get_db()
+    updated = []
+    failed = []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for candidate_id in candidate_ids:
+                try:
+                    row = _review_prompt_matrix_candidate(
+                        cur,
+                        candidate_id,
+                        requested_status,
+                        admin["id"],
+                        reason=reason,
+                    )
+                    if row:
+                        updated.append(row)
+                    else:
+                        failed.append({"id": candidate_id, "error": "candidate_not_found"})
+                except PromptMatrixError as error:
+                    failed.append(
+                        {
+                            "id": candidate_id,
+                            "error": error.code,
+                            "message": error.message,
+                        }
+                    )
+        conn.commit()
+        return jsonify(
+            {
+                "success": len(failed) == 0,
+                "rows": updated,
+                "failed": failed,
+                "summary": {
+                    "updated_count": len(updated),
+                    "failed_count": len(failed),
+                },
             }
         ), 200 if not failed else 409
     except Exception:
@@ -6626,12 +8677,18 @@ def analyzer_rerun_single(response_id):
         return jsonify({'error': 'Celery not available'})
 
 
-_ensure_citations_column()
-_ensure_analyzer_tables()
-_ensure_preview_columns()
-_ensure_query_admin_tables()
-_ensure_topic_plan_tables()
-_normalize_query_data()
+def _run_startup_migrations():
+    _ensure_citations_column()
+    _ensure_analyzer_tables()
+    _ensure_preview_columns()
+    _ensure_query_admin_tables()
+    _ensure_topic_plan_tables()
+    _ensure_prompt_matrix_tables()
+    _normalize_query_data()
+
+
+if os.getenv("QUERY_TOOL_SKIP_STARTUP_MIGRATIONS") != "1" and "pytest" not in sys.modules:
+    _run_startup_migrations()
 
 
 if __name__ == '__main__':
