@@ -1582,7 +1582,7 @@
       <!-- ============ PAGE: PIPELINE PROFILES ============ -->
       <template x-if="page==='planner-profiles'">
         <div x-data="segmentCrudPanel()" x-init="refreshIcons()" class="space-y-4">
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+          <div x-show="segmentView === 'segments'" class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
             <div class="flex items-start justify-between gap-4">
               <div>
                 <div class="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">SEGMENTS</div>
@@ -1595,11 +1595,17 @@
                   <i data-lucide="upload" class="w-3.5 h-3.5"></i>
                   <span>导入 Segment</span>
                 </button>
-                <button @click="openSegmentForm()"
+                <button @click="openSegmentLlmPanel()"
                         class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5"
-                        title="新建 Segment">
+                        title="LLM 生成 Segment">
+                  <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                  <span>LLM 生成 Segment</span>
+                </button>
+                <button @click="openSegmentForm()"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface-page inline-flex items-center gap-1.5"
+                        title="手动新建 Segment">
                   <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                  <span>新建 Segment</span>
+                  <span>手动新建</span>
                 </button>
               </div>
             </div>
@@ -1626,7 +1632,255 @@
             </div>
           </div>
 
-          <div class="grid grid-cols-[minmax(360px,0.85fr)_minmax(0,1.35fr)] gap-4">
+          <div x-show="segmentView === 'segments'" class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-4 border-b border-b-card bg-surface-page flex items-center justify-between gap-4">
+              <div class="relative flex-1 max-w-2xl">
+                <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                <input x-model="segmentQuery"
+                       class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
+                       placeholder="搜索 Segment / 行业 / 状态">
+              </div>
+              <div class="text-[12px] text-ink-muted whitespace-nowrap">
+                <span class="font-semibold text-ink tabular-nums" x-text="filteredSegments().length"></span>
+                <span>/</span>
+                <span class="tabular-nums" x-text="segments.length"></span>
+              </div>
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-[12px]">
+                <thead class="bg-surface-page text-[10px] font-semibold uppercase text-ink-muted border-b border-b-card">
+                  <tr>
+                    <th class="px-5 py-3 w-[120px]">ID</th>
+                    <th class="px-5 py-3 min-w-[280px]">Segment</th>
+                    <th class="px-5 py-3 min-w-[180px]">行业</th>
+                    <th class="px-5 py-3 w-[120px]">Profile</th>
+                    <th class="px-5 py-3 w-[120px]">权重</th>
+                    <th class="px-5 py-3 min-w-[220px]">采样</th>
+                    <th class="px-5 py-3 w-[150px] text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-b-card">
+                  <tr x-show="filteredSegments().length === 0">
+                    <td colspan="7" class="px-5 py-14 text-center text-[12px] text-ink-muted">没有匹配的 Segment</td>
+                  </tr>
+                  <template x-for="segment in filteredSegments()" :key="segment.id">
+                    <tr @click="openSegmentProfiles(segment.id)" class="hover:bg-surface-page cursor-pointer">
+                      <td class="px-5 py-4 font-mono font-semibold text-ink-muted" x-text="segment.id"></td>
+                      <td class="px-5 py-4">
+                        <div class="flex items-center gap-2">
+                          <div class="font-semibold text-ink" x-text="segment.name"></div>
+                          <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                :class="segment.status === 'active' ? 'bg-success/10 text-success' : segment.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                x-text="segment.status"></span>
+                        </div>
+                        <div class="mt-1 max-w-xl text-[11px] text-ink-muted truncate" x-text="segment.note || '未配置备注'"></div>
+                      </td>
+                      <td class="px-5 py-4 text-ink-body" x-text="segment.industry || '-'"></td>
+                      <td class="px-5 py-4">
+                        <div class="font-semibold text-ink tabular-nums" x-text="segmentProfiles(segment.id).length"></div>
+                        <div class="text-[11px] text-ink-muted" x-text="activeProfiles(segment.id) + ' active'"></div>
+                      </td>
+                      <td class="px-5 py-4 font-semibold text-ink tabular-nums" x-text="Math.round(segment.weight * 100) + '%'"></td>
+                      <td class="px-5 py-4">
+                        <div class="text-ink-body" x-text="segment.samplingRate || '-'"></div>
+                        <div class="text-[11px] text-ink-muted truncate" x-text="[segment.ageRange, segment.income, segment.regions].filter(Boolean).join(' · ') || '-'"></div>
+                      </td>
+                      <td class="px-5 py-4">
+                        <div class="flex items-center justify-end gap-1">
+                          <button @click.stop="openSegmentProfiles(segment.id)"
+                                  class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold inline-flex items-center gap-1.5"
+                                  title="进入 Profile">
+                            <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                            <span>Profile</span>
+                          </button>
+                          <button @click.stop="openSegmentForm(segment)"
+                                  class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-accent hover:border-accent/30 inline-flex items-center justify-center"
+                                  title="编辑 Segment">
+                            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                          </button>
+                          <button @click.stop="deleteSegment(segment)"
+                                  class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-danger hover:border-danger/30 inline-flex items-center justify-center"
+                                  title="删除 Segment">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div x-show="segmentView === 'profiles'" x-cloak>
+            <template x-if="currentSegment()">
+              <div class="space-y-4">
+            <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+              <div class="px-5 py-3 flex flex-wrap items-center justify-between gap-3">
+                <div class="min-w-0 flex items-center gap-3">
+                  <button @click="backToSegments()"
+                          class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page inline-flex items-center gap-1.5"
+                          title="返回 Segment 列表">
+                    <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+                    <span>Segment</span>
+                  </button>
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+                      <span class="font-mono font-semibold" x-text="currentSegment().id"></span>
+                      <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                            :class="currentSegment().status === 'active' ? 'bg-success/10 text-success' : currentSegment().status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                            x-text="currentSegment().status"></span>
+                      <span class="tabular-nums" x-text="segmentProfiles(currentSegment().id).length + ' profiles'"></span>
+                      <span class="text-success tabular-nums" x-text="activeProfiles(currentSegment().id) + ' active'"></span>
+                    </div>
+                    <div class="mt-0.5 flex items-baseline gap-2 min-w-0">
+                      <h3 class="text-[16px] font-bold text-ink truncate" x-text="currentSegment().name"></h3>
+                      <span class="text-[12px] text-ink-muted truncate" x-text="currentSegment().note || currentSegment().industry"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center justify-end gap-2">
+                  <button @click="openLlmPanel()"
+                          class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-[12px] font-semibold text-accent hover:bg-accent/10 inline-flex items-center gap-1.5"
+                          title="LLM 生成 Profile">
+                    <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                    <span>LLM 生成 Profile</span>
+                  </button>
+                  <button @click="exportProfiles(currentSegment().id)"
+                          class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface-page inline-flex items-center gap-1.5"
+                          title="导出 Profile">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                    <span>导出</span>
+                  </button>
+                  <button @click="openImport('profiles', currentSegment().id)"
+                          class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface-page inline-flex items-center gap-1.5"
+                          title="导入 Profile">
+                    <i data-lucide="upload" class="w-3.5 h-3.5"></i>
+                    <span>导入</span>
+                  </button>
+                  <button @click="openProfileForm(currentSegment().id)"
+                          class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5"
+                          title="新建 Profile">
+                    <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                    <span>新建 Profile</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section x-show="llmPanelOpen" x-cloak class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">LLM 生成 Profile</h3>
+                  <p class="text-[12px] text-ink-muted mt-1" x-text="currentSegment().name + ' · 生成可采样 Profile'"></p>
+                </div>
+                <button @click="closeLlmPanel()" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="关闭">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="p-5 grid grid-cols-[minmax(0,0.72fr)_minmax(340px,0.28fr)] gap-4">
+                <div class="grid grid-cols-2 gap-4 text-[12px]">
+                  <label class="space-y-1.5">
+                    <span class="font-semibold text-ink-muted">品牌</span>
+                    <input x-model="llmForm.brand" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </label>
+                  <label class="space-y-1.5">
+                    <span class="font-semibold text-ink-muted">数量</span>
+                    <input x-model.number="llmForm.count" type="number" min="1" max="20" step="1" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </label>
+                  <label class="space-y-1.5 col-span-2">
+                    <span class="font-semibold text-ink-muted">生成目标</span>
+                    <textarea x-model="llmForm.goal" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </label>
+                  <label class="space-y-1.5 col-span-2">
+                    <span class="font-semibold text-ink-muted">约束</span>
+                    <textarea x-model="llmForm.notes" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </label>
+                  <div class="col-span-2 flex justify-end gap-2">
+                    <button @click="generateSegmentLlm()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5">
+                      <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                      <span>生成 Profile</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="rounded-card border border-b-card bg-surface-page p-4">
+                  <div class="text-[11px] font-semibold text-ink-muted uppercase">Preview</div>
+                  <div class="mt-3 space-y-2 text-[12px]">
+                    <div class="font-semibold text-ink" x-text="currentSegment().industry || '未设置行业'"></div>
+                    <div class="text-ink-muted" x-text="currentSegment().note || '将基于 Segment 的人群范围生成细分 Profile。'"></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
+                <div class="relative flex-1 max-w-2xl">
+                  <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                  <input x-model="profileQuery"
+                         class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
+                         placeholder="搜索当前 Segment 的 Profile">
+                </div>
+                <div class="text-[12px] text-ink-muted whitespace-nowrap">
+                  <span class="font-semibold text-ink tabular-nums" x-text="filteredProfiles(currentSegment().id).length"></span>
+                  <span>/</span>
+                  <span class="tabular-nums" x-text="segmentProfiles(currentSegment().id).length"></span>
+                </div>
+              </div>
+              <div class="overflow-x-auto max-h-[calc(100vh-290px)] min-h-[560px]">
+                <table class="w-full text-left text-[12px]">
+                  <thead class="sticky top-0 z-10 bg-surface-page text-[10px] font-semibold uppercase text-ink-muted border-b border-b-card">
+                    <tr>
+                      <th class="px-5 py-3 w-[120px]">ID</th>
+                      <th class="px-5 py-3 min-w-[220px]">Profile</th>
+                      <th class="px-5 py-3 min-w-[300px]">画像</th>
+                      <th class="px-5 py-3 min-w-[340px]">需求</th>
+                      <th class="px-5 py-3 w-[90px]">权重</th>
+                      <th class="px-5 py-3 w-[130px] text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-b-card">
+                    <tr x-show="filteredProfiles(currentSegment().id).length === 0">
+                      <td colspan="6" class="px-5 py-14 text-center text-[12px] text-ink-muted">暂无 Profile</td>
+                    </tr>
+                    <template x-for="profile in filteredProfiles(currentSegment().id)" :key="profile.id">
+                      <tr class="hover:bg-surface-page">
+                        <td class="px-5 py-4 font-mono font-semibold text-ink-muted" x-text="profile.id"></td>
+                        <td class="px-5 py-4">
+                          <div class="font-semibold text-ink" x-text="profile.name"></div>
+                          <span class="mt-1 inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                :class="profile.status === 'active' ? 'bg-success/10 text-success' : profile.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                x-text="profile.status"></span>
+                        </td>
+                        <td class="px-5 py-4 text-ink-body" x-text="profile.demographic"></td>
+                        <td class="px-5 py-4 text-ink-body" x-text="profile.need"></td>
+                        <td class="px-5 py-4 font-semibold text-ink tabular-nums" x-text="profile.weight"></td>
+                        <td class="px-5 py-4">
+                          <div class="flex items-center justify-end gap-1">
+                            <button @click="openProfileForm(currentSegment().id, profile)"
+                                    class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-accent hover:border-accent/30 inline-flex items-center justify-center"
+                                    title="编辑 Profile">
+                              <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                            </button>
+                            <button @click="deleteProfile(currentSegment().id, profile.id)"
+                                    class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-danger hover:border-danger/30 inline-flex items-center justify-center"
+                                    title="删除 Profile">
+                              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="false" class="hidden grid grid-cols-[minmax(360px,0.85fr)_minmax(0,1.35fr)] gap-4">
             <section class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
               <div class="px-4 py-3 border-b border-b-card bg-surface-page">
                 <div class="relative">
@@ -1806,6 +2060,104 @@
               </template>
               <div x-show="!currentSegment()" class="p-10 text-center text-[12px] text-ink-muted">请先新建 Segment</div>
             </section>
+          </div>
+
+          <div x-show="segmentLlmModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6" @keydown.escape.window="closeSegmentLlmPanel()">
+            <div class="bg-surface rounded-card-lg shadow-elevated w-full max-w-5xl border border-b-card overflow-hidden">
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div>
+                  <div class="text-[15px] font-bold text-ink">LLM 生成 Brand Segment</div>
+                  <div class="text-[11px] text-ink-muted mt-0.5">输入品牌和市场目标，生成可进入 Query Pool 采样的 Segment 草稿</div>
+                </div>
+                <button type="button" @click="closeSegmentLlmPanel()" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center" title="关闭">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="p-5 grid grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)] gap-5">
+                <div class="space-y-4 text-[12px]">
+                  <div class="grid grid-cols-2 gap-4">
+                    <label class="space-y-1.5">
+                      <span class="font-semibold text-ink-muted">品牌</span>
+                      <input x-model="segmentLlmForm.brand" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    </label>
+                    <label class="space-y-1.5">
+                      <span class="font-semibold text-ink-muted">行业</span>
+                      <input x-model="segmentLlmForm.industry" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    </label>
+                    <label class="space-y-1.5">
+                      <span class="font-semibold text-ink-muted">生成数量</span>
+                      <input x-model.number="segmentLlmForm.count" type="number" min="2" max="12" step="1" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    </label>
+                    <label class="space-y-1.5">
+                      <span class="font-semibold text-ink-muted">默认状态</span>
+                      <select x-model="segmentLlmForm.status" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                        <option value="draft">draft</option>
+                        <option value="active">active</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label class="space-y-1.5 block">
+                    <span class="font-semibold text-ink-muted">品牌定位 / 产品线</span>
+                    <textarea x-model="segmentLlmForm.positioning" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </label>
+                  <label class="space-y-1.5 block">
+                    <span class="font-semibold text-ink-muted">覆盖目标</span>
+                    <textarea x-model="segmentLlmForm.goal" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </label>
+                  <label class="space-y-1.5 block">
+                    <span class="font-semibold text-ink-muted">约束</span>
+                    <textarea x-model="segmentLlmForm.constraints" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </label>
+                  <div class="flex items-center justify-end gap-2">
+                    <button type="button" @click="generateBrandSegments()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5">
+                      <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                      <span>生成 Segment 草稿</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="rounded-card border border-b-card bg-surface-page overflow-hidden">
+                  <div class="px-4 py-3 border-b border-b-card flex items-center justify-between">
+                    <div>
+                      <div class="text-[13px] font-bold text-ink">生成结果</div>
+                      <div class="text-[11px] text-ink-muted mt-0.5" x-text="segmentLlmDrafts.length ? segmentLlmDrafts.length + ' 个 Segment 草稿' : '尚未生成'"></div>
+                    </div>
+                    <button type="button"
+                            @click="applySegmentLlmDrafts()"
+                            :disabled="segmentLlmDrafts.length === 0"
+                            class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn disabled:opacity-50">
+                      加入列表
+                    </button>
+                  </div>
+                  <div class="max-h-[520px] overflow-y-auto divide-y divide-b-card">
+                    <div x-show="segmentLlmDrafts.length === 0" class="p-8 text-center text-[12px] text-ink-muted">
+                      生成后会在这里预览 Segment 草稿
+                    </div>
+                    <template x-for="draft in segmentLlmDrafts" :key="draft.id">
+                      <div class="p-4">
+                        <div class="flex items-center justify-between gap-3">
+                          <div class="min-w-0">
+                            <div class="flex items-center gap-2">
+                              <span class="font-mono text-[11px] font-semibold text-ink-muted" x-text="draft.id"></span>
+                              <span class="inline-flex items-center h-5 px-2 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="draft.status"></span>
+                            </div>
+                            <div class="mt-1 text-[13px] font-bold text-ink truncate" x-text="draft.name"></div>
+                          </div>
+                          <div class="text-[12px] font-semibold text-ink tabular-nums" x-text="Math.round(draft.weight * 100) + '%'"></div>
+                        </div>
+                        <div class="mt-2 text-[12px] text-ink-body" x-text="draft.note"></div>
+                        <div class="mt-2 grid grid-cols-3 gap-2 text-[11px] text-ink-muted">
+                          <div class="rounded-btn bg-surface border border-b-card px-2 py-1.5 truncate" x-text="draft.ageRange"></div>
+                          <div class="rounded-btn bg-surface border border-b-card px-2 py-1.5 truncate" x-text="draft.income"></div>
+                          <div class="rounded-btn bg-surface border border-b-card px-2 py-1.5 truncate" x-text="draft.regions"></div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+              <div x-show="segmentLlmError" x-cloak class="mx-5 mb-5 rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="segmentLlmError"></div>
+            </div>
           </div>
 
           <div x-show="segmentModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6" @keydown.escape.window="closeSegmentForm()">
@@ -6712,12 +7064,17 @@ function segmentCrudPanel() {
   return {
     segmentQuery: '',
     profileQuery: '',
+    segmentView: 'segments',
     selectedSegmentId: 'SEG-001',
     notice: '',
     noticeTimer: null,
     segmentModalOpen: false,
+    segmentLlmModalOpen: false,
     profileModalOpen: false,
     importModalOpen: false,
+    llmPanelOpen: false,
+    segmentLlmDrafts: [],
+    segmentLlmError: '',
     editingSegmentId: null,
     editingProfileId: null,
     profileSegmentId: null,
@@ -6737,6 +7094,15 @@ function segmentCrudPanel() {
       samplingRate: '',
       note: '',
     },
+    segmentLlmForm: {
+      brand: 'CHANEL',
+      industry: '美妆个护',
+      count: 6,
+      status: 'draft',
+      positioning: '高端护肤、香氛与彩妆，重视品牌质感、功效证据和礼赠场景。',
+      goal: '覆盖核心购买者、价格/渠道比较者、竞品摇摆者、礼赠决策者和新用户入门人群。',
+      constraints: '每个 Segment 必须有清晰采样边界，避免只按年龄或城市粗分。',
+    },
     profileForm: {
       id: '',
       name: '',
@@ -6744,6 +7110,12 @@ function segmentCrudPanel() {
       need: '',
       weight: '1.0',
       status: 'active',
+    },
+    llmForm: {
+      brand: 'CHANEL',
+      count: 6,
+      goal: '基于品牌、行业和当前 Segment，生成可用于 Query 采样的细分 Profile。',
+      notes: '覆盖价格、功效、场景、渠道和竞品比较，不生成重复人群。',
     },
     segments: [
       { id:'SEG-001', name:'一线年轻女性', industry:'美妆个护', status:'active', weight:0.35, ageRange:'18-30', income:'中高收入', regions:'北京、上海、广州、深圳', samplingRate:'30%', note:'关注成分、肤感、口碑和折扣组合。' },
@@ -6797,6 +7169,9 @@ function segmentCrudPanel() {
     totalProfiles() {
       return Object.values(this.profiles).reduce((sum, rows) => sum + rows.length, 0);
     },
+    activeProfiles(segmentId) {
+      return this.segmentProfiles(segmentId).filter(profile => profile.status === 'active').length;
+    },
     refreshIcons() {
       this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
@@ -6808,6 +7183,19 @@ function segmentCrudPanel() {
     selectSegment(id) {
       this.selectedSegmentId = id;
       this.profileQuery = '';
+      this.refreshIcons();
+    },
+    openSegmentProfiles(id) {
+      this.selectedSegmentId = id;
+      this.profileQuery = '';
+      this.segmentView = 'profiles';
+      this.closeLlmPanel();
+      this.refreshIcons();
+    },
+    backToSegments() {
+      this.segmentView = 'segments';
+      this.profileQuery = '';
+      this.closeLlmPanel();
       this.refreshIcons();
     },
     nextSegmentId() {
@@ -6824,6 +7212,79 @@ function segmentCrudPanel() {
         return Number.isFinite(n) ? Math.max(max, n) : max;
       }, 0);
       return 'P-' + prefix + '-' + String(maxId + 1).padStart(2, '0');
+    },
+    openSegmentLlmPanel() {
+      this.segmentLlmError = '';
+      this.segmentLlmDrafts = [];
+      this.segmentLlmModalOpen = true;
+      this.refreshIcons();
+    },
+    closeSegmentLlmPanel() {
+      this.segmentLlmModalOpen = false;
+      this.segmentLlmError = '';
+    },
+    generateBrandSegments() {
+      const brand = String(this.segmentLlmForm.brand || '').trim();
+      if (!brand) {
+        this.segmentLlmError = '请先输入品牌';
+        return;
+      }
+      const industry = String(this.segmentLlmForm.industry || '').trim() || '未设置行业';
+      const count = Math.max(2, Math.min(Number(this.segmentLlmForm.count) || 6, 12));
+      const status = this.segmentLlmForm.status || 'draft';
+      const maxId = this.segments.reduce((max, segment) => {
+        const n = parseInt(String(segment.id || '').replace(/\D/g, ''), 10);
+        return Number.isFinite(n) ? Math.max(max, n) : max;
+      }, 0);
+      const archetypes = [
+        ['核心高意向购买者', '25-38', '中高收入', '一线、新一线城市', '32%', '已经认可品类价值，需要判断 ' + brand + ' 是否值得作为首选。'],
+        ['功效证据比较者', '22-35', '中等以上', '一线、新一线城市', '24%', '关注成分、功效证据、真实反馈和竞品横评。'],
+        ['价格渠道敏感者', '24-42', '中等收入', '新一线、二线城市', '18%', '比较官方渠道、折扣、套装和到手价，容易被促销影响。'],
+        ['礼赠场景决策者', '26-45', '中高收入', '一线、新一线城市', '16%', '关注包装体面感、送礼对象适配度、踩雷风险和预算区间。'],
+        ['竞品摇摆用户', '24-40', '中高收入', '全国重点城市', '14%', '在 ' + brand + ' 与替代品牌之间摇摆，需要清晰差异和购买理由。'],
+        ['新用户入门人群', '20-32', '中等收入', '一二线城市', '12%', '对品牌有兴趣但缺少入门路径，需要低门槛解释和首购建议。'],
+        ['复购与升级用户', '28-46', '高收入', '一线、新一线城市', '10%', '已有相关消费经验，关注升级价值、长期体验和复购稳定性。'],
+        ['口碑风险规避者', '24-44', '中等以上', '全国重点城市', '8%', '担心不适配、售后或虚假宣传，需要风险解释和负面反馈筛查。'],
+      ];
+      this.segmentLlmDrafts = Array.from({ length: count }, (_, index) => {
+        const archetype = archetypes[index % archetypes.length];
+        return {
+          id: 'SEG-' + String(maxId + index + 1).padStart(3, '0'),
+          name: brand + ' · ' + archetype[0],
+          industry,
+          status,
+          weight: Number(Math.max(0.08, 0.3 - index * 0.025).toFixed(2)),
+          ageRange: archetype[1],
+          income: archetype[2],
+          regions: archetype[3],
+          samplingRate: archetype[4],
+          note: archetype[5],
+        };
+      });
+      this.segmentLlmError = '';
+      this.refreshIcons();
+    },
+    applySegmentLlmDrafts() {
+      if (!this.segmentLlmDrafts.length) return;
+      let added = 0;
+      let updated = 0;
+      for (const draft of this.segmentLlmDrafts) {
+        const segment = { ...draft };
+        const index = this.segments.findIndex(item => item.id === segment.id);
+        if (index >= 0) {
+          this.segments.splice(index, 1, segment);
+          updated += 1;
+        } else {
+          this.segments.unshift(segment);
+          this.profiles[segment.id] = this.profiles[segment.id] || [];
+          added += 1;
+        }
+      }
+      this.segmentView = 'segments';
+      this.selectedSegmentId = this.segmentLlmDrafts[0].id;
+      this.closeSegmentLlmPanel();
+      this.setNotice('LLM Segment 已加入列表：新增 ' + added + '，更新 ' + updated);
+      this.refreshIcons();
     },
     openSegmentForm(segment) {
       this.editingSegmentId = segment ? segment.id : null;
@@ -6864,6 +7325,7 @@ function segmentCrudPanel() {
         this.segments = [form, ...this.segments];
         this.profiles[form.id] = [];
         this.selectedSegmentId = form.id;
+        this.segmentView = 'profiles';
       }
       this.closeSegmentForm();
       this.setNotice(wasEditing ? 'Segment 已更新' : 'Segment 已创建');
@@ -6877,6 +7339,7 @@ function segmentCrudPanel() {
       if (this.selectedSegmentId === segment.id) {
         this.selectedSegmentId = this.segments[0]?.id || '';
       }
+      if (!this.selectedSegmentId) this.segmentView = 'segments';
       this.setNotice('Segment 已删除');
       this.refreshIcons();
     },
@@ -6933,6 +7396,78 @@ function segmentCrudPanel() {
       this.profiles[segmentId] = this.segmentProfiles(segmentId).filter(profile => profile.id !== profileId);
       this.setNotice('Profile 已删除');
       this.refreshIcons();
+    },
+    exportProfiles(segmentId) {
+      const segment = this.segments.find(item => item.id === segmentId);
+      const rows = this.segmentProfiles(segmentId);
+      const headers = ['id', 'segment_id', 'name', 'demographic', 'need', 'weight', 'status'];
+      const escapeCsv = value => '"' + String(value ?? '').replace(/"/g, '""') + '"';
+      const csv = [
+        headers.join(','),
+        ...rows.map(profile => [
+          profile.id,
+          segmentId,
+          profile.name,
+          profile.demographic,
+          profile.need,
+          profile.weight,
+          profile.status,
+        ].map(escapeCsv).join(',')),
+      ].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (segment ? segment.id : segmentId) + '-profiles.csv';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      this.setNotice('Profile 已导出');
+    },
+    openLlmPanel() {
+      if (!this.currentSegment()) return;
+      this.llmPanelOpen = true;
+      this.refreshIcons();
+    },
+    closeLlmPanel() {
+      this.llmPanelOpen = false;
+    },
+    generateSegmentLlm() {
+      const segment = this.currentSegment();
+      if (!segment) return;
+      const count = Math.max(1, Math.min(Number(this.llmForm.count) || 6, 20));
+      this.generateProfilesFromLlm(segment, count);
+      this.refreshIcons();
+    },
+    generateProfilesFromLlm(segment, count) {
+      const prefix = String(segment.id || this.selectedSegmentId || 'SEG-000').replace(/^SEG-/, '');
+      const existing = this.segmentProfiles(segment.id);
+      const maxId = existing.reduce((max, profile) => {
+        const n = parseInt(String(profile.id || '').split('-').pop(), 10);
+        return Number.isFinite(n) ? Math.max(max, n) : max;
+      }, 0);
+      const archetypes = [
+        ['功效证据比较者', '关注功效证明、成分透明度、权威背书和真实反馈。'],
+        ['渠道价格敏感者', '比较官方渠道、折扣力度、套装组合和到手价。'],
+        ['场景礼赠决策者', '关注包装体面感、送礼风险、适用对象和预算区间。'],
+        ['竞品横评用户', '需要把目标品牌和替代品牌放在同一标准下比较。'],
+        ['复购风险控制者', '关注长期使用体验、售后、补货稳定性和踩雷概率。'],
+        ['新用户入门者', '需要低门槛解释、入门款推荐和购买路径。'],
+      ];
+      const generated = Array.from({ length: count }, (_, index) => {
+        const archetype = archetypes[index % archetypes.length];
+        return {
+          id: 'P-' + prefix + '-' + String(maxId + index + 1).padStart(2, '0'),
+          name: archetype[0],
+          demographic: [segment.ageRange, segment.income, segment.regions].filter(Boolean).join(' / ') || segment.name,
+          need: this.llmForm.brand + ' · ' + archetype[1],
+          weight: (1 + (index % 5) * 0.1).toFixed(1),
+          status: 'draft',
+        };
+      });
+      this.profiles[segment.id] = [...generated, ...existing];
+      this.setNotice('LLM 已生成 ' + generated.length + ' 个 Profile 草稿');
     },
     openImport(mode, segmentId) {
       this.importMode = mode;
