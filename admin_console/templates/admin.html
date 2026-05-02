@@ -6516,9 +6516,12 @@ const ADMIN_BASE_PATH = (() => {
   return index >= 0 ? path.slice(0, index + marker.length) : '/admin';
 })();
 const APP_BASE_PATH = ADMIN_BASE_PATH.replace(/\/admin$/, '') || '';
-const API_BASE = window.location.port === '5173'
-  ? ADMIN_BASE_PATH + '/api'
-  : APP_BASE_PATH + '/api';
+const API_BASE = (() => {
+  if (window.location.port === '5000') return APP_BASE_PATH + '/api';
+  if (window.location.port === '5173') return ADMIN_BASE_PATH + '/api';
+  if (ADMIN_BASE_PATH === '/admin') return '/admin/api';
+  return APP_BASE_PATH + '/api';
+})();
 
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
