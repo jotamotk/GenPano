@@ -24,6 +24,64 @@ except Exception:  # pragma: no cover - optional dependency
 ALLOWED_TOPIC_DIMENSIONS = {"brand", "product", "category", "scenario", "question"}
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
 
+CONSUMER_ALIAS_OVERRIDES = {
+    "lvmh": ["LV", "Dior", "迪奥", "Sephora", "丝芙兰", "大牌香水", "大牌包"],
+    "moethennessylouisvuitton": ["LV", "Dior", "迪奥", "Sephora", "丝芙兰", "大牌香水", "大牌包"],
+    "路威酩轩": ["LV", "Dior", "迪奥", "Sephora", "丝芙兰", "大牌香水", "大牌包"],
+}
+
+STILTED_TOPIC_TERMS = (
+    "LVMH",
+    "路威酩轩",
+    "Moet Hennessy",
+    "旗下",
+    "集团",
+    "产品线",
+    "品类线",
+    "核心品类",
+    "奢品品牌",
+    "品牌档次",
+    "档次是怎么划分",
+    "高端收藏级",
+    "爆款新款",
+    "热门款",
+    "知名品牌",
+    "市场表现",
+    "布局策略",
+    "趋势分析",
+    "用户画像",
+    "转化路径",
+    "私域",
+    "CRM",
+    "会员权益",
+    "客流",
+    "营销",
+)
+
+CONSUMER_TOPIC_SIGNALS = (
+    "?",
+    "？",
+    "怎么",
+    "哪",
+    "什么",
+    "好不好",
+    "好吗",
+    "值不值",
+    "值得",
+    "推荐",
+    "适合",
+    "区别",
+    "会不会",
+    "吗",
+    "嘛",
+    "要不要",
+    "能不能",
+    "怎么买",
+    "不踩雷",
+    "够用",
+    "耐造",
+)
+
 
 class TopicPlanLLMError(ValueError):
     """Controlled error returned to the API layer when LLM output is unusable."""
@@ -150,6 +208,53 @@ def load_doubao_config(env: dict[str, str] | None = None) -> DoubaoConfig:
 def normalize_topic_title(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value or "").casefold()
     return "".join(ch for ch in normalized if ch.isalnum())
+
+
+def consumer_aliases_for_brand(brand: dict[str, Any]) -> list[str]:
+    raw_terms = [brand.get("name"), brand.get("name_en"), brand.get("name_zh")]
+    aliases = brand.get("aliases")
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    if isinstance(aliases, (list, tuple)):
+        raw_terms.extend(aliases)
+
+    result: list[str] = []
+    normalized_terms = []
+    for raw in raw_terms:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        normalized = normalize_topic_title(text)
+        normalized_terms.append(normalized)
+        used_override = False
+        for key, values in CONSUMER_ALIAS_OVERRIDES.items():
+            if key in normalized or normalized in key:
+                used_override = True
+                for value in values:
+                    if value not in result:
+                        result.append(value)
+        if used_override:
+            continue
+        if text not in result and len(normalized) <= 12 and "company" not in text.casefold():
+            result.append(text)
+    return result[:10]
+
+
+def is_natural_consumer_topic(title: str) -> bool:
+    raw = (title or "").strip()
+    if len(raw) < 4 or len(raw) > 80:
+        return False
+    lowered = raw.casefold()
+    if any(term.casefold() in lowered for term in STILTED_TOPIC_TERMS):
+        return False
+    if any(term.casefold() in lowered for term in ("operations", "strategy", "analysis", "crm")):
+        return False
+    return any(signal.casefold() in lowered for signal in CONSUMER_TOPIC_SIGNALS)
 
 
 def is_near_duplicate_title(title: str, existing_normalized: set[str]) -> bool:
@@ -336,6 +441,8 @@ def build_topic_plan_messages(
             "name": str(brand.get("name") or "").strip(),
             "industry": brand.get("industry") or brand.get("industry_name") or "",
             "topic_count": brand.get("topic_count", 0),
+            "aliases": brand.get("aliases") or [],
+            "consumer_aliases": consumer_aliases_for_brand(brand),
         }
         for brand in brands
         if str(brand.get("name") or "").strip()
@@ -365,12 +472,31 @@ def build_topic_plan_messages(
         "\u5ba2\u6237\u5206\u5c42",
         "\u751f\u547d\u5468\u671f",
         "\u52a8\u9500",
+        "LVMH",
+        "\u8def\u5a01\u9149\u8f69",
+        "\u65d7\u4e0b",
+        "\u96c6\u56e2",
+        "\u4ea7\u54c1\u7ebf",
+        "\u54c1\u7c7b\u7ebf",
+        "\u6838\u5fc3\u54c1\u7c7b",
+        "\u5962\u54c1\u54c1\u724c",
+        "\u54c1\u724c\u6863\u6b21",
+        "\u9ad8\u7aef\u6536\u85cf\u7ea7",
+        "\u7206\u6b3e\u65b0\u6b3e",
+        "\u70ed\u95e8\u6b3e",
+        "\u77e5\u540d\u54c1\u724c",
+        "\u5e02\u573a\u8868\u73b0",
+        "\u5e03\u5c40\u7b56\u7565",
+        "\u8d8b\u52bf\u5206\u6790",
     ]
     consumer_title_examples = [
         "\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009",
         "NIKE\u8dd1\u978b\u9002\u5408\u65b0\u624b\u6162\u8dd1\u5417",
         "\u53ef\u53e3\u53ef\u4e50\u65e0\u7cd6\u548c\u666e\u901a\u7248\u53e3\u611f\u533a\u522b",
         "\u5b9d\u9a6c\u65b0\u80fd\u6e90\u8f66\u65e5\u5e38\u901a\u52e4\u4f53\u9a8c\u600e\u4e48\u6837",
+        "\u9884\u7b97\u4e00\u4e07\u5de6\u53f3\u9001\u5973\u751f\u5927\u724c\u5305\u600e\u4e48\u9009",
+        "\u60f3\u4e70\u5927\u724c\u9999\u6c34\u9001\u4eba\u54ea\u79cd\u5473\u9053\u4e0d\u5bb9\u6613\u8e29\u96f7",
+        "LV\u5165\u95e8\u6b3e\u5305\u5305\u4e70\u54ea\u53ea\u66f4\u5b9e\u7528",
     ]
     payload = {
         "industry": industry,
@@ -402,11 +528,15 @@ def build_topic_plan_messages(
         "5. Never include banned_title_terms in topics[].title. Especially avoid member, private-domain, repurchase, channel, CRM, conversion, data-operations, and lifecycle wording.\n"
         "6. topics[].reason must be Chinese for an admin reviewer, but it should explain consumer intent and coverage gap, not an internal operations plan.\n"
         "7. Each title must be about the selected brand, industry, category, and coverage_gaps, but must not expose internal coverage mechanics.\n"
-        "8. Avoid duplicates or near-duplicates with existing_topics.\n"
-        "9. dimension must be one of brand, product, category, scenario, question.\n"
-        "10. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"
-        "11. If allowed_brand_names and coverage_gaps are non-empty, return at least 1 candidate.\n"
-        "12. Return at most max_topics items and match output_schema exactly.\n"
+        "8. If a selected brand is a holding company or corporate group, do not force the legal/group name into the title. Use selected_brands[].consumer_aliases when they sound like consumer words, or ask the category/scenario directly without naming the group.\n"
+        "9. Never write phrases like 旗下, 集团, 产品线, 品类线, 品牌档次, 知名品牌, 爆款新款, 市场表现, 趋势分析, 用户画像, 转化路径.\n"
+        "10. Good group-brand style: 预算一万左右送女生大牌包怎么选 / 想买大牌香水送人哪种味道不容易踩雷 / LV入门款包包买哪只更实用.\n"
+        "11. Bad group-brand style: LVMH旗下的香水线哪些性价比更高 / LVMH集团旗下的奢品品牌档次是怎么划分的.\n"
+        "12. Avoid duplicates or near-duplicates with existing_topics.\n"
+        "13. dimension must be one of brand, product, category, scenario, question.\n"
+        "14. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"
+        "15. If allowed_brand_names and coverage_gaps are non-empty, return at least 1 candidate.\n"
+        "16. Return at most max_topics items and match output_schema exactly.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
