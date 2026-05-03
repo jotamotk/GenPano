@@ -1205,359 +1205,196 @@
         </div>
       </template>
 
-      <!-- ============ PAGE: PIPELINE SCHEDULER ============ -->
+      <!-- ============ PAGE: SCHEDULER (replaces "采集调度") ============ -->
       <template x-if="page==='planner-scheduler'">
-        <div class="space-y-4">
+        <div class="space-y-4" x-init="loadSchedulerAll()">
+
+          <!-- Header: status pill + global pause toggle -->
           <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 text-[12px]">
-              <button @click="goto('planner-topics')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
-                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">1</span>
-                <span class="font-semibold">Topic Plan</span>
-              </button>
-              <span class="w-6 h-px bg-b-card"></span>
-              <button @click="goto('planner-prompt-matrix')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
-                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">2</span>
-                <span class="font-semibold">Prompt Matrix</span>
-              </button>
-              <span class="w-6 h-px bg-b-card"></span>
-              <button @click="goto('planner-query-pool')" class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn text-ink-muted hover:text-ink hover:bg-surface-page transition-colors">
-                <span class="w-5 h-5 rounded-full border border-b-card bg-surface text-[10px] font-bold flex items-center justify-center">3</span>
-                <span class="font-semibold">Query Pool</span>
-              </button>
-              <span class="w-6 h-px bg-b-card"></span>
-              <div class="inline-flex items-center gap-1.5 h-8 px-2 rounded-btn bg-accent/5 text-accent">
-                <span class="w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center">4</span>
-                <span class="font-semibold">Collection Schedule</span>
-              </div>
+            <div class="flex items-center gap-3">
+              <h2 class="text-[18px] font-bold text-ink">Scheduler</h2>
+              <span class="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-badge text-[11px] font-semibold"
+                    :class="schedulerCfg.mode==='auto' ? 'bg-success/10 text-success' : schedulerCfg.mode==='manual' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'">
+                <span class="w-1.5 h-1.5 rounded-full"
+                      :class="schedulerCfg.mode==='auto' ? 'bg-success animate-pulse' : schedulerCfg.mode==='manual' ? 'bg-info' : 'bg-warning'"></span>
+                <span x-text="schedulerCfg.mode==='auto' ? '自动 · 运行中' : schedulerCfg.mode==='manual' ? '手动 · 待触发' : '已暂停'"></span>
+              </span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
+                      @click="loadSchedulerAll()">刷新</button>
+              <button class="h-9 px-4 rounded-btn border border-warning/30 bg-warning/10 text-warning text-[12px] font-semibold hover:bg-warning/20"
+                      @click="toggleSchedulerMode('paused')"
+                      x-show="schedulerCfg.mode!=='paused'">⏸ 全局暂停</button>
+              <button class="h-9 px-4 rounded-btn border border-success/30 bg-success/10 text-success text-[12px] font-semibold hover:bg-success/20"
+                      @click="toggleSchedulerMode('auto')"
+                      x-show="schedulerCfg.mode==='paused'">▶ 恢复自动</button>
             </div>
           </div>
 
-          <div class="grid grid-cols-[1.05fr_1.35fr] gap-4">
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="flex items-center justify-between mb-4">
-                <div>
-                  <h3 class="text-[15px] font-bold text-ink">调度配置</h3>
-                </div>
-                <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">auto</span>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <label class="space-y-1">
-                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Intake Batch</span>
-                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                    <option>scheduler_intake_0429_pm</option>
-                    <option>scheduler_intake_0429_am</option>
-                  </select>
-                </label>
-                <label class="space-y-1">
-                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Window</span>
-                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                    <option>18:00-22:00 UTC+8</option>
-                    <option>06:00-10:00 UTC+8</option>
-                  </select>
-                </label>
-                <label class="space-y-1">
-                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Budget Policy</span>
-                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                    <option>brand weighted cap</option>
-                    <option>equal distribution</option>
-                    <option>priority first</option>
-                  </select>
-                </label>
-                <label class="space-y-1">
-                  <span class="text-[10px] font-semibold text-ink-muted uppercase">Resource Policy</span>
-                  <select class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                    <option>healthy accounts only</option>
-                    <option>include warm-up accounts</option>
-                    <option>manual assignment</option>
-                  </select>
-                </label>
-              </div>
-            </div>
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="flex items-center justify-between mb-4">
-                <div>
-                  <h3 class="text-[15px] font-bold text-ink">调度逻辑</h3>
-                </div>
-                <span class="text-[10px] font-mono text-ink-muted">collection_schedule_run.v1</span>
-              </div>
-              <div class="grid grid-cols-4 gap-2">
-                <template x-for="step in schedulerWorkflow" :key="step.title">
-                  <div class="rounded-card bg-surface-page border border-b-card p-3">
-                    <div class="flex items-center justify-between">
-                      <span class="text-[10px] font-bold text-accent" x-text="step.no"></span>
-                      <i :data-lucide="step.icon" class="w-3.5 h-3.5 text-accent"></i>
-                    </div>
-                    <div class="text-[12px] font-semibold text-ink mt-2" x-text="step.title"></div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-[1fr_1fr] gap-4">
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="flex items-center justify-between mb-4">
-                <div>
-                  <h3 class="text-[15px] font-bold text-ink">调度门禁</h3>
-                </div>
-                <button class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">资源检查</button>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <template x-for="gate in schedulerQualityGates" :key="gate.title">
-                  <div class="rounded-card bg-surface-page border border-b-card p-3">
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
-                      <span class="text-[10px] font-semibold" :class="gate.tone === 'success' ? 'text-success' : gate.tone === 'warning' ? 'text-warning' : 'text-accent'" x-text="gate.value"></span>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="flex items-center justify-between mb-4">
-                <div>
-                  <h3 class="text-[15px] font-bold text-ink">调度产物</h3>
-                </div>
-                <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold">tracker-ready</span>
-              </div>
-              <div class="space-y-2">
-                <template x-for="artifact in schedulerArtifacts" :key="artifact.name">
-                  <div class="flex items-start gap-3 rounded-card bg-surface-page border border-b-card p-3">
-                    <i :data-lucide="artifact.icon" class="w-4 h-4 text-accent mt-0.5 shrink-0"></i>
-                    <div class="min-w-0">
-                      <div class="text-[12px] font-semibold text-ink font-mono" x-text="artifact.name"></div>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </div>
-
-          <!-- ① 今日采集批次 -->
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-            <div class="flex items-center justify-between mb-4">
+          <!-- ─── A-1: Global policy ─── -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <h3 class="text-[15px] font-bold text-ink mb-4">全局调度策略</h3>
+            <div class="grid grid-cols-2 gap-x-6 gap-y-4">
+              <!-- Mode -->
               <div>
-                <h3 class="text-[15px] font-bold text-ink">今日采集批次</h3>
-                <p class="text-[12px] text-ink-muted mt-1">自动调度 06:00 / 18:00 UTC+8 · 上次更新 <span class="text-ink-body" x-text="plannerStatus.lastRunAt"></span></p>
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-badge text-[11px] font-semibold"
-                      :class="plannerStatus.status==='completed' ? 'bg-success/10 text-success' : plannerStatus.status==='running' ? 'bg-accent/10 text-accent' : 'bg-danger/10 text-danger'">
-                  <span class="w-1.5 h-1.5 rounded-full" :class="plannerStatus.status==='completed' ? 'bg-success' : plannerStatus.status==='running' ? 'bg-accent animate-pulse' : 'bg-danger'"></span>
-                  <span x-text="plannerStatus.status==='completed' ? '已完成' : plannerStatus.status==='running' ? '运行中' : '失败'"></span>
-                </span>
-                <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 flex items-center gap-1.5">
-                  <i data-lucide="play" class="w-3.5 h-3.5"></i> 运行 Planner
-                </button>
-              </div>
-            </div>
-            <div class="grid grid-cols-6 gap-3">
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">总 Query</div>
-                <div class="text-[20px] font-bold text-ink mt-1" x-text="schedulerBatches.total"></div>
-              </div>
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">已完成</div>
-                <div class="text-[20px] font-bold text-success mt-1" x-text="schedulerBatches.completed"></div>
-              </div>
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">失败</div>
-                <div class="text-[20px] font-bold text-danger mt-1" x-text="schedulerBatches.failed"></div>
-              </div>
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">排队中</div>
-                <div class="text-[20px] font-bold text-warning mt-1" x-text="schedulerBatches.pending"></div>
-              </div>
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">预估成本</div>
-                <div class="text-[20px] font-bold text-ink mt-1" x-text="schedulerBatches.estCost"></div>
-              </div>
-              <div class="p-3 rounded-card bg-surface-page border border-b-card">
-                <div class="text-[10px] text-ink-muted font-semibold uppercase">剩余时间</div>
-                <div class="text-[20px] font-bold text-ink mt-1" x-text="schedulerBatches.eta"></div>
-              </div>
-            </div>
-            <!-- Funnel -->
-            <div class="mt-5 space-y-2">
-              <div class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider mb-2">四层 Pipeline 漏斗</div>
-              <template x-for="s in schedulerFunnel" :key="s.layer">
-                <div class="flex items-center gap-3">
-                  <span class="w-16 text-[12px] font-semibold text-ink" x-text="s.layer"></span>
-                  <div class="flex-1 h-5 bg-surface-page rounded-btn overflow-hidden">
-                    <div class="h-full rounded-btn" :style="'width:' + (s.count/schedulerFunnel[0].total*100) + '%; background:' + s.color"></div>
-                  </div>
-                  <span class="w-32 text-right text-[11px] text-ink-muted tabular-nums" x-text="s.count.toLocaleString() + ' / ' + s.total.toLocaleString()"></span>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">调度模式</label>
+                <div class="flex items-center gap-3 mt-2 text-[12px]">
+                  <label class="flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" value="auto" x-model="schedulerCfg.mode" @change="schedulerDirty=true">
+                    <span>自动 <span class="text-ink-muted">(每日Beat触发)</span></span>
+                  </label>
+                  <label class="flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" value="manual" x-model="schedulerCfg.mode" @change="schedulerDirty=true">
+                    <span>手动 <span class="text-ink-muted">(只响应"立即触发")</span></span>
+                  </label>
+                  <label class="flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" value="paused" x-model="schedulerCfg.mode" @change="schedulerDirty=true">
+                    <span>暂停 <span class="text-ink-muted">(全部停摆)</span></span>
+                  </label>
                 </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- ② Planner 五步 Bottom-Up 流程 (核心) -->
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-            <div class="flex items-center justify-between mb-1">
+              </div>
+              <!-- Daily time + tz -->
               <div>
-                <h3 class="text-[15px] font-bold text-ink">Planner · Bottom-Up 生成流程</h3>
-                <p class="text-[12px] text-ink-muted mt-1">从知识图谱 (产品→品牌→行业) 递进生成 Topic · 共 5 步</p>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">触发时间</label>
+                <div class="flex items-center gap-2 mt-2">
+                  <input type="text" x-model="schedulerCfg.daily_time" @change="schedulerDirty=true"
+                         placeholder="09:00"
+                         class="w-20 h-8 px-2 rounded-btn border border-b-default text-[12px] text-center" />
+                  <span class="text-[11px] text-ink-muted">时区</span>
+                  <input type="text" x-model="schedulerCfg.timezone" @change="schedulerDirty=true"
+                         placeholder="Asia/Shanghai"
+                         class="w-32 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+                </div>
               </div>
-              <div class="text-right">
-                <div class="text-[22px] font-bold text-accent" x-text="plannerStatus.topicsGenerated.toLocaleString()"></div>
-                <div class="text-[11px] text-ink-muted">最终 Topic 数</div>
-              </div>
-            </div>
-
-            <!-- 5-step pipeline visualization -->
-            <div class="mt-5 space-y-3">
-              <template x-for="s in plannerStatus.steps" :key="s.step">
-                <div class="rounded-card border border-b-card overflow-hidden">
-                  <!-- Step header -->
-                  <div class="flex items-center gap-3 px-4 py-3 bg-surface-page/60">
-                    <div class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[12px] font-bold" :style="'background:' + s.color">
-                      <span x-text="s.step"></span>
-                    </div>
-                    <div class="flex-1">
-                      <div class="text-[13px] font-semibold text-ink" x-text="s.name"></div>
-                      <div class="text-[11px] text-ink-muted" x-text="s.desc"></div>
-                    </div>
-                    <template x-if="s.count">
-                      <div class="text-right">
-                        <div class="text-[17px] font-bold" :style="'color:' + s.color" x-text="'+' + s.count.toLocaleString()"></div>
-                        <div class="text-[10px] text-ink-muted">Topics 产出</div>
-                      </div>
-                    </template>
-                    <template x-if="s.removed">
-                      <div class="text-right">
-                        <div class="text-[17px] font-bold text-danger" x-text="'-' + s.removed"></div>
-                        <div class="text-[10px] text-ink-muted">淘汰 → 最终 <span class="font-semibold text-ink" x-text="s.final.toLocaleString()"></span></div>
+              <!-- Capacity (read-only) -->
+              <div class="col-span-2">
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">当日产出 <span class="font-normal normal-case">(自动算出 = Σ 账号 daily_limit)</span></label>
+                <div class="mt-2 rounded-card bg-surface-page border border-b-card p-3">
+                  <div class="text-[20px] font-bold text-ink">≈ <span x-text="(schedulerCfg.capacity_total || 0).toLocaleString()"></span> 条 / 天</div>
+                  <div class="grid grid-cols-3 gap-2 mt-3 text-[11px]">
+                    <template x-for="c in (schedulerCfg.capacity || [])" :key="c.engine">
+                      <div class="flex items-center justify-between p-2 rounded-card bg-surface border border-b-card/60">
+                        <div>
+                          <div class="font-semibold text-ink" x-text="c.engine"></div>
+                          <div class="text-[10px] text-ink-muted">
+                            <span x-text="c.accounts_active + ' 活跃账号'"></span>
+                            ·
+                            geo: <span x-text="c.expected_geo || '—'"></span>
+                          </div>
+                        </div>
+                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="(c.daily_capacity || 0).toLocaleString() + ' 条'"></div>
                       </div>
                     </template>
                   </div>
-                  <!-- Step sources / checks -->
-                  <div class="px-4 py-2.5 flex flex-wrap gap-1.5">
-                    <template x-for="src in (s.sources || s.checks)" :key="src">
-                      <span class="inline-flex items-center px-2 py-1 rounded-badge text-[10.5px] font-medium"
-                            :class="s.step===5 ? 'bg-danger/5 text-danger' : 'bg-surface-page text-ink-body-soft border border-b-card/50'"
-                            x-text="src"></span>
-                    </template>
-                  </div>
+                  <div class="text-[10.5px] text-ink-muted mt-2">想调整 → 进 [账号池] 改单账号 daily_limit</div>
                 </div>
-              </template>
+              </div>
+              <!-- Temp global cap -->
+              <div class="col-span-2">
+                <label class="flex items-center gap-2 text-[11px] font-semibold text-ink-muted uppercase cursor-pointer">
+                  <input type="checkbox"
+                         :checked="schedulerCfg.temp_global_cap !== null && schedulerCfg.temp_global_cap !== undefined"
+                         @change="schedulerCfg.temp_global_cap = $event.target.checked ? (schedulerCfg.temp_global_cap || 100) : null; schedulerDirty=true">
+                  启用临时全局上限
+                  <span class="font-normal normal-case text-ink-muted/80">(默认关闭，风控紧时刹车用)</span>
+                </label>
+                <input type="number" min="0"
+                       x-show="schedulerCfg.temp_global_cap !== null && schedulerCfg.temp_global_cap !== undefined"
+                       x-model.number="schedulerCfg.temp_global_cap"
+                       @change="schedulerDirty=true"
+                       class="mt-2 w-32 h-8 px-2 rounded-btn border border-b-default text-[12px] text-right" />
+              </div>
+              <!-- Retry -->
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">失败重试</label>
+                <div class="flex items-center gap-2 mt-2 text-[12px]">
+                  最多
+                  <input type="number" min="0" x-model.number="schedulerCfg.retry_max" @change="schedulerDirty=true"
+                         class="w-16 h-8 px-2 rounded-btn border border-b-default text-[12px] text-center" />
+                  次 · 退避 指数 2^n 秒
+                </div>
+              </div>
+              <!-- Risk protection -->
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">风控保护</label>
+                <div class="text-[12px] text-ink mt-2">触发限流 → 12h cooldown <span class="text-ink-muted">(已有逻辑，不可关)</span></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 mt-5 pt-4 border-t border-b-card">
+              <button class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40"
+                      :disabled="!schedulerDirty || schedulerSaving"
+                      @click="saveSchedulerConfig()"
+                      x-text="schedulerSaving ? '保存中…' : '💾 保存'"></button>
+              <button class="h-9 px-4 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-40"
+                      :disabled="schedulerTriggering"
+                      @click="manualTriggerScheduler()"
+                      x-text="schedulerTriggering ? '触发中…' : '▶ 立即触发一次'"></button>
+              <span x-show="schedulerSaveMsg" class="ml-2 text-[11px] text-success" x-text="schedulerSaveMsg"></span>
+              <span x-show="schedulerSaveErr" class="ml-2 text-[11px] text-danger" x-text="schedulerSaveErr"></span>
             </div>
           </div>
 
-          <!-- ③ Topic 维度分布 + 来源 + 纯净度 (三列) -->
-          <div class="grid grid-cols-3 gap-4">
-            <!-- 维度分布 -->
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="text-[13px] font-semibold text-ink mb-3">Topic 维度分布</div>
-              <div class="space-y-2.5">
-                <template x-for="d in plannerStatus.dimensionDist" :key="d.dim">
-                  <div>
-                    <div class="flex items-center justify-between mb-1">
-                      <span class="text-[12px] font-medium text-ink" x-text="d.dim"></span>
-                      <span class="text-[12px] tabular-nums" :class="d.isQuota && d.pct >= d.quotaMin ? 'text-success font-semibold' : d.isQuota && d.pct < d.quotaMin ? 'text-danger font-semibold' : 'text-ink-muted'">
-                        <span x-text="d.count.toLocaleString()"></span>
-                        <span class="ml-1" x-text="'(' + d.pct + '%)'"></span>
-                        <template x-if="d.isQuota">
-                          <span class="ml-1" x-text="d.pct >= d.quotaMin ? '✓' : '✗ <' + d.quotaMin + '%'"></span>
-                        </template>
-                      </span>
-                    </div>
-                    <div class="h-2 bg-surface-page rounded-pill overflow-hidden">
-                      <div class="h-full rounded-pill" :class="d.dim==='品类' ? 'bg-accent' : d.dim==='品牌' ? 'bg-chart-3' : d.dim==='产品' ? 'bg-chart-7' : 'bg-chart-6'"
-                           :style="'width:' + d.pct + '%'"></div>
-                    </div>
-                  </div>
-                </template>
-              </div>
-              <div class="mt-3 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                品类 ≥40% 为硬约束 (PRD §4.2.1)，不达标 Planner 重跑
-              </div>
+          <!-- ─── A-2: Today progress ─── -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-[15px] font-bold text-ink">今日进度</h3>
+              <div class="text-[11px] text-ink-muted" x-text="'最后刷新 ' + (schedulerLastLoad || '—')"></div>
             </div>
-
-            <!-- Topic 来源 -->
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="text-[13px] font-semibold text-ink mb-3">Topic 来源</div>
-              <div class="flex items-center gap-4 mt-4">
-                <div class="flex-1 text-center">
-                  <div class="text-[26px] font-bold text-accent" x-text="plannerStatus.sourceDist.pct_llm + '%'"></div>
-                  <div class="text-[11px] text-ink-muted mt-1">LLM 初始化</div>
-                  <div class="text-[12px] font-semibold text-ink" x-text="plannerStatus.sourceDist.llmInit.toLocaleString()"></div>
-                </div>
-                <div class="w-px h-12 bg-b-card"></div>
-                <div class="flex-1 text-center">
-                  <div class="text-[26px] font-bold text-chart-7" x-text="plannerStatus.sourceDist.pct_mined + '%'"></div>
-                  <div class="text-[11px] text-ink-muted mt-1">Response 挖掘</div>
-                  <div class="text-[12px] font-semibold text-ink" x-text="plannerStatus.sourceDist.responseMined.toLocaleString()"></div>
-                </div>
-              </div>
-              <div class="mt-4 h-3 bg-surface-page rounded-pill overflow-hidden flex">
-                <div class="h-full bg-accent" :style="'width:' + plannerStatus.sourceDist.pct_llm + '%'"></div>
-                <div class="h-full bg-chart-7" :style="'width:' + plannerStatus.sourceDist.pct_mined + '%'"></div>
-              </div>
-              <div class="mt-3 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                LLM 冷启动 + Response 持续迭代 (置信度累积)
-              </div>
+            <!-- Top numbers -->
+            <div class="flex items-center gap-6 text-[12px] mb-3">
+              <span class="text-ink-muted">总目标 <span class="font-bold text-ink tabular-nums" x-text="(schedulerToday.total?.target || 0).toLocaleString()"></span></span>
+              <span>✅ 完成 <span class="font-bold text-success tabular-nums" x-text="(schedulerToday.total?.done || 0).toLocaleString()"></span></span>
+              <span>▶ 运行 <span class="font-bold text-info tabular-nums" x-text="(schedulerToday.total?.running || 0).toLocaleString()"></span></span>
+              <span>⏸ 待执行 <span class="font-bold text-ink-muted tabular-nums" x-text="(schedulerToday.total?.pending || 0).toLocaleString()"></span></span>
+              <span>❌ 失败 <span class="font-bold text-danger tabular-nums" x-text="(schedulerToday.total?.failed || 0).toLocaleString()"></span></span>
             </div>
-
-            <!-- 品类纯净度校验 -->
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
-              <div class="text-[13px] font-semibold text-ink mb-3">品类纯净度校验</div>
-              <div class="mt-4 text-center">
-                <div class="w-16 h-16 mx-auto rounded-full flex items-center justify-center"
-                     :class="plannerStatus.purityCheck.status==='pass' ? 'bg-success/10' : 'bg-danger/10'">
-                  <i :data-lucide="plannerStatus.purityCheck.status==='pass' ? 'shield-check' : 'shield-alert'"
-                     class="w-7 h-7" :class="plannerStatus.purityCheck.status==='pass' ? 'text-success' : 'text-danger'"></i>
-                </div>
-                <div class="text-[14px] font-bold mt-3"
-                     :class="plannerStatus.purityCheck.status==='pass' ? 'text-success' : 'text-danger'"
-                     x-text="plannerStatus.purityCheck.status==='pass' ? '通过' : '未通过'"></div>
-                <div class="text-[11px] text-ink-muted mt-1">
-                  <span x-text="plannerStatus.purityCheck.totalCategoryTopics.toLocaleString()"></span> 个品类 Topic 中
-                  <span class="font-semibold" :class="plannerStatus.purityCheck.brandNameLeaks===0 ? 'text-success' : 'text-danger'"
-                        x-text="plannerStatus.purityCheck.brandNameLeaks"></span> 个混入品牌名
-                </div>
-              </div>
-              <div class="mt-4 pt-2 border-t border-b-card text-[10px] text-ink-muted">
-                dimension='品类' 的 Topic 禁止包含品牌名 (§4.2.1 / §4.2.2a)
-              </div>
+            <!-- Progress bar -->
+            <div class="h-2 bg-surface-page rounded-pill overflow-hidden">
+              <div class="h-full bg-success transition-all"
+                   :style="'width:' + schedulerProgressPct + '%'"></div>
             </div>
-          </div>
-
-          <!-- ④ 历史批次 -->
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card">
-            <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
-              <h3 class="text-[14px] font-semibold text-ink">历史批次 (近 30 天)</h3>
-              <div class="text-[11px] text-ink-muted">下次计划: <span class="font-semibold text-ink-body" x-text="plannerStatus.nextSchedule"></span></div>
-            </div>
-            <div class="overflow-x-auto">
+            <div class="text-[11px] text-ink-muted mt-1" x-text="schedulerProgressPct + '%'"></div>
+            <!-- LLM table -->
+            <div class="mt-4 rounded-card border border-b-card overflow-hidden">
               <table class="w-full text-[12px]">
-                <thead class="bg-surface-page border-b border-b-card">
-                  <tr>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">日期</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">状态</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">Topics</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">品类占比</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">Query 总数</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">成功率</th>
-                    <th class="text-left py-3 px-4 font-semibold text-ink-muted">耗时</th>
+                <thead class="bg-surface-page">
+                  <tr class="border-b border-b-card">
+                    <th class="px-3 py-2 text-left font-semibold text-ink-muted">LLM</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">目标</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">完成</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">运行</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">待执行</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">失败</th>
+                    <th class="px-3 py-2 text-left font-semibold text-ink-muted">状态</th>
+                    <th class="px-3 py-2 text-right font-semibold text-ink-muted">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <template x-for="b in schedulerHistory" :key="b.date">
-                    <tr class="border-b border-b-card/50 hover:bg-surface-page cursor-pointer">
-                      <td class="py-3 px-4 font-semibold text-ink-body" x-text="b.date"></td>
-                      <td class="py-3 px-4">
+                  <tr x-show="(schedulerToday.engines || []).length === 0">
+                    <td colspan="8" class="px-3 py-6 text-center text-[12px] text-ink-muted">暂无数据 — 还没有 active 账号或未触发过调度</td>
+                  </tr>
+                  <template x-for="e in (schedulerToday.engines || [])" :key="e.engine">
+                    <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
+                      <td class="px-3 py-2 font-semibold text-ink" x-text="e.engine"></td>
+                      <td class="px-3 py-2 text-right tabular-nums" x-text="(e.target || 0).toLocaleString()"></td>
+                      <td class="px-3 py-2 text-right tabular-nums text-success" x-text="(e.done || 0).toLocaleString()"></td>
+                      <td class="px-3 py-2 text-right tabular-nums text-info" x-text="(e.running || 0).toLocaleString()"></td>
+                      <td class="px-3 py-2 text-right tabular-nums text-ink-muted" x-text="(e.pending || 0).toLocaleString()"></td>
+                      <td class="px-3 py-2 text-right tabular-nums text-danger" x-text="(e.failed || 0).toLocaleString()"></td>
+                      <td class="px-3 py-2">
                         <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
-                              :class="b.status==='success' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                              x-text="b.status"></span>
+                              :class="schedulerEnginePaused(e.engine) ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'">
+                          <span class="w-1 h-1 rounded-full"
+                                :class="schedulerEnginePaused(e.engine) ? 'bg-warning' : 'bg-success animate-pulse'"></span>
+                          <span x-text="schedulerEnginePaused(e.engine) ? '已暂停' : '运行中'"></span>
+                        </span>
                       </td>
-                      <td class="py-3 px-4 text-ink-body tabular-nums" x-text="b.topics.toLocaleString()"></td>
-                      <td class="py-3 px-4">
-                        <span class="tabular-nums" :class="parseInt(b.catPct) >= 40 ? 'text-success font-semibold' : 'text-danger font-semibold'" x-text="b.catPct"></span>
+                      <td class="px-3 py-2 text-right">
+                        <button class="h-6 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium"
+                                @click="toggleEnginePause(e.engine)"
+                                x-text="schedulerEnginePaused(e.engine) ? '恢复' : '暂停'"></button>
                       </td>
-                      <td class="py-3 px-4 text-ink-body tabular-nums" x-text="b.total.toLocaleString()"></td>
-                      <td class="py-3 px-4 text-ink-body" x-text="b.successRate"></td>
-                      <td class="py-3 px-4 text-ink-muted" x-text="b.duration"></td>
                     </tr>
                   </template>
                 </tbody>
@@ -1565,19 +1402,54 @@
             </div>
           </div>
 
-          <!-- ⑤ 全局暂停 -->
-          <div class="rounded-card-lg bg-warning/5 border border-warning/20 p-4 flex items-center justify-between">
-            <div>
-              <div class="text-[13px] font-semibold text-ink flex items-center gap-2">
-                <i data-lucide="pause-circle" class="w-4 h-4 text-warning"></i> 全局采集控制
-              </div>
-              <div class="text-[12px] text-ink-muted mt-0.5">暂停后新 Query 不入队，进行中的完成但不续新 · 恢复需 super_admin + 理由</div>
+          <!-- ─── A-3: Run history ─── -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+              <h3 class="text-[14px] font-semibold text-ink">运行历史</h3>
+              <span class="text-[11px] text-ink-muted">最近 30 次</span>
             </div>
-            <button class="h-9 px-4 rounded-btn border border-warning/30 bg-warning/10 text-warning text-[12px] font-semibold hover:bg-warning/20 transition-colors">暂停采集</button>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[12px]">
+                <thead class="bg-surface-page border-b border-b-card">
+                  <tr>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">开始时间</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">模式</th>
+                    <th class="text-right py-2.5 px-4 font-semibold text-ink-muted">目标</th>
+                    <th class="text-right py-2.5 px-4 font-semibold text-ink-muted">已入队</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">用时</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">备注</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">详情</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr x-show="schedulerRuns.length === 0">
+                    <td colspan="7" class="py-6 text-center text-ink-muted">暂无运行历史</td>
+                  </tr>
+                  <template x-for="r in schedulerRuns" :key="r.id">
+                    <tr class="border-b border-b-card/50 hover:bg-surface-page">
+                      <td class="py-2.5 px-4 font-mono text-[11px] text-ink-body" x-text="r.started_at"></td>
+                      <td class="py-2.5 px-4">
+                        <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                              :class="r.mode==='auto' ? 'bg-success/10 text-success' : 'bg-info/10 text-info'"
+                              x-text="r.mode === 'auto' ? '自动' : r.mode === 'manual' ? '手动' : (r.mode || '—')"></span>
+                      </td>
+                      <td class="py-2.5 px-4 text-right tabular-nums" x-text="(r.target_total || 0).toLocaleString()"></td>
+                      <td class="py-2.5 px-4 text-right tabular-nums text-success" x-text="(r.queries_created || 0).toLocaleString()"></td>
+                      <td class="py-2.5 px-4 text-ink-muted" x-text="formatRunDuration(r.started_at, r.finished_at)"></td>
+                      <td class="py-2.5 px-4 text-ink-muted" x-text="r.note || '—'"></td>
+                      <td class="py-2.5 px-4">
+                        <button class="text-accent hover:underline" @click="goToTrackerDay(r.started_at)">查看 →</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
           </div>
 
         </div>
       </template>
+
 
       <!-- ============ PAGE: PIPELINE PROFILES ============ -->
       <template x-if="page==='planner-profiles'">
@@ -4385,6 +4257,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">状态</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">健康评分</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">标签</th>
+                      <th class="px-6 py-3 text-left font-semibold text-ink-muted">绑定 Profiles</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">最后使用</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">成功率</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">操作</th>
@@ -4392,7 +4265,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </thead>
                   <tbody>
                     <tr x-show="!accountsLoading && filteredAccountPool.length === 0">
-                      <td colspan="9" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
+                      <td colspan="10" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
                     </tr>
                     <template x-for="a in filteredAccountPool" :key="a.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
@@ -4422,6 +4295,17 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold bg-accent/10 text-accent" x-text="tag"></span>
                             </template>
                           </div>
+                        </td>
+                        <td class="px-6 py-3">
+                          <button class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[11px] font-semibold border border-b-default bg-surface hover:bg-surface-page text-ink-body transition-colors"
+                                  @click="openAccountDrawer(a)"
+                                  :title="'查看绑定的 Profile · 共 ' + (accountProfileCounts[a.dbId]?.bindings || 0) + ' 个'">
+                            <i data-lucide="link" class="w-3 h-3"></i>
+                            <span x-text="(accountProfileCounts[a.dbId]?.bindings || 0) + ' 个'"></span>
+                            <template x-if="(accountProfileCounts[a.dbId]?.unacknowledged || 0) > 0">
+                              <span class="ml-1 text-warning" x-text="'⚠ ' + accountProfileCounts[a.dbId].unacknowledged"></span>
+                            </template>
+                          </button>
                         </td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.lastUsed"></td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.successRate"></td>
@@ -4839,6 +4723,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         <div class="space-y-4">
           <!-- Tab bar -->
           <div class="flex items-center gap-1 p-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
+            <button class="seg-tab" :class="{active: trackerTab==='daily'}" @click="trackerTab='daily'; loadDailyMonth()">按天浏览</button>
             <button class="seg-tab" :class="{active: trackerTab==='attempts'}" @click="trackerTab='attempts'">Attempt 列表</button>
             <button class="seg-tab" :class="{active: trackerTab==='errors'}" @click="trackerTab='errors'; $nextTick(()=>{ if (!charts.trackerFailure) renderTrackerFailureTrend(); })">错误分布</button>
             <button class="seg-tab relative" :class="{active: trackerTab==='rules-dlq'}" @click="trackerTab='rules-dlq'">
@@ -4846,6 +4731,141 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <span class="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-pill text-[10px] font-bold bg-danger text-white" x-text="retryDLQ.length"></span>
             </button>
           </div>
+
+          <!-- Tab: 按天浏览 (calendar heat-map → grouped daily detail) -->
+          <template x-if="trackerTab==='daily'">
+            <div class="space-y-3">
+              <!-- Calendar mode (no day selected) -->
+              <template x-if="!dailySelectedDate">
+                <div class="space-y-3">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <input type="month" x-model="dailyMonth" @change="loadDailyMonth()"
+                           class="h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+                    <select x-model="dailyFilter.llm" @change="loadDailyMonth()"
+                            class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                      <option value="">全部 LLM</option>
+                      <option value="doubao">豆包</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="chatgpt">ChatGPT</option>
+                    </select>
+                    <span class="text-[11px] text-ink-muted ml-auto">完成率 (颜色越深越高) · 点击日期查看当日详情</span>
+                  </div>
+                  <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                    <div x-show="dailyMonthLoading" class="text-center py-8 text-[12px] text-ink-muted">加载中…</div>
+                    <template x-if="!dailyMonthLoading">
+                      <div>
+                        <div class="grid grid-cols-7 gap-1 mb-2 text-[10px] font-semibold text-ink-muted text-center">
+                          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+                        </div>
+                        <div class="grid grid-cols-7 gap-1.5">
+                          <template x-for="cell in dailyCalendarCells" :key="cell.key">
+                            <button class="aspect-square rounded-card border text-left p-1.5 transition-colors"
+                                    :class="cell.empty ? 'bg-transparent border-transparent cursor-default' : (cell.day ? (cell.completion >= 95 ? 'bg-success/30 border-success/40 hover:bg-success/40' : cell.completion >= 70 ? 'bg-success/15 border-success/30 hover:bg-success/25' : cell.completion >= 30 ? 'bg-warning/15 border-warning/30 hover:bg-warning/25' : cell.failed > 0 ? 'bg-danger/10 border-danger/30 hover:bg-danger/20' : 'bg-surface-page border-b-card hover:bg-surface-page/80') : 'bg-surface-page border-b-card/40 cursor-default')"
+                                    :disabled="cell.empty || !cell.day"
+                                    @click="!cell.empty && cell.day && (dailySelectedDate = cell.date) && loadDailyDetail()">
+                              <template x-if="!cell.empty">
+                                <div class="flex flex-col h-full">
+                                  <div class="text-[11px] font-bold text-ink" x-text="cell.dayNum"></div>
+                                  <template x-if="cell.day">
+                                    <div class="mt-auto">
+                                      <div class="text-[10px] tabular-nums font-semibold text-ink" x-text="(cell.day.done || 0) + '/' + (cell.day.total || 0)"></div>
+                                      <div class="text-[9px] tabular-nums text-ink-muted" x-text="cell.completion + '%'"></div>
+                                    </div>
+                                  </template>
+                                </div>
+                              </template>
+                            </button>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Day detail mode -->
+              <template x-if="dailySelectedDate">
+                <div class="space-y-3">
+                  <div class="flex items-center gap-3">
+                    <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
+                            @click="dailySelectedDate=null">← 返回月历</button>
+                    <h3 class="text-[14px] font-bold text-ink" x-text="dailySelectedDate + ' 当日采集'"></h3>
+                    <select x-model="dailyFilter.llm" @change="loadDailyDetail()"
+                            class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white ml-auto">
+                      <option value="">全部 LLM</option>
+                      <option value="doubao">豆包</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="chatgpt">ChatGPT</option>
+                    </select>
+                    <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium" @click="loadDailyDetail()">刷新</button>
+                  </div>
+                  <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-3">
+                    <div class="flex items-center gap-6 text-[12px]">
+                      <span class="text-ink-muted">总 <span class="font-bold text-ink" x-text="(dailyDetail?.totals?.total || 0).toLocaleString()"></span></span>
+                      <span>✅ <span class="font-bold text-success" x-text="(dailyDetail?.totals?.done || 0).toLocaleString()"></span></span>
+                      <span>❌ <span class="font-bold text-danger" x-text="(dailyDetail?.totals?.failed || 0).toLocaleString()"></span></span>
+                      <span>▶ <span class="font-bold text-info" x-text="(dailyDetail?.totals?.running || 0).toLocaleString()"></span></span>
+                      <span>⏸ <span class="font-bold text-ink-muted" x-text="(dailyDetail?.totals?.pending || 0).toLocaleString()"></span></span>
+                    </div>
+                  </div>
+                  <div class="space-y-2">
+                    <div x-show="dailyDetailLoading" class="text-center py-8 text-[12px] text-ink-muted">加载中…</div>
+                    <div x-show="!dailyDetailLoading && (dailyDetail?.groups || []).length === 0"
+                         class="text-center py-8 text-[12px] text-ink-muted">该日无采集记录</div>
+                    <template x-for="g in (dailyDetail?.groups || [])" :key="g.engine + ':' + g.profile_id">
+                      <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+                        <button class="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-page transition-colors"
+                                @click="g.expanded = !g.expanded">
+                          <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-ink-muted"></i>
+                          <span class="text-[13px] font-semibold text-ink" x-text="g.engine"></span>
+                          <span class="text-[11px] font-mono text-ink-muted" x-text="g.profile_code || (g.profile_id || '').slice(0, 12)"></span>
+                          <span class="text-[12px] text-ink-body" x-text="g.profile_name || '(未命名)'"></span>
+                          <span class="ml-auto text-[11px] text-ink-muted">
+                            <span class="text-success font-semibold" x-text="g.done"></span>/<span x-text="g.total"></span>
+                            <template x-if="g.failed > 0"><span class="text-danger ml-1" x-text="'· ❌ ' + g.failed"></span></template>
+                          </span>
+                        </button>
+                        <div x-show="g.expanded" x-collapse>
+                          <table class="w-full text-[12px]">
+                            <thead class="bg-surface-page border-y border-b-card">
+                              <tr>
+                                <th class="px-3 py-2 text-left font-semibold text-ink-muted">#</th>
+                                <th class="px-3 py-2 text-left font-semibold text-ink-muted">Query</th>
+                                <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[80px]">账号</th>
+                                <th class="px-3 py-2 text-right font-semibold text-ink-muted w-[60px]">引用</th>
+                                <th class="px-3 py-2 text-center font-semibold text-ink-muted w-[60px]">截图</th>
+                                <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[100px]">时间</th>
+                                <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[60px]">状态</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <template x-for="q in g.queries" :key="q.id">
+                                <tr class="border-b border-b-card/50 hover:bg-surface-page cursor-pointer transition-colors"
+                                    @click="openDailyQueryDrawer(q)">
+                                  <td class="px-3 py-2 font-mono text-[11px] text-ink-muted" x-text="q.id"></td>
+                                  <td class="px-3 py-2 text-ink-body truncate max-w-[460px]" :title="q.query_text" x-text="q.query_text"></td>
+                                  <td class="px-3 py-2 font-mono text-[11px] text-ink-muted" x-text="q.account_label || ('#' + (q.account_id || '—'))"></td>
+                                  <td class="px-3 py-2 text-right tabular-nums" x-text="q.citation_count"></td>
+                                  <td class="px-3 py-2 text-center" x-text="q.has_screenshot ? '🖼' : '—'"></td>
+                                  <td class="px-3 py-2 font-mono text-[11px] text-ink-muted" x-text="fmtTs(q.finished_at || q.executed_at || q.created_at)"></td>
+                                  <td class="px-3 py-2">
+                                    <span class="inline-flex items-center gap-1 px-1.5 h-5 rounded-badge text-[10px] font-semibold"
+                                          :class="q.status==='done' ? 'bg-success/10 text-success' : q.status==='failed' ? 'bg-danger/10 text-danger' : q.status==='running' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'">
+                                      <span x-text="q.status === 'done' ? '✅' : q.status === 'failed' ? '❌' : q.status === 'running' ? '▶' : '⏸'"></span>
+                                    </span>
+                                  </td>
+                                </tr>
+                              </template>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
 
           <!-- Tab 1: Overview -->
           <template x-if="trackerTab==='errors'">
@@ -6240,41 +6260,60 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             <div class="font-mono text-ink" x-text="debugDrawer.retryReason || '—'"></div>
           </div>
         </div>
-        <!-- Response -->
-        <div>
-          <div class="text-[11px] font-semibold text-ink-muted mb-1">Response (raw_text)</div>
-          <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-body max-h-[400px] overflow-auto whitespace-pre-wrap"
+        <!-- Inner tabs: Response / Citations / Screenshots -->
+        <div class="flex items-center gap-1 p-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
+          <button class="seg-tab" :class="{active: debugTab==='response'}" @click="debugTab='response'">Response</button>
+          <button class="seg-tab" :class="{active: debugTab==='citations'}" @click="debugTab='citations'">
+            Citations
+            <span class="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-pill text-[10px] font-bold bg-ink/10 text-ink"
+                  x-text="(debugDrawer.citations || []).length"></span>
+          </button>
+          <button class="seg-tab" :class="{active: debugTab==='screenshots'}" @click="debugTab='screenshots'">
+            截图
+            <span class="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-pill text-[10px] font-bold bg-ink/10 text-ink"
+                  x-text="debugScreenshots.length"></span>
+          </button>
+        </div>
+
+        <!-- Tab: Response -->
+        <template x-if="debugTab==='response'">
+          <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-body max-h-[520px] overflow-auto whitespace-pre-wrap"
                x-text="debugDrawer.responseText || '(无数据 — 查询尚未完成或未保存)'"></div>
-        </div>
-        <!-- Screenshots -->
-        <div>
-          <div class="text-[11px] font-semibold text-ink-muted mb-1 flex items-center gap-2">
-            <span>截图</span>
-            <span x-show="debugScreenshotsLoading" class="text-ink-faint">加载中…</span>
-            <span x-show="!debugScreenshotsLoading && debugScreenshots.length === 0" class="text-ink-faint">（无截图）</span>
-          </div>
-          <template x-if="!debugScreenshotsLoading && debugScreenshots.length > 0">
-            <div class="space-y-2">
-              <template x-for="(s, idx) in debugScreenshots" :key="s.url">
-                <div class="rounded-card bg-surface-page border border-b-card p-2">
-                  <div class="flex items-center justify-between mb-1 text-[10px] text-ink-muted">
-                    <span class="font-mono truncate" :title="s.name" x-text="s.name"></span>
-                    <a :href="s.url" target="_blank" class="text-accent hover:underline ml-2">原图 ↗</a>
-                  </div>
-                  <a :href="s.url" target="_blank">
-                    <img :src="s.url" :alt="s.name" class="w-full rounded border border-b-card"
-                         style="max-height: 500px; object-fit: contain; background: #f8f8f8;" />
-                  </a>
-                </div>
-              </template>
-            </div>
-          </template>
-        </div>
-        <!-- Citations -->
-        <template x-if="debugDrawer.citations">
+        </template>
+
+        <!-- Tab: Citations -->
+        <template x-if="debugTab==='citations'">
           <div>
-            <div class="text-[11px] font-semibold text-ink-muted mb-1">Citations</div>
-            <pre class="rounded-card bg-surface-page border border-b-card p-3 text-[11px] font-mono text-ink-body max-h-[240px] overflow-auto" x-text="JSON.stringify(debugDrawer.citations, null, 2)"></pre>
+            <div x-show="!debugDrawer.citations || (debugDrawer.citations || []).length === 0"
+                 class="text-[12px] text-ink-muted text-center py-8">（无引用）</div>
+            <pre x-show="debugDrawer.citations && (debugDrawer.citations || []).length > 0"
+                 class="rounded-card bg-surface-page border border-b-card p-3 text-[11px] font-mono text-ink-body max-h-[520px] overflow-auto"
+                 x-text="JSON.stringify(debugDrawer.citations, null, 2)"></pre>
+          </div>
+        </template>
+
+        <!-- Tab: Screenshots -->
+        <template x-if="debugTab==='screenshots'">
+          <div>
+            <div x-show="debugScreenshotsLoading" class="text-center py-8 text-[12px] text-ink-muted">加载中…</div>
+            <div x-show="!debugScreenshotsLoading && debugScreenshots.length === 0"
+                 class="text-center py-8 text-[12px] text-ink-muted">（无截图）</div>
+            <template x-if="!debugScreenshotsLoading && debugScreenshots.length > 0">
+              <div class="space-y-2">
+                <template x-for="(s, idx) in debugScreenshots" :key="s.url">
+                  <div class="rounded-card bg-surface-page border border-b-card p-2">
+                    <div class="flex items-center justify-between mb-1 text-[10px] text-ink-muted">
+                      <span class="font-mono truncate" :title="s.name" x-text="s.name"></span>
+                      <a :href="s.url" target="_blank" class="text-accent hover:underline ml-2">原图 ↗</a>
+                    </div>
+                    <a :href="s.url" target="_blank">
+                      <img :src="s.url" :alt="s.name" class="w-full rounded border border-b-card"
+                           style="max-height: 500px; object-fit: contain; background: #f8f8f8;" />
+                    </a>
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
         </template>
         <!-- Actions -->
@@ -6283,6 +6322,148 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   @click="retryAttempt(debugDrawer); debugDrawer=null">重试此 Query</button>
           <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
                   @click="debugDrawer=null">关闭</button>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+
+<!-- ===== ACCOUNT DETAIL DRAWER (Profile bindings · M:N) ===== -->
+<div x-show="accountDrawer" x-cloak x-transition.opacity class="fixed inset-0 z-40 drawer-overlay" @click="closeAccountDrawer()"></div>
+<div x-show="accountDrawer" x-cloak class="fixed top-0 right-0 z-50 w-[680px] h-full bg-surface border-l border-b-card shadow-elevated drawer-panel overflow-y-auto">
+  <template x-if="accountDrawer">
+    <div>
+      <div class="px-6 py-4 border-b border-b-card flex items-center justify-between sticky top-0 bg-surface z-10">
+        <div>
+          <h3 class="text-[14px] font-semibold text-ink" x-text="'账号 ' + (accountDrawer.phone || ('#' + accountDrawer.id))"></h3>
+          <div class="text-[11px] text-ink-muted mt-0.5">
+            <span x-text="accountDrawer.engine"></span> ·
+            <span x-text="accountDrawer.status"></span> ·
+            daily_limit <span x-text="accountDrawerDetail?.account?.daily_limit ?? '—'"></span> ·
+            geo:<span x-text="accountDrawerDetail?.account?.expected_geo || '—'"></span>
+          </div>
+        </div>
+        <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="closeAccountDrawer()">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <!-- Summary stats -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="rounded-card bg-surface-page border border-b-card p-3">
+            <div class="text-[10px] text-ink-muted font-semibold uppercase">绑定 Profile</div>
+            <div class="text-[18px] font-bold text-ink mt-0.5" x-text="(accountDrawerDetail?.total ?? 0) + ' 个'"></div>
+          </div>
+          <div class="rounded-card bg-surface-page border border-b-card p-3">
+            <div class="text-[10px] text-ink-muted font-semibold uppercase">配额合计</div>
+            <div class="text-[18px] font-bold mt-0.5"
+                 :class="(accountDrawerDetail?.quota_total ?? 0) > (accountDrawerDetail?.account?.daily_limit ?? 0) ? 'text-warning' : 'text-ink'">
+              <span x-text="(accountDrawerDetail?.quota_total ?? 0) + ' / ' + (accountDrawerDetail?.account?.daily_limit ?? 0)"></span>
+            </div>
+          </div>
+          <div class="rounded-card bg-surface-page border border-b-card p-3">
+            <div class="text-[10px] text-ink-muted font-semibold uppercase">今日已用</div>
+            <div class="text-[18px] font-bold text-ink mt-0.5"
+                 x-text="(accountDrawerDetail?.account?.query_count_today ?? 0) + ' 条'"></div>
+          </div>
+        </div>
+
+        <!-- Search + filter + add -->
+        <div class="flex items-center gap-2">
+          <input type="text"
+                 placeholder="搜索 Profile id / code / 名称…"
+                 x-model="accountDrawerSearch"
+                 @input.debounce.300ms="loadAccountDrawerBindings()"
+                 class="flex-1 h-8 px-3 rounded-btn border border-b-default text-[12px]" />
+          <select x-model="accountDrawerOnly"
+                  @change="loadAccountDrawerBindings()"
+                  class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+            <option value="all">全部</option>
+            <option value="conflicts">仅冲突</option>
+          </select>
+          <button class="h-8 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10"
+                  @click="openAddProfileToAccount()">+ 添加</button>
+        </div>
+
+        <!-- Bindings table -->
+        <div class="rounded-card border border-b-card bg-surface overflow-hidden">
+          <div class="px-3 py-1.5 border-b border-b-card bg-surface-page text-[11px] text-ink-muted">
+            <span x-show="accountDrawerLoading">加载中…</span>
+            <span x-show="!accountDrawerLoading"
+                  x-text="'共 ' + (accountDrawerDetail?.total ?? 0) + ' 个绑定'"></span>
+          </div>
+          <div class="max-h-[360px] overflow-y-auto">
+            <table class="w-full text-[12px]">
+              <thead class="bg-surface-page sticky top-0">
+                <tr class="border-b border-b-card">
+                  <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[88px]">Code</th>
+                  <th class="px-3 py-2 text-left font-semibold text-ink-muted">Profile</th>
+                  <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[110px]">设备/语言</th>
+                  <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[90px]">配额</th>
+                  <th class="px-3 py-2 text-left font-semibold text-ink-muted w-[60px]">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr x-show="!accountDrawerLoading && (accountDrawerDetail?.bindings || []).length === 0">
+                  <td colspan="5" class="px-3 py-6 text-center text-[12px] text-ink-muted">暂无绑定</td>
+                </tr>
+                <template x-for="b in (accountDrawerDetail?.bindings || [])" :key="b.profile_id">
+                  <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
+                    <td class="px-3 py-2 font-mono text-[11px] text-ink-body" x-text="b.profile_code || b.profile_id.slice(0, 8)"></td>
+                    <td class="px-3 py-2">
+                      <div class="text-ink truncate" x-text="b.profile_name || '(未命名)'"></div>
+                      <template x-if="b.conflicts && b.conflicts.length">
+                        <div class="text-[10px] text-warning mt-0.5">
+                          <template x-for="c in b.conflicts" :key="c.field">
+                            <span x-text="'⚠ ' + c.field + ': ' + c.actual + ' ≠ ' + c.expected + ' '"></span>
+                          </template>
+                        </div>
+                      </template>
+                    </td>
+                    <td class="px-3 py-2 text-[11px] text-ink-muted">
+                      <span x-text="b.device_type || '—'"></span>·<span x-text="b.language || '—'"></span>
+                    </td>
+                    <td class="px-3 py-2">
+                      <input type="number" min="0"
+                             :value="b.daily_quota"
+                             @change="b.daily_quota = parseInt($event.target.value || 0); accountDrawerDirty = true"
+                             class="w-16 h-7 px-2 rounded-btn border border-b-default text-[12px] text-right" />
+                    </td>
+                    <td class="px-3 py-2">
+                      <button class="text-danger text-[11px] hover:underline"
+                              @click="removeAccountDrawerBinding(b.profile_id)">移除</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bulk actions -->
+        <div class="flex items-center gap-2 text-[11px]">
+          <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-ink-body"
+                  @click="rebalanceQuotas('even')"
+                  :disabled="!(accountDrawerDetail?.bindings || []).length">平均分配</button>
+          <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-ink-body"
+                  @click="rebalanceQuotas('scale_to_cap')"
+                  :disabled="!(accountDrawerDetail?.bindings || []).length">缩放到 daily_limit</button>
+          <span class="ml-auto text-ink-muted">
+            合计: <span class="font-semibold text-ink"
+                       x-text="(accountDrawerDetail?.bindings || []).reduce((s,b)=>s+(parseInt(b.daily_quota)||0), 0)"></span>
+            / <span x-text="accountDrawerDetail?.account?.daily_limit ?? '—'"></span>
+          </span>
+        </div>
+
+        <!-- Save / cancel -->
+        <div class="flex items-center gap-2 pt-2 border-t border-b-card">
+          <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40"
+                  :disabled="!accountDrawerDirty || accountDrawerSaving"
+                  @click="saveAccountDrawerBindings()"
+                  x-text="accountDrawerSaving ? '保存中…' : '保存'"></button>
+          <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
+                  @click="closeAccountDrawer()">关闭</button>
+          <span x-show="accountDrawerError" class="ml-2 text-[11px] text-danger" x-text="accountDrawerError"></span>
         </div>
       </div>
     </div>
@@ -8823,6 +9004,44 @@ function adminApp() {
     selectedProfileGroup: null,
     userDrawer: null,
     brandDrawer: null,
+
+    // ─── Module B: Account ↔ Profile binding drawer ────────────────────
+    accountDrawer: null,             // the row clicked in 账号池 (display only)
+    accountDrawerDetail: null,       // {account, bindings, total, quota_total}
+    accountDrawerSearch: '',
+    accountDrawerOnly: 'all',        // 'all' | 'conflicts'
+    accountDrawerLoading: false,
+    accountDrawerSaving: false,
+    accountDrawerDirty: false,
+    accountDrawerError: null,
+    accountProfileCounts: {},        // {accountId: {bindings, unacknowledged}}
+
+    // ─── Module A: Scheduler page ──────────────────────────────────────
+    schedulerCfg: {
+      mode: 'auto', daily_time: '09:00', timezone: 'Asia/Shanghai',
+      temp_global_cap: null, retry_max: 3, paused_engines: [],
+      capacity: [], capacity_total: 0,
+    },
+    schedulerToday: { engines: [], total: { target:0, done:0, running:0, pending:0, failed:0 } },
+    schedulerRuns: [],
+    schedulerDirty: false,
+    schedulerSaving: false,
+    schedulerTriggering: false,
+    schedulerSaveMsg: '',
+    schedulerSaveErr: '',
+    schedulerLastLoad: '',
+
+    // ─── Module C: Tracker daily tab ───────────────────────────────────
+    dailyMonth: '',                  // 'YYYY-MM'; lazy-init on first open
+    dailySelectedDate: null,         // 'YYYY-MM-DD' or null (calendar mode)
+    dailyMonthData: { days: [] },
+    dailyDetail: null,
+    dailyMonthLoading: false,
+    dailyDetailLoading: false,
+    dailyFilter: { llm: '', profile_id: '' },
+
+    // Debug drawer inner tab (Response / Citations / Screenshots)
+    debugTab: 'response',
     confirmAction: null,
     confirmChecked: false,
     confirmReason: '',
@@ -9693,6 +9912,9 @@ function adminApp() {
         if (rows && rows.error) throw new Error(rows.error);
         this.accountPoolList = (rows || []).map(mapAccountRowToCard);
         this.accountPoolEngines = summarizeAccountPool(this.accountPoolList);
+        // Fetch the binding counts so the new 绑定Profiles column populates
+        // without an N+1 round-trip per account row.
+        this.loadAccountProfileCounts();
       } catch (e) {
         this.accountsError = String(e.message || e);
         this.toast('加载账号池失败: ' + this.accountsError);
@@ -12627,6 +12849,7 @@ function adminApp() {
     openDebugDrawer(att) {
       this.debugDrawer = att;
       this.debugScreenshots = [];
+      this.debugTab = 'response';
       this.$nextTick(() => lucide.createIcons());
       // Pull the latest debug artifacts (PNG/JPG) for this query. SCREENSHOT_DIR
       // lives on the worker host — image is served binary via /api/screenshot.
@@ -12654,6 +12877,390 @@ function adminApp() {
       } finally {
         this.debugScreenshotsLoading = false;
       }
+    },
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Module B — Account ↔ Profile binding drawer
+    // ═══════════════════════════════════════════════════════════════════
+    openAccountDrawer(a) {
+      this.accountDrawer = a;
+      this.accountDrawerDetail = null;
+      this.accountDrawerSearch = '';
+      this.accountDrawerOnly = 'all';
+      this.accountDrawerError = null;
+      this.accountDrawerDirty = false;
+      this.$nextTick(() => lucide.createIcons());
+      this.loadAccountDrawerBindings();
+    },
+    closeAccountDrawer() {
+      if (this.accountDrawerDirty && !confirm('有未保存的修改，确定关闭？')) return;
+      this.accountDrawer = null;
+      this.accountDrawerDetail = null;
+      this.accountDrawerDirty = false;
+    },
+    async loadAccountDrawerBindings() {
+      if (!this.accountDrawer) return;
+      this.accountDrawerLoading = true;
+      this.accountDrawerError = null;
+      try {
+        const params = new URLSearchParams({
+          q: this.accountDrawerSearch || '',
+          only: this.accountDrawerOnly || 'all',
+          limit: '500',
+        });
+        const res = await fetch(API_BASE + '/accounts/' + this.accountDrawer.dbId + '/profiles?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && data.error) throw new Error(data.error);
+        this.accountDrawerDetail = data;
+        this.accountDrawerDirty = false;
+      } catch (e) {
+        this.accountDrawerError = String(e.message || e);
+      } finally {
+        this.accountDrawerLoading = false;
+      }
+    },
+    removeAccountDrawerBinding(profile_id) {
+      if (!this.accountDrawerDetail) return;
+      this.accountDrawerDetail.bindings = (this.accountDrawerDetail.bindings || []).filter(b => b.profile_id !== profile_id);
+      this.accountDrawerDetail._removed = (this.accountDrawerDetail._removed || []);
+      if (!this.accountDrawerDetail._removed.includes(profile_id)) {
+        this.accountDrawerDetail._removed.push(profile_id);
+      }
+      this.accountDrawerDirty = true;
+    },
+    rebalanceQuotas(strategy) {
+      if (!this.accountDrawerDetail) return;
+      const bindings = this.accountDrawerDetail.bindings || [];
+      const cap = this.accountDrawerDetail.account?.daily_limit || 0;
+      if (bindings.length === 0 || cap <= 0) return;
+      if (strategy === 'even') {
+        const each = Math.max(1, Math.floor(cap / bindings.length));
+        bindings.forEach(b => { b.daily_quota = each; });
+      } else if (strategy === 'scale_to_cap') {
+        const total = bindings.reduce((s, b) => s + (parseInt(b.daily_quota) || 0), 0);
+        if (total <= 0) return;
+        const scale = cap / total;
+        bindings.forEach(b => {
+          b.daily_quota = Math.max(1, Math.round((parseInt(b.daily_quota) || 0) * scale));
+        });
+      }
+      this.accountDrawerDirty = true;
+    },
+    async openAddProfileToAccount() {
+      // Minimal wedge: prompt for a profile id; binding is created with quota=1.
+      // The full picker UI is out of scope for this PR — point users at the
+      // existing 受众/Profile management pages for browsing.
+      const pid = (window.prompt('输入要绑定的 Profile id (pf_…)') || '').trim();
+      if (!pid) return;
+      if (!this.accountDrawerDetail) return;
+      const exists = (this.accountDrawerDetail.bindings || []).find(b => b.profile_id === pid);
+      if (exists) { this.toast('已绑定该 Profile'); return; }
+      this.accountDrawerDetail.bindings = this.accountDrawerDetail.bindings || [];
+      this.accountDrawerDetail.bindings.push({
+        profile_id: pid, profile_code: null, profile_name: null,
+        daily_quota: 1, conflicts: [], conflict_acknowledged: false,
+      });
+      this.accountDrawerDirty = true;
+    },
+    async saveAccountDrawerBindings() {
+      if (!this.accountDrawer || !this.accountDrawerDetail) return;
+      this.accountDrawerSaving = true;
+      this.accountDrawerError = null;
+      try {
+        const payload = {
+          bindings: (this.accountDrawerDetail.bindings || []).map(b => ({
+            profile_id: b.profile_id,
+            daily_quota: parseInt(b.daily_quota) || 0,
+            conflict_acknowledged: !!b.conflict_acknowledged,
+          })),
+          remove_profile_ids: this.accountDrawerDetail._removed || [],
+        };
+        const res = await fetch(API_BASE + '/accounts/' + this.accountDrawer.dbId + '/profiles', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已保存 ' + (body.upserted || 0) + ' 项绑定');
+        this.accountDrawerDirty = false;
+        await this.loadAccountDrawerBindings();
+        await this.loadAccountProfileCounts();
+      } catch (e) {
+        this.accountDrawerError = String(e.message || e);
+      } finally {
+        this.accountDrawerSaving = false;
+      }
+    },
+    async loadAccountProfileCounts() {
+      try {
+        const res = await fetch(API_BASE + '/accounts/profile_counts', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        this.accountProfileCounts = data || {};
+      } catch (e) {
+        // non-fatal — column will just show 0
+      }
+    },
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Module A — Scheduler page
+    // ═══════════════════════════════════════════════════════════════════
+    async loadSchedulerAll() {
+      await Promise.all([
+        this.loadSchedulerConfig(),
+        this.loadSchedulerToday(),
+        this.loadSchedulerRuns(),
+      ]);
+      this.schedulerLastLoad = new Date().toLocaleTimeString([], { hour12: false });
+    },
+    async loadSchedulerConfig() {
+      try {
+        const res = await fetch(API_BASE + '/scheduler/config', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && data.error) throw new Error(data.error);
+        // Merge into the reactive object so :checked / x-model bindings stay live.
+        this.schedulerCfg = Object.assign({}, this.schedulerCfg, data, {
+          paused_engines: Array.isArray(data.paused_engines) ? data.paused_engines : [],
+          capacity: Array.isArray(data.capacity) ? data.capacity : [],
+        });
+        this.schedulerDirty = false;
+      } catch (e) {
+        this.schedulerSaveErr = '加载调度配置失败: ' + (e.message || e);
+      }
+    },
+    async loadSchedulerToday() {
+      try {
+        const res = await fetch(API_BASE + '/scheduler/today', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.schedulerToday = data || { engines: [], total: {} };
+      } catch (e) {
+        // keep last value
+      }
+    },
+    async loadSchedulerRuns() {
+      try {
+        const res = await fetch(API_BASE + '/scheduler/runs?limit=30', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.schedulerRuns = Array.isArray(data) ? data : [];
+      } catch (e) {
+        this.schedulerRuns = [];
+      }
+    },
+    async saveSchedulerConfig() {
+      this.schedulerSaving = true;
+      this.schedulerSaveErr = '';
+      this.schedulerSaveMsg = '';
+      try {
+        const payload = {
+          mode: this.schedulerCfg.mode,
+          daily_time: this.schedulerCfg.daily_time,
+          timezone: this.schedulerCfg.timezone,
+          temp_global_cap: this.schedulerCfg.temp_global_cap,
+          retry_max: this.schedulerCfg.retry_max,
+          paused_engines: this.schedulerCfg.paused_engines || [],
+        };
+        const res = await fetch(API_BASE + '/scheduler/config', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.schedulerSaveMsg = '已保存';
+        this.schedulerDirty = false;
+        setTimeout(() => { this.schedulerSaveMsg = ''; }, 2500);
+      } catch (e) {
+        this.schedulerSaveErr = String(e.message || e);
+      } finally {
+        this.schedulerSaving = false;
+      }
+    },
+    async manualTriggerScheduler() {
+      this.schedulerTriggering = true;
+      this.schedulerSaveErr = '';
+      this.schedulerSaveMsg = '';
+      try {
+        const res = await fetch(API_BASE + '/scheduler/manual_trigger', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: 'manual via UI' }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
+        this.schedulerSaveMsg = '已触发: 入队 ' + (body.queries_created || 0) + ' / 目标 ' + (body.target_total || 0);
+        await this.loadSchedulerAll();
+        setTimeout(() => { this.schedulerSaveMsg = ''; }, 5000);
+      } catch (e) {
+        this.schedulerSaveErr = String(e.message || e);
+      } finally {
+        this.schedulerTriggering = false;
+      }
+    },
+    async toggleSchedulerMode(mode) {
+      this.schedulerCfg.mode = mode;
+      this.schedulerDirty = true;
+      await this.saveSchedulerConfig();
+    },
+    schedulerEnginePaused(engine) {
+      return (this.schedulerCfg.paused_engines || []).includes(engine);
+    },
+    async toggleEnginePause(engine) {
+      const cur = this.schedulerCfg.paused_engines || [];
+      const next = cur.includes(engine) ? cur.filter(e => e !== engine) : [...cur, engine];
+      this.schedulerCfg.paused_engines = next;
+      this.schedulerDirty = true;
+      await this.saveSchedulerConfig();
+    },
+    formatRunDuration(start, end) {
+      if (!start || !end) return '—';
+      const ms = new Date(end) - new Date(start);
+      if (isNaN(ms) || ms < 0) return '—';
+      const s = Math.round(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      if (m < 60) return m + 'm' + (sec ? sec + 's' : '');
+      return Math.floor(m / 60) + 'h' + (m % 60) + 'm';
+    },
+    goToTrackerDay(timestamp) {
+      const d = new Date(timestamp);
+      if (isNaN(d)) { this.goto('tracker-attempts'); return; }
+      const date = d.toISOString().slice(0, 10);
+      this.dailyMonth = date.slice(0, 7);
+      this.dailySelectedDate = date;
+      this.goto('tracker-attempts');
+      this.trackerTab = 'daily';
+      this.$nextTick(() => this.loadDailyDetail());
+    },
+    get schedulerProgressPct() {
+      const t = (this.schedulerToday && this.schedulerToday.total) || {};
+      const target = parseInt(t.target) || 0;
+      const done = parseInt(t.done) || 0;
+      if (target <= 0) return 0;
+      return Math.min(100, Math.round(done * 1000 / target) / 10);
+    },
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Module C — Tracker by-day
+    // ═══════════════════════════════════════════════════════════════════
+    async loadDailyMonth() {
+      if (!this.dailyMonth) {
+        const now = new Date();
+        this.dailyMonth = now.toISOString().slice(0, 7);
+      }
+      this.dailyMonthLoading = true;
+      try {
+        const params = new URLSearchParams({ month: this.dailyMonth });
+        if (this.dailyFilter.llm) params.set('llm', this.dailyFilter.llm);
+        const res = await fetch(API_BASE + '/queries/by-day?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && data.error) throw new Error(data.error);
+        this.dailyMonthData = data || { days: [] };
+      } catch (e) {
+        this.toast('加载月度数据失败: ' + (e.message || e));
+        this.dailyMonthData = { days: [] };
+      } finally {
+        this.dailyMonthLoading = false;
+      }
+    },
+    async loadDailyDetail() {
+      if (!this.dailySelectedDate) return;
+      this.dailyDetailLoading = true;
+      try {
+        const params = new URLSearchParams({ date: this.dailySelectedDate });
+        if (this.dailyFilter.llm) params.set('llm', this.dailyFilter.llm);
+        const res = await fetch(API_BASE + '/queries/by-day?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && data.error) throw new Error(data.error);
+        // Default-collapse all groups; user expands what they care about.
+        (data.groups || []).forEach(g => { g.expanded = (data.groups.length <= 4); });
+        this.dailyDetail = data;
+        this.$nextTick(() => lucide.createIcons());
+      } catch (e) {
+        this.toast('加载当日详情失败: ' + (e.message || e));
+        this.dailyDetail = { totals: {}, groups: [] };
+      } finally {
+        this.dailyDetailLoading = false;
+      }
+    },
+    openDailyQueryDrawer(q) {
+      // Reshape a queries/by-day row into the same shape openDebugDrawer expects.
+      this.openDebugDrawer({
+        queryId: q.id,
+        queryDbId: q.id,
+        engine: q.engine || '',
+        status: q.status,
+        prompt: q.query_text || '',
+        responseText: '',  // populated below
+        responseHtml: '',
+        citations: null,
+        latencyMs: q.latency_ms,
+        queuedAt: q.created_at,
+        startedAtRaw: q.executed_at,
+        finishedAtRaw: q.finished_at,
+        retryReason: null,
+      });
+      // Pull the full response/citations payload from the existing /api/queries
+      // endpoint (it already joins llm_responses).
+      fetch(API_BASE + '/queries?id=' + q.id, { credentials: 'same-origin' })
+        .then(r => r.ok ? r.json() : [])
+        .then(rows => {
+          const row = Array.isArray(rows) ? rows[0] : (rows.rows && rows.rows[0]);
+          if (row && this.debugDrawer && this.debugDrawer.queryId === q.id) {
+            this.debugDrawer.responseText = row.response || '';
+            this.debugDrawer.citations = row.citations || null;
+          }
+        })
+        .catch(() => {});
+    },
+    get dailyCalendarCells() {
+      // Build a Mon-first month grid. Empty leading/trailing cells get
+      // {empty:true} so the template can render them as blank squares.
+      const month = this.dailyMonth;
+      if (!month) return [];
+      const [y, m] = month.split('-').map(n => parseInt(n));
+      if (!y || !m) return [];
+      const first = new Date(Date.UTC(y, m - 1, 1));
+      // Mon=0, Sun=6
+      const leading = (first.getUTCDay() + 6) % 7;
+      const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const byDate = {};
+      for (const d of (this.dailyMonthData.days || [])) {
+        if (d.date) byDate[d.date] = d;
+      }
+      const cells = [];
+      for (let i = 0; i < leading; i++) {
+        cells.push({ key: 'lead-' + i, empty: true });
+      }
+      for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
+        const date = `${y}-${String(m).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+        const day = byDate[date] || null;
+        const completion = day ? Math.round(day.completion_rate || 0) : 0;
+        cells.push({
+          key: date,
+          empty: false,
+          date,
+          dayNum,
+          day,
+          completion,
+          failed: day ? (day.failed || 0) : 0,
+        });
+      }
+      // Pad to a multiple of 7 so the grid stays rectangular.
+      while (cells.length % 7 !== 0) {
+        cells.push({ key: 'trail-' + cells.length, empty: true });
+      }
+      return cells;
     },
 
     // ======== CHARTS ========

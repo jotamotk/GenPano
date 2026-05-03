@@ -30,13 +30,20 @@ class AccountPool:
         self,
         llm_name: str,
         country_code: Optional[str] = None,
+        profile_id: Optional[str] = None,
     ) -> Optional[LLMAccount]:
         """
         选取可用账号，策略：
-        1. 同 LLM + 同地区
+        1. 同 LLM + 同地区 (+ 可选: 同 profile_id 已绑定)
         2. 未封禁、未冷却、今日未超配额
         3. 优先选 last_used_at 最早的（均匀分摊）
+
+        ``profile_id`` filters via the ``account_profile_map`` table (M:N),
+        falling back to legacy ``llm_accounts.profile_id`` when no binding rows
+        exist for the account. This lets the Scheduler honor per-(account,
+        profile) daily quotas while staying compatible with old configs.
         """
+        from sqlalchemy import text  # local: avoid forcing the import on import
         now = datetime.utcnow()
 
         stmt = (
@@ -60,6 +67,18 @@ class AccountPool:
         if country_code:
             stmt = stmt.join(LLMAccount.profile).where(
                 LLMAccount.profile.has(country_code=country_code.upper())
+            )
+
+        # 可选：限定到与该 profile 显式绑定 (M:N) 的账号，
+        # 兼容旧 llm_accounts.profile_id (1:1) 字段
+        if profile_id:
+            stmt = stmt.where(
+                text(
+                    "(EXISTS (SELECT 1 FROM account_profile_map apm "
+                    "         WHERE apm.account_id = llm_accounts.id "
+                    "           AND apm.profile_id = :pf) "
+                    " OR llm_accounts.profile_id::text = :pf)"
+                ).bindparams(pf=str(profile_id))
             )
 
         result = await self.db.execute(stmt)
