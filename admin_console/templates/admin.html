@@ -4011,26 +4011,26 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div class="rounded-card bg-accent/5 border border-accent/15 p-3">
                       <div class="flex items-start justify-between gap-3">
                         <div>
-                          <div class="text-[12.5px] font-bold text-ink">当前仅开放后端已生效项</div>
-                          <div class="text-[10px] text-ink-muted mt-1">本页只控制候选组装已经真实生效的参数；引擎、预算、入队和优先级由调度阶段处理。</div>
+                          <div class="text-[12.5px] font-bold text-ink">候选组装设置</div>
+                          <div class="text-[10px] text-ink-muted mt-1">配置 Prompt x Segment x Profile 候选生成所需的采样、数量与上限。</div>
                         </div>
-                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-white text-accent text-[10px] font-semibold">已收敛</span>
+                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-white text-accent text-[10px] font-semibold">组装参数</span>
                       </div>
                       <div class="mt-3 grid grid-cols-3 gap-2">
                         <div class="rounded-card bg-white border border-b-card p-3">
-                          <div class="text-[10px] font-semibold text-ink-muted">当前生效</div>
+                          <div class="text-[10px] font-semibold text-ink-muted">候选生成</div>
                           <div class="text-[15px] font-bold text-ink mt-1">采样 / 数量 / 上限</div>
-                          <div class="text-[10px] text-ink-muted mt-1">后端组装会实际使用这些参数</div>
+                          <div class="text-[10px] text-ink-muted mt-1">用于控制本次候选规模</div>
                         </div>
                         <div class="rounded-card bg-white border border-b-card p-3">
-                          <div class="text-[10px] font-semibold text-ink-muted">Topic 信息仅用于展示</div>
+                          <div class="text-[10px] font-semibold text-ink-muted">Topic 覆盖</div>
                           <div class="text-[15px] font-bold text-ink mt-1" x-text="queryPoolTopicBindingSummary()"></div>
-                          <div class="text-[10px] text-ink-muted mt-1">共享 Segment 的上下文评分待后端接入</div>
+                          <div class="text-[10px] text-ink-muted mt-1">用于确认所选 Prompt 的主题覆盖</div>
                         </div>
                         <div class="rounded-card bg-white border border-b-card p-3">
-                          <div class="text-[10px] font-semibold text-ink-muted">已移出本页</div>
-                          <div class="text-[15px] font-bold text-ink mt-1">调度策略</div>
-                          <div class="text-[10px] text-ink-muted mt-1">引擎、预算、入队和优先级不在 Query Pool 控制</div>
+                          <div class="text-[10px] font-semibold text-ink-muted">执行安排</div>
+                          <div class="text-[15px] font-bold text-ink mt-1">调度页管理</div>
+                          <div class="text-[10px] text-ink-muted mt-1">执行引擎、预算与优先级在调度页统一管理</div>
                         </div>
                       </div>
                     </div>
@@ -4171,7 +4171,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <template x-if="queryPoolActionPanel==='preflight'">
                     <div class="p-5 space-y-3">
                       <div class="rounded-card bg-accent/5 border border-accent/15 px-3 py-2 text-[11px] text-ink-body">
-                        预检报告只展示后端当前真实返回的检查项：Prompt 选择、Segment-Profile 可采样、模板渲染、重复候选和候选上限。
+                        预检报告展示 Prompt 选择、Segment-Profile 可采样、模板渲染、重复候选和候选上限。
                       </div>
                       <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
                         <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">检查项</th><th class="px-4 py-2.5 text-left text-ink-muted">结果</th><th class="px-4 py-2.5 text-left text-ink-muted">影响</th><th class="px-4 py-2.5 text-right text-ink-muted">处理</th></tr></thead>
@@ -4196,7 +4196,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">候选质量</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">Query Pool 只组装 Prompt x Segment x Profile 候选；当前已生效控制为采样策略、每 Prompt Profile、总上限和超限处理。具体引擎派发和执行控制由调度阶段处理。</p>
+                    <p class="text-[12px] text-ink-muted mt-1">Query Pool 组装 Prompt x Segment x Profile 候选，并按采样策略、每 Prompt Profile、总上限和超限处理控制候选规模。执行派发由调度页统一管理。</p>
                   </div>
                 </div>
                 <div class="grid grid-cols-6 gap-3">
@@ -11925,10 +11925,10 @@ function adminApp() {
       const s = this.queryPoolPreflightSummary;
       if (!s) {
         return [
-          { name:'Prompt 选择', result:'未运行', tone:'accent', impact:'等待后端读取显式选择或筛选条件', action:'点击预检报告' },
+          { name:'Prompt 选择', result:'未运行', tone:'accent', impact:'等待读取显式选择或筛选条件', action:'点击预检报告' },
           { name:'Segment-Profile 可采样', result:'未运行', tone:'accent', impact:'等待 active Profile 池检查', action:'点击预检报告' },
-          { name:'模板变量', result:'未运行', tone:'accent', impact:'等待后端预检', action:'点击预检报告' },
-          { name:'重复候选', result:'未运行', tone:'accent', impact:'等待后端去重', action:'点击预检报告' },
+          { name:'模板变量', result:'未运行', tone:'accent', impact:'等待模板渲染检查', action:'点击预检报告' },
+          { name:'重复候选', result:'未运行', tone:'accent', impact:'等待重复候选检查', action:'点击预检报告' },
           { name:'候选上限', result:'未运行', tone:'accent', impact:'等待上限校验', action:'点击预检报告' },
           { name:'调度接收', result:'未运行', tone:'accent', impact:'尚未生成候选', action:'点击预检报告' },
         ];
@@ -11957,8 +11957,8 @@ function adminApp() {
       const estimated = Math.min(raw, cap || raw);
       const ready = s ? Number(s.candidate_ready || 0) : estimated;
       return [
-        { engine:'候选组装', queries:ready, unit:s ? '后端返回候选数' : '已选 Prompt x Profile 预估', cost:'不绑定引擎' },
-        { engine:'调度派发', queries:0, unit:'引擎展开由 Scheduler 确认', cost:'调度阶段估算' },
+        { engine:'候选组装', queries:ready, unit:s ? '预检返回候选数' : '已选 Prompt x Profile 预估', cost:'不绑定引擎' },
+        { engine:'调度派发', queries:0, unit:'引擎展开由调度页确认', cost:'调度阶段估算' },
         { engine:'候选上限', queries:cap, unit:'入队前候选上限', cost:raw > cap ? '已触发上限' : '策略校验' },
       ];
     },
