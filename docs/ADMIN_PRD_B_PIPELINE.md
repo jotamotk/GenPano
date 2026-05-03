@@ -301,7 +301,7 @@ CREATE INDEX ON query_generation_candidates (run_id, segment_id, profile_id, can
 
 **Query Candidate pagination contract**:
 - `POST /api/admin/query-pool/preflight` 使用同一组装逻辑做 dry-run，返回候选预估、预检摘要和 Scheduler Intake 状态，不写入 run/candidate。
-- `POST /api/admin/query-pool/assemble` 创建 `query_generation_runs`，按 Segment/Profile 权重采样并写入 `query_generation_candidates`。返回 `{ success, run }`，其中 `run.id` 作为后续候选列表的 `run_id`。
+- `POST /api/admin/query-pool/assemble` 创建 `query_generation_runs` 后立即返回 running run；后台按 LLM batch 逐批生成并写入 `query_generation_candidates`，每批提交后更新 `candidates_assembled` 与 `preflight_summary`。页面轮询 `run.id` 并读取候选列表，因此第一批候选可见后不需要等待整个 run 完成。
 - `GET /api/admin/query-pool/runs` 和 `GET /api/admin/query-pool/runs/:id` 读取最近组装运行与单次运行详情。
 - Admin 页面调用 `GET /api/admin/query-pool/candidates?run_id=&status=&segment_id=&profile_id=&q=&limit=&cursor=&direction=`，返回 `{ success, rows, next_cursor, prev_cursor, approx_total }`。
 - `POST /api/admin/query-pool/candidates/:id/review` 与 `POST /api/admin/query-pool/candidates/bulk-review` 将候选状态更新为 `candidate | review | ready`，只改变候选审核状态，不创建 Scheduler dispatch job。

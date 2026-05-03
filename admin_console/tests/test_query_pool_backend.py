@@ -38,6 +38,30 @@ class FakeConnection:
         self.closed = True
 
 
+class StreamingCursor(FakeCursor):
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, params=None):
+        compact = " ".join(str(sql).split())
+        self.conn.statements.append((compact, params))
+        if "INSERT INTO query_generation_candidates" in compact:
+            self.conn.inserted_candidates.append(params)
+        if "UPDATE query_generation_runs" in compact:
+            self.conn.run_updates.append((compact, params))
+
+
+class StreamingConnection(FakeConnection):
+    def __init__(self):
+        super().__init__()
+        self.statements = []
+        self.inserted_candidates = []
+        self.run_updates = []
+
+    def cursor(self, *args, **kwargs):
+        return StreamingCursor(self)
+
+
 @pytest.fixture
 def client():
     app_mod.app.config.update(TESTING=True, SECRET_KEY="test-secret")
@@ -151,6 +175,64 @@ def test_query_pool_running_run_reports_estimated_count_without_ready_candidates
     assert run["preflight_summary"]["raw_candidates_estimated"] == 1
     assert run["preflight_summary"]["candidate_ready"] == 0
     assert run["preflight_summary"]["scheduler_intake"] == "running"
+
+
+def test_query_pool_async_run_streams_candidates_batch_by_batch(monkeypatch):
+    monkeypatch.setenv("QUERY_POOL_LLM_BATCH_SIZE", "1")
+    monkeypatch.setattr(app_mod, "_query_pool_prompt_ids_from_selection", lambda cur, selection, max_prompts: ["101", "102", "103"])
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_prompt_rows",
+        lambda cur, prompt_ids: [
+            {"id": "101", "text": "How should I choose sunscreen?", "topic_text": "oily commute sunscreen"},
+            {"id": "102", "text": "How should I choose cleanser?", "topic_text": "gentle daily cleanser"},
+            {"id": "103", "text": "How should I choose moisturizer?", "topic_text": "light moisturizer"},
+        ],
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_profile_pool",
+        lambda cur, segment_ids=None: [
+            {
+                "segment_id": "SEG-1",
+                "segment_weight": 1,
+                "profile_id": "P-1",
+                "profile_weight": 1,
+                "profile_need": "daily use without overspending",
+            }
+        ],
+    )
+    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *args, **kwargs: None)
+    conn = StreamingConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+
+    batch_sizes = []
+
+    def fake_query_generator(contexts):
+        batch_sizes.append(len(contexts))
+        return (
+            {
+                context["candidate_key"]: f"Which {context['topic_text']} is worth buying for everyday use?"
+                for context in contexts
+            },
+            {"model": "fake-query-llm", "usage": {"total_tokens": len(contexts)}},
+        )
+
+    monkeypatch.setattr(app_mod, "_generate_query_pool_llm_queries", fake_query_generator)
+
+    app_mod._execute_query_pool_assembly_run(
+        "run-stream",
+        "admin-1",
+        {
+            "selection": {"mode": "explicit", "prompt_ids": ["101", "102", "103"]},
+            "config": {"profiles_per_prompt": 1, "max_candidates": 10},
+        },
+    )
+
+    assert batch_sizes == [1, 1, 1]
+    assert len(conn.inserted_candidates) == 3
+    assert conn.commits >= 4
+    assert any("status = 'completed'" in sql for sql, _params in conn.run_updates)
 
 
 def test_query_pool_preflight_is_dry_run(client, monkeypatch):
