@@ -259,6 +259,21 @@ def test_query_pool_primary_assemble_button_starts_backend_run():
     assert "document.getElementById('query-pool-action-panel')" in html
 
 
+def test_query_pool_assemble_uses_run_polling_and_persistent_error():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+
+    assert "queryPoolAssembleError" in html
+    assert "startQueryPoolRunPolling" in html
+    assert "loadQueryPoolRun" in html
+    assert "Query 组装失败" in query_pool_section
+    assert "轮询" in query_pool_section
+    assert "API_BASE + '/admin/query-pool/runs/'" in html
+
+
 def test_query_pool_visible_copy_is_chinese():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[html.index("Query Pool") : html.index("<!-- ============ PAGE: PIPELINE PROXY")]

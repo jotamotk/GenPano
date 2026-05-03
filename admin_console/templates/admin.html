@@ -4116,6 +4116,16 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </template>
                   <template x-if="queryPoolActionPanel==='assemble'">
                     <div class="p-5 space-y-4">
+                      <template x-if="queryPoolAssembling && !queryPoolAssembleError">
+                        <div class="rounded-card bg-accent/5 border border-accent/20 px-3 py-2 text-[11px] text-ink-body">
+                          后台正在用 LLM 组装 Query，页面会轮询更新状态，完成后自动刷新候选列表。
+                        </div>
+                      </template>
+                      <template x-if="queryPoolAssembleError">
+                        <div class="rounded-card bg-danger/5 border border-danger/20 px-3 py-2 text-[11px] text-danger">
+                          <span x-text="'Query 组装失败：' + queryPoolAssembleError"></span>
+                        </div>
+                      </template>
                       <div class="grid grid-cols-4 gap-3">
                         <template x-for="step in queryPoolAssembleSteps" :key="step.name">
                           <div class="rounded-card bg-surface-page border border-b-card p-3">
@@ -8729,6 +8739,9 @@ function adminApp() {
     queryPoolActionPanel: '',
     queryPoolAssembleStarted: false,
     queryPoolAssembling: false,
+    queryPoolAssembleError: '',
+    queryPoolRunPollTimer: null,
+    queryPoolRunPollDelay: 3000,
     queryPoolPreflighting: false,
     queryPoolPreflightSummary: null,
     queryPoolPreflightRun: null,
@@ -11859,6 +11872,8 @@ function adminApp() {
     queryPoolSchedulerIntakeLabel(value){
       return {
         ready: '就绪',
+        running: '生成中',
+        failed: '失败',
         blocked: '阻断',
         manual: '仅生成',
       }[value] || '未运行';
@@ -12053,6 +12068,95 @@ function adminApp() {
       return '';
     },
 
+    clearQueryPoolRunPolling(){
+      if (this.queryPoolRunPollTimer) {
+        clearTimeout(this.queryPoolRunPollTimer);
+        this.queryPoolRunPollTimer = null;
+      }
+    },
+
+    async loadQueryPoolRun(runId){
+      const res = await fetch(API_BASE + '/admin/query-pool/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query run 加载失败');
+      return body.run || {};
+    },
+
+    applyQueryPoolRunProgress(run){
+      const status = run.status || 'running';
+      const summary = run.preflight_summary || {};
+      this.applyQueryPoolPreflightSummary(summary, run);
+      this.queryPoolCurrentRunId = run.id || this.queryPoolCurrentRunId || '';
+      const estimated = Number(run.candidates_estimated || summary.raw_candidates_estimated || this.queryCountRaw() || 0);
+      const assembled = status === 'completed'
+        ? Number(run.candidates_assembled || summary.candidate_ready || 0)
+        : Number(run.candidates_assembled || 0);
+      const promptCount = this.queryPoolSelectedPromptCount();
+      const failed = status === 'failed';
+      const completed = status === 'completed';
+      if (failed) this.queryPoolAssembleError = run.llm_error || 'unknown_error';
+      this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
+        if (step.name === 'Prompt 校验') {
+          return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
+        }
+        if (step.name === 'Segment/Profile 采样') {
+          return { ...step, status:failed ? 'idle' : 'done', label:failed ? '失败' : this.queryPoolProfileStrategyLabel(), value:estimated.toLocaleString() + ' 个 Profile' };
+        }
+        if (step.name === 'Query 候选渲染') {
+          return {
+            ...step,
+            status:failed ? 'idle' : (completed ? 'done' : 'running'),
+            label:failed ? '失败' : (completed ? '完成' : 'LLM 生成中'),
+            value:(completed ? '+' : '') + assembled.toLocaleString() + (completed ? ' 个候选' : ' / ' + estimated.toLocaleString()),
+          };
+        }
+        if (step.name === '调度接收') {
+          return {
+            ...step,
+            status:failed ? 'idle' : (completed ? 'done' : 'idle'),
+            label:failed ? '失败' : (completed ? '就绪' : '等待'),
+            value:completed ? '候选已生成' : '等待候选',
+          };
+        }
+        return step;
+      });
+    },
+
+    startQueryPoolRunPolling(runId){
+      this.clearQueryPoolRunPolling();
+      const poll = async () => {
+        if (!runId || this.queryPoolCurrentRunId !== runId) return;
+        let keepPolling = false;
+        try {
+          const run = await this.loadQueryPoolRun(runId);
+          this.applyQueryPoolRunProgress(run);
+          if (run.status === 'completed') {
+            this.queryPoolAssembling = false;
+            this.queryPoolAssembleStarted = true;
+            this.queryPoolCandidateCursor = { next: null, prev: null };
+            await this.loadQueryPoolCandidates();
+            this.toast('Query 组装完成，候选列表已刷新');
+          } else if (run.status === 'failed') {
+            this.queryPoolAssembling = false;
+            this.toast('Query 组装失败: ' + (run.llm_error || 'unknown_error'));
+          } else {
+            keepPolling = true;
+          }
+        } catch (error) {
+          this.queryPoolAssembleError = error.message || 'Query run 轮询失败';
+          keepPolling = true;
+        } finally {
+          if (keepPolling) {
+            this.queryPoolRunPollTimer = setTimeout(poll, Number(this.queryPoolRunPollDelay || 3000));
+          } else {
+            this.queryPoolRunPollTimer = null;
+          }
+          this.$nextTick(()=>lucide.createIcons());
+        }
+      };
+      this.queryPoolRunPollTimer = setTimeout(poll, 800);
+    },
+
     async startQueryPoolPreflight(){
       if (this.queryPoolActionPanel !== 'preflight') this.openQueryPoolPanel('preflight');
       const promptCount = this.queryPoolSelectedPromptCount();
@@ -12088,8 +12192,18 @@ function adminApp() {
         return;
       }
       const requestBody = this.queryPoolRequestPayload();
-      const payload = requestBody.selection;
+      this.clearQueryPoolRunPolling();
+      this.queryPoolAssembleError = '';
       this.queryPoolAssembling = true;
+      this.queryPoolAssembleStarted = true;
+      this.queryPoolCurrentRunId = '';
+      this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
+        if (step.name === 'Prompt 校验') return { ...step, status:'running', label:'校验中', value:promptCount.toLocaleString() + ' 个 Prompt' };
+        if (step.name === 'Segment/Profile 采样') return { ...step, status:'idle', label:'等待', value:'等待 Prompt 校验' };
+        if (step.name === 'Query 候选渲染') return { ...step, status:'idle', label:'等待', value:'等待 LLM 生成' };
+        if (step.name === '调度接收') return { ...step, status:'idle', label:'等待', value:'等待候选生成' };
+        return step;
+      });
       try {
         const res = await fetch(API_BASE + '/admin/query-pool/assemble', {
           method:'POST',
@@ -12100,24 +12214,31 @@ function adminApp() {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 组装失败');
         const run = body.run || {};
-        const preflight = run.preflight_summary || {};
-        this.applyQueryPoolPreflightSummary(preflight, run);
         this.queryPoolCurrentRunId = run.id || '';
-        this.queryPoolAssembleStarted = true;
-        this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
-          if (step.name === 'Prompt 校验') return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
-          if (step.name === 'Segment/Profile 采样') return { ...step, status:'done', label:this.queryPoolProfileStrategyLabel(), value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
-          if (step.name === 'Query 候选渲染') return { ...step, status:'done', label:'完成', value:'+' + Number(run.candidates_assembled || preflight.candidate_ready || 0).toLocaleString() + ' 个候选' };
-          if (step.name === '调度接收') return { ...step, status:'done', label:'就绪', value:payload.mode === 'filtered' ? '全部筛选 Prompt' : '显式选择' };
-          return step;
-        });
-        this.queryPoolCandidateCursor = { next: null, prev: null };
-        await this.loadQueryPoolCandidates();
-        this.toast('Query 组装任务已完成');
+        this.applyQueryPoolRunProgress(run);
+        if (run.status === 'completed') {
+          this.queryPoolAssembling = false;
+          this.queryPoolCandidateCursor = { next: null, prev: null };
+          await this.loadQueryPoolCandidates();
+          this.toast('Query 组装完成，候选列表已刷新');
+          return;
+        }
+        if (run.status === 'failed') {
+          this.queryPoolAssembling = false;
+          this.queryPoolAssembleError = run.llm_error || 'unknown_error';
+          this.toast('Query 组装失败: ' + this.queryPoolAssembleError);
+          return;
+        }
+        if (run.id) {
+          this.startQueryPoolRunPolling(run.id);
+          this.toast('Query 组装已开始，后台 LLM 生成中');
+        } else {
+          throw new Error('Query 组装任务未返回 run id');
+        }
       } catch (error) {
-        this.toast(error.message || 'Query 组装失败');
-      } finally {
         this.queryPoolAssembling = false;
+        this.queryPoolAssembleError = error.message || 'Query 组装失败';
+        this.toast(error.message || 'Query 组装失败');
       }
     },
 
