@@ -12197,6 +12197,13 @@ function adminApp() {
       this.queryPoolAssembling = true;
       this.queryPoolAssembleStarted = true;
       this.queryPoolCurrentRunId = '';
+      this.queryPoolCandidateQuery = '';
+      this.queryPoolCandidateSegment = '';
+      this.queryPoolCandidateProfile = '';
+      this.queryPoolCandidateStatus = '';
+      this.queryPoolCandidateRows = [];
+      this.queryPoolCandidateCursor = { next: null, prev: null };
+      this.queryPoolCandidatePageInfo = { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 };
       this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
         if (step.name === 'Prompt 校验') return { ...step, status:'running', label:'校验中', value:promptCount.toLocaleString() + ' 个 Prompt' };
         if (step.name === 'Segment/Profile 采样') return { ...step, status:'idle', label:'等待', value:'等待 Prompt 校验' };

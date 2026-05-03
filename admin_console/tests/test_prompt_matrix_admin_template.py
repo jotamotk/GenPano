@@ -244,6 +244,19 @@ def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
     assert "filteredRows" not in loader_section
 
 
+def test_query_pool_assemble_resets_candidate_filters_before_new_run():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assemble_start = html.index("async startQueryPoolAssemble")
+    assemble_setup = html[assemble_start : html.index("try {", assemble_start)]
+
+    assert "this.queryPoolCandidateQuery = ''" in assemble_setup
+    assert "this.queryPoolCandidateSegment = ''" in assemble_setup
+    assert "this.queryPoolCandidateProfile = ''" in assemble_setup
+    assert "this.queryPoolCandidateStatus = ''" in assemble_setup
+    assert "this.queryPoolCandidateRows = []" in assemble_setup
+    assert "this.queryPoolCandidateCursor = { next: null, prev: null }" in assemble_setup
+
+
 def test_query_pool_primary_assemble_button_starts_backend_run():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[
