@@ -3892,8 +3892,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <button @click="openQueryPoolPanel('cost')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                       预估成本
                     </button>
-                    <button @click="openQueryPoolPanel('assemble')" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90">
-                      组装 Query
+                    <button @click="startQueryPoolAssemble()" :disabled="queryPoolAssembling" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-60">
+                      <span x-text="queryPoolAssembling ? '组装中...' : '组装 Query'"></span>
                     </button>
                   </div>
                 </div>
@@ -4111,7 +4111,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               </div>
 
               <template x-if="queryPoolActionPanel">
-                <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
+                <div id="query-pool-action-panel" class="rounded-card-lg bg-surface border border-accent/20 shadow-card overflow-hidden">
                   <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
                     <div>
                       <h3 class="text-[15px] font-bold text-ink" x-text="queryPoolPanelTitle()"></h3>
@@ -11866,7 +11866,11 @@ function adminApp() {
 
     openQueryPoolPanel(panel){
       this.queryPoolActionPanel = panel;
-      this.$nextTick(()=>lucide.createIcons());
+      this.$nextTick(()=>{
+        lucide.createIcons();
+        const target = document.getElementById('query-pool-action-panel');
+        if (target) target.scrollIntoView({ behavior:'smooth', block:'start' });
+      });
     },
 
     queryPoolPanelTitle(){
@@ -11877,6 +11881,7 @@ function adminApp() {
     },
 
     async startQueryPoolAssemble(){
+      if (this.queryPoolActionPanel !== 'assemble') this.openQueryPoolPanel('assemble');
       const promptCount = this.queryPoolSelectedPromptCount();
       if (promptCount === 0) {
         this.toast('请先选择 Prompt');

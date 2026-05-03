@@ -160,6 +160,21 @@ def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
     assert "filteredRows" not in loader_section
 
 
+def test_query_pool_primary_assemble_button_starts_backend_run():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+    primary_actions = query_pool_section[
+        query_pool_section.index("预估成本") : query_pool_section.index("组装配置")
+    ]
+    assert '@click="startQueryPoolAssemble()"' in primary_actions
+    assert "queryPoolAssembling ? '组装中...' : '组装 Query'" in primary_actions
+    assert 'id="query-pool-action-panel"' in query_pool_section
+    assert "document.getElementById('query-pool-action-panel')" in html
+
+
 def test_query_pool_visible_copy_is_chinese():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[html.index("Query Pool") : html.index("<!-- ============ PAGE: PIPELINE PROXY")]
