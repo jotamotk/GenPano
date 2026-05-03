@@ -226,6 +226,62 @@ def test_profile_import_skips_bad_rows_without_failing_batch(monkeypatch):
     assert any("ROLLBACK TO SAVEPOINT profile_import_row" in sql for sql, _params in conn.statements)
 
 
+def test_profile_create_syncs_legacy_serial_sequence_before_insert(monkeypatch):
+    class SequenceCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "SELECT 1 FROM profiles" in compact:
+                self.rows = []
+            elif "pg_get_serial_sequence('profiles', 'id')" in compact:
+                self.rows = [{"seq": "public.profiles_id_seq"}]
+            elif "MAX(id)" in compact:
+                self.rows = [{"max_id": 18}]
+            elif "setval" in compact:
+                self.conn.sequence_synced = True
+                self.rows = [{"setval": 18}]
+            elif "INSERT INTO profiles" in compact:
+                if not self.conn.sequence_synced:
+                    raise Exception(
+                        'duplicate key value violates unique constraint "profiles_pkey" DETAIL: Key (id)=(16) already exists.'
+                    )
+                self.rows = [
+                    {
+                        "api_id": "P-NEW",
+                        "id": 19,
+                        "code": "P-NEW",
+                        "segment_id": "SEG-001",
+                        "name": "Proof seeker",
+                        "status": "draft",
+                        "weight": 1,
+                    }
+                ]
+
+    class SequenceConnection(FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.sequence_synced = False
+
+        def cursor(self, *args, **kwargs):
+            return SequenceCursor(self)
+
+    conn = SequenceConnection()
+    cur = conn.cursor()
+    monkeypatch.setattr(
+        app_mod,
+        "_get_segment",
+        lambda cur, segment_id: {"id": segment_id, "name": "Segment", "brand_id": "42", "brand_name": "CHANEL"},
+    )
+
+    row = app_mod._create_profile(cur, "SEG-001", {"code": "P-NEW", "name": "Proof seeker"}, "admin-1")
+
+    statements = [sql for sql, _params in conn.statements]
+    sync_index = next(i for i, sql in enumerate(statements) if "pg_get_serial_sequence('profiles', 'id')" in sql)
+    insert_index = next(i for i, sql in enumerate(statements) if "INSERT INTO profiles" in sql)
+    assert sync_index < insert_index
+    assert row["id"] == "P-NEW"
+
+
 def test_segment_list_pagination_and_search(client, monkeypatch):
     login(monkeypatch)
     fake_db(monkeypatch)
