@@ -141,6 +141,31 @@ def test_query_pool_kpis_are_candidate_quality_not_execution_success():
     assert "Per-Segment Execution Success" not in query_pool_section
 
 
+def test_query_pool_quality_metrics_are_not_static_mock_values():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+    for mock_value in ("4,680", "99.2%", "82%", "3 个待审", "queries:4680"):
+        assert mock_value not in query_pool_section
+    assert "queryPoolQualityGateRows()" in query_pool_section
+    assert "queryPoolPreflightRows()" in query_pool_section
+    assert "queryPoolCostRows()" in query_pool_section
+    assert "queryPoolPreflightSummary" in html
+    assert "applyQueryPoolPreflightSummary" in html
+
+
+def test_query_pool_preflight_button_calls_backend_preflight():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+    assert '@click="startQueryPoolPreflight()"' in query_pool_section
+    assert "API_BASE + '/admin/query-pool/preflight'" in html
+
+
 def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     assert "loadQueryPoolCandidates()" in html
@@ -212,6 +237,8 @@ def test_prd_defines_large_scale_query_candidate_contract():
     assert "GET /admin/api/v1/pipeline/query-pool/candidates" in prd
     assert "Do not use offset pagination for large runs" in prd
     assert "Prompt x Segment x Profile candidate" in prd
+    assert "preflight_summary" in prd
+    assert "不允许静态 mock 数值" in prd
 
 
 def test_profile_groups_are_labeled_as_segments_with_profile_drilldown():

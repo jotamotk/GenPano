@@ -3886,7 +3886,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">Query Pool</h3>
-                    <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + queryPoolSelectedPromptCount().toLocaleString() + ' 个 Prompt · 预计组装 ' + estimatedQueryCount() + ' 个 Query · 就绪 4,680'"></p>
+                    <p class="text-[12px] text-ink-muted mt-1" x-text="queryPoolHeaderSummaryText()"></p>
                   </div>
                   <div class="flex items-center gap-2">
                     <button @click="openQueryPoolPanel('cost')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
@@ -3905,7 +3905,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div>
                       <h3 class="text-[15px] font-bold text-ink">组装配置</h3>
                     </div>
-                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold">待预检</span>
+                    <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                          :class="queryPoolPreflightBadgeClass()"
+                          x-text="queryPoolPreflightBadgeText()"></span>
                   </div>
                   <div class="space-y-4">
                     <div class="space-y-2">
@@ -4095,10 +4097,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">预检状态</h3>
                   </div>
-                  <button @click="openQueryPoolPanel('preflight')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">预检报告</button>
+                  <button @click="startQueryPoolPreflight()" :disabled="queryPoolPreflighting" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn disabled:opacity-60">
+                    <span x-text="queryPoolPreflighting ? '预检中...' : '预检报告'"></span>
+                  </button>
                 </div>
                 <div class="grid grid-cols-6 gap-3">
-                  <template x-for="gate in queryPoolQualityGates" :key="gate.title">
+                  <template x-for="gate in queryPoolQualityGateRows()" :key="gate.title">
                     <div class="rounded-card bg-surface-page border border-b-card p-3">
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-[12px] font-semibold text-ink" x-text="gate.title"></span>
@@ -4122,7 +4126,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               :class="queryPoolActionPanel==='cost' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">成本</button>
                       <button @click="openQueryPoolPanel('assemble')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
                               :class="queryPoolActionPanel==='assemble' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">组装</button>
-                      <button @click="openQueryPoolPanel('preflight')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
+                      <button @click="startQueryPoolPreflight()" :disabled="queryPoolPreflighting" class="h-8 px-3 rounded-btn text-[12px] font-semibold disabled:opacity-60"
                               :class="queryPoolActionPanel==='preflight' ? 'bg-accent text-white' : 'border border-b-default bg-surface text-ink-body hover:bg-surface-page'">预检</button>
                       <button @click="queryPoolActionPanel=''" class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted inline-flex items-center justify-center">
                         <i data-lucide="x" class="w-4 h-4"></i>
@@ -4134,7 +4138,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
                         <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">层级</th><th class="px-4 py-2.5 text-left text-ink-muted">数量</th><th class="px-4 py-2.5 text-left text-ink-muted">依据</th><th class="px-4 py-2.5 text-right text-ink-muted">估算</th></tr></thead>
                         <tbody>
-                          <template x-for="row in queryPoolCostRows" :key="row.engine">
+                          <template x-for="row in queryPoolCostRows()" :key="row.engine">
                             <tr class="border-b border-b-card">
                               <td class="px-4 py-3 font-semibold text-ink" x-text="row.engine"></td>
                               <td class="px-4 py-3 text-ink-body tabular-nums" x-text="row.queries.toLocaleString()"></td>
@@ -4179,10 +4183,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
                         <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">检查项</th><th class="px-4 py-2.5 text-left text-ink-muted">结果</th><th class="px-4 py-2.5 text-left text-ink-muted">影响</th><th class="px-4 py-2.5 text-right text-ink-muted">处理</th></tr></thead>
                         <tbody>
-                          <template x-for="item in queryPoolPreflightItems" :key="item.name">
+                          <template x-for="item in queryPoolPreflightRows()" :key="item.name">
                             <tr class="border-b border-b-card">
                               <td class="px-4 py-3 font-semibold text-ink" x-text="item.name"></td>
-                              <td class="px-4 py-3"><span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold" :class="item.tone==='success' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'" x-text="item.result"></span></td>
+                              <td class="px-4 py-3"><span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold" :class="item.tone==='success' ? 'bg-success/10 text-success' : item.tone==='warning' ? 'bg-warning/10 text-warning' : 'bg-accent/10 text-accent'" x-text="item.result"></span></td>
                               <td class="px-4 py-3 text-ink-body" x-text="item.impact"></td>
                               <td class="px-4 py-3 text-right text-ink-body" x-text="item.action"></td>
                             </tr>
@@ -4203,7 +4207,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </div>
                 </div>
                 <div class="grid grid-cols-6 gap-3">
-                  <template x-for="gate in queryPoolQualityGates" :key="gate.title">
+                  <template x-for="gate in queryPoolQualityGateRows()" :key="gate.title">
                     <div class="p-4 rounded-card bg-surface-page border border-b-card">
                       <div class="text-[11px] text-ink-muted font-semibold" x-text="gate.title"></div>
                       <div class="text-[20px] font-bold text-ink mt-2" x-text="gate.value"></div>
@@ -8712,6 +8716,9 @@ function adminApp() {
     queryPoolActionPanel: '',
     queryPoolAssembleStarted: false,
     queryPoolAssembling: false,
+    queryPoolPreflighting: false,
+    queryPoolPreflightSummary: null,
+    queryPoolPreflightRun: null,
     queryPoolCurrentRunId: '',
     queryPoolCandidateRows: [],
     queryPoolCandidateLoading: false,
@@ -8723,22 +8730,11 @@ function adminApp() {
     queryPoolCandidatePerPage: 100,
     queryPoolCandidateCursor: { next: null, prev: null },
     queryPoolCandidatePageInfo: { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 },
-    queryPoolCostRows: [
-      { engine:'候选组装', queries:4680, unit:'Prompt x Profile 候选', cost:'不绑定引擎' },
-      { engine:'调度派发', queries:0, unit:'引擎展开稍后确定', cost:'调度阶段估算' },
-      { engine:'预算保护', queries:12000, unit:'入队前候选上限', cost:'策略校验' },
-    ],
     queryPoolAssembleSteps: [
       { name:'Prompt 校验', status:'idle', label:'等待中', value:'0 个 Prompt' },
       { name:'Segment Profile 采样', status:'idle', label:'等待中', value:'0 个 Profile' },
       { name:'Query 候选渲染', status:'idle', label:'等待中', value:'+0 个候选' },
       { name:'调度接收', status:'idle', label:'等待中', value:'未入队' },
-    ],
-    queryPoolPreflightItems: [
-      { name:'模板变量', result:'通过', tone:'success', impact:'0 个失败', action:'无需处理' },
-      { name:'重复候选', result:'3 个待审', tone:'warning', impact:'渲染文本相似', action:'合并或人工确认' },
-      { name:'Segment 权重', result:'通过', tone:'success', impact:'允许采样', action:'无需处理' },
-      { name:'调度接收', result:'就绪', tone:'success', impact:'引擎派发稍后处理', action:'调度阶段控制执行' },
     ],
     topicPlanQualityGates: [
       { title:'发布覆盖', value:'78%', tone:'success', icon:'radar', meta:'目标 80% · 当前接近达标' },
@@ -8751,14 +8747,6 @@ function adminApp() {
       { title:'待审核', value:'0', tone:'success', meta:'Prompt candidates' },
       { title:'品类纯净', value:'0 泄露', tone:'success', meta:'Category topics must not mention brands' },
       { title:'相似重复', value:'0', tone:'success', meta:'Duplicate candidates / prompts' },
-    ],
-    queryPoolQualityGates: [
-      { title:'候选就绪', value:'4,680', tone:'success', meta:'引擎派发前已完成组装' },
-      { title:'渲染通过率', value:'99.2%', tone:'success', meta:'模板变量均已正确渲染' },
-      { title:'Segment 覆盖', value:'82%', tone:'success', meta:'已覆盖启用且有权重的 Segment' },
-      { title:'Profile 覆盖', value:'3.0 / Prompt', tone:'accent', meta:'每个选中 Prompt 的采样 Profile 数' },
-      { title:'重复待审', value:'3 个待审', tone:'warning', meta:'相似候选需要合并或确认' },
-      { title:'调度接收', value:'就绪', tone:'success', meta:'派发任务稍后由调度创建' },
     ],
     schedulerWorkflow: [
       { no:'01', title:'接收批次', icon:'inbox', desc:'读取 scheduler_intake_batch，并按窗口合并或拆分。' },
@@ -11763,6 +11751,139 @@ function adminApp() {
       return `已选 Prompt x 每 Prompt Profile = ${promptCount} x ${cfg.profilesPerPrompt} · 候选上限 ${Number(cfg.maxQueries).toLocaleString()}`;
     },
 
+    queryPoolRequestConfig(){
+      return {
+        profile_strategy: this.queryPoolConfig.profileStrategy,
+        desired_engine_policy: this.queryPoolConfig.desiredEnginePolicy,
+        budget_cap: Number(this.queryPoolConfig.budgetCap || 0),
+        intake_window: this.queryPoolConfig.scheduleWindow,
+        dedupe_policy: this.queryPoolConfig.dedupePolicy,
+        priority_mode: this.queryPoolConfig.priorityMode,
+        profiles_per_prompt: Number(this.queryPoolConfig.profilesPerPrompt || 0),
+        max_candidates: Number(this.queryPoolConfig.maxQueries || 0),
+        overflow_policy: this.queryPoolConfig.overflowPolicy,
+      };
+    },
+
+    queryPoolRequestPayload(){
+      return {
+        selection: this.queryPoolSelectionPayload(),
+        config: this.queryPoolRequestConfig(),
+      };
+    },
+
+    queryPoolHeaderSummaryText(){
+      const ready = this.queryPoolPreflightSummary
+        ? Number(this.queryPoolPreflightSummary.candidate_ready || 0).toLocaleString() + ' 个就绪'
+        : '未运行';
+      return '已选 ' + this.queryPoolSelectedPromptCount().toLocaleString() +
+        ' 个 Prompt · 预计组装 ' + this.estimatedQueryCount() + ' 个 Query · 预检 ' + ready;
+    },
+
+    queryPoolPreflightBadgeText(){
+      if (this.queryPoolPreflighting) return '预检中';
+      if (!this.queryPoolPreflightSummary) return '未预检';
+      return this.queryPoolSchedulerIntakeLabel(this.queryPoolPreflightSummary.scheduler_intake);
+    },
+
+    queryPoolPreflightBadgeClass(){
+      if (this.queryPoolPreflighting || !this.queryPoolPreflightSummary) return 'bg-warning/10 text-warning';
+      return this.queryPoolPreflightSummary.scheduler_intake === 'ready'
+        ? 'bg-success/10 text-success'
+        : 'bg-warning/10 text-warning';
+    },
+
+    queryPoolFormatRate(value){
+      if (value === null || value === undefined || value === '') return '--';
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '--';
+      return (number * 100).toFixed(1).replace(/\.0$/, '') + '%';
+    },
+
+    queryPoolFormatCount(value){
+      const number = Number(value || 0);
+      if (!Number.isFinite(number)) return '0';
+      return number.toLocaleString();
+    },
+
+    queryPoolSchedulerIntakeLabel(value){
+      return {
+        ready: '就绪',
+        blocked: '阻断',
+        manual: '仅生成',
+      }[value] || '未运行';
+    },
+
+    queryPoolRateTone(value, target = 0.8){
+      const number = Number(value || 0);
+      if (!this.queryPoolPreflightSummary) return 'accent';
+      return number >= target ? 'success' : 'warning';
+    },
+
+    queryPoolQualityGateRows(){
+      const s = this.queryPoolPreflightSummary;
+      if (!s) {
+        return [
+          { title:'候选就绪', value:'未运行', tone:'accent', meta:'点击预检或组装后由后端计算' },
+          { title:'渲染通过率', value:'--', tone:'accent', meta:'等待后端模板渲染检查' },
+          { title:'Segment 覆盖', value:'--', tone:'accent', meta:'等待 Segment 权重采样结果' },
+          { title:'Profile 覆盖', value:'--', tone:'accent', meta:'等待 Profile 采样结果' },
+          { title:'重复待审', value:'--', tone:'accent', meta:'等待后端去重检查' },
+          { title:'调度接收', value:'未运行', tone:'accent', meta:'调度只接收后端候选' },
+        ];
+      }
+      const duplicate = Number(s.duplicate_review || 0);
+      const renderFailures = Number(s.render_failures || 0);
+      const ready = Number(s.candidate_ready || 0);
+      return [
+        { title:'候选就绪', value:this.queryPoolFormatCount(ready), tone:ready > 0 ? 'success' : 'warning', meta:'后端预检/组装返回的候选数' },
+        { title:'渲染通过率', value:this.queryPoolFormatRate(s.render_pass_rate), tone:this.queryPoolRateTone(s.render_pass_rate, 0.98), meta:renderFailures.toLocaleString() + ' 个渲染失败' },
+        { title:'Segment 覆盖', value:this.queryPoolFormatRate(s.segment_coverage), tone:this.queryPoolRateTone(s.segment_coverage), meta:'启用且有权重的 Segment 覆盖率' },
+        { title:'Profile 覆盖', value:this.queryPoolFormatRate(s.profile_coverage), tone:this.queryPoolRateTone(s.profile_coverage), meta:'每 Prompt ' + Number(s.profiles_per_prompt || this.queryPoolConfig.profilesPerPrompt || 0).toLocaleString() + ' 个 Profile' },
+        { title:'重复待审', value:duplicate.toLocaleString() + ' 个待审', tone:duplicate > 0 ? 'warning' : 'success', meta:'后端渲染文本去重结果' },
+        { title:'调度接收', value:this.queryPoolSchedulerIntakeLabel(s.scheduler_intake), tone:s.scheduler_intake === 'ready' ? 'success' : 'warning', meta:'派发任务稍后由调度创建' },
+      ];
+    },
+
+    queryPoolPreflightRows(){
+      const s = this.queryPoolPreflightSummary;
+      if (!s) {
+        return [
+          { name:'模板变量', result:'未运行', tone:'accent', impact:'等待后端预检', action:'点击预检报告' },
+          { name:'重复候选', result:'未运行', tone:'accent', impact:'等待后端去重', action:'点击预检报告' },
+          { name:'Segment 权重', result:'未运行', tone:'accent', impact:'等待采样检查', action:'点击预检报告' },
+          { name:'调度接收', result:'未运行', tone:'accent', impact:'尚未生成候选', action:'点击预检报告' },
+        ];
+      }
+      const duplicate = Number(s.duplicate_review || 0);
+      const renderFailures = Number(s.render_failures || 0);
+      const segmentCoverage = Number(s.segment_coverage || 0);
+      return [
+        { name:'模板变量', result:renderFailures ? renderFailures.toLocaleString() + ' 个失败' : '通过', tone:renderFailures ? 'warning' : 'success', impact:'渲染通过率 ' + this.queryPoolFormatRate(s.render_pass_rate), action:renderFailures ? '修正 Prompt 变量' : '无需处理' },
+        { name:'重复候选', result:duplicate.toLocaleString() + ' 个待审', tone:duplicate ? 'warning' : 'success', impact:'渲染文本相似', action:duplicate ? '合并或人工确认' : '无需处理' },
+        { name:'Segment 权重', result:segmentCoverage ? '通过' : '阻断', tone:segmentCoverage ? 'success' : 'warning', impact:'覆盖率 ' + this.queryPoolFormatRate(s.segment_coverage), action:segmentCoverage ? '无需处理' : '检查 Segment 权重' },
+        { name:'调度接收', result:this.queryPoolSchedulerIntakeLabel(s.scheduler_intake), tone:s.scheduler_intake === 'ready' ? 'success' : 'warning', impact:'引擎派发稍后处理', action:s.scheduler_intake === 'ready' ? '调度阶段控制执行' : '先修复候选' },
+      ];
+    },
+
+    queryPoolCostRows(){
+      const s = this.queryPoolPreflightSummary;
+      const raw = this.queryCountRaw();
+      const cap = Number(this.queryPoolConfig.maxQueries || 0);
+      const estimated = Math.min(raw, cap || raw);
+      const ready = s ? Number(s.candidate_ready || 0) : estimated;
+      return [
+        { engine:'候选组装', queries:ready, unit:s ? '后端返回候选数' : '已选 Prompt x Profile 预估', cost:'不绑定引擎' },
+        { engine:'调度派发', queries:0, unit:'引擎展开由 Scheduler 确认', cost:'调度阶段估算' },
+        { engine:'候选上限', queries:cap, unit:'入队前候选上限', cost:raw > cap ? '已触发上限' : '策略校验' },
+      ];
+    },
+
+    applyQueryPoolPreflightSummary(summary, run = null){
+      this.queryPoolPreflightSummary = summary && Object.keys(summary).length ? summary : null;
+      this.queryPoolPreflightRun = run;
+    },
+
     queryPoolProfileStrategyLabel(){
       const labels = {
         balanced: '核心 Segment + 补充 Segment',
@@ -11880,6 +12001,33 @@ function adminApp() {
       return '';
     },
 
+    async startQueryPoolPreflight(){
+      if (this.queryPoolActionPanel !== 'preflight') this.openQueryPoolPanel('preflight');
+      const promptCount = this.queryPoolSelectedPromptCount();
+      if (promptCount === 0) {
+        this.toast('请先选择 Prompt');
+        return;
+      }
+      this.queryPoolPreflighting = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/query-pool/preflight', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify(this.queryPoolRequestPayload()),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 预检失败');
+        const run = body.run || {};
+        this.applyQueryPoolPreflightSummary(run.preflight_summary || {}, run);
+        this.toast('Query 预检已完成');
+      } catch (error) {
+        this.toast(error.message || 'Query 预检失败');
+      } finally {
+        this.queryPoolPreflighting = false;
+      }
+    },
+
     async startQueryPoolAssemble(){
       if (this.queryPoolActionPanel !== 'assemble') this.openQueryPoolPanel('assemble');
       const promptCount = this.queryPoolSelectedPromptCount();
@@ -11887,30 +12035,21 @@ function adminApp() {
         this.toast('请先选择 Prompt');
         return;
       }
-      const payload = this.queryPoolSelectionPayload();
-      const config = {
-        profile_strategy: this.queryPoolConfig.profileStrategy,
-        desired_engine_policy: this.queryPoolConfig.desiredEnginePolicy,
-        budget_cap: Number(this.queryPoolConfig.budgetCap || 0),
-        intake_window: this.queryPoolConfig.scheduleWindow,
-        dedupe_policy: this.queryPoolConfig.dedupePolicy,
-        priority_mode: this.queryPoolConfig.priorityMode,
-        profiles_per_prompt: Number(this.queryPoolConfig.profilesPerPrompt || 0),
-        max_candidates: Number(this.queryPoolConfig.maxQueries || 0),
-        overflow_policy: this.queryPoolConfig.overflowPolicy,
-      };
+      const requestBody = this.queryPoolRequestPayload();
+      const payload = requestBody.selection;
       this.queryPoolAssembling = true;
       try {
         const res = await fetch(API_BASE + '/admin/query-pool/assemble', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
-          body: JSON.stringify({ selection: payload, config }),
+          body: JSON.stringify(requestBody),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 组装失败');
         const run = body.run || {};
         const preflight = run.preflight_summary || {};
+        this.applyQueryPoolPreflightSummary(preflight, run);
         this.queryPoolCurrentRunId = run.id || '';
         this.queryPoolAssembleStarted = true;
         this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {

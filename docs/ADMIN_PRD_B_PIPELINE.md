@@ -218,7 +218,7 @@ CREATE TABLE pipeline_global_pause (
 
 - **组装配置**: Query Pool 选择 Prompt 行，并配置 Segment/Profile 采样、`desired_engine_policy`、预算上限、入队窗口、去重策略和优先级。它不选择具体引擎数量，也不暴露每引擎执行控制。
 - **数量控制**: 候选量为 `selected_prompts x profiles_per_prompt`，并受 `max_candidates` 上限保护。引擎展开、每引擎配额、并发、限速、账号/代理分配和重试都属于 Scheduler。
-- **预检状态**: 页面展示「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」。引擎成功率、按 Segment 的执行成功率、账号水位、代理失败率属于 Scheduler/Tracker。
+- **预检状态**: 页面展示「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」。这些指标必须来自 `POST /api/admin/query-pool/preflight` 或 `POST /api/admin/query-pool/assemble` 返回的 `preflight_summary`；未运行时显示空态，不允许静态 mock 数值。引擎成功率、按 Segment 的执行成功率、账号水位、代理失败率属于 Scheduler/Tracker。
 - **按钮流程**:
   - 「预估成本」打开候选级粗估，并明确具体引擎成本延后到 Scheduler 估算。
   - 「组装 Query」展示 Prompt 校验、Segment/Profile 采样、Query 候选渲染和调度接收。
