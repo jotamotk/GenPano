@@ -7852,7 +7852,10 @@ function segmentCrudPanel() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.success === false) {
-        throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        const error = new Error(body.message || body.error || ('HTTP ' + res.status));
+        error.body = body;
+        error.status = res.status;
+        throw error;
       }
       return body;
     },
@@ -7955,14 +7958,21 @@ function segmentCrudPanel() {
     },
 
     fromProfile(profile) {
+      const name = profile.name || profile.profile_name || profile.profileName || profile.title || '';
+      const demographic = profile.demographic || profile.persona || profile.profile || profile.description || profile['画像'] || '';
+      const need = profile.need || profile.needs || profile.demand || profile.pain_point || profile['需求'] || '';
+      const personaJson = profile.persona_json || profile.personaJson || (typeof profile.persona === 'object' ? profile.persona : {});
       return {
         ...profile,
         id: String(profile.id || profile.code || '').toUpperCase(),
         code: profile.code || profile.id,
         brandId: profile.brandId || profile.brand_id || '',
         brandName: profile.brandName || profile.brand_name || profile.brand || '',
+        name,
+        demographic,
+        need,
         weight: String(profile.weight ?? '1.0'),
-        persona_json: profile.persona_json || {},
+        persona_json: personaJson || {},
       };
     },
 
@@ -7985,17 +7995,21 @@ function segmentCrudPanel() {
     },
 
     toApiProfile(profile) {
+      const name = profile.name || profile.profile_name || profile.profileName || profile.title || '';
+      const demographic = profile.demographic || profile.persona || profile.profile || profile.description || profile['画像'] || '';
+      const need = profile.need || profile.needs || profile.demand || profile.pain_point || profile['需求'] || '';
+      const personaJson = profile.persona_json || profile.personaJson || (typeof profile.persona === 'object' ? profile.persona : {});
       return {
-        id: profile.id,
-        code: profile.code || profile.id,
+        id: profile.id || profile.code || profile.profile_id || profile.profileId,
+        code: profile.code || profile.id || profile.profile_id || profile.profileId,
         brand_id: profile.brandId || profile.brand_id || '',
         brand_name: profile.brandName || profile.brand_name || profile.brand || '',
-        name: profile.name,
-        demographic: profile.demographic || '',
-        need: profile.need || '',
+        name,
+        demographic,
+        need,
         weight: Number(profile.weight || 0),
         status: profile.status || 'draft',
-        persona_json: profile.persona_json || {},
+        persona_json: personaJson || {},
       };
     },
 
@@ -8449,7 +8463,14 @@ function segmentCrudPanel() {
         this.profileLlmApplyMessage = '已加入列表：新增 ' + (body.added || 0) + '，更新 ' + (body.updated || 0) + ((body.skipped || 0) ? '，跳过 ' + body.skipped : '');
         this.setNotice('Profile drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));
       } catch (error) {
-        const message = error.message || 'Add Profile drafts failed';
+        const skippedRows = error.body?.skipped_rows || [];
+        const skippedHint = skippedRows.length
+          ? '：' + skippedRows.slice(0, 3).map(row => {
+              const label = row.name || row.id || ('row ' + row.index);
+              return label + ' - ' + row.error;
+            }).join('；')
+          : '';
+        const message = (error.message || 'Add Profile drafts failed') + skippedHint;
         this.profileLlmApplyTone = 'error';
         this.profileLlmApplyMessage = message;
         this.profileLlmError = message;

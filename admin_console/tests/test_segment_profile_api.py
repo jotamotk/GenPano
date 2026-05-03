@@ -611,6 +611,29 @@ def test_profile_generation_service_uses_openai_compatible_llm(monkeypatch):
     assert result.items[0]["persona_json"] == {"archetype": "proof"}
 
 
+def test_profile_generation_accepts_relative_weight_and_alias_fields():
+    rows = segment_profiles.validate_profile_candidates(
+        [
+            {
+                "profile_name": "Price optimizer",
+                "persona": "25-34 urban beauty buyer",
+                "needs": "Compares bundles, channels, and final price.",
+                "weight": "1.3",
+                "status": "已启用",
+            }
+        ],
+        3,
+    )
+
+    assert rows[0]["id"] == "P-DRAFT-001"
+    assert rows[0]["name"] == "Price optimizer"
+    assert rows[0]["demographic"] == "25-34 urban beauty buyer"
+    assert rows[0]["need"] == "Compares bundles, channels, and final price."
+    assert rows[0]["weight"] == 1.3
+    assert rows[0]["status"] == "active"
+    assert rows[0]["persona_json"]["summary"] == "25-34 urban beauty buyer"
+
+
 def test_generation_service_rejects_incomplete_llm_output(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):
