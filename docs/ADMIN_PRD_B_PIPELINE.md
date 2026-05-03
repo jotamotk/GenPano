@@ -225,7 +225,7 @@ CREATE TABLE pipeline_global_pause (
   - 「组装 Query」展示 Prompt 校验、Segment/Profile 采样、Query 候选渲染和调度接收。
   - 「预检报告」展示 Prompt 选择、Segment/Profile 可采样、模板变量、重复候选、候选上限、Segment 权重和调度接收检查。
 - **CTA 规则**: 主页面只保留一个主要「组装 Query」入口；KPI 区不重复放同名 CTA。
-- **运营视图**: 保留「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」和「Query 候选列表」。queued/running/completed/failed 执行指标和每引擎暂停/恢复控制移动到 Scheduler/Tracker。
+- **运营视图**: 保留「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」和「Query 候选列表」。候选列表以 Prompt 为主上下文，展示 Prompt 文本 / Prompt ID / Segment / Profile / Query 文本；Topic 只作为弱辅助信息，不作为候选行主标题。queued/running/completed/failed 执行指标和每引擎暂停/恢复控制移动到 Scheduler/Tracker。
 - **候选列表规模**: Query 候选列表必须支持 100M to 1B+ rows。它只渲染当前服务端游标窗口，使用 server-side cursor/keyset pagination，并在服务端运行搜索、状态、Segment、Profile 过滤。UI 不能加载全部候选、不能 deep-offset paginate、不能在浏览器内存里保留完整 `queryDetailList`。总数可以是 approximate。
 
 **数据模型**:
@@ -305,6 +305,7 @@ CREATE INDEX ON query_generation_candidates (run_id, segment_id, profile_id, can
 - `GET /api/admin/query-pool/runs` 和 `GET /api/admin/query-pool/runs/:id` 读取最近组装运行与单次运行详情。
 - Admin 页面调用 `GET /api/admin/query-pool/candidates?run_id=&status=&segment_id=&profile_id=&q=&limit=&cursor=&direction=`，返回 `{ success, rows, next_cursor, prev_cursor, approx_total }`。
 - `POST /api/admin/query-pool/candidates/:id/review` 与 `POST /api/admin/query-pool/candidates/bulk-review` 将候选状态更新为 `candidate | review | ready`，只改变候选审核状态，不创建 Scheduler dispatch job。
+- `DELETE /api/admin/query-pool/candidates/:id` 与 `POST /api/admin/query-pool/candidates/bulk-delete` 删除单条或选中的 Query 候选，并刷新 run 的 `candidates_assembled` / `candidate_ready` 计数；删除不影响 Prompt、Segment、Profile 源数据。
 - 产品网关兼容 `GET /admin/api/v1/pipeline/query-pool/candidates?run_id=&status=&segment_id=&profile_id=&q=&limit=&cursor=&direction=`，返回同一结构。
 - Cursor is keyset-based, opaque to the client, and ordered by `(run_id, candidate_seq)` or an equivalent sharded monotonic key. Do not use offset pagination for large runs.
 - Candidate storage should be partitioned by `run_id` or time bucket plus project/industry when needed; cold partitions can move to cheaper storage while the current run remains queryable.

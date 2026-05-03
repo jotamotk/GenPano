@@ -4118,7 +4118,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div class="p-5 space-y-4">
                       <template x-if="queryPoolAssembling && !queryPoolAssembleError">
                         <div class="rounded-card bg-accent/5 border border-accent/20 px-3 py-2 text-[11px] text-ink-body">
-                          后台正在用 LLM 组装 Query，生成一批会立即写入候选列表，页面会轮询刷新进度。
+                          正在处理，结果会自动显示。
                         </div>
                       </template>
                       <template x-if="queryPoolAssembleError">
@@ -4211,9 +4211,17 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <div class="px-6 py-4 border-b border-b-card flex items-center justify-between gap-4">
                   <div>
                     <h3 class="text-[14px] font-semibold text-ink">Query 候选列表</h3>
-                    <p class="text-[11px] text-ink-muted mt-1">亿级候选使用服务端游标分页；具体引擎在调度创建派发任务时再确定。</p>
+                    <p class="text-[11px] text-ink-muted mt-1">按 Prompt 查看候选；Topic 仅作为辅助上下文。</p>
                   </div>
                   <div class="flex items-center justify-end gap-2 flex-wrap">
+                    <template x-if="selectedQueryPoolCandidateIds().length > 0">
+                      <button @click="deleteSelectedQueryPoolCandidates()" :disabled="queryPoolCandidateDeleting"
+                              class="h-8 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                              title="批量删除 Query 候选">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        <span x-text="'删除 ' + selectedQueryPoolCandidateIds().length + ' 条'"></span>
+                      </button>
+                    </template>
                     <div class="relative w-[240px]">
                       <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"></i>
                       <input x-model="queryPoolCandidateQuery" @input.debounce.350ms="loadQueryPoolCandidates()"
@@ -4243,9 +4251,11 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 </div>
                 <div class="px-6 py-3 border-b border-b-card bg-surface-page flex items-center justify-between">
                   <div class="flex items-center gap-2 text-[11px] text-ink-muted">
-                    <span>路由意图</span>
-                    <span class="inline-flex items-center h-6 px-2 rounded-badge bg-accent/10 text-accent font-semibold">调度阶段决定</span>
-                    <span class="text-ink-faint">引擎展开由调度阶段处理。</span>
+                    <input type="checkbox" class="rounded border-b-default"
+                           :checked="queryPoolCandidatePageAllSelected()"
+                           :disabled="queryPoolCandidateRows.length === 0"
+                           @change="setQueryPoolCandidatePageSelection($event.target.checked)" />
+                    <span x-text="selectedQueryPoolCandidateIds().length ? '已选 ' + selectedQueryPoolCandidateIds().length + ' 条' : '选择当前窗口候选'"></span>
                   </div>
                   <div class="flex items-center gap-2">
                     <button @click="loadQueryPoolCandidates('prev')" :disabled="!queryPoolCandidatePageInfo.hasPrev || queryPoolCandidateLoading"
@@ -4272,11 +4282,22 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <template x-for="q in queryPoolCandidateRows" :key="q.id">
                     <div class="px-6 py-4 hover:bg-surface-page transition-colors">
                       <div class="flex items-center justify-between mb-2">
-                        <div class="flex items-center gap-2 text-[11px]">
-                          <span class="font-semibold text-ink" x-text="topicTitle(q.topicId)"></span>
-                          <span class="text-ink-muted" x-text="q.promptId"></span>
+                        <div class="flex items-center gap-2 text-[11px] min-w-0">
+                          <input type="checkbox" class="rounded border-b-default shrink-0"
+                                 :checked="isQueryPoolCandidateSelected(q.id)"
+                                 @change="toggleQueryPoolCandidate(q.id, $event.target.checked)" />
+                          <span class="font-semibold text-ink truncate max-w-[760px]" x-text="q.promptText || ('Prompt ' + q.promptId)"></span>
+                          <span class="text-ink-muted shrink-0" x-text="'Prompt ' + q.promptId"></span>
+                          <span x-show="q.topicText" class="text-ink-faint truncate max-w-[220px]" x-text="'主题：' + q.topicText"></span>
                         </div>
-                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="queryPoolCandidateStatusLabel(q.candidateStatus)"></span>
+                        <div class="flex items-center gap-2">
+                          <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="queryPoolCandidateStatusLabel(q.candidateStatus)"></span>
+                          <button @click.stop="deleteQueryPoolCandidate(q)" :disabled="queryPoolCandidateDeleting"
+                                  class="w-7 h-7 inline-flex items-center justify-center rounded-btn border border-b-default text-ink-muted hover:text-danger hover:border-danger/30 disabled:opacity-50"
+                                  title="删除 Query 候选">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                          </button>
+                        </div>
                       </div>
                       <div class="flex items-center gap-2 mb-2 text-[11px]">
                         <i data-lucide="user" class="w-3 h-3 text-ink-muted"></i>
@@ -8748,12 +8769,14 @@ function adminApp() {
     queryPoolCurrentRunId: '',
     queryPoolCandidateRows: [],
     queryPoolCandidateLoading: false,
+    queryPoolCandidateDeleting: false,
     queryPoolCandidateError: '',
     queryPoolCandidateQuery: '',
     queryPoolCandidateSegment: '',
     queryPoolCandidateProfile: '',
     queryPoolCandidateStatus: '',
     queryPoolCandidatePerPage: 100,
+    queryPoolSelectedCandidateIds: {},
     queryPoolCandidateCursor: { next: null, prev: null },
     queryPoolCandidatePageInfo: { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 },
     queryPoolAssembleSteps: [
@@ -12022,7 +12045,9 @@ function adminApp() {
           runId: row.run_id,
           candidateSeq: row.candidate_seq,
           promptId: row.prompt_id,
-          topicId: row.topic_id || row.prompt_id,
+          promptText: row.prompt_text || '',
+          topicId: row.topic_id || '',
+          topicText: row.topic_text || '',
           segmentId: row.segment_id,
           profileId: row.profile_id,
           profileGroup: row.segment_id || '未绑定 Segment',
@@ -12031,6 +12056,10 @@ function adminApp() {
           candidateStatus: row.candidate_status || 'candidate',
         }));
         this.queryPoolCandidateRows = rows;
+        const visibleIds = new Set(rows.map(row => row.id));
+        this.queryPoolSelectedCandidateIds = Object.fromEntries(
+          Object.entries(this.queryPoolSelectedCandidateIds || {}).filter(([id, selected]) => selected && visibleIds.has(id))
+        );
         this.queryPoolCandidateCursor = {
           next: body.next_cursor || null,
           prev: body.prev_cursor || null,
@@ -12050,6 +12079,89 @@ function adminApp() {
         this.queryPoolCandidateLoading = false;
         this.$nextTick(()=>lucide.createIcons());
       }
+    },
+
+    selectedQueryPoolCandidateIds(){
+      return Object.keys(this.queryPoolSelectedCandidateIds || {}).filter(id => this.queryPoolSelectedCandidateIds[id]);
+    },
+
+    isQueryPoolCandidateSelected(candidateId){
+      return Boolean((this.queryPoolSelectedCandidateIds || {})[candidateId]);
+    },
+
+    toggleQueryPoolCandidate(candidateId, selected){
+      if (!candidateId) return;
+      this.queryPoolSelectedCandidateIds = {
+        ...(this.queryPoolSelectedCandidateIds || {}),
+        [candidateId]: Boolean(selected),
+      };
+      if (!selected) delete this.queryPoolSelectedCandidateIds[candidateId];
+    },
+
+    queryPoolCandidatePageAllSelected(){
+      const rows = this.queryPoolCandidateRows || [];
+      return rows.length > 0 && rows.every(row => this.isQueryPoolCandidateSelected(row.id));
+    },
+
+    setQueryPoolCandidatePageSelection(selected){
+      const next = { ...(this.queryPoolSelectedCandidateIds || {}) };
+      (this.queryPoolCandidateRows || []).forEach(row => {
+        if (selected) next[row.id] = true;
+        else delete next[row.id];
+      });
+      this.queryPoolSelectedCandidateIds = next;
+    },
+
+    async performDeleteQueryPoolCandidates(candidateIds, reason){
+      const ids = Array.from(new Set((candidateIds || []).filter(Boolean)));
+      if (!ids.length) return;
+      this.queryPoolCandidateDeleting = true;
+      try {
+        const url = ids.length === 1
+          ? API_BASE + '/admin/query-pool/candidates/' + encodeURIComponent(ids[0])
+          : API_BASE + '/admin/query-pool/candidates/bulk-delete';
+        const res = await fetch(url, {
+          method: ids.length === 1 ? 'DELETE' : 'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify(ids.length === 1 ? { reason } : { candidate_ids: ids, reason }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选删除失败');
+        ids.forEach(id => delete this.queryPoolSelectedCandidateIds[id]);
+        this.toast('已删除 ' + (body.deleted || ids).length + ' 条 Query 候选');
+        await this.loadQueryPoolCandidates();
+      } catch (error) {
+        this.toast(error.message || 'Query 候选删除失败');
+      } finally {
+        this.queryPoolCandidateDeleting = false;
+      }
+    },
+
+    deleteQueryPoolCandidate(candidate){
+      if (!candidate || !candidate.id) return;
+      this.confirmAction = {
+        title:'删除 Query 候选',
+        desc:'删除后该候选不会进入后续调度；已生成的其它候选不受影响。',
+        danger:true,
+        action:(reason)=>this.performDeleteQueryPoolCandidates([candidate.id], reason),
+      };
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    deleteSelectedQueryPoolCandidates(){
+      const ids = this.selectedQueryPoolCandidateIds();
+      if (!ids.length) {
+        this.toast('请先选择 Query 候选');
+        return;
+      }
+      this.confirmAction = {
+        title:'批量删除 Query 候选',
+        desc:'将删除当前选中的 ' + ids.length + ' 条 Query 候选；删除后不会进入后续调度。',
+        danger:true,
+        action:(reason)=>this.performDeleteQueryPoolCandidates(ids, reason),
+      };
+      this.$nextTick(()=>lucide.createIcons());
     },
 
     openQueryPoolPanel(panel){
@@ -12106,7 +12218,7 @@ function adminApp() {
           return {
             ...step,
             status:failed ? 'idle' : (completed ? 'done' : 'running'),
-            label:failed ? '失败' : (completed ? '完成' : 'LLM 生成中'),
+            label:failed ? '失败' : (completed ? '完成' : '生成中'),
             value:(completed ? '+' : '') + assembled.toLocaleString() + (completed ? ' 个候选' : ' / ' + estimated.toLocaleString()),
           };
         }
@@ -12207,12 +12319,13 @@ function adminApp() {
       this.queryPoolCandidateProfile = '';
       this.queryPoolCandidateStatus = '';
       this.queryPoolCandidateRows = [];
+      this.queryPoolSelectedCandidateIds = {};
       this.queryPoolCandidateCursor = { next: null, prev: null };
       this.queryPoolCandidatePageInfo = { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 };
       this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
         if (step.name === 'Prompt 校验') return { ...step, status:'running', label:'校验中', value:promptCount.toLocaleString() + ' 个 Prompt' };
         if (step.name === 'Segment/Profile 采样') return { ...step, status:'idle', label:'等待', value:'等待 Prompt 校验' };
-        if (step.name === 'Query 候选渲染') return { ...step, status:'idle', label:'等待', value:'等待 LLM 生成' };
+        if (step.name === 'Query 候选渲染') return { ...step, status:'idle', label:'等待', value:'等待生成' };
         if (step.name === '调度接收') return { ...step, status:'idle', label:'等待', value:'等待候选生成' };
         return step;
       });
@@ -12243,7 +12356,7 @@ function adminApp() {
         }
         if (run.id) {
           this.startQueryPoolRunPolling(run.id);
-          this.toast('Query 组装已开始，后台 LLM 生成中');
+          this.toast('Query 组装已开始');
         } else {
           throw new Error('Query 组装任务未返回 run id');
         }
