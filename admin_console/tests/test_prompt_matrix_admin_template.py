@@ -100,12 +100,13 @@ def test_query_pool_hides_scheduler_only_controls_until_backend_enforces_them():
         : html.index("<!-- ============ PAGE: PIPELINE PROXY")
     ]
     for active_phrase in (
-        "当前仅开放后端已生效项",
+        "候选组装设置",
+        "配置 Prompt x Segment x Profile 候选生成所需的采样、数量与上限",
         "Segment/Profile 采样",
         "每 Prompt Profile",
         "总上限",
         "超限处理",
-        "引擎、预算、入队和优先级由调度阶段处理",
+        "执行引擎、预算与优先级在调度页统一管理",
     ):
         assert active_phrase in query_pool_section
     for inactive_phrase in (
@@ -118,6 +119,12 @@ def test_query_pool_hides_scheduler_only_controls_until_backend_enforces_them():
         "评分维度",
         "无适配处理",
         "Segment 上下文适配评分",
+        "当前仅开放后端已生效项",
+        "后端已生效",
+        "后端组装会实际使用",
+        "已收敛",
+        "待后端接入",
+        "当前真实返回",
     ):
         assert inactive_phrase not in query_pool_section
     for inactive_model in (
@@ -190,8 +197,8 @@ def test_query_pool_frontend_marks_topic_segment_alignment_as_future_backend_rul
         : html.index("<!-- ============ PAGE: PIPELINE PROXY")
     ]
     for phrase in (
-        "Topic 信息仅用于展示",
-        "共享 Segment 的上下文评分待后端接入",
+        "Topic 覆盖",
+        "用于确认所选 Prompt 的主题覆盖",
         "Segment-Profile 可采样",
     ):
         assert phrase in query_pool_section
@@ -201,6 +208,8 @@ def test_query_pool_frontend_marks_topic_segment_alignment_as_future_backend_rul
         "Segment 仅从 Topic eligible 池采样",
         "预检将阻断",
         "按 Brand / Topic / Intent 打适配分",
+        "仅用于展示",
+        "待后端接入",
     ):
         assert outdated_phrase not in query_pool_section
     assert "queryPoolPromptTopicLabel(prompt)" in query_pool_section
