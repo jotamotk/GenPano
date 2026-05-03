@@ -135,6 +135,22 @@ def test_query_pool_assemble_starts_async_run_without_inline_llm(client, monkeyp
     ]
 
 
+def test_query_pool_run_detail_api_returns_json_on_load_failure(client, monkeypatch):
+    login(monkeypatch)
+
+    def fail_get_db():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(app_mod, "get_db", fail_get_db)
+
+    response = client.get("/api/admin/query-pool/runs/run-1")
+    body = response.get_json()
+
+    assert response.status_code == 503
+    assert body["success"] is False
+    assert body["error"] == "query_pool_run_load_failed"
+
+
 def test_query_pool_running_run_reports_estimated_count_without_ready_candidates(monkeypatch):
     monkeypatch.setattr(app_mod, "_query_pool_prompt_ids_from_selection", lambda cur, selection, max_prompts: ["74"])
     monkeypatch.setattr(

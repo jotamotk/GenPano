@@ -316,6 +316,18 @@ def test_query_pool_polling_refreshes_candidates_while_run_is_running():
     assert "await this.loadQueryPoolCandidates();" in polling
 
 
+def test_query_pool_run_polling_retry_does_not_mark_assembly_failed():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    polling = html[html.index("startQueryPoolRunPolling") : html.index("async startQueryPoolPreflight")]
+
+    assert "queryPoolRunLoadFailures" in html
+    assert "queryPoolRunStatusNotice" in html
+    assert "this.queryPoolRunLoadFailures = 0" in polling
+    assert "this.queryPoolRunStatusNotice = ''" in polling
+    assert "await this.loadQueryPoolCandidates()" in polling
+    assert "this.queryPoolAssembleError = error.message" not in polling
+
+
 def test_query_pool_visible_copy_is_chinese():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[html.index("Query Pool") : html.index("<!-- ============ PAGE: PIPELINE PROXY")]

@@ -8230,15 +8230,26 @@ def admin_query_pool_run_detail_api(run_id):
 
     from psycopg2.extras import RealDictCursor
 
-    conn = get_db()
+    conn = None
     try:
+        conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             run = _get_query_pool_run(cur, run_id)
         if not run:
             return jsonify({"success": False, "error": "query_pool_run_not_found"}), 404
         return jsonify({"success": True, "run": run})
+    except Exception as exc:
+        app.logger.exception("Query Pool run detail failed for run %s: %s", run_id, exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_run_load_failed",
+                "message": "Query run 加载失败",
+            }
+        ), 503
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @app.route('/api/admin/query-pool/candidates/<candidate_id>/review', methods=['POST'])
