@@ -1083,6 +1083,9 @@ def _ensure_query_pool_tables():
                         candidates_assembled INTEGER NOT NULL DEFAULT 0,
                         estimated_cost NUMERIC,
                         preflight_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        llm_model VARCHAR(128),
+                        llm_usage_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        llm_error TEXT,
                         started_at TIMESTAMP,
                         completed_at TIMESTAMP,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -1142,12 +1145,18 @@ def _ensure_query_pool_tables():
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS generation_method VARCHAR(32)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_usage_json JSONB")
+                cur.execute("ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128)")
+                cur.execute("ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS llm_usage_json JSONB")
+                cur.execute("ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS llm_error TEXT")
                 cur.execute("UPDATE query_generation_candidates SET llm_usage_json = '{}'::jsonb WHERE llm_usage_json IS NULL")
+                cur.execute("UPDATE query_generation_runs SET llm_usage_json = '{}'::jsonb WHERE llm_usage_json IS NULL")
                 cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN generation_method SET DEFAULT 'llm'")
                 cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN llm_usage_json SET DEFAULT '{}'::jsonb")
+                cur.execute("ALTER TABLE query_generation_runs ALTER COLUMN llm_usage_json SET DEFAULT '{}'::jsonb")
                 _delete_non_llm_query_pool_candidates(cur)
                 cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN generation_method SET NOT NULL")
                 cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN llm_usage_json SET NOT NULL")
+                cur.execute("ALTER TABLE query_generation_runs ALTER COLUMN llm_usage_json SET NOT NULL")
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_query_candidates_generation_method
@@ -3148,6 +3157,9 @@ def _query_pool_run_row(row):
         "candidates_assembled": int(item.get("candidates_assembled") or 0),
         "estimated_cost": float(item.get("estimated_cost") or 0),
         "preflight_summary": _admin_json(item.get("preflight_summary"), {}) or {},
+        "llm_model": item.get("llm_model"),
+        "llm_usage": _admin_json(item.get("llm_usage_json"), {}) or {},
+        "llm_error": item.get("llm_error"),
         "started_at": _isoformat(item.get("started_at")),
         "completed_at": _isoformat(item.get("completed_at")),
         "created_at": _isoformat(item.get("created_at")),
@@ -3155,38 +3167,7 @@ def _query_pool_run_row(row):
     }
 
 
-def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, preflight_summary):
-    run_id = str(uuid.uuid4())
-    prompt_ids = [candidate["prompt_id"] for candidate in candidates]
-    segment_ids = sorted({candidate["segment_id"] for candidate in candidates if candidate.get("segment_id")})
-    cur.execute(
-        """
-        INSERT INTO query_generation_runs
-            (id, admin_id, status, request_config, prompt_ids, segment_ids_selected,
-             profiles_per_prompt, desired_engine_policy, engine_panel_id, max_candidates,
-             overflow_policy, candidates_estimated, candidates_assembled, estimated_cost,
-             preflight_summary, started_at, completed_at, created_at, updated_at)
-        VALUES
-            (%s, %s, 'completed', %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
-             %s, %s, %s, %s, %s::jsonb, NOW(), NOW(), NOW(), NOW())
-        """,
-        (
-            run_id,
-            admin_id,
-            _topic_plan_json({"selection": selection, "config": config}),
-            _topic_plan_json(prompt_ids),
-            _topic_plan_json(segment_ids),
-            config["profiles_per_prompt"],
-            config["desired_engine_policy"],
-            config.get("engine_panel_id"),
-            config["max_candidates"],
-            config["overflow_policy"],
-            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
-            len(candidates),
-            None,
-            _topic_plan_json(preflight_summary),
-        ),
-    )
+def _insert_query_pool_candidates(cur, run_id, candidates):
     for candidate in candidates:
         cur.execute(
             """
@@ -3211,7 +3192,154 @@ def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, pref
                 candidate["candidate_status"],
             ),
         )
+
+
+def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, preflight_summary):
+    run_id = str(uuid.uuid4())
+    prompt_ids = [candidate["prompt_id"] for candidate in candidates]
+    segment_ids = sorted({candidate["segment_id"] for candidate in candidates if candidate.get("segment_id")})
+    llm_model = preflight_summary.get("llm_model")
+    llm_usage = preflight_summary.get("llm_usage") or {}
+    cur.execute(
+        """
+        INSERT INTO query_generation_runs
+            (id, admin_id, status, request_config, prompt_ids, segment_ids_selected,
+             profiles_per_prompt, desired_engine_policy, engine_panel_id, max_candidates,
+             overflow_policy, candidates_estimated, candidates_assembled, estimated_cost,
+             preflight_summary, llm_model, llm_usage_json,
+             started_at, completed_at, created_at, updated_at)
+        VALUES
+            (%s, %s, 'completed', %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+             %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, NOW(), NOW(), NOW(), NOW())
+        """,
+        (
+            run_id,
+            admin_id,
+            _topic_plan_json({"selection": selection, "config": config}),
+            _topic_plan_json(prompt_ids),
+            _topic_plan_json(segment_ids),
+            config["profiles_per_prompt"],
+            config["desired_engine_policy"],
+            config.get("engine_panel_id"),
+            config["max_candidates"],
+            config["overflow_policy"],
+            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
+            len(candidates),
+            None,
+            _topic_plan_json(preflight_summary),
+            llm_model,
+            _topic_plan_json(llm_usage),
+        ),
+    )
+    _insert_query_pool_candidates(cur, run_id, candidates)
     return run_id
+
+
+def _start_query_pool_assembly_run(cur, admin_id, payload):
+    payload = payload or {}
+    config = _query_pool_config(payload)
+    selection = _query_pool_selection_payload(payload)
+    max_prompt_count = max(1, config["max_candidates"])
+    prompt_ids = _query_pool_prompt_ids_from_selection(cur, selection, max_prompt_count)
+    if not prompt_ids:
+        raise ValueError("prompt_selection_required")
+    prompt_rows = _fetch_query_pool_prompt_rows(cur, prompt_ids)
+    if not prompt_rows:
+        raise ValueError("prompt_selection_empty")
+    segment_ids = payload.get("segment_ids") or (payload.get("config") or {}).get("segment_ids") or []
+    profile_pool = _fetch_query_pool_profile_pool(cur, segment_ids=segment_ids)
+    if not profile_pool:
+        raise ValueError("query_pool_profile_pool_empty")
+    contexts, raw_estimated = _query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+    if not contexts:
+        raise ValueError("query_pool_no_candidates")
+    preflight_summary = _query_pool_summary(
+        contexts=contexts,
+        profile_pool=profile_pool,
+        config=config,
+        raw_estimated=raw_estimated,
+        generation_method="llm_estimate",
+    )
+    preflight_summary["scheduler_intake"] = "running"
+    run_id = str(uuid.uuid4())
+    run_prompt_ids = [str(prompt.get("id")) for prompt in prompt_rows]
+    run_segment_ids = sorted({context["segment_id"] for context in contexts if context.get("segment_id")})
+    cur.execute(
+        """
+        INSERT INTO query_generation_runs
+            (id, admin_id, status, request_config, prompt_ids, segment_ids_selected,
+             profiles_per_prompt, desired_engine_policy, engine_panel_id, max_candidates,
+             overflow_policy, candidates_estimated, candidates_assembled, estimated_cost,
+             preflight_summary, started_at, created_at, updated_at)
+        VALUES
+            (%s, %s, 'running', %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+             %s, %s, 0, %s, %s::jsonb, NOW(), NOW(), NOW())
+        """,
+        (
+            run_id,
+            admin_id,
+            _topic_plan_json({"selection": selection, "config": config}),
+            _topic_plan_json(run_prompt_ids),
+            _topic_plan_json(run_segment_ids),
+            config["profiles_per_prompt"],
+            config["desired_engine_policy"],
+            config.get("engine_panel_id"),
+            config["max_candidates"],
+            config["overflow_policy"],
+            int(preflight_summary.get("raw_candidates_estimated") or len(contexts)),
+            None,
+            _topic_plan_json(preflight_summary),
+        ),
+    )
+    return {
+        "id": run_id,
+        "status": "running",
+        "candidates_estimated": int(preflight_summary.get("raw_candidates_estimated") or 0),
+        "candidates_assembled": 0,
+        "preflight_summary": preflight_summary,
+    }
+
+
+def _complete_query_pool_run(cur, *, run_id, candidates, preflight_summary):
+    _insert_query_pool_candidates(cur, run_id, candidates)
+    cur.execute(
+        """
+        UPDATE query_generation_runs
+        SET status = 'completed',
+            candidates_estimated = %s,
+            candidates_assembled = %s,
+            preflight_summary = %s::jsonb,
+            llm_model = %s,
+            llm_usage_json = %s::jsonb,
+            llm_error = NULL,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
+            len(candidates),
+            _topic_plan_json(preflight_summary),
+            preflight_summary.get("llm_model"),
+            _topic_plan_json(preflight_summary.get("llm_usage") or {}),
+            run_id,
+        ),
+    )
+
+
+def _mark_query_pool_run_failed(cur, *, run_id, error_code, error_message):
+    detail = f"{error_code}: {error_message}".strip()
+    cur.execute(
+        """
+        UPDATE query_generation_runs
+        SET status = 'failed',
+            llm_error = %s,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (detail, run_id),
+    )
 
 
 def _assemble_query_pool_run(cur, admin_id, payload, dry_run=False):
@@ -3276,6 +3404,85 @@ def _assemble_query_pool_run(cur, admin_id, payload, dry_run=False):
         "candidates_assembled": len(candidates) if not dry_run else 0,
         "preflight_summary": preflight_summary,
     }
+
+
+def _execute_query_pool_assembly_run(run_id, admin_id, payload):
+    from psycopg2.extras import RealDictCursor
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            config = _query_pool_config(payload or {})
+            selection = _query_pool_selection_payload(payload or {})
+            max_prompt_count = max(1, config["max_candidates"])
+            prompt_ids = _query_pool_prompt_ids_from_selection(cur, selection, max_prompt_count)
+            prompt_rows = _fetch_query_pool_prompt_rows(cur, prompt_ids)
+            segment_ids = (payload or {}).get("segment_ids") or ((payload or {}).get("config") or {}).get("segment_ids") or []
+            profile_pool = _fetch_query_pool_profile_pool(cur, segment_ids=segment_ids)
+            candidates, preflight_summary = _build_query_pool_candidates(prompt_rows, profile_pool, config)
+            if not candidates:
+                raise ValueError("query_pool_no_candidates")
+            _complete_query_pool_run(
+                cur,
+                run_id=run_id,
+                candidates=candidates,
+                preflight_summary=preflight_summary,
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin_id,
+                action="query_pool_assemble",
+                target_type="query_generation_run",
+                target_id=run_id,
+                diff={"selection": selection, "config": config, "candidates_assembled": len(candidates)},
+                reason="query_pool_assemble",
+            )
+        conn.commit()
+    except TopicPlanLLMError as error:
+        if conn is not None:
+            conn.rollback()
+            try:
+                with conn.cursor() as cur:
+                    _mark_query_pool_run_failed(
+                        cur,
+                        run_id=run_id,
+                        error_code=error.code,
+                        error_message=error.message,
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        app.logger.exception("Query Pool async LLM generation failed for run %s: %s", run_id, error)
+    except Exception as error:
+        if conn is not None:
+            conn.rollback()
+            try:
+                with conn.cursor() as cur:
+                    _mark_query_pool_run_failed(
+                        cur,
+                        run_id=run_id,
+                        error_code=type(error).__name__,
+                        error_message=str(error) or "query_pool_assemble_failed",
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        app.logger.exception("Query Pool async assembly failed for run %s: %s", run_id, error)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _spawn_query_pool_assembly_worker(run_id, admin_id, payload):
+    worker = threading.Thread(
+        target=_execute_query_pool_assembly_run,
+        args=(run_id, admin_id, payload),
+        daemon=True,
+        name=f"query-pool-assemble-{run_id[:8]}",
+    )
+    worker.start()
+    return worker
 
 
 def _get_query_pool_run(cur, run_id):
@@ -7650,13 +7857,10 @@ def admin_query_pool_assemble_api():
     try:
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            run = _assemble_query_pool_run(cur, admin["id"], payload, dry_run=False)
+            run = _start_query_pool_assembly_run(cur, admin["id"], payload)
         conn.commit()
-        return jsonify({"success": True, "run": run}), 201
-    except TopicPlanLLMError as exc:
-        if conn is not None:
-            conn.rollback()
-        return jsonify({"success": False, "error": exc.code, "message": exc.message}), _query_pool_llm_error_status(exc)
+        _spawn_query_pool_assembly_worker(run["id"], admin["id"], payload)
+        return jsonify({"success": True, "run": run}), 202
     except ValueError as exc:
         if conn is not None:
             conn.rollback()

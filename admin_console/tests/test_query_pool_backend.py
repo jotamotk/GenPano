@@ -52,26 +52,36 @@ def login(monkeypatch):
     )
 
 
-def test_query_pool_assemble_creates_run_and_candidates(client, monkeypatch):
+def test_query_pool_assemble_starts_async_run_without_inline_llm(client, monkeypatch):
     login(monkeypatch)
     conn = FakeConnection()
     monkeypatch.setattr(app_mod, "get_db", lambda: conn)
 
-    def fake_assemble(cur, admin_id, payload, dry_run=False):
+    def fail_inline_assemble(*args, **kwargs):
+        pytest.fail("assemble API must not call the LLM generation path inline")
+
+    def fake_start(cur, admin_id, payload):
         assert admin_id == "admin-1"
-        assert dry_run is False
         assert payload["selection"]["mode"] == "explicit"
         assert payload["selection"]["prompt_ids"] == ["101", "102"]
         assert payload["config"]["profiles_per_prompt"] == 2
         return {
             "id": "run-1",
-            "status": "completed",
+            "status": "running",
             "candidates_estimated": 4,
-            "candidates_assembled": 4,
-            "preflight_summary": {"scheduler_intake": "ready", "duplicate_review": 0},
+            "candidates_assembled": 0,
+            "preflight_summary": {"scheduler_intake": "running", "candidate_ready": 4},
         }
 
-    monkeypatch.setattr(app_mod, "_assemble_query_pool_run", fake_assemble)
+    spawned = []
+    monkeypatch.setattr(app_mod, "_assemble_query_pool_run", fail_inline_assemble)
+    monkeypatch.setattr(app_mod, "_start_query_pool_assembly_run", fake_start, raising=False)
+    monkeypatch.setattr(
+        app_mod,
+        "_spawn_query_pool_assembly_worker",
+        lambda run_id, admin_id, payload: spawned.append((run_id, admin_id, payload)),
+        raising=False,
+    )
 
     response = client.post(
         "/api/admin/query-pool/assemble",
@@ -82,12 +92,23 @@ def test_query_pool_assemble_creates_run_and_candidates(client, monkeypatch):
     )
     body = response.get_json()
 
-    assert response.status_code == 201
+    assert response.status_code == 202
     assert body["success"] is True
     assert body["run"]["id"] == "run-1"
-    assert body["run"]["candidates_assembled"] == 4
+    assert body["run"]["status"] == "running"
+    assert body["run"]["candidates_assembled"] == 0
     assert conn.commits == 1
     assert conn.closed is True
+    assert spawned == [
+        (
+            "run-1",
+            "admin-1",
+            {
+                "selection": {"mode": "explicit", "prompt_ids": ["101", "102"]},
+                "config": {"profiles_per_prompt": 2, "desired_engine_policy": "inherit", "max_candidates": 100},
+            },
+        )
+    ]
 
 
 def test_query_pool_preflight_is_dry_run(client, monkeypatch):
@@ -387,6 +408,23 @@ def test_insert_query_pool_run_persists_llm_generation_metadata():
     assert "fake-query-llm" in candidate_params
 
 
+def test_query_pool_run_failed_persists_llm_error():
+    cur = RecordingCursor()
+
+    app_mod._mark_query_pool_run_failed(
+        cur,
+        run_id="run-1",
+        error_code="llm_call_failed",
+        error_message="upstream timeout",
+    )
+
+    sql, params = cur.calls[0]
+    assert "UPDATE query_generation_runs" in sql
+    assert "status = 'failed'" in sql
+    assert "llm_error" in sql
+    assert params == ("llm_call_failed: upstream timeout", "run-1")
+
+
 def test_query_pool_cleanup_deletes_non_llm_candidates_and_orphan_runs():
     cur = RecordingCursor()
 
@@ -396,27 +434,6 @@ def test_query_pool_cleanup_deletes_non_llm_candidates_and_orphan_runs():
     assert "DELETE FROM query_generation_candidates" in sql
     assert "COALESCE(generation_method, 'template') <> 'llm'" in sql
     assert "DELETE FROM query_generation_runs" in sql
-
-
-def test_query_pool_assemble_returns_llm_error_status(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-
-    def fake_assemble(cur, admin_id, payload, dry_run=False):
-        raise app_mod.TopicPlanLLMError("llm_config_missing", "missing llm config")
-
-    monkeypatch.setattr(app_mod, "_assemble_query_pool_run", fake_assemble)
-
-    response = client.post(
-        "/api/admin/query-pool/assemble",
-        json={"selection": {"mode": "explicit", "prompt_ids": ["101"]}, "config": {"profiles_per_prompt": 1}},
-    )
-    body = response.get_json()
-
-    assert response.status_code == 503
-    assert body["error"] == "llm_config_missing"
-    assert conn.rollbacks == 1
 
 
 def test_query_pool_sampling_is_weighted_and_deterministic():
