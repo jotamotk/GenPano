@@ -275,6 +275,19 @@ def test_query_pool_sampling_is_weighted_and_deterministic():
     assert first[0]["profile_id"] == "P-high"
 
 
+def test_query_pool_core_strategy_uses_only_highest_weight_segments():
+    pool = [
+        {"profile_id": "P-core", "segment_id": "SEG-core", "segment_weight": 10, "profile_weight": 1},
+        {"profile_id": "P-supplement", "segment_id": "SEG-supplement", "segment_weight": 9, "profile_weight": 100},
+        {"profile_id": "P-core-2", "segment_id": "SEG-core", "segment_weight": 10, "profile_weight": 0.5},
+    ]
+
+    sampled = app_mod._sample_query_pool_profiles(pool, 2, strategy="core", seed="prompt-1")
+
+    assert {item["segment_id"] for item in sampled} == {"SEG-core"}
+    assert [item["profile_id"] for item in sampled] == ["P-core", "P-core-2"]
+
+
 def test_query_pool_full_strategy_prefers_segment_coverage():
     pool = [
         {"profile_id": "P-a1", "segment_id": "SEG-a", "segment_weight": 10, "profile_weight": 10},
@@ -285,3 +298,30 @@ def test_query_pool_full_strategy_prefers_segment_coverage():
     sampled = app_mod._sample_query_pool_profiles(pool, 2, strategy="full", seed="prompt-1")
 
     assert {item["segment_id"] for item in sampled} == {"SEG-a", "SEG-b"}
+
+
+def test_query_pool_split_policy_caps_candidates_and_reports_cap():
+    prompt_rows = [
+        {"id": "101", "text": "Q1 {profile_id}"},
+        {"id": "102", "text": "Q2 {profile_id}"},
+    ]
+    profile_pool = [
+        {"profile_id": "P-a", "segment_id": "SEG-a", "segment_weight": 10, "profile_weight": 1},
+        {"profile_id": "P-b", "segment_id": "SEG-b", "segment_weight": 9, "profile_weight": 1},
+    ]
+
+    candidates, summary = app_mod._build_query_pool_candidates(
+        prompt_rows,
+        profile_pool,
+        {
+            "profiles_per_prompt": 2,
+            "profile_strategy": "balanced",
+            "max_candidates": 3,
+            "overflow_policy": "split",
+        },
+    )
+
+    assert len(candidates) == 3
+    assert summary["candidate_ready"] == 3
+    assert summary["raw_candidates_estimated"] == 4
+    assert summary["candidate_cap_reached"] is True
