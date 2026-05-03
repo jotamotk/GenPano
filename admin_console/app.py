@@ -2398,6 +2398,9 @@ def _query_pool_candidate_row(row):
         "run_id": str(item.get("run_id")),
         "candidate_seq": int(candidate_seq or 0),
         "prompt_id": str(item.get("prompt_id") or ""),
+        "prompt_text": item.get("prompt_text") or "",
+        "topic_id": str(item.get("topic_id") or ""),
+        "topic_text": item.get("topic_text") or "",
         "segment_id": str(item.get("segment_id") or ""),
         "profile_id": str(item.get("profile_id") or ""),
         "segment_name": item.get("segment_name") or "",
@@ -2449,17 +2452,30 @@ def _fetch_query_pool_candidates(
         params.append(profile_id)
     if query:
         like = f"%{query}%"
-        clauses.append(
+        prompt_search = ""
+        query_params = [like, like, like, like]
+        if _table_exists(cur, "prompts"):
+            prompt_search = """
+                OR EXISTS (
+                    SELECT 1
+                    FROM prompts pr_search
+                    WHERE CAST(pr_search.id AS TEXT) = prompt_id
+                      AND COALESCE(pr_search.text, '') ILIKE %s
+                )
             """
+            query_params.append(like)
+        clauses.append(
+            f"""
             (
                 rendered_query ILIKE %s
                 OR prompt_id ILIKE %s
                 OR COALESCE(segment_id, '') ILIKE %s
                 OR COALESCE(profile_id, '') ILIKE %s
+                {prompt_search}
             )
             """
         )
-        params.extend([like, like, like, like])
+        params.extend(query_params)
 
     where_clause = " AND ".join(clauses)
     cur.execute(
@@ -2500,11 +2516,16 @@ def _fetch_query_pool_candidates(
                q.rendered_query, q.generation_method, q.llm_model, q.llm_usage_json,
                q.candidate_status, q.scheduler_intake_batch_id,
                q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
+               pr.text AS prompt_text,
+               pr.topic_id AS topic_id,
+               t.text AS topic_text,
                s.name AS segment_name,
                p.name AS profile_name,
                p.demographic AS profile_demographic,
                p.need AS profile_need
         FROM query_generation_candidates q
+        LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
+        LEFT JOIN topics t ON t.id = pr.topic_id
         LEFT JOIN segments s ON s.id = q.segment_id
         LEFT JOIN profiles p ON p.segment_id = q.segment_id
           AND (COALESCE(p.code, '') = q.profile_id OR CAST(p.id AS TEXT) = q.profile_id)
@@ -3780,6 +3801,72 @@ def _update_query_pool_candidate_status(cur, candidate_id, status, admin_id, rea
         reason=reason or "query_pool_candidate_review",
     )
     return _query_pool_candidate_row(row)
+
+
+def _refresh_query_pool_run_candidate_counts(cur, run_ids):
+    clean_run_ids = list(dict.fromkeys(str(item).strip() for item in (run_ids or []) if str(item).strip()))
+    if not clean_run_ids:
+        return
+    cur.execute(
+        """
+        WITH run_ids AS (
+            SELECT unnest(%s::varchar[]) AS id
+        ),
+        counts AS (
+            SELECT run_id, COUNT(*)::int AS candidate_count
+            FROM query_generation_candidates
+            WHERE run_id = ANY(%s)
+            GROUP BY run_id
+        )
+        UPDATE query_generation_runs r
+        SET candidates_assembled = COALESCE(counts.candidate_count, 0),
+            preflight_summary = jsonb_set(
+                COALESCE(r.preflight_summary, '{}'::jsonb),
+                '{candidate_ready}',
+                to_jsonb(COALESCE(counts.candidate_count, 0)),
+                true
+            ),
+            updated_at = NOW()
+        FROM run_ids
+        LEFT JOIN counts ON counts.run_id = run_ids.id
+        WHERE r.id = run_ids.id
+        """,
+        (clean_run_ids, clean_run_ids),
+    )
+
+
+def _delete_query_pool_candidates(cur, candidate_ids, admin_id, reason=None):
+    clean_ids = list(dict.fromkeys(str(item).strip() for item in (candidate_ids or []) if str(item).strip()))
+    if not clean_ids:
+        return {"deleted": [], "missing": []}
+    if not _table_exists(cur, "query_generation_candidates"):
+        return {"deleted": [], "missing": clean_ids}
+
+    cur.execute(
+        """
+        DELETE FROM query_generation_candidates
+        WHERE id = ANY(%s)
+        RETURNING id, run_id
+        """,
+        (clean_ids,),
+    )
+    rows = [dict(row) for row in cur.fetchall()]
+    deleted = [str(row.get("id")) for row in rows if row.get("id")]
+    deleted_set = set(deleted)
+    missing = [candidate_id for candidate_id in clean_ids if candidate_id not in deleted_set]
+    run_ids = [str(row.get("run_id")) for row in rows if row.get("run_id")]
+    _refresh_query_pool_run_candidate_counts(cur, run_ids)
+    if deleted:
+        _insert_admin_audit_log(
+            cur,
+            operator_id=admin_id,
+            action="query_pool_candidate_delete",
+            target_type="query_generation_candidate",
+            target_id=",".join(deleted[:20]),
+            diff={"deleted": deleted, "missing": missing},
+            reason=reason,
+        )
+    return {"deleted": deleted, "missing": missing}
 
 
 def _prompt_matrix_category_purity(cur, known_brands):
@@ -8198,6 +8285,43 @@ def admin_query_pool_candidate_review_api(candidate_id):
             conn.close()
 
 
+@app.route('/api/admin/query-pool/candidates/<candidate_id>', methods=['DELETE'])
+@app.route('/admin/api/v1/pipeline/query-pool/candidates/<candidate_id>', methods=['DELETE'])
+def admin_query_pool_candidate_delete_api(candidate_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get("reason") or "").strip() or None
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            result = _delete_query_pool_candidates(cur, [candidate_id], admin["id"], reason=reason)
+        if not result["deleted"]:
+            conn.rollback()
+            return jsonify({"success": False, "error": "query_pool_candidate_not_found"}), 404
+        conn.commit()
+        return jsonify({"success": True, **result})
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool candidate delete failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_candidate_delete_failed",
+                "message": "Query 候选删除失败",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.route('/api/admin/query-pool/candidates/bulk-review', methods=['POST'])
 @app.route('/admin/api/v1/pipeline/query-pool/candidates/bulk-review', methods=['POST'])
 def admin_query_pool_candidate_bulk_review_api():
@@ -8238,6 +8362,46 @@ def admin_query_pool_candidate_bulk_review_api():
                 "success": False,
                 "error": "query_pool_candidate_bulk_review_failed",
                 "message": "Query 候选批量状态更新失败",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/admin/query-pool/candidates/bulk-delete', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/candidates/bulk-delete', methods=['POST'])
+def admin_query_pool_candidate_bulk_delete_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    candidate_ids = [str(item).strip() for item in (payload.get("candidate_ids") or []) if str(item).strip()]
+    candidate_ids = list(dict.fromkeys(candidate_ids))
+    if not candidate_ids:
+        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
+    if len(candidate_ids) > 1000:
+        return jsonify({"success": False, "error": "candidate_ids_too_many"}), 400
+    reason = str(payload.get("reason") or "").strip() or None
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            result = _delete_query_pool_candidates(cur, candidate_ids, admin["id"], reason=reason)
+        conn.commit()
+        return jsonify({"success": True, **result})
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool candidate bulk delete failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_candidate_bulk_delete_failed",
+                "message": "Query 候选批量删除失败",
             }
         ), 503
     finally:

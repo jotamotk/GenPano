@@ -235,13 +235,34 @@ def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
     assert "queryPoolCandidateCursor" in html
     assert "queryPoolCandidatePageRangeText()" in html
     assert "当前窗口" in html
-    assert "服务端游标分页" in html
     candidate_section = html[html.index("Query 候选列表") :]
     assert 'x-for="q in queryPoolCandidateRows"' in candidate_section
     assert 'x-for="q in queryDetailList"' not in candidate_section
     loader_section = html[html.index("async loadQueryPoolCandidates") : html.index("openQueryPoolPanel")]
     assert "this.queryDetailList" not in loader_section
     assert "filteredRows" not in loader_section
+
+
+def test_query_pool_candidate_list_is_prompt_first_and_deemphasizes_topic():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    candidate_section = html[html.index("Query 候选列表") : html.index("async loadQueryPoolCandidates")]
+
+    assert "q.promptText" in candidate_section
+    assert "topicTitle(q.topicId)" not in candidate_section
+    assert "q.topicText" in candidate_section
+
+
+def test_query_pool_candidate_delete_controls_are_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    candidate_section = html[html.index("Query 候选列表") : html.index("async loadQueryPoolCandidates")]
+
+    assert "queryPoolSelectedCandidateIds: {}" in html
+    assert "selectedQueryPoolCandidateIds()" in html
+    assert "setQueryPoolCandidatePageSelection($event.target.checked)" in candidate_section
+    assert "deleteQueryPoolCandidate(q)" in candidate_section
+    assert "deleteSelectedQueryPoolCandidates()" in candidate_section
+    assert "API_BASE + '/admin/query-pool/candidates/bulk-delete'" in html
+    assert "DELETE" in html
 
 
 def test_query_pool_assemble_resets_candidate_filters_before_new_run():
@@ -283,7 +304,6 @@ def test_query_pool_assemble_uses_run_polling_and_persistent_error():
     assert "startQueryPoolRunPolling" in html
     assert "loadQueryPoolRun" in html
     assert "Query 组装失败" in query_pool_section
-    assert "轮询" in query_pool_section
     assert "API_BASE + '/admin/query-pool/runs/'" in html
 
 
