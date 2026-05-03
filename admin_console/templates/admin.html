@@ -1641,6 +1641,13 @@
                        class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
                        placeholder="搜索 Segment / 行业 / 状态">
               </div>
+              <select x-model="segmentBrandId" @change="loadSegments(1)"
+                      class="h-10 rounded-btn border border-b-default bg-surface px-3 text-[12px] font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="all">All brands</option>
+                <template x-for="brand in brandOptions" :key="brand.id">
+                  <option :value="brand.id" x-text="brand.name"></option>
+                </template>
+              </select>
               <select x-model="segmentStatus" @change="loadSegments(1)"
                       class="h-10 rounded-btn border border-b-default bg-surface px-3 text-[12px] font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20">
                 <option value="all">All status</option>
@@ -1661,6 +1668,7 @@
                   <tr>
                     <th class="px-5 py-3 w-[120px]">ID</th>
                     <th class="px-5 py-3 min-w-[280px]">Segment</th>
+                    <th class="px-5 py-3 min-w-[180px]">Brand</th>
                     <th class="px-5 py-3 min-w-[180px]">行业</th>
                     <th class="px-5 py-3 w-[120px]">Profile</th>
                     <th class="px-5 py-3 w-[120px]">权重</th>
@@ -1670,7 +1678,7 @@
                 </thead>
                 <tbody class="divide-y divide-b-card">
                   <tr x-show="filteredSegments().length === 0">
-                    <td colspan="7" class="px-5 py-14 text-center text-[12px] text-ink-muted">没有匹配的 Segment</td>
+                    <td colspan="8" class="px-5 py-14 text-center text-[12px] text-ink-muted">没有匹配的 Segment</td>
                   </tr>
                   <template x-for="segment in filteredSegments()" :key="segment.id">
                     <tr @click="openSegmentProfiles(segment.id)" class="hover:bg-surface-page cursor-pointer">
@@ -1683,6 +1691,10 @@
                                 x-text="segment.status"></span>
                         </div>
                         <div class="mt-1 max-w-xl text-[11px] text-ink-muted truncate" x-text="segment.note || '未配置备注'"></div>
+                      </td>
+                      <td class="px-5 py-4">
+                        <div class="font-semibold text-ink" x-text="segmentBrandLabel(segment)"></div>
+                        <div class="text-[11px] text-ink-muted" x-text="segment.brandId || 'global'"></div>
                       </td>
                       <td class="px-5 py-4 text-ink-body" x-text="segment.industry || '-'"></td>
                       <td class="px-5 py-4">
@@ -1748,6 +1760,7 @@
                       <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
                             :class="currentSegment().status === 'active' ? 'bg-success/10 text-success' : currentSegment().status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
                             x-text="currentSegment().status"></span>
+                      <span class="inline-flex items-center h-5 px-2 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="segmentBrandLabel(currentSegment())"></span>
                       <span class="tabular-nums" x-text="(currentSegment().profile_count || 0) + ' profiles'"></span>
                       <span class="text-success tabular-nums" x-text="(currentSegment().active_profile_count || 0) + ' active'"></span>
                     </div>
@@ -1796,7 +1809,7 @@
                   <i data-lucide="x" class="w-4 h-4"></i>
                 </button>
               </div>
-              <div class="p-5 grid grid-cols-[minmax(0,0.72fr)_minmax(340px,0.28fr)] gap-4">
+              <div class="p-5 grid grid-cols-[minmax(0,0.56fr)_minmax(420px,0.44fr)] gap-4">
                 <div class="grid grid-cols-2 gap-4 text-[12px]">
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">品牌</span>
@@ -1826,27 +1839,63 @@
                     </button>
                   </div>
                 </div>
-                <div class="rounded-card border border-b-card bg-surface-page p-4">
-                  <div class="text-[11px] font-semibold text-ink-muted uppercase">Preview</div>
-                  <div class="mt-3 space-y-2 text-[12px]">
-                    <div class="font-semibold text-ink" x-text="currentSegment().industry || '未设置行业'"></div>
-                    <div class="text-ink-muted" x-text="currentSegment().note || '将基于 Segment 的人群范围生成细分 Profile。'"></div>
-                  </div>
-                  <div x-show="profileLlmDrafts.length" x-cloak class="mt-4 border-t border-b-card pt-3">
-                    <div class="flex items-center justify-between">
-                      <div class="text-[11px] font-semibold text-ink-muted uppercase" x-text="profileLlmDrafts.length + ' drafts'"></div>
-                      <button @click="applyProfileLlmDrafts()" class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">Add</button>
+                <div class="rounded-card border border-b-card bg-surface-page overflow-hidden flex flex-col min-h-[360px]">
+                  <div class="px-4 py-3 border-b border-b-card flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="text-[13px] font-bold text-ink">生成结果</div>
+                      <div class="text-[11px] text-ink-muted mt-0.5" x-text="profileLlmDrafts.length ? profileLlmDrafts.length + ' 个 Profile 草稿' : (profileLlmApplyTone === 'success' && profileLlmApplyMessage ? '已加入列表' : '尚未生成')"></div>
                     </div>
-                    <div class="mt-2 max-h-56 overflow-y-auto space-y-2">
-                      <template x-for="draft in profileLlmDrafts" :key="draft.id">
-                        <div class="rounded-btn border border-b-card bg-surface px-2 py-2">
-                          <div class="text-[12px] font-semibold text-ink truncate" x-text="draft.name"></div>
-                          <div class="text-[11px] text-ink-muted truncate" x-text="draft.need"></div>
+                    <button @click="applyProfileLlmDrafts()"
+                            :disabled="profileLlmApplyLoading || profileLlmDrafts.length === 0"
+                            class="h-9 min-w-[116px] px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <i x-show="profileLlmApplyLoading" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                      <i x-show="!profileLlmApplyLoading" data-lucide="list-plus" class="w-3.5 h-3.5"></i>
+                      <span x-text="profileLlmApplyLoading ? '加入中...' : '加入列表'"></span>
+                    </button>
+                  </div>
+                  <div x-show="profileLlmApplyMessage" x-cloak class="mx-4 mt-3 rounded-btn border px-3 py-2 text-[12px] font-semibold" :class="statusToneClass(profileLlmApplyTone)" x-text="profileLlmApplyMessage"></div>
+                  <div x-show="profileLlmError" x-cloak class="mx-4 mt-3 rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="profileLlmError"></div>
+                  <div class="flex-1 min-h-0 overflow-y-auto divide-y divide-b-card">
+                    <div x-show="profileLlmDrafts.length === 0 && !(profileLlmApplyTone === 'success' && profileLlmApplyMessage)" class="p-8 text-center text-[12px] text-ink-muted">
+                      生成后会在这里查看 Profile 草稿
+                    </div>
+                    <div x-show="profileLlmDrafts.length === 0 && profileLlmApplyTone === 'success' && profileLlmApplyMessage" x-cloak class="p-8 text-center">
+                      <div class="mx-auto w-10 h-10 rounded-btn bg-success/10 text-success inline-flex items-center justify-center">
+                        <i data-lucide="check" class="w-5 h-5"></i>
+                      </div>
+                      <div class="mt-3 text-[13px] font-bold text-ink">Profile 已加入列表</div>
+                      <div class="mt-1 text-[12px] text-ink-muted">可在下方 Profile 表格继续编辑状态和权重</div>
+                    </div>
+                    <template x-for="draft in profileLlmDrafts" :key="draft.id">
+                      <div class="px-4 py-3 bg-surface hover:bg-surface-page">
+                        <div class="flex items-start justify-between gap-3">
+                          <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2">
+                              <span class="font-mono text-[11px] font-semibold text-ink-muted" x-text="draft.id"></span>
+                              <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                    :class="draft.status === 'active' ? 'bg-success/10 text-success' : draft.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="draft.status || 'draft'"></span>
+                            </div>
+                            <div class="mt-1 text-[13px] font-bold text-ink truncate" x-text="draft.name"></div>
+                            <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                              <div class="min-w-0">
+                                <div class="font-semibold text-ink-muted">画像</div>
+                                <div class="mt-0.5 text-ink-body line-clamp-2" x-text="draft.demographic || '-'"></div>
+                              </div>
+                              <div class="min-w-0">
+                                <div class="font-semibold text-ink-muted">需求</div>
+                                <div class="mt-0.5 text-ink-body line-clamp-2" x-text="draft.need || '-'"></div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="shrink-0 text-right">
+                            <div class="text-[10px] font-semibold uppercase text-ink-muted">权重</div>
+                            <div class="mt-0.5 text-[12px] font-bold text-ink tabular-nums" x-text="draft.weight"></div>
+                          </div>
                         </div>
-                      </template>
-                    </div>
+                      </div>
+                    </template>
                   </div>
-                  <div x-show="profileLlmError" x-cloak class="mt-3 rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="profileLlmError"></div>
                 </div>
               </div>
             </section>
@@ -1879,6 +1928,7 @@
                     <tr>
                       <th class="px-5 py-3 w-[120px]">ID</th>
                       <th class="px-5 py-3 min-w-[220px]">Profile</th>
+                      <th class="px-5 py-3 min-w-[160px]">Brand</th>
                       <th class="px-5 py-3 min-w-[300px]">画像</th>
                       <th class="px-5 py-3 min-w-[340px]">需求</th>
                       <th class="px-5 py-3 w-[90px]">权重</th>
@@ -1887,7 +1937,7 @@
                   </thead>
                   <tbody class="divide-y divide-b-card">
                     <tr x-show="filteredProfiles(currentSegment().id).length === 0">
-                      <td colspan="6" class="px-5 py-14 text-center text-[12px] text-ink-muted">暂无 Profile</td>
+                      <td colspan="7" class="px-5 py-14 text-center text-[12px] text-ink-muted">暂无 Profile</td>
                     </tr>
                     <template x-for="profile in filteredProfiles(currentSegment().id)" :key="profile.id">
                       <tr class="hover:bg-surface-page">
@@ -1897,6 +1947,10 @@
                           <span class="mt-1 inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
                                 :class="profile.status === 'active' ? 'bg-success/10 text-success' : profile.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
                                 x-text="profile.status"></span>
+                        </td>
+                        <td class="px-5 py-4">
+                          <div class="font-semibold text-ink truncate" x-text="profileBrandLabel(profile)"></div>
+                          <div class="text-[11px] text-ink-muted" x-text="profile.brandId || currentSegment().brandId || 'global'"></div>
                         </td>
                         <td class="px-5 py-4 text-ink-body" x-text="profile.demographic"></td>
                         <td class="px-5 py-4 text-ink-body" x-text="profile.need"></td>
@@ -2150,8 +2204,8 @@
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">默认状态</span>
                       <select x-model="segmentLlmForm.status" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
-                        <option value="draft">draft</option>
                         <option value="active">active</option>
+                        <option value="draft">draft</option>
                       </select>
                     </label>
                   </div>
@@ -2179,18 +2233,28 @@
                   <div class="px-4 py-3 border-b border-b-card flex items-center justify-between">
                     <div>
                       <div class="text-[13px] font-bold text-ink">生成结果</div>
-                      <div class="text-[11px] text-ink-muted mt-0.5" x-text="segmentLlmDrafts.length ? segmentLlmDrafts.length + ' 个 Segment 草稿' : '尚未生成'"></div>
+                      <div class="text-[11px] text-ink-muted mt-0.5" x-text="segmentLlmDrafts.length ? segmentLlmDrafts.length + ' 个 Segment 草稿' : (segmentLlmApplyTone === 'success' && segmentLlmApplyMessage ? '已加入列表' : '尚未生成')"></div>
                     </div>
                     <button type="button"
                             @click="applySegmentLlmDrafts()"
-                            :disabled="segmentLlmDrafts.length === 0"
-                            class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn disabled:opacity-50">
-                      加入列表
+                            :disabled="segmentLlmApplyLoading || segmentLlmDrafts.length === 0"
+                            class="h-9 min-w-[116px] px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <i x-show="segmentLlmApplyLoading" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                      <i x-show="!segmentLlmApplyLoading" data-lucide="list-plus" class="w-3.5 h-3.5"></i>
+                      <span x-text="segmentLlmApplyLoading ? '加入中...' : '加入列表'"></span>
                     </button>
                   </div>
+                  <div x-show="segmentLlmApplyMessage" x-cloak class="mx-4 mt-3 rounded-btn border px-3 py-2 text-[12px] font-semibold" :class="statusToneClass(segmentLlmApplyTone)" x-text="segmentLlmApplyMessage"></div>
                   <div class="max-h-[520px] overflow-y-auto divide-y divide-b-card">
-                    <div x-show="segmentLlmDrafts.length === 0" class="p-8 text-center text-[12px] text-ink-muted">
+                    <div x-show="segmentLlmDrafts.length === 0 && !(segmentLlmApplyTone === 'success' && segmentLlmApplyMessage)" class="p-8 text-center text-[12px] text-ink-muted">
                       生成后会在这里预览 Segment 草稿
+                    </div>
+                    <div x-show="segmentLlmDrafts.length === 0 && segmentLlmApplyTone === 'success' && segmentLlmApplyMessage" x-cloak class="p-8 text-center">
+                      <div class="mx-auto w-10 h-10 rounded-btn bg-success/10 text-success inline-flex items-center justify-center">
+                        <i data-lucide="check" class="w-5 h-5"></i>
+                      </div>
+                      <div class="mt-3 text-[13px] font-bold text-ink">Segment 已加入列表</div>
+                      <div class="mt-1 text-[12px] text-ink-muted" x-text="'当前确认状态：' + (segmentLlmForm.status || 'active')"></div>
                     </div>
                     <template x-for="draft in segmentLlmDrafts" :key="draft.id">
                       <div class="p-4">
@@ -2198,7 +2262,10 @@
                           <div class="min-w-0">
                             <div class="flex items-center gap-2">
                               <span class="font-mono text-[11px] font-semibold text-ink-muted" x-text="draft.id"></span>
-                              <span class="inline-flex items-center h-5 px-2 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="draft.status"></span>
+                              <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                                    :class="draft.status === 'active' ? 'bg-success/10 text-success' : draft.status === 'draft' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
+                                    x-text="draft.status"></span>
+                              <span class="inline-flex items-center h-5 px-2 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="segmentBrandLabel(draft)"></span>
                             </div>
                             <div class="mt-1 text-[13px] font-bold text-ink truncate" x-text="draft.name"></div>
                           </div>
@@ -2231,6 +2298,15 @@
                 <label class="space-y-1.5">
                   <span class="font-semibold text-ink-muted">Segment ID</span>
                   <input x-model="segmentForm.id" :disabled="!!editingSegmentId" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:bg-surface-page">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">Brand</span>
+                  <select x-model="segmentForm.brandId" @change="syncSegmentFormBrand()" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    <option value="">Global / 通用</option>
+                    <template x-for="brand in brandOptions" :key="brand.id">
+                      <option :value="brand.id" x-text="brandLabel(brand)"></option>
+                    </template>
+                  </select>
                 </label>
                 <label class="space-y-1.5">
                   <span class="font-semibold text-ink-muted">名称</span>
@@ -2273,9 +2349,13 @@
                   <textarea x-model="segmentForm.note" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                 </label>
               </div>
+              <div x-show="segmentFormError" x-cloak class="mx-5 mb-4 rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="segmentFormError"></div>
               <div class="px-5 py-4 border-t border-b-card bg-surface-page flex justify-end gap-2">
-                <button type="button" @click="closeSegmentForm()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink">取消</button>
-                <button type="submit" class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">保存</button>
+                <button type="button" @click="closeSegmentForm()" :disabled="segmentFormSaving" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink disabled:opacity-50">取消</button>
+                <button type="submit" :disabled="segmentFormSaving" class="h-9 min-w-[92px] px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <i x-show="segmentFormSaving" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                  <span x-text="segmentFormSaving ? '保存中...' : '保存'"></span>
+                </button>
               </div>
             </form>
           </div>
@@ -2295,6 +2375,10 @@
                 <label class="space-y-1.5">
                   <span class="font-semibold text-ink-muted">Profile ID</span>
                   <input x-model="profileForm.id" :disabled="!!editingProfileId" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:bg-surface-page">
+                </label>
+                <label class="space-y-1.5">
+                  <span class="font-semibold text-ink-muted">Brand</span>
+                  <input :value="profileBrandLabel(profileForm)" disabled class="w-full h-10 rounded-btn border border-b-default bg-surface-page px-3 text-ink-muted outline-none">
                 </label>
                 <label class="space-y-1.5">
                   <span class="font-semibold text-ink-muted">名称</span>
@@ -2321,9 +2405,13 @@
                   <textarea x-model="profileForm.need" rows="4" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                 </label>
               </div>
+              <div x-show="profileFormError" x-cloak class="mx-5 mb-4 rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="profileFormError"></div>
               <div class="px-5 py-4 border-t border-b-card bg-surface-page flex justify-end gap-2">
-                <button type="button" @click="closeProfileForm()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink">取消</button>
-                <button type="submit" class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn">保存</button>
+                <button type="button" @click="closeProfileForm()" :disabled="profileFormSaving" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink disabled:opacity-50">取消</button>
+                <button type="submit" :disabled="profileFormSaving" class="h-9 min-w-[92px] px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <i x-show="profileFormSaving" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                  <span x-text="profileFormSaving ? '保存中...' : '保存'"></span>
+                </button>
               </div>
             </form>
           </div>
@@ -7119,7 +7207,7 @@ function segmentCrudPanel() {
       brand: 'CHANEL',
       industry: '美妆个护',
       count: 6,
-      status: 'draft',
+      status: 'active',
       positioning: '高端护肤、香氛与彩妆，重视品牌质感、功效证据和礼赠场景。',
       goal: '覆盖核心购买者、价格/渠道比较者、竞品摇摆者、礼赠决策者和新用户入门人群。',
       constraints: '每个 Segment 必须有清晰采样边界，避免只按年龄或城市粗分。',
@@ -7252,7 +7340,7 @@ function segmentCrudPanel() {
       }
       const industry = String(this.segmentLlmForm.industry || '').trim() || '未设置行业';
       const count = Math.max(2, Math.min(Number(this.segmentLlmForm.count) || 6, 12));
-      const status = this.segmentLlmForm.status || 'draft';
+      const status = this.segmentLlmForm.status || 'active';
       const maxId = this.segments.reduce((max, segment) => {
         const n = parseInt(String(segment.id || '').replace(/\D/g, ''), 10);
         return Number.isFinite(n) ? Math.max(max, n) : max;
@@ -7289,8 +7377,9 @@ function segmentCrudPanel() {
       if (!this.segmentLlmDrafts.length) return;
       let added = 0;
       let updated = 0;
+      const status = this.segmentLlmForm.status || 'active';
       for (const draft of this.segmentLlmDrafts) {
-        const segment = { ...draft };
+        const segment = { ...draft, status };
         const index = this.segments.findIndex(item => item.id === segment.id);
         if (index >= 0) {
           this.segments.splice(index, 1, segment);
@@ -7649,6 +7738,7 @@ function segmentCrudPanel() {
     profileQuery: '',
     segmentStatus: 'all',
     profileStatus: 'all',
+    segmentBrandId: 'all',
     segmentView: 'segments',
     selectedSegmentId: '',
     selectedSegment: null,
@@ -7667,11 +7757,22 @@ function segmentCrudPanel() {
     segmentLlmDrafts: [],
     segmentLlmError: '',
     segmentLlmLoading: false,
+    segmentLlmApplyLoading: false,
+    segmentLlmApplyMessage: '',
+    segmentLlmApplyTone: 'info',
     profileLlmDrafts: [],
+    profileLlmDraftSegmentId: '',
     profileLlmError: '',
     profileLlmLoading: false,
+    profileLlmApplyLoading: false,
+    profileLlmApplyMessage: '',
+    profileLlmApplyTone: 'info',
     editingSegmentId: null,
     editingProfileId: null,
+    segmentFormSaving: false,
+    segmentFormError: '',
+    profileFormSaving: false,
+    profileFormError: '',
     profileSegmentId: null,
     importMode: 'segments',
     importSegmentId: null,
@@ -7682,12 +7783,12 @@ function segmentCrudPanel() {
     brandOptions: [],
     brandOptionsLoading: false,
     brandOptionsError: '',
-    segmentForm: { id: '', name: '', industry: '', status: 'active', weight: 0.25, ageRange: '', income: '', regions: '', samplingRate: '', note: '' },
+    segmentForm: { id: '', brandId: '', brandName: '', name: '', industry: '', status: 'active', weight: 0.25, ageRange: '', income: '', regions: '', samplingRate: '', note: '' },
     segmentLlmForm: {
       brand: '',
       industry: 'Beauty',
       count: 6,
-      status: 'draft',
+      status: 'active',
       positioning: 'Premium skincare, fragrance, and cosmetics.',
       goal: 'Cover core buyers, price/channel comparers, competitor switchers, gift buyers, and new category entrants.',
       constraints: 'Each Segment must have a clear sampling boundary and avoid duplicate names.',
@@ -7714,6 +7815,7 @@ function segmentCrudPanel() {
       const params = new URLSearchParams(window.location.search || '');
       this.segmentQuery = params.get('q') || '';
       this.segmentStatus = params.get('status') || 'all';
+      this.segmentBrandId = params.get('brand_id') || 'all';
       this.segmentPagination.page = Number(params.get('page')) || 1;
       this.selectedSegmentId = (params.get('segment_id') || '').trim().toUpperCase();
       this.profileQuery = params.get('profile_q') || '';
@@ -7726,6 +7828,7 @@ function segmentCrudPanel() {
       const params = new URLSearchParams();
       if (this.segmentQuery.trim()) params.set('q', this.segmentQuery.trim());
       if (this.segmentStatus && this.segmentStatus !== 'all') params.set('status', this.segmentStatus);
+      if (this.segmentBrandId && this.segmentBrandId !== 'all') params.set('brand_id', this.segmentBrandId);
       if (this.segmentPagination.page > 1) params.set('page', this.segmentPagination.page);
       if (this.segmentView === 'profiles' && this.selectedSegmentId) {
         params.set('segment_id', this.selectedSegmentId);
@@ -7781,9 +7884,36 @@ function segmentCrudPanel() {
       return brand?.industry ? (brand.name + ' · ' + brand.industry) : brand?.name || '';
     },
 
+    statusToneClass(tone) {
+      if (tone === 'success') return 'border-success/20 bg-success/10 text-success';
+      if (tone === 'error') return 'border-danger/20 bg-danger/10 text-danger';
+      return 'border-accent/20 bg-accent/10 text-accent';
+    },
+
+    brandById(id) {
+      const value = String(id || '').trim();
+      return this.brandOptions.find(brand => String(brand.id) === value) || null;
+    },
+
     selectedBrandOption(name) {
       const value = String(name || '').trim();
       return this.brandOptions.find(brand => brand.name === value) || null;
+    },
+
+    segmentBrandLabel(segment) {
+      const brand = this.brandById(segment?.brandId || segment?.brand_id);
+      return brand ? this.brandLabel(brand) : (segment?.brandName || segment?.brand_name || 'Global');
+    },
+
+    profileBrandLabel(profile) {
+      const brand = this.brandById(profile?.brandId || profile?.brand_id);
+      return brand ? this.brandLabel(brand) : (profile?.brandName || profile?.brand_name || this.segmentBrandLabel(this.currentSegment()));
+    },
+
+    syncSegmentFormBrand() {
+      const brand = this.brandById(this.segmentForm.brandId);
+      this.segmentForm.brandName = brand?.name || '';
+      if (brand?.industry) this.segmentForm.industry = brand.industry;
     },
 
     ensureSelectedBrandIsValid(scope) {
@@ -7810,6 +7940,8 @@ function segmentCrudPanel() {
         ...segment,
         id: String(segment.id || segment.code || '').toUpperCase(),
         code: segment.code || segment.id,
+        brandId: segment.brandId || segment.brand_id || '',
+        brandName: segment.brandName || segment.brand_name || segment.brand || '',
         ageRange: segment.ageRange || segment.age_range || '',
         samplingRate: segment.samplingRate || segment.sampling_rate || '',
         profile_count: Number(segment.profile_count ?? segment.profileCount ?? 0),
@@ -7823,6 +7955,8 @@ function segmentCrudPanel() {
         ...profile,
         id: String(profile.id || profile.code || '').toUpperCase(),
         code: profile.code || profile.id,
+        brandId: profile.brandId || profile.brand_id || '',
+        brandName: profile.brandName || profile.brand_name || profile.brand || '',
         weight: String(profile.weight ?? '1.0'),
         persona_json: profile.persona_json || {},
       };
@@ -7832,6 +7966,8 @@ function segmentCrudPanel() {
       return {
         id: segment.id,
         code: segment.code || segment.id,
+        brand_id: segment.brandId || segment.brand_id || '',
+        brand_name: segment.brandName || segment.brand_name || segment.brand || '',
         name: segment.name,
         industry: segment.industry,
         status: segment.status,
@@ -7848,6 +7984,8 @@ function segmentCrudPanel() {
       return {
         id: profile.id,
         code: profile.code || profile.id,
+        brand_id: profile.brandId || profile.brand_id || '',
+        brand_name: profile.brandName || profile.brand_name || profile.brand || '',
         name: profile.name,
         demographic: profile.demographic || '',
         need: profile.need || '',
@@ -7870,6 +8008,7 @@ function segmentCrudPanel() {
         });
         if (this.segmentQuery.trim()) qp.set('q', this.segmentQuery.trim());
         if (this.segmentStatus && this.segmentStatus !== 'all') qp.set('status', this.segmentStatus);
+        if (this.segmentBrandId && this.segmentBrandId !== 'all') qp.set('brand_id', this.segmentBrandId);
         const body = await this.apiJson(API_BASE + '/segments?' + qp.toString());
         this.segments = (body.rows || []).map(row => this.fromSegment(row));
         this.segmentPagination = { ...this.segmentPagination, ...(body.pagination || {}) };
@@ -7992,7 +8131,8 @@ function segmentCrudPanel() {
     },
     openSegmentLlmPanel() {
       this.segmentLlmError = '';
-      this.segmentLlmDrafts = [];
+      this.segmentLlmApplyMessage = '';
+      this.segmentLlmApplyTone = 'info';
       this.segmentLlmModalOpen = true;
       this.refreshIcons();
     },
@@ -8000,6 +8140,9 @@ function segmentCrudPanel() {
       this.segmentLlmModalOpen = false;
       this.segmentLlmError = '';
       this.segmentLlmLoading = false;
+      this.segmentLlmApplyLoading = false;
+      this.segmentLlmApplyMessage = '';
+      this.segmentLlmApplyTone = 'info';
     },
     async generateBrandSegments() {
       const brand = String(this.segmentLlmForm.brand || '').trim();
@@ -8010,6 +8153,10 @@ function segmentCrudPanel() {
       const brandOption = this.selectedBrandOption(brand);
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
+      this.segmentLlmApplyMessage = '';
+      this.segmentLlmApplyTone = 'info';
+      this.segmentLlmDrafts = [];
+      const targetStatus = this.segmentLlmForm.status || 'active';
       try {
         const body = await this.apiJson(API_BASE + '/segments/generate', {
           method: 'POST',
@@ -8018,13 +8165,18 @@ function segmentCrudPanel() {
             brand_name: brand,
             industry: this.segmentLlmForm.industry,
             count: this.segmentLlmForm.count,
-            status: this.segmentLlmForm.status,
+            status: targetStatus,
             positioning: this.segmentLlmForm.positioning,
             goal: this.segmentLlmForm.goal,
             constraints: this.segmentLlmForm.constraints,
           }),
         });
-        this.segmentLlmDrafts = (body.drafts || []).map(row => this.fromSegment(row));
+        this.segmentLlmDrafts = (body.drafts || []).map(row => this.fromSegment({
+          ...row,
+          brand_id: row.brand_id || brandOption?.id || '',
+          brand_name: row.brand_name || brand,
+          status: targetStatus,
+        }));
       } catch (error) {
         this.segmentLlmError = error.message || 'Segment generation failed';
       } finally {
@@ -8034,54 +8186,90 @@ function segmentCrudPanel() {
     },
     async applySegmentLlmDrafts() {
       if (!this.segmentLlmDrafts.length) return;
+      this.segmentLlmApplyLoading = true;
+      this.segmentLlmError = '';
+      this.segmentLlmApplyTone = 'info';
+      this.segmentLlmApplyMessage = '正在加入 Segment 列表...';
+      const targetStatus = this.segmentLlmForm.status || 'active';
+      const rows = this.segmentLlmDrafts.map(row => this.toApiSegment({ ...row, status: targetStatus }));
+      const firstDraft = this.fromSegment({ ...this.segmentLlmDrafts[0], status: targetStatus });
       try {
         const body = await this.apiJson(API_BASE + '/segments/import', {
           method: 'POST',
-          body: JSON.stringify({ rows: this.segmentLlmDrafts.map(row => this.toApiSegment(row)), reason: 'confirm_llm_segment_drafts' }),
+          body: JSON.stringify({ rows, reason: 'confirm_llm_segment_drafts' }),
         });
-        this.selectedSegmentId = this.segmentLlmDrafts[0].id;
-        this.closeSegmentLlmPanel();
+        this.selectedSegmentId = firstDraft.id;
+        this.selectedSegment = firstDraft;
+        this.segmentLlmDrafts = [];
         await this.loadSegments(1);
+        try {
+          await this.loadSegmentDetail(this.selectedSegmentId);
+        } catch (detailError) {
+          this.setNotice(detailError.message || 'Segment detail refresh failed');
+        }
+        this.segmentLlmApplyTone = 'success';
+        this.segmentLlmApplyMessage = '已加入列表：新增 ' + (body.added || 0) + '，更新 ' + (body.updated || 0) + ((body.skipped || 0) ? '，跳过 ' + body.skipped : '') + '。状态：' + targetStatus;
         this.setNotice('Segment drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));
       } catch (error) {
-        this.segmentLlmError = error.message || 'Add Segment drafts failed';
+        const message = error.message || 'Add Segment drafts failed';
+        this.segmentLlmApplyTone = 'error';
+        this.segmentLlmApplyMessage = message;
+        this.segmentLlmError = message;
+      } finally {
+        this.segmentLlmApplyLoading = false;
+        this.refreshIcons();
       }
     },
     openSegmentForm(segment) {
       this.editingSegmentId = segment ? segment.id : null;
+      this.segmentFormSaving = false;
+      this.segmentFormError = '';
       this.segmentForm = segment
-        ? { ...segment, ageRange: segment.ageRange || segment.age_range || '', samplingRate: segment.samplingRate || segment.sampling_rate || '' }
-        : { id:this.nextSegmentId(), name:'', industry:'', status:'active', weight:0.25, ageRange:'', income:'', regions:'', samplingRate:'', note:'' };
+        ? { ...segment, brandId: segment.brandId || segment.brand_id || '', brandName: segment.brandName || segment.brand_name || '', ageRange: segment.ageRange || segment.age_range || '', samplingRate: segment.samplingRate || segment.sampling_rate || '' }
+        : { id:this.nextSegmentId(), brandId:'', brandName:'', name:'', industry:'', status:'active', weight:0.25, ageRange:'', income:'', regions:'', samplingRate:'', note:'' };
       this.segmentModalOpen = true;
       this.refreshIcons();
     },
-    closeSegmentForm() {
+    closeSegmentForm(force = false) {
+      if (this.segmentFormSaving && !force) return;
       this.segmentModalOpen = false;
       this.editingSegmentId = null;
+      this.segmentFormError = '';
     },
     async saveSegment() {
+      if (this.segmentFormSaving) return;
       const wasEditing = !!this.editingSegmentId;
+      const selectedBrand = this.brandById(this.segmentForm.brandId);
       const payload = this.toApiSegment({
         ...this.segmentForm,
+        brandName: selectedBrand?.name || this.segmentForm.brandName || '',
         id: String(this.segmentForm.id || '').trim().toUpperCase(),
         name: String(this.segmentForm.name || '').trim(),
       });
       if (!payload.id || !payload.name) {
+        this.segmentFormError = 'Segment ID and name are required';
         this.setNotice('Segment ID and name are required');
         return;
       }
+      this.segmentFormSaving = true;
+      this.segmentFormError = '';
       try {
         const url = API_BASE + '/segments' + (wasEditing ? '/' + encodeURIComponent(this.editingSegmentId) : '');
         const body = await this.apiJson(url, { method: wasEditing ? 'PUT' : 'POST', body: JSON.stringify(payload) });
         const saved = this.fromSegment(body.segment);
         this.selectedSegmentId = saved.id;
         this.selectedSegment = saved;
-        this.closeSegmentForm();
+        this.closeSegmentForm(true);
         await this.loadSegments(wasEditing ? this.segmentPagination.page : 1);
         if (!wasEditing) await this.openSegmentProfiles(saved.id);
         this.setNotice(wasEditing ? 'Segment updated' : 'Segment created');
       } catch (error) {
-        this.setNotice(error.message || 'Segment save failed');
+        const message = error.message || 'Segment save failed';
+        this.segmentFormError = message;
+        this.setNotice(message);
+      } finally {
+        this.segmentFormSaving = false;
+        this.refreshIcons();
       }
     },
     async deleteSegment(segment) {
@@ -8105,20 +8293,26 @@ function segmentCrudPanel() {
     },
     openProfileForm(segmentId, profile) {
       const targetSegmentId = segmentId || this.selectedSegmentId;
+      const segment = this.currentSegment();
       this.profileSegmentId = targetSegmentId;
       this.editingProfileId = profile ? profile.id : null;
+      this.profileFormSaving = false;
+      this.profileFormError = '';
       this.profileForm = profile
         ? { ...profile }
-        : { id:this.nextProfileId(targetSegmentId), name:'', demographic:'', need:'', weight:'1.0', status:'active', persona_json:{} };
+        : { id:this.nextProfileId(targetSegmentId), brandId: segment?.brandId || segment?.brand_id || '', brandName: segment?.brandName || segment?.brand_name || '', name:'', demographic:'', need:'', weight:'1.0', status:'active', persona_json:{} };
       this.profileModalOpen = true;
       this.refreshIcons();
     },
-    closeProfileForm() {
+    closeProfileForm(force = false) {
+      if (this.profileFormSaving && !force) return;
       this.profileModalOpen = false;
       this.editingProfileId = null;
       this.profileSegmentId = null;
+      this.profileFormError = '';
     },
     async saveProfile() {
+      if (this.profileFormSaving) return;
       const wasEditing = !!this.editingProfileId;
       const segmentId = this.profileSegmentId || this.selectedSegmentId;
       const payload = this.toApiProfile({
@@ -8127,19 +8321,27 @@ function segmentCrudPanel() {
         name: String(this.profileForm.name || '').trim(),
       });
       if (!segmentId || !payload.id || !payload.name) {
+        this.profileFormError = 'Profile ID and name are required';
         this.setNotice('Profile ID and name are required');
         return;
       }
+      this.profileFormSaving = true;
+      this.profileFormError = '';
       try {
         const base = API_BASE + '/segments/' + encodeURIComponent(segmentId) + '/profiles';
         const url = base + (wasEditing ? '/' + encodeURIComponent(this.editingProfileId) : '');
         await this.apiJson(url, { method: wasEditing ? 'PUT' : 'POST', body: JSON.stringify(payload) });
-        this.closeProfileForm();
+        this.closeProfileForm(true);
         await this.loadProfiles(wasEditing ? this.profilePagination.page : 1);
         await this.loadSegments(this.segmentPagination.page);
         this.setNotice(wasEditing ? 'Profile updated' : 'Profile created');
       } catch (error) {
-        this.setNotice(error.message || 'Profile save failed');
+        const message = error.message || 'Profile save failed';
+        this.profileFormError = message;
+        this.setNotice(message);
+      } finally {
+        this.profileFormSaving = false;
+        this.refreshIcons();
       }
     },
     async deleteProfile(segmentId, profileId) {
@@ -8162,8 +8364,18 @@ function segmentCrudPanel() {
       this.setNotice('Profile export started');
     },
     openLlmPanel() {
-      if (!this.currentSegment()) return;
-      this.profileLlmDrafts = [];
+      const segment = this.currentSegment();
+      if (!segment) return;
+      if (this.profileLlmDraftSegmentId && this.profileLlmDraftSegmentId !== segment.id) {
+        this.profileLlmDrafts = [];
+        this.profileLlmApplyMessage = '';
+        this.profileLlmApplyTone = 'info';
+      }
+      this.profileLlmDraftSegmentId = segment.id;
+      const segmentBrand = this.brandById(segment.brandId || segment.brand_id);
+      if (segmentBrand || segment.brandName || segment.brand_name) {
+        this.llmForm.brand = segmentBrand?.name || segment.brandName || segment.brand_name;
+      }
       this.profileLlmError = '';
       this.llmPanelOpen = true;
       this.refreshIcons();
@@ -8171,6 +8383,9 @@ function segmentCrudPanel() {
     closeLlmPanel() {
       this.llmPanelOpen = false;
       this.profileLlmLoading = false;
+      this.profileLlmApplyLoading = false;
+      this.profileLlmApplyMessage = '';
+      this.profileLlmApplyTone = 'info';
     },
     async generateSegmentLlm() {
       const segment = this.currentSegment();
@@ -8182,6 +8397,10 @@ function segmentCrudPanel() {
       const brandOption = this.selectedBrandOption(this.llmForm.brand);
       this.profileLlmLoading = true;
       this.profileLlmError = '';
+      this.profileLlmApplyMessage = '';
+      this.profileLlmApplyTone = 'info';
+      this.profileLlmDraftSegmentId = segment.id;
+      this.profileLlmDrafts = [];
       try {
         const body = await this.apiJson(API_BASE + '/segments/' + encodeURIComponent(segment.id) + '/profiles/generate', {
           method: 'POST',
@@ -8193,7 +8412,12 @@ function segmentCrudPanel() {
             constraints: this.llmForm.notes,
           }),
         });
-        this.profileLlmDrafts = (body.drafts || []).map(row => this.fromProfile(row));
+        this.profileLlmDrafts = (body.drafts || []).map(row => this.fromProfile({
+          ...row,
+          brand_id: row.brand_id || segment.brandId || segment.brand_id || brandOption?.id || '',
+          brand_name: row.brand_name || segment.brandName || segment.brand_name || this.llmForm.brand,
+        }));
+        this.profileLlmDraftSegmentId = segment.id;
       } catch (error) {
         this.profileLlmError = error.message || 'Profile generation failed';
       } finally {
@@ -8204,17 +8428,30 @@ function segmentCrudPanel() {
     async applyProfileLlmDrafts() {
       const segment = this.currentSegment();
       if (!segment || !this.profileLlmDrafts.length) return;
+      this.profileLlmApplyLoading = true;
+      this.profileLlmError = '';
+      this.profileLlmApplyTone = 'info';
+      this.profileLlmApplyMessage = '正在加入 Profile 列表...';
       try {
         const body = await this.apiJson(API_BASE + '/segments/' + encodeURIComponent(segment.id) + '/profiles/import', {
           method: 'POST',
           body: JSON.stringify({ rows: this.profileLlmDrafts.map(row => this.toApiProfile(row)), reason: 'confirm_llm_profile_drafts' }),
         });
         this.profileLlmDrafts = [];
+        this.profileLlmDraftSegmentId = '';
         await this.loadProfiles(1);
         await this.loadSegments(this.segmentPagination.page);
+        this.profileLlmApplyTone = 'success';
+        this.profileLlmApplyMessage = '已加入列表：新增 ' + (body.added || 0) + '，更新 ' + (body.updated || 0) + ((body.skipped || 0) ? '，跳过 ' + body.skipped : '');
         this.setNotice('Profile drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));
       } catch (error) {
-        this.profileLlmError = error.message || 'Add Profile drafts failed';
+        const message = error.message || 'Add Profile drafts failed';
+        this.profileLlmApplyTone = 'error';
+        this.profileLlmApplyMessage = message;
+        this.profileLlmError = message;
+      } finally {
+        this.profileLlmApplyLoading = false;
+        this.refreshIcons();
       }
     },
     openImport(mode, segmentId) {

@@ -72,16 +72,171 @@ def fake_db(monkeypatch):
     return conn
 
 
+def test_segment_table_migration_backfills_legacy_columns(monkeypatch):
+    conn = fake_db(monkeypatch)
+
+    app_mod._ensure_segment_profile_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS name TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS status VARCHAR(16)" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS weight NUMERIC" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS age_range TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS income TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS regions TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS sampling_rate TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS note TEXT" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)" in statements
+    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_name TEXT" in statements
+
+
+def test_profile_table_migration_backfills_legacy_columns(monkeypatch):
+    conn = fake_db(monkeypatch)
+
+    app_mod._ensure_segment_profile_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS name TEXT" in statements
+    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)" in statements
+    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_name TEXT" in statements
+
+
+def test_admin_db_environment_defaults_to_local_admin_database(monkeypatch):
+    for key in (
+        "ADMIN_DATABASE_URL",
+        "DATABASE_URL",
+        "GENPANO_DATABASE_URL",
+        "ADMIN_DB_USER",
+        "ADMIN_DB_PASSWORD",
+        "ADMIN_DB_HOST",
+        "ADMIN_DB_PORT",
+        "ADMIN_DB_NAME",
+        "POSTGRES_PASSWORD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ADMIN_DB_USER", "genpano")
+    monkeypatch.setenv("ADMIN_DB_PASSWORD", "local_dev_admin_pw")
+
+    assert (
+        app_mod._database_url_from_environment()
+        == "postgresql://genpano:local_dev_admin_pw@localhost:5433/genpano_admin"
+    )
+
+
+def test_admin_db_environment_normalizes_asyncpg_url(monkeypatch):
+    for key in ("ADMIN_DATABASE_URL", "DATABASE_URL", "GENPANO_DATABASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://genpano:pw@postgres:5432/genpano")
+
+    assert app_mod._database_url_from_environment() == "postgresql://genpano:pw@postgres:5432/genpano"
+
+
+def test_admin_api_mount_alias_redirects_to_real_api(client):
+    response = client.get("/admin/api/segments?page=2", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["Location"] == "/api/segments?page=2"
+
+
+def test_segment_brand_fields_round_trip_payload_and_row():
+    payload = app_mod._segment_payload(
+        {"id": "SEG-001", "name": "Core buyers", "brand_id": "42", "brand_name": "CHANEL"}
+    )
+    assert payload["brand_id"] == "42"
+    assert payload["brand_name"] == "CHANEL"
+
+    row = app_mod._segment_row(
+        {
+            "id": "SEG-001",
+            "name": "Core buyers",
+            "brand_id": "42",
+            "brand_name": "CHANEL",
+            "weight": 0.5,
+        }
+    )
+    assert row["brand_id"] == "42"
+    assert row["brandId"] == "42"
+    assert row["brand_name"] == "CHANEL"
+    assert row["brandName"] == "CHANEL"
+
+
+def test_profile_payload_inherits_segment_brand_context():
+    payload = app_mod._profile_payload(
+        {"id": "P-1", "name": "Proof seeker"},
+        "SEG-001",
+        segment={"brand_id": "42", "brand_name": "CHANEL"},
+    )
+    assert payload["brand_id"] == "42"
+    assert payload["brand_name"] == "CHANEL"
+
+
+def test_profile_payload_accepts_import_aliases():
+    payload = app_mod._profile_payload(
+        {
+            "profile_id": "p-1",
+            "profile_name": "Proof seeker",
+            "persona": "25-34 urban buyer",
+            "needs": "Needs ingredient proof",
+            "personaJson": {"channel": "official store"},
+        },
+        "SEG-001",
+    )
+
+    assert payload["id"] == "P-1"
+    assert payload["name"] == "Proof seeker"
+    assert payload["demographic"] == "25-34 urban buyer"
+    assert payload["need"] == "Needs ingredient proof"
+    assert payload["persona_json"] == {"channel": "official store"}
+
+
+def test_profile_import_skips_bad_rows_without_failing_batch(monkeypatch):
+    conn = FakeConnection()
+    cur = conn.cursor()
+    created = []
+
+    monkeypatch.setattr(
+        app_mod,
+        "_get_segment",
+        lambda cur, segment_id: {"id": segment_id, "name": "Segment", "brand_id": "42", "brand_name": "CHANEL"},
+    )
+    monkeypatch.setattr(app_mod, "_get_profile", lambda cur, segment_id, profile_id: None)
+
+    def fake_create(cur, segment_id, payload, admin_id):
+        created.append(payload)
+        return {"id": payload["id"], "name": payload["name"], "segment_id": segment_id}
+
+    monkeypatch.setattr(app_mod, "_create_profile", fake_create)
+
+    result = app_mod._import_profiles(
+        cur,
+        "SEG-001",
+        [
+            None,
+            {"profile_id": "p-1", "profile_name": "Proof seeker", "persona": "demo", "needs": "need"},
+        ],
+        "admin-1",
+    )
+
+    assert result["added"] == 1
+    assert result["skipped"] == 1
+    assert result["skipped_rows"][0]["error"] == "profile_row_empty"
+    assert created[0]["brand_id"] == "42"
+    assert any("SAVEPOINT profile_import_row" in sql for sql, _params in conn.statements)
+    assert any("ROLLBACK TO SAVEPOINT profile_import_row" in sql for sql, _params in conn.statements)
+
+
 def test_segment_list_pagination_and_search(client, monkeypatch):
     login(monkeypatch)
     fake_db(monkeypatch)
 
-    def fake_fetch(cur, *, page=1, per_page=50, q=None, status=None, industry_id=None):
+    def fake_fetch(cur, *, page=1, per_page=50, q=None, status=None, industry_id=None, brand_id=None):
         assert page == 2
         assert per_page == 10
         assert q == "luxury"
         assert status == "active"
         assert industry_id == "beauty"
+        assert brand_id == "42"
         return (
             [{"id": "SEG-001", "name": "Luxury buyers", "status": "active", "profile_count": 3}],
             21,
@@ -89,7 +244,7 @@ def test_segment_list_pagination_and_search(client, monkeypatch):
         )
 
     monkeypatch.setattr(app_mod, "_fetch_segments", fake_fetch)
-    response = client.get("/api/segments?page=2&per_page=10&q=luxury&status=active&industry_id=beauty")
+    response = client.get("/api/segments?page=2&per_page=10&q=luxury&status=active&industry_id=beauty&brand_id=42")
     body = response.get_json()
     assert response.status_code == 200
     assert body["rows"][0]["id"] == "SEG-001"
@@ -141,6 +296,22 @@ def test_segment_import(client, monkeypatch):
     assert any("import_segments" in str(params) for _sql, params in conn.statements)
 
 
+def test_segment_import_returns_json_error_on_unexpected_failure(client, monkeypatch):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    def broken_import(*_args, **_kwargs):
+        raise RuntimeError("missing column")
+
+    monkeypatch.setattr(app_mod, "_import_segments", broken_import)
+    response = client.post("/api/segments/import", json={"rows": [{"id": "SEG-001", "name": "A"}]})
+    body = response.get_json()
+
+    assert response.status_code == 500
+    assert body["error"] == "segment_import_failed"
+    assert conn.rollbacks == 1
+
+
 def test_llm_segment_generation_service_boundary(client, monkeypatch):
     login(monkeypatch)
     conn = fake_db(monkeypatch)
@@ -163,11 +334,13 @@ def test_llm_segment_generation_service_boundary(client, monkeypatch):
     monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", FakeService)
     response = client.post(
         "/api/segments/generate",
-        json={"brand_name": "CHANEL", "industry": "beauty", "count": 1, "status": "draft"},
+        json={"brand_id": "42", "brand_name": "CHANEL", "industry": "beauty", "count": 1, "status": "draft"},
     )
     body = response.get_json()
     assert response.status_code == 200
     assert body["drafts"][0]["id"] == "SEG-DRAFT-001"
+    assert body["drafts"][0]["brand_id"] == "42"
+    assert body["drafts"][0]["brand_name"] == "CHANEL"
     assert calls[0]["brand_name"] == "CHANEL"
     assert any("INSERT INTO segment_generation_logs" in sql for sql, _ in conn.statements)
     assert any("generate_segments" in str(params) for _sql, params in conn.statements)
@@ -245,10 +418,55 @@ def test_profile_create_update_soft_delete_import_export(client, monkeypatch):
     assert "P-1,SEG-001,New" in csv_text
 
 
+def test_profile_import_returns_json_error_on_unexpected_failure(client, monkeypatch):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    def broken_import(*_args, **_kwargs):
+        raise RuntimeError("missing column")
+
+    monkeypatch.setattr(app_mod, "_import_profiles", broken_import)
+    response = client.post("/api/segments/SEG-001/profiles/import", json={"rows": [{"id": "P-1", "name": "A"}]})
+    body = response.get_json()
+
+    assert response.status_code == 500
+    assert body["error"] == "profile_import_failed"
+    assert conn.rollbacks == 1
+
+
+def test_profile_import_returns_400_when_all_rows_are_invalid(client, monkeypatch):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    monkeypatch.setattr(
+        app_mod,
+        "_import_profiles",
+        lambda cur, segment_id, rows, admin_id: {
+            "added": 0,
+            "updated": 0,
+            "skipped": 1,
+            "skipped_rows": [{"index": 1, "error": "profile_name_required"}],
+            "rows": [],
+        },
+    )
+
+    response = client.post("/api/segments/SEG-001/profiles/import", json={"rows": [{"id": "P-1"}]})
+    body = response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "profile_import_no_valid_rows"
+    assert body["skipped_rows"][0]["error"] == "profile_name_required"
+    assert conn.rollbacks == 1
+
+
 def test_llm_profile_generation_service_boundary(client, monkeypatch):
     login(monkeypatch)
     conn = fake_db(monkeypatch)
-    monkeypatch.setattr(app_mod, "_get_segment", lambda cur, segment_id: {"id": segment_id, "name": "Segment"})
+    monkeypatch.setattr(
+        app_mod,
+        "_get_segment",
+        lambda cur, segment_id: {"id": segment_id, "name": "Segment", "brand_id": "42", "brand_name": "CHANEL"},
+    )
     calls = []
 
     class FakeService:
@@ -273,6 +491,8 @@ def test_llm_profile_generation_service_boundary(client, monkeypatch):
     body = response.get_json()
     assert response.status_code == 200
     assert body["drafts"][0]["id"] == "P-DRAFT-01"
+    assert body["drafts"][0]["brand_id"] == "42"
+    assert body["drafts"][0]["brand_name"] == "CHANEL"
     assert calls[0]["segment"]["id"] == "SEG-001"
     assert any("INSERT INTO profile_generation_logs" in sql for sql, _ in conn.statements)
 

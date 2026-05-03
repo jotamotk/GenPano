@@ -10,8 +10,8 @@ import base64
 import hashlib
 import threading
 from datetime import datetime, timedelta
-from urllib.parse import unquote, urlparse
-from flask import Flask, render_template, render_template_string, request, jsonify, Response, session, has_request_context
+from urllib.parse import quote, unquote, urlparse
+from flask import Flask, render_template, render_template_string, request, jsonify, Response, session, has_request_context, redirect
 
 try:
     from .topic_plan import (
@@ -83,6 +83,37 @@ except ImportError:
 # Add parent directory to path so we can import geo_tracker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+
+def _load_env_defaults():
+    """Load simple KEY=VALUE defaults from local .env files when python-dotenv is absent."""
+    seen = set()
+    candidates = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env")),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ]
+    for path in candidates:
+        if path in seen or not os.path.exists(path):
+            continue
+        seen.add(path)
+        try:
+            with open(path, "r", encoding="utf-8") as env_file:
+                for line in env_file:
+                    raw = line.strip()
+                    if not raw or raw.startswith("#") or "=" not in raw:
+                        continue
+                    key, value = raw.split("=", 1)
+                    key = key.strip()
+                    if not key or key in os.environ:
+                        continue
+                    value = value.strip().strip("\"'")
+                    os.environ[key] = value
+        except OSError:
+            continue
+
+
+_load_env_defaults()
+
 app = Flask(__name__)
 app.secret_key = os.getenv(
     "ADMIN_SESSION_SECRET",
@@ -95,7 +126,8 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
 )
 
-DATABASE_URL = "postgresql://genpano:genpano2026@localhost:5432/genpano"
+DEFAULT_DATABASE_URL = "postgresql://genpano:genpano2026@localhost:5432/genpano"
+DATABASE_URL = DEFAULT_DATABASE_URL
 DB_USER = "genpano"
 DB_PASS = "genpano2026"
 DB_HOST = "localhost"
@@ -103,9 +135,61 @@ DB_PORT = "5432"
 DB_NAME = "genpano"
 
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+DB_CONNECT_RETRIES = _env_int("ADMIN_DB_CONNECT_RETRIES", 3)
+DB_CONNECT_TIMEOUT = _env_int("ADMIN_DB_CONNECT_TIMEOUT", 3)
+
+
+def _psycopg_database_url(url):
+    if not url:
+        return url
+    if url.startswith("postgresql+asyncpg://"):
+        return "postgresql://" + url.split("://", 1)[1]
+    if url.startswith("postgres+asyncpg://"):
+        return "postgres://" + url.split("://", 1)[1]
+    return url
+
+
+def _database_url_from_environment():
+    explicit = (
+        os.getenv("ADMIN_DATABASE_URL")
+        or os.getenv("DATABASE_URL")
+        or os.getenv("GENPANO_DATABASE_URL")
+    )
+    if explicit:
+        return _psycopg_database_url(explicit)
+
+    admin_db_keys = {
+        "ADMIN_DB_USER",
+        "ADMIN_DB_PASSWORD",
+        "ADMIN_DB_HOST",
+        "ADMIN_DB_PORT",
+        "ADMIN_DB_NAME",
+    }
+    if any(key in os.environ for key in admin_db_keys):
+        user = os.getenv("ADMIN_DB_USER", "genpano")
+        password = os.getenv("ADMIN_DB_PASSWORD", os.getenv("POSTGRES_PASSWORD", ""))
+        host = os.getenv("ADMIN_DB_HOST", "localhost")
+        port = os.getenv("ADMIN_DB_PORT", "5433")
+        name = os.getenv("ADMIN_DB_NAME", "genpano_admin")
+        return (
+            f"postgresql://{quote(user)}:{quote(password)}@"
+            f"{host}:{port}/{quote(name, safe='')}"
+        )
+
+    return DEFAULT_DATABASE_URL
+
+
 def _configure_database_url(url):
     global DATABASE_URL, DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME
 
+    url = _psycopg_database_url(url)
     parsed = urlparse(url)
     if parsed.scheme not in ("postgresql", "postgres"):
         raise ValueError(f"Unsupported DATABASE_URL scheme: {parsed.scheme!r}")
@@ -121,7 +205,7 @@ def _configure_database_url(url):
 
 
 def _configure_database_url_from_env():
-    _configure_database_url(os.getenv("DATABASE_URL", DATABASE_URL))
+    _configure_database_url(_database_url_from_environment())
 
 
 _configure_database_url_from_env()
@@ -524,7 +608,9 @@ def get_db():
     import psycopg2
     import time
     last_err = None
-    for attempt in range(5):
+    retries = max(1, DB_CONNECT_RETRIES)
+    connect_timeout = max(1, DB_CONNECT_TIMEOUT)
+    for attempt in range(retries):
         try:
             conn = psycopg2.connect(
                 host=DB_HOST,
@@ -532,12 +618,14 @@ def get_db():
                 user=DB_USER,
                 password=DB_PASS,
                 dbname=DB_NAME,
-                connect_timeout=5,
+                connect_timeout=connect_timeout,
             )
             return conn
         except psycopg2.OperationalError as e:
             last_err = e
-            time.sleep(2 ** attempt)  # 1, 2, 4, 8, 16 秒
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    raise last_err
     raise last_err
 
 
@@ -5864,6 +5952,15 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
+@app.route('/admin/api/<path:api_path>', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
+def admin_api_mount_alias(api_path):
+    target = f"/api/{api_path}"
+    query_string = request.query_string.decode("utf-8")
+    if query_string:
+        target = f"{target}?{query_string}"
+    return redirect(target, code=307)
+
+
 @app.route('/admin')
 @app.route('/admin/<path:admin_path>')
 def admin_page(admin_path=None):
@@ -9092,6 +9189,8 @@ def _ensure_segment_profile_tables():
                     CREATE TABLE IF NOT EXISTS segments (
                         id VARCHAR(64) PRIMARY KEY,
                         code VARCHAR(64) UNIQUE,
+                        brand_id VARCHAR(128),
+                        brand_name TEXT,
                         name TEXT NOT NULL,
                         industry_id VARCHAR(128),
                         industry TEXT,
@@ -9112,8 +9211,18 @@ def _ensure_segment_profile_tables():
                     """
                 )
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS code VARCHAR(64)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_name TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS name TEXT")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry_id VARCHAR(128)")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS industry TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'draft'")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS weight NUMERIC NOT NULL DEFAULT 0")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS age_range TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS income TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS regions TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS sampling_rate TEXT")
+                cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS note TEXT")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
                 cur.execute("ALTER TABLE segments ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)")
@@ -9141,6 +9250,8 @@ def _ensure_segment_profile_tables():
                         ),
                         segment_id VARCHAR(64),
                         code VARCHAR(64),
+                        brand_id VARCHAR(128),
+                        brand_name TEXT,
                         name TEXT NOT NULL,
                         demographic TEXT,
                         need TEXT,
@@ -9158,6 +9269,9 @@ def _ensure_segment_profile_tables():
                 )
                 cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS segment_id VARCHAR(64)")
                 cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS code VARCHAR(64)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS name TEXT")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)")
+                cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_name TEXT")
                 cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS demographic TEXT")
                 cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS need TEXT")
                 cur.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS weight NUMERIC NOT NULL DEFAULT 1")
@@ -9264,6 +9378,24 @@ def _pagination(page, per_page, total):
     }
 
 
+def _brand_id_value(data):
+    value = (data or {}).get("brand_id")
+    if value in (None, ""):
+        value = (data or {}).get("brandId")
+    value = str(value or "").strip()
+    return value or None
+
+
+def _brand_name_value(data):
+    value = (
+        (data or {}).get("brand_name")
+        or (data or {}).get("brandName")
+        or (data or {}).get("brand")
+        or ""
+    )
+    return str(value).strip()
+
+
 def _segment_payload(data, existing_id=None):
     data = data or {}
     segment_id = str(data.get("id") or data.get("code") or existing_id or "").strip().upper()
@@ -9280,6 +9412,8 @@ def _segment_payload(data, existing_id=None):
     return {
         "id": segment_id,
         "code": str(data.get("code") or segment_id).strip().upper(),
+        "brand_id": _brand_id_value(data),
+        "brand_name": _brand_name_value(data),
         "name": name,
         "industry_id": str(data.get("industry_id") or "").strip() or None,
         "industry": str(data.get("industry") or data.get("industry_name") or "").strip(),
@@ -9293,13 +9427,21 @@ def _segment_payload(data, existing_id=None):
     }
 
 
-def _profile_payload(data, segment_id, existing_id=None):
+def _profile_payload(data, segment_id, existing_id=None, segment=None):
     data = data or {}
-    profile_id = str(data.get("id") or data.get("code") or existing_id or "").strip().upper()
+    segment = segment or {}
+    profile_id = str(
+        data.get("id")
+        or data.get("code")
+        or data.get("profile_id")
+        or data.get("profileId")
+        or existing_id
+        or ""
+    ).strip().upper()
     if not profile_id:
         suffix = str(segment_id or "SEG").replace("SEG-", "").replace(" ", "-")
         profile_id = f"P-{suffix}-{str(uuid.uuid4())[:6].upper()}"
-    name = str(data.get("name") or "").strip()
+    name = str(data.get("name") or data.get("profile_name") or data.get("profileName") or "").strip()
     if not name:
         raise ValueError("profile_name_required")
     status = str(data.get("status") or "draft").strip().lower()
@@ -9307,16 +9449,39 @@ def _profile_payload(data, segment_id, existing_id=None):
         status = "paused"
     if status not in PROFILE_STATUSES:
         raise ValueError("invalid_profile_status")
+    demographic = (
+        data.get("demographic")
+        or data.get("persona")
+        or data.get("profile")
+        or data.get("description")
+        or data.get("画像")
+        or ""
+    )
+    need = (
+        data.get("need")
+        or data.get("needs")
+        or data.get("demand")
+        or data.get("pain_point")
+        or data.get("需求")
+        or ""
+    )
+    persona_source = data.get("persona_json")
+    if persona_source is None:
+        persona_source = data.get("personaJson")
+    if persona_source is None and isinstance(data.get("persona"), (dict, list, str)):
+        persona_source = data.get("persona")
     return {
         "id": profile_id,
         "code": str(data.get("code") or profile_id).strip().upper(),
         "segment_id": str(segment_id).strip().upper(),
+        "brand_id": _brand_id_value(segment) or _brand_id_value(data),
+        "brand_name": _brand_name_value(segment) or _brand_name_value(data),
         "name": name,
-        "demographic": str(data.get("demographic") or "").strip(),
-        "need": str(data.get("need") or "").strip(),
+        "demographic": str(demographic or "").strip(),
+        "need": str(need or "").strip(),
         "weight": _admin_float(data.get("weight"), 1.0),
         "status": status,
-        "persona_json": _admin_json(data.get("persona_json"), {}) or {},
+        "persona_json": _admin_json(persona_source, {}) or {},
     }
 
 
@@ -9329,9 +9494,16 @@ def _segment_row(row):
         weight = 0.0
     profile_count = int(item.get("profile_count") or 0)
     active_profile_count = int(item.get("active_profile_count") or 0)
+    brand_id = _brand_id_value(item)
+    brand_name = _brand_name_value(item)
     return {
         "id": item.get("id"),
         "code": item.get("code") or item.get("id"),
+        "brand_id": brand_id,
+        "brandId": brand_id,
+        "brand_name": brand_name,
+        "brandName": brand_name,
+        "brand": brand_name,
         "name": item.get("name"),
         "industry_id": item.get("industry_id"),
         "industry": item.get("industry") or item.get("industry_id") or "",
@@ -9362,10 +9534,17 @@ def _profile_row(row):
         weight = 0.0
     persona_json = _admin_json(item.get("persona_json"), {}) or {}
     api_id = item.get("api_id") or item.get("code") or item.get("id")
+    brand_id = _brand_id_value(item)
+    brand_name = _brand_name_value(item)
     return {
         "id": str(api_id),
         "code": item.get("code") or str(api_id),
         "segment_id": item.get("segment_id"),
+        "brand_id": brand_id,
+        "brandId": brand_id,
+        "brand_name": brand_name,
+        "brandName": brand_name,
+        "brand": brand_name,
         "name": item.get("name"),
         "demographic": item.get("demographic") or "",
         "need": item.get("need") or "",
@@ -9377,7 +9556,7 @@ def _profile_row(row):
     }
 
 
-def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_id=None):
+def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_id=None, brand_id=None):
     page = max(int(page or 1), 1)
     per_page = max(1, min(int(per_page or 50), 200))
     offset = (page - 1) * per_page
@@ -9388,10 +9567,10 @@ def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_i
         like = f"%{q}%"
         where.append(
             "(s.id ILIKE %s OR COALESCE(s.code, '') ILIKE %s OR s.name ILIKE %s "
-            "OR COALESCE(s.industry, '') ILIKE %s OR COALESCE(s.status, '') ILIKE %s "
-            "OR COALESCE(s.note, '') ILIKE %s)"
+            "OR COALESCE(s.brand_name, '') ILIKE %s OR COALESCE(s.industry, '') ILIKE %s "
+            "OR COALESCE(s.status, '') ILIKE %s OR COALESCE(s.note, '') ILIKE %s)"
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like])
     status = (status or "").strip().lower()
     if status and status != "all":
         where.append("s.status = %s")
@@ -9400,6 +9579,10 @@ def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_i
     if industry_id:
         where.append("(COALESCE(s.industry_id, '') = %s OR COALESCE(s.industry, '') = %s)")
         params.extend([industry_id, industry_id])
+    brand_id = (brand_id or "").strip()
+    if brand_id:
+        where.append("COALESCE(s.brand_id, '') = %s")
+        params.append(brand_id)
     where_clause = "WHERE " + " AND ".join(where)
     cur.execute(f"SELECT COUNT(*) AS cnt FROM segments s {where_clause}", params)
     total = int(cur.fetchone()["cnt"] or 0)
@@ -9489,15 +9672,17 @@ def _create_segment(cur, payload, admin_id):
     cur.execute(
         """
         INSERT INTO segments
-            (id, code, name, industry_id, industry, status, weight, age_range,
+            (id, code, brand_id, brand_name, name, industry_id, industry, status, weight, age_range,
              income, regions, sampling_rate, note, is_deleted, created_by,
              updated_by, created_at, updated_at)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, NOW(), NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s, NOW(), NOW())
         """,
         (
             data["id"],
             data["code"],
+            data["brand_id"],
+            data["brand_name"],
             data["name"],
             data["industry_id"],
             data["industry"],
@@ -9521,13 +9706,15 @@ def _update_segment(cur, segment_id, payload, admin_id):
     cur.execute(
         """
         UPDATE segments
-        SET code = %s, name = %s, industry_id = %s, industry = %s, status = %s,
+        SET code = %s, brand_id = %s, brand_name = %s, name = %s, industry_id = %s, industry = %s, status = %s,
             weight = %s, age_range = %s, income = %s, regions = %s,
             sampling_rate = %s, note = %s, updated_by = %s, updated_at = NOW()
         WHERE id = %s AND COALESCE(is_deleted, FALSE) = FALSE
         """,
         (
             data["code"],
+            data["brand_id"],
+            data["brand_name"],
             data["name"],
             data["industry_id"],
             data["industry"],
@@ -9544,6 +9731,14 @@ def _update_segment(cur, segment_id, payload, admin_id):
     )
     if cur.rowcount == 0:
         return None
+    cur.execute(
+        """
+        UPDATE profiles
+        SET brand_id = %s, brand_name = %s, updated_by = %s, updated_at = NOW()
+        WHERE segment_id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+        """,
+        (data["brand_id"], data["brand_name"], admin_id, data["id"]),
+    )
     return _get_segment(cur, data["id"])
 
 
@@ -9581,7 +9776,7 @@ def _upsert_segment(cur, payload, admin_id):
         cur.execute(
             """
             UPDATE segments
-            SET code = %s, name = %s, industry_id = %s, industry = %s, status = %s,
+            SET code = %s, brand_id = %s, brand_name = %s, name = %s, industry_id = %s, industry = %s, status = %s,
                 weight = %s, age_range = %s, income = %s, regions = %s,
                 sampling_rate = %s, note = %s, is_deleted = FALSE, deleted_at = NULL,
                 updated_by = %s, updated_at = NOW()
@@ -9589,6 +9784,8 @@ def _upsert_segment(cur, payload, admin_id):
             """,
             (
                 data["code"],
+                data["brand_id"],
+                data["brand_name"],
                 data["name"],
                 data["industry_id"],
                 data["industry"],
@@ -9602,6 +9799,14 @@ def _upsert_segment(cur, payload, admin_id):
                 admin_id,
                 data["id"],
             ),
+        )
+        cur.execute(
+            """
+            UPDATE profiles
+            SET brand_id = %s, brand_name = %s, updated_by = %s, updated_at = NOW()
+            WHERE segment_id = %s AND COALESCE(is_deleted, FALSE) = FALSE
+            """,
+            (data["brand_id"], data["brand_name"], admin_id, data["id"]),
         )
         return "updated", _get_segment(cur, data["id"])
     return "added", _create_segment(cur, data, admin_id)
@@ -9634,10 +9839,10 @@ def _fetch_profiles(cur, segment_id, *, page=1, per_page=100, q=None, status=Non
         like = f"%{q}%"
         where.append(
             "(COALESCE(p.code, '') ILIKE %s OR CAST(p.id AS TEXT) ILIKE %s OR p.name ILIKE %s "
-            "OR COALESCE(p.demographic, '') ILIKE %s OR COALESCE(p.need, '') ILIKE %s "
-            "OR COALESCE(p.status, '') ILIKE %s)"
+            "OR COALESCE(p.brand_name, '') ILIKE %s OR COALESCE(p.demographic, '') ILIKE %s "
+            "OR COALESCE(p.need, '') ILIKE %s OR COALESCE(p.status, '') ILIKE %s)"
         )
-        params.extend([like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like])
     status = (status or "").strip().lower()
     if status and status != "all":
         where.append("p.status = %s")
@@ -9647,8 +9852,12 @@ def _fetch_profiles(cur, segment_id, *, page=1, per_page=100, q=None, status=Non
     total = int(cur.fetchone()["cnt"] or 0)
     cur.execute(
         f"""
-        SELECT COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id, p.*
+        SELECT p.*,
+               COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id,
+               COALESCE(NULLIF(p.brand_id, ''), s.brand_id) AS brand_id,
+               COALESCE(NULLIF(p.brand_name, ''), s.brand_name, '') AS brand_name
         FROM profiles p
+        LEFT JOIN segments s ON s.id = p.segment_id
         {where_clause}
         ORDER BY p.updated_at DESC NULLS LAST, p.created_at DESC NULLS LAST, p.id
         LIMIT %s OFFSET %s
@@ -9661,12 +9870,16 @@ def _fetch_profiles(cur, segment_id, *, page=1, per_page=100, q=None, status=Non
 def _get_profile(cur, segment_id, profile_id):
     cur.execute(
         """
-        SELECT COALESCE(code, CAST(id AS TEXT)) AS api_id, *
-        FROM profiles
-        WHERE segment_id = %s
-          AND (code = %s OR CAST(id AS TEXT) = %s)
-          AND COALESCE(is_deleted, FALSE) = FALSE
-          AND COALESCE(status, 'draft') <> 'deleted'
+        SELECT p.*,
+               COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id,
+               COALESCE(NULLIF(p.brand_id, ''), s.brand_id) AS brand_id,
+               COALESCE(NULLIF(p.brand_name, ''), s.brand_name, '') AS brand_name
+        FROM profiles p
+        LEFT JOIN segments s ON s.id = p.segment_id
+        WHERE p.segment_id = %s
+          AND (p.code = %s OR CAST(p.id AS TEXT) = %s)
+          AND COALESCE(p.is_deleted, FALSE) = FALSE
+          AND COALESCE(p.status, 'draft') <> 'deleted'
         """,
         (
             str(segment_id).strip().upper(),
@@ -9682,7 +9895,7 @@ def _create_profile(cur, segment_id, payload, admin_id):
     segment = _get_segment(cur, segment_id)
     if not segment:
         raise ValueError("segment_not_found")
-    data = _profile_payload(payload, segment_id)
+    data = _profile_payload(payload, segment_id, segment=segment)
     cur.execute(
         """
         SELECT 1
@@ -9698,15 +9911,17 @@ def _create_profile(cur, segment_id, payload, admin_id):
     cur.execute(
         """
         INSERT INTO profiles
-            (code, segment_id, name, demographic, need, weight, status,
+            (code, segment_id, brand_id, brand_name, name, demographic, need, weight, status,
              persona_json, is_deleted, created_by, updated_by, created_at, updated_at)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, FALSE, %s, %s, NOW(), NOW())
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, FALSE, %s, %s, NOW(), NOW())
         RETURNING COALESCE(code, CAST(id AS TEXT)) AS api_id, *
         """,
         (
             data["code"],
             data["segment_id"],
+            data["brand_id"],
+            data["brand_name"],
             data["name"],
             data["demographic"],
             data["need"],
@@ -9721,16 +9936,17 @@ def _create_profile(cur, segment_id, payload, admin_id):
 
 
 def _update_profile(cur, segment_id, profile_id, payload, admin_id):
-    if not _get_segment(cur, segment_id):
+    segment = _get_segment(cur, segment_id)
+    if not segment:
         raise ValueError("segment_not_found")
     existing = _get_profile(cur, segment_id, profile_id)
     if not existing:
         return None
-    data = _profile_payload(payload, segment_id, existing_id=profile_id)
+    data = _profile_payload(payload, segment_id, existing_id=profile_id, segment=segment)
     cur.execute(
         """
         UPDATE profiles
-        SET code = %s, name = %s, demographic = %s, need = %s, weight = %s,
+        SET code = %s, brand_id = %s, brand_name = %s, name = %s, demographic = %s, need = %s, weight = %s,
             status = %s, persona_json = %s::jsonb, updated_by = %s, updated_at = NOW()
         WHERE segment_id = %s
           AND (code = %s OR CAST(id AS TEXT) = %s)
@@ -9738,6 +9954,8 @@ def _update_profile(cur, segment_id, profile_id, payload, admin_id):
         """,
         (
             data["code"],
+            data["brand_id"],
+            data["brand_name"],
             data["name"],
             data["demographic"],
             data["need"],
@@ -9776,15 +9994,40 @@ def _soft_delete_profile(cur, segment_id, profile_id, admin_id):
     return before
 
 
+def _profile_import_mapping(row):
+    if row is None:
+        raise ValueError("profile_row_empty")
+    if isinstance(row, dict):
+        return dict(row)
+    try:
+        return dict(row)
+    except (TypeError, ValueError) as error:
+        raise ValueError("profile_row_must_be_object") from error
+
+
+def _rollback_profile_import_row(cur):
+    try:
+        cur.execute("ROLLBACK TO SAVEPOINT profile_import_row")
+    except Exception:
+        return
+    try:
+        cur.execute("RELEASE SAVEPOINT profile_import_row")
+    except Exception:
+        pass
+
+
 def _import_profiles(cur, segment_id, rows, admin_id):
-    if not _get_segment(cur, segment_id):
+    segment = _get_segment(cur, segment_id)
+    if not segment:
         raise ValueError("segment_not_found")
     added = updated = skipped = 0
     output = []
-    for row in rows or []:
+    skipped_rows = []
+    for index, row in enumerate(rows or [], start=1):
+        cur.execute("SAVEPOINT profile_import_row")
         try:
-            payload = {**dict(row), "segment_id": segment_id}
-            data = _profile_payload(payload, segment_id)
+            payload = {**_profile_import_mapping(row), "segment_id": segment_id}
+            data = _profile_payload(payload, segment_id, segment=segment)
             existing = _get_profile(cur, segment_id, data["id"])
             if existing:
                 output.append(_update_profile(cur, segment_id, data["id"], data, admin_id))
@@ -9792,9 +10035,19 @@ def _import_profiles(cur, segment_id, rows, admin_id):
             else:
                 output.append(_create_profile(cur, segment_id, data, admin_id))
                 added += 1
-        except ValueError:
+            cur.execute("RELEASE SAVEPOINT profile_import_row")
+        except Exception as error:
+            _rollback_profile_import_row(cur)
             skipped += 1
-    return {"added": added, "updated": updated, "skipped": skipped, "rows": output}
+            skipped_rows.append(
+                {
+                    "index": index,
+                    "error": str(error) or error.__class__.__name__,
+                    "id": row.get("id") if isinstance(row, dict) else None,
+                    "name": row.get("name") if isinstance(row, dict) else None,
+                }
+            )
+    return {"added": added, "updated": updated, "skipped": skipped, "skipped_rows": skipped_rows, "rows": output}
 
 
 def _write_segment_generation_log(cur, admin_id, payload, result):
@@ -9853,6 +10106,18 @@ def _segment_profile_generation_status(error):
     return 503 if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"} else 502
 
 
+def _drafts_with_brand_context(items, *, brand_id=None, brand_name="", segment_id=None):
+    drafts = []
+    for item in items or []:
+        draft = dict(item or {})
+        if segment_id is not None:
+            draft.setdefault("segment_id", str(segment_id).strip().upper())
+        draft["brand_id"] = draft.get("brand_id") or brand_id
+        draft["brand_name"] = draft.get("brand_name") or draft.get("brandName") or brand_name or ""
+        drafts.append(draft)
+    return drafts
+
+
 @app.route('/api/segments')
 def admin_segments_api():
     admin, error_response = _require_admin()
@@ -9872,6 +10137,7 @@ def admin_segments_api():
                 q=request.args.get("q"),
                 status=request.args.get("status"),
                 industry_id=request.args.get("industry_id"),
+                brand_id=request.args.get("brand_id"),
             )
         return jsonify({"success": True, "rows": rows, "pagination": _pagination(page, per_page, total), "summary": summary})
     finally:
@@ -9923,7 +10189,18 @@ def admin_segments_import_api():
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            result = _import_segments(cur, rows, admin["id"])
+            try:
+                result = _import_segments(cur, rows, admin["id"])
+            except Exception as error:
+                conn.rollback()
+                app.logger.exception("Segment import failed: %s", error)
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "segment_import_failed",
+                        "message": "Segment import failed. Please check generated draft fields and database schema.",
+                    }
+                ), 500
             _insert_admin_audit_log(
                 cur,
                 operator_id=admin["id"],
@@ -9948,6 +10225,7 @@ def admin_segments_generate_api():
 
     payload = request.get_json(silent=True) or {}
     brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    brand_id = _brand_id_value(payload)
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
     service = SegmentProfileGenerationService(model=payload.get("llm_model"))
@@ -9963,6 +10241,7 @@ def admin_segments_generate_api():
         )
     except SegmentProfileGenerationError as error:
         return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
+    drafts = _drafts_with_brand_context(result.items, brand_id=brand_id, brand_name=brand_name)
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -9979,7 +10258,7 @@ def admin_segments_generate_api():
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"success": True, "drafts": result.items, "model": result.model, "usage": result.usage})
+    return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
 
 
 @app.route('/api/segments/<segment_id>')
@@ -10144,6 +10423,27 @@ def admin_segment_profiles_import_api(segment_id):
             except ValueError as error:
                 conn.rollback()
                 return jsonify({"success": False, "error": str(error)}), 404
+            except Exception as error:
+                conn.rollback()
+                app.logger.exception("Profile import failed: %s", error)
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "profile_import_failed",
+                        "message": "Profile import failed. Please check generated draft fields and database schema.",
+                    }
+                ), 500
+            if result["added"] == 0 and result["updated"] == 0 and result["skipped"] > 0:
+                conn.rollback()
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "profile_import_no_valid_rows",
+                        "message": "No valid Profile rows were imported. Please review draft fields.",
+                        "skipped": result["skipped"],
+                        "skipped_rows": result.get("skipped_rows", [])[:5],
+                    }
+                ), 400
             _insert_admin_audit_log(
                 cur,
                 operator_id=admin["id"],
@@ -10215,6 +10515,8 @@ def admin_segment_profiles_generate_api(segment_id):
             segment = _get_segment(cur, segment_id)
             if not segment:
                 return jsonify({"success": False, "error": "segment_not_found"}), 404
+            brand_id = segment.get("brand_id") or _brand_id_value(payload)
+            draft_brand_name = segment.get("brand_name") or brand_name
             service = SegmentProfileGenerationService(model=payload.get("llm_model"))
             try:
                 result = service.generate_profiles(
@@ -10240,7 +10542,13 @@ def admin_segment_profiles_generate_api(segment_id):
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"success": True, "drafts": result.items, "model": result.model, "usage": result.usage})
+    drafts = _drafts_with_brand_context(
+        result.items,
+        brand_id=brand_id,
+        brand_name=draft_brand_name,
+        segment_id=segment_id,
+    )
+    return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
 
 
 @app.route('/api/segments/<segment_id>/profiles/<profile_id>', methods=['PUT'])
@@ -11011,4 +11319,4 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         _configure_database_url(sys.argv[1])
     debug = os.getenv("ADMIN_CONSOLE_DEBUG", "0") == "1"
-    app.run(host='0.0.0.0', port=5000, debug=debug, use_reloader=debug)
+    app.run(host='0.0.0.0', port=_env_int("ADMIN_CONSOLE_PORT", 5000), debug=debug, use_reloader=debug)
