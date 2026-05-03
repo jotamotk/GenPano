@@ -46,6 +46,7 @@ try:
         SegmentProfileGenerationError,
         SegmentProfileGenerationService,
     )
+    from . import scheduler as scheduler_mod
 except ImportError:
     from topic_plan import (
         DoubaoTopicPlanClient,
@@ -79,6 +80,7 @@ except ImportError:
         SegmentProfileGenerationError,
         SegmentProfileGenerationService,
     )
+    import scheduler as scheduler_mod
 
 # Add parent directory to path so we can import geo_tracker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -12463,6 +12465,419 @@ def analyzer_rerun_single(response_id):
         return jsonify({'error': 'Celery not available'})
 
 
+# ─── Scheduler / execution tracking ──────────────────────────────────────────
+# Profile-aware daily collection: routes pending queries through
+# Profile→Account bindings, respects per-LLM caps + the global pause flag, and
+# writes a row to schedule_runs so the UI can show a per-day timeline.
+
+_SCHEDULER_LOCK = threading.Lock()
+
+
+def _execute_schedule_run(*, trigger_type: str, override_total: int | None = None,
+                          triggered_by: str | None = None, note: str | None = None) -> dict:
+    """Pick pending queries respecting caps + bindings, dispatch via Celery,
+    and record the run. Returns a dict suitable for the JSON response of both
+    the auto trigger and the manual /run-now endpoint.
+
+    Held under ``_SCHEDULER_LOCK`` so two simultaneous manual runs don't
+    double-dispatch the same pending query.
+    """
+    from psycopg2.extras import RealDictCursor
+
+    with _SCHEDULER_LOCK:
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cfg = scheduler_mod.fetch_config(cur)
+                if cfg["paused"] and trigger_type == "auto":
+                    # Auto runs respect the pause flag; manual runs ignore it
+                    # because operators may want to flush a queue while the
+                    # global pause is on.
+                    return {"status": "paused", "skipped": True}
+
+                selected = scheduler_mod.select_pending_queries(
+                    cur,
+                    caps=cfg["daily_caps"],
+                    per_profile_cap=cfg["per_profile_cap"],
+                    override_total=override_total,
+                )
+                run_meta = scheduler_mod.insert_run(
+                    cur,
+                    trigger_type=trigger_type,
+                    planned_count=len(selected),
+                    config_snapshot={
+                        "daily_caps": cfg["daily_caps"],
+                        "per_profile_cap": cfg["per_profile_cap"],
+                        "override_total": override_total,
+                    },
+                    triggered_by=triggered_by,
+                )
+            conn.commit()
+
+            dispatched = 0
+            skipped = 0
+            per_llm: dict[str, int] = {}
+
+            for q in selected:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    chosen_account = None
+                    if q.get("profile_id") is not None:
+                        chosen_account = scheduler_mod.pick_account_for_profile(
+                            cur, q["profile_id"], q["target_llm"],
+                        )
+                    update_sets = ["status = 'pending'",
+                                   "queued_at = NOW()",
+                                   "started_at = NULL",
+                                   "finished_at = NULL",
+                                   "latency_ms = NULL"]
+                    params: list = []
+                    if chosen_account is not None:
+                        update_sets.append("account_id = %s")
+                        params.append(chosen_account)
+                    update_sets.append("retry_reason = %s")
+                    params.append(f"schedule_run:{run_meta['run_uid']}")
+                    params.append(q["id"])
+                    cur.execute(
+                        f"UPDATE queries SET {', '.join(update_sets)} WHERE id = %s",
+                        params,
+                    )
+                conn.commit()
+
+                # Dispatch via Celery (best-effort; if Celery is down we still
+                # record the row as dispatched=skipped so operators can see the
+                # planned count and retry).
+                if HAS_CELERY and celery_app is not None:
+                    try:
+                        celery_app.send_task(
+                            "geo_tracker.tasks.celery_tasks.execute_query",
+                            args=[q["id"]],
+                            queue="celery",
+                        )
+                        dispatched += 1
+                        per_llm[q["target_llm"]] = per_llm.get(q["target_llm"], 0) + 1
+                    except Exception:
+                        skipped += 1
+                else:
+                    skipped += 1
+
+            with conn.cursor() as cur:
+                scheduler_mod.finalize_run(
+                    cur,
+                    run_id=run_meta["id"],
+                    status="completed" if skipped == 0 else "partial",
+                    dispatched_count=dispatched,
+                    skipped_count=skipped,
+                    per_llm_breakdown=per_llm,
+                    note=note,
+                )
+            conn.commit()
+
+            return {
+                "status": "ok",
+                "run": run_meta,
+                "planned": len(selected),
+                "dispatched": dispatched,
+                "skipped": skipped,
+                "per_llm": per_llm,
+            }
+        except Exception as exc:
+            try:
+                with conn.cursor() as cur:
+                    scheduler_mod.finalize_run(
+                        cur,
+                        run_id=run_meta["id"] if "run_meta" in locals() else 0,
+                        status="failed",
+                        dispatched_count=0,
+                        skipped_count=0,
+                        per_llm_breakdown={},
+                        note=f"error: {exc}",
+                    )
+                conn.commit()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def _scheduler_get_config_snapshot():
+    """Used by the auto-trigger thread; returns a thin dict so we don't
+    leak DB connections to the background loop."""
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            return scheduler_mod.fetch_config(cur)
+    finally:
+        conn.close()
+
+
+def _scheduler_auto_fire():
+    """Bound to the DailyAutoTrigger; runs the daily auto collection."""
+    try:
+        _execute_schedule_run(trigger_type="auto", triggered_by="auto-trigger")
+    except Exception as exc:
+        print(f"scheduler auto-trigger failed: {exc}")
+
+
+_SCHEDULER_THREAD = scheduler_mod.DailyAutoTrigger(
+    on_fire=_scheduler_auto_fire,
+    get_config=_scheduler_get_config_snapshot,
+)
+
+
+@app.route('/api/admin/schedule/config')
+def admin_schedule_config_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cfg = scheduler_mod.fetch_config(cur)
+        return jsonify({"success": True, "config": cfg,
+                        "approved_llms": list(scheduler_mod.APPROVED_LLMS)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/schedule/config', methods=['POST'])
+def admin_schedule_config_update_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or {}
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cfg = scheduler_mod.update_config(
+                    cur,
+                    paused=payload.get("paused"),
+                    auto_run_enabled=payload.get("auto_run_enabled"),
+                    daily_run_time=payload.get("daily_run_time"),
+                    daily_caps=payload.get("daily_caps"),
+                    per_profile_cap=payload.get("per_profile_cap"),
+                    modified_by=admin.get("email") if admin else None,
+                )
+            except ValueError as exc:
+                conn.rollback()
+                return jsonify({"success": False, "error": str(exc)}), 400
+        conn.commit()
+        return jsonify({"success": True, "config": cfg})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/schedule/pause', methods=['POST'])
+def admin_schedule_pause_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or {}
+    paused = bool(payload.get("paused", True))
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cfg = scheduler_mod.update_config(
+                cur, paused=paused,
+                modified_by=admin.get("email") if admin else None,
+            )
+        conn.commit()
+        return jsonify({"success": True, "paused": cfg["paused"], "config": cfg})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/schedule/run-now', methods=['POST'])
+def admin_schedule_run_now_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or {}
+    override = payload.get("override_total")
+    if override is not None:
+        try:
+            override = int(override)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "override_total must be an integer"}), 400
+        if override < 0:
+            return jsonify({"success": False, "error": "override_total must be >= 0"}), 400
+    note = (payload.get("note") or "").strip() or None
+    try:
+        result = _execute_schedule_run(
+            trigger_type="manual",
+            override_total=override,
+            triggered_by=(admin.get("email") if admin else None),
+            note=note,
+        )
+        return jsonify({"success": True, **result})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route('/api/admin/schedule/runs')
+def admin_schedule_runs_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    try:
+        limit = int(request.args.get("limit", 30))
+    except ValueError:
+        limit = 30
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            runs = scheduler_mod.list_runs(cur, limit=limit)
+        return jsonify({"success": True, "runs": runs})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/schedule/profile-routing')
+def admin_schedule_profile_routing_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    profile_id = request.args.get("profile_id")
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            bindings = scheduler_mod.list_profile_bindings(
+                cur, profile_id=int(profile_id) if profile_id else None,
+            )
+            cur.execute(
+                """
+                SELECT id, llm_name, phone_number AS label, status,
+                       daily_limit, query_count_today
+                FROM llm_accounts
+                WHERE LOWER(llm_name) IN %s
+                ORDER BY llm_name, id
+                """,
+                (tuple(scheduler_mod.APPROVED_LLMS),),
+            )
+            accounts = [dict(r) for r in (cur.fetchall() or [])]
+            cur.execute(
+                "SELECT id, name, location, country_code FROM profiles ORDER BY id"
+            )
+            profiles = [dict(r) for r in (cur.fetchall() or [])]
+        return jsonify({
+            "success": True,
+            "bindings": bindings,
+            "accounts": accounts,
+            "profiles": profiles,
+            "approved_llms": list(scheduler_mod.APPROVED_LLMS),
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/schedule/profile-routing', methods=['POST'])
+def admin_schedule_profile_routing_update_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    payload = request.get_json(silent=True) or {}
+    try:
+        profile_id = int(payload.get("profile_id"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "profile_id is required"}), 400
+    bindings = payload.get("bindings") or []
+    if not isinstance(bindings, list):
+        return jsonify({"success": False, "error": "bindings must be a list"}), 400
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            inserted = scheduler_mod.replace_profile_bindings(cur, profile_id, bindings)
+            updated = scheduler_mod.list_profile_bindings(cur, profile_id=profile_id)
+        conn.commit()
+        return jsonify({"success": True, "inserted": inserted, "bindings": updated})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/tracking/daily')
+def admin_tracking_daily_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    try:
+        days = int(request.args.get("days", 30))
+    except ValueError:
+        days = 30
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            summary = scheduler_mod.daily_tracking_summary(cur, days=days)
+        return jsonify({"success": True, "summary": summary, "days": days})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/tracking/daily/<day>')
+def admin_tracking_daily_detail_api(day):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    target_llm = request.args.get("llm") or None
+    brand_id = request.args.get("brand_id")
+    try:
+        limit = int(request.args.get("limit", 100))
+    except ValueError:
+        limit = 100
+    try:
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        offset = 0
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            payload = scheduler_mod.daily_tracking_responses(
+                cur,
+                day=day,
+                target_llm=target_llm,
+                brand_id=int(brand_id) if brand_id else None,
+                limit=limit,
+                offset=offset,
+            )
+        return jsonify({"success": True, "day": day, **payload})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/tracking/response/<int:response_id>/citations')
+def admin_tracking_response_citations_api(response_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            citations = scheduler_mod.response_citations(cur, response_id)
+        return jsonify({"success": True, "citations": citations})
+    finally:
+        conn.close()
+
+
+def _ensure_schedule_tables():
+    """Create scheduler tables + seed singleton config (idempotent)."""
+    try:
+        scheduler_mod.ensure_schedule_tables(get_db)
+        print("DB migration: scheduler tables ensured "
+              "(schedule_config, schedule_runs, profile_account_bindings)")
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
 def _run_startup_migrations():
     _ensure_citations_column()
     _ensure_analyzer_tables()
@@ -12472,11 +12887,18 @@ def _run_startup_migrations():
     _ensure_prompt_matrix_tables()
     _ensure_query_pool_tables()
     _ensure_segment_profile_tables()
+    _ensure_schedule_tables()
     _normalize_query_data()
 
 
 if os.getenv("ADMIN_CONSOLE_SKIP_STARTUP_MIGRATIONS") != "1" and "pytest" not in sys.modules:
     _run_startup_migrations()
+    if os.getenv("ADMIN_CONSOLE_DISABLE_AUTO_SCHEDULER") != "1":
+        try:
+            _SCHEDULER_THREAD.start()
+            print("Scheduler: daily auto-trigger thread started")
+        except Exception as e:
+            print(f"Scheduler: failed to start auto-trigger thread: {e}")
 
 
 if __name__ == '__main__':
