@@ -2847,6 +2847,35 @@ def _query_pool_candidate_fallback_query(context):
     return f"Which option is worth buying for {seed}?"
 
 
+QUERY_POOL_SAFE_FALLBACK_QUERIES_ZH = (
+    "这个产品怎么选才不踩雷？",
+    "这类产品哪款更适合日常用？",
+    "预算有限的话哪款更值得买？",
+    "第一次买这类产品怎么选比较稳？",
+    "买这类产品主要看什么才不容易后悔？",
+    "这类产品适合我这种情况买吗？",
+)
+
+QUERY_POOL_SAFE_FALLBACK_QUERIES_EN = (
+    "Which option is worth buying?",
+    "How should I choose this product?",
+    "What should I check before buying this?",
+    "Which one is better for everyday use?",
+    "Is this product worth it on a budget?",
+    "How do I avoid picking the wrong one?",
+)
+
+
+def _query_pool_safe_fallback_queries(context, candidate_key, prefer_cjk=False):
+    context_text = json.dumps(context or {}, ensure_ascii=False)
+    use_cjk = prefer_cjk or _query_pool_has_cjk(context_text)
+    variants = list(QUERY_POOL_SAFE_FALLBACK_QUERIES_ZH if use_cjk else QUERY_POOL_SAFE_FALLBACK_QUERIES_EN)
+    if not variants:
+        return []
+    offset = int(hashlib.sha256(str(candidate_key or "").encode("utf-8")).hexdigest()[:8], 16) % len(variants)
+    return variants[offset:] + variants[:offset]
+
+
 def _query_pool_repair_query_text(value, context, candidate_key):
     query = _query_pool_normalize_query_text(value)
     attempts = []
@@ -2860,6 +2889,7 @@ def _query_pool_repair_query_text(value, context, candidate_key):
             attempts.append(f"Which {seed} is worth buying?")
             attempts.append(f"How should I choose {seed}?")
     attempts.append(_query_pool_candidate_fallback_query(context))
+    attempts.extend(_query_pool_safe_fallback_queries(context, candidate_key, prefer_cjk=_query_pool_has_cjk(query)))
 
     last_error = None
     for attempt in attempts:

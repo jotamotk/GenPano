@@ -460,6 +460,52 @@ def test_query_pool_repairs_single_unnatural_llm_query_instead_of_failing():
     assert summary["query_repaired"] == 1
 
 
+def test_query_pool_repairs_when_llm_and_context_are_stilted():
+    prompt_rows = [
+        {
+            "id": "82",
+            "text": "高端奢侈品集团旗下产品线有哪些？",
+            "topic_text": "高端奢侈品集团旗下产品线",
+        }
+    ]
+    profile_pool = [
+        {
+            "segment_id": "SEG-HXZ-001",
+            "segment_name": "后台用户画像",
+            "segment_weight": 10,
+            "profile_id": "P-HXZ-001",
+            "profile_name": "运营触达人群",
+            "profile_demographic": "后台分层",
+            "profile_need": "用户画像触达和转化路径",
+            "profile_weight": 1,
+        }
+    ]
+
+    candidates, summary = app_mod._build_query_pool_candidates(
+        prompt_rows,
+        profile_pool,
+        {
+            "profiles_per_prompt": 1,
+            "profile_strategy": "balanced",
+            "max_candidates": 10,
+            "overflow_policy": "split",
+        },
+        query_generator=lambda contexts: (
+            {contexts[0]["candidate_key"]: "高端奢侈品集团旗下产品线市场表现"},
+            {"model": "fake-query-llm", "usage": {}},
+        ),
+    )
+
+    rendered_query = candidates[0]["rendered_query"]
+    assert len(candidates) == 1
+    assert app_mod.is_natural_user_prompt(rendered_query)
+    assert "集团旗下" not in rendered_query
+    assert "产品线" not in rendered_query
+    assert "用户画像" not in rendered_query
+    assert summary["candidate_ready"] == 1
+    assert summary["query_repaired"] == 1
+
+
 def test_insert_query_pool_run_persists_llm_generation_metadata():
     cur = RecordingCursor()
 
