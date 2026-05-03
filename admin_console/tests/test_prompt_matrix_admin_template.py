@@ -93,27 +93,44 @@ def test_query_pool_prompt_selector_is_paginated_for_large_prompt_sets():
     assert "filteredQueryPoolPrompts()" not in html
 
 
-def test_query_pool_budget_cap_is_numeric_input():
+def test_query_pool_hides_scheduler_only_controls_until_backend_enforces_them():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
-    assert 'x-model.number="queryPoolConfig.budgetCap"' in html
-    assert 'type="number" min="1" step="10"' in html
-    assert 'x-model="queryPoolConfig.budgetCap"' not in html
-
-
-def test_query_pool_uses_engine_policy_instead_of_engine_count():
-    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
-    assert "desiredEnginePolicy" in html
-    for policy in (
-        "inherit",
-        "balanced",
-        "quality_first",
-        "cost_guarded",
-        "coverage_first",
-        "domestic_only",
-        "global_only",
-        "benchmark_panel",
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+    for active_phrase in (
+        "当前仅开放后端已生效项",
+        "Segment/Profile 采样",
+        "每 Prompt Profile",
+        "总上限",
+        "超限处理",
+        "引擎、预算、入队和优先级由调度阶段处理",
     ):
-        assert f'value="{policy}"' in html or f"'{policy}'" in html
+        assert active_phrase in query_pool_section
+    for inactive_phrase in (
+        "引擎策略",
+        "预算上限",
+        "入队窗口",
+        "去重策略",
+        "执行优先级",
+        "Segment 适配范围",
+        "评分维度",
+        "无适配处理",
+        "Segment 上下文适配评分",
+    ):
+        assert inactive_phrase not in query_pool_section
+    for inactive_model in (
+        "queryPoolConfig.desiredEnginePolicy",
+        "queryPoolConfig.budgetCap",
+        "queryPoolConfig.scheduleWindow",
+        "queryPoolConfig.dedupePolicy",
+        "queryPoolConfig.priorityMode",
+        "queryPoolConfig.segmentBindingPolicy",
+        "queryPoolConfig.segmentScorePolicy",
+        "queryPoolConfig.unmatchedSegmentPolicy",
+    ):
+        assert inactive_model not in html
     assert "queryPoolConfig.engineCount" not in html
 
 
@@ -164,6 +181,33 @@ def test_query_pool_preflight_button_calls_backend_preflight():
     ]
     assert '@click="startQueryPoolPreflight()"' in query_pool_section
     assert "API_BASE + '/admin/query-pool/preflight'" in html
+
+
+def test_query_pool_frontend_marks_topic_segment_alignment_as_future_backend_rule():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[
+        html.index('<h3 class="text-[15px] font-bold text-ink">Query Pool</h3>')
+        : html.index("<!-- ============ PAGE: PIPELINE PROXY")
+    ]
+    for phrase in (
+        "Topic 信息仅用于展示",
+        "共享 Segment 的上下文评分待后端接入",
+        "Segment-Profile 可采样",
+    ):
+        assert phrase in query_pool_section
+    for outdated_phrase in (
+        "Topic eligible Segment",
+        "Topic eligible 池",
+        "Segment 仅从 Topic eligible 池采样",
+        "预检将阻断",
+        "按 Brand / Topic / Intent 打适配分",
+    ):
+        assert outdated_phrase not in query_pool_section
+    assert "queryPoolPromptTopicLabel(prompt)" in query_pool_section
+    assert "queryPoolPromptEligibilityText(prompt)" in query_pool_section
+    assert "segment_binding_policy" not in html
+    assert "segment_score_policy" not in html
+    assert "unmatched_segment_policy" not in html
 
 
 def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
@@ -239,6 +283,10 @@ def test_prd_defines_large_scale_query_candidate_contract():
     assert "Prompt x Segment x Profile candidate" in prd
     assert "preflight_summary" in prd
     assert "不允许静态 mock 数值" in prd
+    assert "只开放后端当前真实生效的候选组装参数" in prd
+    assert "不作为 Query Pool 的可操作选项" in prd
+    assert "去重策略当前为后端固定的渲染文本 hash 去重" in prd
+    assert "页面必须标注为待后端接入" in prd
 
 
 def test_profile_groups_are_labeled_as_segments_with_profile_drilldown():

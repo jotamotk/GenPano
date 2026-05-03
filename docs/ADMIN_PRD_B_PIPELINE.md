@@ -216,13 +216,14 @@ CREATE TABLE pipeline_global_pause (
 - **运营视图**: 总 Prompt、覆盖率、无 Prompt Topic、Intent 分布、语言分布、Prompt 内容列表保留。
 ### Tab 3: Query 组装 / Query Pool
 
-- **组装配置**: Query Pool 选择 Prompt 行，并配置 Segment/Profile 采样、`desired_engine_policy`、预算上限、入队窗口、去重策略和优先级。它不选择具体引擎数量，也不暴露每引擎执行控制。
+- **组装配置**: Query Pool 选择 Prompt 行，并且只开放后端当前真实生效的候选组装参数：Segment/Profile 采样、每 Prompt Profile 数、`max_candidates` 和超限处理。`desired_engine_policy`、预算上限、入队窗口、执行优先级、每引擎控制都不作为 Query Pool 的可操作选项；这些由 Scheduler/Tracker 在调度阶段处理。去重策略当前为后端固定的渲染文本 hash 去重，页面不暴露可切换策略。
 - **数量控制**: 候选量为 `selected_prompts x profiles_per_prompt`，并受 `max_candidates` 上限保护。引擎展开、每引擎配额、并发、限速、账号/代理分配和重试都属于 Scheduler。
 - **预检状态**: 页面展示「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」。这些指标必须来自 `POST /api/admin/query-pool/preflight` 或 `POST /api/admin/query-pool/assemble` 返回的 `preflight_summary`；未运行时显示空态，不允许静态 mock 数值。引擎成功率、按 Segment 的执行成功率、账号水位、代理失败率属于 Scheduler/Tracker。
+- **Topic/Segment 适配边界**: Segment 是可跨品牌复用的人群资产；Prompt 的 Topic 信息可在 Query Pool 展示，但 Brand/Topic/Intent 上下文评分、低分阻断和无适配处理尚未在 Query Pool 后端生效，页面必须标注为待后端接入，不得提供看似生效的可选项。
 - **按钮流程**:
   - 「预估成本」打开候选级粗估，并明确具体引擎成本延后到 Scheduler 估算。
   - 「组装 Query」展示 Prompt 校验、Segment/Profile 采样、Query 候选渲染和调度接收。
-  - 「预检报告」展示模板变量、重复候选、Segment 权重和调度接收检查。
+  - 「预检报告」展示 Prompt 选择、Segment/Profile 可采样、模板变量、重复候选、候选上限、Segment 权重和调度接收检查。
 - **CTA 规则**: 主页面只保留一个主要「组装 Query」入口；KPI 区不重复放同名 CTA。
 - **运营视图**: 保留「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」和「Query 候选列表」。queued/running/completed/failed 执行指标和每引擎暂停/恢复控制移动到 Scheduler/Tracker。
 - **候选列表规模**: Query 候选列表必须支持 100M to 1B+ rows。它只渲染当前服务端游标窗口，使用 server-side cursor/keyset pagination，并在服务端运行搜索、状态、Segment、Profile 过滤。UI 不能加载全部候选、不能 deep-offset paginate、不能在浏览器内存里保留完整 `queryDetailList`。总数可以是 approximate。

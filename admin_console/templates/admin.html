@@ -3972,6 +3972,16 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                   <span class="shrink-0 px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="languageLabel(prompt.lang || prompt.language)"></span>
                                 </div>
                                 <div class="text-[11px] text-ink-muted truncate mt-1.5" x-text="queryPoolPromptMeta(prompt)"></div>
+                                <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page border border-b-card text-[10px] font-semibold text-ink-body"
+                                        x-text="queryPoolPromptTopicLabel(prompt)"></span>
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                        :class="queryPoolPromptTopicStatusClass(prompt)"
+                                        x-text="queryPoolPromptTopicStatusText(prompt)"></span>
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                        :class="queryPoolPromptEligibilityClass(prompt)"
+                                        x-text="queryPoolPromptEligibilityText(prompt)"></span>
+                                </div>
                               </div>
                             </label>
                           </template>
@@ -3998,59 +4008,39 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         </div>
                       </div>
                     </div>
-                    <div class="grid grid-cols-3 gap-3">
+                    <div class="rounded-card bg-accent/5 border border-accent/15 p-3">
+                      <div class="flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-[12.5px] font-bold text-ink">当前仅开放后端已生效项</div>
+                          <div class="text-[10px] text-ink-muted mt-1">本页只控制候选组装已经真实生效的参数；引擎、预算、入队和优先级由调度阶段处理。</div>
+                        </div>
+                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-white text-accent text-[10px] font-semibold">已收敛</span>
+                      </div>
+                      <div class="mt-3 grid grid-cols-3 gap-2">
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted">当前生效</div>
+                          <div class="text-[15px] font-bold text-ink mt-1">采样 / 数量 / 上限</div>
+                          <div class="text-[10px] text-ink-muted mt-1">后端组装会实际使用这些参数</div>
+                        </div>
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted">Topic 信息仅用于展示</div>
+                          <div class="text-[15px] font-bold text-ink mt-1" x-text="queryPoolTopicBindingSummary()"></div>
+                          <div class="text-[10px] text-ink-muted mt-1">共享 Segment 的上下文评分待后端接入</div>
+                        </div>
+                        <div class="rounded-card bg-white border border-b-card p-3">
+                          <div class="text-[10px] font-semibold text-ink-muted">已移出本页</div>
+                          <div class="text-[15px] font-bold text-ink mt-1">调度策略</div>
+                          <div class="text-[10px] text-ink-muted mt-1">引擎、预算、入队和优先级不在 Query Pool 控制</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-1 gap-3">
                     <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">Segment 采样</span>
+                      <span class="text-[10px] font-semibold text-ink-muted uppercase">Segment/Profile 采样</span>
                       <select x-model="queryPoolConfig.profileStrategy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                         <option value="balanced">核心 Segment + 补充 Segment</option>
                         <option value="core">仅核心 Segment</option>
                         <option value="full">完整 Segment 覆盖</option>
-                      </select>
-                    </label>
-                    <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">引擎策略</span>
-                      <select x-model="queryPoolConfig.desiredEnginePolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="inherit">继承调度默认</option>
-                        <option value="balanced">质量与成本均衡</option>
-                        <option value="quality_first">质量优先</option>
-                        <option value="cost_guarded">成本受控</option>
-                        <option value="coverage_first">覆盖优先</option>
-                        <option value="domestic_only">仅国内引擎</option>
-                        <option value="global_only">仅国际引擎</option>
-                        <option value="benchmark_panel">基准评测引擎组</option>
-                      </select>
-                    </label>
-                    <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">预算上限</span>
-                      <div class="relative">
-                        <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[12px] text-ink-muted">$</span>
-                        <input x-model.number="queryPoolConfig.budgetCap" type="number" min="1" step="10" inputmode="decimal" placeholder="180" aria-label="预算上限金额"
-                               class="w-full h-8 rounded-input border border-b-default bg-white pl-6 pr-12 text-[12px] text-ink" />
-                        <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-ink-muted">/ 批次</span>
-                      </div>
-                    </label>
-                    <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">入队窗口</span>
-                      <select x-model="queryPoolConfig.scheduleWindow" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="next">下一采集窗口</option>
-                        <option value="today">今日剩余额度</option>
-                        <option value="manual">只生成不入队</option>
-                      </select>
-                    </label>
-                    <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">去重策略</span>
-                      <select x-model="queryPoolConfig.dedupePolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="merge">相似问法合并</option>
-                        <option value="review">相似问法进入审核</option>
-                        <option value="allow">允许小差异重复</option>
-                      </select>
-                    </label>
-                    <label class="space-y-1">
-                      <span class="text-[10px] font-semibold text-ink-muted uppercase">执行优先级</span>
-                      <select x-model="queryPoolConfig.priorityMode" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="gap">覆盖缺口优先</option>
-                        <option value="brand">品牌权重优先</option>
-                        <option value="balanced">均衡入队</option>
                       </select>
                     </label>
                     </div>
@@ -4081,10 +4071,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                       </label>
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted uppercase">超出上限</span>
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">超限处理</span>
                         <select x-model="queryPoolConfig.overflowPolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option value="split">自动拆批</option>
-                          <option value="hold">进入审批</option>
+                          <option value="split">按上限生成</option>
+                          <option value="hold">超限阻断</option>
                         </select>
                       </label>
                     </div>
@@ -4179,7 +4169,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     </div>
                   </template>
                   <template x-if="queryPoolActionPanel==='preflight'">
-                    <div class="p-5">
+                    <div class="p-5 space-y-3">
+                      <div class="rounded-card bg-accent/5 border border-accent/15 px-3 py-2 text-[11px] text-ink-body">
+                        预检报告只展示后端当前真实返回的检查项：Prompt 选择、Segment-Profile 可采样、模板渲染、重复候选和候选上限。
+                      </div>
                       <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
                         <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">检查项</th><th class="px-4 py-2.5 text-left text-ink-muted">结果</th><th class="px-4 py-2.5 text-left text-ink-muted">影响</th><th class="px-4 py-2.5 text-right text-ink-muted">处理</th></tr></thead>
                         <tbody>
@@ -4203,7 +4196,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <div class="flex items-center justify-between mb-4">
                   <div>
                     <h3 class="text-[15px] font-bold text-ink">候选质量</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">Query Pool 只组装 Prompt x Segment x Profile 候选；具体引擎派发和执行控制由调度阶段处理。</p>
+                    <p class="text-[12px] text-ink-muted mt-1">Query Pool 只组装 Prompt x Segment x Profile 候选；当前已生效控制为采样策略、每 Prompt Profile、总上限和超限处理。具体引擎派发和执行控制由调度阶段处理。</p>
                   </div>
                 </div>
                 <div class="grid grid-cols-6 gap-3">
@@ -4223,9 +4216,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </div>
                   <div class="w-px h-5 bg-accent/20"></div>
                   <div class="flex items-center gap-2">
-                    <i data-lucide="send-horizontal" class="w-4 h-4 text-success"></i>
-                    <span class="text-[12px] text-ink-muted">引擎策略:</span>
-                    <span class="text-[12px] font-semibold text-ink" x-text="queryPoolEnginePolicyLabel()"></span>
+                    <i data-lucide="list-checks" class="w-4 h-4 text-success"></i>
+                    <span class="text-[12px] text-ink-muted">候选上限:</span>
+                    <span class="text-[12px] font-semibold text-ink" x-text="Number(queryPoolConfig.maxQueries).toLocaleString() + ' · ' + queryPoolOverflowPolicyLabel()"></span>
                   </div>
                 </div>
               </div>
@@ -4267,7 +4260,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <div class="px-6 py-3 border-b border-b-card bg-surface-page flex items-center justify-between">
                   <div class="flex items-center gap-2 text-[11px] text-ink-muted">
                     <span>路由意图</span>
-                    <span class="inline-flex items-center h-6 px-2 rounded-badge bg-accent/10 text-accent font-semibold" x-text="queryPoolEnginePolicyLabel()"></span>
+                    <span class="inline-flex items-center h-6 px-2 rounded-badge bg-accent/10 text-accent font-semibold">调度阶段决定</span>
                     <span class="text-ink-faint">引擎展开由调度阶段处理。</span>
                   </div>
                   <div class="flex items-center gap-2">
@@ -8755,11 +8748,6 @@ function adminApp() {
     queryPoolSelectionFilters: null,
     queryPoolConfig: {
       profileStrategy: 'balanced',
-      desiredEnginePolicy: 'inherit',
-      budgetCap: 180,
-      scheduleWindow: 'next',
-      dedupePolicy: 'merge',
-      priorityMode: 'gap',
       profilesPerPrompt: 3,
       maxQueries: 12000,
       overflowPolicy: 'split',
@@ -8783,7 +8771,7 @@ function adminApp() {
     queryPoolCandidatePageInfo: { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 },
     queryPoolAssembleSteps: [
       { name:'Prompt 校验', status:'idle', label:'等待中', value:'0 个 Prompt' },
-      { name:'Segment Profile 采样', status:'idle', label:'等待中', value:'0 个 Profile' },
+      { name:'Segment/Profile 采样', status:'idle', label:'等待中', value:'0 个 Profile' },
       { name:'Query 候选渲染', status:'idle', label:'等待中', value:'+0 个候选' },
       { name:'调度接收', status:'idle', label:'等待中', value:'未入队' },
     ],
@@ -11802,14 +11790,51 @@ function adminApp() {
       return `已选 Prompt x 每 Prompt Profile = ${promptCount} x ${cfg.profilesPerPrompt} · 候选上限 ${Number(cfg.maxQueries).toLocaleString()}`;
     },
 
+    queryPoolPromptTopicValue(prompt){
+      return prompt?.topic_id || prompt?.topicId || prompt?.topicID || '';
+    },
+
+    queryPoolPromptTopicLabel(prompt){
+      const topic = this.queryPoolPromptTopicValue(prompt);
+      return topic ? 'Topic ' + String(topic).replace(/^T-/, '') : '未绑定 Topic';
+    },
+
+    queryPoolPromptTopicStatusText(prompt){
+      return this.queryPoolPromptTopicValue(prompt) ? 'Topic 已绑定' : '缺少 Topic';
+    },
+
+    queryPoolPromptTopicStatusClass(prompt){
+      return this.queryPoolPromptTopicValue(prompt)
+        ? 'bg-success/10 text-success'
+        : 'bg-warning/10 text-warning';
+    },
+
+    queryPoolPromptEligibilityText(prompt){
+      if (!this.queryPoolPromptTopicValue(prompt)) return '缺少 Topic 信息';
+      return 'Topic 已带入展示';
+    },
+
+    queryPoolPromptEligibilityClass(prompt){
+      return this.queryPoolPromptTopicValue(prompt)
+        ? 'bg-accent/10 text-accent'
+        : 'bg-warning/10 text-warning';
+    },
+
+    queryPoolSelectedPromptRows(){
+      return Object.values(this.queryPoolSelectedPromptCache || {}).filter(Boolean);
+    },
+
+    queryPoolTopicBindingSummary(){
+      if (this.queryPoolSelectionMode === 'filtered') return '后端按筛选集统计';
+      const rows = this.queryPoolSelectedPromptRows();
+      const total = rows.length;
+      const bound = rows.filter(prompt => this.queryPoolPromptTopicValue(prompt)).length;
+      return total ? `${bound.toLocaleString()} / ${total.toLocaleString()}` : '未选择';
+    },
+
     queryPoolRequestConfig(){
       return {
         profile_strategy: this.queryPoolConfig.profileStrategy,
-        desired_engine_policy: this.queryPoolConfig.desiredEnginePolicy,
-        budget_cap: Number(this.queryPoolConfig.budgetCap || 0),
-        intake_window: this.queryPoolConfig.scheduleWindow,
-        dedupe_policy: this.queryPoolConfig.dedupePolicy,
-        priority_mode: this.queryPoolConfig.priorityMode,
         profiles_per_prompt: Number(this.queryPoolConfig.profilesPerPrompt || 0),
         max_candidates: Number(this.queryPoolConfig.maxQueries || 0),
         overflow_policy: this.queryPoolConfig.overflowPolicy,
@@ -11900,19 +11925,27 @@ function adminApp() {
       const s = this.queryPoolPreflightSummary;
       if (!s) {
         return [
+          { name:'Prompt 选择', result:'未运行', tone:'accent', impact:'等待后端读取显式选择或筛选条件', action:'点击预检报告' },
+          { name:'Segment-Profile 可采样', result:'未运行', tone:'accent', impact:'等待 active Profile 池检查', action:'点击预检报告' },
           { name:'模板变量', result:'未运行', tone:'accent', impact:'等待后端预检', action:'点击预检报告' },
           { name:'重复候选', result:'未运行', tone:'accent', impact:'等待后端去重', action:'点击预检报告' },
-          { name:'Segment 权重', result:'未运行', tone:'accent', impact:'等待采样检查', action:'点击预检报告' },
+          { name:'候选上限', result:'未运行', tone:'accent', impact:'等待上限校验', action:'点击预检报告' },
           { name:'调度接收', result:'未运行', tone:'accent', impact:'尚未生成候选', action:'点击预检报告' },
         ];
       }
       const duplicate = Number(s.duplicate_review || 0);
       const renderFailures = Number(s.render_failures || 0);
       const segmentCoverage = Number(s.segment_coverage || 0);
+      const profileCoverage = Number(s.profile_coverage || 0);
+      const rawEstimated = Number(s.raw_candidates_estimated || this.queryCountRaw());
+      const capReached = Boolean(s.candidate_cap_reached);
       return [
+        { name:'Prompt 选择', result:rawEstimated ? rawEstimated.toLocaleString() + ' 个预估' : '无候选', tone:rawEstimated ? 'success' : 'warning', impact:'已选 Prompt x 每 Prompt Profile', action:rawEstimated ? '无需处理' : '选择 Prompt' },
+        { name:'Segment-Profile 可采样', result:profileCoverage ? '通过' : '阻断', tone:profileCoverage ? 'success' : 'warning', impact:'Profile 覆盖率 ' + this.queryPoolFormatRate(s.profile_coverage), action:profileCoverage ? '无需处理' : '检查 Segment/Profile 权重' },
         { name:'模板变量', result:renderFailures ? renderFailures.toLocaleString() + ' 个失败' : '通过', tone:renderFailures ? 'warning' : 'success', impact:'渲染通过率 ' + this.queryPoolFormatRate(s.render_pass_rate), action:renderFailures ? '修正 Prompt 变量' : '无需处理' },
         { name:'重复候选', result:duplicate.toLocaleString() + ' 个待审', tone:duplicate ? 'warning' : 'success', impact:'渲染文本相似', action:duplicate ? '合并或人工确认' : '无需处理' },
         { name:'Segment 权重', result:segmentCoverage ? '通过' : '阻断', tone:segmentCoverage ? 'success' : 'warning', impact:'覆盖率 ' + this.queryPoolFormatRate(s.segment_coverage), action:segmentCoverage ? '无需处理' : '检查 Segment 权重' },
+        { name:'候选上限', result:capReached ? '已触发' : '未触发', tone:capReached ? 'warning' : 'success', impact:'总上限 ' + Number(this.queryPoolConfig.maxQueries || 0).toLocaleString(), action:capReached ? this.queryPoolOverflowPolicyLabel() : '无需处理' },
         { name:'调度接收', result:this.queryPoolSchedulerIntakeLabel(s.scheduler_intake), tone:s.scheduler_intake === 'ready' ? 'success' : 'warning', impact:'引擎派发稍后处理', action:s.scheduler_intake === 'ready' ? '调度阶段控制执行' : '先修复候选' },
       ];
     },
@@ -11944,18 +11977,12 @@ function adminApp() {
       return labels[this.queryPoolConfig.profileStrategy] || this.queryPoolConfig.profileStrategy;
     },
 
-    queryPoolEnginePolicyLabel(){
+    queryPoolOverflowPolicyLabel(){
       const labels = {
-        inherit: '继承调度默认',
-        balanced: '质量与成本均衡',
-        quality_first: '质量优先',
-        cost_guarded: '成本受控',
-        coverage_first: '覆盖优先',
-        domestic_only: '仅国内引擎',
-        global_only: '仅国际引擎',
-        benchmark_panel: '基准评测引擎组',
+        split: '按上限生成',
+        hold: '超限阻断',
       };
-      return labels[this.queryPoolConfig.desiredEnginePolicy] || this.queryPoolConfig.desiredEnginePolicy;
+      return labels[this.queryPoolConfig.overflowPolicy] || this.queryPoolConfig.overflowPolicy;
     },
 
     queryPoolCandidateStatusLabel(status){
@@ -12105,7 +12132,7 @@ function adminApp() {
         this.queryPoolAssembleStarted = true;
         this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
           if (step.name === 'Prompt 校验') return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
-          if (step.name === 'Segment Profile 采样') return { ...step, status:'done', label:'每 Prompt ' + this.queryPoolConfig.profilesPerPrompt + ' 个', value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
+          if (step.name === 'Segment/Profile 采样') return { ...step, status:'done', label:this.queryPoolProfileStrategyLabel(), value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
           if (step.name === 'Query 候选渲染') return { ...step, status:'done', label:'完成', value:'+' + Number(run.candidates_assembled || preflight.candidate_ready || 0).toLocaleString() + ' 个候选' };
           if (step.name === '调度接收') return { ...step, status:'done', label:'就绪', value:payload.mode === 'filtered' ? '全部筛选 Prompt' : '显式选择' };
           return step;
