@@ -70,7 +70,7 @@ def test_query_pool_assemble_starts_async_run_without_inline_llm(client, monkeyp
             "status": "running",
             "candidates_estimated": 4,
             "candidates_assembled": 0,
-            "preflight_summary": {"scheduler_intake": "running", "candidate_ready": 4},
+            "preflight_summary": {"scheduler_intake": "running", "candidate_ready": 0},
         }
 
     spawned = []
@@ -109,6 +109,48 @@ def test_query_pool_assemble_starts_async_run_without_inline_llm(client, monkeyp
             },
         )
     ]
+
+
+def test_query_pool_running_run_reports_estimated_count_without_ready_candidates(monkeypatch):
+    monkeypatch.setattr(app_mod, "_query_pool_prompt_ids_from_selection", lambda cur, selection, max_prompts: ["74"])
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_prompt_rows",
+        lambda cur, prompt_ids: [{"id": "74", "text": "夏天通勤防晒怎么选？", "topic_text": "夏天通勤防晒"}],
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_profile_pool",
+        lambda cur, segment_ids=None: [
+            {
+                "segment_id": "SEG-HXZ-001",
+                "segment_name": "混油夏妆人群",
+                "segment_weight": 10,
+                "profile_id": "P-HXZ-002",
+                "profile_name": "通勤白领",
+                "profile_demographic": "28 岁，杭州，夏天每天通勤",
+                "profile_need": "怕油腻又不想太贵",
+                "profile_weight": 1,
+            }
+        ],
+    )
+    cur = RecordingCursor()
+
+    run = app_mod._start_query_pool_assembly_run(
+        cur,
+        "admin-1",
+        {
+            "selection": {"mode": "explicit", "prompt_ids": ["74"]},
+            "config": {"profiles_per_prompt": 1, "max_candidates": 10},
+        },
+    )
+
+    assert run["status"] == "running"
+    assert run["candidates_estimated"] == 1
+    assert run["candidates_assembled"] == 0
+    assert run["preflight_summary"]["raw_candidates_estimated"] == 1
+    assert run["preflight_summary"]["candidate_ready"] == 0
+    assert run["preflight_summary"]["scheduler_intake"] == "running"
 
 
 def test_query_pool_preflight_is_dry_run(client, monkeypatch):
@@ -365,6 +407,57 @@ def test_query_pool_llm_parser_requires_all_candidate_keys():
     assert parsed == {"c-1": "刚入职送人大牌香水怎么选才不踩雷？"}
     with pytest.raises(app_mod.TopicPlanLLMError, match="missing query"):
         app_mod._parse_query_pool_llm_queries('{"queries":[]}', {"c-1"})
+    with pytest.raises(app_mod.TopicPlanLLMError, match="real consumer question"):
+        app_mod._parse_query_pool_llm_queries(
+            '{"queries":[{"candidate_key":"c-1","query":"夏天通勤防晒轻薄不油"}]}',
+            {"c-1"},
+        )
+    parsed_without_validation = app_mod._parse_query_pool_llm_queries(
+        '{"queries":[{"candidate_key":"c-1","query":"夏天通勤防晒轻薄不油"}]}',
+        {"c-1"},
+        validate_queries=False,
+    )
+    assert parsed_without_validation == {"c-1": "夏天通勤防晒轻薄不油"}
+
+
+def test_query_pool_repairs_single_unnatural_llm_query_instead_of_failing():
+    prompt_rows = [{"id": "74", "text": "夏天通勤防晒怎么选？", "topic_text": "夏天通勤防晒"}]
+    profile_pool = [
+        {
+            "segment_id": "SEG-HXZ-001",
+            "segment_name": "混油夏妆人群",
+            "segment_weight": 10,
+            "profile_id": "P-HXZ-002",
+            "profile_name": "通勤白领",
+            "profile_demographic": "28 岁，杭州，夏天每天通勤",
+            "profile_need": "怕油腻又不想太贵",
+            "profile_weight": 1,
+        }
+    ]
+
+    candidates, summary = app_mod._build_query_pool_candidates(
+        prompt_rows,
+        profile_pool,
+        {
+            "profiles_per_prompt": 1,
+            "profile_strategy": "balanced",
+            "max_candidates": 10,
+            "overflow_policy": "split",
+        },
+        query_generator=lambda contexts: (
+            {contexts[0]["candidate_key"]: "夏天通勤防晒轻薄不油"},
+            {"model": "fake-query-llm", "usage": {}},
+        ),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["prompt_id"] == "74"
+    assert candidates[0]["segment_id"] == "SEG-HXZ-001"
+    assert candidates[0]["profile_id"] == "P-HXZ-002"
+    assert candidates[0]["rendered_query"] != "夏天通勤防晒轻薄不油"
+    assert app_mod.is_natural_user_prompt(candidates[0]["rendered_query"])
+    assert summary["candidate_ready"] == 1
+    assert summary["query_repaired"] == 1
 
 
 def test_insert_query_pool_run_persists_llm_generation_metadata():
