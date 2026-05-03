@@ -7852,7 +7852,10 @@ function segmentCrudPanel() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.success === false) {
-        throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        const error = new Error(body.message || body.error || ('HTTP ' + res.status));
+        error.body = body;
+        error.status = res.status;
+        throw error;
       }
       return body;
     },
@@ -7955,14 +7958,21 @@ function segmentCrudPanel() {
     },
 
     fromProfile(profile) {
+      const name = profile.name || profile.profile_name || profile.profileName || profile.title || '';
+      const demographic = profile.demographic || profile.persona || profile.profile || profile.description || profile['画像'] || '';
+      const need = profile.need || profile.needs || profile.demand || profile.pain_point || profile['需求'] || '';
+      const personaJson = profile.persona_json || profile.personaJson || (typeof profile.persona === 'object' ? profile.persona : {});
       return {
         ...profile,
         id: String(profile.id || profile.code || '').toUpperCase(),
         code: profile.code || profile.id,
         brandId: profile.brandId || profile.brand_id || '',
         brandName: profile.brandName || profile.brand_name || profile.brand || '',
+        name,
+        demographic,
+        need,
         weight: String(profile.weight ?? '1.0'),
-        persona_json: profile.persona_json || {},
+        persona_json: personaJson || {},
       };
     },
 
@@ -7985,17 +7995,21 @@ function segmentCrudPanel() {
     },
 
     toApiProfile(profile) {
+      const name = profile.name || profile.profile_name || profile.profileName || profile.title || '';
+      const demographic = profile.demographic || profile.persona || profile.profile || profile.description || profile['画像'] || '';
+      const need = profile.need || profile.needs || profile.demand || profile.pain_point || profile['需求'] || '';
+      const personaJson = profile.persona_json || profile.personaJson || (typeof profile.persona === 'object' ? profile.persona : {});
       return {
-        id: profile.id,
-        code: profile.code || profile.id,
+        id: profile.id || profile.code || profile.profile_id || profile.profileId,
+        code: profile.code || profile.id || profile.profile_id || profile.profileId,
         brand_id: profile.brandId || profile.brand_id || '',
         brand_name: profile.brandName || profile.brand_name || profile.brand || '',
-        name: profile.name,
-        demographic: profile.demographic || '',
-        need: profile.need || '',
+        name,
+        demographic,
+        need,
         weight: Number(profile.weight || 0),
         status: profile.status || 'draft',
-        persona_json: profile.persona_json || {},
+        persona_json: personaJson || {},
       };
     },
 
@@ -8386,10 +8400,36 @@ function segmentCrudPanel() {
     },
     closeLlmPanel() {
       this.llmPanelOpen = false;
-      this.profileLlmLoading = false;
-      this.profileLlmApplyLoading = false;
       this.profileLlmApplyMessage = '';
       this.profileLlmApplyTone = 'info';
+    },
+    delay(ms) {
+      return new Promise(resolve => window.setTimeout(resolve, ms));
+    },
+    applyProfileGenerationResult(body, segment, brandOption) {
+      this.profileLlmDrafts = (body.drafts || []).map(row => this.fromProfile({
+        ...row,
+        brand_id: row.brand_id || segment.brandId || segment.brand_id || brandOption?.id || '',
+        brand_name: row.brand_name || segment.brandName || segment.brand_name || this.llmForm.brand,
+      }));
+      this.profileLlmDraftSegmentId = segment.id;
+      this.profileLlmApplyMessage = '';
+      this.profileLlmApplyTone = 'info';
+    },
+    async pollProfileGenerationJob(segment, jobId, brandOption) {
+      const startedAt = Date.now();
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await this.delay(attempt < 3 ? 1200 : 2500);
+        const body = await this.apiJson(API_BASE + '/segments/' + encodeURIComponent(segment.id) + '/profiles/generate/' + encodeURIComponent(jobId));
+        if (body.status === 'completed') {
+          this.applyProfileGenerationResult(body, segment, brandOption);
+          return;
+        }
+        const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        this.profileLlmApplyTone = 'info';
+        this.profileLlmApplyMessage = 'LLM 正在生成 Profile...' + elapsedSeconds + 's';
+      }
+      throw new Error('Profile generation is still running. Please try again later.');
     },
     async generateSegmentLlm() {
       const segment = this.currentSegment();
@@ -8406,6 +8446,8 @@ function segmentCrudPanel() {
       this.profileLlmDraftSegmentId = segment.id;
       this.profileLlmDrafts = [];
       try {
+        this.profileLlmApplyTone = 'info';
+        this.profileLlmApplyMessage = 'LLM 正在生成 Profile...';
         const body = await this.apiJson(API_BASE + '/segments/' + encodeURIComponent(segment.id) + '/profiles/generate', {
           method: 'POST',
           body: JSON.stringify({
@@ -8414,16 +8456,18 @@ function segmentCrudPanel() {
             count: this.llmForm.count,
             goal: this.llmForm.goal,
             constraints: this.llmForm.notes,
+            async_generation: true,
           }),
         });
-        this.profileLlmDrafts = (body.drafts || []).map(row => this.fromProfile({
-          ...row,
-          brand_id: row.brand_id || segment.brandId || segment.brand_id || brandOption?.id || '',
-          brand_name: row.brand_name || segment.brandName || segment.brand_name || this.llmForm.brand,
-        }));
-        this.profileLlmDraftSegmentId = segment.id;
+        if (body.pending && body.job_id) {
+          await this.pollProfileGenerationJob(segment, body.job_id, brandOption);
+        } else {
+          this.applyProfileGenerationResult(body, segment, brandOption);
+        }
       } catch (error) {
         this.profileLlmError = error.message || 'Profile generation failed';
+        this.profileLlmApplyTone = 'error';
+        this.profileLlmApplyMessage = this.profileLlmError;
       } finally {
         this.profileLlmLoading = false;
         this.refreshIcons();
@@ -8449,7 +8493,14 @@ function segmentCrudPanel() {
         this.profileLlmApplyMessage = '已加入列表：新增 ' + (body.added || 0) + '，更新 ' + (body.updated || 0) + ((body.skipped || 0) ? '，跳过 ' + body.skipped : '');
         this.setNotice('Profile drafts added: +' + (body.added || 0) + ', updated ' + (body.updated || 0));
       } catch (error) {
-        const message = error.message || 'Add Profile drafts failed';
+        const skippedRows = error.body?.skipped_rows || [];
+        const skippedHint = skippedRows.length
+          ? '：' + skippedRows.slice(0, 3).map(row => {
+              const label = row.name || row.id || ('row ' + row.index);
+              return label + ' - ' + row.error;
+            }).join('；')
+          : '';
+        const message = (error.message || 'Add Profile drafts failed') + skippedHint;
         this.profileLlmApplyTone = 'error';
         this.profileLlmApplyMessage = message;
         this.profileLlmError = message;

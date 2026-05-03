@@ -131,6 +131,64 @@ def _normalize_weight(value: Any, default: float, label: str = "weight") -> floa
     return number
 
 
+def _normalize_profile_weight(value: Any, default: float = 1.0) -> float:
+    """Profiles use relative sampling weight, not Segment share, so values may exceed 1."""
+    if value in (None, ""):
+        return default
+    try:
+        raw = str(value).strip()
+        number = float(raw.rstrip("%"))
+    except (TypeError, ValueError):
+        return default
+    if raw.endswith("%"):
+        number = number / 100.0
+    if number < 0:
+        raise SegmentProfileGenerationError("invalid_weight", "Profile weight must be non-negative")
+    return min(number, 10.0)
+
+
+def _first_non_empty(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw and raw.get(key) not in (None, ""):
+            return raw.get(key)
+    return None
+
+
+def _profile_status(value: Any) -> str:
+    status = str(value or "draft").strip().lower()
+    aliases = {
+        "enabled": "active",
+        "live": "active",
+        "启用": "active",
+        "已启用": "active",
+        "有效": "active",
+        "草稿": "draft",
+        "待审核": "draft",
+        "暂停": "paused",
+        "停用": "paused",
+    }
+    return aliases.get(status, status if status in {"active", "draft", "paused"} else "draft")
+
+
+def _coerce_persona_json(value: Any, *, demographic: str, need: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"items": value}
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                return {"items": parsed}
+        except Exception:
+            pass
+        return {"summary": text, "demographic": demographic, "need": need}
+    return {"demographic": demographic, "need": need}
+
+
 def validate_segment_candidates(items: list[dict[str, Any]], max_count: int) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         raise SegmentProfileGenerationError("invalid_llm_output", "Segment output must be a list")
@@ -177,33 +235,39 @@ def validate_profile_candidates(items: list[dict[str, Any]], max_count: int) -> 
     seen_names: set[str] = set()
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(items[:max_count], start=1):
-        _require_any(raw, "Profile id/code", "id", "code")
-        for field in ("name", "demographic", "need", "weight", "status", "persona_json"):
-            _require_any(raw, f"Profile {field}", field)
-        name = str(raw.get("name") or "").strip()
+        if not isinstance(raw, dict):
+            continue
+        name = str(_first_non_empty(raw, "name", "profile_name", "profileName", "title") or "").strip()
         if not name:
-            raise SegmentProfileGenerationError("invalid_llm_output", "Profile name is required")
+            continue
         normalized = name.lower()
         if normalized in seen_names:
-            raise SegmentProfileGenerationError("duplicate_profile_name", f"Duplicate Profile name: {name}")
+            continue
         seen_names.add(normalized)
-        status = str(raw.get("status") or "draft").strip().lower()
-        if status not in {"active", "draft", "paused"}:
-            raise SegmentProfileGenerationError("invalid_profile_status", f"Invalid Profile status: {status}")
-        if not isinstance(raw.get("persona_json"), dict):
-            raise SegmentProfileGenerationError("invalid_persona_json", "Profile persona_json must be an object")
+        demographic = str(
+            _first_non_empty(raw, "demographic", "persona", "profile", "description", "画像") or ""
+        ).strip()
+        need = str(_first_non_empty(raw, "need", "needs", "demand", "pain_point", "需求") or "").strip()
+        if not demographic or not need:
+            continue
+        profile_id = str(
+            _first_non_empty(raw, "id", "code", "profile_id", "profileId") or f"P-DRAFT-{index:03d}"
+        ).strip().upper()
+        persona_source = _first_non_empty(raw, "persona_json", "personaJson", "persona")
         rows.append(
             {
-                "id": str(raw.get("id") or raw.get("code") or f"P-DRAFT-{index:03d}").strip().upper(),
-                "code": str(raw.get("code") or raw.get("id") or f"P-DRAFT-{index:03d}").strip().upper(),
+                "id": profile_id,
+                "code": str(_first_non_empty(raw, "code", "id", "profile_id", "profileId") or profile_id).strip().upper(),
                 "name": name,
-                "demographic": str(raw.get("demographic") or "").strip(),
-                "need": str(raw.get("need") or "").strip(),
-                "weight": _normalize_weight(raw.get("weight"), 1.0, "Profile weight"),
-                "status": status,
-                "persona_json": raw.get("persona_json"),
+                "demographic": demographic,
+                "need": need,
+                "weight": _normalize_profile_weight(raw.get("weight"), 1.0),
+                "status": _profile_status(raw.get("status")),
+                "persona_json": _coerce_persona_json(persona_source, demographic=demographic, need=need),
             }
         )
+    if not rows:
+        raise SegmentProfileGenerationError("missing_llm_field", "No complete Profile drafts were returned")
     return rows
 
 
