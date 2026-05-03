@@ -4118,7 +4118,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div class="p-5 space-y-4">
                       <template x-if="queryPoolAssembling && !queryPoolAssembleError">
                         <div class="rounded-card bg-accent/5 border border-accent/20 px-3 py-2 text-[11px] text-ink-body">
-                          正在处理，结果会自动显示。
+                          <span>正在处理，结果会自动显示。</span>
+                          <span x-show="queryPoolRunStatusNotice" class="ml-2 text-ink-muted" x-text="queryPoolRunStatusNotice"></span>
                         </div>
                       </template>
                       <template x-if="queryPoolAssembleError">
@@ -8763,6 +8764,8 @@ function adminApp() {
     queryPoolAssembleError: '',
     queryPoolRunPollTimer: null,
     queryPoolRunPollDelay: 3000,
+    queryPoolRunLoadFailures: 0,
+    queryPoolRunStatusNotice: '',
     queryPoolPreflighting: false,
     queryPoolPreflightSummary: null,
     queryPoolPreflightRun: null,
@@ -12190,7 +12193,12 @@ function adminApp() {
     async loadQueryPoolRun(runId){
       const res = await fetch(API_BASE + '/admin/query-pool/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query run 加载失败');
+      if (!res.ok || body.success === false) {
+        const message = body.message || body.error || ('Query run 加载失败' + (res.status ? '（' + res.status + '）' : ''));
+        const error = new Error(message);
+        error.status = res.status || 0;
+        throw error;
+      }
       return body.run || {};
     },
 
@@ -12241,6 +12249,9 @@ function adminApp() {
         let keepPolling = false;
         try {
           const run = await this.loadQueryPoolRun(runId);
+          this.queryPoolRunLoadFailures = 0;
+          this.queryPoolRunStatusNotice = '';
+          this.queryPoolAssembleError = '';
           this.applyQueryPoolRunProgress(run);
           const assembledCount = Number(run.candidates_assembled || 0);
           if (run.status === 'completed') {
@@ -12260,7 +12271,11 @@ function adminApp() {
             keepPolling = true;
           }
         } catch (error) {
-          this.queryPoolAssembleError = error.message || 'Query run 轮询失败';
+          this.queryPoolRunLoadFailures = Number(this.queryPoolRunLoadFailures || 0) + 1;
+          this.queryPoolRunStatusNotice = this.queryPoolRunLoadFailures >= 2
+            ? '状态读取暂时失败，正在重试；候选列表会继续刷新。'
+            : '';
+          await this.loadQueryPoolCandidates();
           keepPolling = true;
         } finally {
           if (keepPolling) {
@@ -12311,6 +12326,8 @@ function adminApp() {
       const requestBody = this.queryPoolRequestPayload();
       this.clearQueryPoolRunPolling();
       this.queryPoolAssembleError = '';
+      this.queryPoolRunLoadFailures = 0;
+      this.queryPoolRunStatusNotice = '';
       this.queryPoolAssembling = true;
       this.queryPoolAssembleStarted = true;
       this.queryPoolCurrentRunId = '';
