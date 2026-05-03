@@ -214,6 +214,73 @@ def test_prompts_support_server_side_query_for_query_pool(client, monkeypatch):
     assert body["pagination"] == {"page": 4, "per_page": 25, "total": 126, "total_pages": 6}
 
 
+def test_query_pool_candidates_use_cursor_api_contract(client, monkeypatch):
+    login(monkeypatch)
+    monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
+
+    def fake_fetch(
+        cur,
+        run_id=None,
+        status=None,
+        segment_id=None,
+        profile_id=None,
+        query=None,
+        limit=100,
+        cursor=None,
+        direction="next",
+    ):
+        assert run_id == "run-1"
+        assert status == "ready"
+        assert segment_id == "seg-1"
+        assert profile_id == "profile-1"
+        assert query == "barrier"
+        assert limit == 50
+        assert cursor == "opaque-cursor"
+        assert direction == "prev"
+        return (
+            [
+                {
+                    "id": "qc-1",
+                    "run_id": "run-1",
+                    "candidate_seq": 98,
+                    "prompt_id": "prompt-1",
+                    "segment_id": "seg-1",
+                    "profile_id": "profile-1",
+                    "rendered_query": "敏感肌如何修复屏障？",
+                    "candidate_status": "ready",
+                }
+            ],
+            "next-cursor",
+            "prev-cursor",
+            100_000_000,
+        )
+
+    monkeypatch.setattr(app_mod, "_fetch_query_pool_candidates", fake_fetch)
+
+    response = client.get(
+        "/api/admin/query-pool/candidates"
+        "?run_id=run-1&status=ready&segment_id=seg-1&profile_id=profile-1"
+        "&q=barrier&limit=50&cursor=opaque-cursor&direction=prev"
+    )
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["rows"][0]["rendered_query"] == "敏感肌如何修复屏障？"
+    assert body["next_cursor"] == "next-cursor"
+    assert body["prev_cursor"] == "prev-cursor"
+    assert body["approx_total"] == 100_000_000
+
+
+def test_query_pool_candidates_validate_status(client, monkeypatch):
+    login(monkeypatch)
+
+    response = client.get("/api/admin/query-pool/candidates?status=running")
+    body = response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "invalid_status"
+
+
 def test_generate_requires_topic_selection(client, monkeypatch):
     login(monkeypatch)
     monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())

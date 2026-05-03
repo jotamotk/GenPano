@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 ADMIN_TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "admin.html"
+ADMIN_PRD = Path(__file__).resolve().parents[2] / "docs" / "ADMIN_PRD_B_PIPELINE.md"
 
 
 def test_prompt_matrix_template_uses_real_api_hooks():
@@ -97,6 +98,105 @@ def test_query_pool_budget_cap_is_numeric_input():
     assert 'x-model.number="queryPoolConfig.budgetCap"' in html
     assert 'type="number" min="1" step="10"' in html
     assert 'x-model="queryPoolConfig.budgetCap"' not in html
+
+
+def test_query_pool_uses_engine_policy_instead_of_engine_count():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert "desiredEnginePolicy" in html
+    for policy in (
+        "inherit",
+        "balanced",
+        "quality_first",
+        "cost_guarded",
+        "coverage_first",
+        "domestic_only",
+        "global_only",
+        "benchmark_panel",
+    ):
+        assert f'value="{policy}"' in html or f"'{policy}'" in html
+    assert "queryPoolConfig.engineCount" not in html
+
+
+def test_query_pool_estimates_candidates_without_engine_expansion():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert "候选就绪" in html
+    assert "已选 Prompt x 每 Prompt Profile" in html
+    assert "return promptCount * profiles;" in html
+    assert "promptCount * profiles * engines" not in html
+
+
+def test_query_pool_kpis_are_candidate_quality_not_execution_success():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    for label in (
+        "候选就绪",
+        "渲染通过率",
+        "Segment 覆盖",
+        "Profile 覆盖",
+        "重复待审",
+        "调度接收",
+    ):
+        assert label in html
+    query_pool_section = html[html.index("Query Pool") :]
+    assert "Engine Success Rate" not in query_pool_section
+    assert "Per-Segment Execution Success" not in query_pool_section
+
+
+def test_query_pool_candidate_list_is_server_paginated_for_large_volume():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert "loadQueryPoolCandidates()" in html
+    assert "API_BASE + '/admin/query-pool/candidates?'" in html
+    assert "API_BASE + '/admin/query-pool/assemble'" in html
+    assert "queryPoolCurrentRunId" in html
+    assert "queryPoolCandidateRows: []" in html
+    assert "queryPoolCandidateCursor" in html
+    assert "queryPoolCandidatePageRangeText()" in html
+    assert "当前窗口" in html
+    assert "服务端游标分页" in html
+    candidate_section = html[html.index("Query 候选列表") :]
+    assert 'x-for="q in queryPoolCandidateRows"' in candidate_section
+    assert 'x-for="q in queryDetailList"' not in candidate_section
+    loader_section = html[html.index("async loadQueryPoolCandidates") : html.index("openQueryPoolPanel")]
+    assert "this.queryDetailList" not in loader_section
+    assert "filteredRows" not in loader_section
+
+
+def test_query_pool_visible_copy_is_chinese():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    query_pool_section = html[html.index("Query Pool") : html.index("<!-- ============ PAGE: PIPELINE PROXY")]
+    for phrase in (
+        "Candidate Assembly",
+        "Candidate Ready",
+        "Render Pass Rate",
+        "Profile Coverage",
+        "Duplicate Review",
+        "Scheduler Intake",
+        "Candidate Quality",
+        "Query Candidate List",
+        "Search prompt, segment, text",
+        "Profiles per Prompt",
+        "Routing intent",
+        "Engine policy:",
+        "Loading candidates",
+        "No candidates",
+        " candidates",
+        "candidate pool",
+        "Prompt load failed",
+    ):
+        assert phrase not in query_pool_section
+
+
+def test_prd_defines_large_scale_query_candidate_contract():
+    prd = ADMIN_PRD.read_text(encoding="utf-8")
+    assert "100M to 1B+ rows" in prd
+    assert "server-side cursor/keyset pagination" in prd
+    assert "query_generation_candidates" in prd
+    assert "POST /api/admin/query-pool/preflight" in prd
+    assert "POST /api/admin/query-pool/assemble" in prd
+    assert "GET /api/admin/query-pool/candidates" in prd
+    assert "POST /api/admin/query-pool/candidates/:id/review" in prd
+    assert "GET /admin/api/v1/pipeline/query-pool/candidates" in prd
+    assert "Do not use offset pagination for large runs" in prd
+    assert "Prompt x Segment x Profile candidate" in prd
 
 
 def test_profile_groups_are_labeled_as_segments_with_profile_drilldown():

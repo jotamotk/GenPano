@@ -214,18 +214,18 @@ CREATE TABLE pipeline_global_pause (
   - "审查候选" → 页面内展开候选 Prompt 审核表，可通过 / 拒绝。
 - **CTA 规则**: 主页面只保留一个主要"生成 Prompt"入口；统计/KPI 区不再重复放同名按钮。
 - **运营视图**: 总 Prompt、覆盖率、无 Prompt Topic、Intent 分布、语言分布、Prompt 内容列表保留。
+### Tab 3: Query 组装 / Query Pool
 
-### Tab 3: Query 组装
-
-- **组装配置**: 直接选择本次要入池的 Prompt 列表，支持搜索、全选、清空；配置项包含人群采样、引擎策略、预算上限、入队窗口、去重策略、执行优先级。
-- **数量把控**: 每 Prompt Profile 数、Engine 数、总 Query 上限、超出上限策略。预计组装量按 `selected_prompts × profiles_per_prompt × engine_count` 计算。
-- **预检状态**: 渲染成功、画像覆盖、引擎可用、成本上限。主页面用运营语言描述影响，不显示内部路由状态或字段名。
+- **组装配置**: Query Pool 选择 Prompt 行，并配置 Segment/Profile 采样、`desired_engine_policy`、预算上限、入队窗口、去重策略和优先级。它不选择具体引擎数量，也不暴露每引擎执行控制。
+- **数量控制**: 候选量为 `selected_prompts x profiles_per_prompt`，并受 `max_candidates` 上限保护。引擎展开、每引擎配额、并发、限速、账号/代理分配和重试都属于 Scheduler。
+- **预检状态**: 页面展示「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」。引擎成功率、按 Segment 的执行成功率、账号水位、代理失败率属于 Scheduler/Tracker。
 - **按钮流程**:
-  - "预估成本" → 页面内展开按 Engine 的 Query 数、单价和成本预估。
-  - "组装 Query" → 页面内展开组装任务面板，展示 Prompt 校验、画像采样、Query 渲染、预检入池。
-  - "预检报告" → 页面内展开模板变量、重复 Query、账号水位、成本上限等检查结果。
-- **CTA 规则**: 主页面只保留一个主要"组装 Query"入口；统计/KPI 区不再重复放同名按钮。
-- **运营视图**: 总 Query、今日新增、待执行、执行中、已完成、失败、Query 列表和每引擎暂停 / 恢复控制保留。
+  - 「预估成本」打开候选级粗估，并明确具体引擎成本延后到 Scheduler 估算。
+  - 「组装 Query」展示 Prompt 校验、Segment/Profile 采样、Query 候选渲染和调度接收。
+  - 「预检报告」展示模板变量、重复候选、Segment 权重和调度接收检查。
+- **CTA 规则**: 主页面只保留一个主要「组装 Query」入口；KPI 区不重复放同名 CTA。
+- **运营视图**: 保留「候选就绪」「渲染通过率」「Segment 覆盖」「Profile 覆盖」「重复待审」「调度接收」和「Query 候选列表」。queued/running/completed/failed 执行指标和每引擎暂停/恢复控制移动到 Scheduler/Tracker。
+- **候选列表规模**: Query 候选列表必须支持 100M to 1B+ rows。它只渲染当前服务端游标窗口，使用 server-side cursor/keyset pagination，并在服务端运行搜索、状态、Segment、Profile 过滤。UI 不能加载全部候选、不能 deep-offset paginate、不能在浏览器内存里保留完整 `queryDetailList`。总数可以是 approximate。
 
 **数据模型**:
 Topic Plan 复用 §1.1 `planner_runs`，需记录 `industry_id`、`category_id`、`brand_ids`、`max_per_brand`、`max_topics`、`gap_priority`、`overflow_policy`、`topics_generated`、`pending_candidates`、`coverage_snapshot`。
@@ -261,12 +261,12 @@ CREATE TABLE query_generation_runs (
   prompt_ids UUID[] NOT NULL,
   segment_ids_selected UUID[],
   profiles_per_prompt INT NOT NULL DEFAULT 3,
-  engine_count INT NOT NULL DEFAULT 2,
-  engine_filter TEXT[],
-  max_queries INT NOT NULL DEFAULT 12000,
+  desired_engine_policy TEXT NOT NULL DEFAULT 'inherit',
+  engine_panel_id TEXT,
+  max_candidates INT NOT NULL DEFAULT 12000,
   overflow_policy TEXT NOT NULL DEFAULT 'split',
-  queries_estimated INT DEFAULT 0,
-  queries_assembled INT DEFAULT 0,
+  candidates_estimated INT DEFAULT 0,
+  candidates_assembled INT DEFAULT 0,
   estimated_cost NUMERIC,
   preflight_summary JSONB,
   started_at TIMESTAMPTZ,
@@ -276,14 +276,43 @@ CREATE TABLE query_generation_runs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE query_generation_candidates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id UUID NOT NULL REFERENCES query_generation_runs(id),
+  candidate_seq BIGINT NOT NULL,
+  prompt_id UUID NOT NULL,
+  segment_id UUID,
+  profile_id UUID,
+  rendered_query TEXT NOT NULL,
+  render_hash TEXT NOT NULL,
+  candidate_status TEXT NOT NULL DEFAULT 'candidate',
+  scheduler_intake_batch_id UUID,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (run_id, candidate_seq)
+);
+
 CREATE INDEX ON prompt_generation_runs (created_at DESC);
 CREATE INDEX ON query_generation_runs (created_at DESC);
+CREATE INDEX ON query_generation_candidates (run_id, candidate_seq);
+CREATE INDEX ON query_generation_candidates (run_id, candidate_status, candidate_seq);
+CREATE INDEX ON query_generation_candidates (run_id, segment_id, profile_id, candidate_seq);
 ```
+
+**Query Candidate pagination contract**:
+- `POST /api/admin/query-pool/preflight` 使用同一组装逻辑做 dry-run，返回候选预估、预检摘要和 Scheduler Intake 状态，不写入 run/candidate。
+- `POST /api/admin/query-pool/assemble` 创建 `query_generation_runs`，按 Segment/Profile 权重采样并写入 `query_generation_candidates`。返回 `{ success, run }`，其中 `run.id` 作为后续候选列表的 `run_id`。
+- `GET /api/admin/query-pool/runs` 和 `GET /api/admin/query-pool/runs/:id` 读取最近组装运行与单次运行详情。
+- Admin 页面调用 `GET /api/admin/query-pool/candidates?run_id=&status=&segment_id=&profile_id=&q=&limit=&cursor=&direction=`，返回 `{ success, rows, next_cursor, prev_cursor, approx_total }`。
+- `POST /api/admin/query-pool/candidates/:id/review` 与 `POST /api/admin/query-pool/candidates/bulk-review` 将候选状态更新为 `candidate | review | ready`，只改变候选审核状态，不创建 Scheduler dispatch job。
+- 产品网关兼容 `GET /admin/api/v1/pipeline/query-pool/candidates?run_id=&status=&segment_id=&profile_id=&q=&limit=&cursor=&direction=`，返回同一结构。
+- Cursor is keyset-based, opaque to the client, and ordered by `(run_id, candidate_seq)` or an equivalent sharded monotonic key. Do not use offset pagination for large runs.
+- Candidate storage should be partitioned by `run_id` or time bucket plus project/industry when needed; cold partitions can move to cheaper storage while the current run remains queryable.
+- Search can use a bounded text index over `render_hash`, prompt id, Segment/Profile ids, and rendered text snippets; exact full corpus export belongs to offline jobs, not the Admin list.
 
 **边界**:
 - 某 Intent 的 Prompt 生成失败率 > 20% → 自动标 warning
 - Prompt / Query 预计生成量超过上限 → 按 overflow_policy 自动拆批或进入审批
-- Query 组装预估 > 10000 → 后端自动分批（max 5000/batch）
+- Query 组装预估超过 `max_candidates` → 后端按 `overflow_policy` 自动拆批或进入审批；列表仍通过 cursor 读取当前窗口
 - Prompt 版本已 deactivated → 新 Query 不绑定
 - 主页面禁止展示 `*_run`、`*_candidates`、`*_release_set`、`rendered_queries` 等内部对象名；需要排障时从运行记录进入 Debug 抽屉
 
@@ -350,7 +379,7 @@ CREATE TABLE prompt_ab_experiments (
 
 ## 1.4 Segment & Profile `/admin/planner-profiles`
 
-**目的**。Segment 是 Query 采样的人群分层，Profile 是某个 Segment 下的具体用户画像。Admin 操作者需要先管理品牌/行业对应的 Segment，再进入单个 Segment 管理 Profile 池，供 Query Pool 在 `Prompt × Profile × Engine` 组装时采样。产品 UI 统一使用 **Segment**，不再对运营展示 `ProfileGroup`。
+**目的**。Segment 是 Query 采样的人群分层，Profile 是某个 Segment 下的具体用户画像。Admin 操作者需要先管理品牌/行业对应的 Segment，再进入单个 Segment 管理 Profile 池，供 Query Pool 在 `Prompt x Segment x Profile candidate` 组装时采样。产品 UI 统一使用 **Segment**，不再对运营展示 `ProfileGroup`。
 
 **当前 Admin 前端 IA**:
 1. **Segment 列表页**:

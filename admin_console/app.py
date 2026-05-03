@@ -6,6 +6,8 @@ import re
 import sys
 import uuid
 import json
+import base64
+import hashlib
 import threading
 from datetime import datetime, timedelta
 from urllib.parse import quote, unquote, urlparse
@@ -202,7 +204,11 @@ def _configure_database_url(url):
     DB_NAME = unquote(parsed.path.lstrip("/"))
 
 
-_configure_database_url(_database_url_from_environment())
+def _configure_database_url_from_env():
+    _configure_database_url(_database_url_from_environment())
+
+
+_configure_database_url_from_env()
 
 # HTML debug files directory
 SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "/data/screenshots")
@@ -1046,6 +1052,92 @@ def _ensure_prompt_matrix_tables():
                     cur.execute("ALTER TABLE prompts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()")
             conn.commit()
             print("DB migration: prompt matrix tables ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+def _ensure_query_pool_tables():
+    """Ensure additive Query Pool candidate tables used by the Admin prototype."""
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS query_generation_runs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        admin_id VARCHAR(36),
+                        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+                        request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        prompt_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        segment_ids_selected JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        profiles_per_prompt INTEGER NOT NULL DEFAULT 3,
+                        desired_engine_policy VARCHAR(64) NOT NULL DEFAULT 'inherit',
+                        engine_panel_id VARCHAR(128),
+                        max_candidates INTEGER NOT NULL DEFAULT 12000,
+                        overflow_policy VARCHAR(32) NOT NULL DEFAULT 'split',
+                        candidates_estimated INTEGER NOT NULL DEFAULT 0,
+                        candidates_assembled INTEGER NOT NULL DEFAULT 0,
+                        estimated_cost NUMERIC,
+                        preflight_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_query_generation_runs_created
+                    ON query_generation_runs (created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS query_generation_candidates (
+                        id VARCHAR(36) PRIMARY KEY,
+                        run_id VARCHAR(36) NOT NULL REFERENCES query_generation_runs(id),
+                        candidate_seq BIGINT NOT NULL,
+                        prompt_id VARCHAR(64) NOT NULL,
+                        segment_id VARCHAR(64),
+                        profile_id VARCHAR(64),
+                        rendered_query TEXT NOT NULL,
+                        render_hash VARCHAR(128) NOT NULL,
+                        candidate_status VARCHAR(16) NOT NULL DEFAULT 'candidate'
+                            CHECK (candidate_status IN ('candidate', 'review', 'ready')),
+                        scheduler_intake_batch_id VARCHAR(64),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        UNIQUE (run_id, candidate_seq)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_query_candidates_run_seq
+                    ON query_generation_candidates (run_id, candidate_seq)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_query_candidates_run_status_seq
+                    ON query_generation_candidates (run_id, candidate_status, candidate_seq)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_query_candidates_run_segment_profile_seq
+                    ON query_generation_candidates (run_id, segment_id, profile_id, candidate_seq)
+                    """
+                )
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT")
+            conn.commit()
+            print("DB migration: Query Pool tables ensured")
         finally:
             conn.close()
     except Exception as e:
@@ -2215,6 +2307,700 @@ def _prompt_matrix_candidate_status_counts(cur, query=None):
             counts[status] = count
         counts["all"] += count
     return counts
+
+
+def _query_pool_encode_cursor(candidate_seq):
+    if candidate_seq is None:
+        return None
+    payload = json.dumps(
+        {"candidate_seq": int(candidate_seq)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _query_pool_decode_cursor(cursor):
+    if not cursor:
+        return None
+    try:
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        return int(payload["candidate_seq"])
+    except Exception as exc:
+        raise ValueError("invalid_cursor") from exc
+
+
+def _latest_query_generation_run_id(cur):
+    if not _table_exists(cur, "query_generation_runs"):
+        return None
+    cur.execute(
+        """
+        SELECT id
+        FROM query_generation_runs
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return str(row.get("id") if isinstance(row, dict) else row[0])
+
+
+QUERY_POOL_ENGINE_POLICIES = {
+    "inherit",
+    "balanced",
+    "quality_first",
+    "cost_guarded",
+    "coverage_first",
+    "domestic_only",
+    "global_only",
+    "benchmark_panel",
+}
+QUERY_POOL_PROFILE_STRATEGIES = {"balanced", "core", "full"}
+QUERY_POOL_OVERFLOW_POLICIES = {"split", "hold"}
+QUERY_POOL_CANDIDATE_STATUSES = {"candidate", "review", "ready"}
+
+
+def _query_pool_candidate_row(row):
+    item = dict(row)
+    candidate_seq = item.get("candidate_seq")
+    return {
+        "id": str(item.get("id")),
+        "run_id": str(item.get("run_id")),
+        "candidate_seq": int(candidate_seq or 0),
+        "prompt_id": str(item.get("prompt_id") or ""),
+        "segment_id": str(item.get("segment_id") or ""),
+        "profile_id": str(item.get("profile_id") or ""),
+        "segment_name": item.get("segment_name") or "",
+        "profile_name": item.get("profile_name") or "",
+        "profile_demographic": item.get("profile_demographic") or "",
+        "profile_need": item.get("profile_need") or "",
+        "rendered_query": item.get("rendered_query") or "",
+        "candidate_status": item.get("candidate_status") or "candidate",
+        "scheduler_intake_batch_id": item.get("scheduler_intake_batch_id"),
+        "reviewed_by": item.get("reviewed_by"),
+        "reviewed_at": _isoformat(item.get("reviewed_at")),
+        "review_reason": item.get("review_reason") or "",
+        "created_at": _isoformat(item.get("created_at")),
+    }
+
+
+def _fetch_query_pool_candidates(
+    cur,
+    run_id=None,
+    status=None,
+    segment_id=None,
+    profile_id=None,
+    query=None,
+    limit=100,
+    cursor=None,
+    direction="next",
+):
+    if not _table_exists(cur, "query_generation_candidates"):
+        return [], None, None, 0
+
+    run_id = (run_id or "").strip() or _latest_query_generation_run_id(cur)
+    if not run_id:
+        return [], None, None, 0
+
+    clauses = ["run_id = %s"]
+    params = [run_id]
+    status = (status or "").strip().lower()
+    if status and status != "all":
+        clauses.append("candidate_status = %s")
+        params.append(status)
+    if segment_id:
+        clauses.append("segment_id = %s")
+        params.append(segment_id)
+    if profile_id:
+        clauses.append("profile_id = %s")
+        params.append(profile_id)
+    if query:
+        like = f"%{query}%"
+        clauses.append(
+            """
+            (
+                rendered_query ILIKE %s
+                OR prompt_id ILIKE %s
+                OR COALESCE(segment_id, '') ILIKE %s
+                OR COALESCE(profile_id, '') ILIKE %s
+            )
+            """
+        )
+        params.extend([like, like, like, like])
+
+    where_clause = " AND ".join(clauses)
+    cur.execute(
+        f"""
+        SELECT COUNT(*)::bigint AS count
+        FROM query_generation_candidates
+        WHERE {where_clause}
+        """,
+        params,
+    )
+    total_row = cur.fetchone()
+    approx_total = int((total_row.get("count") if isinstance(total_row, dict) else total_row[0]) or 0)
+
+    cursor_seq = _query_pool_decode_cursor(cursor)
+    page_clauses = list(clauses)
+    page_params = list(params)
+    direction = "prev" if direction == "prev" else "next"
+    order = "DESC" if direction == "prev" else "ASC"
+    if cursor_seq is not None:
+        page_clauses.append("candidate_seq < %s" if direction == "prev" else "candidate_seq > %s")
+        page_params.append(cursor_seq)
+    alias_page_clauses = []
+    for clause in page_clauses:
+        if clause.startswith(("run_id", "candidate_status", "segment_id", "profile_id", "candidate_seq")):
+            alias_page_clauses.append("q." + clause)
+        else:
+            alias_page_clauses.append(
+                clause.replace("rendered_query", "q.rendered_query")
+                .replace("prompt_id", "q.prompt_id")
+                .replace("segment_id", "q.segment_id")
+                .replace("profile_id", "q.profile_id")
+            )
+    page_where_clause = " AND ".join(alias_page_clauses)
+
+    cur.execute(
+        f"""
+        SELECT q.id, q.run_id, q.candidate_seq, q.prompt_id, q.segment_id, q.profile_id,
+               q.rendered_query, q.candidate_status, q.scheduler_intake_batch_id,
+               q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
+               s.name AS segment_name,
+               p.name AS profile_name,
+               p.demographic AS profile_demographic,
+               p.need AS profile_need
+        FROM query_generation_candidates q
+        LEFT JOIN segments s ON s.id = q.segment_id
+        LEFT JOIN profiles p ON p.segment_id = q.segment_id
+          AND (COALESCE(p.code, '') = q.profile_id OR CAST(p.id AS TEXT) = q.profile_id)
+        WHERE {page_where_clause}
+        ORDER BY q.candidate_seq {order}
+        LIMIT %s
+        """,
+        page_params + [limit + 1],
+    )
+    raw_rows = cur.fetchall()
+    has_more = len(raw_rows) > limit
+    raw_rows = raw_rows[:limit]
+    if direction == "prev":
+        raw_rows = list(reversed(raw_rows))
+
+    rows = [_query_pool_candidate_row(row) for row in raw_rows]
+    if not rows:
+        return [], None, None, approx_total
+
+    first_seq = rows[0]["candidate_seq"]
+    last_seq = rows[-1]["candidate_seq"]
+    if direction == "prev":
+        prev_cursor = _query_pool_encode_cursor(first_seq) if has_more else None
+        next_cursor = _query_pool_encode_cursor(last_seq)
+    else:
+        prev_cursor = _query_pool_encode_cursor(first_seq) if cursor_seq is not None else None
+        next_cursor = _query_pool_encode_cursor(last_seq) if has_more else None
+    return rows, next_cursor, prev_cursor, approx_total
+
+
+def _query_pool_config(payload):
+    raw = payload.get("config") if isinstance(payload.get("config"), dict) else payload
+    profiles_per_prompt = _clamp_int(
+        raw.get("profiles_per_prompt") or raw.get("profilesPerPrompt"),
+        3,
+        1,
+        50,
+    )
+    max_candidates = _clamp_int(raw.get("max_candidates") or raw.get("maxQueries"), 12000, 1, 1_000_000)
+    desired_engine_policy = str(raw.get("desired_engine_policy") or raw.get("desiredEnginePolicy") or "inherit").strip()
+    if desired_engine_policy not in QUERY_POOL_ENGINE_POLICIES:
+        raise ValueError("invalid_desired_engine_policy")
+    profile_strategy = str(raw.get("profile_strategy") or raw.get("profileStrategy") or "balanced").strip()
+    if profile_strategy not in QUERY_POOL_PROFILE_STRATEGIES:
+        raise ValueError("invalid_profile_strategy")
+    overflow_policy = str(raw.get("overflow_policy") or raw.get("overflowPolicy") or "split").strip()
+    if overflow_policy not in QUERY_POOL_OVERFLOW_POLICIES:
+        raise ValueError("invalid_overflow_policy")
+    return {
+        "profiles_per_prompt": profiles_per_prompt,
+        "profile_strategy": profile_strategy,
+        "desired_engine_policy": desired_engine_policy,
+        "engine_panel_id": str(raw.get("engine_panel_id") or raw.get("enginePanelId") or "").strip() or None,
+        "max_candidates": max_candidates,
+        "overflow_policy": overflow_policy,
+        "budget_cap": _admin_float(raw.get("budget_cap") or raw.get("budgetCap"), 0),
+        "intake_window": str(raw.get("intake_window") or raw.get("scheduleWindow") or "next").strip(),
+        "dedupe_policy": str(raw.get("dedupe_policy") or raw.get("dedupePolicy") or "merge").strip(),
+        "priority_mode": str(raw.get("priority_mode") or raw.get("priorityMode") or "gap").strip(),
+    }
+
+
+def _query_pool_selection_payload(payload):
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    mode = selection.get("mode") or payload.get("mode") or "explicit"
+    if mode == "filtered":
+        excluded = [str(item).strip() for item in (selection.get("excluded_prompt_ids") or []) if str(item).strip()]
+        return {
+            "mode": "filtered",
+            "filters": selection.get("filters") or payload.get("filters") or {},
+            "excluded_prompt_ids": list(dict.fromkeys(excluded)),
+        }
+    prompt_ids = selection.get("prompt_ids") or payload.get("prompt_ids") or []
+    prompt_ids = [str(item).strip() for item in prompt_ids if str(item).strip()]
+    return {"mode": "explicit", "prompt_ids": list(dict.fromkeys(prompt_ids))}
+
+
+def _query_pool_prompt_ids_from_selection(cur, selection, max_prompts):
+    if selection["mode"] == "explicit":
+        return selection["prompt_ids"]
+    filters = selection.get("filters") or {}
+    intent = (filters.get("intent") or "").strip().lower()
+    language = (filters.get("language") or filters.get("lang") or "").strip()
+    query = (filters.get("q") or filters.get("query") or "").strip()
+    excluded = set(selection.get("excluded_prompt_ids") or [])
+    if not _table_exists(cur, "prompts"):
+        return []
+    prompt_cols = _table_columns(cur, "prompts")
+    if "id" not in prompt_cols:
+        return []
+    where = []
+    params = []
+    if intent and "intent" in prompt_cols:
+        where.append("p.intent = %s")
+        params.append(intent)
+    if language and "language" in prompt_cols:
+        where.append("p.language = %s")
+        params.append(language)
+    if query:
+        like = f"%{query}%"
+        where.append("(p.text ILIKE %s OR CAST(p.id AS TEXT) ILIKE %s)")
+        params.extend([like, like])
+    if "status" in prompt_cols:
+        where.append("COALESCE(p.status, 'active') = 'active'")
+    where_clause = "WHERE " + " AND ".join(where) if where else ""
+    cur.execute(
+        f"""
+        SELECT CAST(p.id AS TEXT) AS id
+        FROM prompts p
+        {where_clause}
+        ORDER BY p.id
+        LIMIT %s
+        """,
+        params + [max_prompts],
+    )
+    return [str(row["id"]) for row in cur.fetchall() if str(row["id"]) not in excluded]
+
+
+def _fetch_query_pool_prompt_rows(cur, prompt_ids):
+    prompt_ids = [str(item).strip() for item in prompt_ids if str(item).strip()]
+    if not prompt_ids or not _table_exists(cur, "prompts"):
+        return []
+    prompt_cols = _table_columns(cur, "prompts")
+    if not {"id", "text"}.issubset(prompt_cols):
+        return []
+    topic_join = ""
+    topic_select = "NULL::text AS topic_text"
+    if "topic_id" in prompt_cols and _table_exists(cur, "topics") and "id" in _table_columns(cur, "topics"):
+        topic_join = "LEFT JOIN topics t ON t.id = p.topic_id"
+        topic_select = "t.text AS topic_text"
+    topic_id_select = "p.topic_id" if "topic_id" in prompt_cols else "NULL::text AS topic_id"
+    status_where = "AND COALESCE(p.status, 'active') = 'active'" if "status" in prompt_cols else ""
+    cur.execute(
+        f"""
+        SELECT CAST(p.id AS TEXT) AS id, {topic_id_select}, p.text, {topic_select}
+        FROM prompts p
+        {topic_join}
+        WHERE CAST(p.id AS TEXT) = ANY(%s)
+        {status_where}
+        """,
+        (prompt_ids,),
+    )
+    rows_by_id = {str(row["id"]): dict(row) for row in cur.fetchall()}
+    return [rows_by_id[prompt_id] for prompt_id in prompt_ids if prompt_id in rows_by_id]
+
+
+def _fetch_query_pool_profile_pool(cur, segment_ids=None):
+    if not _table_exists(cur, "segments") or not _table_exists(cur, "profiles"):
+        return []
+    segment_ids = [str(item).strip().upper() for item in (segment_ids or []) if str(item).strip()]
+    where = [
+        "COALESCE(s.is_deleted, FALSE) = FALSE",
+        "COALESCE(p.is_deleted, FALSE) = FALSE",
+        "COALESCE(s.status, 'draft') = 'active'",
+        "COALESCE(p.status, 'draft') = 'active'",
+        "COALESCE(s.weight, 0) > 0",
+        "COALESCE(p.weight, 0) > 0",
+    ]
+    params = []
+    if segment_ids:
+        where.append("s.id = ANY(%s)")
+        params.append(segment_ids)
+    cur.execute(
+        f"""
+        SELECT
+            s.id AS segment_id,
+            s.name AS segment_name,
+            COALESCE(s.weight, 0) AS segment_weight,
+            COALESCE(p.code, CAST(p.id AS TEXT)) AS profile_id,
+            p.name AS profile_name,
+            p.demographic AS profile_demographic,
+            p.need AS profile_need,
+            COALESCE(p.weight, 0) AS profile_weight
+        FROM segments s
+        JOIN profiles p ON p.segment_id = s.id
+        WHERE {" AND ".join(where)}
+        ORDER BY s.weight DESC, p.weight DESC, s.id, p.id
+        """,
+        params,
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def _query_pool_weight(row):
+    return max(float(row.get("segment_weight") or 0), 0.0) * max(float(row.get("profile_weight") or 0), 0.0)
+
+
+def _query_pool_stable_rank(row, seed):
+    identity = f"{seed}|{row.get('segment_id')}|{row.get('profile_id')}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return int(digest[:12], 16)
+
+
+def _sample_query_pool_profiles(profile_pool, count, strategy="balanced", seed=""):
+    count = max(int(count or 0), 0)
+    if count <= 0:
+        return []
+    valid = [dict(row) for row in profile_pool if _query_pool_weight(row) > 0]
+    if not valid:
+        return []
+    if strategy == "core":
+        max_segment_weight = max(float(row.get("segment_weight") or 0) for row in valid)
+        valid = [row for row in valid if float(row.get("segment_weight") or 0) == max_segment_weight]
+
+    def weighted_key(row):
+        return (-_query_pool_weight(row), _query_pool_stable_rank(row, seed), str(row.get("profile_id") or ""))
+
+    if strategy == "full":
+        chosen = []
+        seen_profiles = set()
+        groups = {}
+        for row in valid:
+            groups.setdefault(row.get("segment_id"), []).append(row)
+        for _segment_id, rows in sorted(
+            groups.items(),
+            key=lambda item: (-max(_query_pool_weight(row) for row in item[1]), str(item[0] or "")),
+        ):
+            best = sorted(rows, key=weighted_key)[0]
+            chosen.append(best)
+            seen_profiles.add(best.get("profile_id"))
+            if len(chosen) >= count:
+                return chosen
+        for row in sorted(valid, key=weighted_key):
+            if row.get("profile_id") in seen_profiles:
+                continue
+            chosen.append(row)
+            if len(chosen) >= count:
+                break
+        return chosen
+
+    return sorted(valid, key=weighted_key)[:count]
+
+
+def _render_query_pool_candidate(prompt, segment, profile):
+    template = (prompt.get("templateText") or prompt.get("text") or "").strip()
+    variables = {
+        "segment": segment.get("segment_name") or segment.get("name") or segment.get("segment_id") or "",
+        "segment_name": segment.get("segment_name") or segment.get("name") or segment.get("segment_id") or "",
+        "segment_id": segment.get("segment_id") or "",
+        "profile": profile.get("profile_name") or profile.get("name") or profile.get("profile_id") or "",
+        "profile_name": profile.get("profile_name") or profile.get("name") or profile.get("profile_id") or "",
+        "profile_id": profile.get("profile_id") or "",
+        "profile_demographic": profile.get("profile_demographic") or profile.get("demographic") or "",
+        "profile_need": profile.get("profile_need") or profile.get("need") or "",
+    }
+    placeholder_seen = False
+
+    def replace(match):
+        nonlocal placeholder_seen
+        key = match.group(1) or match.group(2)
+        if key in variables:
+            placeholder_seen = True
+            return str(variables[key])
+        return match.group(0)
+
+    rendered = re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}", replace, template)
+    if placeholder_seen:
+        return rendered.strip()
+    context = "；".join(
+        item
+        for item in [
+            variables["segment_name"],
+            variables["profile_name"],
+            variables["profile_demographic"],
+            f"需求：{variables['profile_need']}" if variables["profile_need"] else "",
+        ]
+        if item
+    )
+    return f"{template}\n\n用户画像：{context}".strip() if context else template
+
+
+def _build_query_pool_candidates(prompt_rows, profile_pool, config):
+    profiles_per_prompt = int(config["profiles_per_prompt"])
+    max_candidates = int(config["max_candidates"])
+    raw_estimated = len(prompt_rows) * profiles_per_prompt
+    if raw_estimated > max_candidates and config["overflow_policy"] == "hold":
+        raise ValueError("query_pool_candidate_cap_exceeded")
+
+    candidates = []
+    render_failures = 0
+    duplicate_review = 0
+    seen_hashes = set()
+    represented_segments = set()
+    represented_profiles = set()
+    for prompt in prompt_rows:
+        sampled_profiles = _sample_query_pool_profiles(
+            profile_pool,
+            profiles_per_prompt,
+            strategy=config["profile_strategy"],
+            seed=str(prompt.get("id")),
+        )
+        for profile in sampled_profiles:
+            if len(candidates) >= max_candidates:
+                break
+            segment = {
+                "segment_id": profile.get("segment_id"),
+                "segment_name": profile.get("segment_name"),
+            }
+            rendered_query = _render_query_pool_candidate(prompt, segment, profile)
+            if not rendered_query:
+                render_failures += 1
+                continue
+            render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
+            if render_hash in seen_hashes:
+                duplicate_review += 1
+                continue
+            seen_hashes.add(render_hash)
+            represented_segments.add(profile.get("segment_id"))
+            represented_profiles.add(profile.get("profile_id"))
+            candidates.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "candidate_seq": len(candidates) + 1,
+                    "prompt_id": str(prompt.get("id")),
+                    "segment_id": str(profile.get("segment_id") or ""),
+                    "profile_id": str(profile.get("profile_id") or ""),
+                    "rendered_query": rendered_query,
+                    "render_hash": render_hash,
+                    "candidate_status": "candidate",
+                }
+            )
+
+    active_segments = {row.get("segment_id") for row in profile_pool if _query_pool_weight(row) > 0}
+    active_profiles = {row.get("profile_id") for row in profile_pool if _query_pool_weight(row) > 0}
+    assembled = len(candidates)
+    attempted = assembled + render_failures + duplicate_review
+    preflight_summary = {
+        "candidate_ready": assembled,
+        "render_pass_rate": round(assembled / attempted, 4) if attempted else 0,
+        "segment_coverage": round(len(represented_segments) / len(active_segments), 4) if active_segments else 0,
+        "profile_coverage": round(len(represented_profiles) / len(active_profiles), 4) if active_profiles else 0,
+        "profiles_per_prompt": profiles_per_prompt,
+        "duplicate_review": duplicate_review,
+        "render_failures": render_failures,
+        "scheduler_intake": "ready" if assembled else "blocked",
+        "candidate_cap_reached": raw_estimated > max_candidates,
+        "raw_candidates_estimated": raw_estimated,
+    }
+    return candidates, preflight_summary
+
+
+def _query_pool_run_row(row):
+    item = dict(row)
+    return {
+        "id": item.get("id"),
+        "status": item.get("status"),
+        "admin_id": item.get("admin_id"),
+        "request_config": _admin_json(item.get("request_config"), {}) or {},
+        "prompt_ids": _admin_json(item.get("prompt_ids"), []) or [],
+        "segment_ids_selected": _admin_json(item.get("segment_ids_selected"), []) or [],
+        "profiles_per_prompt": int(item.get("profiles_per_prompt") or 0),
+        "desired_engine_policy": item.get("desired_engine_policy") or "inherit",
+        "engine_panel_id": item.get("engine_panel_id"),
+        "max_candidates": int(item.get("max_candidates") or 0),
+        "overflow_policy": item.get("overflow_policy") or "split",
+        "candidates_estimated": int(item.get("candidates_estimated") or 0),
+        "candidates_assembled": int(item.get("candidates_assembled") or 0),
+        "estimated_cost": float(item.get("estimated_cost") or 0),
+        "preflight_summary": _admin_json(item.get("preflight_summary"), {}) or {},
+        "started_at": _isoformat(item.get("started_at")),
+        "completed_at": _isoformat(item.get("completed_at")),
+        "created_at": _isoformat(item.get("created_at")),
+        "updated_at": _isoformat(item.get("updated_at")),
+    }
+
+
+def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, preflight_summary):
+    run_id = str(uuid.uuid4())
+    prompt_ids = [candidate["prompt_id"] for candidate in candidates]
+    segment_ids = sorted({candidate["segment_id"] for candidate in candidates if candidate.get("segment_id")})
+    cur.execute(
+        """
+        INSERT INTO query_generation_runs
+            (id, admin_id, status, request_config, prompt_ids, segment_ids_selected,
+             profiles_per_prompt, desired_engine_policy, engine_panel_id, max_candidates,
+             overflow_policy, candidates_estimated, candidates_assembled, estimated_cost,
+             preflight_summary, started_at, completed_at, created_at, updated_at)
+        VALUES
+            (%s, %s, 'completed', %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+             %s, %s, %s, %s, %s::jsonb, NOW(), NOW(), NOW(), NOW())
+        """,
+        (
+            run_id,
+            admin_id,
+            _topic_plan_json({"selection": selection, "config": config}),
+            _topic_plan_json(prompt_ids),
+            _topic_plan_json(segment_ids),
+            config["profiles_per_prompt"],
+            config["desired_engine_policy"],
+            config.get("engine_panel_id"),
+            config["max_candidates"],
+            config["overflow_policy"],
+            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
+            len(candidates),
+            None,
+            _topic_plan_json(preflight_summary),
+        ),
+    )
+    for candidate in candidates:
+        cur.execute(
+            """
+            INSERT INTO query_generation_candidates
+                (id, run_id, candidate_seq, prompt_id, segment_id, profile_id,
+                 rendered_query, render_hash, candidate_status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """,
+            (
+                candidate["id"],
+                run_id,
+                candidate["candidate_seq"],
+                candidate["prompt_id"],
+                candidate["segment_id"],
+                candidate["profile_id"],
+                candidate["rendered_query"],
+                candidate["render_hash"],
+                candidate["candidate_status"],
+            ),
+        )
+    return run_id
+
+
+def _assemble_query_pool_run(cur, admin_id, payload, dry_run=False):
+    payload = payload or {}
+    config = _query_pool_config(payload)
+    selection = _query_pool_selection_payload(payload)
+    max_prompt_count = max(1, config["max_candidates"])
+    prompt_ids = _query_pool_prompt_ids_from_selection(cur, selection, max_prompt_count)
+    if not prompt_ids:
+        raise ValueError("prompt_selection_required")
+    prompt_rows = _fetch_query_pool_prompt_rows(cur, prompt_ids)
+    if not prompt_rows:
+        raise ValueError("prompt_selection_empty")
+    segment_ids = payload.get("segment_ids") or (payload.get("config") or {}).get("segment_ids") or []
+    profile_pool = _fetch_query_pool_profile_pool(cur, segment_ids=segment_ids)
+    if not profile_pool:
+        raise ValueError("query_pool_profile_pool_empty")
+    candidates, preflight_summary = _build_query_pool_candidates(prompt_rows, profile_pool, config)
+    if not candidates:
+        raise ValueError("query_pool_no_candidates")
+    run_id = None
+    if not dry_run:
+        run_id = _insert_query_pool_run(
+            cur,
+            admin_id=admin_id,
+            selection=selection,
+            config=config,
+            candidates=candidates,
+            preflight_summary=preflight_summary,
+        )
+        _insert_admin_audit_log(
+            cur,
+            operator_id=admin_id,
+            action="query_pool_assemble",
+            target_type="query_generation_run",
+            target_id=run_id,
+            diff={"selection": selection, "config": config, "candidates_assembled": len(candidates)},
+            reason="query_pool_assemble",
+        )
+    return {
+        "id": run_id,
+        "status": "preview" if dry_run else "completed",
+        "candidates_estimated": int(preflight_summary.get("raw_candidates_estimated") or 0),
+        "candidates_assembled": len(candidates) if not dry_run else 0,
+        "preflight_summary": preflight_summary,
+    }
+
+
+def _get_query_pool_run(cur, run_id):
+    if not _table_exists(cur, "query_generation_runs"):
+        return None
+    cur.execute("SELECT * FROM query_generation_runs WHERE id = %s", (run_id,))
+    row = cur.fetchone()
+    return _query_pool_run_row(row) if row else None
+
+
+def _list_query_pool_runs(cur, limit=20):
+    if not _table_exists(cur, "query_generation_runs"):
+        return []
+    cur.execute(
+        """
+        SELECT *
+        FROM query_generation_runs
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    return [_query_pool_run_row(row) for row in cur.fetchall()]
+
+
+def _update_query_pool_candidate_status(cur, candidate_id, status, admin_id, reason=None):
+    if status not in QUERY_POOL_CANDIDATE_STATUSES:
+        raise ValueError("invalid_status")
+    cur.execute(
+        """
+        SELECT id, candidate_status
+        FROM query_generation_candidates
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (candidate_id,),
+    )
+    before = cur.fetchone()
+    if not before:
+        return None
+    cur.execute(
+        """
+        UPDATE query_generation_candidates
+        SET candidate_status = %s, reviewed_by = %s, reviewed_at = NOW(), review_reason = %s
+        WHERE id = %s
+        RETURNING id, run_id, candidate_seq, prompt_id, segment_id, profile_id,
+                  rendered_query, candidate_status, scheduler_intake_batch_id,
+                  reviewed_by, reviewed_at, review_reason, created_at
+        """,
+        (status, admin_id, reason, candidate_id),
+    )
+    row = cur.fetchone()
+    _insert_admin_audit_log(
+        cur,
+        operator_id=admin_id,
+        action="query_pool_candidate_review",
+        target_type="query_generation_candidate",
+        target_id=candidate_id,
+        diff={"before": dict(before), "after_status": status},
+        reason=reason or "query_pool_candidate_review",
+    )
+    return _query_pool_candidate_row(row)
 
 
 def _prompt_matrix_category_purity(cur, known_brands):
@@ -6416,6 +7202,269 @@ def admin_prompt_matrix_candidates_api():
             conn.close()
 
 
+@app.route('/api/admin/query-pool/candidates')
+@app.route('/admin/api/v1/pipeline/query-pool/candidates')
+def admin_query_pool_candidates_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    status = (request.args.get("status") or "").strip().lower()
+    if status and status not in {"candidate", "review", "ready", "all"}:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    direction = (request.args.get("direction") or "next").strip().lower()
+    if direction not in {"next", "prev"}:
+        return jsonify({"success": False, "error": "invalid_direction"}), 400
+    limit = _clamp_int(request.args.get("limit") or request.args.get("per_page"), 100, 1, 200)
+    run_id = (request.args.get("run_id") or "").strip() or None
+    segment_id = (request.args.get("segment_id") or request.args.get("segment") or "").strip() or None
+    profile_id = (request.args.get("profile_id") or request.args.get("profile") or "").strip() or None
+    query = (request.args.get("q") or "").strip() or None
+    cursor = (request.args.get("cursor") or "").strip() or None
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows, next_cursor, prev_cursor, approx_total = _fetch_query_pool_candidates(
+                cur,
+                run_id=run_id,
+                status=status,
+                segment_id=segment_id,
+                profile_id=profile_id,
+                query=query,
+                limit=limit,
+                cursor=cursor,
+                direction=direction,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "rows": rows,
+                "next_cursor": next_cursor,
+                "prev_cursor": prev_cursor,
+                "approx_total": approx_total,
+            }
+        )
+    except ValueError as exc:
+        if str(exc) == "invalid_cursor":
+            return jsonify({"success": False, "error": "invalid_cursor"}), 400
+        raise
+    except Exception as exc:
+        app.logger.exception("Query Pool candidates load failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_candidate_load_failed",
+                "message": "Query 候选加载失败，请检查数据库连接后重试",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/admin/query-pool/preflight', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/preflight', methods=['POST'])
+def admin_query_pool_preflight_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            run = _assemble_query_pool_run(cur, admin["id"], payload, dry_run=True)
+        return jsonify({"success": True, "run": run})
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc), "message": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Query Pool preflight failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_preflight_failed",
+                "message": "Query Pool 预检失败，请检查 Prompt 与 Segment/Profile 配置",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/admin/query-pool/assemble', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/assemble', methods=['POST'])
+def admin_query_pool_assemble_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            run = _assemble_query_pool_run(cur, admin["id"], payload, dry_run=False)
+        conn.commit()
+        return jsonify({"success": True, "run": run}), 201
+    except ValueError as exc:
+        if conn is not None:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(exc), "message": str(exc)}), 400
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool assemble failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_assemble_failed",
+                "message": "Query 组装失败，请检查 Prompt 与 Segment/Profile 配置",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/admin/query-pool/runs')
+@app.route('/admin/api/v1/pipeline/query-pool/runs')
+def admin_query_pool_runs_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    limit = _clamp_int(request.args.get("limit"), 20, 1, 100)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            rows = _list_query_pool_runs(cur, limit=limit)
+        return jsonify({"success": True, "rows": rows})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/query-pool/runs/<run_id>')
+@app.route('/admin/api/v1/pipeline/query-pool/runs/<run_id>')
+def admin_query_pool_run_detail_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            run = _get_query_pool_run(cur, run_id)
+        if not run:
+            return jsonify({"success": False, "error": "query_pool_run_not_found"}), 404
+        return jsonify({"success": True, "run": run})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/query-pool/candidates/<candidate_id>/review', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/candidates/<candidate_id>/review', methods=['POST'])
+def admin_query_pool_candidate_review_api(candidate_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in QUERY_POOL_CANDIDATE_STATUSES:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    reason = str(payload.get("reason") or "").strip() or None
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            candidate = _update_query_pool_candidate_status(cur, candidate_id, status, admin["id"], reason=reason)
+        if not candidate:
+            conn.rollback()
+            return jsonify({"success": False, "error": "query_pool_candidate_not_found"}), 404
+        conn.commit()
+        return jsonify({"success": True, "candidate": candidate})
+    except ValueError as exc:
+        if conn is not None:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool candidate review failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_candidate_review_failed",
+                "message": "Query 候选状态更新失败",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.route('/api/admin/query-pool/candidates/bulk-review', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/candidates/bulk-review', methods=['POST'])
+def admin_query_pool_candidate_bulk_review_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in QUERY_POOL_CANDIDATE_STATUSES:
+        return jsonify({"success": False, "error": "invalid_status"}), 400
+    candidate_ids = [str(item).strip() for item in (payload.get("candidate_ids") or []) if str(item).strip()]
+    if not candidate_ids:
+        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
+    reason = str(payload.get("reason") or "").strip() or None
+    conn = None
+    updated = []
+    missing = []
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            for candidate_id in candidate_ids:
+                candidate = _update_query_pool_candidate_status(cur, candidate_id, status, admin["id"], reason=reason)
+                if candidate:
+                    updated.append(candidate)
+                else:
+                    missing.append(candidate_id)
+        conn.commit()
+        return jsonify({"success": True, "updated": updated, "missing": missing})
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool candidate bulk review failed: %s", exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_candidate_bulk_review_failed",
+                "message": "Query 候选批量状态更新失败",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _prompt_matrix_run_row(row):
     item = dict(row)
     return {
@@ -10256,6 +11305,7 @@ def _run_startup_migrations():
     _ensure_admin_tables()
     _ensure_topic_plan_tables()
     _ensure_prompt_matrix_tables()
+    _ensure_query_pool_tables()
     _ensure_segment_profile_tables()
     _normalize_query_data()
 
