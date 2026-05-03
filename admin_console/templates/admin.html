@@ -4118,7 +4118,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div class="p-5 space-y-4">
                       <template x-if="queryPoolAssembling && !queryPoolAssembleError">
                         <div class="rounded-card bg-accent/5 border border-accent/20 px-3 py-2 text-[11px] text-ink-body">
-                          后台正在用 LLM 组装 Query，页面会轮询更新状态，完成后自动刷新候选列表。
+                          后台正在用 LLM 组装 Query，生成一批会立即写入候选列表，页面会轮询刷新进度。
                         </div>
                       </template>
                       <template x-if="queryPoolAssembleError">
@@ -12130,6 +12130,7 @@ function adminApp() {
         try {
           const run = await this.loadQueryPoolRun(runId);
           this.applyQueryPoolRunProgress(run);
+          const assembledCount = Number(run.candidates_assembled || 0);
           if (run.status === 'completed') {
             this.queryPoolAssembling = false;
             this.queryPoolAssembleStarted = true;
@@ -12140,6 +12141,10 @@ function adminApp() {
             this.queryPoolAssembling = false;
             this.toast('Query 组装失败: ' + (run.llm_error || 'unknown_error'));
           } else {
+            if (assembledCount > Number(this.queryPoolCandidatePageInfo.approxTotal || 0)) {
+              this.queryPoolCandidateCursor = { next: null, prev: null };
+              await this.loadQueryPoolCandidates();
+            }
             keepPolling = true;
           }
         } catch (error) {

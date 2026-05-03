@@ -287,6 +287,15 @@ def test_query_pool_assemble_uses_run_polling_and_persistent_error():
     assert "API_BASE + '/admin/query-pool/runs/'" in html
 
 
+def test_query_pool_polling_refreshes_candidates_while_run_is_running():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    polling = html[html.index("startQueryPoolRunPolling") : html.index("async startQueryPoolPreflight")]
+
+    assert "const assembledCount = Number(run.candidates_assembled || 0);" in polling
+    assert "assembledCount > Number(this.queryPoolCandidatePageInfo.approxTotal || 0)" in polling
+    assert "await this.loadQueryPoolCandidates();" in polling
+
+
 def test_query_pool_visible_copy_is_chinese():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[html.index("Query Pool") : html.index("<!-- ============ PAGE: PIPELINE PROXY")]

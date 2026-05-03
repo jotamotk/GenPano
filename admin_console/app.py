@@ -2975,6 +2975,10 @@ def _query_pool_chunked(items, size):
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def _query_pool_llm_batch_size():
+    return _clamp_int(os.getenv("QUERY_POOL_LLM_BATCH_SIZE"), 8, 1, 25)
+
+
 def _query_pool_candidate_contexts(prompt_rows, profile_pool, config):
     profiles_per_prompt = int(config["profiles_per_prompt"])
     max_candidates = int(config["max_candidates"])
@@ -3012,6 +3016,57 @@ def _query_pool_candidate_contexts(prompt_rows, profile_pool, config):
                 }
             )
     return contexts, raw_estimated
+
+
+def _query_pool_candidates_from_llm_queries(
+    contexts,
+    llm_queries,
+    llm_meta=None,
+    *,
+    start_seq=1,
+    seen_hashes=None,
+):
+    if not isinstance(llm_queries, dict):
+        raise TopicPlanLLMError("llm_schema_invalid", "LLM query generator must return a dict")
+
+    candidates = []
+    duplicate_review = 0
+    query_repaired = 0
+    seen = seen_hashes if seen_hashes is not None else set()
+    llm_meta = llm_meta or {}
+    llm_model = llm_meta.get("model")
+    llm_usage = llm_meta.get("usage") or {}
+    for context in contexts:
+        candidate_key = context["candidate_key"]
+        if candidate_key not in llm_queries:
+            raise TopicPlanLLMError("llm_schema_invalid", f"LLM missing query for candidate_key: {candidate_key}")
+        rendered_query = _query_pool_normalize_query_text(llm_queries.get(candidate_key))
+        try:
+            rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
+        except TopicPlanLLMError:
+            rendered_query = _query_pool_repair_query_text(rendered_query, context, candidate_key)
+            query_repaired += 1
+        render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
+        if render_hash in seen:
+            duplicate_review += 1
+            continue
+        seen.add(render_hash)
+        candidates.append(
+            {
+                "id": str(uuid.uuid4()),
+                "candidate_seq": int(start_seq) + len(candidates),
+                "prompt_id": context["prompt_id"],
+                "segment_id": context["segment_id"],
+                "profile_id": context["profile_id"],
+                "rendered_query": rendered_query,
+                "render_hash": render_hash,
+                "candidate_status": "candidate",
+                "generation_method": "llm",
+                "llm_model": llm_model,
+                "llm_usage": llm_usage,
+            }
+        )
+    return candidates, {"duplicate_review": duplicate_review, "query_repaired": query_repaired}
 
 
 def _query_pool_summary(
@@ -3110,7 +3165,7 @@ class QueryPoolLLMClient:
         all_queries = {}
         usage = {}
         batches = 0
-        batch_size = _clamp_int(os.getenv("QUERY_POOL_LLM_BATCH_SIZE"), 8, 1, 25)
+        batch_size = _query_pool_llm_batch_size()
         for batch in _query_pool_chunked(contexts, batch_size):
             batch_queries, meta = self._generate_query_batch(batch)
             all_queries.update(batch_queries)
@@ -3210,42 +3265,13 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_genera
     if not isinstance(llm_queries, dict):
         raise TopicPlanLLMError("llm_schema_invalid", "LLM query generator must return a dict")
 
-    candidates = []
-    duplicate_review = 0
-    query_repaired = 0
-    seen_hashes = set()
-    llm_model = llm_meta.get("model")
-    llm_usage = llm_meta.get("usage") or {}
-    for context in contexts:
-        candidate_key = context["candidate_key"]
-        if candidate_key not in llm_queries:
-            raise TopicPlanLLMError("llm_schema_invalid", f"LLM missing query for candidate_key: {candidate_key}")
-        rendered_query = _query_pool_normalize_query_text(llm_queries.get(candidate_key))
-        try:
-            rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
-        except TopicPlanLLMError:
-            rendered_query = _query_pool_repair_query_text(rendered_query, context, candidate_key)
-            query_repaired += 1
-        render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
-        if render_hash in seen_hashes:
-            duplicate_review += 1
-            continue
-        seen_hashes.add(render_hash)
-        candidates.append(
-            {
-                "id": str(uuid.uuid4()),
-                "candidate_seq": len(candidates) + 1,
-                "prompt_id": context["prompt_id"],
-                "segment_id": context["segment_id"],
-                "profile_id": context["profile_id"],
-                "rendered_query": rendered_query,
-                "render_hash": render_hash,
-                "candidate_status": "candidate",
-                "generation_method": "llm",
-                "llm_model": llm_model,
-                "llm_usage": llm_usage,
-            }
-        )
+    candidates, stats = _query_pool_candidates_from_llm_queries(
+        contexts,
+        llm_queries,
+        llm_meta,
+        start_seq=1,
+        seen_hashes=set(),
+    )
 
     preflight_summary = _query_pool_summary(
         contexts=contexts,
@@ -3253,8 +3279,8 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_genera
         config=config,
         raw_estimated=raw_estimated,
         candidates=candidates,
-        duplicate_review=duplicate_review,
-        query_repaired=query_repaired,
+        duplicate_review=stats["duplicate_review"],
+        query_repaired=stats["query_repaired"],
         generation_method="llm",
         llm_meta=llm_meta,
     )
@@ -3314,6 +3340,29 @@ def _insert_query_pool_candidates(cur, run_id, candidates):
                 candidate["candidate_status"],
             ),
         )
+
+
+def _update_query_pool_run_progress(cur, *, run_id, candidates, preflight_summary):
+    cur.execute(
+        """
+        UPDATE query_generation_runs
+        SET candidates_estimated = %s,
+            candidates_assembled = %s,
+            preflight_summary = %s::jsonb,
+            llm_model = %s,
+            llm_usage_json = %s::jsonb,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
+            len(candidates),
+            _topic_plan_json(preflight_summary),
+            preflight_summary.get("llm_model"),
+            _topic_plan_json(preflight_summary.get("llm_usage") or {}),
+            run_id,
+        ),
+    )
 
 
 def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, preflight_summary):
@@ -3424,8 +3473,7 @@ def _start_query_pool_assembly_run(cur, admin_id, payload):
     }
 
 
-def _complete_query_pool_run(cur, *, run_id, candidates, preflight_summary):
-    _insert_query_pool_candidates(cur, run_id, candidates)
+def _finalize_query_pool_run(cur, *, run_id, candidates, preflight_summary):
     cur.execute(
         """
         UPDATE query_generation_runs
@@ -3449,6 +3497,11 @@ def _complete_query_pool_run(cur, *, run_id, candidates, preflight_summary):
             run_id,
         ),
     )
+
+
+def _complete_query_pool_run(cur, *, run_id, candidates, preflight_summary):
+    _insert_query_pool_candidates(cur, run_id, candidates)
+    _finalize_query_pool_run(cur, run_id=run_id, candidates=candidates, preflight_summary=preflight_summary)
 
 
 def _mark_query_pool_run_failed(cur, *, run_id, error_code, error_message):
@@ -3544,10 +3597,67 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
             prompt_rows = _fetch_query_pool_prompt_rows(cur, prompt_ids)
             segment_ids = (payload or {}).get("segment_ids") or ((payload or {}).get("config") or {}).get("segment_ids") or []
             profile_pool = _fetch_query_pool_profile_pool(cur, segment_ids=segment_ids)
-            candidates, preflight_summary = _build_query_pool_candidates(prompt_rows, profile_pool, config)
+            contexts, raw_estimated = _query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+            if not contexts:
+                raise ValueError("query_pool_no_candidates")
+            candidates = []
+            seen_hashes = set()
+            duplicate_review = 0
+            query_repaired = 0
+            llm_meta = {"model": None, "usage": {}, "batches": 0}
+            batch_size = _query_pool_llm_batch_size()
+            for batch in _query_pool_chunked(contexts, batch_size):
+                llm_queries, batch_meta = _coerce_query_pool_generation_result(_generate_query_pool_llm_queries(batch))
+                batch_meta = batch_meta or {}
+                if batch_meta.get("model"):
+                    llm_meta["model"] = batch_meta.get("model")
+                llm_meta["usage"] = _query_pool_merge_usage(llm_meta.get("usage") or {}, batch_meta.get("usage") or {})
+                llm_meta["batches"] = int(llm_meta.get("batches") or 0) + int(batch_meta.get("batches") or 1)
+                batch_candidates, batch_stats = _query_pool_candidates_from_llm_queries(
+                    batch,
+                    llm_queries,
+                    batch_meta,
+                    start_seq=len(candidates) + 1,
+                    seen_hashes=seen_hashes,
+                )
+                duplicate_review += int(batch_stats.get("duplicate_review") or 0)
+                query_repaired += int(batch_stats.get("query_repaired") or 0)
+                if batch_candidates:
+                    _insert_query_pool_candidates(cur, run_id, batch_candidates)
+                    candidates.extend(batch_candidates)
+                preflight_summary = _query_pool_summary(
+                    contexts=contexts,
+                    profile_pool=profile_pool,
+                    config=config,
+                    raw_estimated=raw_estimated,
+                    candidates=candidates,
+                    duplicate_review=duplicate_review,
+                    query_repaired=query_repaired,
+                    generation_method="llm",
+                    llm_meta=llm_meta,
+                )
+                preflight_summary["scheduler_intake"] = "running"
+                _update_query_pool_run_progress(
+                    cur,
+                    run_id=run_id,
+                    candidates=candidates,
+                    preflight_summary=preflight_summary,
+                )
+                conn.commit()
             if not candidates:
                 raise ValueError("query_pool_no_candidates")
-            _complete_query_pool_run(
+            preflight_summary = _query_pool_summary(
+                contexts=contexts,
+                profile_pool=profile_pool,
+                config=config,
+                raw_estimated=raw_estimated,
+                candidates=candidates,
+                duplicate_review=duplicate_review,
+                query_repaired=query_repaired,
+                generation_method="llm",
+                llm_meta=llm_meta,
+            )
+            _finalize_query_pool_run(
                 cur,
                 run_id=run_id,
                 candidates=candidates,
