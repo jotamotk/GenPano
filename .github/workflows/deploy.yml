@@ -182,17 +182,22 @@ jobs:
             login_registry="${login_registry%%/*}"
             printf '%s' "$ACR_PASSWORD" | docker login "$login_registry" -u "$ACR_USERNAME" --password-stdin
 
-            echo "Pre-deploy relief: stop old browser workers before pulling images"
-            timeout 90s docker compose stop -t 10 worker worker-analysis beat || true
-            timeout 60s docker compose kill worker worker-analysis beat || true
+            echo "Pre-deploy relief: stop old app containers before pulling images"
+            timeout 90s docker compose stop -t 10 worker worker-analysis beat backend frontend admin-console || true
+            timeout 60s docker compose kill worker worker-analysis beat backend frontend admin-console || true
+            timeout 60s docker compose rm -f worker worker-analysis beat backend frontend admin-console || true
             for proc_name in camoufox camoufox-bin firefox firefox-bin firefox-esr chrome chromium chromium-browser chrome_crashpad_handler "Web Content" WebExtensions; do pkill -9 -x "$proc_name" || true; done
             free -h || true
             ps -eo pid,ppid,pcpu,pmem,rss,comm,args --sort=-pcpu | head -30 || true
             df -h / || true
+            df -ih / || true
             docker system df || true
-            docker image prune -af --filter "until=24h" || true
+            docker container prune -f || true
+            docker image prune -af || true
             docker builder prune -af --keep-storage=2GB || true
             docker system df || true
+            df -h / || true
+            df -ih / || true
             docker compose version || true
 
             # Pull only unique application images from ACR. Base services use
