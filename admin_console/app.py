@@ -9396,6 +9396,36 @@ def _brand_name_value(data):
     return str(value).strip()
 
 
+def _profile_sequence_row_value(row, key, index=0):
+    if not row:
+        return None
+    if hasattr(row, "get"):
+        return row.get(key)
+    try:
+        return row[index]
+    except (IndexError, TypeError):
+        return None
+
+
+def _sync_profiles_id_sequence(cur):
+    """Repair legacy integer profiles.id sequences before Admin inserts."""
+    try:
+        cur.execute("SELECT pg_get_serial_sequence('profiles', 'id') AS seq")
+        sequence_name = _profile_sequence_row_value(cur.fetchone(), "seq")
+        if not sequence_name:
+            return False
+        cur.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM profiles")
+        max_id = int(_profile_sequence_row_value(cur.fetchone(), "max_id") or 0)
+        if max_id > 0:
+            cur.execute("SELECT setval(%s::regclass, %s, TRUE)", (sequence_name, max_id))
+        else:
+            cur.execute("SELECT setval(%s::regclass, 1, FALSE)", (sequence_name,))
+        return True
+    except Exception as error:
+        app.logger.warning("Unable to sync legacy profiles.id sequence: %s", error)
+        return False
+
+
 def _segment_payload(data, existing_id=None):
     data = data or {}
     segment_id = str(data.get("id") or data.get("code") or existing_id or "").strip().upper()
@@ -9908,6 +9938,7 @@ def _create_profile(cur, segment_id, payload, admin_id):
     )
     if cur.fetchone():
         raise ValueError("profile_id_exists")
+    _sync_profiles_id_sequence(cur)
     cur.execute(
         """
         INSERT INTO profiles
