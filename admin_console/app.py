@@ -1107,6 +1107,9 @@ def _ensure_query_pool_tables():
                         profile_id VARCHAR(64),
                         rendered_query TEXT NOT NULL,
                         render_hash VARCHAR(128) NOT NULL,
+                        generation_method VARCHAR(32) NOT NULL DEFAULT 'llm',
+                        llm_model VARCHAR(128),
+                        llm_usage_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                         candidate_status VARCHAR(16) NOT NULL DEFAULT 'candidate'
                             CHECK (candidate_status IN ('candidate', 'review', 'ready')),
                         scheduler_intake_batch_id VARCHAR(64),
@@ -1136,6 +1139,21 @@ def _ensure_query_pool_tables():
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS generation_method VARCHAR(32)")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128)")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_usage_json JSONB")
+                cur.execute("UPDATE query_generation_candidates SET llm_usage_json = '{}'::jsonb WHERE llm_usage_json IS NULL")
+                cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN generation_method SET DEFAULT 'llm'")
+                cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN llm_usage_json SET DEFAULT '{}'::jsonb")
+                _delete_non_llm_query_pool_candidates(cur)
+                cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN generation_method SET NOT NULL")
+                cur.execute("ALTER TABLE query_generation_candidates ALTER COLUMN llm_usage_json SET NOT NULL")
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_query_candidates_generation_method
+                    ON query_generation_candidates (generation_method)
+                    """
+                )
             conn.commit()
             print("DB migration: Query Pool tables ensured")
         finally:
@@ -2378,6 +2396,9 @@ def _query_pool_candidate_row(row):
         "profile_demographic": item.get("profile_demographic") or "",
         "profile_need": item.get("profile_need") or "",
         "rendered_query": item.get("rendered_query") or "",
+        "generation_method": item.get("generation_method") or "llm",
+        "llm_model": item.get("llm_model"),
+        "llm_usage": _admin_json(item.get("llm_usage_json"), {}) or {},
         "candidate_status": item.get("candidate_status") or "candidate",
         "scheduler_intake_batch_id": item.get("scheduler_intake_batch_id"),
         "reviewed_by": item.get("reviewed_by"),
@@ -2467,7 +2488,8 @@ def _fetch_query_pool_candidates(
     cur.execute(
         f"""
         SELECT q.id, q.run_id, q.candidate_seq, q.prompt_id, q.segment_id, q.profile_id,
-               q.rendered_query, q.candidate_status, q.scheduler_intake_batch_id,
+               q.rendered_query, q.generation_method, q.llm_model, q.llm_usage_json,
+               q.candidate_status, q.scheduler_intake_batch_id,
                q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
                s.name AS segment_name,
                p.name AS profile_name,
@@ -2707,57 +2729,142 @@ def _sample_query_pool_profiles(profile_pool, count, strategy="balanced", seed="
     return sorted(valid, key=weighted_key)[:count]
 
 
-def _render_query_pool_candidate(prompt, segment, profile):
-    template = (prompt.get("templateText") or prompt.get("text") or "").strip()
-    variables = {
-        "segment": segment.get("segment_name") or segment.get("name") or segment.get("segment_id") or "",
-        "segment_name": segment.get("segment_name") or segment.get("name") or segment.get("segment_id") or "",
-        "segment_id": segment.get("segment_id") or "",
-        "profile": profile.get("profile_name") or profile.get("name") or profile.get("profile_id") or "",
-        "profile_name": profile.get("profile_name") or profile.get("name") or profile.get("profile_id") or "",
-        "profile_id": profile.get("profile_id") or "",
-        "profile_demographic": profile.get("profile_demographic") or profile.get("demographic") or "",
-        "profile_need": profile.get("profile_need") or profile.get("need") or "",
+QUERY_POOL_FORBIDDEN_QUERY_TERMS = (
+    "segment",
+    "profile",
+    "persona",
+    "user persona",
+    "用户画像",
+    "画像",
+    "后台",
+    "运营",
+    "调度",
+    "执行引擎",
+    "engine",
+    "scheduler",
+)
+
+
+def _query_pool_strip_markdown_fence(raw):
+    text = (raw or "").strip()
+    if not text.startswith("```"):
+        return text
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _query_pool_load_json_object(raw):
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(_query_pool_strip_markdown_fence(raw))
+    except Exception as error:
+        raise TopicPlanLLMError("llm_json_invalid", "LLM returned invalid JSON") from error
+    if not isinstance(parsed, dict):
+        raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON root must be an object")
+    return parsed
+
+
+def _query_pool_clean_query_text(value, candidate_key):
+    query = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(query) < 4 or len(query) > 160:
+        raise TopicPlanLLMError(
+            "query_length_invalid",
+            f"LLM query for {candidate_key} must be 4-160 characters",
+        )
+    lowered = query.casefold()
+    for term in QUERY_POOL_FORBIDDEN_QUERY_TERMS:
+        if term.casefold() in lowered:
+            raise TopicPlanLLMError(
+                "query_contains_internal_terms",
+                f"LLM query for {candidate_key} contains internal product wording",
+            )
+    if not is_natural_user_prompt(query):
+        raise TopicPlanLLMError(
+            "query_not_natural",
+            f"LLM query for {candidate_key} must sound like a real consumer question",
+        )
+    return query
+
+
+def _parse_query_pool_llm_queries(raw, expected_keys):
+    expected = [str(key) for key in expected_keys]
+    expected_set = set(expected)
+    data = _query_pool_load_json_object(raw)
+    queries = data.get("queries")
+    if not isinstance(queries, list):
+        raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON must contain a queries array")
+    parsed = {}
+    for index, item in enumerate(queries):
+        if not isinstance(item, dict):
+            raise TopicPlanLLMError("llm_schema_invalid", f"Query item #{index + 1} must be an object")
+        candidate_key = str(item.get("candidate_key") or "").strip()
+        if candidate_key not in expected_set:
+            raise TopicPlanLLMError(
+                "llm_schema_invalid",
+                f"LLM returned unknown candidate_key: {candidate_key or '<empty>'}",
+            )
+        if candidate_key in parsed:
+            raise TopicPlanLLMError("llm_schema_invalid", f"LLM returned duplicate candidate_key: {candidate_key}")
+        parsed[candidate_key] = _query_pool_clean_query_text(item.get("query"), candidate_key)
+    missing = [key for key in expected if key not in parsed]
+    if missing:
+        raise TopicPlanLLMError(
+            "llm_schema_invalid",
+            "LLM missing query for candidate_key: " + ", ".join(missing[:5]),
+        )
+    return {key: parsed[key] for key in expected}
+
+
+def _query_pool_usage_to_dict(usage_obj):
+    if usage_obj is None:
+        return {}
+    if hasattr(usage_obj, "model_dump"):
+        return usage_obj.model_dump()
+    if isinstance(usage_obj, dict):
+        return dict(usage_obj)
+    return {
+        key: getattr(usage_obj, key)
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if hasattr(usage_obj, key)
     }
-    placeholder_seen = False
-
-    def replace(match):
-        nonlocal placeholder_seen
-        key = match.group(1) or match.group(2)
-        if key in variables:
-            placeholder_seen = True
-            return str(variables[key])
-        return match.group(0)
-
-    rendered = re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}", replace, template)
-    if placeholder_seen:
-        return rendered.strip()
-    context = "；".join(
-        item
-        for item in [
-            variables["segment_name"],
-            variables["profile_name"],
-            variables["profile_demographic"],
-            f"需求：{variables['profile_need']}" if variables["profile_need"] else "",
-        ]
-        if item
-    )
-    return f"{template}\n\n用户画像：{context}".strip() if context else template
 
 
-def _build_query_pool_candidates(prompt_rows, profile_pool, config):
+def _query_pool_merge_usage(left, right):
+    merged = dict(left or {})
+    for key, value in (right or {}).items():
+        if isinstance(value, (int, float)) and isinstance(merged.get(key), (int, float)):
+            merged[key] += value
+        elif key not in merged:
+            merged[key] = value
+    return merged
+
+
+def _query_pool_llm_error_detail(error):
+    parts = [type(error).__name__]
+    status_code = getattr(error, "status_code", None)
+    if status_code:
+        parts.append(f"status={status_code}")
+    message = str(error).strip()
+    if message:
+        parts.append(message[:500])
+    return ": ".join(parts)
+
+
+def _query_pool_chunked(items, size):
+    size = max(1, int(size or 1))
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _query_pool_candidate_contexts(prompt_rows, profile_pool, config):
     profiles_per_prompt = int(config["profiles_per_prompt"])
     max_candidates = int(config["max_candidates"])
     raw_estimated = len(prompt_rows) * profiles_per_prompt
     if raw_estimated > max_candidates and config["overflow_policy"] == "hold":
         raise ValueError("query_pool_candidate_cap_exceeded")
 
-    candidates = []
-    render_failures = 0
-    duplicate_review = 0
-    seen_hashes = set()
-    represented_segments = set()
-    represented_profiles = set()
+    contexts = []
     for prompt in prompt_rows:
         sampled_profiles = _sample_query_pool_profiles(
             profile_pool,
@@ -2766,52 +2873,260 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config):
             seed=str(prompt.get("id")),
         )
         for profile in sampled_profiles:
-            if len(candidates) >= max_candidates:
+            if len(contexts) >= max_candidates:
                 break
-            segment = {
-                "segment_id": profile.get("segment_id"),
-                "segment_name": profile.get("segment_name"),
-            }
-            rendered_query = _render_query_pool_candidate(prompt, segment, profile)
-            if not rendered_query:
-                render_failures += 1
-                continue
-            render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
-            if render_hash in seen_hashes:
-                duplicate_review += 1
-                continue
-            seen_hashes.add(render_hash)
-            represented_segments.add(profile.get("segment_id"))
-            represented_profiles.add(profile.get("profile_id"))
-            candidates.append(
+            prompt_id = str(prompt.get("id") or "")
+            segment_id = str(profile.get("segment_id") or "")
+            profile_id = str(profile.get("profile_id") or "")
+            contexts.append(
                 {
-                    "id": str(uuid.uuid4()),
-                    "candidate_seq": len(candidates) + 1,
-                    "prompt_id": str(prompt.get("id")),
-                    "segment_id": str(profile.get("segment_id") or ""),
-                    "profile_id": str(profile.get("profile_id") or ""),
-                    "rendered_query": rendered_query,
-                    "render_hash": render_hash,
-                    "candidate_status": "candidate",
+                    "candidate_key": f"{prompt_id}|{segment_id}|{profile_id}|{len(contexts) + 1}",
+                    "prompt_id": prompt_id,
+                    "prompt_text": (prompt.get("templateText") or prompt.get("text") or "").strip(),
+                    "topic_id": str(prompt.get("topic_id") or ""),
+                    "topic_text": str(prompt.get("topic_text") or "").strip(),
+                    "segment_id": segment_id,
+                    "segment_name": str(profile.get("segment_name") or "").strip(),
+                    "profile_id": profile_id,
+                    "profile_name": str(profile.get("profile_name") or "").strip(),
+                    "profile_demographic": str(profile.get("profile_demographic") or "").strip(),
+                    "profile_need": str(profile.get("profile_need") or "").strip(),
                 }
             )
+    return contexts, raw_estimated
 
+
+def _query_pool_summary(
+    *,
+    contexts,
+    profile_pool,
+    config,
+    raw_estimated,
+    candidates=None,
+    render_failures=0,
+    duplicate_review=0,
+    generation_method="llm",
+    llm_meta=None,
+):
+    candidate_rows = candidates or []
+    represented_source = candidate_rows if candidates is not None else contexts
+    represented_segments = {row.get("segment_id") for row in represented_source if row.get("segment_id")}
+    represented_profiles = {row.get("profile_id") for row in represented_source if row.get("profile_id")}
     active_segments = {row.get("segment_id") for row in profile_pool if _query_pool_weight(row) > 0}
     active_profiles = {row.get("profile_id") for row in profile_pool if _query_pool_weight(row) > 0}
-    assembled = len(candidates)
-    attempted = assembled + render_failures + duplicate_review
-    preflight_summary = {
+    assembled = len(candidate_rows) if candidates is not None else len(contexts)
+    attempted = len(contexts) if contexts else assembled + render_failures + duplicate_review
+    meta = dict(llm_meta or {})
+    return {
         "candidate_ready": assembled,
         "render_pass_rate": round(assembled / attempted, 4) if attempted else 0,
         "segment_coverage": round(len(represented_segments) / len(active_segments), 4) if active_segments else 0,
         "profile_coverage": round(len(represented_profiles) / len(active_profiles), 4) if active_profiles else 0,
-        "profiles_per_prompt": profiles_per_prompt,
+        "profiles_per_prompt": int(config["profiles_per_prompt"]),
         "duplicate_review": duplicate_review,
         "render_failures": render_failures,
         "scheduler_intake": "ready" if assembled else "blocked",
-        "candidate_cap_reached": raw_estimated > max_candidates,
+        "candidate_cap_reached": raw_estimated > int(config["max_candidates"]),
         "raw_candidates_estimated": raw_estimated,
+        "generation_method": generation_method,
+        "llm_model": meta.get("model"),
+        "llm_usage": meta.get("usage") or {},
+        "llm_batches": meta.get("batches", 0),
     }
+
+
+def _build_query_pool_llm_messages(contexts):
+    schema = {
+        "queries": [
+            {
+                "candidate_key": "copy candidate_key exactly",
+                "query": "a natural consumer query",
+            }
+        ]
+    }
+    payload = {
+        "candidates": contexts,
+        "output_schema": schema,
+    }
+    system = (
+        "你是 GENPANO Query Pool 的真实消费者 Query 生成器。"
+        "你只负责把 Prompt + Topic + Segment/Profile 的上下文改写成真实消费者会搜索或询问的一句话。"
+        "只返回严格 JSON，不要返回 Markdown，不要解释。"
+    )
+    user = (
+        "请为 payload.candidates 中的每个 candidate_key 生成 1 条 Query。\n"
+        "核心规则：\n"
+        "1. Query 必须像真实消费者在搜索框、社媒、购物前或和 LLM 对话时会直接输入的一句话。\n"
+        "2. Prompt 是任务意图，Topic 是主题边界，Segment/Profile 是消费者背景；三者都要影响最终 Query。\n"
+        "3. 不要机械替换模板变量，不要写“请以某某视角回答”，要把 Profile 的年龄、城市、预算、需求、顾虑自然融入。\n"
+        "4. 不同 Profile 即使属于重叠 Segment，也应该因为预算、场景、顾虑不同而生成不同问法。\n"
+        "5. 不要出现 Segment/Profile/用户画像/persona/admin/后台/调度/执行引擎等内部词。\n"
+        "6. 不要写运营分析、品牌方策略、CRM、市场表现、转化路径；只写消费者会问的问题。\n"
+        "7. 中文 Query 通常 10-36 个汉字；英文 Query 通常 7-18 个词。按原 Prompt 的语言自然输出。\n"
+        "8. 可以有口语感：怎么选、值不值、会不会踩雷、适不适合、哪款更稳、预算内怎么买。\n"
+        "9. 如果 Profile 强调预算，不要生硬写“价格敏感型”，可以写“预算有限 / 不想太贵 / 值不值”。\n"
+        "10. 如果 Profile 强调送礼、通勤、敏感肌、学生党、刚入职等场景，要用消费者自己的说法表达。\n"
+        "11. 保持 Query 和 Prompt/Topic 的产品、品类、品牌或场景一致，不要漂移到其他产品。\n"
+        "12. 输出必须严格匹配 output_schema；queries 数量必须等于 candidates 数量。\n\n"
+        "好例子：\n"
+        "Prompt: 预算内怎么选大牌香水？ Profile: 刚入职白领，送礼不踩雷，价格别太夸张\n"
+        "Query: 刚入职送人大牌香水，哪款不太贵又不容易踩雷？\n"
+        "Prompt: 敏感肌修复面霜怎么选？ Profile: 屏障不稳，担心刺激\n"
+        "Query: 敏感肌屏障不稳，修复面霜怎么选才不刺激？\n\n"
+        "payload:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+class QueryPoolLLMClient:
+    """OpenAI-compatible Query Pool generator using the shared Doubao/Ark config."""
+
+    def __init__(self, config=None):
+        self.config = config or load_doubao_config()
+
+    def generate_queries(self, contexts):
+        all_queries = {}
+        usage = {}
+        batches = 0
+        batch_size = _clamp_int(os.getenv("QUERY_POOL_LLM_BATCH_SIZE"), 8, 1, 25)
+        for batch in _query_pool_chunked(contexts, batch_size):
+            batch_queries, meta = self._generate_query_batch(batch)
+            all_queries.update(batch_queries)
+            usage = _query_pool_merge_usage(usage, meta.get("usage") or {})
+            batches += 1
+        return all_queries, {"model": self.config.model, "usage": usage, "batches": batches}
+
+    def _generate_query_batch(self, contexts):
+        try:
+            from openai import OpenAI
+        except Exception as error:  # pragma: no cover - environment dependent
+            raise TopicPlanLLMError("llm_client_unavailable", "OpenAI-compatible client is unavailable") from error
+
+        timeout_seconds = _clamp_int(os.getenv("QUERY_POOL_LLM_TIMEOUT_SECONDS"), 90, 30, 240)
+        max_tokens = _clamp_int(
+            os.getenv("QUERY_POOL_LLM_MAX_TOKENS") or (1024 + len(contexts) * 320),
+            4096,
+            512,
+            12000,
+        )
+        client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=timeout_seconds)
+        try:
+            response = client.chat.completions.create(
+                model=self.config.model,
+                messages=_build_query_pool_llm_messages(contexts),
+                temperature=0.25,
+                max_tokens=max_tokens,
+                timeout=timeout_seconds,
+            )
+        except Exception as error:
+            raise TopicPlanLLMError(
+                "llm_call_failed",
+                "Query Pool LLM generation failed: " + _query_pool_llm_error_detail(error),
+            ) from error
+
+        content = response.choices[0].message.content or "{}"
+        queries = _parse_query_pool_llm_queries(content, [context["candidate_key"] for context in contexts])
+        usage = _query_pool_usage_to_dict(getattr(response, "usage", None))
+        return queries, {"model": self.config.model, "usage": usage}
+
+
+def _generate_query_pool_llm_queries(contexts):
+    return QueryPoolLLMClient().generate_queries(contexts)
+
+
+def _coerce_query_pool_generation_result(result):
+    if isinstance(result, tuple):
+        queries = result[0]
+        meta = result[1] if len(result) > 1 and isinstance(result[1], dict) else {}
+        return queries, meta
+    return result, {}
+
+
+def _delete_non_llm_query_pool_candidates(cur):
+    cur.execute(
+        """
+        DELETE FROM query_generation_candidates
+        WHERE COALESCE(generation_method, 'template') <> 'llm'
+        """
+    )
+    cur.execute(
+        """
+        DELETE FROM query_generation_runs r
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM query_generation_candidates c
+            WHERE c.run_id = r.id
+        )
+        """
+    )
+
+
+def _query_pool_llm_error_status(error):
+    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+        return 503
+    return 502
+
+
+def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_generator=None):
+    contexts, raw_estimated = _query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+    if not contexts:
+        return [], _query_pool_summary(
+            contexts=contexts,
+            profile_pool=profile_pool,
+            config=config,
+            raw_estimated=raw_estimated,
+            candidates=[],
+            generation_method="llm",
+        )
+
+    generator = query_generator or _generate_query_pool_llm_queries
+    llm_queries, llm_meta = _coerce_query_pool_generation_result(generator(contexts))
+    if not isinstance(llm_queries, dict):
+        raise TopicPlanLLMError("llm_schema_invalid", "LLM query generator must return a dict")
+
+    candidates = []
+    duplicate_review = 0
+    seen_hashes = set()
+    llm_model = llm_meta.get("model")
+    llm_usage = llm_meta.get("usage") or {}
+    for context in contexts:
+        candidate_key = context["candidate_key"]
+        rendered_query = str(llm_queries.get(candidate_key) or "").strip()
+        if not rendered_query:
+            raise TopicPlanLLMError("llm_schema_invalid", f"LLM missing query for candidate_key: {candidate_key}")
+        rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
+        render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
+        if render_hash in seen_hashes:
+            duplicate_review += 1
+            continue
+        seen_hashes.add(render_hash)
+        candidates.append(
+            {
+                "id": str(uuid.uuid4()),
+                "candidate_seq": len(candidates) + 1,
+                "prompt_id": context["prompt_id"],
+                "segment_id": context["segment_id"],
+                "profile_id": context["profile_id"],
+                "rendered_query": rendered_query,
+                "render_hash": render_hash,
+                "candidate_status": "candidate",
+                "generation_method": "llm",
+                "llm_model": llm_model,
+                "llm_usage": llm_usage,
+            }
+        )
+
+    preflight_summary = _query_pool_summary(
+        contexts=contexts,
+        profile_pool=profile_pool,
+        config=config,
+        raw_estimated=raw_estimated,
+        candidates=candidates,
+        duplicate_review=duplicate_review,
+        generation_method="llm",
+        llm_meta=llm_meta,
+    )
     return candidates, preflight_summary
 
 
@@ -2877,8 +3192,9 @@ def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, pref
             """
             INSERT INTO query_generation_candidates
                 (id, run_id, candidate_seq, prompt_id, segment_id, profile_id,
-                 rendered_query, render_hash, candidate_status, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                 rendered_query, render_hash, generation_method, llm_model, llm_usage_json,
+                 candidate_status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
             """,
             (
                 candidate["id"],
@@ -2889,6 +3205,9 @@ def _insert_query_pool_run(cur, *, admin_id, selection, config, candidates, pref
                 candidate["profile_id"],
                 candidate["rendered_query"],
                 candidate["render_hash"],
+                candidate.get("generation_method") or "llm",
+                candidate.get("llm_model"),
+                _topic_plan_json(candidate.get("llm_usage") or {}),
                 candidate["candidate_status"],
             ),
         )
@@ -2910,6 +3229,24 @@ def _assemble_query_pool_run(cur, admin_id, payload, dry_run=False):
     profile_pool = _fetch_query_pool_profile_pool(cur, segment_ids=segment_ids)
     if not profile_pool:
         raise ValueError("query_pool_profile_pool_empty")
+    if dry_run:
+        contexts, raw_estimated = _query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+        preflight_summary = _query_pool_summary(
+            contexts=contexts,
+            profile_pool=profile_pool,
+            config=config,
+            raw_estimated=raw_estimated,
+            generation_method="llm_estimate",
+        )
+        if not contexts:
+            raise ValueError("query_pool_no_candidates")
+        return {
+            "id": None,
+            "status": "preview",
+            "candidates_estimated": int(preflight_summary.get("raw_candidates_estimated") or 0),
+            "candidates_assembled": 0,
+            "preflight_summary": preflight_summary,
+        }
     candidates, preflight_summary = _build_query_pool_candidates(prompt_rows, profile_pool, config)
     if not candidates:
         raise ValueError("query_pool_no_candidates")
@@ -2985,7 +3322,8 @@ def _update_query_pool_candidate_status(cur, candidate_id, status, admin_id, rea
         SET candidate_status = %s, reviewed_by = %s, reviewed_at = NOW(), review_reason = %s
         WHERE id = %s
         RETURNING id, run_id, candidate_seq, prompt_id, segment_id, profile_id,
-                  rendered_query, candidate_status, scheduler_intake_batch_id,
+                  rendered_query, generation_method, llm_model, llm_usage_json,
+                  candidate_status, scheduler_intake_batch_id,
                   reviewed_by, reviewed_at, review_reason, created_at
         """,
         (status, admin_id, reason, candidate_id),
@@ -7315,6 +7653,10 @@ def admin_query_pool_assemble_api():
             run = _assemble_query_pool_run(cur, admin["id"], payload, dry_run=False)
         conn.commit()
         return jsonify({"success": True, "run": run}), 201
+    except TopicPlanLLMError as exc:
+        if conn is not None:
+            conn.rollback()
+        return jsonify({"success": False, "error": exc.code, "message": exc.message}), _query_pool_llm_error_status(exc)
     except ValueError as exc:
         if conn is not None:
             conn.rollback()
