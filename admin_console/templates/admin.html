@@ -2519,7 +2519,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 </div>
                 <div class="grid grid-cols-1 gap-3">
                   <template x-if="topicPlanLoading">
-                    <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">Loading Topic Plan...</div>
+                    <div class="rounded-card bg-surface-page border border-b-card p-3 text-[12px] text-ink-muted">Topic Plan 加载中...</div>
                   </template>
                   <template x-if="topicPlanError">
                     <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger" x-text="topicPlanError"></div>
@@ -2531,11 +2531,19 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       </div>
                       <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">已就绪</span>
                     </div>
-                    <div class="mt-3 grid grid-cols-4 gap-2">
+                    <div class="mt-3 grid grid-cols-3 gap-2">
+                      <label class="space-y-1">
+                        <span class="text-[10px] font-semibold text-ink-muted">每 Prompt Profile</span>
+                        <select x-model="queryPoolConfig.profilesPerPrompt" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="5">5</option>
+                        </select>
+                      </label>
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">行业</span>
                         <select x-model="topicPlanConfig.industryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option value="">All</option>
+                          <option value="">全部</option>
                           <template x-for="industry in topicPlanIndustries" :key="industry.id">
                             <option :value="industry.id" x-text="industry.name"></option>
                           </template>
@@ -2608,7 +2616,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                             <div class="text-[10px] text-ink-muted">预计候选</div>
                           </div>
                         </div>
-                        <div class="mt-3 grid grid-cols-4 gap-2">
+                        <div class="mt-3 grid grid-cols-3 gap-2">
                           <label class="space-y-1">
                             <span class="text-[10px] font-semibold text-ink-muted uppercase">每品牌上限</span>
                             <select x-model="topicPlanConfig.maxPerBrand" @change="onTopicPlanGenerationConfigChanged()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
@@ -3911,10 +3919,15 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">引擎策略</span>
-                      <select x-model="queryPoolConfig.engineRouting" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                        <option value="balanced">成本与质量均衡</option>
-                        <option value="quality">优先高质量引擎</option>
-                        <option value="domestic">仅国内引擎</option>
+                      <select x-model="queryPoolConfig.desiredEnginePolicy" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                        <option value="inherit">继承调度默认</option>
+                        <option value="balanced">质量与成本均衡</option>
+                        <option value="quality_first">质量优先</option>
+                        <option value="cost_guarded">成本受控</option>
+                        <option value="coverage_first">覆盖优先</option>
+                        <option value="domestic_only">仅国内引擎</option>
+                        <option value="global_only">仅国际引擎</option>
+                        <option value="benchmark_panel">基准评测引擎组</option>
                       </select>
                     </label>
                     <label class="space-y-1">
@@ -3955,29 +3968,21 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <div class="mt-4 rounded-card bg-surface-page border border-b-card p-3">
                     <div class="flex items-center justify-between gap-3">
                       <div>
-                        <div class="text-[12.5px] font-bold text-ink">组装数量</div>
+                        <div class="text-[12.5px] font-bold text-ink">候选组装</div>
                         <div class="text-[10px] text-ink-muted mt-1 font-mono" x-text="queryCountFormulaText()"></div>
                       </div>
                       <div class="text-right">
                         <div class="text-[20px] font-bold text-accent" x-text="estimatedQueryCount()"></div>
-                        <div class="text-[10px] text-ink-muted">预计 Query</div>
+                        <div class="text-[10px] text-ink-muted">候选就绪</div>
                       </div>
                     </div>
-                    <div class="mt-3 grid grid-cols-4 gap-2">
+                    <div class="mt-3 grid grid-cols-3 gap-2">
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted">每 Prompt 采样 Profile</span>
+                        <span class="text-[10px] font-semibold text-ink-muted">每 Prompt Profile</span>
                         <select x-model="queryPoolConfig.profilesPerPrompt" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option value="2">2</option>
                           <option value="3">3</option>
                           <option value="5">5</option>
-                        </select>
-                      </label>
-                      <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted">引擎数量</span>
-                        <select x-model="queryPoolConfig.engineCount" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option value="1">1</option>
-                          <option value="2">2</option>
-                          <option value="3">3</option>
                         </select>
                       </label>
                       <label class="space-y-1">
@@ -4004,7 +4009,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </div>
                   <button @click="openQueryPoolPanel('preflight')" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">预检报告</button>
                 </div>
-                <div class="grid grid-cols-4 gap-3">
+                <div class="grid grid-cols-6 gap-3">
                   <template x-for="gate in queryPoolQualityGates" :key="gate.title">
                     <div class="rounded-card bg-surface-page border border-b-card p-3">
                       <div class="flex items-center justify-between gap-2">
@@ -4022,7 +4027,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <div class="px-5 py-4 border-b border-b-card flex items-center justify-between gap-3">
                     <div>
                       <h3 class="text-[15px] font-bold text-ink" x-text="queryPoolPanelTitle()"></h3>
-                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Prompt ' + queryPoolSelectedPromptCount().toLocaleString() + ' · 预计 ' + estimatedQueryCount() + ' queries'"></div>
+                      <div class="text-[11px] text-ink-muted mt-1" x-text="'已选 Prompt ' + queryPoolSelectedPromptCount().toLocaleString() + ' · 预计 ' + estimatedQueryCount() + ' 个候选'"></div>
                     </div>
                     <div class="flex items-center gap-2">
                       <button @click="openQueryPoolPanel('cost')" class="h-8 px-3 rounded-btn text-[12px] font-semibold"
@@ -4039,7 +4044,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <template x-if="queryPoolActionPanel==='cost'">
                     <div class="p-5">
                       <table class="w-full text-[12px] rounded-card overflow-hidden border border-b-card">
-                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">Engine</th><th class="px-4 py-2.5 text-left text-ink-muted">Queries</th><th class="px-4 py-2.5 text-left text-ink-muted">单价</th><th class="px-4 py-2.5 text-right text-ink-muted">预估成本</th></tr></thead>
+                        <thead><tr class="bg-surface-page border-b border-b-card"><th class="px-4 py-2.5 text-left text-ink-muted">层级</th><th class="px-4 py-2.5 text-left text-ink-muted">数量</th><th class="px-4 py-2.5 text-left text-ink-muted">依据</th><th class="px-4 py-2.5 text-right text-ink-muted">估算</th></tr></thead>
                         <tbody>
                           <template x-for="row in queryPoolCostRows" :key="row.engine">
                             <tr class="border-b border-b-card">
@@ -4070,13 +4075,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       </div>
                       <div class="rounded-card bg-surface-page border border-b-card p-4 flex items-center justify-between">
                         <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
-                          <div><div class="text-ink-muted">预计组装</div><div class="font-semibold text-ink mt-1" x-text="estimatedQueryCount() + ' queries'"></div></div>
+                          <div><div class="text-ink-muted">预计组装</div><div class="font-semibold text-ink mt-1" x-text="estimatedQueryCount() + ' 个候选'"></div></div>
                           <div><div class="text-ink-muted">Prompt</div><div class="font-semibold text-ink mt-1" x-text="queryPoolSelectedPromptCount().toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">总上限</div><div class="font-semibold text-ink mt-1" x-text="Number(queryPoolConfig.maxQueries).toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="queryPoolAssembleStarted ? '刚刚' : '未运行'"></div></div>
                         </div>
-                        <button @click="startQueryPoolAssemble()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
-                          <span x-text="queryPoolAssembleStarted ? '重新组装' : '开始组装'"></span>
+                        <button @click="startQueryPoolAssemble()" :disabled="queryPoolAssembling" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-60">
+                          <span x-text="queryPoolAssembling ? '组装中...' : (queryPoolAssembleStarted ? '重新组装' : '开始组装')"></span>
                         </button>
                       </div>
                     </div>
@@ -4101,158 +4106,115 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 </div>
               </template>
 
-              <!-- ① KPI Cards: 5 metrics -->
+            <!-- 候选质量：Query Pool 保持不绑定具体引擎。 -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
                 <div class="flex items-center justify-between mb-4">
                   <div>
-                    <h3 class="text-[15px] font-bold text-ink">Query 组装状态</h3>
-                    <p class="text-[12px] text-ink-muted mt-1">按 Segment、Profile 和引擎生成可执行 Query</p>
+                    <h3 class="text-[15px] font-bold text-ink">候选质量</h3>
+                    <p class="text-[12px] text-ink-muted mt-1">Query Pool 只组装 Prompt x Segment x Profile 候选；具体引擎派发和执行控制由调度阶段处理。</p>
                   </div>
                 </div>
-
-                <div class="grid grid-cols-5 gap-3 mb-6">
-                  <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[11px] text-ink-muted font-semibold">总组装量</div>
-                    <div class="text-[22px] font-bold text-ink mt-2" x-text="generationQueryStats.totalAssembled.toLocaleString()"></div>
-                  </div>
-                  <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[11px] text-ink-muted font-semibold">队列中</div>
-                    <div class="text-[22px] font-bold text-warning mt-2" x-text="generationQueryStats.queued.toLocaleString()"></div>
-                  </div>
-                  <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[11px] text-ink-muted font-semibold">就绪</div>
-                    <div class="text-[22px] font-bold text-accent mt-2" x-text="generationQueryStats.ready.toLocaleString()"></div>
-                  </div>
-                  <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[11px] text-ink-muted font-semibold">执行中</div>
-                    <div class="text-[22px] font-bold text-info mt-2" x-text="generationQueryStats.executing"></div>
-                  </div>
-                  <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                    <div class="text-[11px] text-ink-muted font-semibold">已完成</div>
-                    <div class="text-[22px] font-bold text-success mt-2" x-text="generationQueryStats.completed.toLocaleString()"></div>
-                  </div>
-                </div>
-
-                <!-- Prompt × Profile sampling info -->
-                <div class="flex items-center gap-6 p-3 rounded-card bg-accent/5 border border-accent/15 mb-6">
-                  <div class="flex items-center gap-2">
-                    <i data-lucide="shuffle" class="w-4 h-4 text-accent"></i>
-                    <span class="text-[12px] text-ink-muted">采样策略:</span>
-                    <span class="text-[12px] font-semibold text-ink">每条 Prompt 覆盖 <span x-text="generationQueryStats.avgProfilesPerPrompt"></span> 个 Profile</span>
-                  </div>
-                  <div class="w-px h-5 bg-accent/20"></div>
-                  <div class="flex items-center gap-2">
-                    <i data-lucide="check-circle" class="w-4 h-4 text-success"></i>
-                    <span class="text-[12px] font-medium text-ink" x-text="generationQueryStats.samplingCoverage"></span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ② Two-column: Engine success + Segment success -->
-              <div class="grid grid-cols-2 gap-4">
-                <!-- Left: By engine -->
-                <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-                  <div class="text-[13px] font-semibold text-ink mb-4">按引擎成功率</div>
-                  <div class="space-y-3">
-                    <template x-for="e in generationQueryStats.successRateByEngine" :key="e.engine">
-                      <div>
-                        <div class="flex items-center justify-between mb-1 text-[12px]">
-                          <span class="font-semibold text-ink" x-text="e.engine"></span>
-                          <div class="flex items-center gap-3">
-                    <span class="text-[11px] text-ink-muted tabular-nums" x-text="e.queries.toLocaleString() + ' 条 Query'"></span>
-                            <span class="text-accent font-semibold tabular-nums" x-text="e.rate + '%'"></span>
-                          </div>
-                        </div>
-                        <div class="h-5 bg-surface-page rounded-btn-lg overflow-hidden">
-                          <div class="h-full rounded-btn-lg" :class="e.rate >= 90 ? 'bg-success' : e.rate >= 80 ? 'bg-warning' : 'bg-danger'" :style="'width:' + e.rate + '%'"></div>
-                        </div>
-                      </div>
-                    </template>
-                  </div>
-                </div>
-
-                <!-- Right: By Segment -->
-                <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-                  <div class="text-[13px] font-semibold text-ink mb-4">按 Segment 成功率</div>
-                  <div class="space-y-3">
-                    <template x-for="p in generationQueryStats.successRateByProfile" :key="p.group">
-                      <div>
-                        <div class="flex items-center justify-between mb-1 text-[12px]">
-                          <span class="font-semibold text-ink" x-text="p.group"></span>
-                          <div class="flex items-center gap-3">
-                            <span class="text-[11px] text-ink-muted tabular-nums" x-text="p.queries.toLocaleString() + ' 条 Query'"></span>
-                            <span class="text-accent font-semibold tabular-nums" x-text="p.rate + '%'"></span>
-                          </div>
-                        </div>
-                        <div class="h-5 bg-surface-page rounded-btn-lg overflow-hidden">
-                          <div class="h-full rounded-btn-lg" :class="p.rate >= 90 ? 'bg-success' : p.rate >= 80 ? 'bg-warning' : 'bg-danger'" :style="'width:' + p.rate + '%'"></div>
-                        </div>
-                      </div>
-                    </template>
-                  </div>
-                </div>
-              </div>
-
-              <!-- ③ Per-engine execution controls -->
-              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-                <h3 class="text-[14px] font-semibold text-ink mb-4">每引擎执行控制</h3>
-                <div class="space-y-2">
-                  <template x-for="e in ['ChatGPT', '豆包', 'DeepSeek']" :key="e">
-                    <div class="flex items-center justify-between p-3 rounded-card bg-surface-page border border-b-card/50">
-                      <span class="text-[13px] font-medium text-ink" x-text="e"></span>
-                      <div class="flex items-center gap-2">
-                        <button class="h-7 px-3 rounded-btn text-[11px] font-medium border border-success/30 text-success bg-white hover:bg-success/5">恢复</button>
-                        <button class="h-7 px-3 rounded-btn text-[11px] font-medium border border-warning/30 text-warning bg-white hover:bg-warning/5">暂停</button>
-                      </div>
+                <div class="grid grid-cols-6 gap-3">
+                  <template x-for="gate in queryPoolQualityGates" :key="gate.title">
+                    <div class="p-4 rounded-card bg-surface-page border border-b-card">
+                      <div class="text-[11px] text-ink-muted font-semibold" x-text="gate.title"></div>
+                      <div class="text-[20px] font-bold text-ink mt-2" x-text="gate.value"></div>
+                      <div class="text-[10px] text-ink-muted mt-2" x-text="gate.meta"></div>
                     </div>
                   </template>
                 </div>
+                <div class="mt-4 flex items-center gap-6 p-3 rounded-card bg-accent/5 border border-accent/15">
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="shuffle" class="w-4 h-4 text-accent"></i>
+                    <span class="text-[12px] text-ink-muted">采样策略:</span>
+                    <span class="text-[12px] font-semibold text-ink" x-text="queryPoolProfileStrategyLabel() + ' · 每 Prompt ' + queryPoolConfig.profilesPerPrompt + ' 个 Profile'"></span>
+                  </div>
+                  <div class="w-px h-5 bg-accent/20"></div>
+                  <div class="flex items-center gap-2">
+                    <i data-lucide="send-horizontal" class="w-4 h-4 text-success"></i>
+                    <span class="text-[12px] text-ink-muted">引擎策略:</span>
+                    <span class="text-[12px] font-semibold text-ink" x-text="queryPoolEnginePolicyLabel()"></span>
+                  </div>
+                </div>
               </div>
 
-              <!-- ④ Query 详细列表 (Prompt × Profile 组合) -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
-                <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
-                    <h3 class="text-[14px] font-semibold text-ink">Query 内容列表</h3>
-                  <div class="flex items-center gap-2">
-                    <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                      <option value="">全部引擎</option>
-                      <option>ChatGPT</option><option>豆包</option><option>DeepSeek</option>
-                    </select>
-                    <select class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                <div class="px-6 py-4 border-b border-b-card flex items-center justify-between gap-4">
+                  <div>
+                    <h3 class="text-[14px] font-semibold text-ink">Query 候选列表</h3>
+                    <p class="text-[11px] text-ink-muted mt-1">亿级候选使用服务端游标分页；具体引擎在调度创建派发任务时再确定。</p>
+                  </div>
+                  <div class="flex items-center justify-end gap-2 flex-wrap">
+                    <div class="relative w-[240px]">
+                      <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"></i>
+                      <input x-model="queryPoolCandidateQuery" @input.debounce.350ms="loadQueryPoolCandidates()"
+                             class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink"
+                             placeholder="搜索 Prompt / Segment / Query" />
+                    </div>
+                    <input x-model="queryPoolCandidateSegment" @input.debounce.350ms="loadQueryPoolCandidates()"
+                           class="w-[150px] h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink"
+                           placeholder="筛选 Segment" />
+                    <input x-model="queryPoolCandidateProfile" @input.debounce.350ms="loadQueryPoolCandidates()"
+                           class="w-[150px] h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink"
+                           placeholder="筛选 Profile" />
+                    <select x-model="queryPoolCandidateStatus" @change="loadQueryPoolCandidates()"
+                            class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                       <option value="">全部状态</option>
-                      <option>已完成</option><option>部分完成</option><option>失败</option>
+                      <option value="candidate">候选</option>
+                      <option value="review">待审</option>
+                      <option value="ready">就绪</option>
+                    </select>
+                    <select x-model.number="queryPoolCandidatePerPage" @change="loadQueryPoolCandidates()"
+                            class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                      <option :value="50">50</option>
+                      <option :value="100">100</option>
+                      <option :value="200">200</option>
                     </select>
                   </div>
                 </div>
+                <div class="px-6 py-3 border-b border-b-card bg-surface-page flex items-center justify-between">
+                  <div class="flex items-center gap-2 text-[11px] text-ink-muted">
+                    <span>路由意图</span>
+                    <span class="inline-flex items-center h-6 px-2 rounded-badge bg-accent/10 text-accent font-semibold" x-text="queryPoolEnginePolicyLabel()"></span>
+                    <span class="text-ink-faint">引擎展开由调度阶段处理。</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button @click="loadQueryPoolCandidates('prev')" :disabled="!queryPoolCandidatePageInfo.hasPrev || queryPoolCandidateLoading"
+                            class="h-7 w-7 inline-flex items-center justify-center rounded-btn border border-b-default text-ink-muted hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed" title="上一页">
+                      <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
+                    </button>
+                    <span class="min-w-[220px] text-center text-[11px] text-ink-muted" x-text="queryPoolCandidatePageRangeText()"></span>
+                    <button @click="loadQueryPoolCandidates('next')" :disabled="!queryPoolCandidatePageInfo.hasNext || queryPoolCandidateLoading"
+                            class="h-7 w-7 inline-flex items-center justify-center rounded-btn border border-b-default text-ink-muted hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed" title="下一页">
+                      <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                    </button>
+                  </div>
+                </div>
                 <div class="divide-y divide-b-card">
-                  <template x-for="q in queryDetailList" :key="q.id">
+                  <template x-if="queryPoolCandidateError">
+                    <div class="px-6 py-3 bg-danger/5 text-danger text-[12px]" x-text="queryPoolCandidateError"></div>
+                  </template>
+                  <template x-if="queryPoolCandidateLoading">
+                    <div class="px-6 py-10 text-center text-[12px] text-ink-muted">候选加载中...</div>
+                  </template>
+                  <template x-if="!queryPoolCandidateLoading && queryPoolCandidateRows.length === 0">
+                    <div class="px-6 py-10 text-center text-[12px] text-ink-muted">当前游标窗口暂无候选。</div>
+                  </template>
+                  <template x-for="q in queryPoolCandidateRows" :key="q.id">
                     <div class="px-6 py-4 hover:bg-surface-page transition-colors">
                       <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center gap-2 text-[11px]">
                           <span class="font-semibold text-ink" x-text="topicTitle(q.topicId)"></span>
-                          <span class="font-medium text-ink" x-text="q.engine"></span>
+                          <span class="text-ink-muted" x-text="q.promptId"></span>
                         </div>
-                        <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
-                              :class="q.status==='completed' ? 'bg-success/10 text-success' : q.status==='failed' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning'"
-                              x-text="queryStatusLabel(q.status)"></span>
+                        <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="queryPoolCandidateStatusLabel(q.candidateStatus)"></span>
                       </div>
-                      <!-- Profile context -->
                       <div class="flex items-center gap-2 mb-2 text-[11px]">
                         <i data-lucide="user" class="w-3 h-3 text-ink-muted"></i>
                         <span class="text-ink-muted" x-text="q.profileGroup"></span>
                         <span class="text-ink-faint" x-text="'(' + q.profileDesc + ')'"></span>
                       </div>
-                      <!-- Actual query text sent to engine -->
                       <div class="text-[12px] text-ink leading-relaxed p-3 rounded-card bg-surface-page border border-b-card/50" x-text="q.actualQueryText"></div>
-                      <!-- Response link -->
-                      <div class="mt-2 text-[10px]">
-                        <template x-if="q.responseId">
-                          <span class="text-accent cursor-pointer hover:underline">查看采集结果</span>
-                        </template>
-                        <template x-if="!q.responseId">
-                          <span class="text-danger">无 Response（执行失败）</span>
-                        </template>
-                      </div>
                     </div>
                   </template>
                 </div>
@@ -8501,34 +8463,45 @@ function adminApp() {
     queryPoolSelectionFilters: null,
     queryPoolConfig: {
       profileStrategy: 'balanced',
-      engineRouting: 'balanced',
+      desiredEnginePolicy: 'inherit',
       budgetCap: 180,
       scheduleWindow: 'next',
       dedupePolicy: 'merge',
       priorityMode: 'gap',
       profilesPerPrompt: 3,
-      engineCount: 2,
       maxQueries: 12000,
       overflowPolicy: 'split',
     },
     queryPoolActionPanel: '',
     queryPoolAssembleStarted: false,
+    queryPoolAssembling: false,
+    queryPoolCurrentRunId: '',
+    queryPoolCandidateRows: [],
+    queryPoolCandidateLoading: false,
+    queryPoolCandidateError: '',
+    queryPoolCandidateQuery: '',
+    queryPoolCandidateSegment: '',
+    queryPoolCandidateProfile: '',
+    queryPoolCandidateStatus: '',
+    queryPoolCandidatePerPage: 100,
+    queryPoolCandidateCursor: { next: null, prev: null },
+    queryPoolCandidatePageInfo: { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 },
     queryPoolCostRows: [
-      { engine:'ChatGPT', queries:24, unit:'$0.006 / query', cost:'$0.14' },
-      { engine:'豆包', queries:24, unit:'¥0.018 / query', cost:'¥0.43' },
-      { engine:'DeepSeek', queries:0, unit:'¥0.012 / query', cost:'¥0.00' },
+      { engine:'候选组装', queries:4680, unit:'Prompt x Profile 候选', cost:'不绑定引擎' },
+      { engine:'调度派发', queries:0, unit:'引擎展开稍后确定', cost:'调度阶段估算' },
+      { engine:'预算保护', queries:12000, unit:'入队前候选上限', cost:'策略校验' },
     ],
     queryPoolAssembleSteps: [
-      { name:'Prompt 校验', status:'idle', label:'等待', value:'0 个 Prompt' },
-      { name:'Segment Profile 采样', status:'idle', label:'等待', value:'0 个 Profile' },
-      { name:'Query 渲染', status:'idle', label:'待运行', value:'+0' },
-      { name:'预检入池', status:'idle', label:'待运行', value:'待入池' },
+      { name:'Prompt 校验', status:'idle', label:'等待中', value:'0 个 Prompt' },
+      { name:'Segment Profile 采样', status:'idle', label:'等待中', value:'0 个 Profile' },
+      { name:'Query 候选渲染', status:'idle', label:'等待中', value:'+0 个候选' },
+      { name:'调度接收', status:'idle', label:'等待中', value:'未入队' },
     ],
     queryPoolPreflightItems: [
-      { name:'模板变量', result:'通过', tone:'success', impact:'0 failed', action:'无需处理' },
-      { name:'重复 Query', result:'3 review', tone:'warning', impact:'相似问法过高', action:'自动合并' },
-      { name:'账号水位', result:'通过', tone:'success', impact:'可执行', action:'无需处理' },
-      { name:'成本上限', result:'通过', tone:'success', impact:'低于预算', action:'无需处理' },
+      { name:'模板变量', result:'通过', tone:'success', impact:'0 个失败', action:'无需处理' },
+      { name:'重复候选', result:'3 个待审', tone:'warning', impact:'渲染文本相似', action:'合并或人工确认' },
+      { name:'Segment 权重', result:'通过', tone:'success', impact:'允许采样', action:'无需处理' },
+      { name:'调度接收', result:'就绪', tone:'success', impact:'引擎派发稍后处理', action:'调度阶段控制执行' },
     ],
     topicPlanQualityGates: [
       { title:'发布覆盖', value:'78%', tone:'success', icon:'radar', meta:'目标 80% · 当前接近达标' },
@@ -8543,10 +8516,12 @@ function adminApp() {
       { title:'相似重复', value:'0', tone:'success', meta:'Duplicate candidates / prompts' },
     ],
     queryPoolQualityGates: [
-      { title:'渲染成功', value:'99.2%', tone:'success', meta:'变量都能生成完整 Query' },
-      { title:'Segment 覆盖', value:'4.6 平均', tone:'success', meta:'核心 Segment 覆盖充足' },
-      { title:'引擎可用', value:'23 暂缓', tone:'warning', meta:'账号或地域不匹配' },
-      { title:'成本上限', value:'$142', tone:'success', meta:'低于本批预算' },
+      { title:'候选就绪', value:'4,680', tone:'success', meta:'引擎派发前已完成组装' },
+      { title:'渲染通过率', value:'99.2%', tone:'success', meta:'模板变量均已正确渲染' },
+      { title:'Segment 覆盖', value:'82%', tone:'success', meta:'已覆盖启用且有权重的 Segment' },
+      { title:'Profile 覆盖', value:'3.0 / Prompt', tone:'accent', meta:'每个选中 Prompt 的采样 Profile 数' },
+      { title:'重复待审', value:'3 个待审', tone:'warning', meta:'相似候选需要合并或确认' },
+      { title:'调度接收', value:'就绪', tone:'success', meta:'派发任务稍后由调度创建' },
     ],
     schedulerWorkflow: [
       { no:'01', title:'接收批次', icon:'inbox', desc:'读取 scheduler_intake_batch，并按窗口合并或拆分。' },
@@ -8611,7 +8586,7 @@ function adminApp() {
       { title: 'Planner · 规划', items: [
         { key:'planner-topics',        label:'Topic Plan',          icon:'layers-3',            group:'Planner', subtitle:'行业基线 + 品牌 / 产品覆盖' },
         { key:'planner-prompt-matrix', label:'Prompt Matrix',       icon:'message-square-text', group:'Planner', subtitle:'Intent × Language × Template 生成矩阵' },
-        { key:'planner-query-pool',    label:'Query Pool',          icon:'send-horizontal',     group:'Planner', subtitle:'Prompt × Profile × Engine 可执行任务池' },
+        { key:'planner-query-pool',    label:'Query Pool',          icon:'send-horizontal',     group:'Planner', subtitle:'Prompt × Segment × Profile 候选池' },
         { key:'planner-scheduler',     label:'采集调度',             icon:'calendar-clock',      group:'Planner', subtitle:'预算 / 资源 / 优先级 · Query 入队控制' },
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
         { key:'planner-profiles',   label:'Segment', icon:'users',          group:'Planner', subtitle:'人群 Segment · 权重 · 单个 Profile 池' },
@@ -8748,7 +8723,7 @@ function adminApp() {
     // === Prompt 模板详细内容 (含完整模板文本) ===
     promptDetailList: [],
 
-    // === Query 列表 (Prompt × Profile 组合, 含实际发送文本) ===
+    // === Query candidate seed rows (Prompt x Segment x Profile, engine-agnostic) ===
     queryDetailList: [
       { id:'Q-1234', promptId:'PM-3003', topicId:'T-1205', engine:'ChatGPT', profileGroup:'一线年轻女性', profileDesc:'25 岁 · 女 · 上海 · 月入 15k · 关注抗衰',
         actualQueryText:'What are the best anti-aging serums in 2026? Compare top brands including Estée Lauder and Lancôme, SK-II, La Mer in terms of ingredients, efficacy, value for money, and user reviews. Rank them by recommendation level.',
@@ -8952,7 +8927,7 @@ function adminApp() {
       executing: 42,
       completed: 41589,
       totalAssembled: 45820,
-      // Prompt × Profile 采样 (PRD §4.2.3: 每个 Prompt 采样 3-5 个 Profile)
+      // Prompt x Segment x Profile sampling
       avgProfilesPerPrompt: 3.6,
       samplingCoverage: '主要人口统计维度全覆盖',
       successRateByEngine: [
@@ -9710,6 +9685,7 @@ function adminApp() {
       if (key === 'planner-topics' || key === 'planner-prompt-matrix' || key === 'planner-query-pool') this.loadTopicPlanConfig();
       if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
       if (key === 'planner-query-pool') this.loadQueryPoolPrompts();
+      if (key === 'planner-query-pool') this.loadQueryPoolCandidates();
     },
 
     currentNav(){
@@ -11101,7 +11077,7 @@ function adminApp() {
         if (this.promptMatrixPromptLanguage) qp.set('language', this.promptMatrixPromptLanguage);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt load failed');
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
         this.promptDetailList = body.rows || [];
         if (body.stats) this.generationPromptStats = { ...this.generationPromptStats, ...body.stats };
       } catch (e) {
@@ -11511,7 +11487,7 @@ function adminApp() {
         if (filters.language) qp.set('language', filters.language);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt load failed');
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
         this.queryPoolPrompts = (body.rows || []).map(prompt => ({
           ...prompt,
           id: this.queryPoolPromptId(prompt),
@@ -11526,7 +11502,7 @@ function adminApp() {
         this.queryPoolPrompts = [];
         this.queryPoolPromptTotal = 0;
         this.queryPoolPromptTotalPagesValue = 1;
-        this.queryPoolPromptsError = e.message || 'Prompt load failed';
+        this.queryPoolPromptsError = e.message || 'Prompt 加载失败';
       } finally {
         this.queryPoolPromptsLoading = false;
         this.$nextTick(()=>lucide.createIcons());
@@ -11536,8 +11512,7 @@ function adminApp() {
     queryCountRaw(){
       const promptCount = this.queryPoolSelectedPromptCount();
       const profiles = Number(this.queryPoolConfig.profilesPerPrompt) || 0;
-      const engines = Number(this.queryPoolConfig.engineCount) || 0;
-      return promptCount * profiles * engines;
+      return promptCount * profiles;
     },
 
     estimatedQueryCount(){
@@ -11548,7 +11523,108 @@ function adminApp() {
     queryCountFormulaText(){
       const cfg = this.queryPoolConfig;
       const promptCount = this.queryPoolSelectedPromptCount();
-      return `${promptCount} 个 Prompt × 每条 ${cfg.profilesPerPrompt} 个 Profile × ${cfg.engineCount} 个引擎 · 总上限 ${Number(cfg.maxQueries).toLocaleString()}`;
+      return `已选 Prompt x 每 Prompt Profile = ${promptCount} x ${cfg.profilesPerPrompt} · 候选上限 ${Number(cfg.maxQueries).toLocaleString()}`;
+    },
+
+    queryPoolProfileStrategyLabel(){
+      const labels = {
+        balanced: '核心 Segment + 补充 Segment',
+        core: '仅核心 Segment',
+        full: '完整 Segment 覆盖',
+      };
+      return labels[this.queryPoolConfig.profileStrategy] || this.queryPoolConfig.profileStrategy;
+    },
+
+    queryPoolEnginePolicyLabel(){
+      const labels = {
+        inherit: '继承调度默认',
+        balanced: '质量与成本均衡',
+        quality_first: '质量优先',
+        cost_guarded: '成本受控',
+        coverage_first: '覆盖优先',
+        domestic_only: '仅国内引擎',
+        global_only: '仅国际引擎',
+        benchmark_panel: '基准评测引擎组',
+      };
+      return labels[this.queryPoolConfig.desiredEnginePolicy] || this.queryPoolConfig.desiredEnginePolicy;
+    },
+
+    queryPoolCandidateStatusLabel(status){
+      return {
+        candidate: '候选',
+        review: '待审',
+        ready: '就绪',
+      }[status] || '候选';
+    },
+
+    queryPoolCandidatePageRangeText(){
+      const shown = this.queryPoolCandidateRows.length;
+      const approxTotal = Number(this.queryPoolCandidatePageInfo.approxTotal || 0);
+      const suffix = approxTotal ? `，约 ${approxTotal.toLocaleString()} 条` : '';
+      if (!shown) return `当前窗口 0 条${suffix}`;
+      return `当前窗口 ${shown.toLocaleString()} 条${suffix}`;
+    },
+
+    async loadQueryPoolCandidates(direction = 'current'){
+      this.queryPoolCandidateLoading = true;
+      this.queryPoolCandidateError = '';
+      try {
+        const limit = Number(this.queryPoolCandidatePerPage) || 100;
+        const cursor = direction === 'next'
+          ? this.queryPoolCandidateCursor.next
+          : direction === 'prev'
+            ? this.queryPoolCandidateCursor.prev
+            : null;
+        const query = String(this.queryPoolCandidateQuery || '').trim();
+        const segmentFilter = String(this.queryPoolCandidateSegment || '').trim();
+        const profileFilter = String(this.queryPoolCandidateProfile || '').trim();
+        const status = String(this.queryPoolCandidateStatus || '').trim();
+        const qp = new URLSearchParams({ limit:String(limit) });
+        if (cursor) {
+          qp.set('cursor', cursor);
+          qp.set('direction', direction === 'prev' ? 'prev' : 'next');
+        }
+        if (query) qp.set('q', query);
+        if (segmentFilter) qp.set('segment_id', segmentFilter);
+        if (profileFilter) qp.set('profile_id', profileFilter);
+        if (status) qp.set('status', status);
+        if (this.queryPoolCurrentRunId) qp.set('run_id', this.queryPoolCurrentRunId);
+        const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || '候选加载失败');
+        const rows = (body.rows || []).map(row => ({
+          id: row.id,
+          runId: row.run_id,
+          candidateSeq: row.candidate_seq,
+          promptId: row.prompt_id,
+          topicId: row.topic_id || row.prompt_id,
+          segmentId: row.segment_id,
+          profileId: row.profile_id,
+          profileGroup: row.segment_id || '未绑定 Segment',
+          profileDesc: row.profile_id || '未绑定 Profile',
+          actualQueryText: row.rendered_query,
+          candidateStatus: row.candidate_status || 'candidate',
+        }));
+        this.queryPoolCandidateRows = rows;
+        this.queryPoolCandidateCursor = {
+          next: body.next_cursor || null,
+          prev: body.prev_cursor || null,
+        };
+        this.queryPoolCandidatePageInfo = {
+          hasNext: Boolean(this.queryPoolCandidateCursor.next),
+          hasPrev: Boolean(this.queryPoolCandidateCursor.prev),
+          approxTotal: Number(body.approx_total || 0),
+          currentCount: rows.length,
+        };
+      } catch (e) {
+        this.queryPoolCandidateRows = [];
+        this.queryPoolCandidateCursor = { next: null, prev: null };
+        this.queryPoolCandidatePageInfo = { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 };
+        this.queryPoolCandidateError = e.message || '候选加载失败';
+      } finally {
+        this.queryPoolCandidateLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
     openQueryPoolPanel(panel){
@@ -11569,28 +11645,47 @@ function adminApp() {
         this.toast('请先选择 Prompt');
         return;
       }
-      try {
-        const res = await fetch(API_BASE + '/segments?page=1&per_page=1&status=active', { credentials:'same-origin' });
-        const body = await res.json().catch(() => ({}));
-        const activeWeight = Number(body.summary && body.summary.active_weight_sum || 0);
-        if (res.ok && activeWeight <= 0) {
-          this.toast('Active Segment weight is 0. Adjust Segment sampling before assembling Query.');
-          return;
-        }
-      } catch (error) {
-        this.toast('Segment sampling check failed');
-        return;
-      }
       const payload = this.queryPoolSelectionPayload();
-      this.queryPoolAssembleStarted = true;
-      this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
-        if (step.name === 'Prompt 校验') return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
-        if (step.name === 'Segment Profile 采样') return { ...step, status:'done', label:'每条 ' + this.queryPoolConfig.profilesPerPrompt + ' 个', value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
-        if (step.name === 'Query 渲染') return { ...step, status:'done', label:'完成', value:'+' + this.estimatedQueryCount() };
-        if (step.name === '预检入池') return { ...step, status:'done', label:'完成', value:payload.mode === 'filtered' ? '全部匹配选择' : '显式选择' };
-        return step;
-      });
-      this.toast('Query 组装任务已完成');
+      const config = {
+        profile_strategy: this.queryPoolConfig.profileStrategy,
+        desired_engine_policy: this.queryPoolConfig.desiredEnginePolicy,
+        budget_cap: Number(this.queryPoolConfig.budgetCap || 0),
+        intake_window: this.queryPoolConfig.scheduleWindow,
+        dedupe_policy: this.queryPoolConfig.dedupePolicy,
+        priority_mode: this.queryPoolConfig.priorityMode,
+        profiles_per_prompt: Number(this.queryPoolConfig.profilesPerPrompt || 0),
+        max_candidates: Number(this.queryPoolConfig.maxQueries || 0),
+        overflow_policy: this.queryPoolConfig.overflowPolicy,
+      };
+      this.queryPoolAssembling = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/query-pool/assemble', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ selection: payload, config }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 组装失败');
+        const run = body.run || {};
+        const preflight = run.preflight_summary || {};
+        this.queryPoolCurrentRunId = run.id || '';
+        this.queryPoolAssembleStarted = true;
+        this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
+          if (step.name === 'Prompt 校验') return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
+          if (step.name === 'Segment Profile 采样') return { ...step, status:'done', label:'每 Prompt ' + this.queryPoolConfig.profilesPerPrompt + ' 个', value:(promptCount * Number(this.queryPoolConfig.profilesPerPrompt || 0)).toLocaleString() + ' 个 Profile' };
+          if (step.name === 'Query 候选渲染') return { ...step, status:'done', label:'完成', value:'+' + Number(run.candidates_assembled || preflight.candidate_ready || 0).toLocaleString() + ' 个候选' };
+          if (step.name === '调度接收') return { ...step, status:'done', label:'就绪', value:payload.mode === 'filtered' ? '全部筛选 Prompt' : '显式选择' };
+          return step;
+        });
+        this.queryPoolCandidateCursor = { next: null, prev: null };
+        await this.loadQueryPoolCandidates();
+        this.toast('Query 组装任务已完成');
+      } catch (error) {
+        this.toast(error.message || 'Query 组装失败');
+      } finally {
+        this.queryPoolAssembling = false;
+      }
     },
 
     goto(key, options = {}){
