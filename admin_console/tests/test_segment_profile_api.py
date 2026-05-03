@@ -497,6 +497,68 @@ def test_llm_profile_generation_service_boundary(client, monkeypatch):
     assert any("INSERT INTO profile_generation_logs" in sql for sql, _ in conn.statements)
 
 
+def test_async_profile_generation_returns_job(client, monkeypatch):
+    login(monkeypatch)
+    with app_mod._profile_generation_jobs_lock:
+        app_mod._profile_generation_jobs.clear()
+    started = {}
+
+    class FakeThread:
+        def __init__(self, target=None, kwargs=None, daemon=None):
+            started["target"] = target
+            started["kwargs"] = kwargs
+            started["daemon"] = daemon
+
+        def start(self):
+            started["started"] = True
+
+    monkeypatch.setattr(app_mod.threading, "Thread", FakeThread)
+
+    response = client.post(
+        "/api/segments/SEG-001/profiles/generate",
+        json={"brand_name": "CHANEL", "count": 6, "async_generation": True},
+    )
+    body = response.get_json()
+
+    assert response.status_code == 202
+    assert body["pending"] is True
+    assert body["job_id"]
+    assert started["started"] is True
+    assert started["daemon"] is True
+    assert started["kwargs"]["segment_id"] == "SEG-001"
+    job = app_mod._get_profile_generation_job(body["job_id"])
+    assert job["status"] == "queued"
+    assert job["segment_id"] == "SEG-001"
+
+    with app_mod._profile_generation_jobs_lock:
+        app_mod._profile_generation_jobs.clear()
+
+
+def test_profile_generation_job_poll_returns_completed(client, monkeypatch):
+    login(monkeypatch)
+    with app_mod._profile_generation_jobs_lock:
+        app_mod._profile_generation_jobs.clear()
+    app_mod._set_profile_generation_job(
+        "job-1",
+        segment_id="SEG-001",
+        status="completed",
+        drafts=[{"id": "P-1", "name": "Draft"}],
+        model="fake-model",
+        usage={"total_tokens": 10},
+    )
+
+    response = client.get("/api/segments/SEG-001/profiles/generate/job-1")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["pending"] is False
+    assert body["status"] == "completed"
+    assert body["drafts"][0]["id"] == "P-1"
+
+    with app_mod._profile_generation_jobs_lock:
+        app_mod._profile_generation_jobs.clear()
+
+
 def test_segment_generation_service_uses_openai_compatible_llm(monkeypatch):
     calls = []
 

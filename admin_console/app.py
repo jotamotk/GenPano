@@ -9,7 +9,7 @@ import json
 import base64
 import hashlib
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, urlparse
 from flask import Flask, render_template, render_template_string, request, jsonify, Response, session, has_request_context, redirect
 
@@ -10118,6 +10118,136 @@ def _drafts_with_brand_context(items, *, brand_id=None, brand_name="", segment_i
     return drafts
 
 
+_profile_generation_jobs = {}
+_profile_generation_jobs_lock = threading.Lock()
+_PROFILE_GENERATION_JOB_LIMIT = 50
+
+
+def _profile_generation_job_snapshot(job):
+    if not job:
+        return None
+    return {
+        "job_id": job.get("job_id"),
+        "segment_id": job.get("segment_id"),
+        "status": job.get("status"),
+        "pending": job.get("status") in {"queued", "running"},
+        "error": job.get("error"),
+        "message": job.get("message"),
+        "drafts": job.get("drafts") or [],
+        "model": job.get("model"),
+        "usage": job.get("usage") or {},
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "http_status": job.get("http_status"),
+    }
+
+
+def _set_profile_generation_job(job_id, **updates):
+    now = datetime.now(timezone.utc).isoformat()
+    with _profile_generation_jobs_lock:
+        job = _profile_generation_jobs.setdefault(
+            job_id,
+            {"job_id": job_id, "created_at": now, "status": "queued"},
+        )
+        job.update(updates)
+        job["updated_at"] = now
+        if len(_profile_generation_jobs) > _PROFILE_GENERATION_JOB_LIMIT:
+            oldest = sorted(
+                _profile_generation_jobs.values(),
+                key=lambda item: item.get("created_at") or "",
+            )[: len(_profile_generation_jobs) - _PROFILE_GENERATION_JOB_LIMIT]
+            for stale in oldest:
+                _profile_generation_jobs.pop(stale["job_id"], None)
+        return _profile_generation_job_snapshot(job)
+
+
+def _get_profile_generation_job(job_id):
+    with _profile_generation_jobs_lock:
+        return _profile_generation_job_snapshot(_profile_generation_jobs.get(job_id))
+
+
+def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
+    from psycopg2.extras import RealDictCursor
+
+    payload = dict(payload or {})
+    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    conn = None
+    _set_profile_generation_job(job_id, status="running", message="LLM generation started")
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                conn.rollback()
+                _set_profile_generation_job(
+                    job_id,
+                    status="failed",
+                    error="segment_not_found",
+                    message="Segment not found",
+                    http_status=404,
+                )
+                return
+            brand_id = segment.get("brand_id") or _brand_id_value(payload)
+            draft_brand_name = segment.get("brand_name") or brand_name
+            service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+            result = service.generate_profiles(
+                segment=segment,
+                brand_name=brand_name,
+                count=_clamp_int(payload.get("count"), 6, 1, 50),
+                goal=payload.get("goal") or "",
+                constraints=payload.get("constraints") or payload.get("notes") or "",
+            )
+            _write_profile_generation_log(cur, admin_id, segment_id, payload, result)
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin_id,
+                action="generate_profiles",
+                target_type="segment",
+                target_id=segment_id,
+                diff={"count": len(result.items), "model": result.model},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        _set_profile_generation_job(
+            job_id,
+            status="completed",
+            message="Profile generation completed",
+            drafts=_drafts_with_brand_context(
+                result.items,
+                brand_id=brand_id,
+                brand_name=draft_brand_name,
+                segment_id=segment_id,
+            ),
+            model=result.model,
+            usage=result.usage,
+            http_status=200,
+        )
+    except SegmentProfileGenerationError as error:
+        if conn:
+            conn.rollback()
+        _set_profile_generation_job(
+            job_id,
+            status="failed",
+            error=error.code,
+            message=error.message,
+            http_status=_segment_profile_generation_status(error),
+        )
+    except Exception as error:
+        if conn:
+            conn.rollback()
+        app.logger.exception("Async Profile generation failed: %s", error)
+        _set_profile_generation_job(
+            job_id,
+            status="failed",
+            error="profile_generation_failed",
+            message=str(error) or "Profile generation failed",
+            http_status=500,
+        )
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route('/api/segments')
 def admin_segments_api():
     admin, error_response = _require_admin()
@@ -10509,6 +10639,33 @@ def admin_segment_profiles_generate_api(segment_id):
     brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
+    if payload.get("async_generation") or payload.get("async"):
+        job_id = str(uuid.uuid4())
+        _set_profile_generation_job(
+            job_id,
+            status="queued",
+            segment_id=str(segment_id).strip().upper(),
+            message="Profile generation queued",
+        )
+        thread = threading.Thread(
+            target=_run_profile_generation_job,
+            kwargs={
+                "job_id": job_id,
+                "admin_id": admin["id"],
+                "segment_id": segment_id,
+                "payload": payload,
+            },
+            daemon=True,
+        )
+        thread.start()
+        return jsonify(
+            {
+                "success": True,
+                "pending": True,
+                "status": "queued",
+                "job_id": job_id,
+            }
+        ), 202
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -10549,6 +10706,39 @@ def admin_segment_profiles_generate_api(segment_id):
         segment_id=segment_id,
     )
     return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
+
+
+@app.route('/api/segments/<segment_id>/profiles/generate/<job_id>')
+def admin_segment_profiles_generate_job_api(segment_id, job_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    job = _get_profile_generation_job(job_id)
+    if not job or job.get("segment_id") != str(segment_id).strip().upper():
+        return jsonify({"success": False, "error": "generation_job_not_found"}), 404
+    if job.get("status") == "failed":
+        return jsonify(
+            {
+                "success": False,
+                "pending": False,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "error": job.get("error") or "profile_generation_failed",
+                "message": job.get("message") or "Profile generation failed",
+            }
+        ), int(job.get("http_status") or 500)
+    return jsonify(
+        {
+            "success": True,
+            "pending": job.get("pending"),
+            "job_id": job_id,
+            "status": job.get("status"),
+            "message": job.get("message"),
+            "drafts": job.get("drafts") or [],
+            "model": job.get("model"),
+            "usage": job.get("usage") or {},
+        }
+    )
 
 
 @app.route('/api/segments/<segment_id>/profiles/<profile_id>', methods=['PUT'])
