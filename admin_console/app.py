@@ -2775,8 +2775,12 @@ def _query_pool_load_json_object(raw):
     return parsed
 
 
+def _query_pool_normalize_query_text(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def _query_pool_clean_query_text(value, candidate_key):
-    query = re.sub(r"\s+", " ", str(value or "")).strip()
+    query = _query_pool_normalize_query_text(value)
     if len(query) < 4 or len(query) > 160:
         raise TopicPlanLLMError(
             "query_length_invalid",
@@ -2797,7 +2801,81 @@ def _query_pool_clean_query_text(value, candidate_key):
     return query
 
 
-def _parse_query_pool_llm_queries(raw, expected_keys):
+def _query_pool_has_cjk(text):
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _query_pool_sanitize_consumer_seed(value):
+    text = _query_pool_normalize_query_text(value)
+    text = re.sub(r"\{\{?[^{}]+\}?\}", " ", text)
+    text = re.sub(r"\[[^\]]+\]", " ", text)
+    for phrase in ("请以", "请从", "视角", "角度", "回答", "作为", "扮演"):
+        text = text.replace(phrase, " ")
+    for term in QUERY_POOL_FORBIDDEN_QUERY_TERMS:
+        text = re.sub(re.escape(term), " ", text, flags=re.IGNORECASE)
+    text = _query_pool_normalize_query_text(text)
+    return text.strip(" ,，。.!！?？:：;；、")
+
+
+def _query_pool_candidate_fallback_query(context):
+    context = context or {}
+    subject = _query_pool_sanitize_consumer_seed(context.get("topic_text") or context.get("prompt_text") or "")
+    need = _query_pool_sanitize_consumer_seed(context.get("profile_need") or "")
+    profile = _query_pool_sanitize_consumer_seed(
+        context.get("profile_demographic") or context.get("profile_name") or context.get("segment_name") or ""
+    )
+    seed = subject
+    if need and subject and need not in subject:
+        seed = f"{need}，{subject}" if _query_pool_has_cjk(need + subject) else f"{need}, {subject}"
+    elif need:
+        seed = need
+    elif profile and subject:
+        seed = f"{profile}，{subject}" if _query_pool_has_cjk(profile + subject) else f"{profile}, {subject}"
+    elif profile:
+        seed = profile
+
+    seed = _query_pool_sanitize_consumer_seed(seed)[:120]
+    if _query_pool_has_cjk(seed):
+        seed = seed or "这个产品"
+        if is_natural_user_prompt(seed):
+            return seed if seed.endswith(("?", "？")) else seed + "？"
+        return seed.rstrip("？?") + "怎么选？"
+    seed = seed or "this product"
+    seed = seed.rstrip("?")
+    if is_natural_user_prompt(seed):
+        return seed + "?"
+    return f"Which option is worth buying for {seed}?"
+
+
+def _query_pool_repair_query_text(value, context, candidate_key):
+    query = _query_pool_normalize_query_text(value)
+    attempts = []
+    if query:
+        attempts.append(query)
+        if _query_pool_has_cjk(query):
+            attempts.append(query.rstrip("。.!！?？,，、;；") + "怎么选？")
+            attempts.append(query.rstrip("。.!！?？,，、;；") + "值不值得买？")
+        else:
+            seed = query.rstrip(".!?")
+            attempts.append(f"Which {seed} is worth buying?")
+            attempts.append(f"How should I choose {seed}?")
+    attempts.append(_query_pool_candidate_fallback_query(context))
+
+    last_error = None
+    for attempt in attempts:
+        try:
+            return _query_pool_clean_query_text(attempt, candidate_key)
+        except TopicPlanLLMError as error:
+            last_error = error
+    if last_error:
+        raise last_error
+    raise TopicPlanLLMError(
+        "query_not_natural",
+        f"LLM query for {candidate_key} must sound like a real consumer question",
+    )
+
+
+def _parse_query_pool_llm_queries(raw, expected_keys, *, validate_queries=True):
     expected = [str(key) for key in expected_keys]
     expected_set = set(expected)
     data = _query_pool_load_json_object(raw)
@@ -2816,7 +2894,8 @@ def _parse_query_pool_llm_queries(raw, expected_keys):
             )
         if candidate_key in parsed:
             raise TopicPlanLLMError("llm_schema_invalid", f"LLM returned duplicate candidate_key: {candidate_key}")
-        parsed[candidate_key] = _query_pool_clean_query_text(item.get("query"), candidate_key)
+        query = _query_pool_normalize_query_text(item.get("query"))
+        parsed[candidate_key] = _query_pool_clean_query_text(query, candidate_key) if validate_queries else query
     missing = [key for key in expected if key not in parsed]
     if missing:
         raise TopicPlanLLMError(
@@ -2914,6 +2993,7 @@ def _query_pool_summary(
     candidates=None,
     render_failures=0,
     duplicate_review=0,
+    query_repaired=0,
     generation_method="llm",
     llm_meta=None,
 ):
@@ -2934,6 +3014,7 @@ def _query_pool_summary(
         "profiles_per_prompt": int(config["profiles_per_prompt"]),
         "duplicate_review": duplicate_review,
         "render_failures": render_failures,
+        "query_repaired": query_repaired,
         "scheduler_intake": "ready" if assembled else "blocked",
         "candidate_cap_reached": raw_estimated > int(config["max_candidates"]),
         "raw_candidates_estimated": raw_estimated,
@@ -2973,10 +3054,11 @@ def _build_query_pool_llm_messages(contexts):
         "6. 不要写运营分析、品牌方策略、CRM、市场表现、转化路径；只写消费者会问的问题。\n"
         "7. 中文 Query 通常 10-36 个汉字；英文 Query 通常 7-18 个词。按原 Prompt 的语言自然输出。\n"
         "8. 可以有口语感：怎么选、值不值、会不会踩雷、适不适合、哪款更稳、预算内怎么买。\n"
-        "9. 如果 Profile 强调预算，不要生硬写“价格敏感型”，可以写“预算有限 / 不想太贵 / 值不值”。\n"
-        "10. 如果 Profile 强调送礼、通勤、敏感肌、学生党、刚入职等场景，要用消费者自己的说法表达。\n"
-        "11. 保持 Query 和 Prompt/Topic 的产品、品类、品牌或场景一致，不要漂移到其他产品。\n"
-        "12. 输出必须严格匹配 output_schema；queries 数量必须等于 candidates 数量。\n\n"
+        "9. 每条都必须是完整问题，不要只输出标题、短语、卖点词或人群标签；中文建议带“怎么/哪款/会不会/适合吗/值得吗/？”等提问信号。\n"
+        "10. 如果 Profile 强调预算，不要生硬写“价格敏感型”，可以写“预算有限 / 不想太贵 / 值不值”。\n"
+        "11. 如果 Profile 强调送礼、通勤、敏感肌、学生党、刚入职等场景，要用消费者自己的说法表达。\n"
+        "12. 保持 Query 和 Prompt/Topic 的产品、品类、品牌或场景一致，不要漂移到其他产品。\n"
+        "13. 输出必须严格匹配 output_schema；queries 数量必须等于 candidates 数量。\n\n"
         "好例子：\n"
         "Prompt: 预算内怎么选大牌香水？ Profile: 刚入职白领，送礼不踩雷，价格别太夸张\n"
         "Query: 刚入职送人大牌香水，哪款不太贵又不容易踩雷？\n"
@@ -3035,7 +3117,11 @@ class QueryPoolLLMClient:
             ) from error
 
         content = response.choices[0].message.content or "{}"
-        queries = _parse_query_pool_llm_queries(content, [context["candidate_key"] for context in contexts])
+        queries = _parse_query_pool_llm_queries(
+            content,
+            [context["candidate_key"] for context in contexts],
+            validate_queries=False,
+        )
         usage = _query_pool_usage_to_dict(getattr(response, "usage", None))
         return queries, {"model": self.config.model, "usage": usage}
 
@@ -3096,15 +3182,20 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_genera
 
     candidates = []
     duplicate_review = 0
+    query_repaired = 0
     seen_hashes = set()
     llm_model = llm_meta.get("model")
     llm_usage = llm_meta.get("usage") or {}
     for context in contexts:
         candidate_key = context["candidate_key"]
-        rendered_query = str(llm_queries.get(candidate_key) or "").strip()
-        if not rendered_query:
+        if candidate_key not in llm_queries:
             raise TopicPlanLLMError("llm_schema_invalid", f"LLM missing query for candidate_key: {candidate_key}")
-        rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
+        rendered_query = _query_pool_normalize_query_text(llm_queries.get(candidate_key))
+        try:
+            rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
+        except TopicPlanLLMError:
+            rendered_query = _query_pool_repair_query_text(rendered_query, context, candidate_key)
+            query_repaired += 1
         render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
         if render_hash in seen_hashes:
             duplicate_review += 1
@@ -3133,6 +3224,7 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_genera
         raw_estimated=raw_estimated,
         candidates=candidates,
         duplicate_review=duplicate_review,
+        query_repaired=query_repaired,
         generation_method="llm",
         llm_meta=llm_meta,
     )
@@ -3260,6 +3352,8 @@ def _start_query_pool_assembly_run(cur, admin_id, payload):
         raw_estimated=raw_estimated,
         generation_method="llm_estimate",
     )
+    preflight_summary["candidate_ready"] = 0
+    preflight_summary["render_pass_rate"] = 0
     preflight_summary["scheduler_intake"] = "running"
     run_id = str(uuid.uuid4())
     run_prompt_ids = [str(prompt.get("id")) for prompt in prompt_rows]
