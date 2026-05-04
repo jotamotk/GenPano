@@ -1347,6 +1347,7 @@
               <button class="h-9 px-4 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-40"
                       :disabled="schedulerTriggering"
                       @click="manualTriggerScheduler()"
+                      title="立即派发所有启用的 Query 计划，不论 next_run_at"
                       x-text="schedulerTriggering ? '触发中…' : '▶ 立即触发一次'"></button>
               <span x-show="schedulerSaveMsg" class="ml-2 text-[11px] text-success" x-text="schedulerSaveMsg"></span>
               <span x-show="schedulerSaveErr" class="ml-2 text-[11px] text-danger" x-text="schedulerSaveErr"></span>

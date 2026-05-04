@@ -13556,15 +13556,16 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     for q in quotas:
                         q['quota'] = max(1, int(round(int(q['quota'] or 0) * scale)))
 
-            # Fetch due schedules up-front so target_total reflects both the
-            # recurring plans (A) and the random prompt fill (B).
+            # Fetch enabled schedules. Manual trigger fires every enabled
+            # plan regardless of next_run_at (the user is explicitly asking
+            # "do it now"); the Beat tick still uses the strict next_run_at
+            # filter for cron-style cadence.
             cur.execute(
                 """
                 SELECT id, query_text, profile_id, target_llm, cadence_days,
                        brand_id, prompt_id
                 FROM query_schedules
                 WHERE enabled = TRUE
-                  AND next_run_at <= NOW()
                   AND target_llm NOT IN (
                       SELECT jsonb_array_elements_text(%s::jsonb)
                   )
@@ -13692,7 +13693,6 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     cur.execute("ROLLBACK TO SAVEPOINT sp_sched")
                     schedule_failures.append(f"#{sch['id']}: {e}")
                     continue
-                created += 1
 
             # ── (B) Per-(account, profile) random prompt fill ───────────────
             for q in quotas:
