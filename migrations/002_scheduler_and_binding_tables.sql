@@ -39,10 +39,12 @@ CREATE TABLE IF NOT EXISTS scheduler_config (
     daily_time      VARCHAR(8)   NOT NULL DEFAULT '09:00',
     timezone        VARCHAR(64)  NOT NULL DEFAULT 'Asia/Shanghai',
     temp_global_cap INTEGER,
+    engine_caps     JSONB        NOT NULL DEFAULT '{}'::jsonb,
     retry_max       INTEGER      NOT NULL DEFAULT 3 CHECK (retry_max >= 0),
     paused_engines  JSONB        NOT NULL DEFAULT '[]'::jsonb,
     updated_at      TIMESTAMP    NOT NULL DEFAULT NOW()
 );
+ALTER TABLE scheduler_config ADD COLUMN IF NOT EXISTS engine_caps JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- Seed exactly one row if empty (the "global" config).
 INSERT INTO scheduler_config (mode, daily_time, timezone, retry_max, paused_engines)

@@ -12961,6 +12961,7 @@ def _ensure_scheduler_and_binding_tables():
                         daily_time      VARCHAR(8)  NOT NULL DEFAULT '09:00',
                         timezone        VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
                         temp_global_cap INTEGER,
+                        engine_caps     JSONB NOT NULL DEFAULT '{}'::jsonb,
                         retry_max       INTEGER NOT NULL DEFAULT 3
                             CHECK (retry_max >= 0),
                         paused_engines  JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -12968,11 +12969,16 @@ def _ensure_scheduler_and_binding_tables():
                     )
                     """
                 )
+                # Backfill column for tables created before engine_caps existed
+                cur.execute(
+                    "ALTER TABLE scheduler_config "
+                    "ADD COLUMN IF NOT EXISTS engine_caps JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
                 cur.execute(
                     """
                     INSERT INTO scheduler_config
-                        (mode, daily_time, timezone, retry_max, paused_engines)
-                    SELECT 'auto', '09:00', 'Asia/Shanghai', 3, '[]'::jsonb
+                        (mode, daily_time, timezone, retry_max, paused_engines, engine_caps)
+                    SELECT 'auto', '09:00', 'Asia/Shanghai', 3, '[]'::jsonb, '{}'::jsonb
                     WHERE NOT EXISTS (SELECT 1 FROM scheduler_config)
                     """
                 )
@@ -13231,8 +13237,8 @@ def account_profile_counts():
 
 def _scheduler_config_row(cur):
     cur.execute(
-        "SELECT id, mode, daily_time, timezone, temp_global_cap, retry_max, "
-        "       paused_engines, updated_at "
+        "SELECT id, mode, daily_time, timezone, temp_global_cap, engine_caps, "
+        "       retry_max, paused_engines, updated_at "
         "FROM scheduler_config ORDER BY id LIMIT 1"
     )
     return cur.fetchone()
@@ -13328,6 +13334,31 @@ def scheduler_config_put():
     if paused_engines is not None and not isinstance(paused_engines, list):
         return jsonify({'error': 'paused_engines must be a list'}), 400
 
+    # Per-engine caps. Shape: {"doubao": 100, "deepseek": null, "chatgpt": 50}.
+    # ``null`` / missing key / 0 = no cap for that engine. Negative = error.
+    engine_caps = payload.get('engine_caps')
+    if engine_caps is not None:
+        if not isinstance(engine_caps, dict):
+            return jsonify({'error': 'engine_caps must be an object'}), 400
+        normalized_caps = {}
+        for k, v in engine_caps.items():
+            key = str(k or '').strip().lower()
+            if not key:
+                continue
+            if v in ('', None):
+                normalized_caps[key] = None
+                continue
+            try:
+                iv = int(v)
+                if iv < 0:
+                    raise ValueError
+            except Exception:
+                return jsonify({
+                    'error': f"engine_caps['{key}'] must be a non-negative integer or null"
+                }), 400
+            normalized_caps[key] = iv
+        engine_caps = normalized_caps
+
     sets = []
     args = []
     if mode:
@@ -13343,6 +13374,9 @@ def scheduler_config_put():
     if paused_engines is not None:
         sets.append("paused_engines = %s::jsonb")
         args.append(json.dumps(paused_engines))
+    if engine_caps is not None:
+        sets.append("engine_caps = %s::jsonb")
+        args.append(json.dumps(engine_caps))
     if not sets:
         return jsonify({'success': True, 'updated': 0})
     sets.append("updated_at = NOW()")

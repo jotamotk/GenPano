@@ -1267,27 +1267,45 @@
                          class="w-32 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
                 </div>
               </div>
-              <!-- Capacity (read-only) -->
+              <!-- Capacity + per-LLM caps -->
               <div class="col-span-2">
-                <label class="text-[11px] font-semibold text-ink-muted uppercase">当日产出 <span class="font-normal normal-case">(自动算出 = Σ 账号 daily_limit)</span></label>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase">当日产出 <span class="font-normal normal-case">(账号容量 = Σ daily_limit · 上限留空则按容量)</span></label>
                 <div class="mt-2 rounded-card bg-surface-page border border-b-card p-3">
-                  <div class="text-[20px] font-bold text-ink">≈ <span x-text="(schedulerCfg.capacity_total || 0).toLocaleString()"></span> 条 / 天</div>
+                  <div class="text-[20px] font-bold text-ink">
+                    ≈ <span x-text="schedulerEffectiveTotal.toLocaleString()"></span> 条 / 天
+                    <span class="text-[12px] font-normal text-ink-muted ml-2">
+                      (账号容量 <span x-text="(schedulerCfg.capacity_total || 0).toLocaleString()"></span>)
+                    </span>
+                  </div>
                   <div class="grid grid-cols-3 gap-2 mt-3 text-[11px]">
                     <template x-for="c in (schedulerCfg.capacity || [])" :key="c.engine">
-                      <div class="flex items-center justify-between p-2 rounded-card bg-surface border border-b-card/60">
-                        <div>
-                          <div class="font-semibold text-ink" x-text="c.engine"></div>
-                          <div class="text-[10px] text-ink-muted">
-                            <span x-text="c.accounts_active + ' 活跃账号'"></span>
-                            ·
-                            geo: <span x-text="c.expected_geo || '—'"></span>
+                      <div class="p-2 rounded-card bg-surface border border-b-card/60">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-semibold text-ink" x-text="c.engine"></div>
+                            <div class="text-[10px] text-ink-muted">
+                              <span x-text="c.accounts_active + ' 活跃账号'"></span>
+                              · geo: <span x-text="c.expected_geo || '—'"></span>
+                            </div>
                           </div>
+                          <div class="text-[12px] text-ink-muted tabular-nums" x-text="'容量 ' + (c.daily_capacity || 0)"></div>
                         </div>
-                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="(c.daily_capacity || 0).toLocaleString() + ' 条'"></div>
+                        <div class="flex items-center gap-1.5 mt-2">
+                          <span class="text-[10px] text-ink-muted">上限</span>
+                          <input type="number" min="0"
+                                 placeholder="不限"
+                                 :value="schedulerEngineCapValue(c.engine)"
+                                 @input="setEngineCap(c.engine, $event.target.value)"
+                                 class="w-20 h-7 px-2 rounded-btn border border-b-default text-[11px] text-right" />
+                          <span class="text-[10px] text-ink-muted">条</span>
+                          <span class="ml-auto text-[10px] tabular-nums"
+                                :class="schedulerEngineEffective(c) < (c.daily_capacity || 0) ? 'text-warning font-semibold' : 'text-ink-muted'"
+                                x-text="'→ ' + schedulerEngineEffective(c)"></span>
+                        </div>
                       </div>
                     </template>
                   </div>
-                  <div class="text-[10.5px] text-ink-muted mt-2">想调整 → 进 [账号池] 改单账号 daily_limit</div>
+                  <div class="text-[10.5px] text-ink-muted mt-2">想加容量 → 账号池增账号或调 daily_limit；这里的"上限"只缩不增</div>
                 </div>
               </div>
               <!-- Temp global cap -->
@@ -9072,6 +9090,7 @@ function adminApp() {
     schedulerCfg: {
       mode: 'auto', daily_time: '09:00', timezone: 'Asia/Shanghai',
       temp_global_cap: null, retry_max: 3, paused_engines: [],
+      engine_caps: {},               // {engine_lower: int|null}; null/missing = no cap
       capacity: [], capacity_total: 0,
     },
     schedulerToday: { engines: [], total: { target:0, done:0, running:0, pending:0, failed:0 } },
@@ -13231,6 +13250,7 @@ function adminApp() {
         // Merge into the reactive object so :checked / x-model bindings stay live.
         this.schedulerCfg = Object.assign({}, this.schedulerCfg, data, {
           paused_engines: Array.isArray(data.paused_engines) ? data.paused_engines : [],
+          engine_caps: (data.engine_caps && typeof data.engine_caps === 'object') ? data.engine_caps : {},
           capacity: Array.isArray(data.capacity) ? data.capacity : [],
         });
         this.schedulerDirty = false;
@@ -13270,6 +13290,7 @@ function adminApp() {
           temp_global_cap: this.schedulerCfg.temp_global_cap,
           retry_max: this.schedulerCfg.retry_max,
           paused_engines: this.schedulerCfg.paused_engines || [],
+          engine_caps: this.schedulerCfg.engine_caps || {},
         };
         const res = await fetch(API_BASE + '/scheduler/config', {
           method: 'PUT',
@@ -13352,6 +13373,43 @@ function adminApp() {
       const done = parseInt(t.done) || 0;
       if (target <= 0) return 0;
       return Math.min(100, Math.round(done * 1000 / target) / 10);
+    },
+
+    // ─── engine_caps helpers ────────────────────────────────────────────
+    // Returns the per-engine effective ceiling (cap if set & lower, else
+    // the account capacity). Mirrors what the backend dispatcher does.
+    schedulerEngineEffective(c) {
+      const cap = this.schedulerEngineCapValue(c.engine);
+      const ccap = parseInt(c.daily_capacity) || 0;
+      if (cap === '' || cap === null || cap === undefined) return ccap;
+      const i = parseInt(cap);
+      if (!Number.isFinite(i) || i <= 0) return ccap;
+      return Math.min(ccap, i);
+    },
+    schedulerEngineCapValue(engine) {
+      const m = this.schedulerCfg.engine_caps || {};
+      const k = (engine || '').toLowerCase();
+      const v = m[k] ?? m[engine];   // tolerate either casing
+      return (v === null || v === undefined) ? '' : v;
+    },
+    setEngineCap(engine, raw) {
+      const k = (engine || '').toLowerCase();
+      const m = Object.assign({}, this.schedulerCfg.engine_caps || {});
+      const s = (raw === null || raw === undefined) ? '' : String(raw).trim();
+      if (s === '') {
+        delete m[k];
+      } else {
+        const n = parseInt(s);
+        if (!Number.isFinite(n) || n < 0) return;
+        m[k] = n;
+      }
+      this.schedulerCfg.engine_caps = m;
+      this.schedulerDirty = true;
+    },
+    get schedulerEffectiveTotal() {
+      return (this.schedulerCfg.capacity || []).reduce(
+        (s, c) => s + this.schedulerEngineEffective(c), 0
+      );
     },
 
     // ═══════════════════════════════════════════════════════════════════
