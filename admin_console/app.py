@@ -9818,7 +9818,7 @@ def queries():
                     a.llm_name as account_llm
                 FROM queries q
                 LEFT JOIN llm_responses r ON q.id = r.query_id
-                LEFT JOIN profiles p ON q.profile_id = p.id
+                LEFT JOIN profiles p ON q.profile_id::text = p.id::text
                 LEFT JOIN llm_accounts a ON q.account_id = a.id
                 LEFT JOIN prompts pr ON q.prompt_id = pr.id
                 LEFT JOIN topics t ON pr.topic_id = t.id
@@ -12917,134 +12917,129 @@ def analyzer_rerun_single(response_id):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _ensure_scheduler_and_binding_tables():
-    """Create account_profile_map / scheduler_config / scheduler_runs.
+    """Create account_profile_map / scheduler_config / scheduler_runs /
+    query_schedules.
+
+    Each table runs in its own short transaction so a permission error on one
+    statement (commonly the ALTER TABLE on the geo_tracker-owned ``queries``
+    table when admin_console connects as a less-privileged role) doesn't roll
+    back the rest of the migration. Without this, a single ``permission denied``
+    silently nukes the new scheduler tables and every subsequent
+    ``/api/scheduler/*`` request 500s.
 
     profile_id is VARCHAR(64) to match the live admin_console profiles schema
     ('pf_xxxx'). Account M:N binding overrides the legacy llm_accounts.profile_id,
     which stays as the per-account fallback "primary" profile.
     """
-    try:
-        conn = get_db()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS account_profile_map (
-                        id                    SERIAL PRIMARY KEY,
-                        account_id            INTEGER NOT NULL
-                            REFERENCES llm_accounts(id) ON DELETE CASCADE,
-                        profile_id            VARCHAR(64) NOT NULL,
-                        daily_quota           INTEGER NOT NULL DEFAULT 1
-                            CHECK (daily_quota >= 0),
-                        conflict_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
-                        created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
-                        CONSTRAINT uq_apm_account_profile
-                            UNIQUE (account_id, profile_id)
-                    )
-                    """
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_apm_account "
-                    "ON account_profile_map (account_id)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_apm_profile "
-                    "ON account_profile_map (profile_id)"
-                )
-
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS scheduler_config (
-                        id              SERIAL PRIMARY KEY,
-                        mode            VARCHAR(16) NOT NULL DEFAULT 'auto'
-                            CHECK (mode IN ('auto', 'manual', 'paused')),
-                        daily_time      VARCHAR(8)  NOT NULL DEFAULT '09:00',
-                        timezone        VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
-                        temp_global_cap INTEGER,
-                        engine_caps     JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        retry_max       INTEGER NOT NULL DEFAULT 3
-                            CHECK (retry_max >= 0),
-                        paused_engines  JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
-                    )
-                    """
-                )
-                # Backfill column for tables created before engine_caps existed
-                cur.execute(
-                    "ALTER TABLE scheduler_config "
-                    "ADD COLUMN IF NOT EXISTS engine_caps JSONB NOT NULL DEFAULT '{}'::jsonb"
-                )
-                cur.execute(
-                    """
-                    INSERT INTO scheduler_config
-                        (mode, daily_time, timezone, retry_max, paused_engines, engine_caps)
-                    SELECT 'auto', '09:00', 'Asia/Shanghai', 3, '[]'::jsonb, '{}'::jsonb
-                    WHERE NOT EXISTS (SELECT 1 FROM scheduler_config)
-                    """
-                )
-
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS scheduler_runs (
-                        id              SERIAL PRIMARY KEY,
-                        started_at      TIMESTAMP NOT NULL DEFAULT NOW(),
-                        finished_at     TIMESTAMP,
-                        mode            VARCHAR(16),
-                        target_total    INTEGER NOT NULL DEFAULT 0,
-                        queries_created INTEGER NOT NULL DEFAULT 0,
-                        note            TEXT
-                    )
-                    """
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started "
-                    "ON scheduler_runs (started_at DESC)"
-                )
-
-                # query_schedules: recurring query plans. Each row fires every
-                # cadence_days; queries.schedule_id traces an attempt back to
-                # its plan.
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS query_schedules (
-                        id            SERIAL PRIMARY KEY,
-                        query_text    TEXT NOT NULL,
-                        profile_id    VARCHAR(64),
-                        target_llm    VARCHAR(32) NOT NULL,
-                        cadence_days  INTEGER NOT NULL DEFAULT 1
-                            CHECK (cadence_days >= 1),
-                        next_run_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-                        last_run_at   TIMESTAMP,
-                        enabled       BOOLEAN NOT NULL DEFAULT TRUE,
-                        note          TEXT,
-                        brand_id      INTEGER,
-                        prompt_id     INTEGER,
-                        created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
-                        updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
-                    )
-                    """
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_qs_next_run "
-                    "ON query_schedules (enabled, next_run_at)"
-                )
-                cur.execute(
-                    "ALTER TABLE queries "
-                    "ADD COLUMN IF NOT EXISTS schedule_id INTEGER"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_queries_schedule "
-                    "ON queries (schedule_id)"
-                )
-            conn.commit()
-            print(
-                "DB migration: scheduler_config / account_profile_map / "
-                "scheduler_runs / query_schedules ensured"
+    statements = [
+        # Account ↔ Profile binding. We deliberately do NOT add a FK to
+        # llm_accounts(id): admin_console often connects as a less-privileged
+        # role that lacks REFERENCES on the worker-owned llm_accounts table,
+        # and a missing FK privilege would fail CREATE TABLE entirely. App-
+        # level cleanup (delete_account / delete_profile) covers cascading.
+        ("account_profile_map", [
+            """
+            CREATE TABLE IF NOT EXISTS account_profile_map (
+                id                    SERIAL PRIMARY KEY,
+                account_id            INTEGER NOT NULL,
+                profile_id            VARCHAR(64) NOT NULL,
+                daily_quota           INTEGER NOT NULL DEFAULT 1
+                    CHECK (daily_quota >= 0),
+                conflict_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_apm_account_profile
+                    UNIQUE (account_id, profile_id)
             )
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"DB migration warning (non-fatal): {e}")
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_apm_account ON account_profile_map (account_id)",
+            "CREATE INDEX IF NOT EXISTS idx_apm_profile ON account_profile_map (profile_id)",
+        ]),
+        ("scheduler_config", [
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_config (
+                id              SERIAL PRIMARY KEY,
+                mode            VARCHAR(16) NOT NULL DEFAULT 'auto'
+                    CHECK (mode IN ('auto', 'manual', 'paused')),
+                daily_time      VARCHAR(8)  NOT NULL DEFAULT '09:00',
+                timezone        VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
+                temp_global_cap INTEGER,
+                engine_caps     JSONB NOT NULL DEFAULT '{}'::jsonb,
+                retry_max       INTEGER NOT NULL DEFAULT 3
+                    CHECK (retry_max >= 0),
+                paused_engines  JSONB NOT NULL DEFAULT '[]'::jsonb,
+                updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """,
+            "ALTER TABLE scheduler_config ADD COLUMN IF NOT EXISTS engine_caps JSONB NOT NULL DEFAULT '{}'::jsonb",
+            """
+            INSERT INTO scheduler_config
+                (mode, daily_time, timezone, retry_max, paused_engines, engine_caps)
+            SELECT 'auto', '09:00', 'Asia/Shanghai', 3, '[]'::jsonb, '{}'::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM scheduler_config)
+            """,
+        ]),
+        ("scheduler_runs", [
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_runs (
+                id              SERIAL PRIMARY KEY,
+                started_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+                finished_at     TIMESTAMP,
+                mode            VARCHAR(16),
+                target_total    INTEGER NOT NULL DEFAULT 0,
+                queries_created INTEGER NOT NULL DEFAULT 0,
+                note            TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started ON scheduler_runs (started_at DESC)",
+        ]),
+        ("query_schedules", [
+            """
+            CREATE TABLE IF NOT EXISTS query_schedules (
+                id            SERIAL PRIMARY KEY,
+                query_text    TEXT NOT NULL,
+                profile_id    VARCHAR(64),
+                target_llm    VARCHAR(32) NOT NULL,
+                cadence_days  INTEGER NOT NULL DEFAULT 1
+                    CHECK (cadence_days >= 1),
+                next_run_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+                last_run_at   TIMESTAMP,
+                enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+                note          TEXT,
+                brand_id      INTEGER,
+                prompt_id     INTEGER,
+                created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_qs_next_run ON query_schedules (enabled, next_run_at)",
+        ]),
+        # The ALTER TABLE on the (worker-owned) queries table must be in its
+        # own transaction. A permission-denied here used to nuke every other
+        # table above when they all shared one transaction.
+        ("queries.schedule_id", [
+            "ALTER TABLE queries ADD COLUMN IF NOT EXISTS schedule_id INTEGER",
+            "CREATE INDEX IF NOT EXISTS idx_queries_schedule ON queries (schedule_id)",
+        ]),
+    ]
+    ok = []
+    failed = []
+    for name, stmts in statements:
+        try:
+            conn = get_db()
+            try:
+                with conn.cursor() as cur:
+                    for stmt in stmts:
+                        cur.execute(stmt)
+                conn.commit()
+                ok.append(name)
+            finally:
+                conn.close()
+        except Exception as e:
+            failed.append(f"{name} ({e})")
+    if ok:
+        print("DB migration: ensured " + ", ".join(ok))
+    if failed:
+        print("DB migration warning (non-fatal, partial): " + " | ".join(failed))
 
 
 # ─── Account ↔ Profile binding APIs ─────────────────────────────────────────
@@ -13591,61 +13586,110 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 (json.dumps([str(e).lower() for e in paused_engines]),),
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
+            schedule_failures = []
             for sch in due_schedules:
-                # Pick any active account for that engine (and matching profile
-                # binding when one exists). We DON'T enforce daily_limit here —
-                # the worker's account_pool guards that at execute-time.
-                cur.execute(
-                    """
-                    SELECT a.id
-                    FROM llm_accounts a
-                    LEFT JOIN account_profile_map apm
-                           ON apm.account_id = a.id
-                          AND apm.profile_id = %s
-                    WHERE a.llm_name = %s
-                      AND a.status = 'active'
-                      AND a.cookies_json IS NOT NULL
-                      AND a.cookies_json != ''
-                      AND (%s IS NULL
-                           OR apm.profile_id IS NOT NULL
-                           OR a.profile_id::text = %s)
-                    ORDER BY (apm.profile_id IS NOT NULL) DESC,
-                             a.last_used_at NULLS FIRST,
-                             a.id
-                    LIMIT 1
-                    """,
-                    (sch['profile_id'], sch['target_llm'],
-                     sch['profile_id'], sch['profile_id']),
-                )
-                acct = cur.fetchone()
-                account_id = acct['id'] if acct else None
-                cur.execute(
-                    """
-                    INSERT INTO queries
-                        (prompt_id, profile_id, brand_id, account_id,
-                         query_text, target_llm, status, schedule_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, NOW())
-                    """,
-                    (
-                        sch.get('prompt_id'),
-                        sch.get('profile_id'),
-                        sch.get('brand_id'),
-                        account_id,
-                        sch['query_text'],
-                        sch['target_llm'],
-                        sch['id'],
-                    ),
-                )
-                cur.execute(
-                    """
-                    UPDATE query_schedules
-                       SET last_run_at = NOW(),
-                           next_run_at = NOW() + (cadence_days || ' days')::interval,
-                           updated_at = NOW()
-                     WHERE id = %s
-                    """,
-                    (sch['id'],),
-                )
+                # Wrap each schedule in a SAVEPOINT so a single bad row (e.g.
+                # profile_id type mismatch when profiles.id is INTEGER but
+                # the schedule's profile_id is "pf_xxx", or queries.schedule_id
+                # column missing on this DB) doesn't poison the whole dispatch.
+                cur.execute("SAVEPOINT sp_sched")
+                try:
+                    cur.execute(
+                        """
+                        SELECT a.id
+                        FROM llm_accounts a
+                        LEFT JOIN account_profile_map apm
+                               ON apm.account_id = a.id
+                              AND apm.profile_id = %s
+                        WHERE a.llm_name = %s
+                          AND a.status = 'active'
+                          AND a.cookies_json IS NOT NULL
+                          AND a.cookies_json != ''
+                          AND (%s IS NULL
+                               OR apm.profile_id IS NOT NULL
+                               OR a.profile_id::text = %s)
+                        ORDER BY (apm.profile_id IS NOT NULL) DESC,
+                                 a.last_used_at NULLS FIRST,
+                                 a.id
+                        LIMIT 1
+                        """,
+                        (sch['profile_id'], sch['target_llm'],
+                         sch['profile_id'], sch['profile_id']),
+                    )
+                    acct = cur.fetchone()
+                    account_id = acct['id'] if acct else None
+                    # If queries.profile_id is INTEGER (geo_tracker schema),
+                    # a string like "pf_xxx" can't be inserted. Coerce to int
+                    # when possible, drop to NULL otherwise — the worker can
+                    # still run the query without a profile.
+                    pid_for_queries = sch.get('profile_id')
+                    if pid_for_queries is not None:
+                        try:
+                            pid_for_queries = int(pid_for_queries)
+                        except (TypeError, ValueError):
+                            try:
+                                # Detect column type once: if it accepts text,
+                                # the cast in a no-op test below succeeds.
+                                cur.execute("SELECT NULL::text = NULL::text")
+                            except Exception:
+                                pid_for_queries = None
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO queries
+                                (prompt_id, profile_id, brand_id, account_id,
+                                 query_text, target_llm, status, schedule_id,
+                                 created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, NOW())
+                            """,
+                            (
+                                sch.get('prompt_id'),
+                                pid_for_queries,
+                                sch.get('brand_id'),
+                                account_id,
+                                sch['query_text'],
+                                sch['target_llm'],
+                                sch['id'],
+                            ),
+                        )
+                    except Exception:
+                        # Could be: schedule_id column missing, profile_id type
+                        # mismatch we couldn't coerce, or a CHECK constraint.
+                        # Fall back to inserting without schedule_id so the
+                        # query still gets queued.
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_sched")
+                        cur.execute(
+                            """
+                            INSERT INTO queries
+                                (prompt_id, profile_id, brand_id, account_id,
+                                 query_text, target_llm, status, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW())
+                            """,
+                            (
+                                sch.get('prompt_id'),
+                                None,  # safest: drop profile_id to avoid type clash
+                                sch.get('brand_id'),
+                                account_id,
+                                sch['query_text'],
+                                sch['target_llm'],
+                            ),
+                        )
+                    cur.execute(
+                        """
+                        UPDATE query_schedules
+                           SET last_run_at = NOW(),
+                               next_run_at = NOW() + (cadence_days || ' days')::interval,
+                               updated_at = NOW()
+                         WHERE id = %s
+                        """,
+                        (sch['id'],),
+                    )
+                    cur.execute("RELEASE SAVEPOINT sp_sched")
+                    created += 1
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_sched")
+                    schedule_failures.append(f"#{sch['id']}: {e}")
+                    continue
                 created += 1
 
             # ── (B) Per-(account, profile) random prompt fill ───────────────
