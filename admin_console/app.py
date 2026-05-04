@@ -13000,8 +13000,47 @@ def _ensure_scheduler_and_binding_tables():
                     "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started "
                     "ON scheduler_runs (started_at DESC)"
                 )
+
+                # query_schedules: recurring query plans. Each row fires every
+                # cadence_days; queries.schedule_id traces an attempt back to
+                # its plan.
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS query_schedules (
+                        id            SERIAL PRIMARY KEY,
+                        query_text    TEXT NOT NULL,
+                        profile_id    VARCHAR(64),
+                        target_llm    VARCHAR(32) NOT NULL,
+                        cadence_days  INTEGER NOT NULL DEFAULT 1
+                            CHECK (cadence_days >= 1),
+                        next_run_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+                        last_run_at   TIMESTAMP,
+                        enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+                        note          TEXT,
+                        brand_id      INTEGER,
+                        prompt_id     INTEGER,
+                        created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_qs_next_run "
+                    "ON query_schedules (enabled, next_run_at)"
+                )
+                cur.execute(
+                    "ALTER TABLE queries "
+                    "ADD COLUMN IF NOT EXISTS schedule_id INTEGER"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_queries_schedule "
+                    "ON queries (schedule_id)"
+                )
             conn.commit()
-            print("DB migration: scheduler_config / account_profile_map / scheduler_runs ensured")
+            print(
+                "DB migration: scheduler_config / account_profile_map / "
+                "scheduler_runs / query_schedules ensured"
+            )
         finally:
             conn.close()
     except Exception as e:
@@ -13533,6 +13572,83 @@ def _run_manual_dispatch(cap_override=None, note=None):
             run_id = cur.fetchone()['id']
 
             created = 0
+
+            # ── (A) Consume due query_schedules ─────────────────────────────
+            # Recurring user-defined plans. Each due row (next_run_at <= now,
+            # enabled=TRUE) becomes one queries row, advances by cadence_days.
+            cur.execute(
+                """
+                SELECT id, query_text, profile_id, target_llm, cadence_days,
+                       brand_id, prompt_id
+                FROM query_schedules
+                WHERE enabled = TRUE
+                  AND next_run_at <= NOW()
+                  AND target_llm NOT IN (
+                      SELECT jsonb_array_elements_text(%s::jsonb)
+                  )
+                ORDER BY next_run_at ASC, id ASC
+                """,
+                (json.dumps([str(e).lower() for e in paused_engines]),),
+            )
+            due_schedules = [dict(r) for r in cur.fetchall()]
+            for sch in due_schedules:
+                # Pick any active account for that engine (and matching profile
+                # binding when one exists). We DON'T enforce daily_limit here —
+                # the worker's account_pool guards that at execute-time.
+                cur.execute(
+                    """
+                    SELECT a.id
+                    FROM llm_accounts a
+                    LEFT JOIN account_profile_map apm
+                           ON apm.account_id = a.id
+                          AND apm.profile_id = %s
+                    WHERE a.llm_name = %s
+                      AND a.status = 'active'
+                      AND a.cookies_json IS NOT NULL
+                      AND a.cookies_json != ''
+                      AND (%s IS NULL
+                           OR apm.profile_id IS NOT NULL
+                           OR a.profile_id::text = %s)
+                    ORDER BY (apm.profile_id IS NOT NULL) DESC,
+                             a.last_used_at NULLS FIRST,
+                             a.id
+                    LIMIT 1
+                    """,
+                    (sch['profile_id'], sch['target_llm'],
+                     sch['profile_id'], sch['profile_id']),
+                )
+                acct = cur.fetchone()
+                account_id = acct['id'] if acct else None
+                cur.execute(
+                    """
+                    INSERT INTO queries
+                        (prompt_id, profile_id, brand_id, account_id,
+                         query_text, target_llm, status, schedule_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, NOW())
+                    """,
+                    (
+                        sch.get('prompt_id'),
+                        sch.get('profile_id'),
+                        sch.get('brand_id'),
+                        account_id,
+                        sch['query_text'],
+                        sch['target_llm'],
+                        sch['id'],
+                    ),
+                )
+                cur.execute(
+                    """
+                    UPDATE query_schedules
+                       SET last_run_at = NOW(),
+                           next_run_at = NOW() + (cadence_days || ' days')::interval,
+                           updated_at = NOW()
+                     WHERE id = %s
+                    """,
+                    (sch['id'],),
+                )
+                created += 1
+
+            # ── (B) Per-(account, profile) random prompt fill ───────────────
             for q in quotas:
                 pid = str(q['profile_id'])
                 engine = q['engine']
@@ -13685,6 +13801,276 @@ def scheduler_today():
             'pending': sum(b['pending'] for b in engines),
         }
         return jsonify({'engines': engines, 'total': total})
+    finally:
+        conn.close()
+
+
+# ─── Query schedules (recurring query plans) ────────────────────────────────
+
+def _row_to_schedule(r):
+    return {
+        'id':            r['id'],
+        'query_text':    r['query_text'],
+        'profile_id':    r['profile_id'],
+        'target_llm':    r['target_llm'],
+        'cadence_days':  int(r['cadence_days'] or 1),
+        'next_run_at':   _isoformat(r['next_run_at']),
+        'last_run_at':   _isoformat(r.get('last_run_at')),
+        'enabled':       bool(r['enabled']),
+        'note':          r.get('note'),
+        'brand_id':      r.get('brand_id'),
+        'prompt_id':     r.get('prompt_id'),
+        'created_at':    _isoformat(r.get('created_at')),
+        'updated_at':    _isoformat(r.get('updated_at')),
+    }
+
+
+def _validate_schedule_payload(payload, *, partial=False):
+    """Returns (ok, value_or_error). When partial=True, missing fields are OK
+    (used by PUT). target_llm must be in the engine allowlist.
+    """
+    out = {}
+    allowed_llms = {'doubao', 'deepseek', 'chatgpt', 'gemini'}
+
+    if 'query_text' in payload or not partial:
+        qt = (payload.get('query_text') or '').strip()
+        if not qt:
+            return False, 'query_text is required'
+        out['query_text'] = qt
+    if 'target_llm' in payload or not partial:
+        llm = (payload.get('target_llm') or '').strip().lower()
+        if llm not in allowed_llms:
+            return False, f"target_llm must be one of {sorted(allowed_llms)}"
+        out['target_llm'] = llm
+    if 'profile_id' in payload:
+        pid = payload.get('profile_id')
+        out['profile_id'] = pid.strip() if isinstance(pid, str) and pid.strip() else None
+    if 'cadence_days' in payload or not partial:
+        try:
+            cd = int(payload.get('cadence_days', 1))
+            if cd < 1:
+                raise ValueError
+        except Exception:
+            return False, 'cadence_days must be a positive integer'
+        out['cadence_days'] = cd
+    if 'next_run_at' in payload:
+        v = payload.get('next_run_at')
+        if v in ('', None):
+            out['next_run_at'] = None  # caller decides default (NOW())
+        else:
+            try:
+                # Accept ISO-8601 with or without tz; psycopg parses TIMESTAMP
+                out['next_run_at'] = str(v)
+            except Exception:
+                return False, 'next_run_at must be ISO-8601 string'
+    if 'enabled' in payload:
+        out['enabled'] = bool(payload.get('enabled'))
+    if 'note' in payload:
+        nv = payload.get('note')
+        out['note'] = nv if isinstance(nv, str) else None
+    if 'brand_id' in payload:
+        v = payload.get('brand_id')
+        try:
+            out['brand_id'] = int(v) if v not in ('', None) else None
+        except Exception:
+            return False, 'brand_id must be an integer or null'
+    if 'prompt_id' in payload:
+        v = payload.get('prompt_id')
+        try:
+            out['prompt_id'] = int(v) if v not in ('', None) else None
+        except Exception:
+            return False, 'prompt_id must be an integer or null'
+    return True, out
+
+
+@app.route('/api/scheduler/schedules')
+def list_query_schedules():
+    """List recurring query plans (newest enabled first, then disabled)."""
+    from psycopg2.extras import RealDictCursor
+    enabled_only = (request.args.get('enabled_only') or '').lower() in ('1', 'true', 'yes')
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            where = "WHERE enabled = TRUE" if enabled_only else ""
+            cur.execute(
+                f"""
+                SELECT id, query_text, profile_id, target_llm, cadence_days,
+                       next_run_at, last_run_at, enabled, note, brand_id,
+                       prompt_id, created_at, updated_at
+                FROM query_schedules
+                {where}
+                ORDER BY enabled DESC, next_run_at ASC, id DESC
+                """
+            )
+            rows = cur.fetchall()
+        return jsonify([_row_to_schedule(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/schedules', methods=['POST'])
+def create_query_schedule():
+    payload = request.get_json(silent=True) or {}
+    ok, val = _validate_schedule_payload(payload, partial=False)
+    if not ok:
+        return jsonify({'error': val}), 400
+    next_run = val.get('next_run_at')
+    if next_run is None:
+        next_run = datetime.utcnow().isoformat()
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO query_schedules
+                    (query_text, profile_id, target_llm, cadence_days,
+                     next_run_at, enabled, note, brand_id, prompt_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, query_text, profile_id, target_llm, cadence_days,
+                          next_run_at, last_run_at, enabled, note, brand_id,
+                          prompt_id, created_at, updated_at
+                """,
+                (
+                    val['query_text'],
+                    val.get('profile_id'),
+                    val['target_llm'],
+                    val.get('cadence_days', 1),
+                    next_run,
+                    val.get('enabled', True),
+                    val.get('note'),
+                    val.get('brand_id'),
+                    val.get('prompt_id'),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return jsonify(_row_to_schedule(row))
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/schedules/<int:schedule_id>', methods=['PUT'])
+def update_query_schedule(schedule_id):
+    payload = request.get_json(silent=True) or {}
+    ok, val = _validate_schedule_payload(payload, partial=True)
+    if not ok:
+        return jsonify({'error': val}), 400
+    if not val:
+        return jsonify({'success': True, 'updated': 0})
+    sets = []
+    args = []
+    for col in ('query_text', 'profile_id', 'target_llm', 'cadence_days',
+                'next_run_at', 'enabled', 'note', 'brand_id', 'prompt_id'):
+        if col in val:
+            sets.append(f"{col} = %s")
+            args.append(val[col])
+    sets.append("updated_at = NOW()")
+    args.append(schedule_id)
+    conn = get_db()
+    try:
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                UPDATE query_schedules SET {', '.join(sets)}
+                WHERE id = %s
+                RETURNING id, query_text, profile_id, target_llm, cadence_days,
+                          next_run_at, last_run_at, enabled, note, brand_id,
+                          prompt_id, created_at, updated_at
+                """,
+                args,
+            )
+            row = cur.fetchone()
+        conn.commit()
+        if not row:
+            return jsonify({'error': 'Schedule not found'}), 404
+        return jsonify(_row_to_schedule(row))
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/schedules/<int:schedule_id>', methods=['DELETE'])
+def delete_query_schedule(schedule_id):
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM query_schedules WHERE id = %s",
+                        (schedule_id,))
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted == 0:
+            return jsonify({'error': 'Schedule not found'}), 404
+        return jsonify({'success': True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/upcoming')
+def schedules_upcoming():
+    """Project the next N days of schedule fires (for the調度 page preview).
+    Each row in query_schedules with enabled=TRUE is "rolled forward" by
+    cadence_days as many times as fits within the window. Output is grouped
+    by date (YYYY-MM-DD).
+    """
+    from psycopg2.extras import RealDictCursor
+    try:
+        days = max(1, min(int(request.args.get('days', 7)), 60))
+    except Exception:
+        days = 7
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, query_text, profile_id, target_llm, cadence_days,
+                       next_run_at, last_run_at, enabled, note
+                FROM query_schedules
+                WHERE enabled = TRUE
+                ORDER BY next_run_at ASC, id ASC
+                """
+            )
+            rows = cur.fetchall()
+
+        # Project forward in Python so we can keep the DB simple. The window
+        # ends at end-of-day on day N (local-server time, which is what the
+        # UI shows).
+        from datetime import timedelta
+        now = datetime.utcnow()
+        end = (now + timedelta(days=days)).replace(hour=23, minute=59, second=59)
+
+        by_date = {}
+        for r in rows:
+            nxt = r['next_run_at']
+            if not nxt:
+                continue
+            cadence = int(r['cadence_days'] or 1)
+            t = nxt
+            # Cap the projection at 30 fires per schedule per window so a
+            # cadence_days=0-via-corruption schedule can't blow up the response.
+            for _ in range(30):
+                if t > end:
+                    break
+                date_key = t.date().isoformat()
+                by_date.setdefault(date_key, []).append({
+                    'schedule_id': r['id'],
+                    'fire_at':     _isoformat(t),
+                    'query_text':  r['query_text'],
+                    'profile_id':  r['profile_id'],
+                    'target_llm':  r['target_llm'],
+                    'cadence_days': cadence,
+                    'note':        r.get('note'),
+                })
+                t = t + timedelta(days=cadence)
+        # Make sure we emit one entry per day in the window even if empty,
+        # so the UI can show "0 条" cleanly.
+        out_days = []
+        for offset in range(days + 1):
+            day = (now + timedelta(days=offset)).date().isoformat()
+            fires = sorted(by_date.get(day, []), key=lambda x: x['fire_at'])
+            out_days.append({'date': day, 'fires': fires, 'count': len(fires)})
+        return jsonify({'days': out_days})
     finally:
         conn.close()
 

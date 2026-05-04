@@ -1420,6 +1420,121 @@
             </div>
           </div>
 
+          <!-- ─── A-2.5: Query 计划 (recurring plans) ─── -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+              <div>
+                <h3 class="text-[14px] font-semibold text-ink">Query 计划</h3>
+                <p class="text-[11px] text-ink-muted mt-0.5">每条计划按 cadence 周期重复入队 · 可改可停</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] text-ink-muted">
+                  共 <span class="font-semibold text-ink" x-text="schedules.length"></span> ·
+                  启用 <span class="font-semibold text-success" x-text="schedules.filter(s => s.enabled).length"></span>
+                </span>
+                <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
+                        @click="loadSchedules(); loadUpcoming()">刷新</button>
+                <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
+                        @click="openScheduleEditor(null)">+ 添加 Query 计划</button>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[12px]">
+                <thead class="bg-surface-page border-b border-b-card">
+                  <tr>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">Query</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted w-[80px]">LLM</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted w-[110px]">Profile</th>
+                    <th class="text-right py-2.5 px-4 font-semibold text-ink-muted w-[70px]">间隔</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted w-[150px]">下次执行</th>
+                    <th class="text-left py-2.5 px-4 font-semibold text-ink-muted w-[120px]">上次执行</th>
+                    <th class="text-center py-2.5 px-4 font-semibold text-ink-muted w-[60px]">启用</th>
+                    <th class="text-right py-2.5 px-4 font-semibold text-ink-muted w-[120px]">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr x-show="schedules.length === 0">
+                    <td colspan="8" class="py-8 text-center text-ink-muted">
+                      还没有 Query 计划 — 点 <span class="text-accent">+ 添加 Query 计划</span> 创建第一个
+                    </td>
+                  </tr>
+                  <template x-for="s in schedules" :key="s.id">
+                    <tr class="border-b border-b-card/50 hover:bg-surface-page transition-colors"
+                        :class="!s.enabled ? 'opacity-60' : ''">
+                      <td class="py-2.5 px-4 text-ink-body truncate max-w-[420px]" :title="s.query_text" x-text="s.query_text"></td>
+                      <td class="py-2.5 px-4 text-ink-body" x-text="s.target_llm"></td>
+                      <td class="py-2.5 px-4 font-mono text-[11px] text-ink-muted truncate" :title="s.profile_id" x-text="s.profile_id || '— 自动 —'"></td>
+                      <td class="py-2.5 px-4 text-right tabular-nums" x-text="s.cadence_days + ' 天'"></td>
+                      <td class="py-2.5 px-4 font-mono text-[11px] text-ink-muted" x-text="formatScheduleTs(s.next_run_at)"></td>
+                      <td class="py-2.5 px-4 font-mono text-[11px] text-ink-muted" x-text="formatScheduleTs(s.last_run_at) || '—'"></td>
+                      <td class="py-2.5 px-4 text-center">
+                        <button class="inline-flex items-center justify-center w-9 h-5 rounded-pill text-[10px] font-bold transition-colors"
+                                :class="s.enabled ? 'bg-success/20 text-success' : 'bg-ink/10 text-ink-muted'"
+                                @click="toggleScheduleEnabled(s)"
+                                x-text="s.enabled ? 'ON' : 'OFF'"></button>
+                      </td>
+                      <td class="py-2.5 px-4 text-right">
+                        <button class="text-accent hover:underline text-[11px] mr-2"
+                                @click="openScheduleEditor(s)">编辑</button>
+                        <button class="text-danger hover:underline text-[11px]"
+                                @click="deleteSchedule(s)">删除</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ─── A-2.6: Upcoming N-day preview ─── -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+              <h3 class="text-[14px] font-semibold text-ink">未来 <span x-text="upcomingDays"></span> 天预览</h3>
+              <div class="flex items-center gap-2 text-[11px]">
+                <span class="text-ink-muted">天数</span>
+                <select x-model.number="upcomingDays" @change="loadUpcoming()"
+                        class="h-7 px-2 rounded-btn border border-b-default text-[11px] bg-white">
+                  <option :value="3">3</option>
+                  <option :value="7">7</option>
+                  <option :value="14">14</option>
+                  <option :value="30">30</option>
+                </select>
+              </div>
+            </div>
+            <div class="p-4">
+              <div x-show="upcomingLoading" class="text-center py-6 text-[12px] text-ink-muted">加载中…</div>
+              <div x-show="!upcomingLoading && (upcoming.days || []).every(d => d.count === 0)"
+                   class="text-center py-6 text-[12px] text-ink-muted">未来 <span x-text="upcomingDays"></span> 天没有计划触发的 Query — 启用一些 Query 计划即可</div>
+              <div class="space-y-2" x-show="!upcomingLoading">
+                <template x-for="d in (upcoming.days || [])" :key="d.date">
+                  <div class="rounded-card border border-b-card overflow-hidden"
+                       :class="d.count > 0 ? 'bg-surface-page' : 'bg-surface opacity-70'">
+                    <button class="w-full flex items-center gap-3 px-3 py-2 hover:bg-surface-page/80 transition-colors text-left"
+                            @click="d._expanded = !d._expanded; $nextTick(()=>lucide.createIcons())">
+                      <i :data-lucide="d.count > 0 ? (d._expanded ? 'chevron-down' : 'chevron-right') : 'minus'" class="w-3.5 h-3.5 text-ink-muted"></i>
+                      <span class="font-mono text-[12px] font-semibold text-ink" x-text="d.date"></span>
+                      <span class="text-[10px] text-ink-muted" x-text="formatScheduleDow(d.date)"></span>
+                      <span class="ml-auto text-[11px]"
+                            :class="d.count > 0 ? 'text-success font-semibold' : 'text-ink-muted'"
+                            x-text="d.count + ' 条'"></span>
+                    </button>
+                    <div x-show="d._expanded && d.count > 0" x-collapse class="border-t border-b-card/60 divide-y divide-b-card/40">
+                      <template x-for="f in d.fires" :key="f.schedule_id + ':' + f.fire_at">
+                        <div class="flex items-center gap-3 px-4 py-2 text-[11px]">
+                          <span class="font-mono text-ink-muted shrink-0" x-text="(f.fire_at || '').slice(11, 16)"></span>
+                          <span class="text-[10px] text-ink-muted shrink-0 w-[60px]" x-text="f.target_llm"></span>
+                          <span class="font-mono text-[10px] text-ink-muted shrink-0 w-[100px] truncate" :title="f.profile_id" x-text="f.profile_id || '— 自动 —'"></span>
+                          <span class="text-ink-body truncate flex-1" :title="f.query_text" x-text="f.query_text"></span>
+                          <span class="text-[10px] text-ink-muted shrink-0" x-text="'每 ' + f.cadence_days + ' 天'"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
           <!-- ─── A-3: Run history ─── -->
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
             <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
@@ -6665,6 +6780,80 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
   </template>
 </div>
 
+<!-- ===== QUERY SCHEDULE CREATE / EDIT MODAL ===== -->
+<div x-show="scheduleEditor" x-cloak x-transition.opacity class="fixed inset-0 z-40 bg-ink/40" @click="closeScheduleEditor()"></div>
+<div x-show="scheduleEditor" x-cloak class="fixed inset-0 z-50 flex items-start justify-center pt-20 pointer-events-none">
+  <div class="w-[560px] rounded-card-lg bg-surface border border-b-card shadow-elevated pointer-events-auto"
+       @click.stop>
+    <template x-if="scheduleEditor">
+      <div>
+        <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
+          <h3 class="text-[14px] font-semibold text-ink"
+              x-text="scheduleEditor.id ? '编辑 Query 计划 #' + scheduleEditor.id : '新建 Query 计划'"></h3>
+          <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="closeScheduleEditor()">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <div class="p-6 space-y-4">
+          <div>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">Query 文本</label>
+            <textarea x-model="scheduleEditor.query_text"
+                      rows="3"
+                      placeholder="例如：哪款奶粉适合二胎家庭？"
+                      class="w-full mt-1 p-2 rounded-btn border border-b-default text-[12px] resize-none"></textarea>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-[11px] font-semibold text-ink-muted uppercase">目标 LLM</label>
+              <select x-model="scheduleEditor.target_llm"
+                      class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                <option value="doubao">豆包</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="chatgpt">ChatGPT</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-[11px] font-semibold text-ink-muted uppercase">间隔 (天)</label>
+              <input type="number" min="1" x-model.number="scheduleEditor.cadence_days"
+                     class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] text-right" />
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">Profile (可选)</label>
+            <input type="text" x-model="scheduleEditor.profile_id"
+                   placeholder="留空 = 调度时自动分配 (如 pf_xxxx)"
+                   class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] font-mono" />
+          </div>
+          <div>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">下次执行时间</label>
+            <input type="datetime-local" x-model="scheduleEditor.next_run_local"
+                   class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+            <div class="text-[10px] text-ink-muted mt-1">留空 = 立即首次执行；之后每隔 cadence_days 天再触发</div>
+          </div>
+          <div>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">备注 (可选)</label>
+            <input type="text" x-model="scheduleEditor.note"
+                   class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+          </div>
+          <label class="flex items-center gap-2 text-[12px] cursor-pointer">
+            <input type="checkbox" x-model="scheduleEditor.enabled" />
+            <span>启用</span>
+          </label>
+          <span x-show="scheduleEditorError" class="block text-[11px] text-danger" x-text="scheduleEditorError"></span>
+        </div>
+        <div class="px-6 py-4 border-t border-b-card flex items-center gap-2 justify-end">
+          <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
+                  @click="closeScheduleEditor()">取消</button>
+          <button class="h-8 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40"
+                  :disabled="scheduleEditorSaving"
+                  @click="saveSchedule()"
+                  x-text="scheduleEditorSaving ? '保存中…' : '保存'"></button>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
 <!-- ===== ATTEMPT DETAIL DRAWER (Tracker v2) ===== -->
 <div x-show="attemptDrawer" x-cloak x-transition.opacity class="fixed inset-0 z-40 drawer-overlay" @click="attemptDrawer=null"></div>
 <div x-show="attemptDrawer" x-cloak class="fixed top-0 right-0 z-50 w-[540px] h-full bg-surface border-l border-b-card shadow-elevated drawer-panel overflow-y-auto">
@@ -9232,6 +9421,15 @@ function adminApp() {
     schedulerSaveMsg: '',
     schedulerSaveErr: '',
     schedulerLastLoad: '',
+
+    // ─── Query 计划 (recurring plans) ──────────────────────────────────
+    schedules: [],
+    upcoming: { days: [] },
+    upcomingDays: 7,
+    upcomingLoading: false,
+    scheduleEditor: null,           // open/closed state + form fields
+    scheduleEditorSaving: false,
+    scheduleEditorError: '',
 
     // ─── Module C: Tracker daily tab ───────────────────────────────────
     dailyMonth: '',                  // 'YYYY-MM' shown in the calendar popover
@@ -13375,8 +13573,180 @@ function adminApp() {
         this.loadSchedulerConfig(),
         this.loadSchedulerToday(),
         this.loadSchedulerRuns(),
+        this.loadSchedules(),
+        this.loadUpcoming(),
       ]);
       this.schedulerLastLoad = new Date().toLocaleTimeString([], { hour12: false });
+    },
+
+    // ─── Query 计划 CRUD ──────────────────────────────────────────────
+    async loadSchedules() {
+      try {
+        const res = await fetch(API_BASE + '/scheduler/schedules', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.schedules = Array.isArray(data) ? data : [];
+      } catch (e) {
+        this.toast('加载 Query 计划失败: ' + (e.message || e));
+        this.schedules = [];
+      }
+    },
+    async loadUpcoming() {
+      this.upcomingLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/scheduler/upcoming?days=' + (this.upcomingDays || 7),
+                                { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        // Pre-expand the first 3 non-empty days so the page shows useful info.
+        let openCount = 0;
+        (data.days || []).forEach(d => {
+          d._expanded = (openCount < 3 && d.count > 0);
+          if (d._expanded) openCount++;
+        });
+        this.upcoming = data || { days: [] };
+        this.$nextTick(() => lucide.createIcons());
+      } catch (e) {
+        this.toast('加载未来计划失败: ' + (e.message || e));
+        this.upcoming = { days: [] };
+      } finally {
+        this.upcomingLoading = false;
+      }
+    },
+    formatScheduleTs(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      const yy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mi = String(d.getMinutes()).padStart(2, '0');
+      return `${yy}-${mm}-${dd} ${hh}:${mi}`;
+    },
+    formatScheduleDow(dateStr) {
+      if (!dateStr) return '';
+      const labels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      const d = new Date(dateStr + 'T00:00:00');
+      return isNaN(d) ? '' : labels[d.getDay()];
+    },
+    openScheduleEditor(s) {
+      const isNew = !s;
+      const tomorrow = new Date(Date.now() + 86400000);
+      // datetime-local input wants YYYY-MM-DDTHH:MM in local time
+      const tz = tomorrow.getTimezoneOffset() * 60000;
+      const defaultLocal = new Date(tomorrow.getTime() - tz).toISOString().slice(0, 16);
+      this.scheduleEditor = isNew ? {
+        id: null,
+        query_text: '',
+        target_llm: 'doubao',
+        profile_id: '',
+        cadence_days: 1,
+        next_run_local: defaultLocal,
+        enabled: true,
+        note: '',
+      } : {
+        id: s.id,
+        query_text: s.query_text || '',
+        target_llm: s.target_llm || 'doubao',
+        profile_id: s.profile_id || '',
+        cadence_days: s.cadence_days || 1,
+        next_run_local: this._isoToLocalInput(s.next_run_at),
+        enabled: !!s.enabled,
+        note: s.note || '',
+      };
+      this.scheduleEditorError = '';
+      this.$nextTick(() => lucide.createIcons());
+    },
+    closeScheduleEditor() {
+      this.scheduleEditor = null;
+      this.scheduleEditorError = '';
+    },
+    _isoToLocalInput(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return '';
+      const tz = d.getTimezoneOffset() * 60000;
+      return new Date(d.getTime() - tz).toISOString().slice(0, 16);
+    },
+    async saveSchedule() {
+      const e = this.scheduleEditor;
+      if (!e) return;
+      if (!(e.query_text || '').trim()) {
+        this.scheduleEditorError = 'Query 文本不能为空';
+        return;
+      }
+      if (!e.cadence_days || e.cadence_days < 1) {
+        this.scheduleEditorError = '间隔必须 ≥ 1 天';
+        return;
+      }
+      this.scheduleEditorSaving = true;
+      this.scheduleEditorError = '';
+      try {
+        const payload = {
+          query_text: e.query_text.trim(),
+          target_llm: e.target_llm,
+          profile_id: (e.profile_id || '').trim() || null,
+          cadence_days: parseInt(e.cadence_days),
+          enabled: !!e.enabled,
+          note: e.note || null,
+        };
+        if (e.next_run_local) {
+          // datetime-local lacks tz; treat it as local and convert to ISO
+          const d = new Date(e.next_run_local);
+          if (!isNaN(d)) payload.next_run_at = d.toISOString();
+        }
+        const url = e.id
+          ? API_BASE + '/scheduler/schedules/' + e.id
+          : API_BASE + '/scheduler/schedules';
+        const method = e.id ? 'PUT' : 'POST';
+        const res = await fetch(url, {
+          method,
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast(e.id ? '已更新计划 #' + e.id : '已创建 Query 计划');
+        this.closeScheduleEditor();
+        await this.loadSchedules();
+        await this.loadUpcoming();
+      } catch (err) {
+        this.scheduleEditorError = String(err.message || err);
+      } finally {
+        this.scheduleEditorSaving = false;
+      }
+    },
+    async toggleScheduleEnabled(s) {
+      try {
+        const res = await fetch(API_BASE + '/scheduler/schedules/' + s.id, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !s.enabled }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        await this.loadSchedules();
+        await this.loadUpcoming();
+      } catch (e) {
+        this.toast('更新失败: ' + (e.message || e));
+      }
+    },
+    async deleteSchedule(s) {
+      if (!confirm('删除计划 #' + s.id + '？\n（已生成的 attempt 不会被删除，只是不再继续派生新 attempt）')) return;
+      try {
+        const res = await fetch(API_BASE + '/scheduler/schedules/' + s.id, {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.toast('已删除计划 #' + s.id);
+        await this.loadSchedules();
+        await this.loadUpcoming();
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
+      }
     },
     async loadSchedulerConfig() {
       try {
