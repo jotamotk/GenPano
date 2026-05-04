@@ -49,9 +49,7 @@ def _build_celery_app() -> Celery:
 
     app.conf.task_routes = {
         "app.tasks.health.heartbeat": {"queue": "beat", "routing_key": "beat"},
-        "geo_tracker.tasks.scheduler.run_daily_dispatch": {
-            "queue": "beat", "routing_key": "beat"
-        },
+        "geo_tracker.tasks.scheduler.run_daily_dispatch": {"queue": "beat", "routing_key": "beat"},
     }
 
     app.conf.task_default_queue = "beat"
