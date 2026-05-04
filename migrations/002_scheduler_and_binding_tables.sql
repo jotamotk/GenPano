@@ -17,9 +17,12 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 1. account_profile_map
 -- ═══════════════════════════════════════════════════════════════════════════
+-- account_id is NOT a FK on purpose: admin_console often connects as a
+-- less-privileged role that lacks REFERENCES on the worker-owned
+-- llm_accounts table. App-level cleanup handles cascading deletes.
 CREATE TABLE IF NOT EXISTS account_profile_map (
     id                    SERIAL PRIMARY KEY,
-    account_id            INTEGER NOT NULL REFERENCES llm_accounts(id) ON DELETE CASCADE,
+    account_id            INTEGER NOT NULL,
     profile_id            VARCHAR(64) NOT NULL,
     daily_quota           INTEGER NOT NULL DEFAULT 1 CHECK (daily_quota >= 0),
     conflict_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,

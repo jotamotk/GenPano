@@ -266,58 +266,101 @@ def run_daily_dispatch(
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
             for sch in due_schedules:
-                cur.execute(
-                    """
-                    SELECT a.id
-                    FROM llm_accounts a
-                    LEFT JOIN account_profile_map apm
-                           ON apm.account_id = a.id
-                          AND apm.profile_id = %s
-                    WHERE a.llm_name = %s
-                      AND a.status = 'active'
-                      AND a.cookies_json IS NOT NULL
-                      AND a.cookies_json != ''
-                      AND (%s IS NULL
-                           OR apm.profile_id IS NOT NULL
-                           OR a.profile_id::text = %s)
-                    ORDER BY (apm.profile_id IS NOT NULL) DESC,
-                             a.last_used_at NULLS FIRST,
-                             a.id
-                    LIMIT 1
-                    """,
-                    (sch["profile_id"], sch["target_llm"],
-                     sch["profile_id"], sch["profile_id"]),
-                )
-                acct = cur.fetchone()
-                account_id = acct["id"] if acct else None
-                cur.execute(
-                    """
-                    INSERT INTO queries
-                        (prompt_id, profile_id, brand_id, account_id,
-                         query_text, target_llm, status, schedule_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, NOW())
-                    """,
-                    (
-                        sch.get("prompt_id"),
-                        sch.get("profile_id"),
-                        sch.get("brand_id"),
-                        account_id,
-                        sch["query_text"],
-                        sch["target_llm"],
-                        sch["id"],
-                    ),
-                )
-                cur.execute(
-                    """
-                    UPDATE query_schedules
-                       SET last_run_at = NOW(),
-                           next_run_at = NOW() + (cadence_days || ' days')::interval,
-                           updated_at = NOW()
-                     WHERE id = %s
-                    """,
-                    (sch["id"],),
-                )
-                created += 1
+                # SAVEPOINT per row so a single bad schedule (profile_id type
+                # mismatch, missing schedule_id column) doesn't poison the
+                # batch.
+                cur.execute("SAVEPOINT sp_sched")
+                try:
+                    cur.execute(
+                        """
+                        SELECT a.id
+                        FROM llm_accounts a
+                        LEFT JOIN account_profile_map apm
+                               ON apm.account_id = a.id
+                              AND apm.profile_id = %s
+                        WHERE a.llm_name = %s
+                          AND a.status = 'active'
+                          AND a.cookies_json IS NOT NULL
+                          AND a.cookies_json != ''
+                          AND (%s IS NULL
+                               OR apm.profile_id IS NOT NULL
+                               OR a.profile_id::text = %s)
+                        ORDER BY (apm.profile_id IS NOT NULL) DESC,
+                                 a.last_used_at NULLS FIRST,
+                                 a.id
+                        LIMIT 1
+                        """,
+                        (sch["profile_id"], sch["target_llm"],
+                         sch["profile_id"], sch["profile_id"]),
+                    )
+                    acct = cur.fetchone()
+                    account_id = acct["id"] if acct else None
+                    pid_for_queries = sch.get("profile_id")
+                    if pid_for_queries is not None:
+                        try:
+                            pid_for_queries = int(pid_for_queries)
+                        except (TypeError, ValueError):
+                            # Non-numeric (e.g. "pf_xxx") — drop to NULL if
+                            # queries.profile_id is INTEGER. The retry path
+                            # below catches the type error and re-tries with
+                            # NULL.
+                            pass
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO queries
+                                (prompt_id, profile_id, brand_id, account_id,
+                                 query_text, target_llm, status, schedule_id,
+                                 created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s,
+                                    NOW())
+                            """,
+                            (
+                                sch.get("prompt_id"),
+                                pid_for_queries,
+                                sch.get("brand_id"),
+                                account_id,
+                                sch["query_text"],
+                                sch["target_llm"],
+                                sch["id"],
+                            ),
+                        )
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_sched")
+                        cur.execute(
+                            """
+                            INSERT INTO queries
+                                (prompt_id, profile_id, brand_id, account_id,
+                                 query_text, target_llm, status, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW())
+                            """,
+                            (
+                                sch.get("prompt_id"),
+                                None,
+                                sch.get("brand_id"),
+                                account_id,
+                                sch["query_text"],
+                                sch["target_llm"],
+                            ),
+                        )
+                    cur.execute(
+                        """
+                        UPDATE query_schedules
+                           SET last_run_at = NOW(),
+                               next_run_at = NOW() + (cadence_days || ' days')::interval,
+                               updated_at = NOW()
+                         WHERE id = %s
+                        """,
+                        (sch["id"],),
+                    )
+                    cur.execute("RELEASE SAVEPOINT sp_sched")
+                    created += 1
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_sched")
+                    logger.warning(
+                        "Skipping schedule #%s due to error: %s", sch["id"], e
+                    )
+                    continue
 
             # ── Random prompt fill against per-(account, profile) quotas ──
             for q in quotas:
