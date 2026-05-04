@@ -35,7 +35,11 @@ def _build_celery_app() -> Celery:
         "genpano",
         broker=settings.redis_url,
         backend=settings.redis_url,
-        include=["app.tasks.health", "geo_tracker.tasks.scheduler"],
+        include=[
+            "app.tasks.health",
+            "geo_tracker.tasks.scheduler",
+            "geo_tracker.tasks.hotspots",
+        ],
     )
 
     app.conf.task_queues = (
@@ -50,6 +54,8 @@ def _build_celery_app() -> Celery:
     app.conf.task_routes = {
         "app.tasks.health.heartbeat": {"queue": "beat", "routing_key": "beat"},
         "geo_tracker.tasks.scheduler.run_daily_dispatch": {"queue": "beat", "routing_key": "beat"},
+        "hotspots.collect_source": {"queue": "beat", "routing_key": "beat"},
+        "hotspots.archive_expired": {"queue": "beat", "routing_key": "beat"},
     }
 
     app.conf.task_default_queue = "beat"
@@ -68,6 +74,18 @@ def _build_celery_app() -> Celery:
             "schedule": crontab(minute=0, hour=1),
             "options": {"queue": "beat", "routing_key": "beat"},
         },
+        # Module D Beat — staggered minutes per source so platforms aren't
+        # all hit at the same wall-clock (anti-rate-limit). Browser sources
+        # (weibo / douyin / xhs) only fire when HOTSPOT_BROWSER_COLLECTORS=1
+        # in the worker env; the collector itself short-circuits otherwise.
+        # Weibo runs without a browser (mobile JSON public API) so it's safe
+        # to schedule even with the gate off.
+        "hotspots-baidu":  {"task": "hotspots.collect_source", "args": ["baidu"],  "schedule": crontab(minute=20)},
+        "hotspots-zhihu":  {"task": "hotspots.collect_source", "args": ["zhihu"],  "schedule": crontab(minute=40)},
+        "hotspots-weibo":  {"task": "hotspots.collect_source", "args": ["weibo"],  "schedule": crontab(minute=15)},
+        "hotspots-douyin": {"task": "hotspots.collect_source", "args": ["douyin"], "schedule": crontab(minute=25)},
+        "hotspots-xhs":    {"task": "hotspots.collect_source", "args": ["xhs"],    "schedule": crontab(minute=35, hour="*/2")},
+        "hotspots-archive":{"task": "hotspots.archive_expired",                    "schedule": crontab(minute=0, hour=3)},
     }
 
     return app

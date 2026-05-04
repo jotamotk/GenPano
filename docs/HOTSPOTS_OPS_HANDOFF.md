@@ -17,37 +17,30 @@ changes required.
 | `/api/admin/hot-topics` CRUD + `/collect` + `/archive-expired` | ✅ shipped | none |
 | `planner-hotspots` admin UI | ✅ shipped | none |
 | Prompt Matrix LLM injection (rules 24/25) | ✅ shipped | none |
-| Public-source collectors (`baidu`, `zhihu`) | ✅ shipped & active | none |
-| LLM-search collector (`llm_search`) | 🟡 placeholder | wire豆包 web_search (see §3) |
-| Browser collectors (`weibo` / `douyin` / `xhs`) | 🟡 code shipped, gated off | provision accounts + flip env (see §1, §2) |
-| Beat schedule (cron triggers) | 🟡 not configured | add to `backend/app/celery_app.py` (see §4) |
-| Daily archive task | 🟡 not scheduled | add to Beat (see §4) |
+| Public-source collectors (`baidu`, `zhihu`, `weibo`) | ✅ shipped & active, no account needed | none |
+| Browser collectors (`douyin` / `xhs`) | ✅ code + UI shipped | provision accounts + flip env (see §1, §2) |
+| Beat schedule (cron triggers) | ✅ shipped | none — auto-fires once main worker has the latest image |
+| Daily archive task | ✅ scheduled (03:00 UTC daily) | none |
+| LLM-search collector (`llm_search`) | 🟡 placeholder | wire 豆包 web_search (see §3) — optional |
 
 ---
 
 ## 1. Provision platform accounts
 
-Browser collectors reuse the existing `AccountPool`. Each platform owns one
-`llm_name` slot, the same way ChatGPT and Doubao do. Operators provision at
-least one account per slot through the existing **账号池** admin UI (left nav →
-**采集资源**), or directly via SQL:
+**Weibo no longer needs an account** — the collector now uses the public
+mobile JSON endpoint (`m.weibo.cn/api/container/getIndex`), which returns
+the same ~50 trending list anonymously. If that endpoint is ever blocked
+the collector falls back to scraping the desktop HTML; both paths are
+no-account.
 
-```sql
-INSERT INTO llm_accounts (llm_name, phone_number, email, status, daily_limit, ...)
-VALUES
-  ('weibo_hots',  '<phone>', '<phone>@weibo_hots.local',  'active', 24, ...),
-  ('douyin_hots', '<phone>', '<phone>@douyin_hots.local', 'active', 24, ...),
-  ('xhs_hots',    '<phone>', '<phone>@xhs_hots.local',    'active', 24, ...);
-```
-
-Then log in once via the SMS-login flow under each account so cookies are saved
-to the `llm_accounts.cookies_json` column. The collector will restore those
-cookies on every cycle and persist the refreshed jar back to the same field
-(handled by `BrowserHotspotCollector` — see `geo_tracker/hotspots/browser.py`).
+For **douyin** and **xhs** an authenticated browser session is still
+required. Each platform owns one `llm_name` slot in the existing
+`AccountPool`, the same way ChatGPT and Doubao do. Provision through the
+existing **采集资源 → + 添加账号 → Cookies 导入** UI (the platform dropdown
+now lists `douyin_hots` and `xhs_hots`).
 
 **Conservative quotas to start**:
-- `weibo_hots` — `daily_limit = 24` (1 cycle / hour)
-- `douyin_hots` — `daily_limit = 24`
+- `douyin_hots` — `daily_limit = 24` (1 cycle / hour)
 - `xhs_hots` — `daily_limit = 12` (XHS has the strictest anti-bot, so half-rate)
 
 Bind a residential proxy (CN geo) to each account. Reuse the existing proxy
@@ -55,30 +48,33 @@ pool and binding flow.
 
 ---
 
-## 2. Flip the env flag
+## 2. Flip the env flag (douyin / xhs only)
 
-Browser collectors short-circuit to `[]` unless this env is set:
+The two remaining browser collectors short-circuit to `[]` unless this env
+is set on the worker:
 
 ```bash
 HOTSPOT_BROWSER_COLLECTORS=1
 ```
 
-Set it on the same process that hosts the admin_console + worker stack
-(typically the docker-compose service). Without this flag, `weibo` / `douyin` /
-`xhs` are still listed in the registry and the UI dropdown — they just no-op.
-This is intentional so the default boot in CI / sandbox / web-only doesn't
-spin up Camoufox.
+Set it on the docker-compose service that runs the Celery worker (the
+`beat` queue). Without this flag, `douyin` / `xhs` are still listed in
+the registry and the Beat schedule — they just no-op. Default boots in
+CI / sandbox / web-only don't spin up Camoufox.
+
+`weibo` / `baidu` / `zhihu` are unaffected by this flag — they're plain
+HTTP and always run.
 
 After setting the env, verify:
 
 ```bash
 docker compose exec admin_console python -m geo_tracker.hotspots.pipeline \
-  --sources weibo --industry 母婴个护
+  --sources weibo,baidu --industry 母婴个护
 ```
 
-You should see something like `{"collected": 50, "inserted": 12, ...}` if
-microsoft一切就绪. If the account isn't bound, the result is
-`{"collected": 0, "inserted": 0, "by_source": {"weibo": 0}, "errors": {}}` —
+You should see something like `{"collected": 50, "inserted": 12, ...}`.
+If an account isn't bound for a browser source, the result is
+`{"collected": 0, "inserted": 0, "by_source": {"douyin": 0}, "errors": {}}` —
 not an error, just nothing collected.
 
 ---
@@ -105,44 +101,17 @@ industry. For 母婴个护 / 美妆个护 they usually catch the headlines fine.
 
 ---
 
-## 4. Schedule the cron triggers
+## 4. Beat schedule (already shipped)
 
-Add to `backend/app/celery_app.py` `beat_schedule` (or wherever your Beat
-config lives):
-
-```python
-"hotspots-baidu":  {"task": "...collect_source", "args": ["baidu"],   "schedule": crontab(minute=20)},
-"hotspots-zhihu":  {"task": "...collect_source", "args": ["zhihu"],   "schedule": crontab(minute=40)},
-"hotspots-weibo":  {"task": "...collect_source", "args": ["weibo"],   "schedule": crontab(minute=15)},
-"hotspots-douyin": {"task": "...collect_source", "args": ["douyin"],  "schedule": crontab(minute=25)},
-"hotspots-xhs":    {"task": "...collect_source", "args": ["xhs"],     "schedule": crontab(minute=35, hour="*/2")},
-"hotspots-archive":{"task": "...archive_expired_hotspots", "schedule": crontab(hour=3)},
-```
-
-Stagger the minutes so the platforms don't all fire at the same wall-clock and
-trip rate-limits.
-
-You'll need a thin Celery wrapper around the existing pipeline functions:
-
-```python
-# backend/app/tasks/hotspots.py
-from celery import shared_task
-from geo_tracker.hotspots.pipeline import (
-    run_collection_cycle, archive_expired_hotspots,
-)
-
-@shared_task(name="hotspots.collect_source")
-def collect_source(source: str):
-    return run_collection_cycle(sources=[source])
-
-@shared_task(name="hotspots.archive_expired")
-def archive_expired():
-    return archive_expired_hotspots()
-```
+`backend/app/celery_app.py` now declares the full set of hotspot Beat
+entries (staggered minutes per source, one nightly archive at 03:00 UTC).
+The thin Celery wrappers live in `geo_tracker/tasks/hotspots.py`.
+Once the worker pulls the latest image the cron fires automatically;
+no extra ops work needed beyond §1-§2.
 
 Manual one-shot from admin: the **「立即采集」** button in the hotspots page
-already calls `/api/admin/hot-topics/collect` — that's enough for ad-hoc
-testing without beat.
+calls `/api/admin/hot-topics/collect` synchronously — useful for ad-hoc
+testing or fresh installs that don't want to wait for the next cron tick.
 
 ---
 
