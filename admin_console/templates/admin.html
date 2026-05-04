@@ -1540,7 +1540,11 @@
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
             <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
               <h3 class="text-[14px] font-semibold text-ink">运行历史</h3>
-              <span class="text-[11px] text-ink-muted">最近 30 次</span>
+              <div class="flex items-center gap-2 text-[11px] text-ink-muted">
+                <span x-text="'共 ' + (schedulerRunsTotal || 0) + ' 条'"></span>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
+                        @click="cleanEmptyRuns()" title="删除所有 已入队=0 的历史行">清理空记录</button>
+              </div>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full text-[12px]">
@@ -1553,11 +1557,12 @@
                     <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">用时</th>
                     <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">备注</th>
                     <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">详情</th>
+                    <th class="text-right py-2.5 px-4 font-semibold text-ink-muted w-[60px]">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr x-show="schedulerRuns.length === 0">
-                    <td colspan="7" class="py-6 text-center text-ink-muted">暂无运行历史</td>
+                    <td colspan="8" class="py-6 text-center text-ink-muted">暂无运行历史</td>
                   </tr>
                   <template x-for="r in schedulerRuns" :key="r.id">
                     <tr class="border-b border-b-card/50 hover:bg-surface-page">
@@ -1574,10 +1579,44 @@
                       <td class="py-2.5 px-4">
                         <button class="text-accent hover:underline" @click="goToTrackerDay(r.started_at)">查看 →</button>
                       </td>
+                      <td class="py-2.5 px-4 text-right">
+                        <button class="text-danger hover:underline text-[11px]"
+                                @click="deleteSchedulerRun(r)">删除</button>
+                      </td>
                     </tr>
                   </template>
                 </tbody>
               </table>
+            </div>
+            <!-- Pagination -->
+            <div class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted"
+                 x-show="schedulerRunsTotal > 0">
+              <div>
+                每页
+                <select x-model.number="schedulerRunsPerPage" @change="schedulerRunsPage = 1; loadSchedulerRuns()"
+                        class="h-6 px-1 rounded-btn border border-b-default text-[11px] bg-white">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                  <option :value="100">100</option>
+                </select>
+                条
+              </div>
+              <div class="flex items-center gap-2">
+                <button class="h-6 px-2 rounded-btn border border-b-default bg-surface disabled:opacity-40 hover:bg-surface-page"
+                        :disabled="schedulerRunsPage <= 1"
+                        @click="schedulerRunsPage = 1; loadSchedulerRuns()">«</button>
+                <button class="h-6 px-2 rounded-btn border border-b-default bg-surface disabled:opacity-40 hover:bg-surface-page"
+                        :disabled="schedulerRunsPage <= 1"
+                        @click="schedulerRunsPage = Math.max(1, schedulerRunsPage - 1); loadSchedulerRuns()">‹</button>
+                <span x-text="'第 ' + schedulerRunsPage + ' / ' + Math.max(1, Math.ceil(schedulerRunsTotal / schedulerRunsPerPage)) + ' 页'"></span>
+                <button class="h-6 px-2 rounded-btn border border-b-default bg-surface disabled:opacity-40 hover:bg-surface-page"
+                        :disabled="schedulerRunsPage >= Math.ceil(schedulerRunsTotal / schedulerRunsPerPage)"
+                        @click="schedulerRunsPage++; loadSchedulerRuns()">›</button>
+                <button class="h-6 px-2 rounded-btn border border-b-default bg-surface disabled:opacity-40 hover:bg-surface-page"
+                        :disabled="schedulerRunsPage >= Math.ceil(schedulerRunsTotal / schedulerRunsPerPage)"
+                        @click="schedulerRunsPage = Math.max(1, Math.ceil(schedulerRunsTotal / schedulerRunsPerPage)); loadSchedulerRuns()">»</button>
+              </div>
             </div>
           </div>
 
@@ -9691,6 +9730,9 @@ function adminApp() {
     },
     schedulerToday: { engines: [], total: { target:0, done:0, running:0, pending:0, failed:0 } },
     schedulerRuns: [],
+    schedulerRunsTotal: 0,
+    schedulerRunsPage: 1,
+    schedulerRunsPerPage: 20,
     schedulerDirty: false,
     schedulerSaving: false,
     schedulerTriggering: false,
@@ -14258,12 +14300,59 @@ function adminApp() {
     },
     async loadSchedulerRuns() {
       try {
-        const res = await fetch(API_BASE + '/scheduler/runs?limit=30', { credentials: 'same-origin' });
+        const params = new URLSearchParams({
+          page: this.schedulerRunsPage,
+          per_page: this.schedulerRunsPerPage,
+        });
+        const res = await fetch(API_BASE + '/scheduler/runs?' + params, { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        this.schedulerRuns = Array.isArray(data) ? data : [];
+        // Server returns {rows, total, page, per_page} when paginated
+        if (data && Array.isArray(data.rows)) {
+          this.schedulerRuns = data.rows;
+          this.schedulerRunsTotal = data.total || 0;
+        } else {
+          this.schedulerRuns = Array.isArray(data) ? data : [];
+          this.schedulerRunsTotal = this.schedulerRuns.length;
+        }
       } catch (e) {
         this.schedulerRuns = [];
+        this.schedulerRunsTotal = 0;
+      }
+    },
+    async deleteSchedulerRun(r) {
+      if (!confirm('删除这条历史记录 (#' + r.id + ')？')) return;
+      try {
+        const res = await fetch(API_BASE + '/scheduler/runs/' + r.id, {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已删除 #' + r.id);
+        // Re-load — if this was the last row on the page, step back a page
+        const remaining = (this.schedulerRunsTotal || 0) - 1;
+        const maxPage = Math.max(1, Math.ceil(remaining / this.schedulerRunsPerPage));
+        if (this.schedulerRunsPage > maxPage) this.schedulerRunsPage = maxPage;
+        await this.loadSchedulerRuns();
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
+      }
+    },
+    async cleanEmptyRuns() {
+      if (!confirm('删除所有 「已入队 = 0」 的历史记录？')) return;
+      try {
+        const res = await fetch(API_BASE + '/scheduler/runs?empty=1', {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已清理 ' + (body.deleted || 0) + ' 条空记录');
+        this.schedulerRunsPage = 1;
+        await this.loadSchedulerRuns();
+      } catch (e) {
+        this.toast('清理失败: ' + (e.message || e));
       }
     },
     async saveSchedulerConfig() {
