@@ -12,12 +12,25 @@ from .baidu import BaiduHotsCollector
 from .zhihu import ZhihuHotsCollector
 from .llm_search import LLMSearchCollector
 
-COLLECTOR_REGISTRY = {
+COLLECTOR_REGISTRY: dict[str, type] = {
     "baidu": BaiduHotsCollector,
     "zhihu": ZhihuHotsCollector,
     "llm_search": LLMSearchCollector,
-    # weibo / douyin / xhs ship with Module D-B (browser-use).
 }
+
+# Module D-B: browser-use collectors. They import camoufox + the agent
+# stack lazily (inside .collect()), so import here is safe even on web-only
+# deploys; the actual browser launch is gated on
+# HOTSPOT_BROWSER_COLLECTORS=1 (see browser.browser_collectors_enabled).
+try:
+    from .weibo import WeiboHotsCollector
+    from .douyin import DouyinHotsCollector
+    from .xiaohongshu import XHSHotsCollector
+    COLLECTOR_REGISTRY["weibo"] = WeiboHotsCollector
+    COLLECTOR_REGISTRY["douyin"] = DouyinHotsCollector
+    COLLECTOR_REGISTRY["xhs"] = XHSHotsCollector
+except Exception as _e:
+    print(f"[hotspots] browser collectors unavailable: {_e}")
 
 
 def _normalize_title(text: str) -> str:
@@ -73,6 +86,7 @@ def run_collection_cycle(*,
                 candidates.append(it)
         except Exception as e:
             errors[name] = str(e)[:200]
+            by_source[name] = 0
 
     candidates = _dedupe(candidates)
 
