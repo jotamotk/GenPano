@@ -11045,9 +11045,14 @@ def _fetch_segments(cur, *, page=1, per_page=50, q=None, status=None, industry_i
         """
         SELECT
             COUNT(*) AS profile_count,
-            COUNT(*) FILTER (WHERE status = 'active') AS active_profile_count
-        FROM profiles
-        WHERE COALESCE(is_deleted, FALSE) = FALSE
+            COUNT(*) FILTER (WHERE p.status = 'active') AS active_profile_count
+        FROM profiles p
+        WHERE COALESCE(p.is_deleted, FALSE) = FALSE
+          AND p.segment_id IN (
+              SELECT s.id FROM segments s
+              WHERE COALESCE(s.is_deleted, FALSE) = FALSE
+                AND COALESCE(s.status, 'draft') <> 'deleted'
+          )
         """
     )
     profile_summary = dict(cur.fetchone() or {})
@@ -13265,6 +13270,239 @@ def account_profile_counts():
         })
     finally:
         conn.close()
+
+
+@app.route('/api/accounts/auto_assign_profiles', methods=['POST'])
+def auto_assign_profiles():
+    """Bulk-assign profiles to every active account.
+
+    Strategy:
+      1. Fetch all active accounts (skip ones already bound to N profiles when
+         skip_already_bound=true; default true so re-running is idempotent).
+      2. Filter the candidate Profile pool by the account's expected geo
+         (豆包/DS = CN, ChatGPT = US/NA) using `persona_json.country_code`
+         when present, otherwise everything.
+      3. Optionally call the LLM to pick the best matching subset; if the LLM
+         is unavailable or times out, fall back to a simple round-robin
+         deterministic distribution so the user still gets bindings.
+
+    Body: {
+       "per_account": int = 5,           # how many profiles to assign per account
+       "skip_already_bound": bool=true,  # don't touch accounts that already
+                                         # have >= per_account bindings
+       "use_llm": bool=true              # try LLM ranking; fall back to RR
+    }
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        per_account = max(1, min(int(payload.get('per_account', 5)), 50))
+    except Exception:
+        return jsonify({'error': 'per_account must be 1..50'}), 400
+    skip_bound = bool(payload.get('skip_already_bound', True))
+    use_llm = bool(payload.get('use_llm', True))
+
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    summary = {
+        'accounts_processed': 0,
+        'accounts_skipped': 0,
+        'bindings_inserted': 0,
+        'method': 'unknown',
+        'errors': [],
+    }
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Active accounts
+            cur.execute(
+                """
+                SELECT a.id, a.llm_name, a.phone_number, a.daily_limit,
+                       (SELECT COUNT(*) FROM account_profile_map apm
+                          WHERE apm.account_id = a.id) AS bound_count
+                FROM llm_accounts a
+                WHERE a.status = 'active'
+                  AND a.cookies_json IS NOT NULL AND a.cookies_json != ''
+                ORDER BY a.id
+                """
+            )
+            accounts = [dict(r) for r in cur.fetchall()]
+
+            # Probe profiles schema (some envs use VARCHAR ids, others INT)
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'profiles'"
+            )
+            profile_cols = {r['column_name'] for r in cur.fetchall()}
+            select_parts = [
+                'p.id::text AS id',
+                ("p.code" if 'code' in profile_cols else "'' AS code"),
+                ("p.name" if 'name' in profile_cols else 'NULL AS name'),
+                ("p.persona_json" if 'persona_json' in profile_cols else 'NULL AS persona_json'),
+            ]
+            cur.execute(
+                f"""
+                SELECT {', '.join(select_parts)}
+                FROM profiles p
+                WHERE {('COALESCE(p.is_deleted, FALSE) = FALSE' if 'is_deleted' in profile_cols else 'TRUE')}
+                ORDER BY p.id::text
+                """
+            )
+            all_profiles = [dict(r) for r in cur.fetchall()]
+
+        # Bucket profiles by geo (best-effort — pulls country_code from
+        # persona_json if present)
+        engine_geo = {'doubao': 'CN', 'deepseek': 'CN', 'chatgpt': 'US', 'gemini': 'US'}
+
+        def profile_geo(p):
+            pj = p.get('persona_json') or {}
+            if isinstance(pj, str):
+                try:
+                    pj = json.loads(pj)
+                except Exception:
+                    pj = {}
+            for k in ('country_code', 'country', 'geo'):
+                v = (pj.get(k) or '').upper()
+                if v:
+                    return v
+            return None
+
+        # Try LLM picker. Falls back to round-robin if it fails.
+        method = 'rr'
+        llm_picks = {}
+        if use_llm and accounts and all_profiles:
+            try:
+                llm_picks = _llm_assign_profiles(accounts, all_profiles, per_account)
+                method = 'llm'
+            except Exception as e:
+                summary['errors'].append(f'llm fallback: {e}')
+
+        # Round-robin pointer per geo bucket so each account gets distinct picks
+        rr_idx = {'CN': 0, 'US': 0, '*': 0}
+        by_geo = {'CN': [], 'US': [], '*': []}
+        for p in all_profiles:
+            g = profile_geo(p)
+            if g == 'CN':
+                by_geo['CN'].append(p)
+            elif g in ('US', 'NA', 'GB'):
+                by_geo['US'].append(p)
+            else:
+                by_geo['*'].append(p)
+
+        with conn.cursor() as cur2:
+            for a in accounts:
+                if skip_bound and (a['bound_count'] or 0) >= per_account:
+                    summary['accounts_skipped'] += 1
+                    continue
+                expected = engine_geo.get(str(a['llm_name'] or '').lower())
+                # LLM-driven picks for this account, else RR
+                picks = (llm_picks.get(a['id']) or [])[:per_account] if method == 'llm' else []
+                if not picks:
+                    pool = by_geo.get(expected, []) + by_geo['*']
+                    if not pool:
+                        continue
+                    start = rr_idx.get(expected or '*', 0)
+                    picked = []
+                    for k in range(per_account):
+                        picked.append(pool[(start + k) % len(pool)]['id'])
+                    rr_idx[expected or '*'] = (start + per_account) % len(pool)
+                    picks = picked
+
+                for pid in picks:
+                    cur2.execute(
+                        """
+                        INSERT INTO account_profile_map
+                            (account_id, profile_id, daily_quota,
+                             conflict_acknowledged)
+                        VALUES (%s, %s, %s, FALSE)
+                        ON CONFLICT (account_id, profile_id) DO NOTHING
+                        """,
+                        (a['id'], pid, 1),
+                    )
+                    summary['bindings_inserted'] += cur2.rowcount
+                summary['accounts_processed'] += 1
+        conn.commit()
+        summary['method'] = method
+        return jsonify({'success': True, **summary})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+
+def _llm_assign_profiles(accounts, profiles, per_account):
+    """Ask the LLM to pick `per_account` profile ids for each account.
+
+    Returns ``{account_id: [profile_id, ...]}``. Empty dict on any error so
+    the caller can fall back to round-robin without surfacing the failure.
+    """
+    try:
+        from openai import OpenAI
+        from .topic_plan import load_doubao_config
+    except Exception:
+        return {}
+    cfg = load_doubao_config()
+    if not getattr(cfg, 'api_key', None):
+        return {}
+    # Cap profile context — LLM call cost grows linearly with list size.
+    cand = profiles[:200]
+    profile_lines = '\n'.join(
+        f"  - id={p['id']}; code={p.get('code') or ''}; "
+        f"name={(p.get('name') or '')[:40]}"
+        for p in cand
+    )
+    account_lines = '\n'.join(
+        f"  - account_id={a['id']}; llm={a['llm_name']}; phone={a['phone_number'] or ''}"
+        for a in accounts
+    )
+    prompt = (
+        f"Match each LLM browser-automation account with up to {per_account} "
+        f"of the most representative Profile ids. The match should reflect "
+        f"natural usage: 豆包/deepseek best fit Chinese-locale profiles; "
+        f"chatgpt fits English/global profiles. Spread profiles so each "
+        f"account gets a distinct slice.\n\n"
+        f"ACCOUNTS:\n{account_lines}\n\n"
+        f"PROFILES:\n{profile_lines}\n\n"
+        f"Respond with strict JSON only: "
+        f'{{"assignments": [{{"account_id": <int>, "profile_ids": [<id>, ...]}}, ...]}}'
+    )
+    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=90)
+    resp = client.chat.completions.create(
+        model=cfg.model,
+        messages=[
+            {"role": "system", "content": "You are a careful assignment planner. Output strict JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=2048,
+    )
+    text = resp.choices[0].message.content if resp.choices else ''
+    text = (text or '').strip()
+    # Try to extract JSON block from a possibly-fenced response
+    if text.startswith('```'):
+        text = text.split('```', 2)[1]
+        if text.lstrip().startswith('json'):
+            text = text.lstrip()[4:].lstrip()
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        # Tolerate trailing commentary
+        idx = text.rfind('}')
+        if idx > 0:
+            try:
+                parsed = json.loads(text[:idx + 1])
+            except Exception:
+                return {}
+        else:
+            return {}
+    out = {}
+    for item in (parsed.get('assignments') or []):
+        try:
+            aid = int(item.get('account_id'))
+            pids = [str(x) for x in (item.get('profile_ids') or []) if x]
+            out[aid] = pids[:per_account]
+        except Exception:
+            continue
+    return out
 
 
 # ─── Scheduler config + manual trigger + history APIs ───────────────────────
