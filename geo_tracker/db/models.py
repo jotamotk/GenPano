@@ -248,6 +248,7 @@ class SchedulerConfig(Base):
     daily_time       = Column(String(8),  default="09:00")   # HH:MM
     timezone         = Column(String(64), default="Asia/Shanghai")
     temp_global_cap  = Column(Integer, nullable=True)        # null = disabled
+    engine_caps      = Column(JSON, nullable=True)           # {"doubao":50, ...}; null/missing per engine = no cap
     retry_max        = Column(Integer, default=3)
     paused_engines   = Column(JSON, nullable=True)           # ["chatgpt", ...]
     updated_at       = Column(DateTime, server_default=func.now(), onupdate=func.now())

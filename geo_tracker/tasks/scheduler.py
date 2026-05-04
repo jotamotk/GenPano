@@ -47,8 +47,8 @@ def _connect():
 def _load_config(cur) -> Dict[str, Any]:
     cur.execute(
         """
-        SELECT id, mode, daily_time, timezone, temp_global_cap, retry_max,
-               paused_engines
+        SELECT id, mode, daily_time, timezone, temp_global_cap, engine_caps,
+               retry_max, paused_engines
         FROM scheduler_config
         ORDER BY id ASC
         LIMIT 1
@@ -61,10 +61,12 @@ def _load_config(cur) -> Dict[str, Any]:
     cur.execute(
         """
         INSERT INTO scheduler_config
-            (mode, daily_time, timezone, temp_global_cap, retry_max, paused_engines)
-        VALUES ('auto', '09:00', 'Asia/Shanghai', NULL, 3, '[]'::jsonb)
-        RETURNING id, mode, daily_time, timezone, temp_global_cap, retry_max,
-                  paused_engines
+            (mode, daily_time, timezone, temp_global_cap, engine_caps,
+             retry_max, paused_engines)
+        VALUES ('auto', '09:00', 'Asia/Shanghai', NULL, '{}'::jsonb,
+                3, '[]'::jsonb)
+        RETURNING id, mode, daily_time, timezone, temp_global_cap, engine_caps,
+                  retry_max, paused_engines
         """
     )
     return dict(cur.fetchone())
@@ -132,6 +134,39 @@ def _apply_global_cap(quotas: List[Dict[str, Any]], cap: Optional[int]) -> List[
     return quotas
 
 
+def _apply_engine_caps(
+    quotas: List[Dict[str, Any]],
+    engine_caps: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Apply per-engine ceilings.
+
+    ``engine_caps`` shape: ``{"doubao": 100, "deepseek": null}``. A null or
+    missing entry means "no cap, use account capacity for that engine"; 0 also
+    means "no cap" (UI sends 0 for empty inputs in some cases). Negatives are
+    rejected at the API layer, so we don't re-validate here.
+    """
+    if not engine_caps:
+        return quotas
+    by_engine: Dict[str, List[Dict[str, Any]]] = {}
+    for q in quotas:
+        by_engine.setdefault((q.get("engine") or "").lower(), []).append(q)
+    for engine, items in by_engine.items():
+        cap = engine_caps.get(engine)
+        if cap in (None, 0):
+            continue
+        try:
+            cap_i = int(cap)
+        except Exception:
+            continue
+        total = sum(int(i["quota"] or 0) for i in items)
+        if cap_i <= 0 or total <= cap_i or total == 0:
+            continue
+        scale = cap_i / total
+        for i in items:
+            i["quota"] = max(1, int(round(int(i["quota"] or 0) * scale)))
+    return quotas
+
+
 def _pick_query_text(cur, profile_id: str, engine: str) -> Optional[Dict[str, Any]]:
     """Pick one prompt to enqueue for this (profile, engine) pair.
 
@@ -190,6 +225,10 @@ def run_daily_dispatch(
 
             paused_engines = cfg.get("paused_engines") or []
             quotas = _quotas(cur, paused_engines)
+            # Order matters: per-engine caps shrink first (so the global cap
+            # then applies to a number that already respects engine ceilings),
+            # then the optional global cap.
+            quotas = _apply_engine_caps(quotas, cfg.get("engine_caps") or {})
             cap = cap_override if cap_override is not None else cfg.get("temp_global_cap")
             quotas = _apply_global_cap(quotas, cap)
 
