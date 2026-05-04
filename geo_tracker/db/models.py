@@ -209,6 +209,61 @@ class LLMAccount(Base):
     proxy               = relationship("Proxy", back_populates="accounts")
     profile             = relationship("Profile", back_populates="accounts")
     rotation_logs       = relationship("AccountRotationLog", back_populates="account")
+    profile_bindings    = relationship("AccountProfileMap", back_populates="account",
+                                       cascade="all, delete-orphan")
+
+
+# ─── Account ↔ Profile (many-to-many with per-binding daily quota) ───────────
+# A single LLM account may serve dozens of Profiles. The legacy
+# llm_accounts.profile_id stays as the "primary" profile for backward compat;
+# this table is the additive layer the Scheduler reads to know how many queries
+# each (account, profile) pair should run per day.
+class AccountProfileMap(Base):
+    __tablename__ = "account_profile_map"
+
+    id                    = Column(Integer, primary_key=True)
+    account_id            = Column(Integer, ForeignKey("llm_accounts.id", ondelete="CASCADE"),
+                                   nullable=False)
+    # profiles.id in production is VARCHAR(64) ('pf_xxxx'); we don't enforce
+    # the FK here so the ORM stays compatible with both schemas (legacy int +
+    # current string). Referential integrity is enforced in the DB DDL.
+    profile_id            = Column(String(64), nullable=False)
+    daily_quota           = Column(Integer, default=1, nullable=False)
+    conflict_acknowledged = Column(Boolean, default=False)
+    created_at            = Column(DateTime, server_default=func.now())
+
+    account               = relationship("LLMAccount", back_populates="profile_bindings")
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "profile_id", name="uq_apm_account_profile"),
+    )
+
+
+# ─── Scheduler Config (single row) ───────────────────────────────────────────
+class SchedulerConfig(Base):
+    __tablename__ = "scheduler_config"
+
+    id               = Column(Integer, primary_key=True)
+    mode             = Column(String(16), default="auto")    # auto | manual | paused
+    daily_time       = Column(String(8),  default="09:00")   # HH:MM
+    timezone         = Column(String(64), default="Asia/Shanghai")
+    temp_global_cap  = Column(Integer, nullable=True)        # null = disabled
+    retry_max        = Column(Integer, default=3)
+    paused_engines   = Column(JSON, nullable=True)           # ["chatgpt", ...]
+    updated_at       = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# ─── Scheduler Run History ───────────────────────────────────────────────────
+class SchedulerRun(Base):
+    __tablename__ = "scheduler_runs"
+
+    id              = Column(Integer, primary_key=True)
+    started_at      = Column(DateTime, server_default=func.now())
+    finished_at     = Column(DateTime, nullable=True)
+    mode            = Column(String(16))                     # auto | manual
+    target_total    = Column(Integer, default=0)
+    queries_created = Column(Integer, default=0)
+    note            = Column(Text, nullable=True)
 
 
 class AccountRotationLog(Base):

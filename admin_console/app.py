@@ -12474,6 +12474,722 @@ def analyzer_rerun_single(response_id):
         return jsonify({'error': 'Celery not available'})
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Scheduler + Account↔Profile binding (M:N) — see migrations/002_*.sql
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _ensure_scheduler_and_binding_tables():
+    """Create account_profile_map / scheduler_config / scheduler_runs.
+
+    profile_id is VARCHAR(64) to match the live admin_console profiles schema
+    ('pf_xxxx'). Account M:N binding overrides the legacy llm_accounts.profile_id,
+    which stays as the per-account fallback "primary" profile.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS account_profile_map (
+                        id                    SERIAL PRIMARY KEY,
+                        account_id            INTEGER NOT NULL
+                            REFERENCES llm_accounts(id) ON DELETE CASCADE,
+                        profile_id            VARCHAR(64) NOT NULL,
+                        daily_quota           INTEGER NOT NULL DEFAULT 1
+                            CHECK (daily_quota >= 0),
+                        conflict_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_apm_account_profile
+                            UNIQUE (account_id, profile_id)
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_apm_account "
+                    "ON account_profile_map (account_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_apm_profile "
+                    "ON account_profile_map (profile_id)"
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduler_config (
+                        id              SERIAL PRIMARY KEY,
+                        mode            VARCHAR(16) NOT NULL DEFAULT 'auto'
+                            CHECK (mode IN ('auto', 'manual', 'paused')),
+                        daily_time      VARCHAR(8)  NOT NULL DEFAULT '09:00',
+                        timezone        VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
+                        temp_global_cap INTEGER,
+                        retry_max       INTEGER NOT NULL DEFAULT 3
+                            CHECK (retry_max >= 0),
+                        paused_engines  JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO scheduler_config
+                        (mode, daily_time, timezone, retry_max, paused_engines)
+                    SELECT 'auto', '09:00', 'Asia/Shanghai', 3, '[]'::jsonb
+                    WHERE NOT EXISTS (SELECT 1 FROM scheduler_config)
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduler_runs (
+                        id              SERIAL PRIMARY KEY,
+                        started_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+                        finished_at     TIMESTAMP,
+                        mode            VARCHAR(16),
+                        target_total    INTEGER NOT NULL DEFAULT 0,
+                        queries_created INTEGER NOT NULL DEFAULT 0,
+                        note            TEXT
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started "
+                    "ON scheduler_runs (started_at DESC)"
+                )
+            conn.commit()
+            print("DB migration: scheduler_config / account_profile_map / scheduler_runs ensured")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"DB migration warning (non-fatal): {e}")
+
+
+# ─── Account ↔ Profile binding APIs ─────────────────────────────────────────
+
+# LLM → expected geo (豆包/DS = CN, ChatGPT = US/NA). Used for soft conflict
+# detection in the account drawer; profiles whose country_code differs are
+# flagged but not blocked.
+LLM_DEFAULT_GEO = {
+    "doubao": "CN", "deepseek": "CN", "chatgpt": "US", "gemini": "US",
+}
+
+
+def _account_engine_geo(llm_name):
+    if not llm_name:
+        return None
+    return LLM_DEFAULT_GEO.get(str(llm_name).lower())
+
+
+@app.route('/api/accounts/<int:account_id>/profiles')
+def get_account_profiles(account_id):
+    """Return the (paginated) Profile bindings for an account, with
+    soft-conflict flags computed against the account's LLM/device hint.
+    Query params: q (search), only=conflicts|all, limit (default 50), offset.
+    """
+    from psycopg2.extras import RealDictCursor
+    q = (request.args.get('q') or '').strip()
+    only = (request.args.get('only') or 'all').strip().lower()
+    try:
+        limit = max(1, min(int(request.args.get('limit', 50)), 200))
+    except Exception:
+        limit = 50
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except Exception:
+        offset = 0
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, llm_name, phone_number, daily_limit, "
+                "       query_count_today, status "
+                "FROM llm_accounts WHERE id = %s",
+                (account_id,),
+            )
+            account = cur.fetchone()
+            if not account:
+                return jsonify({'error': 'Account not found'}), 404
+
+            # Build a parameterized search predicate that works both for
+            # tables that have profiles.code/name and the legacy schema.
+            params = [account_id]
+            search_pred = ""
+            if q:
+                like = f"%{q}%"
+                search_pred = " AND (p.id ILIKE %s OR COALESCE(p.code,'') ILIKE %s OR COALESCE(p.name,'') ILIKE %s)"
+                params.extend([like, like, like])
+
+            cur.execute(
+                f"""
+                SELECT
+                    apm.id                        AS binding_id,
+                    apm.profile_id                AS profile_id,
+                    apm.daily_quota               AS daily_quota,
+                    apm.conflict_acknowledged     AS conflict_acknowledged,
+                    p.code                        AS profile_code,
+                    p.name                        AS profile_name,
+                    p.persona_json                AS persona_json
+                FROM account_profile_map apm
+                LEFT JOIN profiles p ON p.id = apm.profile_id
+                WHERE apm.account_id = %s
+                  {search_pred}
+                ORDER BY p.code NULLS LAST, apm.profile_id
+                """,
+                params,
+            )
+            all_rows = cur.fetchall()
+
+            cur.execute(
+                "SELECT COALESCE(SUM(daily_quota),0) AS s "
+                "FROM account_profile_map WHERE account_id = %s",
+                (account_id,),
+            )
+            quota_total = int(cur.fetchone()['s'] or 0)
+
+        engine_geo = _account_engine_geo(account['llm_name'])
+        bindings = []
+        for r in all_rows:
+            persona = r.get('persona_json') or {}
+            country = (persona.get('country_code') or '').upper() or None
+            device = (persona.get('device_type') or '').lower() or None
+            language = (persona.get('language') or '').lower() or None
+            timezone = persona.get('timezone') or None
+            conflicts = []
+            if engine_geo and country and country != engine_geo:
+                conflicts.append({
+                    'field': 'geo',
+                    'expected': engine_geo,
+                    'actual': country,
+                })
+            bindings.append({
+                'binding_id': r['binding_id'],
+                'profile_id': r['profile_id'],
+                'profile_code': r.get('profile_code'),
+                'profile_name': r.get('profile_name'),
+                'daily_quota': int(r['daily_quota'] or 0),
+                'country_code': country,
+                'device_type': device,
+                'language': language,
+                'timezone': timezone,
+                'conflicts': conflicts,
+                'conflict_acknowledged': bool(r['conflict_acknowledged']),
+            })
+
+        if only == 'conflicts':
+            bindings = [b for b in bindings if b['conflicts']
+                        and not b['conflict_acknowledged']]
+
+        total = len(bindings)
+        page = bindings[offset:offset + limit]
+
+        return jsonify({
+            'account': {
+                'id': account['id'],
+                'llm_name': account['llm_name'],
+                'phone_number': account['phone_number'],
+                'daily_limit': int(account['daily_limit'] or 0),
+                'query_count_today': int(account['query_count_today'] or 0),
+                'status': account['status'],
+                'expected_geo': engine_geo,
+            },
+            'bindings': page,
+            'total': total,
+            'quota_total': quota_total,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/accounts/<int:account_id>/profiles', methods=['PUT'])
+def upsert_account_profiles(account_id):
+    """Upsert (and optionally remove) profile bindings for an account.
+
+    Body: {
+        "bindings": [
+            {"profile_id": "pf_...", "daily_quota": 1,
+             "conflict_acknowledged": false},
+            ...
+        ],
+        "remove_profile_ids": ["pf_...", ...]
+    }
+    """
+    payload = request.get_json(silent=True) or {}
+    bindings = payload.get('bindings') or []
+    remove_ids = payload.get('remove_profile_ids') or []
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM llm_accounts WHERE id = %s",
+                        (account_id,))
+            if cur.fetchone() is None:
+                return jsonify({'error': 'Account not found'}), 404
+
+            for b in bindings:
+                pid = (b.get('profile_id') or '').strip()
+                if not pid:
+                    continue
+                quota = int(b.get('daily_quota') or 0)
+                ack = bool(b.get('conflict_acknowledged'))
+                cur.execute(
+                    """
+                    INSERT INTO account_profile_map
+                        (account_id, profile_id, daily_quota, conflict_acknowledged)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (account_id, profile_id) DO UPDATE
+                        SET daily_quota = EXCLUDED.daily_quota,
+                            conflict_acknowledged = EXCLUDED.conflict_acknowledged
+                    """,
+                    (account_id, pid, quota, ack),
+                )
+
+            for pid in remove_ids:
+                cur.execute(
+                    "DELETE FROM account_profile_map "
+                    "WHERE account_id = %s AND profile_id = %s",
+                    (account_id, pid),
+                )
+        conn.commit()
+        return jsonify({'success': True,
+                        'upserted': len(bindings),
+                        'removed': len(remove_ids)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/accounts/profile_counts')
+def account_profile_counts():
+    """Return {account_id: {bindings, conflicts}} for the account pool table
+    so the new 绑定Profiles column can render without N+1 fetches.
+    """
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT account_id, COUNT(*) AS bindings,
+                       SUM(CASE WHEN conflict_acknowledged THEN 0 ELSE 1 END)
+                           AS unacknowledged
+                FROM account_profile_map
+                GROUP BY account_id
+                """
+            )
+            rows = cur.fetchall()
+        return jsonify({
+            int(r['account_id']): {
+                'bindings': int(r['bindings'] or 0),
+                # NOTE: this counts *bindings*, not *true conflicts*. The drawer
+                # recomputes per-profile conflicts; this is just a hint.
+                'unacknowledged': int(r['unacknowledged'] or 0),
+            }
+            for r in rows
+        })
+    finally:
+        conn.close()
+
+
+# ─── Scheduler config + manual trigger + history APIs ───────────────────────
+
+def _scheduler_config_row(cur):
+    cur.execute(
+        "SELECT id, mode, daily_time, timezone, temp_global_cap, retry_max, "
+        "       paused_engines, updated_at "
+        "FROM scheduler_config ORDER BY id LIMIT 1"
+    )
+    return cur.fetchone()
+
+
+def _account_capacity_breakdown(cur):
+    """Compute Σ active_account.daily_limit, grouped by engine. This is the
+    physical ceiling — there is no notion of "budget" above it.
+    """
+    cur.execute(
+        """
+        SELECT llm_name AS engine,
+               COUNT(*)                     AS account_total,
+               COUNT(*) FILTER (WHERE status='active'
+                                AND cookies_json IS NOT NULL
+                                AND cookies_json != '')      AS account_active,
+               COALESCE(SUM(daily_limit) FILTER (
+                   WHERE status='active'
+                     AND cookies_json IS NOT NULL
+                     AND cookies_json != ''
+               ), 0)                                         AS daily_capacity
+        FROM llm_accounts
+        GROUP BY llm_name
+        ORDER BY llm_name
+        """
+    )
+    rows = cur.fetchall()
+    return [
+        {
+            'engine': r['engine'],
+            'accounts_total': int(r['account_total'] or 0),
+            'accounts_active': int(r['account_active'] or 0),
+            'daily_capacity': int(r['daily_capacity'] or 0),
+            'expected_geo': _account_engine_geo(r['engine']),
+        }
+        for r in rows
+    ]
+
+
+@app.route('/api/scheduler/config')
+def scheduler_config_get():
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cfg = _scheduler_config_row(cur)
+            cap = _account_capacity_breakdown(cur)
+        if not cfg:
+            return jsonify({'error': 'scheduler_config missing'}), 500
+        cfg = dict(cfg)
+        cfg['updated_at'] = _isoformat(cfg.get('updated_at'))
+        cfg['capacity'] = cap
+        cfg['capacity_total'] = sum(int(c['daily_capacity'] or 0) for c in cap)
+        return jsonify(cfg)
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/config', methods=['PUT'])
+def scheduler_config_put():
+    payload = request.get_json(silent=True) or {}
+    allowed_modes = ('auto', 'manual', 'paused')
+    mode = (payload.get('mode') or '').strip().lower()
+    if mode and mode not in allowed_modes:
+        return jsonify({'error': f"mode must be one of {allowed_modes}"}), 400
+
+    daily_time = (payload.get('daily_time') or '').strip() or None
+    if daily_time and not re.match(r"^\d{1,2}:\d{2}$", daily_time):
+        return jsonify({'error': 'daily_time must be HH:MM'}), 400
+
+    timezone = (payload.get('timezone') or '').strip() or None
+    cap = payload.get('temp_global_cap')
+    if cap in ('', None):
+        cap = None
+    else:
+        try:
+            cap = int(cap)
+            if cap < 0:
+                raise ValueError
+        except Exception:
+            return jsonify({'error': 'temp_global_cap must be a non-negative integer or null'}), 400
+
+    retry_max = payload.get('retry_max')
+    if retry_max is not None:
+        try:
+            retry_max = int(retry_max)
+            if retry_max < 0:
+                raise ValueError
+        except Exception:
+            return jsonify({'error': 'retry_max must be a non-negative integer'}), 400
+
+    paused_engines = payload.get('paused_engines')
+    if paused_engines is not None and not isinstance(paused_engines, list):
+        return jsonify({'error': 'paused_engines must be a list'}), 400
+
+    sets = []
+    args = []
+    if mode:
+        sets.append("mode = %s"); args.append(mode)
+    if daily_time:
+        sets.append("daily_time = %s"); args.append(daily_time)
+    if timezone:
+        sets.append("timezone = %s"); args.append(timezone)
+    if 'temp_global_cap' in payload:
+        sets.append("temp_global_cap = %s"); args.append(cap)
+    if retry_max is not None:
+        sets.append("retry_max = %s"); args.append(retry_max)
+    if paused_engines is not None:
+        sets.append("paused_engines = %s::jsonb")
+        args.append(json.dumps(paused_engines))
+    if not sets:
+        return jsonify({'success': True, 'updated': 0})
+    sets.append("updated_at = NOW()")
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE scheduler_config SET {', '.join(sets)} "
+                "WHERE id = (SELECT id FROM scheduler_config ORDER BY id LIMIT 1)",
+                args,
+            )
+            updated = cur.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'updated': updated})
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/manual_trigger', methods=['POST'])
+def scheduler_manual_trigger():
+    """Run scheduler.run_daily_dispatch() inline (we're already in a Flask
+    worker; no need to round-trip through Celery for a one-shot button).
+    Body (optional): {"cap": 100, "note": "manual via UI"}.
+    """
+    payload = request.get_json(silent=True) or {}
+    cap = payload.get('cap')
+    note = (payload.get('note') or 'manual via UI').strip()
+    try:
+        cap_int = int(cap) if cap not in ('', None) else None
+    except Exception:
+        return jsonify({'error': 'cap must be an integer or null'}), 400
+    try:
+        from geo_tracker.tasks.scheduler import run_daily_dispatch
+        result = run_daily_dispatch(
+            mode_override='manual', cap_override=cap_int, note=note,
+        )
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/scheduler/runs')
+def scheduler_runs():
+    from psycopg2.extras import RealDictCursor
+    try:
+        limit = max(1, min(int(request.args.get('limit', 30)), 200))
+    except Exception:
+        limit = 30
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, started_at, finished_at, mode,
+                       target_total, queries_created, note
+                FROM scheduler_runs
+                ORDER BY started_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                'id': r['id'],
+                'started_at': _isoformat(r['started_at']),
+                'finished_at': _isoformat(r['finished_at']),
+                'mode': r['mode'],
+                'target_total': int(r['target_total'] or 0),
+                'queries_created': int(r['queries_created'] or 0),
+                'note': r['note'],
+            })
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/today')
+def scheduler_today():
+    """Live progress for today's dispatch — used by the scheduler page header.
+    Returns counts grouped by engine + a flat total.
+    """
+    from psycopg2.extras import RealDictCursor
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT target_llm AS engine,
+                       LOWER(status) AS status,
+                       COUNT(*) AS cnt
+                FROM queries
+                WHERE created_at::date = CURRENT_DATE
+                GROUP BY target_llm, LOWER(status)
+                """
+            )
+            rows = cur.fetchall()
+            cap = _account_capacity_breakdown(cur)
+        engine_buckets = {}
+        for r in rows:
+            eng = r['engine'] or 'unknown'
+            b = engine_buckets.setdefault(eng, {
+                'engine': eng, 'done': 0, 'failed': 0, 'running': 0, 'pending': 0,
+            })
+            st = r['status'] or 'unknown'
+            if st in b:
+                b[st] = int(r['cnt'] or 0)
+        for c in cap:
+            b = engine_buckets.setdefault(c['engine'], {
+                'engine': c['engine'], 'done': 0, 'failed': 0, 'running': 0, 'pending': 0,
+            })
+            b['target'] = int(c['daily_capacity'] or 0)
+            b['accounts_active'] = int(c['accounts_active'] or 0)
+            b['expected_geo'] = c.get('expected_geo')
+        engines = list(engine_buckets.values())
+        for b in engines:
+            b.setdefault('target', 0)
+            b.setdefault('accounts_active', 0)
+            b.setdefault('expected_geo', None)
+        total = {
+            'target':  sum(b['target']  for b in engines),
+            'done':    sum(b['done']    for b in engines),
+            'failed':  sum(b['failed']  for b in engines),
+            'running': sum(b['running'] for b in engines),
+            'pending': sum(b['pending'] for b in engines),
+        }
+        return jsonify({'engines': engines, 'total': total})
+    finally:
+        conn.close()
+
+
+# ─── Module C: Tracker by-day (calendar + grouped list) ─────────────────────
+
+@app.route('/api/queries/by-day')
+def queries_by_day():
+    """Two modes (selected by query string):
+      ?month=YYYY-MM           → calendar heat-map data (one row per day)
+      ?date=YYYY-MM-DD         → list of queries for that day, grouped by
+                                  (target_llm, profile_id) for the new
+                                  「按天浏览」tab in the tracker.
+    Optional filters in both modes: llm, profile_id.
+    """
+    from psycopg2.extras import RealDictCursor
+
+    month = (request.args.get('month') or '').strip()
+    date  = (request.args.get('date') or '').strip()
+    llm   = (request.args.get('llm') or '').strip() or None
+    profile_id = (request.args.get('profile_id') or '').strip() or None
+
+    if not month and not date:
+        # Default to current month
+        month = datetime.utcnow().strftime("%Y-%m")
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if month and not date:
+                if not re.match(r"^\d{4}-\d{2}$", month):
+                    return jsonify({'error': 'month must be YYYY-MM'}), 400
+                where = ["to_char(q.created_at, 'YYYY-MM') = %s"]
+                params = [month]
+                if llm:
+                    where.append("q.target_llm = %s"); params.append(llm)
+                if profile_id:
+                    where.append("q.profile_id::text = %s"); params.append(profile_id)
+                where_sql = " AND ".join(where)
+                cur.execute(
+                    f"""
+                    SELECT q.created_at::date AS day,
+                           COUNT(*) AS total,
+                           COUNT(*) FILTER (WHERE LOWER(q.status)='done')    AS done,
+                           COUNT(*) FILTER (WHERE LOWER(q.status)='failed')  AS failed,
+                           COUNT(*) FILTER (WHERE LOWER(q.status)='running') AS running,
+                           COUNT(*) FILTER (WHERE LOWER(q.status)='pending') AS pending
+                    FROM queries q
+                    WHERE {where_sql}
+                    GROUP BY q.created_at::date
+                    ORDER BY q.created_at::date
+                    """,
+                    params,
+                )
+                days = []
+                for r in cur.fetchall():
+                    total = int(r['total'] or 0)
+                    done = int(r['done'] or 0)
+                    days.append({
+                        'date':    r['day'].isoformat() if r['day'] else None,
+                        'total':   total,
+                        'done':    done,
+                        'failed':  int(r['failed'] or 0),
+                        'running': int(r['running'] or 0),
+                        'pending': int(r['pending'] or 0),
+                        'completion_rate': round(done * 100 / total, 1) if total else 0.0,
+                    })
+                return jsonify({'mode': 'month', 'month': month, 'days': days})
+
+            # Date mode: grouped list
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+            where = ["q.created_at::date = %s"]
+            params = [date]
+            if llm:
+                where.append("q.target_llm = %s"); params.append(llm)
+            if profile_id:
+                where.append("q.profile_id::text = %s"); params.append(profile_id)
+            where_sql = " AND ".join(where)
+
+            cur.execute(
+                f"""
+                SELECT q.id,
+                       q.target_llm,
+                       LOWER(q.status) AS status,
+                       q.profile_id::text AS profile_id,
+                       p.code AS profile_code,
+                       p.name AS profile_name,
+                       q.account_id,
+                       a.phone_number AS account_label,
+                       q.query_text,
+                       q.created_at,
+                       q.executed_at,
+                       q.finished_at,
+                       q.latency_ms,
+                       q.retry_count,
+                       (SELECT COUNT(*) FROM citation_sources cs
+                          JOIN llm_responses r ON r.id = cs.response_id
+                         WHERE r.query_id = q.id) AS citation_count,
+                       (SELECT COUNT(*) FROM llm_responses r
+                         WHERE r.query_id = q.id AND r.screenshot_path IS NOT NULL)
+                            AS has_screenshot
+                FROM queries q
+                LEFT JOIN profiles p ON p.id = q.profile_id::text
+                LEFT JOIN llm_accounts a ON a.id = q.account_id
+                WHERE {where_sql}
+                ORDER BY q.target_llm, q.profile_id, q.id
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+
+        groups = {}
+        totals = {'total': 0, 'done': 0, 'failed': 0, 'running': 0, 'pending': 0}
+        for r in rows:
+            key = (r['target_llm'] or 'unknown', r['profile_id'] or '—')
+            g = groups.setdefault(key, {
+                'engine': key[0],
+                'profile_id': key[1],
+                'profile_code': r.get('profile_code'),
+                'profile_name': r.get('profile_name'),
+                'queries': [],
+                'done': 0, 'failed': 0, 'running': 0, 'pending': 0, 'total': 0,
+            })
+            g['queries'].append({
+                'id': r['id'],
+                'status': r['status'],
+                'query_text': (r['query_text'] or '')[:200],
+                'account_id': r['account_id'],
+                'account_label': r['account_label'],
+                'created_at':  _isoformat(r['created_at']),
+                'executed_at': _isoformat(r['executed_at']),
+                'finished_at': _isoformat(r['finished_at']),
+                'latency_ms':  r['latency_ms'],
+                'retry_count': int(r['retry_count'] or 0),
+                'citation_count': int(r['citation_count'] or 0),
+                'has_screenshot': bool(r['has_screenshot'] or 0),
+            })
+            g['total'] += 1
+            totals['total'] += 1
+            st = r['status'] or 'pending'
+            if st in g:
+                g[st] += 1
+            if st in totals:
+                totals[st] += 1
+
+        return jsonify({
+            'mode': 'date',
+            'date': date,
+            'totals': totals,
+            'groups': sorted(groups.values(), key=lambda g: (g['engine'], g['profile_id'])),
+        })
+    finally:
+        conn.close()
+
+
 def _run_startup_migrations():
     _ensure_citations_column()
     _ensure_analyzer_tables()
@@ -12483,6 +13199,7 @@ def _run_startup_migrations():
     _ensure_prompt_matrix_tables()
     _ensure_query_pool_tables()
     _ensure_segment_profile_tables()
+    _ensure_scheduler_and_binding_tables()
     _normalize_query_data()
 
 

@@ -23,6 +23,7 @@ Path B routing decision (Step 7 arbitration, 2026-04-27):
 """
 
 from celery import Celery
+from celery.schedules import crontab
 from kombu import Queue
 
 from app.core.config import get_settings
@@ -34,7 +35,7 @@ def _build_celery_app() -> Celery:
         "genpano",
         broker=settings.redis_url,
         backend=settings.redis_url,
-        include=["app.tasks.health"],
+        include=["app.tasks.health", "geo_tracker.tasks.scheduler"],
     )
 
     app.conf.task_queues = (
@@ -48,6 +49,7 @@ def _build_celery_app() -> Celery:
 
     app.conf.task_routes = {
         "app.tasks.health.heartbeat": {"queue": "beat", "routing_key": "beat"},
+        "geo_tracker.tasks.scheduler.run_daily_dispatch": {"queue": "beat", "routing_key": "beat"},
     }
 
     app.conf.task_default_queue = "beat"
@@ -55,6 +57,18 @@ def _build_celery_app() -> Celery:
     app.conf.task_acks_late = True
     app.conf.worker_prefetch_multiplier = 1
     app.conf.timezone = "UTC"
+
+    # Daily dispatch tick at 01:00 UTC = 09:00 Asia/Shanghai (the default
+    # config.daily_time). The task itself re-reads scheduler_config and
+    # short-circuits when mode is 'paused' or when the configured
+    # daily_time has already been processed today, so a coarser cron is fine.
+    app.conf.beat_schedule = {
+        "scheduler-daily-dispatch": {
+            "task": "geo_tracker.tasks.scheduler.run_daily_dispatch",
+            "schedule": crontab(minute=0, hour=1),
+            "options": {"queue": "beat", "routing_key": "beat"},
+        },
+    }
 
     return app
 
