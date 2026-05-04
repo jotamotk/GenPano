@@ -9726,6 +9726,9 @@ def queries():
     prompt_id = request.args.get('prompt_id')
     query_id = request.args.get('id')
     prompt_q = (request.args.get('q') or '').strip()
+    date_filter = (request.args.get('date') or '').strip()  # YYYY-MM-DD
+    date_from = (request.args.get('date_from') or '').strip()
+    date_to = (request.args.get('date_to') or '').strip()
     limit = int(request.args.get('limit', 50))
     offset = int(request.args.get('offset', 0))
     sort = request.args.get('sort', 'id_desc')
@@ -9750,8 +9753,24 @@ def queries():
             where.append("q.target_llm = %s")
             params.append(llm)
         if status:
-            where.append("UPPER(q.status) = UPPER(%s)")
-            params.append(status)
+            # Map the new split labels back to the underlying status enum.
+            s = status.lower()
+            if s == 'unqueued':
+                where.append("LOWER(q.status) = 'pending' AND q.queued_at IS NULL")
+            elif s == 'queued':
+                where.append("LOWER(q.status) = 'pending' AND q.queued_at IS NOT NULL")
+            else:
+                where.append("UPPER(q.status) = UPPER(%s)")
+                params.append(status)
+        if date_filter and re.match(r"^\d{4}-\d{2}-\d{2}$", date_filter):
+            where.append("q.created_at::date = %s")
+            params.append(date_filter)
+        if date_from and re.match(r"^\d{4}-\d{2}-\d{2}$", date_from):
+            where.append("q.created_at::date >= %s")
+            params.append(date_from)
+        if date_to and re.match(r"^\d{4}-\d{2}-\d{2}$", date_to):
+            where.append("q.created_at::date <= %s")
+            params.append(date_to)
         if brand_id:
             where.append("q.brand_id = %s")
             params.append(int(brand_id))
@@ -9777,13 +9796,31 @@ def queries():
                 total = cur.fetchone()['cnt']
                 # Full-dataset status breakdown so the UI summary isn't capped at
                 # the current page size (e.g. 50 rows can't represent 166 done).
+                # 'pending' is split into:
+                #   - 'unqueued' (status=pending AND queued_at IS NULL):
+                #     created by the dispatcher but not yet sent to the worker
+                #   - 'queued'   (status=pending AND queued_at IS NOT NULL):
+                #     handed off to Celery, waiting on a worker
+                # 'pending' (legacy aggregate) is still emitted for back-compat.
                 cur.execute(
-                    f"""SELECT LOWER(q.status) AS st, COUNT(*) AS cnt
+                    f"""SELECT
+                            CASE
+                                WHEN LOWER(q.status) = 'pending' AND q.queued_at IS NULL
+                                    THEN 'unqueued'
+                                WHEN LOWER(q.status) = 'pending' AND q.queued_at IS NOT NULL
+                                    THEN 'queued'
+                                ELSE LOWER(q.status)
+                            END AS st,
+                            COUNT(*) AS cnt
                         FROM queries q WHERE {where_clause}
-                        GROUP BY LOWER(q.status)""",
+                        GROUP BY 1""",
                     params
                 )
                 by_status = {row['st'] or 'unknown': row['cnt'] for row in cur.fetchall()}
+                # Back-compat: pending = unqueued + queued
+                pending_legacy = (by_status.get('unqueued', 0) + by_status.get('queued', 0))
+                if pending_legacy:
+                    by_status['pending'] = pending_legacy
             else:
                 total = None
 
@@ -10036,6 +10073,65 @@ def batch_trigger_queries():
         'dispatched': dispatched,
         'dispatch_failed': dispatch_failed,
     })
+
+
+@app.route('/api/queries/cleanup', methods=['DELETE'])
+def cleanup_queries():
+    """Remove orphaned queries.
+
+    Use cases:
+      - ``?type=unqueued``    delete all status='pending' rows whose
+        queued_at IS NULL — these are dispatcher-created but never sent to
+        a worker, the source of the 94k bloat the user reported.
+      - ``?type=failed_old&days=30`` delete failed rows older than N days.
+      - ``?type=all_pending`` delete every pending row (unqueued + queued).
+
+    Body / query also accepts ``dry_run=1`` to just count without deleting.
+    """
+    cleanup_type = (request.args.get('type') or '').strip().lower()
+    dry_run = (request.args.get('dry_run') or '').lower() in ('1', 'true', 'yes')
+    try:
+        days = max(1, int(request.args.get('days', 30)))
+    except Exception:
+        days = 30
+
+    if cleanup_type == 'unqueued':
+        sql_count = "SELECT COUNT(*) FROM queries WHERE LOWER(status) = 'pending' AND queued_at IS NULL"
+        sql_del = "DELETE FROM queries WHERE LOWER(status) = 'pending' AND queued_at IS NULL"
+        params = []
+    elif cleanup_type == 'all_pending':
+        sql_count = "SELECT COUNT(*) FROM queries WHERE LOWER(status) = 'pending'"
+        sql_del = "DELETE FROM queries WHERE LOWER(status) = 'pending'"
+        params = []
+    elif cleanup_type == 'failed_old':
+        sql_count = (
+            "SELECT COUNT(*) FROM queries "
+            "WHERE LOWER(status) = 'failed' AND created_at < NOW() - INTERVAL %s"
+        )
+        sql_del = (
+            "DELETE FROM queries "
+            "WHERE LOWER(status) = 'failed' AND created_at < NOW() - INTERVAL %s"
+        )
+        params = [f"{days} days"]
+    else:
+        return jsonify({
+            'error': "type must be one of: unqueued, all_pending, failed_old"
+        }), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_count, params)
+            count = int(cur.fetchone()[0] or 0)
+            if dry_run:
+                return jsonify({'success': True, 'count': count, 'dry_run': True,
+                                'type': cleanup_type})
+            cur.execute(sql_del, params)
+            deleted = cur.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'deleted': deleted, 'type': cleanup_type})
+    finally:
+        conn.close()
 
 
 @app.route('/api/queries/<int:query_id>/mark_failed', methods=['POST'])
@@ -13942,52 +14038,19 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     continue
 
             # ── (B) Per-(account, profile) random prompt fill ───────────────
-            for q in quotas:
-                pid = str(q['profile_id'])
-                engine = q['engine']
-                for _ in range(int(q['quota'] or 0)):
-                    cur.execute(
-                        """
-                        SELECT pr.id   AS prompt_id,
-                               pr.text AS query_text,
-                               t.brand_id
-                        FROM prompts pr
-                        JOIN topics  t  ON t.id = pr.topic_id
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM queries q
-                            WHERE q.prompt_id = pr.id
-                              AND q.profile_id::text = %s
-                              AND q.target_llm = %s
-                              AND DATE(q.created_at) = CURRENT_DATE
-                        )
-                        ORDER BY (
-                            SELECT COUNT(*) FROM queries q2
-                            WHERE q2.prompt_id = pr.id AND q2.target_llm = %s
-                        ) ASC,
-                        random()
-                        LIMIT 1
-                        """,
-                        (pid, engine, engine),
-                    )
-                    pick = cur.fetchone()
-                    if not pick:
-                        # No fresh prompt for this (profile, engine) today — skip
-                        continue
-                    cur.execute(
-                        "INSERT INTO queries "
-                        "(prompt_id, profile_id, brand_id, account_id, "
-                        " query_text, target_llm, status, created_at) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW())",
-                        (
-                            pick['prompt_id'],
-                            pid,
-                            pick.get('brand_id'),
-                            q['account_id'],
-                            pick['query_text'],
-                            engine,
-                        ),
-                    )
-                    created += 1
+            # SKIPPED for manual_trigger: the user clicking 立即触发一次 wants
+            # their schedules fired now, not a flood of random-prompt queries
+            # for every binding × cadence. The Beat task (Celery) keeps the
+            # original (A)+(B) behavior so daily auto runs still fill account
+            # capacity. Without this skip, dispatching with N bindings × M
+            # quota inserted N*M queries every click — a single user reported
+            # 94k pending queries from repeated triggers.
+            #
+            # If you need (B) here later, gate it on a flag from the request
+            # body, e.g. `payload.get('include_random_fill') is True`.
+
+            # Re-derive target_total now that (B) is skipped — schedules only.
+            target_total = len(due_schedules)
 
             # Only record a scheduler_runs row when we actually did work.
             # User feedback: 0/0 rows just clutter the history table.
@@ -14127,9 +14190,17 @@ def delete_scheduler_run(run_id):
 
 @app.route('/api/scheduler/runs', methods=['DELETE'])
 def delete_scheduler_runs_bulk():
-    """Bulk-delete run-history rows. ``?empty=1`` removes 0-created rows
-    (the most common cleanup); ``?all=1`` wipes the whole table.
+    """Bulk-delete run-history rows.
+    ``?ids=1,2,3``  delete the listed rows (multi-select)
+    ``?empty=1``    delete every 0-created row (clean placeholder noise)
+    ``?all=1``      wipe the whole table
     """
+    body = request.get_json(silent=True) or {}
+    raw_ids = request.args.get('ids') or body.get('ids') or ''
+    if isinstance(raw_ids, list):
+        id_list = raw_ids
+    else:
+        id_list = [s.strip() for s in str(raw_ids).split(',') if s.strip()]
     conn = get_db()
     try:
         with conn.cursor() as cur:
@@ -14140,8 +14211,16 @@ def delete_scheduler_runs_bulk():
                     "DELETE FROM scheduler_runs "
                     "WHERE COALESCE(queries_created, 0) = 0"
                 )
+            elif id_list:
+                clean = [int(x) for x in id_list if str(x).isdigit()]
+                if not clean:
+                    return jsonify({'error': 'ids list contains no valid integers'}), 400
+                cur.execute(
+                    "DELETE FROM scheduler_runs WHERE id = ANY(%s)",
+                    (clean,),
+                )
             else:
-                return jsonify({'error': 'pass ?empty=1 or ?all=1'}), 400
+                return jsonify({'error': 'pass ?ids=… , ?empty=1, or ?all=1'}), 400
             deleted = cur.rowcount
         conn.commit()
         return jsonify({'success': True, 'deleted': deleted})
