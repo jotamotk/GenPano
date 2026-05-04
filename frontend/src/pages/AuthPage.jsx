@@ -2,8 +2,8 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLocale } from '../contexts/LocaleContext';
 import { authApi } from '../api/auth';
-import { useAuth } from '../context/AuthContext';
-import { useLanguage } from '../context/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { validateEmailFormat } from '../hooks/useEmailValidation';
 import AuthVisualPanel from '../components/AuthVisualPanel';
 

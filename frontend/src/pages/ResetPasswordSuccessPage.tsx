@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { useLanguage } from '../context/LanguageContext'
+import { useLanguage } from '../contexts/LanguageContext'
 import AuthVisualPanel from '../components/AuthVisualPanel'
 import LanguageSwitcher from '../components/LanguageSwitcher'
 

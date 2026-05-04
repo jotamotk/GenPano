@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import AuthLayout from '../components/AuthLayout'
-import { useLanguage } from '../context/LanguageContext'
+import { useLanguage } from '../contexts/LanguageContext'
 import { authApi } from '../api/auth'
 import { showToast } from '../components/Toast'
 

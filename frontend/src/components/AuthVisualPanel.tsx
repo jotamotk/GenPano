@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useLanguage } from '../context/LanguageContext'
+import { useLanguage } from '../contexts/LanguageContext'
 
 const ENGINES = [
   { name: 'ChatGPT', color: 'var(--color-success)' },
