@@ -51,8 +51,9 @@ class TimeRangeParams:
         self.to_date = to_d
 
 
-def parse_engines(engine: str | None = Query(None, description="csv: chatgpt,doubao,deepseek")) \
-        -> list[str] | None:
+def parse_engines(
+    engine: str | None = Query(None, description="csv: chatgpt,doubao,deepseek"),
+) -> list[str] | None:
     if engine is None or engine == "":
         return None
     items = [e.strip().lower() for e in engine.split(",") if e.strip()]
