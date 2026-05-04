@@ -1542,6 +1542,10 @@
               <h3 class="text-[14px] font-semibold text-ink">运行历史</h3>
               <div class="flex items-center gap-2 text-[11px] text-ink-muted">
                 <span x-text="'共 ' + (schedulerRunsTotal || 0) + ' 条'"></span>
+                <button class="h-7 px-2 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[11px] font-semibold hover:bg-danger/10 disabled:opacity-40"
+                        :disabled="selectedRunIdsCount === 0"
+                        @click="bulkDeleteSelectedRuns()"
+                        x-text="'批量删除' + (selectedRunIdsCount ? ' (' + selectedRunIdsCount + ')' : '')"></button>
                 <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
                         @click="cleanEmptyRuns()" title="删除所有 已入队=0 的历史行">清理空记录</button>
               </div>
@@ -1550,6 +1554,11 @@
               <table class="w-full text-[12px]">
                 <thead class="bg-surface-page border-b border-b-card">
                   <tr>
+                    <th class="text-left py-2.5 px-4 w-8">
+                      <input type="checkbox" class="rounded cursor-pointer"
+                             :checked="schedulerRuns.length > 0 && schedulerRuns.every(r => selectedRunIds[r.id])"
+                             @change="toggleAllSchedulerRuns($event.target.checked)" />
+                    </th>
                     <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">开始时间</th>
                     <th class="text-left py-2.5 px-4 font-semibold text-ink-muted">模式</th>
                     <th class="text-right py-2.5 px-4 font-semibold text-ink-muted">目标</th>
@@ -1562,10 +1571,15 @@
                 </thead>
                 <tbody>
                   <tr x-show="schedulerRuns.length === 0">
-                    <td colspan="8" class="py-6 text-center text-ink-muted">暂无运行历史</td>
+                    <td colspan="9" class="py-6 text-center text-ink-muted">暂无运行历史</td>
                   </tr>
                   <template x-for="r in schedulerRuns" :key="r.id">
                     <tr class="border-b border-b-card/50 hover:bg-surface-page">
+                      <td class="py-2.5 px-4">
+                        <input type="checkbox" class="rounded cursor-pointer"
+                               :checked="!!selectedRunIds[r.id]"
+                               @change="selectedRunIds = Object.assign({}, selectedRunIds, { [r.id]: $event.target.checked })" />
+                      </td>
                       <td class="py-2.5 px-4 font-mono text-[11px] text-ink-body" x-text="r.started_at"></td>
                       <td class="py-2.5 px-4">
                         <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
@@ -4949,7 +4963,6 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         <div class="space-y-4">
           <!-- Tab bar -->
           <div class="flex items-center gap-1 p-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
-            <button class="seg-tab" :class="{active: trackerTab==='daily'}" @click="trackerTab='daily'; openDailyTab()">按天浏览</button>
             <button class="seg-tab" :class="{active: trackerTab==='attempts'}" @click="trackerTab='attempts'">Attempt 列表</button>
             <button class="seg-tab" :class="{active: trackerTab==='errors'}" @click="trackerTab='errors'; $nextTick(()=>{ if (!charts.trackerFailure) renderTrackerFailureTrend(); })">错误分布</button>
             <button class="seg-tab relative" :class="{active: trackerTab==='rules-dlq'}" @click="trackerTab='rules-dlq'">
@@ -4958,273 +4971,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             </button>
           </div>
 
-          <!-- Tab: 按天浏览 (default = today's attempts list with inline response) -->
-          <template x-if="trackerTab==='daily'">
-            <div class="space-y-3">
-              <!-- Top: date stepper + filters + calendar popover trigger -->
-              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-3 relative">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <button class="h-8 w-8 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-ink-body text-[14px] font-bold"
-                          @click="dailyShiftDay(-1)" title="上一天">‹</button>
-                  <button class="h-8 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold flex items-center gap-1.5 min-w-[200px] justify-center"
-                          @click="dailyMonthPickerOpen = !dailyMonthPickerOpen; if (dailyMonthPickerOpen) loadDailyMonth()">
-                    <i data-lucide="calendar" class="w-3.5 h-3.5"></i>
-                    <span x-text="dailySelectedDate || '—'"></span>
-                    <span class="text-[10px] text-ink-muted" x-text="dailyDayOfWeekLabel"></span>
-                  </button>
-                  <button class="h-8 w-8 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-ink-body text-[14px] font-bold"
-                          @click="dailyShiftDay(1)" title="下一天">›</button>
-                  <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
-                          @click="dailyGotoToday()">今天</button>
-
-                  <div class="w-px h-6 bg-b-card mx-1"></div>
-
-                  <select x-model="dailyFilter.llm" @change="loadDailyDetail()"
-                          class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                    <option value="">全部 LLM</option>
-                    <option value="doubao">豆包</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="chatgpt">ChatGPT</option>
-                  </select>
-                  <select x-model="dailyFilter.status" @change="loadDailyDetail()"
-                          class="h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                    <option value="">全部状态</option>
-                    <option value="done">✅ 成功</option>
-                    <option value="failed">❌ 失败</option>
-                    <option value="running">▶ 运行中</option>
-                    <option value="pending">⏸ 待执行</option>
-                  </select>
-                  <label class="flex items-center gap-1.5 text-[11px] text-ink-muted cursor-pointer">
-                    <input type="checkbox" x-model="dailyGroupByProfile" />
-                    按 Profile 分组
-                  </label>
-                  <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium ml-auto"
-                          @click="loadDailyDetail()">刷新</button>
-                </div>
-
-                <div class="flex items-center gap-5 text-[11px] mt-2 pt-2 border-t border-b-card/60">
-                  <span class="text-ink-muted">当日总 <span class="font-bold text-ink tabular-nums" x-text="(dailyDetail?.totals?.total || 0).toLocaleString()"></span></span>
-                  <span>✅ <span class="font-bold text-success tabular-nums" x-text="(dailyDetail?.totals?.done || 0).toLocaleString()"></span></span>
-                  <span>❌ <span class="font-bold text-danger tabular-nums" x-text="(dailyDetail?.totals?.failed || 0).toLocaleString()"></span></span>
-                  <span>▶ <span class="font-bold text-info tabular-nums" x-text="(dailyDetail?.totals?.running || 0).toLocaleString()"></span></span>
-                  <span>⏸ <span class="font-bold text-ink-muted tabular-nums" x-text="(dailyDetail?.totals?.pending || 0).toLocaleString()"></span></span>
-                </div>
-
-                <div x-show="dailyMonthPickerOpen" x-cloak x-transition.opacity
-                     @click.outside="dailyMonthPickerOpen = false"
-                     class="absolute z-30 mt-2 left-2 right-2 rounded-card-lg bg-surface border border-b-default shadow-elevated p-4">
-                  <div class="flex items-center justify-between mb-3">
-                    <div class="flex items-center gap-2">
-                      <button class="h-7 w-7 rounded-btn border border-b-default hover:bg-surface-page text-[12px]"
-                              @click="dailyShiftMonth(-1); loadDailyMonth()">‹</button>
-                      <input type="month" x-model="dailyMonth" @change="loadDailyMonth()"
-                             class="h-7 px-2 rounded-btn border border-b-default text-[11px]" />
-                      <button class="h-7 w-7 rounded-btn border border-b-default hover:bg-surface-page text-[12px]"
-                              @click="dailyShiftMonth(1); loadDailyMonth()">›</button>
-                    </div>
-                    <span class="text-[10px] text-ink-muted">完成率越高颜色越深 · 点击跳转</span>
-                  </div>
-                  <div x-show="dailyMonthLoading" class="text-center py-6 text-[12px] text-ink-muted">加载中…</div>
-                  <template x-if="!dailyMonthLoading">
-                    <div>
-                      <div class="grid grid-cols-7 gap-1 mb-1 text-[10px] font-semibold text-ink-muted text-center">
-                        <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
-                      </div>
-                      <div class="grid grid-cols-7 gap-1">
-                        <template x-for="cell in dailyCalendarCells" :key="cell.key">
-                          <button class="aspect-square rounded-card border text-left p-1 transition-colors text-[10px]"
-                                  :class="cell.empty ? 'bg-transparent border-transparent cursor-default' : (cell.date === dailySelectedDate ? 'bg-accent/20 border-accent ring-1 ring-accent' : (cell.day ? (cell.completion >= 95 ? 'bg-success/30 border-success/40 hover:bg-success/40' : cell.completion >= 70 ? 'bg-success/15 border-success/30 hover:bg-success/25' : cell.completion >= 30 ? 'bg-warning/15 border-warning/30 hover:bg-warning/25' : cell.failed > 0 ? 'bg-danger/10 border-danger/30 hover:bg-danger/20' : 'bg-surface-page border-b-card hover:bg-surface-page/80') : 'bg-surface-page border-b-card/40 hover:bg-surface-page/80'))"
-                                  :disabled="cell.empty"
-                                  @click="cell.empty || (dailySelectedDate = cell.date, dailyMonthPickerOpen = false, loadDailyDetail())">
-                            <template x-if="!cell.empty">
-                              <div class="flex flex-col h-full">
-                                <div class="font-bold text-ink" x-text="cell.dayNum"></div>
-                                <template x-if="cell.day">
-                                  <div class="mt-auto text-[9px] tabular-nums">
-                                    <div class="font-semibold text-ink" x-text="(cell.day.done || 0) + '/' + (cell.day.total || 0)"></div>
-                                    <div class="text-ink-muted" x-text="cell.completion + '%'"></div>
-                                  </div>
-                                </template>
-                              </div>
-                            </template>
-                          </button>
-                        </template>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </div>
-
-              <!-- Body: attempts (chronological flat list, or grouped by profile) -->
-              <div x-show="dailyDetailLoading" class="text-center py-8 text-[12px] text-ink-muted">加载中…</div>
-              <div x-show="!dailyDetailLoading && dailyAttempts.length === 0"
-                   class="rounded-card-lg bg-surface border border-b-card shadow-card text-center py-12 text-[12px] text-ink-muted">
-                该日无 attempt 记录
-              </div>
-
-              <template x-if="dailyGroupByProfile && !dailyDetailLoading && dailyAttempts.length > 0">
-                <div class="space-y-2">
-                  <template x-for="g in (dailyDetail?.groups || [])" :key="g.engine + ':' + g.profile_id">
-                    <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
-                      <button class="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-page transition-colors"
-                              @click="g.expanded = !g.expanded">
-                        <i :data-lucide="g.expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 text-ink-muted"></i>
-                        <span class="text-[13px] font-semibold text-ink" x-text="g.engine"></span>
-                        <span class="text-[11px] font-mono text-ink-muted" x-text="g.profile_code || (g.profile_id || '').slice(0, 12)"></span>
-                        <span class="text-[12px] text-ink-body" x-text="g.profile_name || '(未命名)'"></span>
-                        <span class="ml-auto text-[11px] text-ink-muted">
-                          <span class="text-success font-semibold" x-text="g.done"></span>/<span x-text="g.total"></span>
-                          <template x-if="g.failed > 0"><span class="text-danger ml-1" x-text="'· ❌ ' + g.failed"></span></template>
-                        </span>
-                      </button>
-                      <div x-show="g.expanded" x-collapse class="border-t border-b-card divide-y divide-b-card/50">
-                        <template x-for="q in g.queries" :key="q.id">
-                          <div>
-                            <button class="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-surface-page transition-colors text-left"
-                                    @click="toggleAttemptExpand(q)">
-                              <span class="inline-flex items-center justify-center w-5 h-5 rounded-badge text-[11px] font-semibold"
-                                    :class="q.status==='done' ? 'bg-success/10 text-success' : q.status==='failed' ? 'bg-danger/10 text-danger' : q.status==='running' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'">
-                                <span x-text="q.status === 'done' ? '✅' : q.status === 'failed' ? '❌' : q.status === 'running' ? '▶' : '⏸'"></span>
-                              </span>
-                              <span class="font-mono text-[11px] text-ink-muted shrink-0" x-text="'#' + q.id"></span>
-                              <span class="text-[12px] text-ink-body truncate flex-1" :title="q.query_text" x-text="q.query_text"></span>
-                              <span class="font-mono text-[10px] text-ink-muted shrink-0" x-text="fmtTs(q.finished_at || q.executed_at || q.created_at)"></span>
-                              <span class="text-[10px] text-ink-muted shrink-0" x-text="(q.account_label || ('#' + q.account_id)) + ' · 引用 ' + q.citation_count + (q.has_screenshot ? ' · 🖼' : '')"></span>
-                              <i :data-lucide="dailyExpanded[q.id] ? 'chevron-down' : 'chevron-right'" class="w-3.5 h-3.5 text-ink-muted"></i>
-                            </button>
-                            <div x-show="dailyExpanded[q.id]" x-collapse class="bg-surface-page/60 px-5 py-3 border-t border-b-card/60">
-                              <template x-if="!dailyDetails[q.id]">
-                                <div class="text-[11px] text-ink-muted">加载中…</div>
-                              </template>
-                              <template x-if="dailyDetails[q.id]">
-                                <div class="space-y-3">
-                                  <div>
-                                    <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1">Query</div>
-                                    <div class="text-[12px] text-ink-body whitespace-pre-wrap" x-text="dailyDetails[q.id].query_text || q.query_text"></div>
-                                  </div>
-                                  <div>
-                                    <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1 flex items-center gap-2">
-                                      Response
-                                      <span class="text-ink-muted/70 text-[10px] font-normal" x-show="dailyDetails[q.id].llm_version"
-                                            x-text="'· ' + dailyDetails[q.id].llm_version"></span>
-                                      <span class="text-ink-muted/70 text-[10px] font-normal" x-show="dailyDetails[q.id].latency_ms != null"
-                                            x-text="'· ' + dailyDetails[q.id].latency_ms + 'ms'"></span>
-                                    </div>
-                                    <div class="rounded-card bg-surface border border-b-card p-3 text-[12px] text-ink-body max-h-[420px] overflow-auto whitespace-pre-wrap"
-                                         x-text="dailyDetails[q.id].response || '(无 response — 该 attempt 尚未完成或未保存)'"></div>
-                                  </div>
-                                  <template x-if="dailyDetails[q.id].citations && (dailyDetails[q.id].citations || []).length > 0">
-                                    <div>
-                                      <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1"
-                                           x-text="'Citations (' + (dailyDetails[q.id].citations || []).length + ')'"></div>
-                                      <pre class="rounded-card bg-surface border border-b-card p-2 text-[10.5px] font-mono text-ink-body max-h-[180px] overflow-auto"
-                                           x-text="JSON.stringify(dailyDetails[q.id].citations, null, 2)"></pre>
-                                    </div>
-                                  </template>
-                                  <template x-if="dailyScreenshots[q.id] && dailyScreenshots[q.id].length > 0">
-                                    <div>
-                                      <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1">截图</div>
-                                      <div class="flex flex-wrap gap-2">
-                                        <template x-for="s in dailyScreenshots[q.id]" :key="s.url">
-                                          <a :href="s.url" target="_blank" class="block rounded border border-b-card overflow-hidden">
-                                            <img :src="s.url" :alt="s.name" class="block max-h-[160px] w-auto bg-surface-page" />
-                                          </a>
-                                        </template>
-                                      </div>
-                                    </div>
-                                  </template>
-                                  <div class="flex items-center gap-2 pt-1">
-                                    <button class="h-7 px-2 rounded-btn bg-accent text-white text-[11px] font-semibold hover:opacity-90"
-                                            @click="retryDailyAttempt(q)">重试此 Query</button>
-                                    <button class="h-7 px-2 rounded-btn border border-b-default text-ink-body text-[11px] hover:bg-surface-page"
-                                            @click="toggleAttemptExpand(q)">收起</button>
-                                  </div>
-                                </div>
-                              </template>
-                            </div>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-
-              <template x-if="!dailyGroupByProfile && !dailyDetailLoading && dailyAttempts.length > 0">
-                <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden divide-y divide-b-card/50">
-                  <template x-for="q in dailyAttempts" :key="q.id">
-                    <div>
-                      <button class="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-surface-page transition-colors text-left"
-                              @click="toggleAttemptExpand(q)">
-                        <span class="inline-flex items-center justify-center w-5 h-5 rounded-badge text-[11px] font-semibold"
-                              :class="q.status==='done' ? 'bg-success/10 text-success' : q.status==='failed' ? 'bg-danger/10 text-danger' : q.status==='running' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'">
-                          <span x-text="q.status === 'done' ? '✅' : q.status === 'failed' ? '❌' : q.status === 'running' ? '▶' : '⏸'"></span>
-                        </span>
-                        <span class="font-mono text-[11px] text-ink-muted shrink-0" x-text="'#' + q.id"></span>
-                        <span class="text-[11px] text-ink-muted shrink-0 w-[60px]" x-text="q.engine || '—'"></span>
-                        <span class="font-mono text-[10px] text-ink-muted shrink-0 w-[90px] truncate" :title="q.profile_id" x-text="q.profile_code || (q.profile_id || '—').slice(0, 10)"></span>
-                        <span class="text-[12px] text-ink-body truncate flex-1" :title="q.query_text" x-text="q.query_text"></span>
-                        <span class="font-mono text-[10px] text-ink-muted shrink-0" x-text="fmtTs(q.finished_at || q.executed_at || q.created_at)"></span>
-                        <span class="text-[10px] text-ink-muted shrink-0" x-text="(q.account_label || ('#' + (q.account_id || '—'))) + ' · 引用 ' + q.citation_count + (q.has_screenshot ? ' · 🖼' : '')"></span>
-                        <i :data-lucide="dailyExpanded[q.id] ? 'chevron-down' : 'chevron-right'" class="w-3.5 h-3.5 text-ink-muted"></i>
-                      </button>
-                      <div x-show="dailyExpanded[q.id]" x-collapse class="bg-surface-page/60 px-5 py-3 border-t border-b-card/60">
-                        <template x-if="!dailyDetails[q.id]">
-                          <div class="text-[11px] text-ink-muted">加载中…</div>
-                        </template>
-                        <template x-if="dailyDetails[q.id]">
-                          <div class="space-y-3">
-                            <div>
-                              <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1">Query</div>
-                              <div class="text-[12px] text-ink-body whitespace-pre-wrap" x-text="dailyDetails[q.id].query_text || q.query_text"></div>
-                            </div>
-                            <div>
-                              <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1 flex items-center gap-2">
-                                Response
-                                <span class="text-ink-muted/70 text-[10px] font-normal" x-show="dailyDetails[q.id].llm_version"
-                                      x-text="'· ' + dailyDetails[q.id].llm_version"></span>
-                                <span class="text-ink-muted/70 text-[10px] font-normal" x-show="dailyDetails[q.id].latency_ms != null"
-                                      x-text="'· ' + dailyDetails[q.id].latency_ms + 'ms'"></span>
-                              </div>
-                              <div class="rounded-card bg-surface border border-b-card p-3 text-[12px] text-ink-body max-h-[420px] overflow-auto whitespace-pre-wrap"
-                                   x-text="dailyDetails[q.id].response || '(无 response — 该 attempt 尚未完成或未保存)'"></div>
-                            </div>
-                            <template x-if="dailyDetails[q.id].citations && (dailyDetails[q.id].citations || []).length > 0">
-                              <div>
-                                <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1"
-                                     x-text="'Citations (' + (dailyDetails[q.id].citations || []).length + ')'"></div>
-                                <pre class="rounded-card bg-surface border border-b-card p-2 text-[10.5px] font-mono text-ink-body max-h-[180px] overflow-auto"
-                                     x-text="JSON.stringify(dailyDetails[q.id].citations, null, 2)"></pre>
-                              </div>
-                            </template>
-                            <template x-if="dailyScreenshots[q.id] && dailyScreenshots[q.id].length > 0">
-                              <div>
-                                <div class="text-[10px] font-semibold text-ink-muted uppercase mb-1">截图</div>
-                                <div class="flex flex-wrap gap-2">
-                                  <template x-for="s in dailyScreenshots[q.id]" :key="s.url">
-                                    <a :href="s.url" target="_blank" class="block rounded border border-b-card overflow-hidden">
-                                      <img :src="s.url" :alt="s.name" class="block max-h-[160px] w-auto bg-surface-page" />
-                                    </a>
-                                  </template>
-                                </div>
-                              </div>
-                            </template>
-                            <div class="flex items-center gap-2 pt-1">
-                              <button class="h-7 px-2 rounded-btn bg-accent text-white text-[11px] font-semibold hover:opacity-90"
-                                      @click="retryDailyAttempt(q)">重试此 Query</button>
-                              <button class="h-7 px-2 rounded-btn border border-b-default text-ink-body text-[11px] hover:bg-surface-page"
-                                      @click="toggleAttemptExpand(q)">收起</button>
-                            </div>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-            </div>
-          </template>
-          <!-- Tab 1: Overview -->
+          <!-- Tab 1: Errors overview -->
           <template x-if="trackerTab==='errors'">
             <div class="space-y-4">
               <!-- ① Pipeline status bar (lightweight, 4 layers in one row) -->
@@ -5302,12 +5049,17 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             <div class="space-y-3">
               <!-- Summary bar -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-                <div class="flex items-center gap-6 text-[12px]">
+                <div class="flex items-center gap-5 text-[12px] flex-wrap">
                   <span class="text-ink-muted">总 Query: <span class="font-bold text-ink" x-text="attemptsSummary.total.toLocaleString()"></span></span>
                   <span>成功: <span class="font-bold text-success" x-text="(attemptsSummary.success || 0).toLocaleString() + ' (' + attemptsSummary.successRate + '%)'"></span></span>
                   <span>失败: <span class="font-bold text-danger" x-text="(attemptsSummary.failed || 0).toLocaleString()"></span></span>
                   <span>运行中: <span class="font-bold text-info" x-text="(attemptsSummary.running || 0).toLocaleString()"></span></span>
-                  <span>待执行: <span class="font-bold text-ink-muted" x-text="(attemptsSummary.pending || 0).toLocaleString()"></span></span>
+                  <span>排队中: <span class="font-bold text-warning" x-text="(attemptsSummary.queued || 0).toLocaleString()"></span></span>
+                  <span>未派发: <span class="font-bold text-ink-muted" x-text="(attemptsSummary.unqueued || 0).toLocaleString()"></span></span>
+                  <button x-show="(attemptsSummary.unqueued || 0) > 0"
+                          class="ml-auto h-7 px-3 rounded-btn border border-warning/40 bg-warning/5 text-warning text-[11.5px] font-semibold hover:bg-warning/15"
+                          @click="cleanupUnqueuedQueries()"
+                          title="删除所有 status=pending 且 queued_at 为空的 query">清理未派发</button>
                 </div>
               </div>
 
@@ -5344,8 +5096,15 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <option value="done">✅ 成功</option>
                   <option value="failed">❌ 失败</option>
                   <option value="running">▶ 运行中</option>
-                  <option value="pending">⏸ 待执行</option>
+                  <option value="queued">⏳ 排队中</option>
+                  <option value="unqueued">📥 未派发</option>
+                  <option value="pending">⏸ 待执行 (排队+未派发)</option>
                 </select>
+                <input type="date"
+                       x-model="attemptFilter.date"
+                       @change="attemptsPage=1; loadAttempts()"
+                       title="按 created_at 日期过滤"
+                       class="h-8 px-2 rounded-btn border border-b-default text-[12px]" />
                 <input type="number"
                        placeholder="Query ID"
                        x-model="attemptFilter.queryId"
@@ -5381,7 +5140,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
-                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; selectedAttemptIds={}; attemptsPage=1; loadAttempts()">重置</button>
+                        @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'', date:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; selectedAttemptIds={}; attemptsPage=1; loadAttempts()">重置</button>
                 <button class="h-8 px-3 rounded-btn bg-purple-600 text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
                         :disabled="selectedAttemptCount === 0 || batchTriggering"
                         @click="batchTriggerSelected()"
@@ -8013,20 +7772,33 @@ function summarizeAccountPool(list) {
 function summarizeAttempts(rows, total, byStatus) {
   // Prefer server-side breakdown so counts reflect the full dataset instead of
   // the current page (50 rows can't represent 166 done).
-  let success = 0, failed = 0, running = 0, pending = 0;
+  // The server now emits separate `unqueued` (status=pending AND queued_at IS
+  // NULL) and `queued` (status=pending AND queued_at IS NOT NULL) buckets;
+  // older clients still get a `pending` aggregate for back-compat.
+  let success = 0, failed = 0, running = 0, queued = 0, unqueued = 0;
   if (byStatus && typeof byStatus === 'object') {
     success = (byStatus.done || 0) + (byStatus.success || 0) + (byStatus.completed || 0);
     failed = (byStatus.failed || 0) + (byStatus.error || 0);
     running = byStatus.running || 0;
-    pending = (byStatus.pending || 0) + (byStatus.queued || 0);
+    queued = byStatus.queued || 0;
+    unqueued = byStatus.unqueued || 0;
+    // If the server only sent the legacy `pending` aggregate, treat it as
+    // unqueued (closer to the truth — most pending queries lack queued_at).
+    if ((queued + unqueued) === 0 && byStatus.pending) {
+      unqueued = byStatus.pending;
+    }
   } else {
     for (const a of rows) {
-      if (a.status === 'success') success++;
+      if (a.status === 'success' || a.status === 'done') success++;
       else if (a.status === 'failed') failed++;
       else if (a.status === 'running') running++;
-      else if (a.status === 'pending') pending++;
+      else if (a.status === 'pending') {
+        if (a.queued_at) queued++;
+        else unqueued++;
+      }
     }
   }
+  const pending = queued + unqueued;
   const t = (total != null) ? total : rows.length;
   const successRate = t > 0 ? Math.round((success / t) * 100) : 0;
   return {
@@ -8036,6 +7808,8 @@ function summarizeAttempts(rows, total, byStatus) {
     failed,
     running,
     pending,
+    queued,
+    unqueued,
     // keep retrying/waitingManual/dlq in the shape in case other views read them
     retrying: 0,
     waitingManual: 0,
@@ -9731,6 +9505,7 @@ function adminApp() {
     schedulerToday: { engines: [], total: { target:0, done:0, running:0, pending:0, failed:0 } },
     schedulerRuns: [],
     schedulerRunsTotal: 0,
+    selectedRunIds: {},          // {run_id: true} for bulk-delete checkboxes
     schedulerRunsPage: 1,
     schedulerRunsPerPage: 20,
     schedulerDirty: false,
@@ -10245,7 +10020,7 @@ function adminApp() {
     attemptsPage: 1,
     attemptsPageSize: 50,
     attemptsTotal: 0,
-    attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptId: '' },
+    attemptFilter: { brandId: '', topicId: '', engine: '', status: '', queryId: '', promptId: '', date: '' },
     // Selection map: { [queryDbId]: true }. Only covers current page (cleared on page/filter change).
     selectedAttemptIds: {},
     batchTriggering: false,
@@ -10254,6 +10029,24 @@ function adminApp() {
     availablePrompts: [],
     promptSelectOpen: false,
     promptSelectSearch: '',
+
+    async cleanupUnqueuedQueries() {
+      const before = this.attemptsSummary.unqueued || 0;
+      if (!confirm('删除所有「未派发」的 Query (' + before + ' 条)？\n这些是 status=pending 且 queued_at 为空的记录，未被派发到 worker。\n已派发但仍排队中的不会受影响。')) return;
+      try {
+        const res = await fetch(API_BASE + '/queries/cleanup?type=unqueued', {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已清理 ' + (body.deleted || 0) + ' 条未派发 Query');
+        this.attemptsPage = 1;
+        await this.loadAttempts();
+      } catch (e) {
+        this.toast('清理失败: ' + (e.message || e));
+      }
+    },
 
     async loadAttempts() {
       this.attemptsLoading = true;
@@ -10272,6 +10065,7 @@ function adminApp() {
         if (this.attemptFilter.status)  qp.set('status', this.attemptFilter.status);
         if (this.attemptFilter.queryId) qp.set('id',        this.attemptFilter.queryId);
         if (this.attemptFilter.promptId) qp.set('prompt_id', this.attemptFilter.promptId);
+        if (this.attemptFilter.date)     qp.set('date',      this.attemptFilter.date);
         const res = await fetch(API_BASE + '/queries?' + qp.toString(),
                                 { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -14337,6 +14131,39 @@ function adminApp() {
         await this.loadSchedulerRuns();
       } catch (e) {
         this.toast('删除失败: ' + (e.message || e));
+      }
+    },
+    get selectedRunIdsCount() {
+      return Object.keys(this.selectedRunIds || {}).filter(k => this.selectedRunIds[k]).length;
+    },
+    toggleAllSchedulerRuns(checked) {
+      const sel = Object.assign({}, this.selectedRunIds);
+      for (const r of (this.schedulerRuns || [])) sel[r.id] = !!checked;
+      this.selectedRunIds = sel;
+    },
+    async bulkDeleteSelectedRuns() {
+      const ids = Object.keys(this.selectedRunIds || {})
+        .filter(k => this.selectedRunIds[k])
+        .map(k => parseInt(k));
+      if (ids.length === 0) return;
+      if (!confirm('删除选中的 ' + ids.length + ' 条运行历史？')) return;
+      try {
+        const params = new URLSearchParams({ ids: ids.join(',') });
+        const res = await fetch(API_BASE + '/scheduler/runs?' + params, {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        this.toast('已删除 ' + (body.deleted || 0) + ' 条');
+        this.selectedRunIds = {};
+        // Step back if we removed a whole page
+        const remaining = (this.schedulerRunsTotal || 0) - (body.deleted || 0);
+        const maxPage = Math.max(1, Math.ceil(remaining / this.schedulerRunsPerPage));
+        if (this.schedulerRunsPage > maxPage) this.schedulerRunsPage = maxPage;
+        await this.loadSchedulerRuns();
+      } catch (e) {
+        this.toast('批量删除失败: ' + (e.message || e));
       }
     },
     async cleanEmptyRuns() {
