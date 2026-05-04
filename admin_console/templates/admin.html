@@ -4423,6 +4423,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <span x-show="accountsLoading" class="text-[12px] text-ink-muted">加载中…</span>
                   <span x-show="accountsError" class="text-[12px] text-danger" x-text="accountsError"></span>
                   <button class="h-9 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[13px] font-medium" @click="loadAccounts()">刷新</button>
+                  <button class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[13px] font-semibold hover:bg-accent/10 disabled:opacity-40 inline-flex items-center gap-1.5"
+                          :disabled="autoAssignBusy"
+                          @click="openAutoAssignModal()"
+                          title="为所有账号自动分配 Profile (LLM 优先，按 geo 兜底)">
+                    <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                    <span x-text="autoAssignBusy ? '分配中…' : 'LLM 自动分配 Profile'"></span>
+                  </button>
                   <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90" @click="openAccountModal('cookies')">+ 接入账号</button>
                 </div>
               </div>
@@ -6939,6 +6946,66 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         </div>
       </div>
     </template>
+  </div>
+</div>
+
+<!-- ===== AUTO-ASSIGN PROFILES TO ALL ACCOUNTS (LLM) ===== -->
+<div x-show="autoAssignModal" x-cloak x-transition.opacity class="fixed inset-0 z-40 bg-ink/40" @click="autoAssignModal = false"></div>
+<div x-show="autoAssignModal" x-cloak class="fixed inset-0 z-50 flex items-start justify-center pt-24 pointer-events-none">
+  <div class="w-[480px] rounded-card-lg bg-surface border border-b-card shadow-elevated pointer-events-auto" @click.stop>
+    <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
+      <h3 class="text-[14px] font-semibold text-ink flex items-center gap-2">
+        <i data-lucide="sparkles" class="w-4 h-4 text-accent"></i>
+        LLM 自动分配 Profile
+      </h3>
+      <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center"
+              @click="autoAssignModal = false">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div class="p-6 space-y-4">
+      <p class="text-[12px] text-ink-body">
+        让 LLM 为所有 active 账号挑选合适的 Profile。豆包/DeepSeek 偏向 CN profile，ChatGPT 偏向 US profile。
+        若 LLM 不可用会自动按 geo 轮询兜底。
+      </p>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-[11px] font-semibold text-ink-muted uppercase">每账号绑定数</label>
+          <input type="number" min="1" max="50" x-model.number="autoAssignPerAccount"
+                 class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] text-right" />
+        </div>
+        <div class="flex items-end">
+          <label class="flex items-center gap-2 text-[12px] cursor-pointer">
+            <input type="checkbox" x-model="autoAssignSkipBound" />
+            <span>跳过已绑定 ≥ 此数的账号</span>
+          </label>
+        </div>
+      </div>
+      <label class="flex items-center gap-2 text-[12px] cursor-pointer">
+        <input type="checkbox" x-model="autoAssignUseLlm" />
+        <span>优先尝试 LLM (失败自动降级到 geo 轮询)</span>
+      </label>
+      <div x-show="autoAssignResult" class="rounded-card bg-surface-page border border-b-card p-3 text-[11.5px] text-ink-body">
+        <div x-show="autoAssignResult?.success" class="space-y-0.5">
+          <div>方法: <span class="font-mono" x-text="autoAssignResult?.method"></span></div>
+          <div>处理账号: <span class="font-semibold" x-text="autoAssignResult?.accounts_processed"></span></div>
+          <div>跳过 (已达数量): <span class="text-ink-muted" x-text="autoAssignResult?.accounts_skipped"></span></div>
+          <div>新增绑定: <span class="font-semibold text-success" x-text="autoAssignResult?.bindings_inserted"></span></div>
+          <template x-if="(autoAssignResult?.errors || []).length">
+            <div class="text-warning" x-text="'告警: ' + (autoAssignResult?.errors || []).join('; ')"></div>
+          </template>
+        </div>
+        <div x-show="!autoAssignResult?.success" class="text-danger" x-text="autoAssignResult?.error || autoAssignResult"></div>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t border-b-card flex items-center gap-2 justify-end">
+      <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
+              @click="autoAssignModal = false; autoAssignResult = null">关闭</button>
+      <button class="h-8 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40"
+              :disabled="autoAssignBusy"
+              @click="runAutoAssign()"
+              x-text="autoAssignBusy ? '分配中… (LLM 调用可能需要几十秒)' : '开始分配'"></button>
+    </div>
   </div>
 </div>
 
@@ -9606,6 +9673,14 @@ function adminApp() {
     accountDrawerDirty: false,
     accountDrawerError: null,
     accountProfileCounts: {},        // {accountId: {bindings, unacknowledged}}
+
+    // ─── Auto-assign profiles modal ────────────────────────────────────
+    autoAssignModal: false,
+    autoAssignBusy: false,
+    autoAssignPerAccount: 5,
+    autoAssignSkipBound: true,
+    autoAssignUseLlm: true,
+    autoAssignResult: null,
 
     // ─── Module A: Scheduler page ──────────────────────────────────────
     schedulerCfg: {
@@ -13843,6 +13918,39 @@ function adminApp() {
         this.accountProfileCounts = data || {};
       } catch (e) {
         // non-fatal — column will just show 0
+      }
+    },
+
+    openAutoAssignModal() {
+      this.autoAssignModal = true;
+      this.autoAssignResult = null;
+      this.$nextTick(() => lucide.createIcons());
+    },
+    async runAutoAssign() {
+      this.autoAssignBusy = true;
+      this.autoAssignResult = null;
+      try {
+        const res = await fetch(API_BASE + '/accounts/auto_assign_profiles', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            per_account: parseInt(this.autoAssignPerAccount) || 5,
+            skip_already_bound: !!this.autoAssignSkipBound,
+            use_llm: !!this.autoAssignUseLlm,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        this.autoAssignResult = body;
+        if (body.success) {
+          await this.loadAccountProfileCounts();
+          // If the drawer is currently open, refresh its bindings too
+          if (this.accountDrawer) await this.loadAccountDrawerBindings();
+        }
+      } catch (e) {
+        this.autoAssignResult = { success: false, error: String(e.message || e) };
+      } finally {
+        this.autoAssignBusy = false;
       }
     },
 
