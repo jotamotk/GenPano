@@ -1,14 +1,9 @@
-from sqlalchemy import MetaData
-from sqlalchemy.orm import DeclarativeBase
+"""Backward-compat shim — Base now lives in `genpano_models.base` (ADR-004).
 
-NAMING_CONVENTION = {
-    "ix": "ix_%(column_0_label)s",
-    "uq": "uq_%(table_name)s_%(column_0_name)s",
-    "ck": "ck_%(table_name)s_%(constraint_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",
-}
+Existing `from app.db.base import Base` imports continue to work via this
+re-export. New code should import directly from `genpano_models`.
+"""
 
+from genpano_models.base import NAMING_CONVENTION, Base
 
-class Base(DeclarativeBase):
-    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+__all__ = ["NAMING_CONVENTION", "Base"]
