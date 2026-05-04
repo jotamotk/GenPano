@@ -6795,14 +6795,107 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             <i data-lucide="x" class="w-4 h-4"></i>
           </button>
         </div>
-        <div class="p-6 space-y-4">
+        <div class="p-6 space-y-4 max-h-[calc(100vh-180px)] overflow-y-auto">
+          <!-- Query selection: pick from prompts OR type custom -->
           <div>
-            <label class="text-[11px] font-semibold text-ink-muted uppercase">Query 文本</label>
-            <textarea x-model="scheduleEditor.query_text"
-                      rows="3"
-                      placeholder="例如：哪款奶粉适合二胎家庭？"
-                      class="w-full mt-1 p-2 rounded-btn border border-b-default text-[12px] resize-none"></textarea>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">Query 来源</label>
+            <div class="flex items-center gap-1 p-1 mt-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
+              <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'pick'}"
+                      @click="scheduleEditor.querySource = 'pick'; loadScheduleEditorBrands()">从已有 Prompt 选</button>
+              <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'custom'}"
+                      @click="scheduleEditor.querySource = 'custom'">自定义文本</button>
+            </div>
           </div>
+
+          <template x-if="scheduleEditor.querySource === 'pick'">
+            <div class="space-y-2 rounded-card bg-surface-page border border-b-card p-3">
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="text-[10px] font-semibold text-ink-muted uppercase">品牌</label>
+                  <select x-model="scheduleEditor.pick_brand_id"
+                          @change="scheduleEditor.pick_topic_id=''; scheduleEditor.pick_prompt_id=''; loadScheduleEditorTopics(); loadScheduleEditorPrompts()"
+                          class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                    <option value="">— 全部品牌 —</option>
+                    <template x-for="b in scheduleEditorBrands" :key="b.id">
+                      <option :value="b.id" x-text="b.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[10px] font-semibold text-ink-muted uppercase">Topic</label>
+                  <select x-model="scheduleEditor.pick_topic_id"
+                          @change="scheduleEditor.pick_prompt_id=''; loadScheduleEditorPrompts()"
+                          class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                    <option value="" x-text="'— 全部 Topic' + (scheduleEditorTopics.length ? ' (' + scheduleEditorTopics.length + ')' : '') + ' —'"></option>
+                    <template x-for="t in scheduleEditorTopics" :key="t.id">
+                      <option :value="t.id" x-text="t.text"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label class="text-[10px] font-semibold text-ink-muted uppercase">
+                  Prompt <span class="font-normal normal-case text-ink-muted/80" x-text="'(' + scheduleEditorPrompts.length + ' 条可选)'"></span>
+                </label>
+                <input type="text" x-model="scheduleEditor.pick_prompt_search"
+                       placeholder="搜索 prompt 文本…"
+                       class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+                <div class="mt-1 max-h-40 overflow-y-auto rounded-btn border border-b-default bg-white divide-y divide-b-card/40">
+                  <div x-show="filteredScheduleEditorPrompts.length === 0" class="px-3 py-2 text-[11px] text-ink-muted">
+                    <span x-show="!scheduleEditor.pick_brand_id">请先选品牌</span>
+                    <span x-show="scheduleEditor.pick_brand_id && scheduleEditorPrompts.length === 0">无 prompt</span>
+                    <span x-show="scheduleEditor.pick_brand_id && scheduleEditorPrompts.length > 0 && filteredScheduleEditorPrompts.length === 0">无匹配的 prompt</span>
+                  </div>
+                  <template x-for="p in filteredScheduleEditorPrompts" :key="p.id">
+                    <div @click="pickScheduleEditorPrompt(p)"
+                         class="px-3 py-2 text-[11.5px] cursor-pointer hover:bg-surface-page"
+                         :class="String(scheduleEditor.pick_prompt_id) === String(p.id) ? 'bg-accent/10' : ''">
+                      <div class="text-ink truncate" x-text="p.text"></div>
+                      <div class="text-[10px] text-ink-muted truncate" x-text="p.topic_text ? ('Topic: ' + p.topic_text) : ''"></div>
+                    </div>
+                  </template>
+                </div>
+                <div x-show="scheduleEditor.query_text" class="mt-2 text-[11px] text-ink-muted">
+                  当前选中: <span class="font-mono" x-text="scheduleEditor.query_text"></span>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="scheduleEditor.querySource === 'custom'">
+            <div>
+              <label class="text-[11px] font-semibold text-ink-muted uppercase">Query 文本</label>
+              <textarea x-model="scheduleEditor.query_text" rows="3"
+                        placeholder="例如：哪款奶粉适合二胎家庭？"
+                        class="w-full mt-1 p-2 rounded-btn border border-b-default text-[12px] resize-none"></textarea>
+            </div>
+          </template>
+
+          <!-- Profile picker (replaces the old plain text input) -->
+          <div>
+            <label class="text-[11px] font-semibold text-ink-muted uppercase">Profile (可选)</label>
+            <input type="text" x-model="scheduleEditor.profile_search"
+                   @focus="loadScheduleEditorProfiles()"
+                   @input.debounce.250ms="loadScheduleEditorProfiles()"
+                   :placeholder="scheduleEditor.profile_id ? ('已选 ' + scheduleEditor.profile_id + ' · 点击更换') : '搜索 Profile (留空 = 调度时自动分配)'"
+                   class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+            <div x-show="scheduleEditor.profile_picker_open || (scheduleEditor.profile_search && scheduleEditorProfiles.length > 0)"
+                 class="mt-1 max-h-32 overflow-y-auto rounded-btn border border-b-default bg-white divide-y divide-b-card/40">
+              <div @click="scheduleEditor.profile_id = ''; scheduleEditor.profile_search = ''"
+                   class="px-3 py-1.5 text-[11px] cursor-pointer hover:bg-surface-page text-ink-muted">
+                — 清除 (留空 = 调度时自动分配) —
+              </div>
+              <template x-for="pf in scheduleEditorProfiles" :key="pf.id">
+                <div @click="scheduleEditor.profile_id = pf.id; scheduleEditor.profile_search = (pf.code || pf.id) + ' · ' + (pf.name || '')"
+                     class="px-3 py-1.5 text-[11px] cursor-pointer hover:bg-surface-page"
+                     :class="scheduleEditor.profile_id === pf.id ? 'bg-accent/10' : ''">
+                  <span class="font-mono text-ink-muted" x-text="pf.code || pf.id.slice(0, 14)"></span>
+                  <span class="text-ink ml-2" x-text="pf.name || '(未命名)'"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="text-[11px] font-semibold text-ink-muted uppercase">目标 LLM</label>
@@ -6820,16 +6913,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             </div>
           </div>
           <div>
-            <label class="text-[11px] font-semibold text-ink-muted uppercase">Profile (可选)</label>
-            <input type="text" x-model="scheduleEditor.profile_id"
-                   placeholder="留空 = 调度时自动分配 (如 pf_xxxx)"
-                   class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] font-mono" />
-          </div>
-          <div>
             <label class="text-[11px] font-semibold text-ink-muted uppercase">下次执行时间</label>
             <input type="datetime-local" x-model="scheduleEditor.next_run_local"
                    class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
-            <div class="text-[10px] text-ink-muted mt-1">留空 = 立即首次执行；之后每隔 cadence_days 天再触发</div>
+            <div class="text-[10px] text-ink-muted mt-1">默认 = 现在；之后每隔 cadence_days 天再触发</div>
           </div>
           <div>
             <label class="text-[11px] font-semibold text-ink-muted uppercase">备注 (可选)</label>
@@ -6849,6 +6936,119 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   :disabled="scheduleEditorSaving"
                   @click="saveSchedule()"
                   x-text="scheduleEditorSaving ? '保存中…' : '保存'"></button>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+<!-- ===== ADD PROFILE TO ACCOUNT — picker modal ===== -->
+<div x-show="profileAdder" x-cloak x-transition.opacity class="fixed inset-0 z-40 bg-ink/40" @click="closeProfileAdder()"></div>
+<div x-show="profileAdder" x-cloak class="fixed inset-0 z-50 flex items-start justify-center pt-20 pointer-events-none">
+  <div class="w-[680px] rounded-card-lg bg-surface border border-b-card shadow-elevated pointer-events-auto"
+       @click.stop>
+    <template x-if="profileAdder">
+      <div>
+        <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
+          <div>
+            <h3 class="text-[14px] font-semibold text-ink">添加 Profile 绑定</h3>
+            <p class="text-[11px] text-ink-muted mt-0.5">勾选要绑定的 Profile · 已选 <span class="font-semibold text-accent" x-text="profileAdderSelectedCount"></span> 个</p>
+          </div>
+          <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="closeProfileAdder()">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <div class="p-5 space-y-3 max-h-[calc(100vh-220px)] overflow-y-auto">
+          <!-- Search bar -->
+          <div class="flex items-center gap-2">
+            <input type="text" x-model="profileAdder.search"
+                   @input.debounce.300ms="loadProfileAdderResults()"
+                   placeholder="搜索 Profile id / code / 名称…"
+                   class="flex-1 h-8 px-3 rounded-btn border border-b-default text-[12px]" />
+            <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
+                    @click="loadProfileAdderResults()">刷新</button>
+          </div>
+
+          <!-- Available Profile list -->
+          <div class="rounded-card border border-b-card overflow-hidden">
+            <div class="px-3 py-1.5 bg-surface-page text-[11px] text-ink-muted flex items-center">
+              <span x-show="profileAdderLoading">加载中…</span>
+              <span x-show="!profileAdderLoading"
+                    x-text="'可选 ' + profileAdderResults.length + ' 个 (已绑定的不在列表)'"></span>
+            </div>
+            <div class="max-h-[260px] overflow-y-auto">
+              <div x-show="!profileAdderLoading && profileAdderResults.length === 0"
+                   class="px-3 py-6 text-center text-[12px] text-ink-muted">无可用 Profile (或全部已绑定)</div>
+              <template x-for="p in profileAdderResults" :key="p.id">
+                <div class="flex items-center gap-3 px-3 py-2 border-b border-b-card/50 hover:bg-surface-page cursor-pointer"
+                     @click="toggleProfileAdderSelect(p)">
+                  <input type="checkbox" class="rounded"
+                         :checked="!!profileAdder.selected[p.id]"
+                         @click.stop="toggleProfileAdderSelect(p)" />
+                  <span class="font-mono text-[11px] text-ink-muted shrink-0 w-[88px] truncate" :title="p.id" x-text="p.code || p.id.slice(0, 14)"></span>
+                  <span class="text-[12px] text-ink truncate flex-1" x-text="p.name || '(未命名)'"></span>
+                  <button class="text-[10px] text-accent hover:underline shrink-0"
+                          title="找相似 Profile (同 segment / brand)"
+                          @click.stop="loadSimilarProfiles(p)">找相似</button>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Similar suggestions -->
+          <template x-if="profileAdder.similarSeed">
+            <div class="rounded-card bg-accent/5 border border-accent/30 overflow-hidden">
+              <div class="px-3 py-2 flex items-center gap-2 text-[11px]">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-accent"></i>
+                <span>基于 <span class="font-mono" x-text="profileAdder.similarSeed.code || profileAdder.similarSeed.id"></span> 的相似 Profile</span>
+                <button x-show="(profileAdder.similar || []).length > 0"
+                        class="ml-auto h-6 px-2 rounded-btn bg-accent text-white text-[10px] font-semibold hover:opacity-90"
+                        @click="selectAllSimilar()">全选 <span x-text="(profileAdder.similar || []).length"></span> 个</button>
+                <button class="text-[11px] text-ink-muted hover:text-ink"
+                        @click="profileAdder.similarSeed = null; profileAdder.similar = []">×</button>
+              </div>
+              <div class="border-t border-accent/20 max-h-[180px] overflow-y-auto">
+                <div x-show="profileAdder.similarLoading" class="px-3 py-3 text-center text-[11px] text-ink-muted">加载中…</div>
+                <div x-show="!profileAdder.similarLoading && (profileAdder.similar || []).length === 0"
+                     class="px-3 py-3 text-center text-[11px] text-ink-muted">没有更多相似的 Profile</div>
+                <template x-for="p in (profileAdder.similar || [])" :key="p.id">
+                  <div class="flex items-center gap-3 px-3 py-1.5 border-b border-accent/10 hover:bg-accent/10 cursor-pointer"
+                       @click="toggleProfileAdderSelect(p); profileAdder.similar = profileAdder.similar.filter(x => x.id !== p.id)">
+                    <i data-lucide="plus" class="w-3 h-3 text-accent"></i>
+                    <span class="font-mono text-[10.5px] text-ink-muted shrink-0 w-[88px] truncate" x-text="p.code || p.id.slice(0, 14)"></span>
+                    <span class="text-[11.5px] text-ink truncate flex-1" x-text="p.name || '(未命名)'"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- Selected list -->
+          <template x-if="profileAdderSelectedCount > 0">
+            <div class="rounded-card border border-b-card overflow-hidden">
+              <div class="px-3 py-1.5 bg-surface-page text-[11px] text-ink-muted">
+                已选 <span class="font-semibold text-accent" x-text="profileAdderSelectedCount"></span> 个 (保存后默认 daily_quota = 1，可在抽屉表里调整)
+              </div>
+              <div class="max-h-[140px] overflow-y-auto px-3 py-2 flex flex-wrap gap-1.5">
+                <template x-for="p in Object.values(profileAdder.selected)" :key="p.id">
+                  <span class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[10.5px] font-medium bg-accent/10 text-accent">
+                    <span x-text="p.code || p.id.slice(0, 12)"></span>
+                    <button @click="toggleProfileAdderSelect(p)" class="hover:text-danger">×</button>
+                  </span>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <div class="px-6 py-4 border-t border-b-card flex items-center gap-2 justify-end">
+          <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
+                  @click="closeProfileAdder()">取消</button>
+          <button class="h-8 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40"
+                  :disabled="profileAdderSelectedCount === 0"
+                  @click="confirmAddProfiles()"
+                  x-text="'添加 ' + (profileAdderSelectedCount ? '(' + profileAdderSelectedCount + ')' : '')"></button>
         </div>
       </div>
     </template>
@@ -13508,21 +13708,101 @@ function adminApp() {
       }
       this.accountDrawerDirty = true;
     },
-    async openAddProfileToAccount() {
-      // Minimal wedge: prompt for a profile id; binding is created with quota=1.
-      // The full picker UI is out of scope for this PR — point users at the
-      // existing 受众/Profile management pages for browsing.
-      const pid = (window.prompt('输入要绑定的 Profile id (pf_…)') || '').trim();
-      if (!pid) return;
+    // ─── Add-profile modal (replaces the old window.prompt()) ───────────
+    profileAdder: null,            // {search:'', selected:{}, similarSeed:null, similarLoading:false}
+    profileAdderResults: [],
+    profileAdderLoading: false,
+    openAddProfileToAccount() {
       if (!this.accountDrawerDetail) return;
-      const exists = (this.accountDrawerDetail.bindings || []).find(b => b.profile_id === pid);
-      if (exists) { this.toast('已绑定该 Profile'); return; }
+      this.profileAdder = {
+        search: '',
+        selected: {},        // {profile_id: {id, code, name}}
+        similarSeed: null,
+        similar: [],
+        similarLoading: false,
+      };
+      this.profileAdderResults = [];
+      this.loadProfileAdderResults();
+      this.$nextTick(() => lucide.createIcons());
+    },
+    closeProfileAdder() {
+      this.profileAdder = null;
+      this.profileAdderResults = [];
+    },
+    async loadProfileAdderResults() {
+      if (!this.profileAdder) return;
+      this.profileAdderLoading = true;
+      try {
+        const params = new URLSearchParams({ limit: 200 });
+        if (this.profileAdder.search) params.set('q', this.profileAdder.search);
+        const res = await fetch(API_BASE + '/profiles/lite?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        // Filter out profiles already bound to this account
+        const bound = new Set((this.accountDrawerDetail?.bindings || []).map(b => b.profile_id));
+        this.profileAdderResults = (Array.isArray(data) ? data : []).filter(p => !bound.has(p.id));
+      } catch (e) {
+        this.toast('加载 Profile 失败: ' + (e.message || e));
+        this.profileAdderResults = [];
+      } finally {
+        this.profileAdderLoading = false;
+      }
+    },
+    toggleProfileAdderSelect(p) {
+      if (!this.profileAdder) return;
+      const sel = Object.assign({}, this.profileAdder.selected);
+      if (sel[p.id]) delete sel[p.id]; else sel[p.id] = p;
+      this.profileAdder.selected = sel;
+    },
+    async loadSimilarProfiles(seed) {
+      if (!this.profileAdder || !seed) return;
+      this.profileAdder.similarSeed = seed;
+      this.profileAdder.similarLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/profiles/' + encodeURIComponent(seed.id) + '/similar?limit=20',
+                                { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const bound = new Set((this.accountDrawerDetail?.bindings || []).map(b => b.profile_id));
+        const selected = this.profileAdder.selected || {};
+        this.profileAdder.similar = (data.rows || []).filter(p => !bound.has(p.id) && !selected[p.id]);
+      } catch (e) {
+        this.toast('加载相似 Profile 失败: ' + (e.message || e));
+        this.profileAdder.similar = [];
+      } finally {
+        this.profileAdder.similarLoading = false;
+      }
+    },
+    selectAllSimilar() {
+      if (!this.profileAdder || !this.profileAdder.similar) return;
+      const sel = Object.assign({}, this.profileAdder.selected);
+      for (const p of this.profileAdder.similar) sel[p.id] = p;
+      this.profileAdder.selected = sel;
+      this.profileAdder.similar = [];
+    },
+    confirmAddProfiles() {
+      if (!this.profileAdder || !this.accountDrawerDetail) return;
+      const items = Object.values(this.profileAdder.selected);
+      if (items.length === 0) { this.closeProfileAdder(); return; }
       this.accountDrawerDetail.bindings = this.accountDrawerDetail.bindings || [];
-      this.accountDrawerDetail.bindings.push({
-        profile_id: pid, profile_code: null, profile_name: null,
-        daily_quota: 1, conflicts: [], conflict_acknowledged: false,
-      });
+      const existing = new Set(this.accountDrawerDetail.bindings.map(b => b.profile_id));
+      for (const p of items) {
+        if (existing.has(p.id)) continue;
+        this.accountDrawerDetail.bindings.push({
+          profile_id: p.id,
+          profile_code: p.code || null,
+          profile_name: p.name || null,
+          daily_quota: 1,
+          conflicts: [],
+          conflict_acknowledged: false,
+        });
+      }
       this.accountDrawerDirty = true;
+      this.toast('已添加 ' + items.length + ' 个 Profile (尚未保存)');
+      this.closeProfileAdder();
+    },
+    get profileAdderSelectedCount() {
+      return this.profileAdder ? Object.keys(this.profileAdder.selected).length : 0;
     },
     async saveAccountDrawerBindings() {
       if (!this.accountDrawer || !this.accountDrawerDetail) return;
@@ -13631,6 +13911,12 @@ function adminApp() {
       const d = new Date(dateStr + 'T00:00:00');
       return isNaN(d) ? '' : labels[d.getDay()];
     },
+    // Cache for the schedule editor's cascade picker
+    scheduleEditorBrands: [],
+    scheduleEditorTopics: [],
+    scheduleEditorPrompts: [],
+    scheduleEditorProfiles: [],
+
     openScheduleEditor(s) {
       const isNew = !s;
       // Default to "now" so the first 立即触发一次 / next Beat tick actually
@@ -13639,7 +13925,7 @@ function adminApp() {
       const now = new Date();
       const tz = now.getTimezoneOffset() * 60000;
       const defaultLocal = new Date(now.getTime() - tz).toISOString().slice(0, 16);
-      this.scheduleEditor = isNew ? {
+      const base = isNew ? {
         id: null,
         query_text: '',
         target_llm: 'doubao',
@@ -13657,13 +13943,93 @@ function adminApp() {
         next_run_local: this._isoToLocalInput(s.next_run_at),
         enabled: !!s.enabled,
         note: s.note || '',
+        prompt_id: s.prompt_id || null,
+        brand_id: s.brand_id || null,
       };
+      // Picker state: pre-fill profile_search if editing
+      base.querySource = (base.prompt_id || base.brand_id) ? 'pick' : (base.query_text ? 'custom' : 'pick');
+      base.pick_brand_id = base.brand_id || '';
+      base.pick_topic_id = '';
+      base.pick_prompt_id = base.prompt_id || '';
+      base.pick_prompt_search = '';
+      base.profile_search = base.profile_id || '';
+      base.profile_picker_open = false;
+      this.scheduleEditor = base;
       this.scheduleEditorError = '';
+      this.scheduleEditorTopics = [];
+      this.scheduleEditorPrompts = [];
+      this.loadScheduleEditorBrands();
+      this.loadScheduleEditorProfiles();
       this.$nextTick(() => lucide.createIcons());
     },
     closeScheduleEditor() {
       this.scheduleEditor = null;
       this.scheduleEditorError = '';
+    },
+    async loadScheduleEditorBrands() {
+      // Reuses the existing brand list endpoint loaded by attempts page
+      if (this.scheduleEditorBrands.length === 0) {
+        try {
+          const res = await fetch(API_BASE + '/admin/brands', { credentials: 'same-origin' });
+          if (res.ok) {
+            const data = await res.json();
+            this.scheduleEditorBrands = Array.isArray(data) ? data : (data.rows || []);
+          }
+        } catch (e) { /* non-fatal */ }
+      }
+    },
+    async loadScheduleEditorTopics() {
+      const bid = this.scheduleEditor?.pick_brand_id;
+      if (!bid) { this.scheduleEditorTopics = []; return; }
+      try {
+        const res = await fetch(API_BASE + '/topics?' + new URLSearchParams({ brand_id: bid }), { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.scheduleEditorTopics = Array.isArray(data) ? data : [];
+      } catch (e) {
+        this.scheduleEditorTopics = [];
+      }
+    },
+    async loadScheduleEditorPrompts() {
+      const e = this.scheduleEditor;
+      if (!e?.pick_brand_id) { this.scheduleEditorPrompts = []; return; }
+      try {
+        const params = new URLSearchParams({ brand_id: e.pick_brand_id });
+        if (e.pick_topic_id) params.set('topic_id', e.pick_topic_id);
+        const res = await fetch(API_BASE + '/prompts?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.scheduleEditorPrompts = Array.isArray(data) ? data : [];
+      } catch (err) {
+        this.scheduleEditorPrompts = [];
+      }
+    },
+    pickScheduleEditorPrompt(p) {
+      if (!this.scheduleEditor) return;
+      this.scheduleEditor.pick_prompt_id = p.id;
+      this.scheduleEditor.query_text = p.text || '';
+      this.scheduleEditor.prompt_id = p.id;
+    },
+    get filteredScheduleEditorPrompts() {
+      const q = (this.scheduleEditor?.pick_prompt_search || '').toLowerCase().trim();
+      if (!q) return this.scheduleEditorPrompts;
+      return this.scheduleEditorPrompts.filter(p =>
+        (p.text || '').toLowerCase().includes(q) ||
+        (p.topic_text || '').toLowerCase().includes(q));
+    },
+    async loadScheduleEditorProfiles() {
+      try {
+        const params = new URLSearchParams({ limit: 100 });
+        const q = (this.scheduleEditor?.profile_search || '').trim();
+        if (q && q !== this.scheduleEditor.profile_id) params.set('q', q);
+        const res = await fetch(API_BASE + '/profiles/lite?' + params, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.scheduleEditorProfiles = Array.isArray(data) ? data : [];
+        if (this.scheduleEditor) this.scheduleEditor.profile_picker_open = true;
+      } catch (e) {
+        this.scheduleEditorProfiles = [];
+      }
     },
     _isoToLocalInput(iso) {
       if (!iso) return '';
@@ -13693,6 +14059,10 @@ function adminApp() {
           cadence_days: parseInt(e.cadence_days),
           enabled: !!e.enabled,
           note: e.note || null,
+          // Carry the prompt_id when picked from the cascade so the
+          // schedule traces back to its source prompt for analytics.
+          prompt_id: (e.querySource === 'pick' && e.pick_prompt_id) ? parseInt(e.pick_prompt_id) : null,
+          brand_id:  (e.querySource === 'pick' && e.pick_brand_id)  ? parseInt(e.pick_brand_id)  : null,
         };
         if (e.next_run_local) {
           // datetime-local lacks tz; treat it as local and convert to ISO
