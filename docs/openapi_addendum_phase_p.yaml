@@ -1,0 +1,580 @@
+# OpenAPI Addendum — Phase P 端点契约增补
+#
+# 日期：2026-05-04
+# 范围：本文件以 OpenAPI 3.1.0 paths 片段格式，列出 Phase 0/1/2/3/A/K/D/RP/M/N/E/O
+# 引入的 ≈ 230 个新端点的 stub。完整 schema 在 Phase R.5 / Phase 0 实施时落入主
+# `docs/openapi.yaml`。本文件作为审稿基准。
+#
+# Stability tier 标记：
+#   x-tier: stable | beta | experimental
+
+paths:
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase 0 — 产品 API 骨架
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/_meta/routes:
+    get:
+      tags: [Meta]
+      summary: List all registered v1 routes
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  # ── Projects（Phase 1）─────────────────────────────────────────
+  /v1/projects:
+    get:
+      tags: [Projects]
+      summary: List user's projects
+      x-tier: stable
+      responses: {'200': {description: OK}}
+    post:
+      tags: [Projects]
+      summary: Create project (onboarding)
+      x-tier: stable
+      responses: {'201': {description: Created}}
+
+  /v1/projects/{projectId}:
+    parameters:
+      - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      tags: [Projects]
+      summary: Project detail (industry / primary brand / competitors embed)
+      x-tier: stable
+      responses: {'200': {description: OK}, '404': {description: Not found}}
+    patch:
+      tags: [Projects]
+      summary: Update project (name / primary_brand / preferences)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+    delete:
+      tags: [Projects]
+      summary: Soft delete
+      x-tier: stable
+      responses: {'204': {description: No Content}}
+
+  /v1/projects/{projectId}/competitors:
+    parameters:
+      - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      tags: [Projects]
+      summary: Add competitor (capacity 10 + debounce 30s)
+      x-tier: stable
+      responses: {'201': {description: Created}, '409': {description: Capacity full}, '429': {description: Debounced}}
+
+  /v1/projects/{projectId}/competitors/{brandId}:
+    delete:
+      tags: [Projects]
+      summary: Remove competitor
+      x-tier: stable
+      responses: {'204': {description: No Content}}
+
+  # ── Industries / Brands 公共数据 ────────────────────────────────
+  /v1/industries:
+    get:
+      tags: [Industries]
+      summary: List industries (public catalog)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  /v1/industries/{industryId}/top-brands:
+    get:
+      tags: [Industries]
+      parameters: [{name: n, in: query, schema: {type: integer, default: 3}}]
+      summary: Top N brands by today's GeoScore
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  /v1/brands:
+    get:
+      tags: [Brands]
+      parameters:
+        - {name: industryId, in: query, schema: {type: integer}}
+        - {name: q, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+      summary: Search brands
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase 2 — Brand Mode 9 子页
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/projects/{projectId}/overview:
+    get:
+      tags: [Brand]
+      summary: Brand overview (KPI + 同集团 + 头部 prompt + 30d 趋势)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  /v1/projects/{projectId}/metrics:
+    get:
+      tags: [Brand]
+      parameters:
+        - {name: series, in: query, schema: {type: string}, description: "mention,sov,rank,sentiment,citation 任选"}
+        - {name: from, in: query, schema: {type: string, format: date}}
+        - {name: to, in: query, schema: {type: string, format: date}}
+        - {name: engine, in: query, schema: {type: string}}
+        - {name: profileGroupId, in: query, schema: {type: string}}
+      summary: Brand metrics time series
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  /v1/projects/{projectId}/topics:
+    get:
+      tags: [Brand]
+      summary: Project topics list (含 pin state)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+  /v1/projects/{projectId}/topics/{topicId}:
+    patch:
+      tags: [Brand]
+      summary: Pin/ignore topic
+      x-tier: stable
+      responses: {'200': {description: OK}}
+    delete:
+      tags: [Brand]
+      summary: Unpin
+      x-tier: stable
+      responses: {'204': {description: No Content}}
+
+  /v1/projects/{projectId}/sentiment:
+    get:
+      tags: [Brand]
+      summary: Sentiment distribution + 30d trend
+      x-tier: stable
+      responses: {'200': {description: OK}}
+  /v1/projects/{projectId}/sentiment/keywords:
+    get: {tags: [Brand], summary: Sentiment keywords cloud, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/sentiment/drivers:
+    get: {tags: [Brand], summary: Sentiment drivers (positive/negative reasons), x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/projects/{projectId}/citations:
+    get: {tags: [Brand], summary: Citation list with attribution + tier filters, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/citations/domains:
+    get: {tags: [Brand], summary: Top cited domains, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/citations/pages:
+    get: {tags: [Brand], summary: Top cited pages, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/projects/{projectId}/products:
+    get: {tags: [Brand], summary: Project main brand SKU list, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/products/{productId}:
+    get: {tags: [Brand], summary: Product detail (features / scenarios / drivers), x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/projects/{projectId}/competitors/metrics:
+    get: {tags: [Brand], summary: Competitor matrix + bubble chart data, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/projects/{projectId}/diagnostics:
+    get: {tags: [Brand], summary: List diagnostics with filters, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/diagnostics/refresh:
+    post: {tags: [Brand], summary: Manually trigger evaluator, x-tier: stable, responses: {'202': {description: Accepted}}}
+  /v1/projects/{projectId}/diagnostics/{diagId}:
+    get: {tags: [Brand], summary: Diagnostic detail (4 layer view), x-tier: stable, responses: {'200': {description: OK}}}
+    patch: {tags: [Brand], summary: Mark acknowledged/ignored/resolved, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase 3 — Industry Mode 4 子页
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/industries/{industryId}/overview:
+    get: {tags: [Industry], summary: Industry KPI + Top 10 + 30d 事件流, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/industries/{industryId}/ranking:
+    get: {tags: [Industry], summary: Brand ranking (offset paginated), x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/industries/{industryId}/topics:
+    get: {tags: [Industry], summary: Industry topic pool, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/industries/{industryId}/kg:
+    get:
+      tags: [Industry]
+      parameters:
+        - {name: focus, in: query, schema: {type: string}, description: "focus node id, default industry root"}
+        - {name: depth, in: query, schema: {type: integer, default: 2}}
+      summary: Knowledge Graph nodes + edges (Phase K)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase 4 — Crawl + Leads
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/projects/{projectId}/crawl-requests:
+    post:
+      tags: [Crawl]
+      summary: User-triggered manual crawl (HIGH priority + daily quota 5/day)
+      x-tier: stable
+      responses: {'202': {description: Queued}, '429': {description: Daily quota exceeded}}
+  /v1/projects/{projectId}/crawl-requests/{crawlId}:
+    get: {tags: [Crawl], summary: Crawl status polling, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/leads:
+    post:
+      tags: [Leads]
+      summary: Submit commercial lead (multi-source)
+      x-tier: stable
+      responses: {'201': {description: Created}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase RP — Reports（详细）
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/projects/{projectId}/reports:
+    get: {tags: [Reports], summary: List reports (cursor-paginated), x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Reports], summary: Generate report (即时 / 调度), x-tier: stable, responses: {'201': {description: Created}}}
+  /v1/projects/{projectId}/reports/{reportId}:
+    get: {tags: [Reports], summary: Report metadata + status, x-tier: stable, responses: {'200': {description: OK}}}
+    patch: {tags: [Reports], summary: Cancel / update cron, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/reports/{reportId}/download:
+    get:
+      tags: [Reports]
+      parameters: [{name: format, in: query, schema: {type: string, enum: [pdf, md, json, csv]}}]
+      summary: 302 to signed URL
+      x-tier: stable
+      responses: {'302': {description: Redirect}}
+  /v1/projects/{projectId}/reports/{reportId}/share:
+    post: {tags: [Reports], summary: Generate share token, x-tier: stable, responses: {'201': {description: Created}}}
+  /v1/projects/{projectId}/reports/{reportId}/share/{token}:
+    delete: {tags: [Reports], summary: Revoke share, x-tier: stable, responses: {'204': {description: No Content}}}
+
+  /v1/projects/{projectId}/report-schedules:
+    get: {tags: [Reports], summary: List schedules, x-tier: stable, responses: {'200': {description: OK}}}
+    put: {tags: [Reports], summary: Set/update schedule, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /reports/public/{token}:
+    get:
+      tags: [Reports Public]
+      summary: Public share access (no auth)
+      x-tier: stable
+      responses: {'200': {description: OK}, '410': {description: Expired}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase M — MCP + API Keys
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/users/me/api-keys:
+    get: {tags: [API Keys], summary: List user keys (no hash), x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [API Keys], summary: Generate (returns secret once), x-tier: stable, responses: {'201': {description: Created}}}
+  /v1/users/me/api-keys/{keyId}:
+    delete: {tags: [API Keys], summary: Revoke, x-tier: stable, responses: {'204': {description: No Content}}}
+  /v1/users/me/api-keys/{keyId}/usage:
+    get: {tags: [API Keys], summary: Usage stats (per tool / per day), x-tier: stable, responses: {'200': {description: OK}}}
+
+  /mcp/v1:
+    post:
+      tags: [MCP]
+      summary: JSON-RPC endpoint (initialize / tools/list / tools/call / resources/list / resources/read)
+      x-tier: stable
+      responses: {'200': {description: OK}, '401': {description: MCP_AUTH_REQUIRED}}
+  /mcp/v1/sse:
+    get: {tags: [MCP], summary: SSE streaming for tools/call, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase N — Alerts + Notifications
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/alerts:
+    get:
+      tags: [Alerts]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [unread, read, ignored, resolved]}}
+        - {name: severity, in: query, schema: {type: string}}
+        - {name: project_id, in: query, schema: {type: string, format: uuid}}
+      summary: List user alerts (scope=user)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+  /v1/alerts/unread-count:
+    get: {tags: [Alerts], summary: Topbar bell badge number, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/alerts/{alertId}:
+    patch: {tags: [Alerts], summary: Mark read/ignored/resolved, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/alerts/mark-all-read:
+    post: {tags: [Alerts], summary: One-click mark all read, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/users/me/notifications:
+    get: {tags: [Notifications], summary: User preferences, x-tier: stable, responses: {'200': {description: OK}}}
+    patch: {tags: [Notifications], summary: Update preferences (3 toggles + locale + quiet hours), x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/users/me/alert-rules:
+    get: {tags: [Notifications], summary: List custom alert rules, x-tier: beta, responses: {'200': {description: OK}}}
+    post: {tags: [Notifications], summary: Create rule, x-tier: beta, responses: {'201': {description: Created}}}
+  /v1/users/me/alert-rules/{ruleId}:
+    patch: {tags: [Notifications], summary: Update, x-tier: beta, responses: {'200': {description: OK}}}
+    delete: {tags: [Notifications], summary: Delete, x-tier: beta, responses: {'204': {description: No Content}}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Phase E — Exports + Submissions + Simulator
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/projects/{projectId}/exports:
+    post:
+      tags: [Exports]
+      summary: Create CSV export (8 types)
+      x-tier: stable
+      responses: {'202': {description: Queued}, '429': {description: Quota exceeded (20/day)}}
+  /v1/projects/{projectId}/exports/{exportId}:
+    get: {tags: [Exports], summary: Status polling, x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/projects/{projectId}/exports/{exportId}/download:
+    get: {tags: [Exports], summary: 302 to signed URL, x-tier: stable, responses: {'302': {description: Redirect}}}
+
+  /v1/brands/submissions:
+    post: {tags: [Brand Submissions], summary: User submit new brand, x-tier: stable, responses: {'201': {description: Created}}}
+  /v1/users/me/brand-submissions:
+    get: {tags: [Brand Submissions], summary: My submissions, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /v1/projects/{projectId}/simulator/run:
+    post:
+      tags: [Simulator]
+      summary: Authority boost simulation (shared with MCP tool)
+      x-tier: stable
+      responses: {'200': {description: OK}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # User-self
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /v1/users/me:
+    get: {tags: [User], summary: Current user profile, x-tier: stable, responses: {'200': {description: OK}}}
+    patch: {tags: [User], summary: Update profile (name / company / locale), x-tier: stable, responses: {'200': {description: OK}}}
+  /v1/users/me/password:
+    post: {tags: [User], summary: Change password (requires current), x-tier: stable, responses: {'200': {description: OK}}}
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Admin (Phase R.4 迁 + Phase O 新增)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  # Phase O.1 Pipeline 诊断
+  /api/admin/pipeline/overview:
+    get: {tags: [Admin Pipeline], summary: 24h funnel + KPI cards, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/engines:
+    get: {tags: [Admin Pipeline], summary: Engine health list + 30d trend, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/engines/{engine}/recheck:
+    post: {tags: [Admin Pipeline], summary: Manually recheck (audit:high), x-tier: stable, responses: {'202': {description: Accepted}}}
+  /api/admin/pipeline/queue:
+    get: {tags: [Admin Pipeline], summary: Crawl task queue, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/proxies:
+    get: {tags: [Admin Pipeline], summary: Proxy pool status, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin Pipeline], summary: Add proxy, x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/pipeline/proxies/{proxyId}:
+    patch: {tags: [Admin Pipeline], summary: Enable/disable proxy, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/retry-center:
+    get: {tags: [Admin Pipeline], summary: Failed queries list, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/retry-center/{queryId}:
+    get: {tags: [Admin Pipeline], summary: Detail with artifacts, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/pipeline/retry-center/{queryId}/retry:
+    post: {tags: [Admin Pipeline], summary: Retry single (audit:med), x-tier: stable, responses: {'202': {description: Accepted}}}
+  /api/admin/pipeline/retry-center/batch-retry:
+    post: {tags: [Admin Pipeline], summary: Batch retry (audit:high), x-tier: stable, responses: {'202': {description: Accepted}}}
+  /api/admin/pipeline/retry-center/{queryId}/mark-failed-permanent:
+    post: {tags: [Admin Pipeline], summary: Mark permanent failure, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.1.5 KG Discovery Logs
+  /api/admin/kg/discovery-logs:
+    get: {tags: [Admin KG], summary: Discovery log list (filter source / hallucination), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/discovery-logs/{logId}/mark-hallucination:
+    post: {tags: [Admin KG], summary: Mark hallucination, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/discovery-logs/stats:
+    get: {tags: [Admin KG], summary: Hallucination rate stats, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.2.1 Cost Dashboard
+  /api/admin/cost/daily:
+    get: {tags: [Admin Cost], summary: Daily cost dashboard (by scope), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/cost/breakdown:
+    get: {tags: [Admin Cost], summary: Drill-down breakdown, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/cost/budget-thresholds:
+    get: {tags: [Admin Cost], summary: Get budget config, x-tier: stable, responses: {'200': {description: OK}}}
+    put: {tags: [Admin Cost], summary: Update budget (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.2.2 Audit Log
+  /api/admin/audit-log:
+    get: {tags: [Admin Audit], summary: Audit log list (filter operator / action / severity / time), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/audit-log/{logId}:
+    get: {tags: [Admin Audit], summary: Detail with diff, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/audit-log/export:
+    get: {tags: [Admin Audit], summary: CSV export, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.2.3 MCP Ops
+  /api/admin/mcp-ops/overview:
+    get: {tags: [Admin MCP], summary: 24h/7d/30d overview, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/mcp-ops/users:
+    get: {tags: [Admin MCP], summary: User call ranking, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/mcp-ops/calls:
+    get: {tags: [Admin MCP], summary: Call log stream, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/mcp-ops/api-keys/{keyId}/suspend:
+    post: {tags: [Admin MCP], summary: Suspend key (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/mcp-ops/api-keys/{keyId}/resume:
+    post: {tags: [Admin MCP], summary: Resume key (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.3.1 Alerts (operator)
+  /api/admin/alerts:
+    get: {tags: [Admin Alerts], summary: Operator alerts (scope=operator), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/alerts/unread-count:
+    get: {tags: [Admin Alerts], summary: Operator badge, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/alerts/{alertId}:
+    patch: {tags: [Admin Alerts], summary: Acknowledge / assign / resolve / runbook (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/alerts/{alertId}/escalate:
+    post: {tags: [Admin Alerts], summary: Escalate severity (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/alerts/mark-all-read:
+    post: {tags: [Admin Alerts], summary: Bulk mark read, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.3.2 Comms
+  /api/admin/comms:
+    get: {tags: [Admin Comms], summary: List announcements, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin Comms], summary: Create draft, x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/comms/{commsId}:
+    put: {tags: [Admin Comms], summary: Update draft, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/comms/{commsId}/preview:
+    post: {tags: [Admin Comms], summary: Preview rendering, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/comms/{commsId}/send:
+    post: {tags: [Admin Comms], summary: Trigger send (audit:high), x-tier: stable, responses: {'202': {description: Accepted}}}
+  /api/admin/comms/{commsId}/cancel:
+    post: {tags: [Admin Comms], summary: Cancel scheduled (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/comms/{commsId}/recipients:
+    get: {tags: [Admin Comms], summary: Recipients list, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase O.3.3 Commercial Leads
+  /api/admin/commercial/leads:
+    get: {tags: [Admin Leads], summary: Lead list with filters, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/commercial/leads/{leadId}:
+    get: {tags: [Admin Leads], summary: Lead detail (含 lead_diagnostic 报告), x-tier: stable, responses: {'200': {description: OK}}}
+    patch: {tags: [Admin Leads], summary: Update status / assigned_to / notes (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/commercial/leads/export:
+    get: {tags: [Admin Leads], summary: CSV export, x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase E.5 KG Brand Submissions admin
+  /api/admin/kg/brand-submissions:
+    get: {tags: [Admin KG], summary: List submissions, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/brand-submissions/{subId}/approve:
+    post: {tags: [Admin KG], summary: Approve → KG ingestion (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/brand-submissions/{subId}/reject:
+    post: {tags: [Admin KG], summary: Reject (audit:low), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/brand-submissions/{subId}/duplicate:
+    post: {tags: [Admin KG], summary: Mark as duplicate of existing brand (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+
+  # Phase K K3 KG admin CRUD（部分）
+  /api/admin/kg/categories:
+    get: {tags: [Admin KG], summary: Tree view, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin KG], summary: Create category (audit:med), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/kg/categories/{categoryId}:
+    patch: {tags: [Admin KG], summary: Update (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+    delete: {tags: [Admin KG], summary: Delete (audit:high), x-tier: stable, responses: {'204': {description: No Content}}}
+
+  /api/admin/kg/brands:
+    get: {tags: [Admin KG], summary: Brand list (含 status), x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin KG], summary: Add brand (audit:high), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/kg/brands/{kgBrandId}:
+    patch: {tags: [Admin KG], summary: Update (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+    delete: {tags: [Admin KG], summary: Soft delete (audit:high), x-tier: stable, responses: {'204': {description: No Content}}}
+
+  /api/admin/kg/brand-relations:
+    get: {tags: [Admin KG], summary: Brand relations list, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin KG], summary: Manual add relation (audit:med), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/kg/brand-relations/{relationId}:
+    patch: {tags: [Admin KG], summary: Adjust confidence / type (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+    delete: {tags: [Admin KG], summary: Soft delete (audit:high), x-tier: stable, responses: {'204': {description: No Content}}}
+
+  /api/admin/kg/products:
+    get: {tags: [Admin KG], summary: Product list, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/product-relations:
+    get: {tags: [Admin KG], summary: Product relations list, x-tier: stable, responses: {'200': {description: OK}}}
+
+  /api/admin/kg/candidates:
+    get: {tags: [Admin KG], summary: Pending relation candidates, x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/candidates/{candidateId}/review:
+    post: {tags: [Admin KG], summary: Approve / reject candidate (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+  /api/admin/kg/candidates/bulk-review:
+    post: {tags: [Admin KG], summary: Bulk action (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+
+  /api/admin/kg/diff:
+    get: {tags: [Admin KG], summary: 24h KG diff (ADMIN_PRD §C8), x-tier: beta, responses: {'200': {description: OK}}}
+  /api/admin/kg/quality:
+    get: {tags: [Admin KG], summary: KG quality monitor (ADMIN_PRD §C9), x-tier: beta, responses: {'200': {description: OK}}}
+
+  # Phase A.4 Domain Authorities
+  /api/admin/domain-authorities:
+    get: {tags: [Admin Authority], summary: List (filter tier), x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin Authority], summary: Add (audit:med), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/domain-authorities/{domain}:
+    patch: {tags: [Admin Authority], summary: Update tier (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+    delete: {tags: [Admin Authority], summary: Delete (audit:high), x-tier: stable, responses: {'204': {description: No Content}}}
+  /api/admin/domain-authorities/bulk-import:
+    post: {tags: [Admin Authority], summary: CSV bulk import (audit:high), x-tier: stable, responses: {'202': {description: Accepted}}}
+
+  # Phase A.6 Brand Groups
+  /api/admin/brand-groups:
+    get: {tags: [Admin Groups], summary: List groups, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin Groups], summary: Create group (audit:med), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/brand-groups/{groupId}:
+    patch: {tags: [Admin Groups], summary: Update (audit:med), x-tier: stable, responses: {'200': {description: OK}}}
+    delete: {tags: [Admin Groups], summary: Delete (audit:high), x-tier: stable, responses: {'204': {description: No Content}}}
+  /api/admin/brand-groups/{groupId}/members:
+    get: {tags: [Admin Groups], summary: List group members, x-tier: stable, responses: {'200': {description: OK}}}
+    post: {tags: [Admin Groups], summary: Add member (audit:med), x-tier: stable, responses: {'201': {description: Created}}}
+  /api/admin/brand-groups/{groupId}/members/{brandId}:
+    delete: {tags: [Admin Groups], summary: Remove (audit:med), x-tier: stable, responses: {'204': {description: No Content}}}
+
+  # Phase E.4 Industry Pricing
+  /api/admin/industry-pricing-params:
+    get: {tags: [Admin Pricing], summary: List, x-tier: stable, responses: {'200': {description: OK}}}
+    put: {tags: [Admin Pricing], summary: Update (audit:high), x-tier: stable, responses: {'200': {description: OK}}}
+
+components:
+  responses:
+    Unauthorized:
+      description: Bearer required
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            properties:
+              type: {type: string}
+              title: {type: string}
+              status: {type: integer, example: 401}
+              detail: {type: string}
+              code: {type: string, example: 'unauthorized'}
+    Forbidden:
+      description: Cross-tenant or scope mismatch
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    NotFound:
+      description: Not found (also for cross-tenant deny)
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    ValidationError:
+      description: 422 Unprocessable Entity
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    RateLimitExceeded:
+      description: 429 with Retry-After header
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    MCPAuthRequired:
+      description: 401 MCP_AUTH_REQUIRED
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+
+  schemas:
+    ProblemDetails:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: {type: string, default: 'about:blank'}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        code: {type: string, description: "Stable error code for FE i18n lookup"}
+
+# 端点统计：
+#   Phase 0/1:    9
+#   Phase 2:     22
+#   Phase 3:      4
+#   Phase 4:      3
+#   Phase RP:    11
+#   Phase M:      6
+#   Phase N:      9
+#   Phase E:      6
+#   User-self:    3
+#   Admin (全):  ~155 (Phase R.4 迁旧 ~100 + Phase O 新 ~35 + KG/A 新 ~20)
+#   ────────────────────────────
+#   总计:        ~228 个端点
