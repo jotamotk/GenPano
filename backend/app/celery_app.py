@@ -76,16 +76,38 @@ def _build_celery_app() -> Celery:
         },
         # Module D Beat — staggered minutes per source so platforms aren't
         # all hit at the same wall-clock (anti-rate-limit). Browser sources
-        # (weibo / douyin / xhs) only fire when HOTSPOT_BROWSER_COLLECTORS=1
-        # in the worker env; the collector itself short-circuits otherwise.
-        # Weibo runs without a browser (mobile JSON public API) so it's safe
-        # to schedule even with the gate off.
-        "hotspots-baidu":  {"task": "hotspots.collect_source", "args": ["baidu"],  "schedule": crontab(minute=20)},
-        "hotspots-zhihu":  {"task": "hotspots.collect_source", "args": ["zhihu"],  "schedule": crontab(minute=40)},
-        "hotspots-weibo":  {"task": "hotspots.collect_source", "args": ["weibo"],  "schedule": crontab(minute=15)},
-        "hotspots-douyin": {"task": "hotspots.collect_source", "args": ["douyin"], "schedule": crontab(minute=25)},
-        "hotspots-xhs":    {"task": "hotspots.collect_source", "args": ["xhs"],    "schedule": crontab(minute=35, hour="*/2")},
-        "hotspots-archive":{"task": "hotspots.archive_expired",                    "schedule": crontab(minute=0, hour=3)},
+        # (douyin / xhs) only fire when HOTSPOT_BROWSER_COLLECTORS=1 in the
+        # worker env; the collector short-circuits otherwise. Weibo / baidu /
+        # zhihu are plain HTTP and always run.
+        "hotspots-weibo": {
+            "task": "hotspots.collect_source",
+            "args": ["weibo"],
+            "schedule": crontab(minute=15),
+        },
+        "hotspots-baidu": {
+            "task": "hotspots.collect_source",
+            "args": ["baidu"],
+            "schedule": crontab(minute=20),
+        },
+        "hotspots-douyin": {
+            "task": "hotspots.collect_source",
+            "args": ["douyin"],
+            "schedule": crontab(minute=25),
+        },
+        "hotspots-xhs": {
+            "task": "hotspots.collect_source",
+            "args": ["xhs"],
+            "schedule": crontab(minute=35, hour="*/2"),
+        },
+        "hotspots-zhihu": {
+            "task": "hotspots.collect_source",
+            "args": ["zhihu"],
+            "schedule": crontab(minute=40),
+        },
+        "hotspots-archive": {
+            "task": "hotspots.archive_expired",
+            "schedule": crontab(minute=0, hour=3),
+        },
     }
 
     return app
