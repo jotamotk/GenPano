@@ -266,7 +266,10 @@ def is_near_duplicate_title(title: str, existing_normalized: set[str]) -> bool:
     for other in existing_normalized:
         if len(current) >= 5 and len(other) >= 5 and (current in other or other in current):
             return True
-        if SequenceMatcher(None, current, other).ratio() >= 0.92:
+        # Module B-4: loosen 0.92 → 0.96 — close-but-not-identical phrasings of
+        # the same idea now slip through as separate topics. Strict 0.92 was
+        # eating ~30% of generated batches.
+        if SequenceMatcher(None, current, other).ratio() >= 0.96:
             return True
     return False
 
@@ -364,22 +367,73 @@ def dedupe_topic_candidates(
     candidates: list[LLMTopic],
     existing_titles: list[str],
     max_count: int | None = None,
-) -> tuple[list[LLMTopic], list[dict[str, str]]]:
-    normalized = {normalize_topic_title(title) for title in existing_titles if title}
-    normalized.discard("")
+    *,
+    layer_check: bool = True,
+) -> tuple[list[LLMTopic], list[dict[str, Any]]]:
+    """Dedupe + (optionally) layer-boundary check.
+
+    Skipped items now carry structured ``reason`` codes so the API can
+    surface a per-reason breakdown to the UI:
+
+      - ``duplicate_db``         existing title (or near-duplicate) in DB
+      - ``duplicate_intra_batch`` LLM repeated itself in this batch
+      - ``looks_like_prompt``    layer violation: this is a Prompt, not a Topic
+      - ``looks_like_query``     layer violation: this is a Query
+      - ``over_limit``           accepted enough already, this is the tail
+    """
+    from ._layer_classifier import reject_reason as _reject_reason
+
+    db_normalized = {normalize_topic_title(title) for title in existing_titles if title}
+    db_normalized.discard("")
+    batch_normalized: set[str] = set()
     accepted: list[LLMTopic] = []
-    skipped: list[dict[str, str]] = []
+    skipped: list[dict[str, Any]] = []
 
     for item in candidates:
         if max_count is not None and len(accepted) >= max_count:
             skipped.append({"title": item.title, "reason": "over_limit"})
             continue
-        if is_near_duplicate_title(item.title, normalized):
-            skipped.append({"title": item.title, "reason": "duplicate"})
+        if layer_check:
+            layer_reason = _reject_reason(item.title, "topic")
+            if layer_reason is not None:
+                skipped.append({"title": item.title, "reason": layer_reason})
+                continue
+        if is_near_duplicate_title(item.title, db_normalized):
+            skipped.append({"title": item.title, "reason": "duplicate_db"})
+            continue
+        if is_near_duplicate_title(item.title, batch_normalized):
+            skipped.append({"title": item.title, "reason": "duplicate_intra_batch"})
             continue
         accepted.append(item)
-        normalized.add(normalize_topic_title(item.title))
+        batch_normalized.add(normalize_topic_title(item.title))
     return accepted, skipped
+
+
+def sample_existing_for_context(items: list[str], total_quota: int = 400) -> list[str]:
+    """Module B-2: send the LLM a mix of recency + breadth instead of the
+    naive ``items[:300]`` slice, so the LLM "knows" what the long tail of
+    the topic library already covers and stops re-generating it.
+    """
+    import random
+
+    if not items:
+        return []
+    if len(items) <= total_quota:
+        return list(items)
+    recent_n = int(total_quota * 0.6)
+    recent = items[-recent_n:]
+    older = items[:-recent_n]
+    sampled_old = random.sample(older, min(len(older), total_quota - len(recent)))
+    return list(recent) + sampled_old
+
+
+def over_request_count(target: int, *, multiplier: float = 1.4, min_buffer: int = 5) -> int:
+    """Module B-1: ask the LLM for ``ceil(target * multiplier)`` so dedup +
+    layer-violation losses still leave us at ``target`` accepted.
+    """
+    import math
+
+    return max(int(math.ceil(target * multiplier)), target + min_buffer)
 
 
 def repair_single_brand_placeholders(topics: list[LLMTopic], brands: list[dict[str, Any]]) -> list[LLMTopic]:
@@ -512,8 +566,13 @@ def build_topic_plan_messages(
         "consumer_title_examples": consumer_title_examples,
         "output_schema": schema,
     }
+    # Module 0.5: prepend the layer-boundary header so the LLM knows it must
+    # produce *Topics* (noun-phrase research areas), not Prompts or Queries.
+    from ._layer_classifier import LAYER_BOUNDARY_PROMPT
     system = (
-        "You are the GENPANO Topic Plan generator for consumer-facing topics. "
+        LAYER_BOUNDARY_PROMPT.replace("{LAYER}", "topic")
+        + "\n\n"
+        + "You are the GENPANO Topic Plan generator for consumer-facing topics. "
         "Operators use the admin UI, but every topic title must represent real consumer demand. "
         "Return strict JSON only. No markdown. No explanations. "
         "Never introduce unselected brands, competitors, prompts, queries, table names, or engineering notes."

@@ -896,12 +896,18 @@ def _ensure_topic_plan_tables():
                         llm_usage_json JSONB,
                         llm_error TEXT,
                         candidates_generated INTEGER NOT NULL DEFAULT 0,
+                        metrics_json JSONB,
                         started_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         completed_at TIMESTAMP,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                     )
                     """
+                )
+                # Module B-5.1: persist generation metrics + rejected sample so
+                # the UI can explain "why did 50 requested → only 38 accepted".
+                cur.execute(
+                    "ALTER TABLE topic_plan_runs ADD COLUMN IF NOT EXISTS metrics_json JSONB"
                 )
                 cur.execute(
                     """
@@ -987,12 +993,17 @@ def _ensure_prompt_matrix_tables():
                         llm_model VARCHAR(128),
                         llm_usage_json JSONB,
                         llm_error TEXT,
+                        metrics_json JSONB,
                         started_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         completed_at TIMESTAMP,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                     )
                     """
+                )
+                # Module B-5.1: persist metrics + rejected sample
+                cur.execute(
+                    "ALTER TABLE prompt_generation_runs ADD COLUMN IF NOT EXISTS metrics_json JSONB"
                 )
                 cur.execute(
                     """
@@ -7322,11 +7333,52 @@ def _topic_plan_run_row(row):
         "llm_model": item.get("llm_model"),
         "llm_usage": _prompt_matrix_json_value(item.get("llm_usage_json"), {}) or {},
         "llm_error": item.get("llm_error"),
+        # Module B-5.1: transparency — surface metrics + rejected sample so
+        # the UI can answer "why 50 requested → only 38 accepted".
+        "metrics": _prompt_matrix_json_value(item.get("metrics_json"), {}) or {},
         "started_at": _isoformat(item.get("started_at")),
         "completed_at": _isoformat(item.get("completed_at")),
         "created_at": _isoformat(item.get("created_at")),
         "updated_at": _isoformat(item.get("updated_at")),
         "elapsed_seconds": float(item.get("elapsed_seconds") or 0),
+    }
+
+
+def _compute_generation_metrics(*, requested, accepted, skipped, batches,
+                                 llm_model, llm_returned=None,
+                                 rejected_sample_size=20):
+    """Aggregate per-reason counts + a small sample of rejected items for
+    persisting into <runtable>.metrics_json. The sample is capped (default
+    20 items × ~200 bytes = ~4 KB) so the JSONB column stays small.
+    """
+    by_reason: dict[str, int] = {}
+    for s in (skipped or []):
+        r = s.get("reason") or "unknown"
+        by_reason[r] = by_reason.get(r, 0) + 1
+    rejected_sample = []
+    seen_reasons: dict[str, int] = {}
+    # Sample evenly across reasons so the user sees at least 1-2 of each
+    per_reason_cap = max(1, rejected_sample_size // max(len(by_reason), 1))
+    for s in (skipped or []):
+        r = s.get("reason") or "unknown"
+        if seen_reasons.get(r, 0) >= per_reason_cap:
+            continue
+        rejected_sample.append({
+            "text": s.get("title") or s.get("text") or "",
+            "reason": r,
+        })
+        seen_reasons[r] = seen_reasons.get(r, 0) + 1
+        if len(rejected_sample) >= rejected_sample_size:
+            break
+    return {
+        "requested": int(requested or 0),
+        "accepted": int(accepted or 0),
+        "rejected_total": int(len(skipped or [])),
+        "by_reason": by_reason,
+        "batches": int(batches or 0),
+        "llm_model": llm_model,
+        "llm_returned": int(llm_returned) if llm_returned is not None else None,
+        "rejected_sample": rejected_sample,
     }
 
 
@@ -7479,6 +7531,15 @@ def _execute_topic_plan_generation(
             if remaining <= 0:
                 break
             batch_max = min(remaining, batch_cap)
+            # Module B-1: ask LLM for ceil(N * 1.4) so dedup + layer rejects
+            # still leave us at N accepted.
+            # Module B-2: send the LLM a recency+sample mix instead of the
+            # naive existing_titles[:300] slice so it doesn't re-generate
+            # prompts that already exist past the first 300.
+            from .topic_plan import (
+                over_request_count as _over_req,
+                sample_existing_for_context as _sample_ex,
+            )
             llm_topics, llm_meta = client.generate_topics(
                 industry=industry_id or "All industries",
                 category=category_id or "All categories",
@@ -7492,8 +7553,8 @@ def _execute_topic_plan_generation(
                     for brand in batch_brands
                 ],
                 coverage_gaps=batch_gaps,
-                max_topics=batch_max,
-                existing_topics=existing_titles,
+                max_topics=_over_req(batch_max),
+                existing_topics=_sample_ex(existing_titles, total_quota=400),
             )
             batches += 1
             llm_model = (llm_meta or {}).get("model") or llm_model
@@ -7578,6 +7639,13 @@ def _execute_topic_plan_generation(
             }
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            metrics = _compute_generation_metrics(
+                requested=max_topics,
+                accepted=len(inserted),
+                skipped=skipped,
+                batches=batches,
+                llm_model=llm_model,
+            )
             cur.execute(
                 """
                 UPDATE topic_plan_runs
@@ -7585,6 +7653,7 @@ def _execute_topic_plan_generation(
                     llm_model = %s,
                     llm_usage_json = %s::jsonb,
                     candidates_generated = %s,
+                    metrics_json = %s::jsonb,
                     completed_at = NOW(),
                     updated_at = NOW()
                 WHERE id = %s
@@ -7593,6 +7662,7 @@ def _execute_topic_plan_generation(
                     llm_model,
                     _topic_plan_json(usage),
                     len(inserted),
+                    json.dumps(metrics, ensure_ascii=False),
                     run_id,
                 ),
             )
@@ -8742,6 +8812,8 @@ def _prompt_matrix_run_row(row):
         "llm_model": item.get("llm_model"),
         "llm_usage": _prompt_matrix_json_value(item.get("llm_usage_json"), {}) or {},
         "llm_error": item.get("llm_error"),
+        # Module B-5.1: transparency
+        "metrics": _prompt_matrix_json_value(item.get("metrics_json"), {}) or {},
         "started_at": _isoformat(item.get("started_at")),
         "completed_at": _isoformat(item.get("completed_at")),
         "created_at": _isoformat(item.get("created_at")),
@@ -8893,12 +8965,17 @@ def _execute_prompt_matrix_generation(
     try:
         client = PromptMatrixClient()
         llm_model = getattr(getattr(client, "config", None), "model", None) or llm_model
+        # Module B-2: send the LLM a recency+sample mix instead of the
+        # naive existing_prompts[:300] inside generate_prompts(); this gives
+        # the LLM a wider view of what the prompt library already covers.
+        from .prompt_matrix import sample_existing_for_context as _sample_pm
+        existing_for_llm = _sample_pm(existing_prompts, total_quota=400)
         for llm_candidates, llm_meta in _prompt_matrix_candidate_batches(
             client,
             topics=topics,
             config=config,
             known_brands=known_brands,
-            existing_prompts=existing_prompts,
+            existing_prompts=existing_for_llm,
         ):
             if _is_generation_run_cancelled(conn, "prompt_generation_runs", run_id):
                 cancelled = True
@@ -8988,6 +9065,13 @@ def _execute_prompt_matrix_generation(
             }
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            metrics = _compute_generation_metrics(
+                requested=estimated,
+                accepted=len(inserted),
+                skipped=skipped,
+                batches=batches,
+                llm_model=llm_model,
+            )
             cur.execute(
                 """
                 UPDATE prompt_generation_runs
@@ -8996,6 +9080,7 @@ def _execute_prompt_matrix_generation(
                     llm_usage_json = %s::jsonb,
                     llm_error = NULL,
                     candidates_generated = %s,
+                    metrics_json = %s::jsonb,
                     completed_at = NOW(),
                     updated_at = NOW()
                 WHERE id = %s
@@ -9004,6 +9089,7 @@ def _execute_prompt_matrix_generation(
                     llm_model,
                     _prompt_matrix_json(usage),
                     len(inserted),
+                    json.dumps(metrics, ensure_ascii=False),
                     run_id,
                 ),
             )

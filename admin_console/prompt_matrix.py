@@ -293,7 +293,9 @@ def is_near_duplicate_prompt(text: str, existing_normalized: set[str]) -> bool:
     for other in existing_normalized:
         if len(current) >= 12 and len(other) >= 12 and (current in other or other in current):
             return True
-        if SequenceMatcher(None, current, other).ratio() >= 0.9:
+        # Module B-4: 0.9 → 0.96 (close paraphrases now slip through as
+        # separate prompts); strict 0.9 was over-eating prompt batches.
+        if SequenceMatcher(None, current, other).ratio() >= 0.96:
             return True
     return False
 
@@ -302,22 +304,71 @@ def dedupe_prompt_candidates(
     candidates: list[LLMPromptCandidate],
     existing_texts: list[str],
     max_count: int | None = None,
-) -> tuple[list[LLMPromptCandidate], list[dict[str, str]]]:
-    normalized = {normalize_prompt_text(text) for text in existing_texts if text}
-    normalized.discard("")
+    *,
+    layer_check: bool = True,
+) -> tuple[list[LLMPromptCandidate], list[dict[str, Any]]]:
+    """Dedupe + layer-boundary check. Skipped items carry structured
+    ``reason`` codes so the API can surface a per-reason breakdown:
+
+      - ``duplicate_db``         existing in DB
+      - ``duplicate_intra_batch`` LLM repeated itself in this batch
+      - ``looks_like_topic``     layer violation: this is a Topic, not a Prompt
+      - ``looks_like_query``     layer violation: this carries personal anchors
+      - ``over_limit``           accepted enough already, this is the tail
+    """
+    from ._layer_classifier import reject_reason as _reject_reason
+
+    db_normalized = {normalize_prompt_text(text) for text in existing_texts if text}
+    db_normalized.discard("")
+    batch_normalized: set[str] = set()
     accepted: list[LLMPromptCandidate] = []
-    skipped: list[dict[str, str]] = []
+    skipped: list[dict[str, Any]] = []
 
     for item in candidates:
         if max_count is not None and len(accepted) >= max_count:
             skipped.append({"text": item.text, "reason": "over_limit"})
             continue
-        if is_near_duplicate_prompt(item.text, normalized):
-            skipped.append({"text": item.text, "reason": "duplicate"})
+        if layer_check:
+            layer_reason = _reject_reason(item.text, "prompt")
+            if layer_reason is not None:
+                skipped.append({"text": item.text, "reason": layer_reason})
+                continue
+        if is_near_duplicate_prompt(item.text, db_normalized):
+            skipped.append({"text": item.text, "reason": "duplicate_db"})
+            continue
+        if is_near_duplicate_prompt(item.text, batch_normalized):
+            skipped.append({"text": item.text, "reason": "duplicate_intra_batch"})
             continue
         accepted.append(item)
-        normalized.add(normalize_prompt_text(item.text))
+        batch_normalized.add(normalize_prompt_text(item.text))
     return accepted, skipped
+
+
+def sample_existing_for_context(items: list[str], total_quota: int = 400) -> list[str]:
+    """Module B-2: send the LLM a mix of recency + breadth instead of the
+    naive ``items[:300]`` slice (so the LLM "sees" what the long tail of
+    the prompt library covers, not just the most-recent 300).
+    """
+    import random
+
+    if not items:
+        return []
+    if len(items) <= total_quota:
+        return list(items)
+    recent_n = int(total_quota * 0.6)
+    recent = items[-recent_n:]
+    older = items[:-recent_n]
+    sampled_old = random.sample(older, min(len(older), total_quota - len(recent)))
+    return list(recent) + sampled_old
+
+
+def over_request_count(target: int, *, multiplier: float = 1.4, min_buffer: int = 5) -> int:
+    """Module B-1: ask the LLM for ``ceil(target * multiplier)`` so dedup +
+    layer-violation losses still leave us at ``target`` accepted.
+    """
+    import math
+
+    return max(int(math.ceil(target * multiplier)), target + min_buffer)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -777,8 +828,14 @@ def build_prompt_matrix_messages(
         "existing_prompts": existing_prompts[:300],
         "output_schema": schema,
     }
+    # Module 0.5: prepend the layer-boundary header so the LLM knows it must
+    # produce *Prompts* (complete user inputs, no personal anchors), not Topics
+    # (noun-phrase subjects) and not Queries (Profile-personalized text).
+    from ._layer_classifier import LAYER_BOUNDARY_PROMPT
     system = (
-        "你是 GENPANO 的真实用户问法生成器。你写的每一句都要像一个普通人准备搜索、购买、送礼、"
+        LAYER_BOUNDARY_PROMPT.replace("{LAYER}", "prompt")
+        + "\n\n"
+        + "你是 GENPANO 的真实用户问法生成器。你写的每一句都要像一个普通人准备搜索、购买、送礼、"
         "使用或避坑时会直接问出来的话。不要写 SEO 标题、导购稿、运营任务、后台指令或翻译腔。"
         "只返回严格 JSON，不要返回 Markdown。"
     )
@@ -915,7 +972,7 @@ class PromptMatrixClient:
             if remaining <= 0:
                 break
             batch_config = dict(config)
-            batch_config["max_prompts"] = min(
+            target = min(
                 remaining,
                 estimate_generation_count(
                     selected_topics=len(batch),
@@ -925,13 +982,17 @@ class PromptMatrixClient:
                     max_prompts=remaining,
                 ),
             )
+            # Module B-1: ask LLM for ceil(target * 1.4) so dedup + layer
+            # rejects downstream still leave us at ``target`` accepted.
+            batch_config["max_prompts"] = over_request_count(target)
             prompts, meta = self._generate_prompt_batch(
                 topics=batch,
                 config=batch_config,
                 known_brands=known_brands,
                 existing_prompts=existing_prompts + [item.text for item in generated_prompts],
             )
-            batch_prompts = prompts[:remaining]
+            # Trim back to the actual target (LLM over-shot was on purpose).
+            batch_prompts = prompts[:target]
             generated_prompts.extend(batch_prompts)
             yield batch_prompts, meta
 
