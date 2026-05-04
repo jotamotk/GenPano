@@ -1,38 +1,124 @@
-"""Weibo Hot Search collector — browser-use, requires logged-in account."""
+"""Weibo Hot Search collector — public mobile JSON, no account / browser needed.
+
+Originally drafted as a browser-use collector (PR #212), but the mobile-web
+trending endpoint (``m.weibo.cn/api/container/getIndex``) returns the same
+~50 trending list anonymously and is far more reliable than parsing the
+desktop HTML or driving Camoufox.
+
+Falls back to the desktop ``s.weibo.com/top/summary`` HTML scrape only if
+the mobile API stops working.
+"""
 from __future__ import annotations
 
-from .base import HotspotCandidate
-from .browser import BrowserHotspotCollector
+import json as _json
+import re
+import urllib.request
+
+from .base import HotspotCandidate, HotspotCollector
+
+MOBILE_API = (
+    "https://m.weibo.cn/api/container/getIndex"
+    "?containerid=106003type%3D25%26t%3D3%26disable_hot%3D1%26filter_type%3Drealtimehot"
+)
+DESKTOP_FALLBACK = "https://s.weibo.com/top/summary"
+
+UA_MOBILE = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+)
+UA_DESKTOP = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 
-class WeiboHotsCollector(BrowserHotspotCollector):
+class WeiboHotsCollector(HotspotCollector):
     SOURCE_NAME = "weibo"
-    LLM_NAME = "weibo_hots"
-    URL = "https://s.weibo.com/top/summary"
+    REQUIRES_BROWSER = False
+    LLM_NAME = ""  # No account needed — kept for parity with browser collectors.
 
-    async def _scrape(self, page, *, limit: int = 50) -> list[HotspotCandidate]:
-        out: list[HotspotCandidate] = []
+    def collect(self, *, limit: int = 50) -> list[HotspotCandidate]:
+        items = self._collect_mobile(limit=limit)
+        if items:
+            return items
+        return self._collect_desktop(limit=limit)
+
+    def _collect_mobile(self, *, limit: int) -> list[HotspotCandidate]:
         try:
-            await page.wait_for_selector("table.list-table, .data, .HotTopic_inner_3WLkr", timeout=15_000)
-        except Exception:
-            return out
-        rows = await page.locator("table.list-table tbody tr").all()
-        for i, row in enumerate(rows[:limit]):
-            try:
-                title_el = row.locator("td.td-02 a")
-                title = (await title_el.first.text_content() or "").strip()
-                if not title or title.startswith("置顶"):
+            req = urllib.request.Request(MOBILE_API, headers={
+                "User-Agent": UA_MOBILE,
+                "Accept": "application/json",
+                "Referer": "https://m.weibo.cn/p/106003type=25&t=3&disable_hot=1",
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception as e:
+            print(f"[weibo] mobile API failed: {e}")
+            return []
+
+        cards = (payload.get("data") or {}).get("cards") or []
+        out: list[HotspotCandidate] = []
+        rank = 0
+        for card in cards:
+            groups = card.get("card_group") or ([card] if card.get("desc") else [])
+            for g in groups:
+                title = (g.get("desc") or g.get("title_sub") or "").strip()
+                if not title or "更多热搜" in title:
                     continue
-                href = await title_el.first.get_attribute("href")
-                metric_el = row.locator("td.td-02 span")
-                metric = (await metric_el.first.text_content() or "").strip() if await metric_el.count() else None
+                rank += 1
+                if rank > limit:
+                    break
+                metric = (g.get("desc_extr") or "").strip() or None
+                href = g.get("scheme") or g.get("url")
                 out.append(HotspotCandidate(
                     title=title,
                     source=self.SOURCE_NAME,
-                    source_url=("https://s.weibo.com" + href) if href and href.startswith("/") else href,
-                    raw_rank=i + 1,
-                    raw_metric=metric or None,
+                    source_url=href,
+                    raw_rank=rank,
+                    raw_metric=str(metric) if metric else None,
                 ))
-            except Exception:
+            if rank >= limit:
+                break
+        return out
+
+    def _collect_desktop(self, *, limit: int) -> list[HotspotCandidate]:
+        """Fallback: scrape the desktop hot summary table.
+
+        Anonymous requests get the same list as logged-in users since 2023.
+        Parsed via regex to avoid pulling in BeautifulSoup as a hard dep.
+        """
+        try:
+            req = urllib.request.Request(DESKTOP_FALLBACK, headers={
+                "User-Agent": UA_DESKTOP,
+                "Accept": "text/html,application/xhtml+xml",
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            print(f"[weibo] desktop fallback failed: {e}")
+            return []
+
+        # Each row in the hot table looks like:
+        #   <td class="td-02"><a href="...">title</a><span>metric</span></td>
+        pattern = re.compile(
+            r'<td[^>]*class="td-02"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>'
+            r'(?:\s*<span[^>]*>(.*?)</span>)?',
+            re.DOTALL,
+        )
+        out: list[HotspotCandidate] = []
+        for i, m in enumerate(pattern.finditer(html)):
+            if len(out) >= limit:
+                break
+            href = m.group(1).strip()
+            title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+            metric = re.sub(r"<[^>]+>", "", m.group(3) or "").strip() or None
+            if not title or title.startswith("置顶"):
                 continue
+            out.append(HotspotCandidate(
+                title=title,
+                source=self.SOURCE_NAME,
+                source_url=("https://s.weibo.com" + href) if href.startswith("/") else href,
+                raw_rank=i + 1,
+                raw_metric=metric,
+            ))
         return out
