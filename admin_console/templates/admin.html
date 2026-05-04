@@ -9524,20 +9524,9 @@ function adminApp() {
     scheduleEditorSaving: false,
     scheduleEditorError: '',
 
-    // ─── Module C: Tracker daily tab ───────────────────────────────────
-    dailyMonth: '',                  // 'YYYY-MM' shown in the calendar popover
-    dailySelectedDate: null,         // 'YYYY-MM-DD'; defaults to today on first open
-    dailyMonthData: { days: [] },
-    dailyDetail: null,               // {totals, groups: [...]}
-    dailyAttempts: [],               // flat chronological list, derived from groups
-    dailyMonthLoading: false,
-    dailyDetailLoading: false,
-    dailyMonthPickerOpen: false,
-    dailyGroupByProfile: false,      // toggle on the toolbar
-    dailyFilter: { llm: '', profile_id: '', status: '' },
-    dailyExpanded: {},               // {queryId: true} — inline-expanded rows
-    dailyDetails: {},                // {queryId: {response, citations, ...}}
-    dailyScreenshots: {},            // {queryId: [{url, name}, ...]}
+    // (Daily tab state was removed in Module A — its work is now done by the
+    // Attempt 列表 tab with a date filter on /api/queries.)
+
 
     // Debug drawer inner tab (Response / Citations / Screenshots)
     debugTab: 'response',
@@ -14285,14 +14274,18 @@ function adminApp() {
       return Math.floor(m / 60) + 'h' + (m % 60) + 'm';
     },
     goToTrackerDay(timestamp) {
-      const d = new Date(timestamp);
-      if (isNaN(d)) { this.goto('tracker-attempts'); return; }
-      const date = d.toISOString().slice(0, 10);
-      this.dailyMonth = date.slice(0, 7);
-      this.dailySelectedDate = date;
+      // Daily tab was removed in PR #208 — route to Attempt 列表 with the
+      // date filter pre-set instead. The attempts list endpoint accepts
+      // ?date=YYYY-MM-DD.
       this.goto('tracker-attempts');
-      this.trackerTab = 'daily';
-      this.$nextTick(() => this.loadDailyDetail());
+      this.trackerTab = 'attempts';
+      const d = new Date(timestamp);
+      if (!isNaN(d)) {
+        const date = d.toISOString().slice(0, 10);
+        this.attemptFilter = Object.assign({}, this.attemptFilter, { date });
+        this.attemptsPage = 1;
+      }
+      this.$nextTick(() => this.loadAttempts && this.loadAttempts());
     },
     get schedulerProgressPct() {
       const t = (this.schedulerToday && this.schedulerToday.total) || {};
@@ -14343,224 +14336,6 @@ function adminApp() {
     // Module C — Tracker by-day
     // ═══════════════════════════════════════════════════════════════════
     // ─── Tab entry / date stepping ─────────────────────────────────────
-    openDailyTab() {
-      // Default to today (local time) on first visit; reuse the previous date
-      // selection on subsequent visits so the user doesn't lose context.
-      if (!this.dailySelectedDate) {
-        const d = new Date();
-        const tz = d.getTimezoneOffset() * 60000;
-        this.dailySelectedDate = new Date(d.getTime() - tz).toISOString().slice(0, 10);
-        this.dailyMonth = this.dailySelectedDate.slice(0, 7);
-      }
-      this.loadDailyDetail();
-      this.$nextTick(() => lucide.createIcons());
-    },
-    dailyShiftDay(delta) {
-      const base = this.dailySelectedDate ? new Date(this.dailySelectedDate + 'T00:00:00')
-                                          : new Date();
-      base.setDate(base.getDate() + delta);
-      const tz = base.getTimezoneOffset() * 60000;
-      this.dailySelectedDate = new Date(base.getTime() - tz).toISOString().slice(0, 10);
-      this.dailyMonth = this.dailySelectedDate.slice(0, 7);
-      this.dailyExpanded = {};
-      this.dailyDetails = {};
-      this.dailyScreenshots = {};
-      this.loadDailyDetail();
-    },
-    dailyShiftMonth(delta) {
-      if (!this.dailyMonth) {
-        const now = new Date();
-        this.dailyMonth = now.toISOString().slice(0, 7);
-      }
-      const [y, m] = this.dailyMonth.split('-').map(n => parseInt(n));
-      const dt = new Date(Date.UTC(y, (m - 1) + delta, 1));
-      this.dailyMonth = dt.toISOString().slice(0, 7);
-    },
-    dailyGotoToday() {
-      const d = new Date();
-      const tz = d.getTimezoneOffset() * 60000;
-      const today = new Date(d.getTime() - tz).toISOString().slice(0, 10);
-      if (this.dailySelectedDate === today) return;
-      this.dailySelectedDate = today;
-      this.dailyMonth = today.slice(0, 7);
-      this.dailyExpanded = {};
-      this.dailyDetails = {};
-      this.dailyScreenshots = {};
-      this.loadDailyDetail();
-    },
-    get dailyDayOfWeekLabel() {
-      if (!this.dailySelectedDate) return '';
-      const labels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-      const d = new Date(this.dailySelectedDate + 'T00:00:00');
-      return labels[d.getDay()];
-    },
-
-    async loadDailyMonth() {
-      if (!this.dailyMonth) {
-        const now = new Date();
-        this.dailyMonth = now.toISOString().slice(0, 7);
-      }
-      this.dailyMonthLoading = true;
-      try {
-        const params = new URLSearchParams({ month: this.dailyMonth });
-        if (this.dailyFilter.llm) params.set('llm', this.dailyFilter.llm);
-        const res = await fetch(API_BASE + '/queries/by-day?' + params, { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        if (data && data.error) throw new Error(data.error);
-        this.dailyMonthData = data || { days: [] };
-      } catch (e) {
-        this.toast('加载月度数据失败: ' + (e.message || e));
-        this.dailyMonthData = { days: [] };
-      } finally {
-        this.dailyMonthLoading = false;
-      }
-    },
-    async loadDailyDetail() {
-      if (!this.dailySelectedDate) return;
-      this.dailyDetailLoading = true;
-      try {
-        const params = new URLSearchParams({ date: this.dailySelectedDate });
-        if (this.dailyFilter.llm) params.set('llm', this.dailyFilter.llm);
-        const res = await fetch(API_BASE + '/queries/by-day?' + params, { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        if (data && data.error) throw new Error(data.error);
-        // Apply client-side status filter (server already handles llm) so the
-        // per-status pills in the toolbar slim the list without a re-fetch.
-        const wanted = (this.dailyFilter.status || '').toLowerCase();
-        (data.groups || []).forEach(g => {
-          g.expanded = ((data.groups || []).length <= 4);
-          if (wanted) g.queries = (g.queries || []).filter(q => q.status === wanted);
-        });
-        // Build the flat chronological list used in default mode.
-        const flat = [];
-        (data.groups || []).forEach(g => {
-          (g.queries || []).forEach(q => {
-            flat.push(Object.assign({}, q, {
-              engine: g.engine,
-              profile_id: g.profile_id,
-              profile_code: g.profile_code,
-              profile_name: g.profile_name,
-            }));
-          });
-        });
-        flat.sort((a, b) => {
-          const ta = a.finished_at || a.executed_at || a.created_at || '';
-          const tb = b.finished_at || b.executed_at || b.created_at || '';
-          if (ta === tb) return (a.id || 0) - (b.id || 0);
-          return ta < tb ? -1 : 1;
-        });
-        this.dailyDetail = data;
-        this.dailyAttempts = flat;
-        // Wipe any per-row caches since the list might have changed.
-        this.dailyExpanded = {};
-        this.$nextTick(() => lucide.createIcons());
-      } catch (e) {
-        this.toast('加载当日详情失败: ' + (e.message || e));
-        this.dailyDetail = { totals: {}, groups: [] };
-        this.dailyAttempts = [];
-      } finally {
-        this.dailyDetailLoading = false;
-      }
-    },
-
-    // ─── Inline-expand: fetch response for a single attempt on demand ──
-    toggleAttemptExpand(q) {
-      const id = q.id;
-      const cur = !!this.dailyExpanded[id];
-      this.dailyExpanded = Object.assign({}, this.dailyExpanded, { [id]: !cur });
-      if (!cur && !this.dailyDetails[id]) {
-        this.fetchAttemptDetail(id);
-      }
-      this.$nextTick(() => lucide.createIcons());
-    },
-    async fetchAttemptDetail(queryId) {
-      if (!queryId || this.dailyDetails[queryId]) return;
-      try {
-        // /api/queries already joins llm_responses (raw_text + citations_json)
-        const res = await fetch(API_BASE + '/queries?id=' + queryId, { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const body = await res.json();
-        const row = Array.isArray(body) ? body[0] : ((body.rows || [])[0]);
-        if (!row) return;
-        this.dailyDetails = Object.assign({}, this.dailyDetails, {
-          [queryId]: {
-            response: row.response || '',
-            citations: row.citations || null,
-            llm_version: row.llm_version || null,
-            latency_ms: row.latency_ms,
-            query_text: row.query_text,
-          },
-        });
-        // Screenshots come from a separate endpoint
-        const sres = await fetch(API_BASE + '/html_files?query_id=' + queryId, { credentials: 'same-origin' });
-        if (sres.ok) {
-          const sdata = await sres.json();
-          const items = Array.isArray(sdata) ? sdata : (sdata.items || []);
-          this.dailyScreenshots = Object.assign({}, this.dailyScreenshots, {
-            [queryId]: items.filter(f => f.type === 'image').slice(0, 5).map(f => ({
-              name: f.name,
-              url: API_BASE + '/screenshot?path=' + encodeURIComponent(f.path),
-            })),
-          });
-        }
-      } catch (e) {
-        // Soft fail — UI shows "(无 response …)" until the user retries
-      }
-    },
-    async retryDailyAttempt(q) {
-      try {
-        const res = await fetch(API_BASE + '/queries/' + q.id + '/retry', {
-          method: 'POST', credentials: 'same-origin',
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
-        this.toast('已重试 #' + q.id);
-      } catch (e) {
-        this.toast('重试失败: ' + (e.message || e));
-      }
-    },
-    get dailyCalendarCells() {
-      // Build a Mon-first month grid. Empty leading/trailing cells get
-      // {empty:true} so the template can render them as blank squares.
-      const month = this.dailyMonth;
-      if (!month) return [];
-      const [y, m] = month.split('-').map(n => parseInt(n));
-      if (!y || !m) return [];
-      const first = new Date(Date.UTC(y, m - 1, 1));
-      // Mon=0, Sun=6
-      const leading = (first.getUTCDay() + 6) % 7;
-      const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
-      const byDate = {};
-      for (const d of (this.dailyMonthData.days || [])) {
-        if (d.date) byDate[d.date] = d;
-      }
-      const cells = [];
-      for (let i = 0; i < leading; i++) {
-        cells.push({ key: 'lead-' + i, empty: true });
-      }
-      for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
-        const date = `${y}-${String(m).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-        const day = byDate[date] || null;
-        const completion = day ? Math.round(day.completion_rate || 0) : 0;
-        cells.push({
-          key: date,
-          empty: false,
-          date,
-          dayNum,
-          day,
-          completion,
-          failed: day ? (day.failed || 0) : 0,
-        });
-      }
-      // Pad to a multiple of 7 so the grid stays rectangular.
-      while (cells.length % 7 !== 0) {
-        cells.push({ key: 'trail-' + cells.length, empty: true });
-      }
-      return cells;
-    },
-
     // ======== CHARTS ========
     charts: {},
     init() {
