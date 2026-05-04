@@ -13806,7 +13806,8 @@ def _run_manual_dispatch(cap_override=None, note=None):
             # Fetch enabled schedules. Manual trigger fires every enabled
             # plan regardless of next_run_at (the user is explicitly asking
             # "do it now"); the Beat tick still uses the strict next_run_at
-            # filter for cron-style cadence.
+            # filter for cron-style cadence. LIMIT keeps the per-click work
+            # bounded so the proxy's 30/60s timeout doesn't 502 the response.
             cur.execute(
                 """
                 SELECT id, query_text, profile_id, target_llm, cadence_days,
@@ -13817,19 +13818,18 @@ def _run_manual_dispatch(cap_override=None, note=None):
                       SELECT jsonb_array_elements_text(%s::jsonb)
                   )
                 ORDER BY next_run_at ASC, id ASC
+                LIMIT 50
                 """,
                 (json.dumps([str(e).lower() for e in paused_engines]),),
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
             target_total = len(due_schedules) + sum(int(q['quota'] or 0) for q in quotas)
 
-            # Open a run row up front so partial failures still leave a record
-            cur.execute(
-                "INSERT INTO scheduler_runs (mode, target_total, queries_created, note) "
-                "VALUES (%s, %s, 0, %s) RETURNING id",
-                ('manual', target_total, note),
-            )
-            run_id = cur.fetchone()['id']
+            # Defer the scheduler_runs INSERT until we know we did real work.
+            # A queries_created==0 + 0 enabled schedules row would just clutter
+            # the run-history table. We assign run_id only if we end up with
+            # something to log.
+            run_id = None
 
             created = 0
 
@@ -13989,11 +13989,16 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     )
                     created += 1
 
-            cur.execute(
-                "UPDATE scheduler_runs SET queries_created = %s, finished_at = NOW() "
-                "WHERE id = %s",
-                (created, run_id),
-            )
+            # Only record a scheduler_runs row when we actually did work.
+            # User feedback: 0/0 rows just clutter the history table.
+            if created > 0:
+                cur.execute(
+                    "INSERT INTO scheduler_runs "
+                    "(mode, target_total, queries_created, note, finished_at) "
+                    "VALUES (%s, %s, %s, %s, NOW()) RETURNING id",
+                    ('manual', target_total, created, note),
+                )
+                run_id = cur.fetchone()['id']
         conn.commit()
         # Diagnostics so the UI can explain the (common) "0 / 0" outcome:
         #   reason='ok'                    something fired
@@ -14032,28 +14037,60 @@ def _run_manual_dispatch(cap_override=None, note=None):
 
 @app.route('/api/scheduler/runs')
 def scheduler_runs():
+    """List scheduler_runs rows with pagination.
+
+    Query params: ``page`` (1-based), ``per_page`` (default 20, max 100).
+    Response: ``{rows: [...], total: N, page, per_page}``. Backwards
+    compatibility: if no pagination params, returns the bare rows list
+    (preserving the older callers that did ``Array.isArray(data) ? data : []``).
+    """
     from psycopg2.extras import RealDictCursor
+    paginated = ('page' in request.args) or ('per_page' in request.args)
     try:
-        limit = max(1, min(int(request.args.get('limit', 30)), 200))
+        page = max(1, int(request.args.get('page', 1)))
     except Exception:
-        limit = 30
+        page = 1
+    try:
+        per_page = max(1, min(int(request.args.get('per_page', 20)), 100))
+    except Exception:
+        per_page = 20
+    try:
+        limit = max(1, min(int(request.args.get('limit', per_page)), 200))
+    except Exception:
+        limit = per_page
+    offset = (page - 1) * per_page if paginated else 0
+
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, started_at, finished_at, mode,
-                       target_total, queries_created, note
-                FROM scheduler_runs
-                ORDER BY started_at DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
+            if paginated:
+                cur.execute("SELECT COUNT(*) AS n FROM scheduler_runs")
+                total = int(cur.fetchone()['n'] or 0)
+                cur.execute(
+                    """
+                    SELECT id, started_at, finished_at, mode,
+                           target_total, queries_created, note
+                    FROM scheduler_runs
+                    ORDER BY started_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (per_page, offset),
+                )
+            else:
+                total = None
+                cur.execute(
+                    """
+                    SELECT id, started_at, finished_at, mode,
+                           target_total, queries_created, note
+                    FROM scheduler_runs
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
             rows = cur.fetchall()
-        out = []
-        for r in rows:
-            out.append({
+        out = [
+            {
                 'id': r['id'],
                 'started_at': _isoformat(r['started_at']),
                 'finished_at': _isoformat(r['finished_at']),
@@ -14061,8 +14098,53 @@ def scheduler_runs():
                 'target_total': int(r['target_total'] or 0),
                 'queries_created': int(r['queries_created'] or 0),
                 'note': r['note'],
-            })
+            }
+            for r in rows
+        ]
+        if paginated:
+            return jsonify({'rows': out, 'total': total,
+                            'page': page, 'per_page': per_page})
         return jsonify(out)
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/runs/<int:run_id>', methods=['DELETE'])
+def delete_scheduler_run(run_id):
+    """Delete a single run-history row."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scheduler_runs WHERE id = %s", (run_id,))
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted == 0:
+            return jsonify({'error': 'run not found'}), 404
+        return jsonify({'success': True})
+    finally:
+        conn.close()
+
+
+@app.route('/api/scheduler/runs', methods=['DELETE'])
+def delete_scheduler_runs_bulk():
+    """Bulk-delete run-history rows. ``?empty=1`` removes 0-created rows
+    (the most common cleanup); ``?all=1`` wipes the whole table.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            if (request.args.get('all') or '').lower() in ('1', 'true', 'yes'):
+                cur.execute("DELETE FROM scheduler_runs")
+            elif (request.args.get('empty') or '').lower() in ('1', 'true', 'yes'):
+                cur.execute(
+                    "DELETE FROM scheduler_runs "
+                    "WHERE COALESCE(queries_created, 0) = 0"
+                )
+            else:
+                return jsonify({'error': 'pass ?empty=1 or ?all=1'}), 400
+            deleted = cur.rowcount
+        conn.commit()
+        return jsonify({'success': True, 'deleted': deleted})
     finally:
         conn.close()
 
