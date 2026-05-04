@@ -107,15 +107,11 @@ async def test_cross_tenant_returns_404_not_403(client, two_users):
     """ADR-005: cross-tenant access deny via 404, not 403."""
     user_a, user_b = two_users
     # User A creates a project
-    resp = await client.post(
-        "/api/v1/projects/", headers=_bearer(user_a), json={"name": "A's"}
-    )
+    resp = await client.post("/api/v1/projects/", headers=_bearer(user_a), json={"name": "A's"})
     project_id = resp.json()["id"]
 
     # User B tries to access — must 404, not 403
-    resp = await client.get(
-        f"/api/v1/projects/{project_id}", headers=_bearer(user_b)
-    )
+    resp = await client.get(f"/api/v1/projects/{project_id}", headers=_bearer(user_b))
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "not_found"
 
@@ -127,9 +123,7 @@ async def test_patch_project_name(client, two_users):
     resp = await client.post("/api/v1/projects/", headers=headers, json={"name": "old"})
     pid = resp.json()["id"]
 
-    resp = await client.patch(
-        f"/api/v1/projects/{pid}", headers=headers, json={"name": "new"}
-    )
+    resp = await client.patch(f"/api/v1/projects/{pid}", headers=headers, json={"name": "new"})
     assert resp.status_code == 200
     assert resp.json()["name"] == "new"
 
@@ -138,9 +132,7 @@ async def test_patch_project_name(client, two_users):
 async def test_soft_delete_project(client, two_users):
     user_a, _ = two_users
     headers = _bearer(user_a)
-    pid = (
-        await client.post("/api/v1/projects/", headers=headers, json={"name": "x"})
-    ).json()["id"]
+    pid = (await client.post("/api/v1/projects/", headers=headers, json={"name": "x"})).json()["id"]
 
     resp = await client.delete(f"/api/v1/projects/{pid}", headers=headers)
     assert resp.status_code == 204
@@ -158,11 +150,9 @@ async def test_soft_delete_project(client, two_users):
 async def test_add_remove_competitor(client, two_users):
     user_a, _ = two_users
     headers = _bearer(user_a)
-    pid = (
-        await client.post(
-            "/api/v1/projects/", headers=headers, json={"name": "comp"}
-        )
-    ).json()["id"]
+    pid = (await client.post("/api/v1/projects/", headers=headers, json={"name": "comp"})).json()[
+        "id"
+    ]
 
     resp = await client.post(
         f"/api/v1/projects/{pid}/competitors",
@@ -183,9 +173,7 @@ async def test_add_remove_competitor(client, two_users):
     assert sum(1 for c in resp.json()["competitors"] if c["brand_id"] == 42) == 1
 
     # Remove
-    resp = await client.delete(
-        f"/api/v1/projects/{pid}/competitors/42", headers=headers
-    )
+    resp = await client.delete(f"/api/v1/projects/{pid}/competitors/42", headers=headers)
     assert resp.status_code == 204
 
     # Verify gone
@@ -197,11 +185,9 @@ async def test_add_remove_competitor(client, two_users):
 async def test_competitor_capacity_409(client, two_users):
     user_a, _ = two_users
     headers = _bearer(user_a)
-    pid = (
-        await client.post(
-            "/api/v1/projects/", headers=headers, json={"name": "cap"}
-        )
-    ).json()["id"]
+    pid = (await client.post("/api/v1/projects/", headers=headers, json={"name": "cap"})).json()[
+        "id"
+    ]
 
     for brand_id in range(1, 11):
         resp = await client.post(

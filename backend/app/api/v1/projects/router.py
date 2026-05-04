@@ -41,9 +41,7 @@ async def list_projects(
     return ProjectListOut(items=items, total=len(items))
 
 
-@router.post(
-    "/", response_model=ProjectOut, status_code=status.HTTP_201_CREATED
-)
+@router.post("/", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
 async def create_project(
     payload: ProjectIn,
     user: Annotated[User, Depends(current_user)],
@@ -107,9 +105,7 @@ async def add_competitor(
     session: AsyncSession = _DependsDb,
 ) -> ProjectOut:
     project = await service.get_project_for_user(session, user, project_id)
-    project = await service.add_competitor(
-        session, project, brand_id=payload.brand_id, user=user
-    )
+    project = await service.add_competitor(session, project, brand_id=payload.brand_id, user=user)
     return ProjectOut.model_validate(project)
 
 

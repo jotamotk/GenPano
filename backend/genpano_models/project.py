@@ -37,9 +37,7 @@ def _new_uuid() -> str:
 
 class Project(Base):
     __tablename__ = "projects"
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_projects_user_id_name"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_projects_user_id_name"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     user_id: Mapped[str] = mapped_column(
@@ -78,9 +76,7 @@ class ProjectCompetitor(Base):
         primary_key=True,
     )
     brand_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    pinned_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
-    )
+    pinned_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     pinned_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     project: Mapped[Project] = relationship("Project", back_populates="competitors")
@@ -102,6 +98,4 @@ class ProjectTopicPin(Base):
     )
     topic_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     state: Mapped[str] = mapped_column(String(16), nullable=False)
-    pinned_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
-    )
+    pinned_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

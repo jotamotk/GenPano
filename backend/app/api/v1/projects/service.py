@@ -28,9 +28,7 @@ async def list_user_projects(session: AsyncSession, user: User) -> list[Project]
     return list(result.scalars().all())
 
 
-async def get_project_for_user(
-    session: AsyncSession, user: User, project_id: str
-) -> Project:
+async def get_project_for_user(session: AsyncSession, user: User, project_id: str) -> Project:
     """Return project iff `user` owns it; else raise 404 (not 403, ADR-005)."""
     stmt = select(Project).where(
         Project.id == project_id,
@@ -85,9 +83,7 @@ async def create_project(
     if competitor_brand_ids:
         for brand_id in competitor_brand_ids:
             session.add(
-                ProjectCompetitor(
-                    project_id=project.id, brand_id=brand_id, pinned_by=user.id
-                )
+                ProjectCompetitor(project_id=project.id, brand_id=brand_id, pinned_by=user.id)
             )
 
     await session.commit()
@@ -110,9 +106,7 @@ async def update_project(
             Project.deleted_at.is_(None),
         )
         if (await session.execute(stmt)).scalar_one_or_none():
-            raise conflict(
-                "project_name_taken", f"name '{name_changed_to}' already used"
-            )
+            raise conflict("project_name_taken", f"name '{name_changed_to}' already used")
 
     for k, v in fields.items():
         if v is not None:
@@ -144,9 +138,7 @@ async def add_competitor(
     if any(c.brand_id == brand_id for c in project.competitors):
         return project
 
-    session.add(
-        ProjectCompetitor(project_id=project.id, brand_id=brand_id, pinned_by=user.id)
-    )
+    session.add(ProjectCompetitor(project_id=project.id, brand_id=brand_id, pinned_by=user.id))
     await session.commit()
     await session.refresh(project, ["competitors"])
     return project
