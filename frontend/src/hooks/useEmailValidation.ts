@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { useLanguage } from '../context/LanguageContext'
+import { useLanguage } from '../contexts/LanguageContext'
 
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/
 

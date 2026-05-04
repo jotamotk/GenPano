@@ -1,6 +1,6 @@
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { useLanguage } from '../context/LanguageContext'
+import { useLanguage } from '../contexts/LanguageContext'
 import { authApi } from '../api/auth'
 import { showToast } from '../components/Toast'
 import AuthVisualPanel from '../components/AuthVisualPanel'
