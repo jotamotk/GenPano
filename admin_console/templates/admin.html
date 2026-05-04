@@ -7993,10 +7993,17 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             <label class="text-[12px] font-medium text-ink-body">
               平台
               <select x-model="cookieForm.platform" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]">
-                <option value="chatgpt">ChatGPT</option>
-                <option value="doubao">豆包</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="gemini">Gemini</option>
+                <optgroup label="LLM (用来跑 Query)">
+                  <option value="chatgpt">ChatGPT</option>
+                  <option value="doubao">豆包</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="gemini">Gemini</option>
+                </optgroup>
+                <optgroup label="热点采集 (Module D-B)">
+                  <option value="weibo_hots">微博热搜 (weibo_hots)</option>
+                  <option value="douyin_hots">抖音热点 (douyin_hots)</option>
+                  <option value="xhs_hots">小红书热点 (xhs_hots)</option>
+                </optgroup>
               </select>
             </label>
             <label class="text-[12px] font-medium text-ink-body">
