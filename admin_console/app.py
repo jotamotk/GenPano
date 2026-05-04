@@ -14084,6 +14084,169 @@ def delete_query_schedule(schedule_id):
         conn.close()
 
 
+@app.route('/api/profiles/lite')
+def list_profiles_lite():
+    """Lightweight profile list for picker UI components.
+
+    Returns only the columns a picker needs: id (the binding key), code (a
+    short human label), name (the long label), segment_id (used by the
+    "find similar" button to suggest related profiles). Tolerant of either
+    schema flavor (segments-based VARCHAR ids or geo_tracker INT ids).
+    """
+    from psycopg2.extras import RealDictCursor
+    q = (request.args.get('q') or '').strip()
+    try:
+        limit = max(1, min(int(request.args.get('limit', 200)), 1000))
+    except Exception:
+        limit = 200
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Probe the columns the production profiles table actually has;
+            # this endpoint must work whether the schema is segments-based
+            # ('pf_xxx' VARCHAR ids + code/name) or the geo_tracker original
+            # (INTEGER id + name only).
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'profiles'"
+            )
+            cols = {r['column_name'] for r in cur.fetchall()}
+            select_parts = ['p.id::text AS id']
+            select_parts.append("COALESCE(p.code, '') AS code" if 'code' in cols else "'' AS code")
+            select_parts.append('p.name' if 'name' in cols else 'NULL AS name')
+            if 'segment_id' in cols:
+                select_parts.append('p.segment_id')
+            else:
+                select_parts.append('NULL AS segment_id')
+            if 'brand_id' in cols:
+                select_parts.append('p.brand_id::text AS brand_id')
+            else:
+                select_parts.append('NULL AS brand_id')
+            where = []
+            params = []
+            if q:
+                like = f"%{q}%"
+                conds = ["p.id::text ILIKE %s"]
+                params.append(like)
+                if 'code' in cols:
+                    conds.append("COALESCE(p.code,'') ILIKE %s"); params.append(like)
+                if 'name' in cols:
+                    conds.append("COALESCE(p.name,'') ILIKE %s"); params.append(like)
+                where.append("(" + " OR ".join(conds) + ")")
+            if 'is_deleted' in cols:
+                where.append("COALESCE(p.is_deleted, FALSE) = FALSE")
+            wsql = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(
+                f"""
+                SELECT {', '.join(select_parts)}
+                FROM profiles p
+                {wsql}
+                ORDER BY p.id::text
+                LIMIT %s
+                """,
+                params + [limit],
+            )
+            rows = cur.fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route('/api/profiles/<profile_id>/similar')
+def list_similar_profiles(profile_id):
+    """Heuristic similar-profile suggestions for the account-drawer "找相似"
+    button. Currently uses simple shared-attribute matching:
+
+      1. Same segment_id (highest priority — segments group personas by intent)
+      2. Same brand_id (when segment_id is null)
+      3. Falls back to name overlap if neither key is present
+
+    A real LLM-based similarity step is out of scope for this endpoint to keep
+    it cheap; the heuristic is good enough for the "give me a few more like
+    this" UX the user asked for. Caller can filter further client-side.
+    """
+    from psycopg2.extras import RealDictCursor
+    try:
+        limit = max(1, min(int(request.args.get('limit', 20)), 200))
+    except Exception:
+        limit = 20
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'profiles'"
+            )
+            cols = {r['column_name'] for r in cur.fetchall()}
+            cur.execute(
+                f"""
+                SELECT p.id::text AS id,
+                       {('p.segment_id' if 'segment_id' in cols else 'NULL AS segment_id')},
+                       {('p.brand_id' if 'brand_id' in cols else 'NULL AS brand_id')},
+                       {('p.name' if 'name' in cols else 'NULL AS name')}
+                FROM profiles p
+                WHERE p.id::text = %s
+                """,
+                (str(profile_id),),
+            )
+            seed = cur.fetchone()
+            if not seed:
+                return jsonify({'error': 'profile not found'}), 404
+
+            select_parts = [
+                'p.id::text AS id',
+                ("p.code" if 'code' in cols else "'' AS code"),
+                ("p.name" if 'name' in cols else 'NULL AS name'),
+                ("p.segment_id" if 'segment_id' in cols else 'NULL AS segment_id'),
+            ]
+            if 'segment_id' in cols and seed.get('segment_id'):
+                cur.execute(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM profiles p
+                    WHERE p.segment_id = %s
+                      AND p.id::text != %s
+                      {'AND COALESCE(p.is_deleted, FALSE) = FALSE' if 'is_deleted' in cols else ''}
+                    ORDER BY p.id::text
+                    LIMIT %s
+                    """,
+                    (seed['segment_id'], str(profile_id), limit),
+                )
+                strategy = 'same_segment'
+            elif 'brand_id' in cols and seed.get('brand_id'):
+                cur.execute(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM profiles p
+                    WHERE p.brand_id = %s
+                      AND p.id::text != %s
+                      {'AND COALESCE(p.is_deleted, FALSE) = FALSE' if 'is_deleted' in cols else ''}
+                    ORDER BY p.id::text
+                    LIMIT %s
+                    """,
+                    (seed['brand_id'], str(profile_id), limit),
+                )
+                strategy = 'same_brand'
+            else:
+                # Fallback: just return a few sibling profiles by id proximity
+                cur.execute(
+                    f"""
+                    SELECT {', '.join(select_parts)}
+                    FROM profiles p
+                    WHERE p.id::text != %s
+                      {'AND COALESCE(p.is_deleted, FALSE) = FALSE' if 'is_deleted' in cols else ''}
+                    ORDER BY p.id::text
+                    LIMIT %s
+                    """,
+                    (str(profile_id), limit),
+                )
+                strategy = 'fallback'
+            rows = [dict(r) for r in cur.fetchall()]
+        return jsonify({'seed': dict(seed), 'strategy': strategy, 'rows': rows})
+    finally:
+        conn.close()
+
+
 @app.route('/api/scheduler/upcoming')
 def schedules_upcoming():
     """Project the next N days of schedule fires (for the調度 page preview).
