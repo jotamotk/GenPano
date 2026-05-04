@@ -13398,9 +13398,14 @@ def scheduler_config_put():
 
 @app.route('/api/scheduler/manual_trigger', methods=['POST'])
 def scheduler_manual_trigger():
-    """Run scheduler.run_daily_dispatch() inline (we're already in a Flask
-    worker; no need to round-trip through Celery for a one-shot button).
-    Body (optional): {"cap": 100, "note": "manual via UI"}.
+    """Run the daily dispatch inline (no Celery round-trip).
+
+    The admin_console Docker image does not ship the geo_tracker package,
+    so we duplicate the small dispatch loop here instead of importing it.
+    Celery beat (separate worker container that does ship geo_tracker)
+    keeps using ``geo_tracker.tasks.scheduler.run_daily_dispatch``.
+
+    Body (optional): ``{"cap": 100, "note": "manual via UI"}``.
     """
     payload = request.get_json(silent=True) or {}
     cap = payload.get('cap')
@@ -13410,13 +13415,187 @@ def scheduler_manual_trigger():
     except Exception:
         return jsonify({'error': 'cap must be an integer or null'}), 400
     try:
-        from geo_tracker.tasks.scheduler import run_daily_dispatch
-        result = run_daily_dispatch(
-            mode_override='manual', cap_override=cap_int, note=note,
-        )
+        result = _run_manual_dispatch(cap_override=cap_int, note=note)
         return jsonify({'success': True, **result})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _run_manual_dispatch(cap_override=None, note=None):
+    """Inline copy of geo_tracker.tasks.scheduler.run_daily_dispatch.
+
+    Reads scheduler_config (per-engine caps + temp_global_cap), walks
+    account_profile_map to compute per-(account, profile) quotas, and
+    inserts pending rows into the queries table. Returns a status dict.
+    """
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Load (or seed) scheduler_config
+            cur.execute(
+                "SELECT id, mode, daily_time, timezone, temp_global_cap, "
+                "       engine_caps, retry_max, paused_engines "
+                "FROM scheduler_config ORDER BY id LIMIT 1"
+            )
+            cfg = cur.fetchone()
+            if cfg is None:
+                cur.execute(
+                    "INSERT INTO scheduler_config "
+                    "(mode, daily_time, timezone, temp_global_cap, engine_caps, "
+                    " retry_max, paused_engines) "
+                    "VALUES ('auto', '09:00', 'Asia/Shanghai', NULL, '{}'::jsonb, "
+                    "        3, '[]'::jsonb) "
+                    "RETURNING id, mode, daily_time, timezone, temp_global_cap, "
+                    "          engine_caps, retry_max, paused_engines"
+                )
+                cfg = cur.fetchone()
+            cfg = dict(cfg)
+            paused_engines = cfg.get('paused_engines') or []
+            engine_caps = cfg.get('engine_caps') or {}
+
+            # Compute per-(account, profile) quotas. Falls back to legacy
+            # llm_accounts.profile_id when no apm rows exist for an account.
+            cur.execute(
+                """
+                SELECT a.id           AS account_id,
+                       a.llm_name     AS engine,
+                       a.daily_limit  AS account_cap,
+                       COALESCE(apm.profile_id, a.profile_id::text) AS profile_id,
+                       COALESCE(apm.daily_quota, 1) AS quota
+                FROM llm_accounts a
+                LEFT JOIN account_profile_map apm ON apm.account_id = a.id
+                WHERE a.status = 'active'
+                  AND a.cookies_json IS NOT NULL
+                  AND a.cookies_json != ''
+                """
+            )
+            quotas = [dict(r) for r in cur.fetchall()
+                      if r.get('profile_id') is not None]
+
+            # Drop paused engines
+            paused_set = set(str(e).lower() for e in paused_engines)
+            quotas = [q for q in quotas
+                      if str(q.get('engine') or '').lower() not in paused_set]
+
+            # Cap per-account total at daily_limit (binding rows may
+            # over-allocate; we shrink proportionally if so).
+            by_account = {}
+            for q in quotas:
+                by_account.setdefault(q['account_id'], []).append(q)
+            for items in by_account.values():
+                cap_v = int(items[0]['account_cap'] or 0)
+                total = sum(int(i['quota'] or 0) for i in items)
+                if cap_v > 0 and total > cap_v and total > 0:
+                    scale = cap_v / total
+                    for i in items:
+                        i['quota'] = max(1, int(round(int(i['quota'] or 0) * scale)))
+
+            # Apply per-engine caps (UI inputs in 当日产出 card)
+            if engine_caps:
+                by_engine = {}
+                for q in quotas:
+                    by_engine.setdefault(str(q['engine'] or '').lower(), []).append(q)
+                for engine, items in by_engine.items():
+                    raw = engine_caps.get(engine)
+                    if raw in (None, 0):
+                        continue
+                    try:
+                        ec = int(raw)
+                    except Exception:
+                        continue
+                    total = sum(int(i['quota'] or 0) for i in items)
+                    if ec <= 0 or total <= ec or total == 0:
+                        continue
+                    scale = ec / total
+                    for i in items:
+                        i['quota'] = max(1, int(round(int(i['quota'] or 0) * scale)))
+
+            # Apply optional global cap (manual override or scheduler_config)
+            global_cap = cap_override if cap_override is not None else cfg.get('temp_global_cap')
+            if global_cap and int(global_cap) > 0:
+                gc = int(global_cap)
+                total = sum(int(q['quota'] or 0) for q in quotas)
+                if total > gc and total > 0:
+                    scale = gc / total
+                    for q in quotas:
+                        q['quota'] = max(1, int(round(int(q['quota'] or 0) * scale)))
+
+            target_total = sum(int(q['quota'] or 0) for q in quotas)
+
+            # Open a run row up front so partial failures still leave a record
+            cur.execute(
+                "INSERT INTO scheduler_runs (mode, target_total, queries_created, note) "
+                "VALUES (%s, %s, 0, %s) RETURNING id",
+                ('manual', target_total, note),
+            )
+            run_id = cur.fetchone()['id']
+
+            created = 0
+            for q in quotas:
+                pid = str(q['profile_id'])
+                engine = q['engine']
+                for _ in range(int(q['quota'] or 0)):
+                    cur.execute(
+                        """
+                        SELECT pr.id   AS prompt_id,
+                               pr.text AS query_text,
+                               t.brand_id
+                        FROM prompts pr
+                        JOIN topics  t  ON t.id = pr.topic_id
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM queries q
+                            WHERE q.prompt_id = pr.id
+                              AND q.profile_id::text = %s
+                              AND q.target_llm = %s
+                              AND DATE(q.created_at) = CURRENT_DATE
+                        )
+                        ORDER BY (
+                            SELECT COUNT(*) FROM queries q2
+                            WHERE q2.prompt_id = pr.id AND q2.target_llm = %s
+                        ) ASC,
+                        random()
+                        LIMIT 1
+                        """,
+                        (pid, engine, engine),
+                    )
+                    pick = cur.fetchone()
+                    if not pick:
+                        # No fresh prompt for this (profile, engine) today — skip
+                        continue
+                    cur.execute(
+                        "INSERT INTO queries "
+                        "(prompt_id, profile_id, brand_id, account_id, "
+                        " query_text, target_llm, status, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, 'pending', NOW())",
+                        (
+                            pick['prompt_id'],
+                            pid,
+                            pick.get('brand_id'),
+                            q['account_id'],
+                            pick['query_text'],
+                            engine,
+                        ),
+                    )
+                    created += 1
+
+            cur.execute(
+                "UPDATE scheduler_runs SET queries_created = %s, finished_at = NOW() "
+                "WHERE id = %s",
+                (created, run_id),
+            )
+        conn.commit()
+        return {
+            'target_total': target_total,
+            'queries_created': created,
+            'run_id': run_id,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 @app.route('/api/scheduler/runs')
