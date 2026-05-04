@@ -13556,6 +13556,15 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     for q in quotas:
                         q['quota'] = max(1, int(round(int(q['quota'] or 0) * scale)))
 
+            # How many enabled schedules exist in total (independent of the
+            # paused_engines filter)? Surfacing this in the response lets the
+            # UI explain "0 dispatched" — was it "no schedules" or "all engines
+            # paused" or "no profile bindings"?
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM query_schedules WHERE enabled = TRUE"
+            )
+            schedules_enabled_total = int(cur.fetchone()['n'] or 0)
+
             # Fetch enabled schedules. Manual trigger fires every enabled
             # plan regardless of next_run_at (the user is explicitly asking
             # "do it now"); the Beat tick still uses the strict next_run_at
@@ -13748,10 +13757,33 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 (created, run_id),
             )
         conn.commit()
+        # Diagnostics so the UI can explain the (common) "0 / 0" outcome:
+        #   reason='ok'                    something fired
+        #   reason='no_schedules'          no enabled query_schedules
+        #   reason='all_engines_paused'    enabled plans exist but every
+        #                                  target_llm is in paused_engines
+        #   reason='no_account_bindings'   schedules ran 0 (none) but no
+        #                                  profile bindings + no schedules
+        if created > 0:
+            reason = 'ok'
+        elif schedules_enabled_total == 0 and not quotas:
+            reason = 'no_plans_or_bindings'
+        elif schedules_enabled_total > 0 and len(due_schedules) == 0:
+            reason = 'all_engines_paused'
+        elif schedules_enabled_total == 0 and quotas:
+            reason = 'no_schedules_only_bindings_no_prompts'
+        else:
+            reason = 'unknown'
         return {
             'target_total': target_total,
             'queries_created': created,
             'run_id': run_id,
+            'reason': reason,
+            'schedules_enabled': schedules_enabled_total,
+            'schedules_dispatchable': len(due_schedules),
+            'paused_engines': paused_engines,
+            'quotas_total': sum(int(q['quota'] or 0) for q in quotas),
+            'schedule_failures': schedule_failures,
         }
     except Exception:
         conn.rollback()

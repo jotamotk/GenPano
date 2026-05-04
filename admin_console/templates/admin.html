@@ -13832,9 +13832,32 @@ function adminApp() {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
-        this.schedulerSaveMsg = '已触发: 入队 ' + (body.queries_created || 0) + ' / 目标 ' + (body.target_total || 0);
+        const created = body.queries_created || 0;
+        const target  = body.target_total   || 0;
+        if (created > 0) {
+          this.schedulerSaveMsg = '已触发: 入队 ' + created + ' / 目标 ' + target;
+          this.schedulerSaveErr = '';
+        } else {
+          // 0/0 — explain why so the user isn't stuck guessing.
+          let hint = '0 入队';
+          const en   = body.schedules_enabled    ?? 0;
+          const disp = body.schedules_dispatchable ?? 0;
+          const paused = body.paused_engines || [];
+          const quotas = body.quotas_total ?? 0;
+          if (en === 0 && quotas === 0) {
+            hint += ' — 没有启用的 Query 计划，也没有 Profile 绑定。请先在下方表格添加 Query 计划 (或在账号池里给账号绑定 Profile)。';
+          } else if (en > 0 && disp === 0 && paused.length > 0) {
+            hint += ' — 有 ' + en + ' 条启用的 Query 计划，但所有目标 LLM 都被暂停了 (' + paused.join(', ') + ')。点上方今日进度卡里的「恢复」按钮启用 LLM。';
+          } else if (en > 0 && disp === 0) {
+            hint += ' — 启用的 Query 计划的目标 LLM 都不在白名单内 (paused_engines=' + JSON.stringify(paused) + ')';
+          } else {
+            hint += ' — schedules_enabled=' + en + ' / dispatchable=' + disp + ' / quotas=' + quotas + (body.schedule_failures && body.schedule_failures.length ? ' / errors: ' + body.schedule_failures.slice(0,2).join('; ') : '');
+          }
+          this.schedulerSaveErr = hint;
+          this.schedulerSaveMsg = '';
+        }
         await this.loadSchedulerAll();
-        setTimeout(() => { this.schedulerSaveMsg = ''; }, 5000);
+        setTimeout(() => { this.schedulerSaveMsg = ''; this.schedulerSaveErr = ''; }, 8000);
       } catch (e) {
         this.schedulerSaveErr = String(e.message || e);
       } finally {
