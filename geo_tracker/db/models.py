@@ -60,6 +60,7 @@ class Brand(Base):
     created_at   = Column(DateTime, server_default=func.now())
 
     topics      = relationship("Topic",      back_populates="brand", cascade="all, delete-orphan")
+    products    = relationship("Product",    back_populates="brand", cascade="all, delete-orphan")
     competitors = relationship("Competitor", back_populates="brand", cascade="all, delete-orphan")
     queries     = relationship("Query",      back_populates="brand")
 
@@ -71,6 +72,7 @@ class Topic(Base):
 
     id           = Column(Integer, primary_key=True)
     brand_id     = Column(Integer, ForeignKey("brands.id"), nullable=False)
+    product_id   = Column(Integer, ForeignKey("products.id"), nullable=True)
     text         = Column(String(256), nullable=False)
     category     = Column(String(64))   # awareness|comparison|recommendation|problem_solving
     generated_by = Column(String(64))   # claude-opus-4-6
@@ -78,7 +80,34 @@ class Topic(Base):
     created_at   = Column(DateTime, server_default=func.now())
 
     brand   = relationship("Brand",  back_populates="topics")
+    product = relationship("Product", back_populates="topics")
     prompts = relationship("Prompt", back_populates="topic", cascade="all, delete-orphan")
+
+
+# ─── Product ──────────────────────────────────────────────────────────────────
+
+class Product(Base):
+    """SKU-level concept. A Topic may optionally pin to one Product so that
+    downstream Prompts/Queries focus on a specific SKU rather than the brand
+    as a whole.
+    """
+    __tablename__ = "products"
+
+    id          = Column(Integer, primary_key=True)
+    brand_id    = Column(Integer, ForeignKey("brands.id"), nullable=False)
+    name        = Column(String(256), nullable=False)
+    sku         = Column(String(128))
+    category    = Column(String(128))
+    description = Column(Text)
+    aliases     = Column(JSON, nullable=True)
+    status      = Column(String(16), default="active")  # active | archived
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    brand  = relationship("Brand", back_populates="products")
+    topics = relationship("Topic", back_populates="product")
+
+    __table_args__ = (UniqueConstraint("brand_id", "name", name="uq_products_brand_name"),)
 
 
 # ─── Prompt ───────────────────────────────────────────────────────────────────

@@ -1638,6 +1638,156 @@
       </template>
 
 
+      <!-- ============ PAGE: PRODUCTS ============ -->
+      <template x-if="page==='planner-products'">
+        <div class="space-y-4" x-init="loadProductsList()">
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <div class="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">PRODUCTS</div>
+                <h2 class="mt-1 text-[20px] font-bold text-ink">产品 (SKU)</h2>
+                <div class="text-[12px] text-ink-muted mt-1">
+                  添加产品后，可在 Topic 生成时勾选定向，让 Topic / Prompt / Query 聚焦到具体 SKU。
+                </div>
+              </div>
+              <button @click="openProductModal()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
+                <i data-lucide="plus" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i> 添加产品
+              </button>
+            </div>
+          </div>
+
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-3 border-b border-b-card flex flex-wrap items-center gap-2">
+              <select x-model="productsFilter.brandId" @change="loadProductsList()"
+                      class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">全部品牌</option>
+                <template x-for="b in productsBrands" :key="b.id">
+                  <option :value="b.id" x-text="b.name"></option>
+                </template>
+              </select>
+              <select x-model="productsFilter.status" @change="loadProductsList()"
+                      class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">全部状态</option>
+                <option value="active">在售 active</option>
+                <option value="archived">归档 archived</option>
+              </select>
+              <input x-model="productsFilter.q" @input.debounce.300ms="loadProductsList()" type="text"
+                     placeholder="搜索产品名 / SKU / 品类..."
+                     class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] flex-1 min-w-[200px]" />
+              <span class="text-[11px] text-ink-muted ml-auto" x-text="'共 ' + productsTotal + ' 条'"></span>
+            </div>
+
+            <table class="w-full text-[12.5px]">
+              <thead>
+                <tr class="text-[11px] text-ink-muted bg-surface-page">
+                  <th class="text-left font-semibold px-4 py-2">品牌</th>
+                  <th class="text-left font-semibold px-4 py-2">名称</th>
+                  <th class="text-left font-semibold px-4 py-2">SKU</th>
+                  <th class="text-left font-semibold px-4 py-2">品类</th>
+                  <th class="text-left font-semibold px-4 py-2">别名</th>
+                  <th class="text-right font-semibold px-4 py-2">关联 Topic</th>
+                  <th class="text-center font-semibold px-4 py-2">状态</th>
+                  <th class="text-right font-semibold px-4 py-2">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="p in productsList" :key="p.id">
+                  <tr class="border-t border-b-card hover:bg-surface-page/50">
+                    <td class="px-4 py-2 text-ink-body" x-text="p.brand_name || '—'"></td>
+                    <td class="px-4 py-2 font-semibold text-ink" x-text="p.name"></td>
+                    <td class="px-4 py-2 text-ink-muted" x-text="p.sku || '—'"></td>
+                    <td class="px-4 py-2 text-ink-body" x-text="p.category || '—'"></td>
+                    <td class="px-4 py-2 text-ink-muted text-[11.5px]" x-text="(p.aliases || []).join(' · ') || '—'"></td>
+                    <td class="px-4 py-2 text-right text-ink-body" x-text="p.topic_count"></td>
+                    <td class="px-4 py-2 text-center">
+                      <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                            :class="p.status === 'active' ? 'bg-success/10 text-success' : 'bg-ink-muted/10 text-ink-muted'"
+                            x-text="p.status === 'active' ? '在售' : '归档'"></span>
+                    </td>
+                    <td class="px-4 py-2 text-right">
+                      <button @click="openProductModal(p)" class="text-accent text-[11.5px] font-semibold hover:underline mr-2">编辑</button>
+                      <button @click="deleteProduct(p)" class="text-danger text-[11.5px] font-semibold hover:underline">删除</button>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!productsLoading && productsList.length === 0">
+                  <tr><td colspan="8" class="px-4 py-12 text-center text-[12px] text-ink-muted">暂无产品 — 点击上方「添加产品」开始。</td></tr>
+                </template>
+                <template x-if="productsLoading">
+                  <tr><td colspan="8" class="px-4 py-8 text-center text-[12px] text-ink-muted">加载中...</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Add / Edit modal -->
+          <div x-show="productModalOpen" x-cloak
+               class="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-sm p-4"
+               @keydown.escape.window="closeProductModal()">
+            <div class="rounded-card-lg bg-surface shadow-modal max-w-lg w-full overflow-hidden" @click.outside="closeProductModal()">
+              <div class="px-5 py-3 border-b border-b-card flex items-center justify-between">
+                <h3 class="text-[15px] font-bold text-ink" x-text="productEditing.id ? '编辑产品' : '添加产品'"></h3>
+                <button @click="closeProductModal()" class="text-ink-muted hover:text-ink text-[14px]">✕</button>
+              </div>
+              <div class="p-5 space-y-3">
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">品牌 *</label>
+                  <select x-model="productEditing.brand_id" :disabled="!!productEditing.id"
+                          class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]">
+                    <option value="">选择品牌...</option>
+                    <template x-for="b in productsBrands" :key="b.id">
+                      <option :value="b.id" x-text="b.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">名称 *</label>
+                  <input x-model="productEditing.name" type="text" placeholder="如：玉容鎏金蜜粉"
+                         class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">SKU</label>
+                    <input x-model="productEditing.sku" type="text" placeholder="如：HXZ-MF-2024"
+                           class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                  </div>
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">品类</label>
+                    <input x-model="productEditing.category" type="text" placeholder="如：蜜粉"
+                           class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                  </div>
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">描述（会作为 LLM 上下文注入）</label>
+                  <textarea x-model="productEditing.description" rows="3" placeholder="产品定位 / 卖点 / 受众"
+                            class="mt-1 w-full px-3 py-2 rounded-btn border border-b-default bg-surface text-[12.5px]"></textarea>
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">别名（逗号 / 换行分隔）</label>
+                  <input x-model="productEditing.aliasesText" type="text" placeholder="如：蜜粉饼, 新品蜜粉"
+                         class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                </div>
+                <div>
+                  <label class="inline-flex items-center gap-2 text-[12px] text-ink-body">
+                    <input type="checkbox" :checked="productEditing.status === 'active'"
+                           @change="productEditing.status = $event.target.checked ? 'active' : 'archived'" />
+                    <span>active（取消勾选则归档）</span>
+                  </label>
+                </div>
+                <div x-show="productSaveError" class="text-[12px] text-danger" x-text="productSaveError"></div>
+              </div>
+              <div class="px-5 py-3 border-t border-b-card flex items-center justify-end gap-2">
+                <button @click="closeProductModal()" class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body">取消</button>
+                <button @click="saveProduct()" :disabled="productSaving"
+                        class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-50">
+                  <span x-text="productSaving ? '保存中...' : (productEditing.id ? '保存修改' : '创建')"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <!-- ============ PAGE: PIPELINE PROFILES ============ -->
       <template x-if="page==='planner-profiles'">
         <div x-data="segmentCrudPanel()" x-init="init()" class="space-y-4">
@@ -9457,6 +9607,15 @@ function adminApp() {
     topicPlanLastRejected: [],
     topicPlanShowRejected: false,
     topicPlanPendingItems: [],
+    productsList: [],
+    productsTotal: 0,
+    productsLoading: false,
+    productsBrands: [],
+    productsFilter: { brandId: '', status: '', q: '' },
+    productModalOpen: false,
+    productSaving: false,
+    productSaveError: '',
+    productEditing: { id: null, brand_id: '', name: '', sku: '', category: '', description: '', aliasesText: '', status: 'active' },
     promptMatrixConfig: {
       intentCount: 4,
       languageCount: 2,
@@ -9712,6 +9871,7 @@ function adminApp() {
         { key:'planner-scheduler',     label:'采集调度',             icon:'calendar-clock',      group:'Planner', subtitle:'预算 / 资源 / 优先级 · Query 入队控制' },
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
         { key:'planner-profiles',   label:'Segment', icon:'users',          group:'Planner', subtitle:'人群 Segment · 权重 · 单个 Profile 池' },
+        { key:'planner-products',   label:'产品 Product', icon:'package', group:'Planner', subtitle:'品牌下 SKU 库 · 注入 Topic / Prompt 生成上下文' },
         { key:'planner-resources',  label:'采集资源',     icon:'key-round',      badge:'P0', badgeTone:'danger', group:'Planner', subtitle:'账号池 + 代理池 · 生命周期 · 健康评分' },
       ]},
       { title: 'Tracker · 执行', items: [
@@ -11547,6 +11707,111 @@ function adminApp() {
       if (finished && run.metrics && Object.keys(run.metrics).length){
         this.topicPlanLastMetrics = run.metrics;
         this.topicPlanLastRejected = Array.isArray(run.metrics.rejected_sample) ? run.metrics.rejected_sample : [];
+      }
+    },
+
+    async loadProductsList(){
+      if (this.productsLoading) return;
+      this.productsLoading = true;
+      try {
+        if (this.productsBrands.length === 0){
+          const br = await fetch(API_BASE + '/admin/brands', { credentials:'same-origin' });
+          const bb = await br.json().catch(()=>({}));
+          if (bb && bb.brands) this.productsBrands = bb.brands.map(b=>({ id:b.id, name:b.name }));
+        }
+        const qs = new URLSearchParams();
+        if (this.productsFilter.brandId) qs.set('brand_id', this.productsFilter.brandId);
+        if (this.productsFilter.status) qs.set('status', this.productsFilter.status);
+        if (this.productsFilter.q) qs.set('q', this.productsFilter.q);
+        qs.set('limit', '200');
+        const res = await fetch(API_BASE + '/admin/products?' + qs.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'load_failed');
+        this.productsList = body.products || [];
+        this.productsTotal = body.total || 0;
+      } catch (e) {
+        this.toast('加载产品失败: ' + (e.message || e));
+      } finally {
+        this.productsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    openProductModal(p){
+      this.productSaveError = '';
+      if (p) {
+        this.productEditing = {
+          id: p.id, brand_id: p.brand_id, name: p.name, sku: p.sku || '',
+          category: p.category || '', description: p.description || '',
+          aliasesText: (p.aliases || []).join(', '),
+          status: p.status || 'active',
+        };
+      } else {
+        this.productEditing = {
+          id: null, brand_id: this.productsFilter.brandId || (this.productsBrands[0] && this.productsBrands[0].id) || '',
+          name: '', sku: '', category: '', description: '', aliasesText: '', status: 'active',
+        };
+      }
+      this.productModalOpen = true;
+    },
+
+    closeProductModal(){
+      this.productModalOpen = false;
+      this.productSaveError = '';
+    },
+
+    async saveProduct(){
+      if (this.productSaving) return;
+      const e = this.productEditing;
+      if (!e.brand_id) { this.productSaveError = '请选择品牌'; return; }
+      if (!String(e.name || '').trim()) { this.productSaveError = '产品名称不能为空'; return; }
+      this.productSaving = true;
+      this.productSaveError = '';
+      const aliases = (e.aliasesText || '').split(/[,，\n]/).map(s=>s.trim()).filter(Boolean);
+      const payload = { name: e.name, sku: e.sku, category: e.category,
+                        description: e.description, aliases, status: e.status };
+      try {
+        let res;
+        if (e.id) {
+          res = await fetch(API_BASE + '/admin/products/' + e.id, {
+            method:'PUT', credentials:'same-origin',
+            headers:{ 'Content-Type':'application/json' },
+            body: JSON.stringify(payload),
+          });
+        } else {
+          res = await fetch(API_BASE + '/admin/brands/' + e.brand_id + '/products', {
+            method:'POST', credentials:'same-origin',
+            headers:{ 'Content-Type':'application/json' },
+            body: JSON.stringify(payload),
+          });
+        }
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) {
+          this.productSaveError = body.error === 'duplicate_product_name' ? '该品牌下已有同名产品' : (body.error || '保存失败');
+          return;
+        }
+        this.closeProductModal();
+        this.toast(e.id ? '产品已更新' : '产品已创建');
+        await this.loadProductsList();
+      } catch (err) {
+        this.productSaveError = err.message || '保存失败';
+      } finally {
+        this.productSaving = false;
+      }
+    },
+
+    async deleteProduct(p){
+      if (!confirm(`确认删除产品「${p.name}」？已关联的 ${p.topic_count} 个 Topic 会解除绑定（不会删除）。`)) return;
+      try {
+        const res = await fetch(API_BASE + '/admin/products/' + p.id, {
+          method:'DELETE', credentials:'same-origin',
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'delete_failed');
+        this.toast('已删除' + (body.unlinked_topics ? ` (解绑 ${body.unlinked_topics} 个 Topic)` : ''));
+        await this.loadProductsList();
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
       }
     },
 

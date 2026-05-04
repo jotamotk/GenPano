@@ -107,9 +107,10 @@ class LLMTopic:
     reason: str
     confidence: float
     coverage_gap: str
+    product_name: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "title": self.title,
             "brand": self.brand,
             "dimension": self.dimension,
@@ -117,6 +118,9 @@ class LLMTopic:
             "confidence": self.confidence,
             "coverage_gap": self.coverage_gap,
         }
+        if self.product_name:
+            d["product_name"] = self.product_name
+        return d
 
 
 def _parse_env_value(raw_value: str) -> str:
@@ -350,6 +354,11 @@ def parse_llm_topics(raw: str | dict[str, Any]) -> list[LLMTopic]:
                 f"Topic item #{index + 1} confidence must be between 0 and 1",
             )
 
+        product_name = item.get("product_name")
+        if isinstance(product_name, str):
+            product_name = product_name.strip() or None
+        else:
+            product_name = None
         parsed.append(
             LLMTopic(
                 title=title,
@@ -358,6 +367,7 @@ def parse_llm_topics(raw: str | dict[str, Any]) -> list[LLMTopic]:
                 reason=reason,
                 confidence=confidence,
                 coverage_gap=coverage_gap,
+                product_name=product_name,
             )
         )
     return parsed
@@ -462,6 +472,7 @@ def repair_single_brand_placeholders(topics: list[LLMTopic], brands: list[dict[s
                 reason=topic.reason.replace(brand_text, selected_brand),
                 confidence=topic.confidence,
                 coverage_gap=topic.coverage_gap.replace(brand_text, selected_brand),
+                product_name=topic.product_name,
             )
         )
     return repaired
@@ -490,23 +501,50 @@ def build_topic_plan_messages(
 ) -> list[dict[str, str]]:
     allowed_brand_names = [str(brand.get("name") or "").strip() for brand in brands]
     allowed_brand_names = [name for name in allowed_brand_names if name]
-    selected_brand_payload = [
-        {
-            "name": str(brand.get("name") or "").strip(),
+    selected_brand_payload = []
+    for brand in brands:
+        name = str(brand.get("name") or "").strip()
+        if not name:
+            continue
+        entry: dict[str, Any] = {
+            "name": name,
             "industry": brand.get("industry") or brand.get("industry_name") or "",
             "topic_count": brand.get("topic_count", 0),
             "aliases": brand.get("aliases") or [],
             "consumer_aliases": consumer_aliases_for_brand(brand),
         }
-        for brand in brands
-        if str(brand.get("name") or "").strip()
-    ]
+        # Module C-5: include brand description + target_market when present.
+        # These are already on the brands table but were not previously surfaced
+        # to the LLM, so generated topics stayed at "brand-level platitudes"
+        # rather than reflecting the brand's actual positioning / market.
+        if brand.get("description"):
+            entry["description"] = str(brand["description"])[:600]
+        if brand.get("target_market"):
+            entry["target_market"] = str(brand["target_market"])[:120]
+        # Module C-4: products are SKU-level focus subjects. When admin selects
+        # specific product ids in the generate request, those products are
+        # passed here so the LLM can produce topics that mention concrete SKUs.
+        products = brand.get("products") or []
+        if products:
+            entry["products"] = [
+                {
+                    "name": str(p.get("name") or "").strip(),
+                    "sku": str(p.get("sku") or "").strip() or None,
+                    "category": str(p.get("category") or "").strip() or None,
+                    "description": (str(p.get("description") or "")[:300]) or None,
+                    "aliases": p.get("aliases") or [],
+                }
+                for p in products
+                if str(p.get("name") or "").strip()
+            ]
+        selected_brand_payload.append(entry)
     schema = {
         "topics": [
             {
                 "title": "...",
                 "brand": "...",
                 "dimension": "brand|product|category|scenario|question",
+                "product_name": "...optional, copy from selected_brands[].products[].name when title focuses on a specific product",
                 "reason": "...",
                 "confidence": 0.0,
                 "coverage_gap": "...",
@@ -596,6 +634,9 @@ def build_topic_plan_messages(
         "14. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"
         "15. If allowed_brand_names and coverage_gaps are non-empty, return at least 1 candidate.\n"
         "16. Return at most max_topics items and match output_schema exactly.\n"
+        "17. If selected_brands[].products is non-empty, AT LEAST 60% of generated topics MUST mention or specifically be about one of those product names (or its aliases). Spread coverage across products — do not put every topic on the same SKU.\n"
+        "18. When a topic is specifically about a product, set topics[].dimension='product' and topics[].product_name to the exact product name from selected_brands[].products[].name. Otherwise omit product_name.\n"
+        "19. When selected_brands[].description or target_market is provided, let those flavor the topic angles (e.g. premium positioning → gifting / collection topics; mass-market → price / availability / value topics). Do NOT quote those fields verbatim into titles.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

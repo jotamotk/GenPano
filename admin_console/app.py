@@ -965,6 +965,15 @@ def _ensure_topic_plan_tables():
                     ON topic_candidates (run_id)
                     """
                 )
+                # Module C-4: capture product attribution at candidate time so
+                # approval can copy it through to topics.product_id without
+                # re-querying the products table.
+                cur.execute(
+                    "ALTER TABLE topic_candidates ADD COLUMN IF NOT EXISTS product_id INTEGER"
+                )
+                cur.execute(
+                    "ALTER TABLE topic_candidates ADD COLUMN IF NOT EXISTS product_name VARCHAR(256)"
+                )
             conn.commit()
             print("DB migration: topic plan tables ensured")
         finally:
@@ -1871,6 +1880,11 @@ def _review_topic_plan_candidate(cur, candidate_id, requested_status, admin_id, 
                 columns.append("status")
                 values.append("active")
                 placeholders.append("%s")
+            # Module C-4: pin product_id when the candidate carried one.
+            if "product_id" in topic_cols and candidate.get("product_id"):
+                columns.append("product_id")
+                values.append(candidate["product_id"])
+                placeholders.append("%s")
             if "created_at" in topic_cols:
                 columns.append("created_at")
                 placeholders.append("NOW()")
@@ -2091,7 +2105,7 @@ def _prompt_matrix_topic_row(row, required_intents, required_languages, known_br
         coverage = "risk"
 
     updated = item.get("updated_at") or item.get("created_at")
-    return {
+    out = {
         "id": f"T-{raw_id}",
         "raw_id": raw_id,
         "title": item.get("text") or "",
@@ -2118,6 +2132,24 @@ def _prompt_matrix_topic_row(row, required_intents, required_languages, known_br
         "brand_leak_count": leak_count,
         "selected": False,
     }
+    # Module C-4: surface product fields when the topic is pinned to a SKU,
+    # so build_prompt_matrix_messages can include them in the LLM payload.
+    if item.get("product_id"):
+        aliases = item.get("product_aliases")
+        if isinstance(aliases, str):
+            try:
+                aliases = json.loads(aliases) or []
+            except Exception:
+                aliases = []
+        out.update({
+            "product_id": item.get("product_id"),
+            "product_name": item.get("product_name"),
+            "product_sku": item.get("product_sku"),
+            "product_category": item.get("product_category"),
+            "product_description": item.get("product_description"),
+            "product_aliases": aliases if isinstance(aliases, list) else [],
+        })
+    return out
 
 
 def _fetch_prompt_matrix_topics(cur, filters=None, page=1, per_page=20, topic_ids=None):
@@ -2161,6 +2193,24 @@ def _fetch_prompt_matrix_topics(cur, filters=None, page=1, per_page=20, topic_id
         params.extend([like, like, like])
 
     prompt_join = _prompt_matrix_prompt_meta_join(cur)
+    # Module C-4: optionally join products so prompt_matrix can pass SKU
+    # context to the LLM. Guarded — older deployments may not have the column.
+    has_product_id = "product_id" in topic_cols and _table_exists(cur, "products")
+    if has_product_id:
+        product_select = (
+            ", t.product_id AS product_id, "
+            "p.name AS product_name, p.sku AS product_sku, "
+            "p.category AS product_category, "
+            "p.description AS product_description, p.aliases AS product_aliases"
+        )
+        product_join = "LEFT JOIN products p ON p.id = t.product_id"
+    else:
+        product_select = (
+            ", NULL::int AS product_id, NULL::text AS product_name, "
+            "NULL::text AS product_sku, NULL::text AS product_category, "
+            "NULL::text AS product_description, NULL::jsonb AS product_aliases"
+        )
+        product_join = ""
     cur.execute(
         f"""
         SELECT t.id, t.brand_id, t.text, {category_select},
@@ -2171,9 +2221,11 @@ def _fetch_prompt_matrix_topics(cur, filters=None, page=1, per_page=20, topic_id
                COALESCE(pm.prompt_intents, ARRAY[]::text[]) AS prompt_intents,
                COALESCE(pm.prompt_languages, ARRAY[]::text[]) AS prompt_languages,
                0::int AS brand_leak_count
+               {product_select}
         FROM topics t
         JOIN brands b ON b.id = t.brand_id
         {prompt_join}
+        {product_join}
         WHERE {" AND ".join(where)}
         {status_condition}
         ORDER BY {order_expr}
@@ -7029,6 +7081,260 @@ def admin_brand_options_api():
         conn.close()
 
 
+# ─── Module C: Products CRUD ────────────────────────────────────────────────
+
+def _product_row(row):
+    """Normalize a products row for the API."""
+    if not row:
+        return None
+    aliases = row.get("aliases")
+    if aliases is None:
+        aliases = []
+    elif isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases) or []
+        except Exception:
+            aliases = []
+    return {
+        "id": row.get("id"),
+        "brand_id": row.get("brand_id"),
+        "brand_name": row.get("brand_name"),
+        "name": row.get("name"),
+        "sku": row.get("sku") or "",
+        "category": row.get("category") or "",
+        "description": row.get("description") or "",
+        "aliases": aliases if isinstance(aliases, list) else [],
+        "status": row.get("status") or "active",
+        "topic_count": int(row.get("topic_count") or 0),
+        "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+        "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+    }
+
+
+def _coerce_product_aliases(value):
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [s.strip() for s in value.replace("\n", ",").split(",") if s.strip()]
+    return []
+
+
+@app.route('/api/admin/products', methods=['GET'])
+def admin_products_list_api():
+    """List products across all brands. Query params: brand_id, status, q, limit, offset."""
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        brand_id = int(request.args.get("brand_id")) if request.args.get("brand_id") else None
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+    status = (request.args.get("status") or "").strip().lower() or None
+    q = (request.args.get("q") or "").strip()
+    limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    offset = max(0, int(request.args.get("offset") or 0))
+
+    where = []
+    params: list = []
+    if brand_id:
+        where.append("p.brand_id = %s"); params.append(brand_id)
+    if status in ("active", "archived"):
+        where.append("p.status = %s"); params.append(status)
+    if q:
+        where.append("(p.name ILIKE %s OR p.sku ILIKE %s OR p.category ILIKE %s)")
+        like = f"%{q}%"
+        params.extend([like, like, like])
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"SELECT COUNT(*) AS c FROM products p {where_sql}", params)
+            total = int(cur.fetchone()["c"])
+            cur.execute(
+                f"""
+                SELECT p.id, p.brand_id, b.name AS brand_name,
+                       p.name, p.sku, p.category, p.description,
+                       p.aliases, p.status, p.created_at, p.updated_at,
+                       (SELECT COUNT(*) FROM topics t WHERE t.product_id = p.id) AS topic_count
+                FROM products p
+                LEFT JOIN brands b ON b.id = p.brand_id
+                {where_sql}
+                ORDER BY p.updated_at DESC, p.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = [_product_row(r) for r in cur.fetchall()]
+        return jsonify({
+            "success": True,
+            "products": rows,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brands/<int:brand_id>/products', methods=['POST'])
+def admin_brand_products_create_api(brand_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "name_required"}), 400
+    sku = (payload.get("sku") or "").strip() or None
+    category = (payload.get("category") or "").strip() or None
+    description = (payload.get("description") or "").strip() or None
+    aliases = _coerce_product_aliases(payload.get("aliases"))
+    status = (payload.get("status") or "active").strip().lower()
+    if status not in ("active", "archived"):
+        status = "active"
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM brands WHERE id = %s", (brand_id,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "error": "brand_not_found"}), 404
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO products
+                        (brand_id, name, sku, category, description, aliases, status)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                    RETURNING id, brand_id, name, sku, category, description,
+                              aliases, status, created_at, updated_at
+                    """,
+                    (brand_id, name, sku, category, description,
+                     json.dumps(aliases, ensure_ascii=False), status),
+                )
+                row = cur.fetchone()
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                return jsonify({"success": False, "error": "duplicate_product_name"}), 409
+            row["brand_name"] = None
+            row["topic_count"] = 0
+            cur.execute("SELECT name FROM brands WHERE id = %s", (brand_id,))
+            br = cur.fetchone()
+            if br:
+                row["brand_name"] = br["name"]
+        conn.commit()
+        return jsonify({"success": True, "product": _product_row(row)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/products/<int:product_id>', methods=['PUT'])
+def admin_product_update_api(product_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    fields = []
+    params: list = []
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if not name:
+            return jsonify({"success": False, "error": "name_required"}), 400
+        fields.append("name = %s"); params.append(name)
+    if "sku" in payload:
+        fields.append("sku = %s"); params.append((payload.get("sku") or "").strip() or None)
+    if "category" in payload:
+        fields.append("category = %s"); params.append((payload.get("category") or "").strip() or None)
+    if "description" in payload:
+        fields.append("description = %s"); params.append((payload.get("description") or "").strip() or None)
+    if "aliases" in payload:
+        aliases = _coerce_product_aliases(payload.get("aliases"))
+        fields.append("aliases = %s::jsonb"); params.append(json.dumps(aliases, ensure_ascii=False))
+    if "status" in payload:
+        status = (payload.get("status") or "").strip().lower()
+        if status not in ("active", "archived"):
+            return jsonify({"success": False, "error": "invalid_status"}), 400
+        fields.append("status = %s"); params.append(status)
+    if not fields:
+        return jsonify({"success": False, "error": "no_fields"}), 400
+    fields.append("updated_at = NOW()")
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute(
+                    f"""
+                    UPDATE products SET {', '.join(fields)}
+                    WHERE id = %s
+                    RETURNING id, brand_id, name, sku, category, description,
+                              aliases, status, created_at, updated_at
+                    """,
+                    params + [product_id],
+                )
+                row = cur.fetchone()
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                return jsonify({"success": False, "error": "duplicate_product_name"}), 409
+            if not row:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            cur.execute("SELECT name FROM brands WHERE id = %s", (row["brand_id"],))
+            br = cur.fetchone()
+            row["brand_name"] = br["name"] if br else None
+            cur.execute("SELECT COUNT(*) AS c FROM topics WHERE product_id = %s", (product_id,))
+            row["topic_count"] = int(cur.fetchone()["c"])
+        conn.commit()
+        return jsonify({"success": True, "product": _product_row(row)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/products/<int:product_id>', methods=['DELETE'])
+def admin_product_delete_api(product_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE topics SET product_id = NULL WHERE product_id = %s", (product_id,))
+            unlinked = cur.rowcount
+            cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
+            if cur.rowcount == 0:
+                return jsonify({"success": False, "error": "not_found"}), 404
+        conn.commit()
+        return jsonify({"success": True, "unlinked_topics": unlinked})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @app.route('/api/admin/topic-plan/config')
 def admin_topic_plan_config_api():
     admin, error_response = _require_admin()
@@ -7439,13 +7745,36 @@ def _insert_topic_plan_candidate_batch(
             skipped.append({"title": item.title, "reason": "brand_not_selected"})
             continue
         candidate_id = str(uuid.uuid4())
+        # Module C-4: resolve item.product_name (LLM-supplied) to the actual
+        # products row id so approval can stamp topics.product_id directly.
+        product_id = None
+        product_name = (item.product_name or "").strip() or None
+        if product_name:
+            for prod in (brand.get("products") or []):
+                if not prod.get("name"):
+                    continue
+                pname_norm = normalize_topic_title(prod["name"])
+                target_norm = normalize_topic_title(product_name)
+                if pname_norm and (pname_norm == target_norm
+                                   or pname_norm in target_norm
+                                   or target_norm in pname_norm):
+                    product_id = prod["id"]
+                    product_name = prod["name"]
+                    break
+                aliases = prod.get("aliases") or []
+                if any(normalize_topic_title(a or "") == target_norm
+                       for a in aliases if a):
+                    product_id = prod["id"]
+                    product_name = prod["name"]
+                    break
         cur.execute(
             """
             INSERT INTO topic_candidates
                 (id, run_id, brand_id, brand_name, title, dimension,
                  reason, confidence, coverage_gap, normalized_title,
+                 product_id, product_name,
                  status, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     'pending', NOW(), NOW())
             RETURNING *
             """,
@@ -7460,6 +7789,8 @@ def _insert_topic_plan_candidate_batch(
                 item.confidence,
                 item.coverage_gap,
                 normalize_topic_title(item.title),
+                product_id,
+                product_name,
             ),
         )
         inserted.append(_topic_plan_candidate_row(cur.fetchone()))
@@ -7873,10 +8204,15 @@ def admin_topic_plan_generate_api():
     max_topics = _clamp_int(payload.get("max_topics"), 180, 1, 300)
     gap_priority = (payload.get("gap_priority") or "p12").strip()
     overflow_policy = (payload.get("overflow_policy") or "review").strip()
+    try:
+        product_ids = _parse_int_list(payload.get("product_ids")) if payload.get("product_ids") else []
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_product_ids"}), 400
     request_config = {
         "industry_id": industry_id,
         "category_id": category_id,
         "brand_ids": brand_ids,
+        "product_ids": product_ids,
         "max_per_brand": max_per_brand,
         "max_topics": max_topics,
         "gap_priority": gap_priority,
@@ -7895,6 +8231,30 @@ def admin_topic_plan_generate_api():
             )
             if not brands:
                 return jsonify({"success": False, "error": "selected_brands_not_found"}), 404
+
+            # Module C-4: attach selected products to each brand so they reach
+            # the LLM payload via build_topic_plan_messages.
+            products_by_brand: dict[int, list[dict]] = {}
+            if product_ids:
+                cur.execute(
+                    """
+                    SELECT id, brand_id, name, sku, category, description, aliases
+                    FROM products
+                    WHERE id = ANY(%s) AND status = 'active'
+                    """,
+                    (product_ids,),
+                )
+                for row in cur.fetchall():
+                    products_by_brand.setdefault(row["brand_id"], []).append({
+                        "id": row["id"],
+                        "name": row["name"],
+                        "sku": row["sku"],
+                        "category": row["category"],
+                        "description": row["description"],
+                        "aliases": row["aliases"] or [],
+                    })
+                for brand in brands:
+                    brand["products"] = products_by_brand.get(brand["id"], [])
 
             coverage = _build_topic_plan_coverage(
                 cur,
@@ -13229,6 +13589,58 @@ def _ensure_scheduler_and_binding_tables():
         print("DB migration warning (non-fatal, partial): " + " | ".join(failed))
 
 
+def _ensure_products_table():
+    """Module C-1: create products table + topics.product_id FK column.
+
+    Per-table tx pattern (same as ``_ensure_scheduler_and_binding_tables``)
+    so a permission denial on ALTER TABLE topics doesn't roll back products.
+    """
+    statements = [
+        ("products", [
+            """
+            CREATE TABLE IF NOT EXISTS products (
+                id            SERIAL PRIMARY KEY,
+                brand_id      INTEGER NOT NULL,
+                name          VARCHAR(256) NOT NULL,
+                sku           VARCHAR(128),
+                category      VARCHAR(128),
+                description   TEXT,
+                aliases       JSONB,
+                status        VARCHAR(16) NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'archived')),
+                created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_products_brand        ON products (brand_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_status_brand ON products (status, brand_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_products_brand_name ON products (brand_id, name)",
+        ]),
+        ("topics.product_id", [
+            "ALTER TABLE topics ADD COLUMN IF NOT EXISTS product_id INTEGER",
+            "CREATE INDEX IF NOT EXISTS idx_topics_product ON topics (product_id)",
+        ]),
+    ]
+    ok, failed = [], []
+    for name, stmts in statements:
+        try:
+            conn = get_db()
+            try:
+                with conn.cursor() as cur:
+                    for stmt in stmts:
+                        cur.execute(stmt)
+                conn.commit()
+                ok.append(name)
+            finally:
+                conn.close()
+        except Exception as e:
+            failed.append(f"{name} ({e})")
+    if ok:
+        print("DB migration: ensured " + ", ".join(ok))
+    if failed:
+        print("DB migration warning (non-fatal, partial): " + " | ".join(failed))
+
+
 # ─── Account ↔ Profile binding APIs ─────────────────────────────────────────
 
 # LLM → expected geo (豆包/DS = CN, ChatGPT = US/NA). Used for soft conflict
@@ -14963,6 +15375,7 @@ def _run_startup_migrations():
     _ensure_query_pool_tables()
     _ensure_segment_profile_tables()
     _ensure_scheduler_and_binding_tables()
+    _ensure_products_table()
     _normalize_query_data()
 
 
