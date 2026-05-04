@@ -2469,11 +2469,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + selectedTopicPlanBrands().length + ' 个品牌 · 覆盖率 ' + (topicPlanStats.coverageLabel || '0%') + ' · 待审核 ' + topicPlanStats.pendingCandidates"></p>
                   </div>
                   <div class="flex items-center gap-2">
+                    <span x-show="topicPlanGenerateLoading || topicPlanRunStatus" class="inline-flex items-center gap-1.5 px-2 h-7 rounded-badge text-[11px] font-semibold"
+                          :class="topicPlanRunStatus === 'completed' ? 'bg-success/10 text-success' : (topicPlanRunStatus === 'failed' ? 'bg-danger/10 text-danger' : (topicPlanRunStatus === 'cancelled' ? 'bg-ink-muted/15 text-ink-muted' : 'bg-accent/10 text-accent'))">
+                      <span class="w-1.5 h-1.5 rounded-full"
+                            :class="topicPlanRunStatus === 'completed' ? 'bg-success' : (topicPlanRunStatus === 'failed' ? 'bg-danger' : (topicPlanRunStatus === 'cancelled' ? 'bg-ink-muted' : 'bg-accent animate-pulse'))"></span>
+                      <span x-text="topicPlanRunStatusLabel()"></span>
+                    </span>
                     <button @click="focusTopicPlanSection('coverage')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                       覆盖度检查
                     </button>
-                    <button @click="startTopicPlanGenerate()" :disabled="topicPlanGenerateLoading || selectedTopicPlanBrands().length === 0" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
-                      <span x-text="topicPlanGenerateLoading ? '生成中...' : '生成 Topic'"></span>
+                    <button x-show="topicPlanGenerateLoading"
+                            @click="stopTopicPlanGenerate()"
+                            :disabled="topicPlanStopLoading"
+                            class="h-9 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12.5px] font-semibold hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <span x-text="topicPlanStopLoading ? '停止中...' : '停止生成'"></span>
+                    </button>
+                    <button x-show="!topicPlanGenerateLoading"
+                            @click="startTopicPlanGenerate()" :disabled="selectedTopicPlanBrands().length === 0" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <span>生成 Topic</span>
                     </button>
                   </div>
                 </div>
@@ -3114,11 +3127,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <p class="text-[12px] text-ink-muted mt-1" x-text="'已选 ' + promptMatrixSelectedTopicCount() + ' 个 Topic · 预计生成 ' + estimatedPromptCount() + ' 个 Prompt · 覆盖率 ' + generationPromptStats.coveragePct + '%'"></p>
                   </div>
                   <div class="flex items-center gap-2">
+                    <span x-show="promptMatrixGenerateLoading || promptMatrixRunStatus" class="inline-flex items-center gap-1.5 px-2 h-7 rounded-badge text-[11px] font-semibold"
+                          :class="promptMatrixRunStatus === 'completed' ? 'bg-success/10 text-success' : (promptMatrixRunStatus === 'failed' ? 'bg-danger/10 text-danger' : (promptMatrixRunStatus === 'cancelled' ? 'bg-ink-muted/15 text-ink-muted' : 'bg-accent/10 text-accent'))">
+                      <span class="w-1.5 h-1.5 rounded-full"
+                            :class="promptMatrixRunStatus === 'completed' ? 'bg-success' : (promptMatrixRunStatus === 'failed' ? 'bg-danger' : (promptMatrixRunStatus === 'cancelled' ? 'bg-ink-muted' : 'bg-accent animate-pulse'))"></span>
+                      <span x-text="promptMatrixRunStatusLabel()"></span>
+                    </span>
                     <button @click="openPromptMatrixPanel('gaps')" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page shadow-btn">
                       缺口列表
                     </button>
-                    <button @click="startPromptMatrixGenerate()" :disabled="promptMatrixGenerateLoading" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40">
-                      <span x-text="promptMatrixGenerateLoading ? '生成中...' : '生成 Prompt'"></span>
+                    <button x-show="promptMatrixGenerateLoading"
+                            @click="stopPromptMatrixGenerate()"
+                            :disabled="promptMatrixStopLoading"
+                            class="h-9 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12.5px] font-semibold hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <span x-text="promptMatrixStopLoading ? '停止中...' : '停止生成'"></span>
+                    </button>
+                    <button x-show="!promptMatrixGenerateLoading"
+                            @click="startPromptMatrixGenerate()" class="h-9 px-3 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40">
+                      <span>生成 Prompt</span>
                     </button>
                   </div>
                 </div>
@@ -3457,9 +3483,18 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <div><div class="text-ink-muted">生成上限</div><div class="font-semibold text-ink mt-1" x-text="Number(promptMatrixConfig.maxPrompts).toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixGenerateStarted ? '刚刚' : '未运行'"></div></div>
                         </div>
-                        <button @click="startPromptMatrixGenerate()" :disabled="promptMatrixGenerateLoading" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-40">
-                          <span x-text="promptMatrixGenerateLoading ? '生成中...' : (promptMatrixGenerateStarted ? '重新生成' : '开始生成')"></span>
-                        </button>
+                        <div class="flex items-center gap-2">
+                          <button x-show="promptMatrixGenerateLoading"
+                                  @click="stopPromptMatrixGenerate()"
+                                  :disabled="promptMatrixStopLoading"
+                                  class="h-9 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12.5px] font-semibold hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                            <span x-text="promptMatrixStopLoading ? '停止中...' : '停止生成'"></span>
+                          </button>
+                          <button x-show="!promptMatrixGenerateLoading"
+                                  @click="startPromptMatrixGenerate()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-40">
+                            <span x-text="promptMatrixGenerateStarted ? '重新生成' : '开始生成'"></span>
+                          </button>
+                        </div>
                       </div>
                       <template x-if="promptMatrixGenerateError">
                         <div class="text-[12px] text-danger" x-text="promptMatrixGenerateError"></div>
@@ -4017,11 +4052,21 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <div><div class="text-ink-muted">预计组装</div><div class="font-semibold text-ink mt-1" x-text="estimatedQueryCount() + ' 个候选'"></div></div>
                           <div><div class="text-ink-muted">Prompt</div><div class="font-semibold text-ink mt-1" x-text="queryPoolSelectedPromptCount().toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">总上限</div><div class="font-semibold text-ink mt-1" x-text="Number(queryPoolConfig.maxQueries).toLocaleString()"></div></div>
-                          <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="queryPoolAssembleStarted ? '刚刚' : '未运行'"></div></div>
+                          <div><div class="text-ink-muted">状态</div><div class="font-semibold mt-1" x-text="queryPoolRunStatusLabel()"
+                                :class="queryPoolRunStatus === 'completed' ? 'text-success' : (queryPoolRunStatus === 'failed' ? 'text-danger' : (queryPoolRunStatus === 'cancelled' ? 'text-ink-muted' : (queryPoolAssembling ? 'text-accent' : 'text-ink')))"></div></div>
                         </div>
-                        <button @click="startQueryPoolAssemble()" :disabled="queryPoolAssembling" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-60">
-                          <span x-text="queryPoolAssembling ? '组装中...' : (queryPoolAssembleStarted ? '重新组装' : '开始组装')"></span>
-                        </button>
+                        <div class="flex items-center gap-2">
+                          <button x-show="queryPoolAssembling"
+                                  @click="stopQueryPoolAssemble()"
+                                  :disabled="queryPoolStopLoading"
+                                  class="h-9 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12.5px] font-semibold hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                            <span x-text="queryPoolStopLoading ? '停止中...' : '停止组装'"></span>
+                          </button>
+                          <button x-show="!queryPoolAssembling"
+                                  @click="startQueryPoolAssemble()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-60">
+                            <span x-text="queryPoolAssembleStarted ? '重新组装' : '开始组装'"></span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -8843,6 +8888,7 @@ function adminApp() {
     topicPlanGenerateError: '',
     topicPlanActiveRunId: '',
     topicPlanRunStatus: '',
+    topicPlanStopLoading: false,
     topicPlanRunPollTimer: null,
     topicPlanRunPollDelay: 3000,
     topicPlanCoverageRows: [],
@@ -8879,6 +8925,7 @@ function adminApp() {
     promptMatrixGenerateError: '',
     promptMatrixActiveRunId: '',
     promptMatrixRunStatus: '',
+    promptMatrixStopLoading: false,
     promptMatrixRunPollTimer: null,
     promptMatrixRunPollDelay: 3000,
     promptMatrixCandidateReviewing: false,
@@ -8943,6 +8990,8 @@ function adminApp() {
     queryPoolAssembleStarted: false,
     queryPoolAssembling: false,
     queryPoolAssembleError: '',
+    queryPoolRunStatus: '',
+    queryPoolStopLoading: false,
     queryPoolRunPollTimer: null,
     queryPoolRunPollDelay: 3000,
     queryPoolRunLoadFailures: 0,
@@ -10876,27 +10925,67 @@ function adminApp() {
       const status = run.status || 'running';
       const finished = status === 'completed';
       const failed = status === 'failed';
+      const cancelled = status === 'cancelled';
+      const stoppedLabel = cancelled ? '已停止' : (failed ? '失败' : (finished ? '完成' : '运行中'));
       this.topicPlanRunStatus = status;
       this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => {
         if (index === 2) {
           return {
             ...step,
-            status: failed ? 'idle' : (finished ? 'done' : 'running'),
-            label: failed ? '失败' : (finished ? '完成' : '运行中'),
+            status: (failed || cancelled) ? 'idle' : (finished ? 'done' : 'running'),
+            label: stoppedLabel,
             value: generated + ' / ' + estimated,
           };
         }
         if (index === 3) {
           return {
             ...step,
-            status: failed ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
-            label: failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待'),
+            status: (failed || cancelled) ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
+            label: cancelled ? '已停止' : (failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待')),
             value: String(generated),
           };
         }
         return step;
       });
       if (failed) this.topicPlanGenerateError = run.llm_error || 'Topic generation failed';
+    },
+
+    topicPlanRunStatusLabel(){
+      const status = this.topicPlanRunStatus || (this.topicPlanGenerateLoading ? 'running' : '');
+      if (status === 'completed') return '生成完成';
+      if (status === 'failed') return '生成失败';
+      if (status === 'cancelled') return '已停止';
+      if (status === 'running' || this.topicPlanGenerateLoading) return '生成中';
+      return '';
+    },
+
+    async stopTopicPlanGenerate(){
+      const runId = this.topicPlanActiveRunId;
+      if (!runId || this.topicPlanStopLoading) return;
+      this.topicPlanStopLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/topic-plan/runs/' + encodeURIComponent(runId) + '/stop', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic 生成停止失败');
+        this.clearTopicPlanRunPolling();
+        if (body.run) this.topicPlanApplyRunProgress(body.run);
+        this.topicPlanRunStatus = 'cancelled';
+        this.topicPlanGenerateLoading = false;
+        this.topicPlanActiveRunId = '';
+        await this.loadTopicPlanCandidates();
+        await this.loadTopicPlanCoverage();
+        await this.loadTopicPlanTopics();
+        this.toast(body.already_finalized ? 'Topic 生成已结束' : 'Topic 生成已停止');
+      } catch (e) {
+        this.toast('Topic 停止失败: ' + (e.message || e));
+      } finally {
+        this.topicPlanStopLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
     async loadTopicPlanRun(runId){
@@ -10926,6 +11015,12 @@ function adminApp() {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
             this.toast('Topic 生成失败: ' + (run.llm_error || 'unknown_error'));
+          } else if (run.status === 'cancelled') {
+            this.topicPlanGenerateLoading = false;
+            this.topicPlanActiveRunId = '';
+            await this.loadTopicPlanCoverage();
+            await this.loadTopicPlanTopics();
+            this.toast('Topic 生成已停止');
           } else {
             keepPolling = true;
           }
@@ -10954,6 +11049,7 @@ function adminApp() {
       this.topicPlanGenerateStarted = true;
       this.topicPlanGenerateLoading = true;
       this.topicPlanGenerateError = '';
+      this.topicPlanRunStatus = 'running';
       const estimatedBeforeRun = this.estimatedTopicCount();
       this.topicPlanGenerateSteps = [
         { name:'配置检查', status:'done', label:'完成', value:this.selectedTopicPlanBrands().length + ' 个品牌' },
@@ -11601,27 +11697,67 @@ function adminApp() {
       const status = run.status || 'running';
       const finished = status === 'completed';
       const failed = status === 'failed';
+      const cancelled = status === 'cancelled';
+      const stoppedLabel = cancelled ? '已停止' : (failed ? '失败' : (finished ? '完成' : '运行中'));
       this.promptMatrixRunStatus = status;
       this.promptMatrixGenerateSteps = this.promptMatrixGenerateSteps.map((step, index) => {
         if (index === 2) {
           return {
             ...step,
-            status: failed ? 'idle' : (finished ? 'done' : 'running'),
-            label: failed ? '失败' : (finished ? '完成' : '运行中'),
+            status: (failed || cancelled) ? 'idle' : (finished ? 'done' : 'running'),
+            label: stoppedLabel,
             value: generated + ' / ' + estimated,
           };
         }
         if (index === 3) {
           return {
             ...step,
-            status: failed ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
-            label: failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待'),
+            status: (failed || cancelled) ? 'idle' : (generated > 0 || finished ? 'done' : 'idle'),
+            label: cancelled ? '已停止' : (failed ? '失败' : (generated > 0 || finished ? '已入队' : '等待')),
             value: String(generated),
           };
         }
         return step;
       });
       if (failed) this.promptMatrixGenerateError = run.llm_error || 'Prompt generation failed';
+    },
+
+    promptMatrixRunStatusLabel(){
+      const status = this.promptMatrixRunStatus || (this.promptMatrixGenerateLoading ? 'running' : '');
+      if (status === 'completed') return '生成完成';
+      if (status === 'failed') return '生成失败';
+      if (status === 'cancelled') return '已停止';
+      if (status === 'running' || this.promptMatrixGenerateLoading) return '生成中';
+      return '';
+    },
+
+    async stopPromptMatrixGenerate(){
+      const runId = this.promptMatrixActiveRunId;
+      if (!runId || this.promptMatrixStopLoading) return;
+      this.promptMatrixStopLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/prompt-matrix/runs/' + encodeURIComponent(runId) + '/stop', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 生成停止失败');
+        this.clearPromptMatrixRunPolling();
+        if (body.run) this.promptMatrixApplyRunProgress(body.run);
+        this.promptMatrixRunStatus = 'cancelled';
+        this.promptMatrixGenerateLoading = false;
+        this.promptMatrixActiveRunId = '';
+        await this.loadPromptMatrixCandidates();
+        await this.loadPromptMatrixPrompts();
+        await this.loadPromptMatrixTopics();
+        this.toast(body.already_finalized ? 'Prompt 生成已结束' : 'Prompt 生成已停止');
+      } catch (e) {
+        this.toast('Prompt 停止失败: ' + (e.message || e));
+      } finally {
+        this.promptMatrixStopLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
     async loadPromptMatrixRun(runId){
@@ -11651,6 +11787,13 @@ function adminApp() {
             this.promptMatrixGenerateLoading = false;
             this.promptMatrixActiveRunId = '';
             this.toast('Prompt 生成失败: ' + (run.llm_error || 'unknown_error'));
+          } else if (run.status === 'cancelled') {
+            this.promptMatrixGenerateLoading = false;
+            this.promptMatrixActiveRunId = '';
+            await this.loadPromptMatrixGaps();
+            await this.loadPromptMatrixPrompts();
+            await this.loadPromptMatrixTopics();
+            this.toast('Prompt 生成已停止');
           } else {
             keepPolling = true;
           }
@@ -11687,6 +11830,7 @@ function adminApp() {
       this.promptMatrixGenerateStarted = true;
       this.promptMatrixGenerateLoading = true;
       this.promptMatrixGenerateError = '';
+      this.promptMatrixRunStatus = 'running';
       const estimatedBeforeRun = this.estimatedPromptCount();
       this.promptMatrixGenerateSteps = [
         { name:'Topic 校验', status:'done', label:'完成', value:this.promptMatrixSelectedTopicCount() + ' Topic' },
@@ -12429,6 +12573,7 @@ function adminApp() {
       const summary = run.preflight_summary || {};
       this.applyQueryPoolPreflightSummary(summary, run);
       this.queryPoolCurrentRunId = run.id || this.queryPoolCurrentRunId || '';
+      this.queryPoolRunStatus = status;
       const estimated = Number(run.candidates_estimated || summary.raw_candidates_estimated || this.queryCountRaw() || 0);
       const assembled = status === 'completed'
         ? Number(run.candidates_assembled || summary.candidate_ready || 0)
@@ -12436,32 +12581,70 @@ function adminApp() {
       const promptCount = this.queryPoolSelectedPromptCount();
       const failed = status === 'failed';
       const completed = status === 'completed';
+      const cancelled = status === 'cancelled';
+      const stopped = failed || cancelled;
       if (failed) this.queryPoolAssembleError = run.llm_error || 'unknown_error';
       this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
         if (step.name === 'Prompt 校验') {
           return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
         }
         if (step.name === 'Segment/Profile 采样') {
-          return { ...step, status:failed ? 'idle' : 'done', label:failed ? '失败' : this.queryPoolProfileStrategyLabel(), value:estimated.toLocaleString() + ' 个 Profile' };
+          return { ...step, status:stopped ? 'idle' : 'done', label:cancelled ? '已停止' : (failed ? '失败' : this.queryPoolProfileStrategyLabel()), value:estimated.toLocaleString() + ' 个 Profile' };
         }
         if (step.name === 'Query 候选渲染') {
           return {
             ...step,
-            status:failed ? 'idle' : (completed ? 'done' : 'running'),
-            label:failed ? '失败' : (completed ? '完成' : '生成中'),
+            status:stopped ? 'idle' : (completed ? 'done' : 'running'),
+            label:cancelled ? '已停止' : (failed ? '失败' : (completed ? '完成' : '生成中')),
             value:(completed ? '+' : '') + assembled.toLocaleString() + (completed ? ' 个候选' : ' / ' + estimated.toLocaleString()),
           };
         }
         if (step.name === '调度接收') {
           return {
             ...step,
-            status:failed ? 'idle' : (completed ? 'done' : 'idle'),
-            label:failed ? '失败' : (completed ? '就绪' : '等待'),
-            value:completed ? '候选已生成' : '等待候选',
+            status:stopped ? 'idle' : (completed ? 'done' : 'idle'),
+            label:cancelled ? '已停止' : (failed ? '失败' : (completed ? '就绪' : '等待')),
+            value:cancelled ? '已停止' : (completed ? '候选已生成' : '等待候选'),
           };
         }
         return step;
       });
+    },
+
+    queryPoolRunStatusLabel(){
+      const status = this.queryPoolRunStatus || (this.queryPoolAssembling ? 'running' : '');
+      if (status === 'completed') return '组装完成';
+      if (status === 'failed') return '组装失败';
+      if (status === 'cancelled') return '已停止';
+      if (status === 'running' || this.queryPoolAssembling) return '组装中';
+      return this.queryPoolAssembleStarted ? '已结束' : '未运行';
+    },
+
+    async stopQueryPoolAssemble(){
+      const runId = this.queryPoolCurrentRunId;
+      if (!runId || this.queryPoolStopLoading) return;
+      this.queryPoolStopLoading = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/query-pool/runs/' + encodeURIComponent(runId) + '/stop', {
+          method:'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 组装停止失败');
+        this.clearQueryPoolRunPolling();
+        if (body.run) this.applyQueryPoolRunProgress(body.run);
+        this.queryPoolRunStatus = 'cancelled';
+        this.queryPoolAssembling = false;
+        this.queryPoolCandidateCursor = { next: null, prev: null };
+        await this.loadQueryPoolCandidates();
+        this.toast(body.already_finalized ? 'Query 组装已结束' : 'Query 组装已停止');
+      } catch (e) {
+        this.toast('Query 停止失败: ' + (e.message || e));
+      } finally {
+        this.queryPoolStopLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
     },
 
     startQueryPoolRunPolling(runId){
@@ -12485,6 +12668,11 @@ function adminApp() {
           } else if (run.status === 'failed') {
             this.queryPoolAssembling = false;
             this.toast('Query 组装失败: ' + (run.llm_error || 'unknown_error'));
+          } else if (run.status === 'cancelled') {
+            this.queryPoolAssembling = false;
+            this.queryPoolCandidateCursor = { next: null, prev: null };
+            await this.loadQueryPoolCandidates();
+            this.toast('Query 组装已停止');
           } else {
             if (assembledCount > Number(this.queryPoolCandidatePageInfo.approxTotal || 0)) {
               this.queryPoolCandidateCursor = { next: null, prev: null };
@@ -12552,6 +12740,7 @@ function adminApp() {
       this.queryPoolRunStatusNotice = '';
       this.queryPoolAssembling = true;
       this.queryPoolAssembleStarted = true;
+      this.queryPoolRunStatus = 'running';
       this.queryPoolCurrentRunId = '';
       this.queryPoolCandidateQuery = '';
       this.queryPoolCandidateSegment = '';
