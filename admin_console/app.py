@@ -7335,6 +7335,324 @@ def admin_product_delete_api(product_id):
         conn.close()
 
 
+# ─── Module D: Hot Topics CRUD + collection ─────────────────────────────────
+
+def _hot_topic_row(row):
+    if not row:
+        return None
+    return {
+        "id": row.get("id"),
+        "title": row.get("title"),
+        "summary": row.get("summary") or "",
+        "category": row.get("category") or "",
+        "source": row.get("source") or "manual",
+        "source_url": row.get("source_url") or "",
+        "raw_rank": row.get("raw_rank"),
+        "raw_metric": row.get("raw_metric") or "",
+        "industry": row.get("industry") or "",
+        "brand_id": row.get("brand_id"),
+        "brand_name": row.get("brand_name"),
+        "effective_from": row.get("effective_from").isoformat() if row.get("effective_from") else None,
+        "effective_until": row.get("effective_until").isoformat() if row.get("effective_until") else None,
+        "status": row.get("status") or "active",
+        "days_remaining": row.get("days_remaining"),
+        "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+        "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+    }
+
+
+@app.route('/api/admin/hot-topics', methods=['GET'])
+def admin_hot_topics_list_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    status = (request.args.get("status") or "").strip().lower() or None
+    source = (request.args.get("source") or "").strip().lower() or None
+    industry = (request.args.get("industry") or "").strip() or None
+    try:
+        brand_id = int(request.args.get("brand_id")) if request.args.get("brand_id") else None
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+    limit = max(1, min(int(request.args.get("limit") or 100), 500))
+
+    where = []
+    params: list = []
+    if status in ("draft", "active", "expired", "rejected"):
+        where.append("h.status = %s"); params.append(status)
+    if source:
+        where.append("h.source = %s"); params.append(source)
+    if industry:
+        where.append("h.industry = %s"); params.append(industry)
+    if brand_id:
+        where.append("h.brand_id = %s"); params.append(brand_id)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT h.id, h.title, h.summary, h.category, h.source, h.source_url,
+                       h.raw_rank, h.raw_metric, h.industry, h.brand_id,
+                       b.name AS brand_name,
+                       h.effective_from, h.effective_until, h.status,
+                       GREATEST(0, EXTRACT(DAY FROM (h.effective_until - NOW())))::int AS days_remaining,
+                       h.created_at, h.updated_at
+                FROM hot_topics h
+                LEFT JOIN brands b ON b.id = h.brand_id
+                {where_sql}
+                ORDER BY
+                    CASE h.status WHEN 'draft' THEN 0 WHEN 'active' THEN 1
+                                  WHEN 'expired' THEN 2 ELSE 3 END,
+                    h.effective_from DESC
+                LIMIT %s
+                """,
+                params + [limit],
+            )
+            rows = [_hot_topic_row(r) for r in cur.fetchall()]
+            cur.execute("""
+                SELECT status, COUNT(*) AS c FROM hot_topics GROUP BY status
+            """)
+            counts = {r["status"]: int(r["c"]) for r in cur.fetchall()}
+        return jsonify({
+            "success": True,
+            "hot_topics": rows,
+            "counts": {
+                "draft": counts.get("draft", 0),
+                "active": counts.get("active", 0),
+                "expired": counts.get("expired", 0),
+                "rejected": counts.get("rejected", 0),
+                "total": sum(counts.values()),
+            },
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/hot-topics', methods=['POST'])
+def admin_hot_topics_create_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    title = (payload.get("title") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "title_required"}), 400
+    summary = (payload.get("summary") or "").strip() or None
+    category = (payload.get("category") or "").strip() or None
+    industry = (payload.get("industry") or "").strip() or None
+    source = (payload.get("source") or "manual").strip().lower() or "manual"
+    try:
+        brand_id = int(payload.get("brand_id")) if payload.get("brand_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+    try:
+        days = int(payload.get("effective_days") or 14)
+    except (TypeError, ValueError):
+        days = 14
+    days = max(1, min(days, 90))
+    status = (payload.get("status") or ("active" if source == "manual" else "draft")).strip().lower()
+    if status not in ("draft", "active"):
+        status = "active"
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                INSERT INTO hot_topics
+                    (title, summary, category, source, industry, brand_id,
+                     effective_from, effective_until, status)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW(),
+                        NOW() + INTERVAL '{days} days', %s)
+                RETURNING id, title, summary, category, source, source_url,
+                          raw_rank, raw_metric, industry, brand_id,
+                          effective_from, effective_until, status,
+                          created_at, updated_at
+                """,
+                (title, summary, category, source, industry, brand_id, status),
+            )
+            row = cur.fetchone()
+            if brand_id:
+                cur.execute("SELECT name FROM brands WHERE id = %s", (brand_id,))
+                br = cur.fetchone()
+                row["brand_name"] = br["name"] if br else None
+            else:
+                row["brand_name"] = None
+            row["days_remaining"] = days
+        conn.commit()
+        return jsonify({"success": True, "hot_topic": _hot_topic_row(row)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/hot-topics/<int:hot_id>', methods=['PUT'])
+def admin_hot_topic_update_api(hot_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    fields = []
+    params: list = []
+    if "title" in payload:
+        title = (payload.get("title") or "").strip()
+        if not title:
+            return jsonify({"success": False, "error": "title_required"}), 400
+        fields.append("title = %s"); params.append(title)
+    for k in ("summary", "category", "industry", "source_url"):
+        if k in payload:
+            fields.append(f"{k} = %s"); params.append((payload.get(k) or "").strip() or None)
+    if "brand_id" in payload:
+        try:
+            bid = int(payload["brand_id"]) if payload["brand_id"] else None
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+        fields.append("brand_id = %s"); params.append(bid)
+    if "status" in payload:
+        st = (payload.get("status") or "").strip().lower()
+        if st not in ("draft", "active", "expired", "rejected"):
+            return jsonify({"success": False, "error": "invalid_status"}), 400
+        fields.append("status = %s"); params.append(st)
+    if "effective_days" in payload:
+        try:
+            d = max(1, min(int(payload["effective_days"]), 90))
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "invalid_effective_days"}), 400
+        fields.append(f"effective_until = NOW() + INTERVAL '{d} days'")
+    if not fields:
+        return jsonify({"success": False, "error": "no_fields"}), 400
+    fields.append("updated_at = NOW()")
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                UPDATE hot_topics SET {', '.join(fields)}
+                WHERE id = %s
+                RETURNING id, title, summary, category, source, source_url,
+                          raw_rank, raw_metric, industry, brand_id,
+                          effective_from, effective_until, status,
+                          GREATEST(0, EXTRACT(DAY FROM (effective_until - NOW())))::int AS days_remaining,
+                          created_at, updated_at
+                """,
+                params + [hot_id],
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            if row["brand_id"]:
+                cur.execute("SELECT name FROM brands WHERE id = %s", (row["brand_id"],))
+                br = cur.fetchone()
+                row["brand_name"] = br["name"] if br else None
+            else:
+                row["brand_name"] = None
+        conn.commit()
+        return jsonify({"success": True, "hot_topic": _hot_topic_row(row)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/hot-topics/<int:hot_id>', methods=['DELETE'])
+def admin_hot_topic_delete_api(hot_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE prompts SET hotspot_id = NULL WHERE hotspot_id = %s", (hot_id,))
+            unlinked = cur.rowcount
+            cur.execute("DELETE FROM hot_topics WHERE id = %s", (hot_id,))
+            if cur.rowcount == 0:
+                return jsonify({"success": False, "error": "not_found"}), 404
+        conn.commit()
+        return jsonify({"success": True, "unlinked_prompts": unlinked})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/hot-topics/archive-expired', methods=['POST'])
+def admin_hot_topics_archive_expired_api():
+    """Module D-5: marks hot_topics whose effective_until < NOW() as expired.
+
+    Called by the daily Beat task or manually from admin. Idempotent.
+    """
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE hot_topics SET status = 'expired', updated_at = NOW() "
+                "WHERE status = 'active' AND effective_until <= NOW()"
+            )
+            n = cur.rowcount
+        conn.commit()
+        return jsonify({"success": True, "archived": n})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/hot-topics/collect', methods=['POST'])
+def admin_hot_topics_collect_api():
+    """Module D-2.5: trigger a collection cycle for one or more sources.
+
+    Currently supports the lightweight collectors that don't need a browser
+    (baidu / zhihu public APIs + LLM web-search fallback). The browser-use
+    collectors (weibo / douyin / xhs) ship in the D-B follow-up.
+    """
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    payload = request.get_json(silent=True) or {}
+    sources_raw = payload.get("sources") or ["baidu", "zhihu", "llm_search"]
+    if isinstance(sources_raw, str):
+        sources = [s.strip() for s in sources_raw.split(",") if s.strip()]
+    else:
+        sources = [str(s).strip() for s in sources_raw if str(s).strip()]
+    industry_filter = (payload.get("industry") or "").strip() or None
+
+    try:
+        from geo_tracker.hotspots.pipeline import run_collection_cycle
+    except Exception as e:
+        return jsonify({"success": False, "error": "collectors_unavailable",
+                        "message": str(e)[:200]}), 503
+
+    try:
+        result = run_collection_cycle(sources=sources, industry_filter=industry_filter)
+    except Exception as e:
+        return jsonify({"success": False, "error": "collection_failed",
+                        "message": str(e)[:200]}), 502
+
+    return jsonify({"success": True, **result})
+
+
 @app.route('/api/admin/topic-plan/config')
 def admin_topic_plan_config_api():
     admin, error_response = _require_admin()
@@ -9182,15 +9500,26 @@ def _prompt_matrix_run_row(row):
     }
 
 
-def _prompt_matrix_candidate_batches(client, *, topics, config, known_brands, existing_prompts):
+def _prompt_matrix_candidate_batches(client, *, topics, config, known_brands,
+                                     existing_prompts, active_hotspots=None):
     batch_method = getattr(client, "generate_prompt_batches", None)
     if callable(batch_method):
-        yield from batch_method(
-            topics=topics,
-            config=config,
-            known_brands=known_brands,
-            existing_prompts=existing_prompts,
-        )
+        try:
+            yield from batch_method(
+                topics=topics,
+                config=config,
+                known_brands=known_brands,
+                existing_prompts=existing_prompts,
+                active_hotspots=active_hotspots,
+            )
+        except TypeError:
+            # Older client signature without active_hotspots — fall back.
+            yield from batch_method(
+                topics=topics,
+                config=config,
+                known_brands=known_brands,
+                existing_prompts=existing_prompts,
+            )
         return
     prompts, meta = client.generate_prompts(
         topics=topics,
@@ -9199,6 +9528,30 @@ def _prompt_matrix_candidate_batches(client, *, topics, config, known_brands, ex
         existing_prompts=existing_prompts,
     )
     yield prompts, meta
+
+
+def _fetch_active_hotspots_for_brands(cur, brand_ids, industries=None, limit=15):
+    """Module D-4: load currently-active hotspots that match the brands or
+    industries we're generating prompts for. Used by prompt-matrix to grow
+    piggyback prompts on top of evergreen topics.
+    """
+    if not _table_exists(cur, "hot_topics"):
+        return []
+    industries = list({i for i in (industries or []) if i})
+    cur.execute(
+        """
+        SELECT id, title, summary, category, industry, brand_id,
+               source, effective_until
+        FROM hot_topics
+        WHERE status = 'active' AND effective_until > NOW()
+          AND (brand_id = ANY(%s) OR industry = ANY(%s)
+               OR (brand_id IS NULL AND industry IS NULL))
+        ORDER BY effective_from DESC
+        LIMIT %s
+        """,
+        (list(brand_ids or []), industries, limit),
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 def _insert_prompt_matrix_candidate_batch(
@@ -9330,12 +9683,27 @@ def _execute_prompt_matrix_generation(
         # the LLM a wider view of what the prompt library already covers.
         from .prompt_matrix import sample_existing_for_context as _sample_pm
         existing_for_llm = _sample_pm(existing_prompts, total_quota=400)
+        # Module D-4: load currently-active hotspots for the brands /
+        # industries we're generating prompts for, so the LLM can grow
+        # piggyback prompts.
+        active_hotspots: list[dict] = []
+        try:
+            brand_ids = list({int(t.get("brand_id")) for t in topics if t.get("brand_id")})
+            industries = list({t.get("industry") for t in topics if t.get("industry")})
+            if brand_ids or industries:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    active_hotspots = _fetch_active_hotspots_for_brands(
+                        cur, brand_ids, industries=industries, limit=15,
+                    )
+        except Exception as e:
+            print(f"[hotspots] fetch_active_hotspots_for_brands failed: {e}")
         for llm_candidates, llm_meta in _prompt_matrix_candidate_batches(
             client,
             topics=topics,
             config=config,
             known_brands=known_brands,
             existing_prompts=existing_for_llm,
+            active_hotspots=active_hotspots,
         ):
             if _is_generation_run_cancelled(conn, "prompt_generation_runs", run_id):
                 cancelled = True
@@ -13589,6 +13957,60 @@ def _ensure_scheduler_and_binding_tables():
         print("DB migration warning (non-fatal, partial): " + " | ".join(failed))
 
 
+def _ensure_hot_topics_table():
+    """Module D-1: hot_topics + prompts.hotspot_id."""
+    statements = [
+        ("hot_topics", [
+            """
+            CREATE TABLE IF NOT EXISTS hot_topics (
+                id              SERIAL PRIMARY KEY,
+                title           VARCHAR(256) NOT NULL,
+                summary         TEXT,
+                category        VARCHAR(64),
+                source          VARCHAR(64) NOT NULL DEFAULT 'manual',
+                source_url      TEXT,
+                raw_rank        INTEGER,
+                raw_metric      VARCHAR(128),
+                industry        VARCHAR(128),
+                brand_id        INTEGER,
+                effective_from  TIMESTAMP NOT NULL DEFAULT NOW(),
+                effective_until TIMESTAMP NOT NULL DEFAULT NOW() + INTERVAL '14 days',
+                status          VARCHAR(16) NOT NULL DEFAULT 'active'
+                                CHECK (status IN ('draft', 'active', 'expired', 'rejected')),
+                created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_hot_topics_active   ON hot_topics (status, effective_until)",
+            "CREATE INDEX IF NOT EXISTS idx_hot_topics_industry ON hot_topics (industry)",
+            "CREATE INDEX IF NOT EXISTS idx_hot_topics_brand    ON hot_topics (brand_id)",
+            "CREATE INDEX IF NOT EXISTS idx_hot_topics_source   ON hot_topics (source, status)",
+        ]),
+        ("prompts.hotspot_id", [
+            "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS hotspot_id INTEGER",
+            "CREATE INDEX IF NOT EXISTS idx_prompts_hotspot ON prompts (hotspot_id)",
+        ]),
+    ]
+    ok, failed = [], []
+    for name, stmts in statements:
+        try:
+            conn = get_db()
+            try:
+                with conn.cursor() as cur:
+                    for stmt in stmts:
+                        cur.execute(stmt)
+                conn.commit()
+                ok.append(name)
+            finally:
+                conn.close()
+        except Exception as e:
+            failed.append(f"{name} ({e})")
+    if ok:
+        print("DB migration: ensured " + ", ".join(ok))
+    if failed:
+        print("DB migration warning (non-fatal, partial): " + " | ".join(failed))
+
+
 def _ensure_products_table():
     """Module C-1: create products table + topics.product_id FK column.
 
@@ -15376,6 +15798,7 @@ def _run_startup_migrations():
     _ensure_segment_profile_tables()
     _ensure_scheduler_and_binding_tables()
     _ensure_products_table()
+    _ensure_hot_topics_table()
     _normalize_query_data()
 
 

@@ -1788,6 +1788,206 @@
         </div>
       </template>
 
+      <!-- ============ PAGE: HOTSPOTS ============ -->
+      <template x-if="page==='planner-hotspots'">
+        <div class="space-y-4" x-init="loadHotspotsList()">
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div class="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">HOTSPOTS</div>
+                <h2 class="mt-1 text-[20px] font-bold text-ink">热点池</h2>
+                <div class="text-[12px] text-ink-muted mt-1">
+                  Prompt Matrix 在生成时会自动注入 active 状态的热点。draft 热点需先批准。
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="openHotspotModal()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
+                  <i data-lucide="plus" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i> 手填
+                </button>
+                <button @click="collectHotspots()" :disabled="hotspotCollecting"
+                        class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12.5px] font-semibold disabled:opacity-50">
+                  <i data-lucide="refresh-cw" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i>
+                  <span x-text="hotspotCollecting ? '采集中...' : '🔄 立即采集 (baidu / zhihu)'"></span>
+                </button>
+                <button @click="archiveExpiredHotspots()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body">
+                  归档过期
+                </button>
+              </div>
+            </div>
+            <div class="grid grid-cols-4 gap-3 mt-4">
+              <div class="rounded-card bg-warning/5 border border-warning/20 p-3">
+                <div class="text-[10px] font-semibold text-ink-muted uppercase">draft 待审</div>
+                <div class="text-[20px] font-bold text-warning mt-1" x-text="hotspotCounts.draft || 0"></div>
+              </div>
+              <div class="rounded-card bg-success/5 border border-success/20 p-3">
+                <div class="text-[10px] font-semibold text-ink-muted uppercase">active 生效</div>
+                <div class="text-[20px] font-bold text-success mt-1" x-text="hotspotCounts.active || 0"></div>
+              </div>
+              <div class="rounded-card bg-ink-muted/5 border border-ink-muted/20 p-3">
+                <div class="text-[10px] font-semibold text-ink-muted uppercase">expired 过期</div>
+                <div class="text-[20px] font-bold text-ink-muted mt-1" x-text="hotspotCounts.expired || 0"></div>
+              </div>
+              <div class="rounded-card bg-surface-page border border-b-card p-3">
+                <div class="text-[10px] font-semibold text-ink-muted uppercase">total</div>
+                <div class="text-[20px] font-bold text-ink mt-1" x-text="hotspotCounts.total || 0"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Filter bar -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-3 border-b border-b-card flex flex-wrap items-center gap-2">
+              <select x-model="hotspotFilter.status" @change="loadHotspotsList()"
+                      class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">全部状态</option>
+                <option value="draft">draft 待审</option>
+                <option value="active">active 生效</option>
+                <option value="expired">expired 过期</option>
+                <option value="rejected">rejected 驳回</option>
+              </select>
+              <select x-model="hotspotFilter.source" @change="loadHotspotsList()"
+                      class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">全部来源</option>
+                <option value="manual">手填 manual</option>
+                <option value="baidu">百度</option>
+                <option value="zhihu">知乎</option>
+                <option value="weibo">微博</option>
+                <option value="douyin">抖音</option>
+                <option value="xhs">小红书</option>
+                <option value="llm_search">LLM 搜索</option>
+              </select>
+              <span class="text-[11px] text-ink-muted ml-auto" x-text="'共 ' + (hotspotsList.length || 0) + ' 条'"></span>
+            </div>
+
+            <table class="w-full text-[12.5px]">
+              <thead>
+                <tr class="text-[11px] text-ink-muted bg-surface-page">
+                  <th class="text-left font-semibold px-4 py-2">状态</th>
+                  <th class="text-left font-semibold px-4 py-2">标题</th>
+                  <th class="text-left font-semibold px-4 py-2">摘要</th>
+                  <th class="text-left font-semibold px-4 py-2">分类</th>
+                  <th class="text-left font-semibold px-4 py-2">来源</th>
+                  <th class="text-left font-semibold px-4 py-2">行业 / 品牌</th>
+                  <th class="text-right font-semibold px-4 py-2">剩余天数</th>
+                  <th class="text-right font-semibold px-4 py-2">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="h in hotspotsList" :key="h.id">
+                  <tr class="border-t border-b-card hover:bg-surface-page/50">
+                    <td class="px-4 py-2">
+                      <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
+                            :class="hotspotStatusClass(h.status)" x-text="h.status"></span>
+                    </td>
+                    <td class="px-4 py-2 font-semibold text-ink" x-text="h.title"></td>
+                    <td class="px-4 py-2 text-ink-muted text-[11.5px] max-w-[280px] truncate" :title="h.summary || ''" x-text="h.summary || '—'"></td>
+                    <td class="px-4 py-2 text-ink-body" x-text="h.category || '—'"></td>
+                    <td class="px-4 py-2 text-ink-body">
+                      <span x-text="h.source"></span>
+                      <a x-show="h.source_url" :href="h.source_url" target="_blank"
+                         class="text-accent text-[10px] ml-1 hover:underline">↗</a>
+                    </td>
+                    <td class="px-4 py-2 text-ink-body text-[11.5px]">
+                      <span x-text="h.industry || '—'"></span>
+                      <span x-show="h.brand_name" class="text-ink-muted" x-text="' · ' + h.brand_name"></span>
+                    </td>
+                    <td class="px-4 py-2 text-right text-[11.5px]"
+                        :class="(h.days_remaining || 0) <= 2 ? 'text-danger font-semibold' : 'text-ink-body'"
+                        x-text="h.status === 'expired' ? '已过期' : ((h.days_remaining || 0) + ' d')"></td>
+                    <td class="px-4 py-2 text-right">
+                      <template x-if="h.status === 'draft'">
+                        <span>
+                          <button @click="setHotspotStatus(h, 'active')" class="text-success text-[11.5px] font-semibold hover:underline mr-2">✓ 通过</button>
+                          <button @click="setHotspotStatus(h, 'rejected')" class="text-ink-muted text-[11.5px] font-semibold hover:underline mr-2">✗ 驳回</button>
+                        </span>
+                      </template>
+                      <button @click="openHotspotModal(h)" class="text-accent text-[11.5px] font-semibold hover:underline mr-2">编辑</button>
+                      <button @click="deleteHotspot(h)" class="text-danger text-[11.5px] font-semibold hover:underline">删除</button>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!hotspotsLoading && hotspotsList.length === 0">
+                  <tr><td colspan="8" class="px-4 py-12 text-center text-[12px] text-ink-muted">暂无热点 — 点击「手填」或「立即采集」开始。</td></tr>
+                </template>
+                <template x-if="hotspotsLoading">
+                  <tr><td colspan="8" class="px-4 py-8 text-center text-[12px] text-ink-muted">加载中...</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Modal -->
+          <div x-show="hotspotModalOpen" x-cloak
+               class="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-sm p-4"
+               @keydown.escape.window="closeHotspotModal()">
+            <div class="rounded-card-lg bg-surface shadow-modal max-w-lg w-full overflow-hidden" @click.outside="closeHotspotModal()">
+              <div class="px-5 py-3 border-b border-b-card flex items-center justify-between">
+                <h3 class="text-[15px] font-bold text-ink" x-text="hotspotEditing.id ? '编辑热点' : '手填热点'"></h3>
+                <button @click="closeHotspotModal()" class="text-ink-muted hover:text-ink text-[14px]">✕</button>
+              </div>
+              <div class="p-5 space-y-3">
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">标题 *</label>
+                  <input x-model="hotspotEditing.title" type="text" placeholder="如：辛巴直播间奶粉争议"
+                         class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">摘要（一两句给 LLM 当上下文）</label>
+                  <textarea x-model="hotspotEditing.summary" rows="3"
+                            placeholder="11/28 直播售卖某品牌奶粉后被质疑，宝妈群体讨论代购信任度"
+                            class="mt-1 w-full px-3 py-2 rounded-btn border border-b-default bg-surface text-[12.5px]"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">分类</label>
+                    <input x-model="hotspotEditing.category" type="text" placeholder="如：舆论事件 / 政策 / 明星"
+                           class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                  </div>
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">行业</label>
+                    <input x-model="hotspotEditing.industry" type="text" placeholder="如：母婴个护"
+                           class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">关联品牌</label>
+                    <select x-model="hotspotEditing.brand_id" class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]">
+                      <option value="">不指定</option>
+                      <template x-for="b in productsBrands" :key="b.id">
+                        <option :value="b.id" x-text="b.name"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-[11px] font-semibold text-ink-muted">有效期（天）</label>
+                    <input x-model.number="hotspotEditing.effective_days" type="number" min="1" max="90"
+                           class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                  </div>
+                </div>
+                <div x-show="hotspotEditing.id">
+                  <label class="text-[11px] font-semibold text-ink-muted">状态</label>
+                  <select x-model="hotspotEditing.status" class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]">
+                    <option value="draft">draft 待审</option>
+                    <option value="active">active 生效</option>
+                    <option value="expired">expired 过期</option>
+                    <option value="rejected">rejected 驳回</option>
+                  </select>
+                </div>
+                <div x-show="hotspotSaveError" class="text-[12px] text-danger" x-text="hotspotSaveError"></div>
+              </div>
+              <div class="px-5 py-3 border-t border-b-card flex items-center justify-end gap-2">
+                <button @click="closeHotspotModal()" class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body">取消</button>
+                <button @click="saveHotspot()" :disabled="hotspotSaving"
+                        class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-50">
+                  <span x-text="hotspotSaving ? '保存中...' : (hotspotEditing.id ? '保存修改' : '创建')"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <!-- ============ PAGE: PIPELINE PROFILES ============ -->
       <template x-if="page==='planner-profiles'">
         <div x-data="segmentCrudPanel()" x-init="init()" class="space-y-4">
@@ -9616,6 +9816,15 @@ function adminApp() {
     productSaving: false,
     productSaveError: '',
     productEditing: { id: null, brand_id: '', name: '', sku: '', category: '', description: '', aliasesText: '', status: 'active' },
+    hotspotsList: [],
+    hotspotCounts: { draft: 0, active: 0, expired: 0, total: 0 },
+    hotspotsLoading: false,
+    hotspotCollecting: false,
+    hotspotFilter: { status: '', source: '' },
+    hotspotModalOpen: false,
+    hotspotSaving: false,
+    hotspotSaveError: '',
+    hotspotEditing: { id: null, title: '', summary: '', category: '', industry: '', brand_id: '', effective_days: 14, status: 'active' },
     promptMatrixConfig: {
       intentCount: 4,
       languageCount: 2,
@@ -9872,6 +10081,7 @@ function adminApp() {
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
         { key:'planner-profiles',   label:'Segment', icon:'users',          group:'Planner', subtitle:'人群 Segment · 权重 · 单个 Profile 池' },
         { key:'planner-products',   label:'产品 Product', icon:'package', group:'Planner', subtitle:'品牌下 SKU 库 · 注入 Topic / Prompt 生成上下文' },
+        { key:'planner-hotspots',   label:'热点 Hotspot', icon:'flame', group:'Planner', subtitle:'时事热点池 · 14 天窗口 · Prompt Matrix 蹭热点' },
         { key:'planner-resources',  label:'采集资源',     icon:'key-round',      badge:'P0', badgeTone:'danger', group:'Planner', subtitle:'账号池 + 代理池 · 生命周期 · 健康评分' },
       ]},
       { title: 'Tracker · 执行', items: [
@@ -11812,6 +12022,170 @@ function adminApp() {
         await this.loadProductsList();
       } catch (e) {
         this.toast('删除失败: ' + (e.message || e));
+      }
+    },
+
+    hotspotStatusClass(status){
+      return {
+        draft:    'bg-warning/10 text-warning',
+        active:   'bg-success/10 text-success',
+        expired:  'bg-ink-muted/10 text-ink-muted',
+        rejected: 'bg-danger/10 text-danger',
+      }[status] || 'bg-ink-muted/10 text-ink-muted';
+    },
+
+    async loadHotspotsList(){
+      if (this.hotspotsLoading) return;
+      this.hotspotsLoading = true;
+      try {
+        if (this.productsBrands.length === 0){
+          const br = await fetch(API_BASE + '/admin/brands', { credentials:'same-origin' });
+          const bb = await br.json().catch(()=>({}));
+          if (bb && bb.brands) this.productsBrands = bb.brands.map(b=>({ id:b.id, name:b.name }));
+        }
+        const qs = new URLSearchParams();
+        if (this.hotspotFilter.status) qs.set('status', this.hotspotFilter.status);
+        if (this.hotspotFilter.source) qs.set('source', this.hotspotFilter.source);
+        qs.set('limit', '300');
+        const res = await fetch(API_BASE + '/admin/hot-topics?' + qs.toString(), { credentials:'same-origin' });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'load_failed');
+        this.hotspotsList = body.hot_topics || [];
+        this.hotspotCounts = body.counts || { draft:0, active:0, expired:0, total:0 };
+      } catch (e) {
+        this.toast('加载热点失败: ' + (e.message || e));
+      } finally {
+        this.hotspotsLoading = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    openHotspotModal(h){
+      this.hotspotSaveError = '';
+      if (h) {
+        this.hotspotEditing = {
+          id: h.id, title: h.title || '', summary: h.summary || '',
+          category: h.category || '', industry: h.industry || '',
+          brand_id: h.brand_id || '', effective_days: 14,
+          status: h.status || 'active',
+        };
+      } else {
+        this.hotspotEditing = {
+          id: null, title: '', summary: '', category: '', industry: '',
+          brand_id: '', effective_days: 14, status: 'active',
+        };
+      }
+      this.hotspotModalOpen = true;
+    },
+
+    closeHotspotModal(){ this.hotspotModalOpen = false; this.hotspotSaveError = ''; },
+
+    async saveHotspot(){
+      if (this.hotspotSaving) return;
+      const e = this.hotspotEditing;
+      if (!String(e.title || '').trim()) { this.hotspotSaveError = '标题不能为空'; return; }
+      this.hotspotSaving = true;
+      this.hotspotSaveError = '';
+      const payload = {
+        title: e.title, summary: e.summary, category: e.category,
+        industry: e.industry, brand_id: e.brand_id || null,
+        effective_days: e.effective_days, status: e.status,
+      };
+      try {
+        let res;
+        if (e.id) {
+          res = await fetch(API_BASE + '/admin/hot-topics/' + e.id, {
+            method:'PUT', credentials:'same-origin',
+            headers:{ 'Content-Type':'application/json' },
+            body: JSON.stringify(payload),
+          });
+        } else {
+          res = await fetch(API_BASE + '/admin/hot-topics', {
+            method:'POST', credentials:'same-origin',
+            headers:{ 'Content-Type':'application/json' },
+            body: JSON.stringify(payload),
+          });
+        }
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) {
+          this.hotspotSaveError = body.error || '保存失败';
+          return;
+        }
+        this.closeHotspotModal();
+        this.toast(e.id ? '热点已更新' : '热点已创建');
+        await this.loadHotspotsList();
+      } catch (err) {
+        this.hotspotSaveError = err.message || '保存失败';
+      } finally {
+        this.hotspotSaving = false;
+      }
+    },
+
+    async setHotspotStatus(h, status){
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/' + h.id, {
+          method:'PUT', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ status }),
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'update_failed');
+        this.toast('已切换为 ' + status);
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('切换失败: ' + (e.message || e));
+      }
+    },
+
+    async deleteHotspot(h){
+      if (!confirm(`确认删除热点「${h.title}」？`)) return;
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/' + h.id, {
+          method:'DELETE', credentials:'same-origin',
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'delete_failed');
+        this.toast('已删除' + (body.unlinked_prompts ? ` (解绑 ${body.unlinked_prompts} 个 Prompt)` : ''));
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('删除失败: ' + (e.message || e));
+      }
+    },
+
+    async collectHotspots(){
+      if (this.hotspotCollecting) return;
+      this.hotspotCollecting = true;
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/collect', {
+          method:'POST', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ sources: ['baidu', 'zhihu', 'llm_search'] }),
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) {
+          this.toast('采集失败: ' + (body.message || body.error || ''));
+          return;
+        }
+        this.toast(`本次采集 ${body.collected || 0} 条 → 入库 ${body.inserted || 0} 条 (待审区)`);
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('采集失败: ' + (e.message || e));
+      } finally {
+        this.hotspotCollecting = false;
+      }
+    },
+
+    async archiveExpiredHotspots(){
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/archive-expired', {
+          method:'POST', credentials:'same-origin',
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'archive_failed');
+        this.toast(`已归档 ${body.archived || 0} 条过期热点`);
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('归档失败: ' + (e.message || e));
       }
     },
 

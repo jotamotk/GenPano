@@ -117,6 +117,7 @@ class Prompt(Base):
 
     id           = Column(Integer, primary_key=True)
     topic_id     = Column(Integer, ForeignKey("topics.id"), nullable=False)
+    hotspot_id   = Column(Integer, ForeignKey("hot_topics.id"), nullable=True)
     text         = Column(Text, nullable=False)
     intent       = Column(String(64))   # brand|non_brand|comparison
     language     = Column(String(8), default="zh")   # zh | en
@@ -124,7 +125,35 @@ class Prompt(Base):
     created_at   = Column(DateTime, server_default=func.now())
 
     topic   = relationship("Topic", back_populates="prompts")
+    hotspot = relationship("HotTopic", back_populates="prompts")
     queries = relationship("Query", back_populates="prompt")
+
+
+# ─── Hot Topic (short-lived current events) ──────────────────────────────────
+
+class HotTopic(Base):
+    """Current event / hotspot. Short-lived (~14 days). Used by Prompt
+    Matrix to grow piggyback prompts on top of evergreen Topics.
+    """
+    __tablename__ = "hot_topics"
+
+    id              = Column(Integer, primary_key=True)
+    title           = Column(String(256), nullable=False)
+    summary         = Column(Text)
+    category        = Column(String(64))
+    source          = Column(String(64), default="manual")  # manual | weibo | baidu | xhs | douyin | zhihu | llm_search
+    source_url      = Column(Text)
+    raw_rank        = Column(Integer)
+    raw_metric      = Column(String(128))
+    industry        = Column(String(128))
+    brand_id        = Column(Integer, ForeignKey("brands.id"), nullable=True)
+    effective_from  = Column(DateTime, server_default=func.now())
+    effective_until = Column(DateTime)
+    status          = Column(String(16), default="active")  # draft | active | expired | rejected
+    created_at      = Column(DateTime, server_default=func.now())
+    updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    prompts = relationship("Prompt", back_populates="hotspot")
 
 
 # ─── Competitor ───────────────────────────────────────────────────────────────

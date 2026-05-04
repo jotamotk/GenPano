@@ -787,6 +787,7 @@ def build_prompt_matrix_messages(
     config: dict[str, Any],
     known_brands: list[dict[str, Any]],
     existing_prompts: list[str],
+    active_hotspots: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     topic_payload = []
     for topic in topics:
@@ -839,6 +840,19 @@ def build_prompt_matrix_messages(
         "existing_prompts": existing_prompts[:300],
         "output_schema": schema,
     }
+    # Module D-4: pass current hotspots so a fraction of generated prompts
+    # can piggyback on what the user is currently talking about.
+    if active_hotspots:
+        payload["current_hotspots"] = [
+            {
+                "id": int(h["id"]),
+                "title": h.get("title") or "",
+                "summary": (h.get("summary") or "")[:300],
+                "category": h.get("category") or None,
+            }
+            for h in active_hotspots
+            if h.get("id") and h.get("title")
+        ][:15]
     # Module 0.5: prepend the layer-boundary header so the LLM knows it must
     # produce *Prompts* (complete user inputs, no personal anchors), not Topics
     # (noun-phrase subjects) and not Queries (Profile-personalized text).
@@ -879,7 +893,9 @@ def build_prompt_matrix_messages(
         "20. 不要决定执行引擎，也不要返回 tags.engines；引擎只在 Query Pool / Tracker 最终调度时决定。\n"
         "21. tags.routing 固定写 deferred_to_query_pool。\n"
         "22. 最多返回 max_prompts 条，字段必须严格匹配 output_schema。\n"
-        "23. 如果 topic.product 存在，prompt 必须明确提到该产品（用 product.name 或 product.aliases 之一），不要泛化到品牌层面，保持 SKU 颗粒度。\n\n"
+        "23. 如果 topic.product 存在，prompt 必须明确提到该产品（用 product.name 或 product.aliases 之一），不要泛化到品牌层面，保持 SKU 颗粒度。\n"
+        "24. 如果 current_hotspots 非空，本批次约 20-30% 的 prompt 应蹭一个热点角度（可在文本里提到事件名/角度，不要硬塞日期），其他 prompt 保持 evergreen。蹭热点的 prompt 必须仍然是 Prompt 形态（不带个人化锚点）。\n"
+        "25. 当一条 prompt 蹭了热点，请在 output.prompts[i].tags.hotspot_id 写上该 hotspot 的 id（来自 current_hotspots 里的 id 字段），便于后端入库时建立 FK。\n\n"
         "好坏示例：\n"
         "Bad zh-CN: 高端奢侈品集团旗下的香水线哪些性价比更高？\n"
         "Good zh-CN: 想买大牌香水，哪些系列不太贵又好闻？\n"
@@ -973,6 +989,7 @@ class PromptMatrixClient:
         config: dict[str, Any],
         known_brands: list[dict[str, Any]],
         existing_prompts: list[str],
+        active_hotspots: list[dict[str, Any]] | None = None,
     ):
         if not topics:
             return
@@ -1002,6 +1019,7 @@ class PromptMatrixClient:
                 config=batch_config,
                 known_brands=known_brands,
                 existing_prompts=existing_prompts + [item.text for item in generated_prompts],
+                active_hotspots=active_hotspots,
             )
             # Trim back to the actual target (LLM over-shot was on purpose).
             batch_prompts = prompts[:target]
@@ -1015,6 +1033,7 @@ class PromptMatrixClient:
         config: dict[str, Any],
         known_brands: list[dict[str, Any]],
         existing_prompts: list[str],
+        active_hotspots: list[dict[str, Any]] | None = None,
     ) -> tuple[list[LLMPromptCandidate], dict[str, Any]]:
         try:
             from openai import OpenAI
@@ -1026,6 +1045,7 @@ class PromptMatrixClient:
             config=config,
             known_brands=known_brands,
             existing_prompts=existing_prompts,
+            active_hotspots=active_hotspots,
         )
         timeout_seconds = clamp_int(
             os.getenv("PROMPT_MATRIX_LLM_TIMEOUT_SECONDS") or getattr(self.config, "timeout", None) or 90,
