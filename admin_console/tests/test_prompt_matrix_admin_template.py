@@ -380,3 +380,28 @@ def test_profile_groups_are_labeled_as_segments_with_profile_drilldown():
     assert "segmentProfiles:" in html
     assert "Segment 内用于 Query 采样的单个 Profile" in html
     assert "+ 新建 ProfileGroup" not in html
+
+
+def test_topic_plan_generation_status_and_stop_button_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'stopTopicPlanGenerate()' in html
+    assert 'topicPlanStopLoading' in html
+    assert 'topicPlanRunStatusLabel()' in html
+    assert "/admin/topic-plan/runs/" in html
+    assert "stop'" in html or 'stop", {' in html or 'stop\', {' in html
+
+
+def test_prompt_matrix_generation_status_and_stop_button_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'stopPromptMatrixGenerate()' in html
+    assert 'promptMatrixStopLoading' in html
+    assert 'promptMatrixRunStatusLabel()' in html
+    assert "/admin/prompt-matrix/runs/" in html
+
+
+def test_query_pool_generation_status_and_stop_button_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'stopQueryPoolAssemble()' in html
+    assert 'queryPoolStopLoading' in html
+    assert 'queryPoolRunStatusLabel()' in html
+    assert "/admin/query-pool/runs/" in html

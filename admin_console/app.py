@@ -889,7 +889,7 @@ def _ensure_topic_plan_tables():
                         category_id VARCHAR(128),
                         brand_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                         status VARCHAR(16) NOT NULL DEFAULT 'running'
-                            CHECK (status IN ('running', 'completed', 'failed')),
+                            CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
                         request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
                         coverage_snapshot JSONB,
                         llm_model VARCHAR(128),
@@ -907,6 +907,14 @@ def _ensure_topic_plan_tables():
                     """
                     CREATE INDEX IF NOT EXISTS idx_topic_plan_runs_created
                     ON topic_plan_runs (created_at DESC)
+                    """
+                )
+                cur.execute("ALTER TABLE topic_plan_runs DROP CONSTRAINT IF EXISTS topic_plan_runs_status_check")
+                cur.execute(
+                    """
+                    ALTER TABLE topic_plan_runs
+                    ADD CONSTRAINT topic_plan_runs_status_check
+                    CHECK (status IN ('running', 'completed', 'failed', 'cancelled'))
                     """
                 )
                 cur.execute(
@@ -971,7 +979,7 @@ def _ensure_prompt_matrix_tables():
                         id VARCHAR(36) PRIMARY KEY,
                         admin_id VARCHAR(36),
                         status VARCHAR(16) NOT NULL DEFAULT 'running'
-                            CHECK (status IN ('running', 'completed', 'failed')),
+                            CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
                         request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
                         selected_topic_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                         estimated_prompts INTEGER NOT NULL DEFAULT 0,
@@ -990,6 +998,14 @@ def _ensure_prompt_matrix_tables():
                     """
                     CREATE INDEX IF NOT EXISTS idx_prompt_generation_runs_created
                     ON prompt_generation_runs (created_at DESC)
+                    """
+                )
+                cur.execute("ALTER TABLE prompt_generation_runs DROP CONSTRAINT IF EXISTS prompt_generation_runs_status_check")
+                cur.execute(
+                    """
+                    ALTER TABLE prompt_generation_runs
+                    ADD CONSTRAINT prompt_generation_runs_status_check
+                    CHECK (status IN ('running', 'completed', 'failed', 'cancelled'))
                     """
                 )
                 cur.execute(
@@ -1070,7 +1086,7 @@ def _ensure_query_pool_tables():
                         id VARCHAR(36) PRIMARY KEY,
                         admin_id VARCHAR(36),
                         status VARCHAR(16) NOT NULL DEFAULT 'pending'
-                            CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+                            CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
                         request_config JSONB NOT NULL DEFAULT '{}'::jsonb,
                         prompt_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                         segment_ids_selected JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -1161,6 +1177,14 @@ def _ensure_query_pool_tables():
                     """
                     CREATE INDEX IF NOT EXISTS idx_query_candidates_generation_method
                     ON query_generation_candidates (generation_method)
+                    """
+                )
+                cur.execute("ALTER TABLE query_generation_runs DROP CONSTRAINT IF EXISTS query_generation_runs_status_check")
+                cur.execute(
+                    """
+                    ALTER TABLE query_generation_runs
+                    ADD CONSTRAINT query_generation_runs_status_check
+                    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled'))
                     """
                 )
             conn.commit()
@@ -3374,6 +3398,7 @@ def _update_query_pool_run_progress(cur, *, run_id, candidates, preflight_summar
             llm_usage_json = %s::jsonb,
             updated_at = NOW()
         WHERE id = %s
+          AND status NOT IN ('cancelled', 'failed')
         """,
         (
             int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
@@ -3508,6 +3533,7 @@ def _finalize_query_pool_run(cur, *, run_id, candidates, preflight_summary):
             completed_at = NOW(),
             updated_at = NOW()
         WHERE id = %s
+          AND status <> 'cancelled'
         """,
         (
             int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
@@ -3535,8 +3561,34 @@ def _mark_query_pool_run_failed(cur, *, run_id, error_code, error_message):
             completed_at = NOW(),
             updated_at = NOW()
         WHERE id = %s
+          AND status <> 'cancelled'
         """,
         (detail, run_id),
+    )
+
+
+def _mark_query_pool_run_cancelled(cur, *, run_id, candidates, preflight_summary):
+    cur.execute(
+        """
+        UPDATE query_generation_runs
+        SET status = 'cancelled',
+            candidates_estimated = %s,
+            candidates_assembled = %s,
+            preflight_summary = %s::jsonb,
+            llm_model = %s,
+            llm_usage_json = %s::jsonb,
+            completed_at = COALESCE(completed_at, NOW()),
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            int(preflight_summary.get("raw_candidates_estimated") or len(candidates)),
+            len(candidates),
+            _topic_plan_json(preflight_summary),
+            preflight_summary.get("llm_model"),
+            _topic_plan_json(preflight_summary.get("llm_usage") or {}),
+            run_id,
+        ),
     )
 
 
@@ -3627,7 +3679,11 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
             query_repaired = 0
             llm_meta = {"model": None, "usage": {}, "batches": 0}
             batch_size = _query_pool_llm_batch_size()
+            cancelled = False
             for batch in _query_pool_chunked(contexts, batch_size):
+                if _is_generation_run_cancelled(conn, "query_generation_runs", run_id):
+                    cancelled = True
+                    break
                 llm_queries, batch_meta = _coerce_query_pool_generation_result(_generate_query_pool_llm_queries(batch))
                 batch_meta = batch_meta or {}
                 if batch_meta.get("model"):
@@ -3643,6 +3699,9 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                 )
                 duplicate_review += int(batch_stats.get("duplicate_review") or 0)
                 query_repaired += int(batch_stats.get("query_repaired") or 0)
+                if _is_generation_run_cancelled(conn, "query_generation_runs", run_id):
+                    cancelled = True
+                    break
                 if batch_candidates:
                     _insert_query_pool_candidates(cur, run_id, batch_candidates)
                     candidates.extend(batch_candidates)
@@ -3665,6 +3724,40 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                     preflight_summary=preflight_summary,
                 )
                 conn.commit()
+            if cancelled or _is_generation_run_cancelled(conn, "query_generation_runs", run_id):
+                preflight_summary = _query_pool_summary(
+                    contexts=contexts,
+                    profile_pool=profile_pool,
+                    config=config,
+                    raw_estimated=raw_estimated,
+                    candidates=candidates,
+                    duplicate_review=duplicate_review,
+                    query_repaired=query_repaired,
+                    generation_method="llm",
+                    llm_meta=llm_meta,
+                )
+                preflight_summary["scheduler_intake"] = "cancelled"
+                _mark_query_pool_run_cancelled(
+                    cur,
+                    run_id=run_id,
+                    candidates=candidates,
+                    preflight_summary=preflight_summary,
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="query_pool_assemble_cancelled",
+                    target_type="query_generation_run",
+                    target_id=run_id,
+                    diff={
+                        "selection": selection,
+                        "config": config,
+                        "candidates_assembled": len(candidates),
+                    },
+                    reason="query_pool_assemble",
+                )
+                conn.commit()
+                return
             if not candidates:
                 raise ValueError("query_pool_no_candidates")
             preflight_summary = _query_pool_summary(
@@ -7325,6 +7418,25 @@ def _topic_plan_run_failed_status(error):
     return 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
 
 
+def _is_generation_run_cancelled(conn, table, run_id):
+    """Return True if the run row for run_id is currently marked cancelled."""
+    if not run_id:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM " + table + " WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return False
+    if not row:
+        return False
+    status = row[0] if isinstance(row, (list, tuple)) else row.get("status")
+    return str(status or "").lower() == "cancelled"
+
+
 def _execute_topic_plan_generation(
     *,
     run_id,
@@ -7349,6 +7461,7 @@ def _execute_topic_plan_generation(
     usage = {}
     batches = 0
     llm_model = os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL")
+    cancelled = False
     try:
         doubao_config = load_doubao_config()
         client = DoubaoTopicPlanClient(doubao_config)
@@ -7359,6 +7472,9 @@ def _execute_topic_plan_generation(
             max_topics=max_topics,
             max_per_brand=max_per_brand,
         ):
+            if _is_generation_run_cancelled(conn, "topic_plan_runs", run_id):
+                cancelled = True
+                break
             remaining = max_topics - len(inserted)
             if remaining <= 0:
                 break
@@ -7382,6 +7498,9 @@ def _execute_topic_plan_generation(
             batches += 1
             llm_model = (llm_meta or {}).get("model") or llm_model
             usage = merge_usage(usage, (llm_meta or {}).get("usage") or {})
+            if _is_generation_run_cancelled(conn, "topic_plan_runs", run_id):
+                cancelled = True
+                break
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 batch_inserted = _insert_topic_plan_candidate_batch(
                     cur,
@@ -7402,6 +7521,7 @@ def _execute_topic_plan_generation(
                         candidates_generated = %s,
                         updated_at = NOW()
                     WHERE id = %s
+                      AND status NOT IN ('cancelled', 'failed')
                     """,
                     (
                         llm_model,
@@ -7411,6 +7531,51 @@ def _execute_topic_plan_generation(
                     ),
                 )
             conn.commit()
+
+        if cancelled or _is_generation_run_cancelled(conn, "topic_plan_runs", run_id):
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'cancelled',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        completed_at = COALESCE(completed_at, NOW()),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _topic_plan_json(usage),
+                        len(inserted),
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="generate_topic_plan_cancelled",
+                    target_type="topic_plan_run",
+                    target_id=run_id,
+                    diff={
+                        "request_config": request_config,
+                        "candidates_generated": len(inserted),
+                        "batches": batches,
+                        "skipped": skipped,
+                    },
+                    reason="topic_plan_generate",
+                )
+            conn.commit()
+            return {
+                "inserted": inserted,
+                "skipped": skipped,
+                "usage": usage,
+                "model": llm_model,
+                "batches": batches,
+                "coverage": coverage_summary,
+                "cancelled": True,
+            }
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -7470,6 +7635,7 @@ def _execute_topic_plan_generation(
                         completed_at = NOW(),
                         updated_at = NOW()
                     WHERE id = %s
+                      AND status <> 'cancelled'
                     """,
                     (
                         llm_model,
@@ -7533,6 +7699,84 @@ def admin_topic_plan_run_api(run_id):
             if not row:
                 return jsonify({"success": False, "error": "run_not_found"}), 404
             return jsonify({"success": True, "run": _topic_plan_run_row(row)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/topic-plan/runs/<run_id>/stop', methods=['POST'])
+def admin_topic_plan_run_stop_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "topic_plan_runs"):
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            cur.execute(
+                "SELECT id, status FROM topic_plan_runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            current_status = str(row.get("status") or "").lower()
+            if current_status in {"completed", "failed", "cancelled"}:
+                cur.execute(
+                    """
+                    SELECT *,
+                           EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                    FROM topic_plan_runs
+                    WHERE id = %s
+                    """,
+                    (run_id,),
+                )
+                final_row = cur.fetchone()
+                return jsonify(
+                    {
+                        "success": True,
+                        "already_finalized": True,
+                        "run": _topic_plan_run_row(final_row) if final_row else None,
+                    }
+                )
+            cur.execute(
+                """
+                UPDATE topic_plan_runs
+                SET status = 'cancelled',
+                    completed_at = COALESCE(completed_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (run_id,),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="topic_plan_run_cancelled",
+                target_type="topic_plan_run",
+                target_id=run_id,
+                diff={"requested_status": "cancelled"},
+                reason="topic_plan_stop",
+            )
+            cur.execute(
+                """
+                SELECT *,
+                       EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                FROM topic_plan_runs
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            updated_row = cur.fetchone()
+        conn.commit()
+        return jsonify({"success": True, "run": _topic_plan_run_row(updated_row) if updated_row else None})
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -8252,6 +8496,71 @@ def admin_query_pool_run_detail_api(run_id):
             conn.close()
 
 
+@app.route('/api/admin/query-pool/runs/<run_id>/stop', methods=['POST'])
+@app.route('/admin/api/v1/pipeline/query-pool/runs/<run_id>/stop', methods=['POST'])
+def admin_query_pool_run_stop_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "query_generation_runs"):
+                return jsonify({"success": False, "error": "query_pool_run_not_found"}), 404
+            cur.execute(
+                "SELECT id, status FROM query_generation_runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "query_pool_run_not_found"}), 404
+            current_status = str(row.get("status") or "").lower()
+            if current_status in {"completed", "failed", "cancelled"}:
+                run = _get_query_pool_run(cur, run_id)
+                return jsonify({"success": True, "already_finalized": True, "run": run})
+            cur.execute(
+                """
+                UPDATE query_generation_runs
+                SET status = 'cancelled',
+                    completed_at = COALESCE(completed_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (run_id,),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="query_pool_run_cancelled",
+                target_type="query_generation_run",
+                target_id=run_id,
+                diff={"requested_status": "cancelled"},
+                reason="query_pool_stop",
+            )
+            run = _get_query_pool_run(cur, run_id)
+        conn.commit()
+        return jsonify({"success": True, "run": run})
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        app.logger.exception("Query Pool stop failed for run %s: %s", run_id, exc)
+        return jsonify(
+            {
+                "success": False,
+                "error": "query_pool_run_stop_failed",
+                "message": "Query 组装停止失败",
+            }
+        ), 503
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.route('/api/admin/query-pool/candidates/<candidate_id>/review', methods=['POST'])
 @app.route('/admin/api/v1/pipeline/query-pool/candidates/<candidate_id>/review', methods=['POST'])
 def admin_query_pool_candidate_review_api(candidate_id):
@@ -8580,6 +8889,7 @@ def _execute_prompt_matrix_generation(
     usage = {}
     batches = 0
     llm_model = os.getenv("ARK_MODEL") or os.getenv("DOUBAO_MODEL") or os.getenv("LLM_MODEL")
+    cancelled = False
     try:
         client = PromptMatrixClient()
         llm_model = getattr(getattr(client, "config", None), "model", None) or llm_model
@@ -8590,6 +8900,9 @@ def _execute_prompt_matrix_generation(
             known_brands=known_brands,
             existing_prompts=existing_prompts,
         ):
+            if _is_generation_run_cancelled(conn, "prompt_generation_runs", run_id):
+                cancelled = True
+                break
             batches += 1
             llm_model = (llm_meta or {}).get("model") or llm_model
             usage = merge_usage(usage, (llm_meta or {}).get("usage") or {})
@@ -8618,6 +8931,7 @@ def _execute_prompt_matrix_generation(
                         candidates_generated = %s,
                         updated_at = NOW()
                     WHERE id = %s
+                      AND status NOT IN ('cancelled', 'failed')
                     """,
                     (
                         llm_model,
@@ -8627,6 +8941,51 @@ def _execute_prompt_matrix_generation(
                     ),
                 )
             conn.commit()
+
+        if cancelled or _is_generation_run_cancelled(conn, "prompt_generation_runs", run_id):
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE prompt_generation_runs
+                    SET status = 'cancelled',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        completed_at = COALESCE(completed_at, NOW()),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _prompt_matrix_json(usage),
+                        len(inserted),
+                        run_id,
+                    ),
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="generate_prompt_matrix_cancelled",
+                    target_type="prompt_generation_run",
+                    target_id=run_id,
+                    diff={
+                        "request_config": request_config,
+                        "estimated_prompts": estimated,
+                        "candidates_generated": len(inserted),
+                        "batches": batches,
+                        "skipped": skipped,
+                    },
+                    reason="prompt_matrix_generate",
+                )
+            conn.commit()
+            return {
+                "inserted": inserted,
+                "skipped": skipped,
+                "usage": usage,
+                "model": llm_model,
+                "batches": batches,
+                "cancelled": True,
+            }
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -8681,6 +9040,7 @@ def _execute_prompt_matrix_generation(
                         completed_at = NOW(),
                         updated_at = NOW()
                     WHERE id = %s
+                      AND status <> 'cancelled'
                     """,
                     (
                         llm_model,
@@ -8744,6 +9104,84 @@ def admin_prompt_matrix_run_api(run_id):
             if not row:
                 return jsonify({"success": False, "error": "run_not_found"}), 404
             return jsonify({"success": True, "run": _prompt_matrix_run_row(row)})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/prompt-matrix/runs/<run_id>/stop', methods=['POST'])
+def admin_prompt_matrix_run_stop_api(run_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "prompt_generation_runs"):
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            cur.execute(
+                "SELECT id, status FROM prompt_generation_runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "run_not_found"}), 404
+            current_status = str(row.get("status") or "").lower()
+            if current_status in {"completed", "failed", "cancelled"}:
+                cur.execute(
+                    """
+                    SELECT *,
+                           EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                    FROM prompt_generation_runs
+                    WHERE id = %s
+                    """,
+                    (run_id,),
+                )
+                final_row = cur.fetchone()
+                return jsonify(
+                    {
+                        "success": True,
+                        "already_finalized": True,
+                        "run": _prompt_matrix_run_row(final_row) if final_row else None,
+                    }
+                )
+            cur.execute(
+                """
+                UPDATE prompt_generation_runs
+                SET status = 'cancelled',
+                    completed_at = COALESCE(completed_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                """,
+                (run_id,),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="prompt_matrix_run_cancelled",
+                target_type="prompt_generation_run",
+                target_id=run_id,
+                diff={"requested_status": "cancelled"},
+                reason="prompt_matrix_stop",
+            )
+            cur.execute(
+                """
+                SELECT *,
+                       EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+                FROM prompt_generation_runs
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            updated_row = cur.fetchone()
+        conn.commit()
+        return jsonify({"success": True, "run": _prompt_matrix_run_row(updated_row) if updated_row else None})
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
