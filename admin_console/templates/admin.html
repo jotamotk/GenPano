@@ -13632,10 +13632,12 @@ function adminApp() {
     },
     openScheduleEditor(s) {
       const isNew = !s;
-      const tomorrow = new Date(Date.now() + 86400000);
-      // datetime-local input wants YYYY-MM-DDTHH:MM in local time
-      const tz = tomorrow.getTimezoneOffset() * 60000;
-      const defaultLocal = new Date(tomorrow.getTime() - tz).toISOString().slice(0, 16);
+      // Default to "now" so the first 立即触发一次 / next Beat tick actually
+      // fires the new plan; otherwise users see "目标 0 / 入队 0" because
+      // next_run_at was in the future.
+      const now = new Date();
+      const tz = now.getTimezoneOffset() * 60000;
+      const defaultLocal = new Date(now.getTime() - tz).toISOString().slice(0, 16);
       this.scheduleEditor = isNew ? {
         id: null,
         query_text: '',
