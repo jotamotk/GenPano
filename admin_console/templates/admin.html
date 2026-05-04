@@ -2931,6 +2931,74 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     </div>
                   </section>
 
+                  <template x-if="topicPlanLastMetrics && topicPlanLastMetrics.requested">
+                    <section class="rounded-card-lg bg-accent/5 border border-accent/20 shadow-card overflow-hidden">
+                      <div class="px-5 py-3 border-b border-accent/20 flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <h3 class="text-[14px] font-bold text-accent">本次生成结果</h3>
+                          <div class="text-[11px] text-ink-muted mt-0.5">
+                            请求 <strong class="text-ink" x-text="topicPlanLastMetrics.requested"></strong>
+                            → 通过 <strong class="text-success" x-text="topicPlanLastMetrics.accepted"></strong>
+                            <span class="text-ink-muted" x-show="topicPlanLastMetrics.rejected_total">
+                              · 丢弃 <strong class="text-danger" x-text="topicPlanLastMetrics.rejected_total"></strong>
+                            </span>
+                          </div>
+                        </div>
+                        <button @click="topicPlanLastMetrics = null; topicPlanLastRejected = []; topicPlanShowRejected = false"
+                                class="h-6 px-2 rounded-badge text-[11px] text-ink-muted hover:text-ink shrink-0">× 关闭</button>
+                      </div>
+                      <div class="p-4 space-y-3">
+                        <div>
+                          <div class="flex items-center justify-between text-[10px] text-ink-muted mb-1">
+                            <span>通过率</span>
+                            <span><strong class="text-ink" x-text="metricsAcceptanceRate(topicPlanLastMetrics) + '%'"></strong></span>
+                          </div>
+                          <div class="h-2 bg-ink-muted/15 rounded-full overflow-hidden">
+                            <div class="h-full bg-accent rounded-full transition-all"
+                                 :style="'width:' + metricsAcceptanceRate(topicPlanLastMetrics) + '%'"></div>
+                          </div>
+                        </div>
+                        <template x-if="topicPlanLastMetrics.rejected_total > 0">
+                          <div class="rounded-card bg-surface border border-b-card p-3 space-y-1.5">
+                            <template x-for="row in rejectionGroupedRows(topicPlanLastMetrics)" :key="row.key">
+                              <div class="flex items-center justify-between text-[11.5px]">
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                  <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="row.color"></span>
+                                  <span class="text-ink-body" x-text="row.label"></span>
+                                  <span class="text-[10px] text-ink-muted truncate" x-text="row.note"></span>
+                                </div>
+                                <span class="font-semibold text-ink shrink-0" x-text="row.count + ' 条'"></span>
+                              </div>
+                            </template>
+                            <button @click="topicPlanShowRejected = !topicPlanShowRejected"
+                                    x-show="topicPlanLastRejected.length > 0"
+                                    class="w-full mt-1.5 h-7 rounded-btn border border-b-default bg-surface-page text-[11px] font-semibold text-ink-body hover:bg-surface">
+                              <span x-text="topicPlanShowRejected ? '收起被丢条目 ▴' : ('查看被丢条目样本 (' + topicPlanLastRejected.length + ' 条) ▾')"></span>
+                            </button>
+                            <template x-if="topicPlanShowRejected">
+                              <div class="mt-1.5 max-h-56 overflow-y-auto divide-y divide-b-card/50">
+                                <template x-for="item in topicPlanLastRejected" :key="(item.text||'') + (item.reason||'')">
+                                  <div class="text-[11px] flex items-start justify-between gap-2 py-1.5">
+                                    <span class="flex-1 text-ink-body break-words" x-text="item.text || '(空)'"></span>
+                                    <span class="text-[9.5px] font-semibold rounded-badge px-1.5 h-4 inline-flex items-center bg-ink-muted/10 text-ink-muted whitespace-nowrap shrink-0"
+                                          x-text="rejectionReasonLabel(item.reason)"></span>
+                                  </div>
+                                </template>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                        <div class="text-[10.5px] text-ink-muted flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 border-t border-b-card/50">
+                          <span x-text="'用时 ' + metricsDurationLabel(topicPlanLastMetrics)"></span>
+                          <span class="opacity-50">·</span>
+                          <span x-text="(topicPlanLastMetrics.batches || 1) + ' 批'"></span>
+                          <span class="opacity-50">·</span>
+                          <span x-text="topicPlanLastMetrics.llm_model || '—'"></span>
+                        </div>
+                      </div>
+                    </section>
+                  </template>
+
                   <section x-ref="topicPlanPending" class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
                     <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
                       <div>
@@ -3685,6 +3753,73 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       </div>
                       <template x-if="promptMatrixGenerateError">
                         <div class="text-[12px] text-danger" x-text="promptMatrixGenerateError"></div>
+                      </template>
+                      <template x-if="promptMatrixLastMetrics && promptMatrixLastMetrics.requested">
+                        <div class="rounded-card-lg bg-accent/5 border border-accent/20 shadow-card overflow-hidden">
+                          <div class="px-5 py-3 border-b border-accent/20 flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                              <h3 class="text-[14px] font-bold text-accent">本次生成结果</h3>
+                              <div class="text-[11px] text-ink-muted mt-0.5">
+                                请求 <strong class="text-ink" x-text="promptMatrixLastMetrics.requested"></strong>
+                                → 通过 <strong class="text-success" x-text="promptMatrixLastMetrics.accepted"></strong>
+                                <span class="text-ink-muted" x-show="promptMatrixLastMetrics.rejected_total">
+                                  · 丢弃 <strong class="text-danger" x-text="promptMatrixLastMetrics.rejected_total"></strong>
+                                </span>
+                              </div>
+                            </div>
+                            <button @click="promptMatrixLastMetrics = null; promptMatrixLastRejected = []; promptMatrixShowRejected = false"
+                                    class="h-6 px-2 rounded-badge text-[11px] text-ink-muted hover:text-ink shrink-0">× 关闭</button>
+                          </div>
+                          <div class="p-4 space-y-3">
+                            <div>
+                              <div class="flex items-center justify-between text-[10px] text-ink-muted mb-1">
+                                <span>通过率</span>
+                                <span><strong class="text-ink" x-text="metricsAcceptanceRate(promptMatrixLastMetrics) + '%'"></strong></span>
+                              </div>
+                              <div class="h-2 bg-ink-muted/15 rounded-full overflow-hidden">
+                                <div class="h-full bg-accent rounded-full transition-all"
+                                     :style="'width:' + metricsAcceptanceRate(promptMatrixLastMetrics) + '%'"></div>
+                              </div>
+                            </div>
+                            <template x-if="promptMatrixLastMetrics.rejected_total > 0">
+                              <div class="rounded-card bg-surface border border-b-card p-3 space-y-1.5">
+                                <template x-for="row in rejectionGroupedRows(promptMatrixLastMetrics)" :key="row.key">
+                                  <div class="flex items-center justify-between text-[11.5px]">
+                                    <div class="flex items-center gap-1.5 min-w-0">
+                                      <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="row.color"></span>
+                                      <span class="text-ink-body" x-text="row.label"></span>
+                                      <span class="text-[10px] text-ink-muted truncate" x-text="row.note"></span>
+                                    </div>
+                                    <span class="font-semibold text-ink shrink-0" x-text="row.count + ' 条'"></span>
+                                  </div>
+                                </template>
+                                <button @click="promptMatrixShowRejected = !promptMatrixShowRejected"
+                                        x-show="promptMatrixLastRejected.length > 0"
+                                        class="w-full mt-1.5 h-7 rounded-btn border border-b-default bg-surface-page text-[11px] font-semibold text-ink-body hover:bg-surface">
+                                  <span x-text="promptMatrixShowRejected ? '收起被丢条目 ▴' : ('查看被丢条目样本 (' + promptMatrixLastRejected.length + ' 条) ▾')"></span>
+                                </button>
+                                <template x-if="promptMatrixShowRejected">
+                                  <div class="mt-1.5 max-h-56 overflow-y-auto divide-y divide-b-card/50">
+                                    <template x-for="item in promptMatrixLastRejected" :key="(item.text||'') + (item.reason||'')">
+                                      <div class="text-[11px] flex items-start justify-between gap-2 py-1.5">
+                                        <span class="flex-1 text-ink-body break-words" x-text="item.text || '(空)'"></span>
+                                        <span class="text-[9.5px] font-semibold rounded-badge px-1.5 h-4 inline-flex items-center bg-ink-muted/10 text-ink-muted whitespace-nowrap shrink-0"
+                                              x-text="rejectionReasonLabel(item.reason)"></span>
+                                      </div>
+                                    </template>
+                                  </div>
+                                </template>
+                              </div>
+                            </template>
+                            <div class="text-[10.5px] text-ink-muted flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 border-t border-b-card/50">
+                              <span x-text="'用时 ' + metricsDurationLabel(promptMatrixLastMetrics)"></span>
+                              <span class="opacity-50">·</span>
+                              <span x-text="(promptMatrixLastMetrics.batches || 1) + ' 批'"></span>
+                              <span class="opacity-50">·</span>
+                              <span x-text="promptMatrixLastMetrics.llm_model || '—'"></span>
+                            </div>
+                          </div>
+                        </div>
                       </template>
                     </div>
                   </template>
@@ -9318,6 +9453,9 @@ function adminApp() {
       { name:'候选生成', status:'idle', label:'待运行', value:'+0' },
       { name:'进入审核', status:'idle', label:'待运行', value:'0' },
     ],
+    topicPlanLastMetrics: null,
+    topicPlanLastRejected: [],
+    topicPlanShowRejected: false,
     topicPlanPendingItems: [],
     promptMatrixConfig: {
       intentCount: 4,
@@ -9373,6 +9511,9 @@ function adminApp() {
       { name:'候选生成', status:'idle', label:'等待', value:'+0' },
       { name:'进入审核', status:'idle', label:'等待', value:'0' },
     ],
+    promptMatrixLastMetrics: null,
+    promptMatrixLastRejected: [],
+    promptMatrixShowRejected: false,
     promptMatrixPendingItems: [],
     promptMatrixCandidateStatus: 'pending',
     promptMatrixCandidatePage: 1,
@@ -11403,6 +11544,10 @@ function adminApp() {
         return step;
       });
       if (failed) this.topicPlanGenerateError = run.llm_error || 'Topic generation failed';
+      if (finished && run.metrics && Object.keys(run.metrics).length){
+        this.topicPlanLastMetrics = run.metrics;
+        this.topicPlanLastRejected = Array.isArray(run.metrics.rejected_sample) ? run.metrics.rejected_sample : [];
+      }
     },
 
     topicPlanRunStatusLabel(){
@@ -11412,6 +11557,47 @@ function adminApp() {
       if (status === 'cancelled') return '已停止';
       if (status === 'running' || this.topicPlanGenerateLoading) return '生成中';
       return '';
+    },
+
+    rejectionReasonLabel(reason){
+      const map = {
+        duplicate_db: '重复 (与已有内容)',
+        duplicate_intra_batch: '重复 (本批次内)',
+        looks_like_topic: '越界：写成了主题',
+        looks_like_prompt: '越界：写成了提问',
+        looks_like_query: '越界：含个性化锚点',
+        over_limit: '超过请求数量',
+      };
+      return map[reason] || reason || '其他';
+    },
+
+    rejectionGroupedRows(metrics){
+      if (!metrics || !metrics.by_reason) return [];
+      const by = metrics.by_reason;
+      const groups = [
+        { key:'dup',  label:'重复',     color:'bg-warning', note:'(相似度 ≥96% 或子串包含)',
+          count: (by.duplicate_db||0) + (by.duplicate_intra_batch||0) },
+        { key:'cross',label:'越界',     color:'bg-accent',  note:'(写成了其他层级)',
+          count: (by.looks_like_topic||0) + (by.looks_like_prompt||0) + (by.looks_like_query||0) },
+        { key:'over', label:'超出限制', color:'bg-ink-muted',note:'(LLM 返回多于请求数)',
+          count: by.over_limit || 0 },
+      ];
+      return groups.filter(g => g.count > 0);
+    },
+
+    metricsAcceptanceRate(metrics){
+      if (!metrics || !metrics.requested) return 0;
+      return Math.round((metrics.accepted || 0) / metrics.requested * 100);
+    },
+
+    metricsDurationLabel(metrics){
+      const ms = (metrics && metrics.duration_ms) || 0;
+      if (!ms) return '—';
+      if (ms < 1000) return ms + 'ms';
+      if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+      const m = Math.floor(ms / 60000);
+      const s = Math.round((ms % 60000) / 1000);
+      return m + 'm ' + s + 's';
     },
 
     async stopTopicPlanGenerate(){
@@ -11505,6 +11691,9 @@ function adminApp() {
       this.topicPlanGenerateLoading = true;
       this.topicPlanGenerateError = '';
       this.topicPlanRunStatus = 'running';
+      this.topicPlanLastMetrics = null;
+      this.topicPlanLastRejected = [];
+      this.topicPlanShowRejected = false;
       const estimatedBeforeRun = this.estimatedTopicCount();
       this.topicPlanGenerateSteps = [
         { name:'配置检查', status:'done', label:'完成', value:this.selectedTopicPlanBrands().length + ' 个品牌' },
@@ -12175,6 +12364,10 @@ function adminApp() {
         return step;
       });
       if (failed) this.promptMatrixGenerateError = run.llm_error || 'Prompt generation failed';
+      if (finished && run.metrics && Object.keys(run.metrics).length){
+        this.promptMatrixLastMetrics = run.metrics;
+        this.promptMatrixLastRejected = Array.isArray(run.metrics.rejected_sample) ? run.metrics.rejected_sample : [];
+      }
     },
 
     promptMatrixRunStatusLabel(){
@@ -12286,6 +12479,9 @@ function adminApp() {
       this.promptMatrixGenerateLoading = true;
       this.promptMatrixGenerateError = '';
       this.promptMatrixRunStatus = 'running';
+      this.promptMatrixLastMetrics = null;
+      this.promptMatrixLastRejected = [];
+      this.promptMatrixShowRejected = false;
       const estimatedBeforeRun = this.estimatedPromptCount();
       this.promptMatrixGenerateSteps = [
         { name:'Topic 校验', status:'done', label:'完成', value:this.promptMatrixSelectedTopicCount() + ' Topic' },
