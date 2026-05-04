@@ -13109,7 +13109,7 @@ def get_account_profiles(account_id):
                     p.name                        AS profile_name,
                     p.persona_json                AS persona_json
                 FROM account_profile_map apm
-                LEFT JOIN profiles p ON p.id = apm.profile_id
+                LEFT JOIN profiles p ON p.id::text = apm.profile_id
                 WHERE apm.account_id = %s
                   {search_pred}
                 ORDER BY p.code NULLS LAST, apm.profile_id
@@ -13556,21 +13556,8 @@ def _run_manual_dispatch(cap_override=None, note=None):
                     for q in quotas:
                         q['quota'] = max(1, int(round(int(q['quota'] or 0) * scale)))
 
-            target_total = sum(int(q['quota'] or 0) for q in quotas)
-
-            # Open a run row up front so partial failures still leave a record
-            cur.execute(
-                "INSERT INTO scheduler_runs (mode, target_total, queries_created, note) "
-                "VALUES (%s, %s, 0, %s) RETURNING id",
-                ('manual', target_total, note),
-            )
-            run_id = cur.fetchone()['id']
-
-            created = 0
-
-            # ── (A) Consume due query_schedules ─────────────────────────────
-            # Recurring user-defined plans. Each due row (next_run_at <= now,
-            # enabled=TRUE) becomes one queries row, advances by cadence_days.
+            # Fetch due schedules up-front so target_total reflects both the
+            # recurring plans (A) and the random prompt fill (B).
             cur.execute(
                 """
                 SELECT id, query_text, profile_id, target_llm, cadence_days,
@@ -13586,6 +13573,21 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 (json.dumps([str(e).lower() for e in paused_engines]),),
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
+            target_total = len(due_schedules) + sum(int(q['quota'] or 0) for q in quotas)
+
+            # Open a run row up front so partial failures still leave a record
+            cur.execute(
+                "INSERT INTO scheduler_runs (mode, target_total, queries_created, note) "
+                "VALUES (%s, %s, 0, %s) RETURNING id",
+                ('manual', target_total, note),
+            )
+            run_id = cur.fetchone()['id']
+
+            created = 0
+
+            # ── (A) Consume due query_schedules ─────────────────────────────
+            # Recurring user-defined plans. Each due row (next_run_at <= now,
+            # enabled=TRUE) becomes one queries row, advances by cadence_days.
             schedule_failures = []
             for sch in due_schedules:
                 # Wrap each schedule in a SAVEPOINT so a single bad row (e.g.
@@ -14218,7 +14220,7 @@ def queries_by_day():
                          WHERE r.query_id = q.id AND r.screenshot_path IS NOT NULL)
                             AS has_screenshot
                 FROM queries q
-                LEFT JOIN profiles p ON p.id = q.profile_id::text
+                LEFT JOIN profiles p ON p.id::text = q.profile_id::text
                 LEFT JOIN llm_accounts a ON a.id = q.account_id
                 WHERE {where_sql}
                 ORDER BY q.target_llm, q.profile_id, q.id
