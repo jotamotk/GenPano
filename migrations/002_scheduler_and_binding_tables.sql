@@ -65,3 +65,34 @@ CREATE TABLE IF NOT EXISTS scheduler_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started
     ON scheduler_runs (started_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 4. query_schedules — recurring query plans
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Each row defines a recurring query: same query_text + (LLM, profile)
+-- pair, fired every cadence_days. The dispatcher consumes rows whose
+-- next_run_at <= now(), creates a row in `queries`, then advances
+-- next_run_at. A `queries.schedule_id` FK lets attempts trace back to
+-- their plan so the timeline can be reconstructed.
+CREATE TABLE IF NOT EXISTS query_schedules (
+    id            SERIAL PRIMARY KEY,
+    query_text    TEXT       NOT NULL,
+    profile_id    VARCHAR(64),
+    target_llm    VARCHAR(32) NOT NULL,
+    cadence_days  INTEGER    NOT NULL DEFAULT 1 CHECK (cadence_days >= 1),
+    next_run_at   TIMESTAMP  NOT NULL DEFAULT NOW(),
+    last_run_at   TIMESTAMP,
+    enabled       BOOLEAN    NOT NULL DEFAULT TRUE,
+    note          TEXT,
+    brand_id      INTEGER,
+    prompt_id     INTEGER,
+    created_at    TIMESTAMP  NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMP  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_qs_next_run
+    ON query_schedules (enabled, next_run_at);
+
+-- queries.schedule_id (additive, no FK to keep migration cheap on big tables)
+ALTER TABLE queries ADD COLUMN IF NOT EXISTS schedule_id INTEGER;
+CREATE INDEX IF NOT EXISTS idx_queries_schedule
+    ON queries (schedule_id);

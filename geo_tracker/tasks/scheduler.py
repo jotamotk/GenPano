@@ -13,6 +13,7 @@ browser session via the queue worker.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -246,6 +247,79 @@ def run_daily_dispatch(
             run_id = cur.fetchone()["id"]
 
             created = 0
+
+            # ── Consume due query_schedules first (recurring user-defined plans) ──
+            paused_lower = [str(e).lower() for e in (paused_engines or [])]
+            cur.execute(
+                """
+                SELECT id, query_text, profile_id, target_llm, cadence_days,
+                       brand_id, prompt_id
+                FROM query_schedules
+                WHERE enabled = TRUE
+                  AND next_run_at <= NOW()
+                  AND target_llm NOT IN (
+                      SELECT jsonb_array_elements_text(%s::jsonb)
+                  )
+                ORDER BY next_run_at ASC, id ASC
+                """,
+                (json.dumps(paused_lower),),
+            )
+            due_schedules = [dict(r) for r in cur.fetchall()]
+            for sch in due_schedules:
+                cur.execute(
+                    """
+                    SELECT a.id
+                    FROM llm_accounts a
+                    LEFT JOIN account_profile_map apm
+                           ON apm.account_id = a.id
+                          AND apm.profile_id = %s
+                    WHERE a.llm_name = %s
+                      AND a.status = 'active'
+                      AND a.cookies_json IS NOT NULL
+                      AND a.cookies_json != ''
+                      AND (%s IS NULL
+                           OR apm.profile_id IS NOT NULL
+                           OR a.profile_id::text = %s)
+                    ORDER BY (apm.profile_id IS NOT NULL) DESC,
+                             a.last_used_at NULLS FIRST,
+                             a.id
+                    LIMIT 1
+                    """,
+                    (sch["profile_id"], sch["target_llm"],
+                     sch["profile_id"], sch["profile_id"]),
+                )
+                acct = cur.fetchone()
+                account_id = acct["id"] if acct else None
+                cur.execute(
+                    """
+                    INSERT INTO queries
+                        (prompt_id, profile_id, brand_id, account_id,
+                         query_text, target_llm, status, schedule_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, NOW())
+                    """,
+                    (
+                        sch.get("prompt_id"),
+                        sch.get("profile_id"),
+                        sch.get("brand_id"),
+                        account_id,
+                        sch["query_text"],
+                        sch["target_llm"],
+                        sch["id"],
+                    ),
+                )
+                cur.execute(
+                    """
+                    UPDATE query_schedules
+                       SET last_run_at = NOW(),
+                           next_run_at = NOW() + (cadence_days || ' days')::interval,
+                           updated_at = NOW()
+                     WHERE id = %s
+                    """,
+                    (sch["id"],),
+                )
+                created += 1
+
+            # ── Random prompt fill against per-(account, profile) quotas ──
             for q in quotas:
                 for _ in range(int(q["quota"] or 0)):
                     pick = _pick_query_text(cur, q["profile_id"], q["engine"])
