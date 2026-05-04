@@ -788,8 +788,9 @@ def build_prompt_matrix_messages(
     known_brands: list[dict[str, Any]],
     existing_prompts: list[str],
 ) -> list[dict[str, str]]:
-    topic_payload = [
-        {
+    topic_payload = []
+    for topic in topics:
+        entry: dict[str, Any] = {
             "topic_id": int(topic.get("raw_id") or topic.get("id")),
             "title": topic.get("title") or topic.get("text") or "",
             "brand": topic.get("brand") or topic.get("brand_name") or "",
@@ -797,8 +798,18 @@ def build_prompt_matrix_messages(
             "dimension": _topic_dimension(topic) or "brand",
             "required_focus_terms": sorted(topic_relevance_terms(topic, known_brands))[:12],
         }
-        for topic in topics
-    ]
+        # Module C-4: surface SKU context to the LLM when the topic is pinned
+        # to a specific product. Prompts generated under this topic must
+        # mention this product (rule 23 below).
+        if topic.get("product_name"):
+            entry["product"] = {
+                "name": topic.get("product_name"),
+                "sku": topic.get("product_sku") or None,
+                "category": topic.get("product_category") or None,
+                "description": (topic.get("product_description") or "")[:300] or None,
+                "aliases": topic.get("product_aliases") or [],
+            }
+        topic_payload.append(entry)
     schema = {
         "prompts": [
             {
@@ -867,7 +878,8 @@ def build_prompt_matrix_messages(
         "19. 不要使用 {{brand_name}} 这类模板变量。\n"
         "20. 不要决定执行引擎，也不要返回 tags.engines；引擎只在 Query Pool / Tracker 最终调度时决定。\n"
         "21. tags.routing 固定写 deferred_to_query_pool。\n"
-        "22. 最多返回 max_prompts 条，字段必须严格匹配 output_schema。\n\n"
+        "22. 最多返回 max_prompts 条，字段必须严格匹配 output_schema。\n"
+        "23. 如果 topic.product 存在，prompt 必须明确提到该产品（用 product.name 或 product.aliases 之一），不要泛化到品牌层面，保持 SKU 颗粒度。\n\n"
         "好坏示例：\n"
         "Bad zh-CN: 高端奢侈品集团旗下的香水线哪些性价比更高？\n"
         "Good zh-CN: 想买大牌香水，哪些系列不太贵又好闻？\n"
