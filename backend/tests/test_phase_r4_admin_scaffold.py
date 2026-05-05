@@ -122,8 +122,10 @@ async def test_admin_sub_routers_auto_detect_wired_status(client, admin_operator
     by_name = {it["name"]: it["status"] for it in body["items"]}
     # users sub-router was migrated in PR #247
     assert by_name["users"] == "wired"
-    # session is not yet migrated
-    assert by_name["session"] == "pending"
+    # session sub-router was migrated in subsequent PR (admin /me + dashboard meta)
+    assert by_name["session"] == "wired"
+    # topic_plan still pending (depends on tracker upstream tables)
+    assert by_name["topic_plan"] == "pending"
     # wired count matches what we see
     assert body["wired"] == sum(1 for it in body["items"] if it["status"] == "wired")
     assert body["pending"] == sum(1 for it in body["items"] if it["status"] == "pending")
