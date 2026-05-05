@@ -95,34 +95,8 @@ export default function SettingsPage() {
         {/* API Keys Card — Phase M live (POST /v1/users/me/api-keys) */}
         <ApiKeysCard t={t} formatDate={formatDate} />
 
-        {/* MCP Server Card */}
-        <Card>
-          <h2 className="text-sm font-semibold text-themed-primary mb-2">
-            {t('settings.mcp.title')}
-          </h2>
-          <p className="text-sm text-themed-secondary mb-4">{t('settings.mcp.description')}</p>
-
-          <div
-            style={{
-              background: 'var(--color-bg-elevated)',
-              borderRadius: '0.5rem',
-              padding: '1rem',
-              border: '1px solid var(--color-border)',
-              overflow: 'auto',
-            }}
-          >
-            <pre className="tabular-nums text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-{`{
-  "mcpServers": {
-    "genpano": {
-      "url": "https://mcp.genpano.com/sse",
-      "headers": { "Authorization": "Bearer gp_sk_..." }
-    }
-  }
-}`}
-            </pre>
-          </div>
-        </Card>
+        {/* MCP Server Card — config snippet uses the user's first key prefix */}
+        <McpConfigCard t={t} />
 
         {/* Notifications Card */}
         <Card>
@@ -355,6 +329,68 @@ function ApiKeysCard({
           </div>
         ))}
       </div>
+    </Card>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   McpConfigCard — renders an MCP-client config snippet with the
+   user's first API key prefix (when one exists) instead of the
+   generic `gp_sk_...` placeholder.
+   ───────────────────────────────────────────────────────────── */
+function McpConfigCard({
+  t,
+}: {
+  t: (key: string, params?: Record<string, unknown>) => string;
+}) {
+  const { data } = useApiKeys();
+  const firstKey = data?.items?.find((k) => !k.revoked_at) ?? null;
+  const tokenSample = firstKey
+    ? `${firstKey.prefix}····················`
+    : 'gp_sk_...';
+  const mcpUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/mcp/v1`
+      : '/mcp/v1';
+  const snippet = `{
+  "mcpServers": {
+    "genpano": {
+      "url": "${mcpUrl}",
+      "headers": { "Authorization": "Bearer ${tokenSample}" }
+    }
+  }
+}`;
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-themed-primary mb-2">
+        {t('settings.mcp.title')}
+      </h2>
+      <p className="text-sm text-themed-secondary mb-4">
+        {t('settings.mcp.description')}
+      </p>
+
+      <div
+        style={{
+          background: 'var(--color-bg-elevated)',
+          borderRadius: '0.5rem',
+          padding: '1rem',
+          border: '1px solid var(--color-border)',
+          overflow: 'auto',
+        }}
+      >
+        <pre
+          className="tabular-nums text-sm"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          {snippet}
+        </pre>
+      </div>
+      {!firstKey && (
+        <p className="text-[11px] text-themed-muted mt-2">
+          {t('settings.mcp.no_key_hint') ||
+            '生成一把 API 密钥后, 这里会显示你的真实 prefix.'}
+        </p>
+      )}
     </Card>
   );
 }
