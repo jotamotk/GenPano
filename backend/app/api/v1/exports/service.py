@@ -102,7 +102,7 @@ async def materialize_export_csv(
     populated. Raises NotImplementedError for export types we haven't
     wired yet.
 
-    The 4 wired types pull only data the project owner can see — the
+    All 8 wired types pull only data the project owner can see — the
     project ownership check has already been done by the caller (router).
     """
     import csv
@@ -110,8 +110,12 @@ async def materialize_export_csv(
 
     from genpano_models import (
         BrandMention,
+        CitationSource,
         GeoScoreDaily,
+        IndustryTopicDaily,
+        ProductScoreDaily,
         ProjectCompetitor,
+        ReportJob,
         SentimentDriver,
     )
 
@@ -227,9 +231,163 @@ async def materialize_export_csv(
                 )
                 row_count += 1
 
+    elif job.export_type == "citation_list":
+        writer.writerow(
+            [
+                "created_at",
+                "response_id",
+                "url",
+                "domain",
+                "title",
+                "source_type",
+                "brand_name",
+            ]
+        )
+        if project.primary_brand_id is not None:
+            cs_stmt = (
+                select(CitationSource, BrandMention.brand_name)
+                .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+                .where(BrandMention.brand_id == project.primary_brand_id)
+                .order_by(CitationSource.created_at.desc())
+                .limit(50000)
+            )
+            for cs, brand_name in (await session.execute(cs_stmt)).all():
+                writer.writerow(
+                    [
+                        cs.created_at.isoformat() if cs.created_at else "",
+                        cs.response_id,
+                        cs.url,
+                        cs.domain or "",
+                        (cs.title or "").replace("\n", " ")[:500],
+                        cs.source_type or "",
+                        brand_name or "",
+                    ]
+                )
+                row_count += 1
+
+    elif job.export_type == "topic_coverage":
+        writer.writerow(
+            ["date", "category", "topic_id", "mention_count", "unique_brand_count", "hot_score"]
+        )
+        if project.industry_id is not None:
+            from datetime import date as _date
+            from datetime import timedelta as _td
+
+            today = _date.today()
+            from_d = today - _td(days=29)
+            it_stmt = (
+                select(IndustryTopicDaily)
+                .where(
+                    and_(
+                        IndustryTopicDaily.industry_id == project.industry_id,
+                        IndustryTopicDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                    )
+                )
+                .order_by(IndustryTopicDaily.date.desc(), IndustryTopicDaily.topic_id.asc())
+                .limit(50000)
+            )
+            for it in (await session.execute(it_stmt)).scalars().all():
+                writer.writerow(
+                    [
+                        it.date.date().isoformat()
+                        if hasattr(it.date, "date")
+                        else str(it.date),
+                        it.category or "",
+                        it.topic_id,
+                        it.mention_count,
+                        it.unique_brand_count,
+                        it.hot_score if it.hot_score is not None else "",
+                    ]
+                )
+                row_count += 1
+
+    elif job.export_type == "products_list":
+        writer.writerow(
+            [
+                "date",
+                "product_name",
+                "category",
+                "target_llm",
+                "mention_count",
+                "mention_rate",
+                "first_place_count",
+                "avg_position_rank",
+            ]
+        )
+        if project.primary_brand_id is not None:
+            from datetime import date as _date
+            from datetime import timedelta as _td
+
+            today = _date.today()
+            from_d = today - _td(days=29)
+            ps_stmt = (
+                select(ProductScoreDaily)
+                .where(
+                    and_(
+                        ProductScoreDaily.brand_id == project.primary_brand_id,
+                        ProductScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                    )
+                )
+                .order_by(
+                    ProductScoreDaily.date.desc(),
+                    ProductScoreDaily.product_name.asc(),
+                )
+                .limit(50000)
+            )
+            for ps in (await session.execute(ps_stmt)).scalars().all():
+                writer.writerow(
+                    [
+                        ps.date.date().isoformat()
+                        if hasattr(ps.date, "date")
+                        else str(ps.date),
+                        ps.product_name,
+                        ps.category or "",
+                        ps.target_llm or "",
+                        ps.mention_count if ps.mention_count is not None else 0,
+                        round(ps.mention_rate, 4) if ps.mention_rate is not None else 0,
+                        ps.first_place_count if ps.first_place_count is not None else 0,
+                        round(ps.avg_position_rank, 2)
+                        if ps.avg_position_rank is not None
+                        else "",
+                    ]
+                )
+                row_count += 1
+
+    elif job.export_type == "report_data":
+        # Flat list of project's report_jobs — useful for tracking what was
+        # generated when. The actual report bodies live behind /reports/:rid.
+        writer.writerow(
+            [
+                "report_id",
+                "type",
+                "status",
+                "scheduled_cron",
+                "created_at",
+                "finished_at",
+                "error",
+            ]
+        )
+        rj_stmt = (
+            select(ReportJob)
+            .where(ReportJob.project_id == project.id)
+            .order_by(ReportJob.created_at.desc())
+            .limit(50000)
+        )
+        for rj in (await session.execute(rj_stmt)).scalars().all():
+            writer.writerow(
+                [
+                    rj.id,
+                    rj.type or "",
+                    rj.status or "",
+                    rj.scheduled_cron or "",
+                    rj.created_at.isoformat() if rj.created_at else "",
+                    rj.finished_at.isoformat() if rj.finished_at else "",
+                    (rj.error or "").replace("\n", " ")[:500],
+                ]
+            )
+            row_count += 1
+
     else:
-        # Other types (citation_list / topic_coverage / products_list /
-        # report_data) are scaffolded for future PRs.
         raise NotImplementedError(f"export_type '{job.export_type}' not yet implemented")
 
     job.status = "done"
