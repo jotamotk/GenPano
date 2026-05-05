@@ -48,6 +48,32 @@ def _run_async(coro: Any) -> dict[str, Any]:  # pragma: no cover — thin wrappe
     return result
 
 
+def _next_cron_tick(cron_expr: str | None, base: datetime) -> datetime:
+    """Compute the next firing time for a cron expression after `base`.
+
+    Falls back to base + 1 day when:
+        - cron_expr is None / empty
+        - the expression doesn't parse (malformed cron)
+
+    The fallback keeps a misconfigured schedule visible (next run is
+    tomorrow) instead of silently dropping it — operator can fix the
+    cron string and the schedule resumes on its real cadence.
+    """
+    if not cron_expr:
+        from datetime import timedelta as _td
+
+        return base + _td(days=1)
+    try:
+        from croniter import croniter  # type: ignore[import-untyped]
+
+        nxt: datetime = croniter(cron_expr, base).get_next(datetime)
+        return nxt
+    except Exception:
+        from datetime import timedelta as _td
+
+        return base + _td(days=1)
+
+
 @celery_app.task(name="app.tasks.reports.generate", queue="beat")  # type: ignore[untyped-decorator]
 def generate(report_id: str) -> dict[str, Any]:
     """Re-run the builder for an existing ReportJob row.
@@ -168,11 +194,11 @@ def run_schedules() -> dict[str, Any]:
                         created_by=None,
                     )
                 )
-                # Bump next_run_at by 1 day as a simple advance; real cron
-                # evaluation lands when croniter is added (RP.7 follow-up).
-                from datetime import timedelta as _td
-
-                sched.next_run_at = now + _td(days=1)
+                # Real cron evaluation via croniter. Falls back to
+                # +1 day on parse error so a malformed cron doesn't
+                # wedge the scheduler — operator sees the same row
+                # next run + can fix the cron string.
+                sched.next_run_at = _next_cron_tick(sched.cron, now)
                 sched.last_run_at = now
                 sched.last_run_id = job_id
                 enqueued.append(job_id)
