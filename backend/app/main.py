@@ -5,9 +5,11 @@ auth router. All product endpoints currently return 501 stub; Phase 1+ fills
 them in.
 """
 
+import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,7 @@ from app.api.v1.projects.router import router as projects_router
 from app.api.v1.reports.router import public_router as reports_public_router
 from app.api.v1.reports.router import router as reports_router
 from app.api.v1.topics.router import router as topics_router
+from app.core.rate_limit import setup_rate_limit
 from app.db.session import get_db
 
 app = FastAPI(
@@ -39,6 +42,24 @@ app = FastAPI(
     version="0.1.0",
     description="GenPano App backend — Phase 0 skeleton (12 sub-routers + auth)",
 )
+
+# Phase 5 hardening — CORS + rate limit
+_default_origins = "http://localhost:5173,http://localhost:3000"
+_origins = [
+    o.strip()
+    for o in os.environ.get("GENPANO_CORS_ORIGINS", _default_origins).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept-Language"],
+    expose_headers=["X-Request-ID"],
+    max_age=3600,
+)
+setup_rate_limit(app)
 
 # Auth router is self-prefixed with /api/auth (legacy)
 app.include_router(user_auth_router)

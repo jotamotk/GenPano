@@ -37,6 +37,10 @@ class TestEnv:
 async def env(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[TestEnv, None]:
     """Per-test combined HTTP + DB fixture."""
     monkeypatch.setenv("USER_JWT_SECRET", "u" * 64)
+    # Phase 5 — disable rate limiter inside tests so HTTP-heavy fixtures
+    # don't trip 429s. The dedicated rate-limit tests opt-in by clearing
+    # this env var temporarily.
+    monkeypatch.setenv("GENPANO_RATE_LIMIT_DISABLED", "1")
 
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
         db_path = Path(tmp.name)
