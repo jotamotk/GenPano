@@ -76,7 +76,7 @@ from genpano_models.kg import (
     KgRelationCandidate,
 )
 from genpano_models.project import Project, ProjectCompetitor, ProjectTopicPin
-from genpano_models.report import ReportSchedule, ReportShareToken
+from genpano_models.report import ReportJob, ReportSchedule, ReportShareToken
 from genpano_models.user import User, UserAuthToken
 
 __all__ = [
@@ -122,6 +122,7 @@ __all__ = [
     "ProjectCompetitor",
     "ProjectTopicPin",
     "ProxyHealthDaily",
+    "ReportJob",
     "ReportSchedule",
     "ReportShareToken",
     "ResponseAnalysis",

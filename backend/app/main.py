@@ -29,6 +29,7 @@ from app.api.v1.industries.router import router as industries_router
 from app.api.v1.leads.router import router as leads_router
 from app.api.v1.products.router import router as products_router
 from app.api.v1.projects.router import router as projects_router
+from app.api.v1.reports.router import public_router as reports_public_router
 from app.api.v1.reports.router import router as reports_router
 from app.api.v1.topics.router import router as topics_router
 from app.db.session import get_db
@@ -51,7 +52,7 @@ app.include_router(topics_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/t
 app.include_router(citations_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/citations")
 app.include_router(products_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/products")
 app.include_router(competitors_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/competitors")
-app.include_router(reports_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/reports")
+app.include_router(reports_router, prefix=f"{V1_PREFIX}/projects")
 app.include_router(diagnostics_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/diagnostics")
 app.include_router(leads_router, prefix=f"{V1_PREFIX}/leads")
 app.include_router(crawl_router, prefix=f"{V1_PREFIX}/projects")
@@ -62,6 +63,7 @@ app.include_router(notifications_router, prefix=f"{V1_PREFIX}/users/me")
 app.include_router(api_keys_router, prefix=f"{V1_PREFIX}/users/me")
 app.include_router(mcp_router, prefix="/mcp")
 app.include_router(meta_router, prefix=V1_PREFIX)
+app.include_router(reports_public_router, prefix="/reports/public")
 app.include_router(admin_router, prefix="/api/admin")
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
