@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Response, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin import router as admin_router
 from app.api.v1._meta.router import router as meta_router
 from app.api.v1.alerts.router import prefs_router as notifications_router
 from app.api.v1.alerts.router import router as alerts_router
@@ -61,6 +62,7 @@ app.include_router(notifications_router, prefix=f"{V1_PREFIX}/users/me")
 app.include_router(api_keys_router, prefix=f"{V1_PREFIX}/users/me")
 app.include_router(mcp_router, prefix="/mcp")
 app.include_router(meta_router, prefix=V1_PREFIX)
+app.include_router(admin_router, prefix="/api/admin")
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
