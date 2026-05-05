@@ -5,7 +5,7 @@ Phase E endpoints (PRD §4.7.4 / §4.7.5 / §4.7.6).
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
 from genpano_models import User
@@ -24,6 +24,7 @@ from app.api.v1.exports.service import (
     create_export_job,
     get_export_job,
     list_user_submissions,
+    materialize_export_csv,
     simulate_authority_boost,
     submit_brand,
 )
@@ -64,6 +65,35 @@ async def export_status(
     project = await get_project_for_user(session, user, project_id)
     job = await get_export_job(session, project=project, export_id=export_id)
     return ExportJobOut.model_validate(job)
+
+
+@router.get("/{project_id}/exports/{export_id}/download")
+async def export_download(
+    project_id: str,
+    export_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> Any:
+    """Synchronously materialize + stream the CSV for an export job.
+
+    Phase E.1 inline path. Marks the job done after first successful
+    materialization. Re-running on a `done` job re-materializes (cheap
+    + acceptable for v1; cache-to-S3 lands in Phase E.celery).
+    """
+    from fastapi.responses import StreamingResponse
+
+    from app.core.errors import validation_error
+
+    project = await get_project_for_user(session, user, project_id)
+    job = await get_export_job(session, project=project, export_id=export_id)
+    try:
+        csv_text, _ = await materialize_export_csv(session, project=project, job=job)
+    except NotImplementedError as exc:
+        raise validation_error("export_type", str(exc)) from exc
+    headers = {
+        "Content-Disposition": (f"attachment; filename=export_{job.export_type}_{job.id[:8]}.csv")
+    }
+    return StreamingResponse(iter([csv_text]), media_type="text/csv", headers=headers)
 
 
 # ── Simulator ────────────────────────────────────────────────────
