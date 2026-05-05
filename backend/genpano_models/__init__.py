@@ -23,6 +23,16 @@ Backward compatibility:
 - `backend/app/db/base.py` re-exports `Base` for the same reason.
 """
 
+from genpano_models.admin_ops import (
+    AdminAuditLog,
+    BudgetThreshold,
+    CommsAnnouncement,
+    CostEvent,
+    DiscoveryLog,
+    EngineHealthDaily,
+    McpCallLog,
+    ProxyHealthDaily,
+)
 from genpano_models.alert import (
     Alert,
     AlertRule,
@@ -59,15 +69,21 @@ from genpano_models.report import ReportSchedule, ReportShareToken
 from genpano_models.user import User, UserAuthToken
 
 __all__ = [
+    "AdminAuditLog",
     "Alert",
     "AlertRule",
     "Base",
     "BrandMention",
     "BrandSubmission",
+    "BudgetThreshold",
     "CitationSource",
     "CommercialLead",
+    "CommsAnnouncement",
+    "CostEvent",
     "CrawlRequest",
     "Diagnostic",
+    "DiscoveryLog",
+    "EngineHealthDaily",
     "ExportJob",
     "GeoScoreDaily",
     "IndustryBenchmarkDaily",
@@ -78,12 +94,14 @@ __all__ = [
     "KgProduct",
     "KgProductRelation",
     "KgRelationCandidate",
+    "McpCallLog",
     "Organization",
     "ProductFeatureMention",
     "ProductScoreDaily",
     "Project",
     "ProjectCompetitor",
     "ProjectTopicPin",
+    "ProxyHealthDaily",
     "ReportSchedule",
     "ReportShareToken",
     "ResponseAnalysis",
