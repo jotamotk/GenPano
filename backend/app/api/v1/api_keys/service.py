@@ -196,6 +196,23 @@ async def dispatch_mcp_request(
                 {"uri": uri, "name": uri, "mimeType": "application/json"} for uri in MCP_RESOURCES
             ]
         }
+    if method == "resources/read":
+        from app.api.v1.api_keys.mcp_resources import read_resource
+
+        uri = (params or {}).get("uri") or ""
+        if not uri:
+            return {
+                "contents": [],
+                "isError": True,
+                "_meta": {"error": "uri parameter required"},
+            }
+        if session is None:
+            return {
+                "contents": [],
+                "isError": True,
+                "_meta": {"error": "session not propagated"},
+            }
+        return await read_resource(session, user=user, uri=uri)
     if method == "tools/call":
         tool_name = (params or {}).get("name") or ""
         arguments = (params or {}).get("arguments") or {}
