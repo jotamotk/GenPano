@@ -11,7 +11,7 @@ Phase R.4 ships:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from genpano_models import AdminAuditLog, User
@@ -78,20 +78,72 @@ async def admin_meta_routes(
     return {"items": items, "count": len(items)}
 
 
+def _build_audit_query(
+    *,
+    action: str | None = None,
+    severity: str | None = None,
+    operator_id: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> Any:
+    """Compose the AdminAuditLog filter chain shared by list + export."""
+    stmt = select(AdminAuditLog).order_by(AdminAuditLog.occurred_at.desc())
+    if action:
+        stmt = stmt.where(AdminAuditLog.action == action)
+    if severity:
+        stmt = stmt.where(AdminAuditLog.severity == severity)
+    if operator_id:
+        stmt = stmt.where(AdminAuditLog.operator_id == operator_id)
+    if resource_type:
+        stmt = stmt.where(AdminAuditLog.resource_type == resource_type)
+    if resource_id:
+        stmt = stmt.where(AdminAuditLog.resource_id == resource_id)
+    if from_date:
+        try:
+            d = datetime.fromisoformat(from_date)
+        except ValueError:
+            pass
+        else:
+            stmt = stmt.where(AdminAuditLog.occurred_at >= d)
+    if to_date:
+        try:
+            d = datetime.fromisoformat(to_date)
+        except ValueError:
+            pass
+        else:
+            stmt = stmt.where(AdminAuditLog.occurred_at <= d)
+    return stmt
+
+
 @router.get("/audit-log")
 async def admin_audit_log(
     operator: Annotated[User, Depends(current_admin_operator)],
     session: AsyncSession = _DependsDb,
     action: str | None = Query(None),
     severity: str | None = Query(None),
+    operator_id: str | None = Query(None),
+    resource_type: str | None = Query(None),
+    resource_id: str | None = Query(None),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
     limit: int = Query(50, ge=1, le=500),
 ) -> dict[str, object]:
-    """List admin audit log (operator scope, ADR-014)."""
-    stmt = select(AdminAuditLog).order_by(AdminAuditLog.occurred_at.desc()).limit(limit)
-    if action:
-        stmt = stmt.where(AdminAuditLog.action == action)
-    if severity:
-        stmt = stmt.where(AdminAuditLog.severity == severity)
+    """List admin audit log (operator scope, ADR-014).
+
+    Filters: action, severity, operator_id, resource_type, resource_id,
+    from / to (ISO datetime). All optional; combined with AND.
+    """
+    stmt = _build_audit_query(
+        action=action,
+        severity=severity,
+        operator_id=operator_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        from_date=from_date,
+        to_date=to_date,
+    ).limit(limit)
     rows = list((await session.execute(stmt)).scalars().all())
     items = [
         {
@@ -101,11 +153,81 @@ async def admin_audit_log(
             "resource_type": r.resource_type,
             "resource_id": r.resource_id,
             "severity": r.severity,
+            "ip": r.ip,
+            "reason": r.reason,
             "occurred_at": r.occurred_at.isoformat(),
         }
         for r in rows
     ]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/audit-log/export.csv")
+async def admin_audit_log_export_csv(
+    operator: Annotated[User, Depends(current_admin_operator)],
+    session: AsyncSession = _DependsDb,
+    action: str | None = Query(None),
+    severity: str | None = Query(None),
+    operator_id: str | None = Query(None),
+    resource_type: str | None = Query(None),
+    resource_id: str | None = Query(None),
+    from_date: str | None = Query(None, alias="from"),
+    to_date: str | None = Query(None, alias="to"),
+    limit: int = Query(5000, ge=1, le=50000),
+) -> Any:
+    """Export filtered admin audit log as CSV (ADMIN_PRD §4.4.7)."""
+    import csv
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    stmt = _build_audit_query(
+        action=action,
+        severity=severity,
+        operator_id=operator_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        from_date=from_date,
+        to_date=to_date,
+    ).limit(limit)
+    rows = list((await session.execute(stmt)).scalars().all())
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "id",
+            "occurred_at",
+            "operator_id",
+            "action",
+            "resource_type",
+            "resource_id",
+            "severity",
+            "ip",
+            "reason",
+        ]
+    )
+    for r in rows:
+        writer.writerow(
+            [
+                r.id,
+                r.occurred_at.isoformat(),
+                r.operator_id,
+                r.action,
+                r.resource_type,
+                r.resource_id or "",
+                r.severity,
+                r.ip or "",
+                (r.reason or "").replace("\n", " "),
+            ]
+        )
+    buf.seek(0)
+    headers = {
+        "Content-Disposition": (
+            f"attachment; filename=audit_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+    }
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers=headers)
 
 
 # ── Demo: high-risk mutation with @audit decorator ────────────────
