@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import { BRANDS, PROJECTS, INDUSTRIES } from '../data/mock';
 import { useLocale } from '../contexts/LocaleContext';
+import { useProject } from '../contexts/ProjectContext';
+import { useUpdateProject, useDeleteProject } from '../hooks/useProjects';
+import { isLiveProjectId } from '../hooks/useReports';
 
 /* ─────────────────────────────────────────────────────────────
    ProjectSettingsPage — PRD §4.10 全量国际化
@@ -16,12 +20,22 @@ const MAX_COMPETITORS = 5;
 
 export default function ProjectSettingsPage() {
   const { t, locale, formatBrand, formatDate } = useLocale();
-
-  // Initialize from first project
-  const project = PROJECTS[0];
+  const navigate = useNavigate();
+  // ProjectContext is hybrid live/mock since PR #293 — when the user has
+  // a real backend project, activeProject reflects it (toMockShape); else
+  // it falls back to the first mock project.
+  const { activeProject: liveActiveProject } = useProject();
+  const project = liveActiveProject || PROJECTS[0];
+  const liveProjectId = isLiveProjectId(project?.id) ? project.id : null;
+  const updateProject = useUpdateProject();
+  const deleteProject = useDeleteProject();
+  // Live projects come through toMockShape() which has competitorBrandIds
+  // but lacks the rich preferences object — fall back to mock for those.
+  const mockFallback = PROJECTS[0];
+  const preferences = project?.preferences || mockFallback?.preferences;
   const industry = INDUSTRIES.find((i) => i.id === project.industryId);
   const primaryBrand = BRANDS.find((b) => b.id === project.primaryBrandId);
-  const competitorBrands = project.competitorBrandIds
+  const competitorBrands = (project.competitorBrandIds || [])
     .map((id) => BRANDS.find((b) => b.id === id))
     .filter(Boolean);
 
@@ -29,13 +43,13 @@ export default function ProjectSettingsPage() {
   const [projectName, setProjectName] = useState(project.name);
   const [competitors, setCompetitors] = useState(competitorBrands);
   const [showAddCompetitor, setShowAddCompetitor] = useState(false);
-  const [weeklyEnabled, setWeeklyEnabled] = useState(project.preferences.reportSchedule.weeklyEnabled);
-  const [monthlyEnabled, setMonthlyEnabled] = useState(project.preferences.reportSchedule.monthlyEnabled);
+  const [weeklyEnabled, setWeeklyEnabled] = useState(preferences.reportSchedule.weeklyEnabled);
+  const [monthlyEnabled, setMonthlyEnabled] = useState(preferences.reportSchedule.monthlyEnabled);
   const [emailRecipients, setEmailRecipients] = useState(
-    project.preferences.reportSchedule.emailRecipients.join(', ')
+    preferences.reportSchedule.emailRecipients.join(', ')
   );
-  const [p0Notify, setP0Notify] = useState(project.preferences.alertConfig.p0Notify);
-  const [p1Notify, setP1Notify] = useState(project.preferences.alertConfig.p1Notify);
+  const [p0Notify, setP0Notify] = useState(preferences.alertConfig.p0Notify);
+  const [p1Notify, setP1Notify] = useState(preferences.alertConfig.p1Notify);
   const [saved, setSaved] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -69,8 +83,34 @@ export default function ProjectSettingsPage() {
   };
 
   const handleSave = () => {
+    if (liveProjectId) {
+      // Persist project name to backend (only field the live API accepts).
+      updateProject.mutate(
+        { id: liveProjectId, payload: { name: projectName } },
+        {
+          onSuccess: () => {
+            setSaved(true);
+            setTimeout(() => setSaved(false), 2000);
+          },
+        },
+      );
+      return;
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleDelete = () => {
+    if (liveProjectId) {
+      deleteProject.mutate(liveProjectId, {
+        onSuccess: () => {
+          navigate('/onboarding');
+        },
+      });
+      return;
+    }
+    // Mock-only: just close the dialog (no real delete).
+    setShowDeleteConfirm(false);
   };
 
   return (
@@ -79,6 +119,14 @@ export default function ProjectSettingsPage() {
       <div className="border-b border-border px-8 py-6">
         <h1 className="text-3xl font-semibold text-ink mb-1">{t('project_settings.page_title')}</h1>
         <p className="text-sm text-ink-secondary">{project.name}</p>
+        {liveProjectId && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs">
+            <Badge variant="default">LIVE</Badge>
+            <span className="text-ink-muted">
+              已连接真实项目 — 保存 / 删除将持久化到后端
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main content */}
@@ -447,8 +495,14 @@ export default function ProjectSettingsPage() {
                         >
                           {t('project_settings.delete.cancel')}
                         </button>
-                        <button className="flex-1 px-2 py-1 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors">
-                          {t('project_settings.delete.confirm')}
+                        <button
+                          onClick={handleDelete}
+                          disabled={deleteProject.isPending}
+                          className="flex-1 px-2 py-1 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors disabled:opacity-50"
+                        >
+                          {deleteProject.isPending
+                            ? '删除中…'
+                            : t('project_settings.delete.confirm')}
                         </button>
                       </div>
                     </div>
