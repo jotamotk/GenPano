@@ -25,6 +25,7 @@ import ReportsPage from './pages/ReportsPage'
 import KnowledgeGraphPage from './pages/KnowledgeGraphPage'
 import SettingsPage from './pages/SettingsPage'
 import ProjectSettingsPage from './pages/ProjectSettingsPage'
+import AlertsPage from './pages/AlertsPage'
 import ToastViewport from './components/ui/ToastViewport'
 
 /* ── NEW distinct sub-view pages (Brand/Industry Mode IA v2.0, Sessions T2'/T3') ──
@@ -189,6 +190,7 @@ export default function App() {
           <Route path="/brands"          element={<BrandsPage />} />
           <Route path="/settings"        element={<SettingsPage />} />
           <Route path="/project-settings" element={<ProjectSettingsPage />} />
+          <Route path="/alerts"          element={<AlertsPage />} />
 
           {/* ── Legacy 301 redirects (§4.6-IA-v2.D) ── */}
           <Route path="/dashboard"       element={<RedirectWithQuery to="/brand/overview" />} />

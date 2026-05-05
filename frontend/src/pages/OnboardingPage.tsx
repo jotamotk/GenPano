@@ -6,6 +6,7 @@ import Badge from '../components/ui/Badge';
 import { useLocale } from '../contexts/LocaleContext';
 import { INDUSTRIES, BRANDS } from '../data/mock';
 import { useIndustriesWithTopBrands } from '../hooks/useIndustries';
+import { useCreateProject } from '../hooks/useProjects';
 
 /* ══════════════════════════════════════════════════════════════
    Onboarding Page — PRD 4.1.1b Single-Path Flow
@@ -40,6 +41,7 @@ export default function OnboardingPage() {
 
   // Live backend data (with overlays for icon / nameEn)
   const { data: liveIndustries, isLoading, isError } = useIndustriesWithTopBrands();
+  const createProject = useCreateProject();
 
   // Fallback: when backend returns nothing (or errors), show the static
   // mock so onboarding is never blank pre-seeded.
@@ -62,10 +64,29 @@ export default function OnboardingPage() {
     navigate('/dashboard');
   };
 
-  const handleSelectIndustry = (industryKey: string | number) => {
+  const handleSelectIndustry = async (industryKey: string | number) => {
     // PRD: 选完即走 — 点击卡片后零延迟进入行业探索视图
     // industryKey is either the live industry_id (number) or the mock slug.
     localStorage?.setItem?.('genpano_industry', String(industryKey));
+
+    // Live mode: actually create a Project via POST /v1/projects so the
+    // user lands on /dashboard with a real projects.length === 1 state
+    // instead of the empty zero-project view. Best-effort: failures
+    // (offline / 401 / quota) silently fall through to navigation, since
+    // the user can retry from /project-settings.
+    if (useLive && typeof industryKey === 'number') {
+      const card = liveIndustries.find((it) => it.industry_id === industryKey);
+      const industryName = card?.nameZh ?? `industry-${industryKey}`;
+      try {
+        await createProject.mutateAsync({
+          name: `${industryName} 监测`,
+          industry_id: industryKey,
+        });
+      } catch {
+        // ignore — project may already exist or backend is down; navigate anyway
+      }
+    }
+
     // monitorBrand intent is preserved through the URL so the destination
     // page (Brand Detail) can re-evaluate WatchBrandButton state once the
     // ProjectContext is bootstrapped post-onboarding.
