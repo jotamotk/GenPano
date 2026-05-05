@@ -11,6 +11,8 @@ import { useMemo, useState } from 'react';
 import { Card } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
 import { DIAGNOSTICS } from '../data/mock';
+import { useProjects } from '../hooks/useProjects';
+import { useDiagnostics, toMockShape } from '../hooks/useDiagnostics';
 
 const SEVERITY_META = [
   { id: 'P0', label: '紧急', borderClass: 'border-l-red-500', textClass: 'text-themed-danger' },
@@ -32,6 +34,16 @@ export default function DiagnosticsPage() {
   const [showLeadForm, setShowLeadForm] = useState(false);
   const [leadDiagId, setLeadDiagId] = useState(null);
 
+  // Live data: when the user has a real backend project, prefer those
+  // diagnostics. Mock fallback when project list is empty.
+  const { data: liveProjects } = useProjects();
+  const liveProjectId =
+    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const { data: liveDiag } = useDiagnostics(liveProjectId, { limit: 200 });
+  const liveItems = liveDiag?.items ?? [];
+  const useLive = liveItems.length > 0;
+  const allItems: any[] = useLive ? liveItems.map(toMockShape) : DIAGNOSTICS;
+
   const openLeadForm = (diagId) => {
     setLeadDiagId(diagId);
     setShowLeadForm(true);
@@ -40,28 +52,28 @@ export default function DiagnosticsPage() {
   const counts = useMemo(() => {
     const c = {};
     SEVERITY_META.forEach((s) => {
-      c[s.id] = DIAGNOSTICS.filter((d) => d.severity === s.id).length;
+      c[s.id] = allItems.filter((d) => d.severity === s.id).length;
     });
     return c;
-  }, []);
+  }, [allItems]);
 
   const typeCounts = useMemo(() => {
     const c = {};
     TYPE_META.forEach((t) => {
-      c[t.id] = DIAGNOSTICS.filter((d) => d.type === t.id).length;
+      c[t.id] = allItems.filter((d) => d.type === t.id).length;
     });
     return c;
-  }, []);
+  }, [allItems]);
 
   const filtered = useMemo(() => {
-    return DIAGNOSTICS.filter(
+    return allItems.filter(
       (d) =>
         (filterSev === 'all' || d.severity === filterSev) &&
         (filterType === 'all' || d.type === filterType)
     );
-  }, [filterSev, filterType]);
+  }, [allItems, filterSev, filterType]);
 
-  const leadDiag = leadDiagId ? DIAGNOSTICS.find((d) => d.id === leadDiagId) : null;
+  const leadDiag = leadDiagId ? allItems.find((d) => d.id === leadDiagId) : null;
 
   return (
     <div className="space-y-6">
@@ -108,7 +120,7 @@ export default function DiagnosticsPage() {
               : 'border-themed-card text-themed-muted hover:text-themed-primary'
           }`}
         >
-          全部 ({DIAGNOSTICS.length})
+          全部 ({allItems.length})
         </button>
         {TYPE_META.map((t) => {
           const active = filterType === t.id;
