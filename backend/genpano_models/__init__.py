@@ -45,6 +45,14 @@ from genpano_models.commercial_lead import CommercialLead
 from genpano_models.crawl_request import CrawlRequest
 from genpano_models.export_job import ExportJob
 from genpano_models.industry_pricing import IndustryPricingParams
+from genpano_models.kg import (
+    KgBrand,
+    KgBrandRelation,
+    KgCategory,
+    KgProduct,
+    KgProductRelation,
+    KgRelationCandidate,
+)
 from genpano_models.project import Project, ProjectCompetitor, ProjectTopicPin
 from genpano_models.user import User, UserAuthToken
 
@@ -61,6 +69,12 @@ __all__ = [
     "GeoScoreDaily",
     "IndustryBenchmarkDaily",
     "IndustryPricingParams",
+    "KgBrand",
+    "KgBrandRelation",
+    "KgCategory",
+    "KgProduct",
+    "KgProductRelation",
+    "KgRelationCandidate",
     "Organization",
     "ProductFeatureMention",
     "ProductScoreDaily",
