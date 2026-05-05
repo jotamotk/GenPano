@@ -1,4 +1,7 @@
-"""Phase E.1 — remaining 4 export types (citation_list / topic_coverage / products_list / report_data)."""
+"""Phase E.1 — remaining 4 export types.
+
+Covers citation_list / topic_coverage / products_list / report_data.
+"""
 
 from __future__ import annotations
 

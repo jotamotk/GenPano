@@ -289,9 +289,7 @@ async def materialize_export_csv(
             for it in (await session.execute(it_stmt)).scalars().all():
                 writer.writerow(
                     [
-                        it.date.date().isoformat()
-                        if hasattr(it.date, "date")
-                        else str(it.date),
+                        it.date.date().isoformat() if hasattr(it.date, "date") else str(it.date),
                         it.category or "",
                         it.topic_id,
                         it.mention_count,
@@ -337,18 +335,14 @@ async def materialize_export_csv(
             for ps in (await session.execute(ps_stmt)).scalars().all():
                 writer.writerow(
                     [
-                        ps.date.date().isoformat()
-                        if hasattr(ps.date, "date")
-                        else str(ps.date),
+                        ps.date.date().isoformat() if hasattr(ps.date, "date") else str(ps.date),
                         ps.product_name,
                         ps.category or "",
                         ps.target_llm or "",
                         ps.mention_count if ps.mention_count is not None else 0,
                         round(ps.mention_rate, 4) if ps.mention_rate is not None else 0,
                         ps.first_place_count if ps.first_place_count is not None else 0,
-                        round(ps.avg_position_rank, 2)
-                        if ps.avg_position_rank is not None
-                        else "",
+                        round(ps.avg_position_rank, 2) if ps.avg_position_rank is not None else "",
                     ]
                 )
                 row_count += 1
