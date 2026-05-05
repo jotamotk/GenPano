@@ -1,0 +1,272 @@
+"""Phase 2.3 — products / competitors metrics / diagnostics endpoints."""
+
+from __future__ import annotations
+
+import os
+import uuid
+from datetime import datetime, timedelta
+
+import pytest
+import pytest_asyncio
+from genpano_models import (
+    BrandMention,
+    GeoScoreDaily,
+    ProductFeatureMention,
+    Project,
+    ProjectCompetitor,
+    ResponseAnalysis,
+    User,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.user_auth.jwt import sign_user_access_token
+
+os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _bearer(user: User) -> dict[str, str]:
+    token, _ = sign_user_access_token(user_id=user.id, email=user.email)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def user(db_session: AsyncSession) -> User:
+    u = User(
+        id=_new_id(),
+        email=f"b-{uuid.uuid4().hex[:6]}@example.com",
+        name="Brand User",
+        role="free",
+        provider="email",
+        email_verified=True,
+        password_hash="dummy",
+        locale="zh-CN",
+    )
+    db_session.add(u)
+    await db_session.commit()
+    return u
+
+
+@pytest_asyncio.fixture
+async def project_with_data(db_session: AsyncSession, user: User) -> Project:
+    p = Project(user_id=user.id, name="Brand 2.3", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    # Add competitor pin
+    db_session.add(ProjectCompetitor(project_id=p.id, brand_id=99, pinned_by=user.id))
+
+    today = datetime.now().date()
+    # 30d geo_score for primary + competitor
+    for bid in (42, 99):
+        for i in range(30):
+            d = today - timedelta(days=29 - i)
+            db_session.add(
+                GeoScoreDaily(
+                    brand_id=bid,
+                    date=datetime.combine(d, datetime.min.time()),
+                    target_llm="chatgpt",
+                    avg_geo_score=70.0 + i * 0.5 if bid == 42 else 60.0 + i * 0.4,
+                    mention_rate=0.6 + i * 0.005 if bid == 42 else 0.4 + i * 0.005,
+                    avg_sov=0.4 if bid == 42 else 0.3,
+                    avg_sentiment=0.7 if bid == 42 else 0.5,
+                    total_queries=100,
+                )
+            )
+
+    # Brand mentions for co-mention test (primary + competitor on same response_ids)
+    for i in range(10):
+        db_session.add(
+            BrandMention(
+                response_id=3000 + i,
+                brand_id=42,
+                brand_name="Primary",
+                sentiment="positive" if i % 3 != 0 else "negative",
+                sentiment_score=0.6,
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+    for i in range(5):  # 5 of 10 responses also include competitor → 5 co-mentions
+        db_session.add(
+            BrandMention(
+                response_id=3000 + i,
+                brand_id=99,
+                brand_name="Competitor",
+                sentiment="positive",
+                sentiment_score=0.5,
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+
+    # ResponseAnalysis (needed for some downstream queries)
+    for i in range(10):
+        db_session.add(
+            ResponseAnalysis(
+                response_id=3000 + i,
+                target_brand_mentioned=True,
+                sentiment_score=0.6,
+                analyzed_at=datetime.now() - timedelta(days=i),
+            )
+        )
+
+    # Product features for /products endpoint
+    products = [
+        ("Primary", "ProductA", "taste", "morning"),
+        ("Primary", "ProductA", "price", "morning"),
+        ("Primary", "ProductA", "taste", "afternoon"),
+        ("Primary", "ProductB", "design", None),
+        ("Primary", "ProductB", "design", None),
+    ]
+    for i, (bn, pn, fn, sc) in enumerate(products):
+        db_session.add(
+            ProductFeatureMention(
+                analysis_id=1,  # FK any in fresh DB
+                brand_name=bn,
+                product_name=pn,
+                feature_name=fn,
+                feature_sentiment="positive" if i % 2 == 0 else "neutral",
+                scenario=sc,
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+
+    await db_session.commit()
+    return p
+
+
+@pytest.mark.asyncio
+async def test_products_returns_aggregated(client, user, project_with_data):
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_data.id}/products",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    # 2 distinct (brand, product) pairs: (Primary, ProductA) + (Primary, ProductB)
+    assert body["total"] >= 2
+    names = {p["product_name"] for p in body["items"]}
+    assert "ProductA" in names
+    assert "ProductB" in names
+
+
+@pytest.mark.asyncio
+async def test_products_empty_for_no_brand(client, user, db_session):
+    p = Project(user_id=user.id, name="No Primary", primary_brand_id=None)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/products", headers=_bearer(user))
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_competitor_metrics_includes_primary_and_competitors(client, user, project_with_data):
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_data.id}/competitors/metrics",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    assert body["primary_brand_id"] == 42
+    assert body["primary"] is not None
+    assert body["primary"]["brand_id"] == 42
+    assert body["primary"]["avg_geo_score"] is not None
+    assert len(body["competitors"]) == 1
+    comp = body["competitors"][0]
+    assert comp["brand_id"] == 99
+    # Co-mention should be 5 (5 responses had both brands)
+    assert comp["co_mention_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_derives_from_data(client, user, db_session):
+    """Insert sharp drop in mention_rate → expect visibility_decline diagnostic."""
+    p = Project(user_id=user.id, name="Diag", primary_brand_id=77)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    today = datetime.now().date()
+    # Prior 30d: high mention_rate (0.8)
+    for i in range(30):
+        d = today - timedelta(days=59 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=77,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                mention_rate=0.8,
+                avg_geo_score=80.0,
+                total_queries=100,
+            )
+        )
+    # Current 30d: low mention_rate (0.3) → -62.5%
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=77,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                mention_rate=0.3,
+                avg_geo_score=40.0,
+                total_queries=100,
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/diagnostics", headers=_bearer(user))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    assert len(body["items"]) >= 1
+    diag = body["items"][0]
+    assert diag["category"] == "visibility_decline"
+    assert diag["severity"] == "P1"  # ≤ -30%
+    assert diag["evidence"]["change_percent"] is not None
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_empty_for_no_brand(client, user, db_session):
+    p = Project(user_id=user.id, name="Diag Empty", primary_brand_id=None)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/diagnostics", headers=_bearer(user))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "empty"
+    assert body["counts_by_severity"] == {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+
+
+@pytest.mark.asyncio
+async def test_phase_2_3_cross_tenant_returns_404(client, db_session, project_with_data):
+    other = User(
+        id=_new_id(),
+        email=f"o-{uuid.uuid4().hex[:6]}@example.com",
+        name="Other",
+        role="free",
+        provider="email",
+        email_verified=True,
+        password_hash="dummy",
+        locale="zh-CN",
+    )
+    db_session.add(other)
+    await db_session.commit()
+
+    for path in ["products", "competitors/metrics", "diagnostics"]:
+        resp = await client.get(
+            f"/api/v1/projects/{project_with_data.id}/{path}",
+            headers=_bearer(other),
+        )
+        assert resp.status_code == 404, f"path {path}"
+        assert resp.json()["detail"]["code"] == "not_found"
