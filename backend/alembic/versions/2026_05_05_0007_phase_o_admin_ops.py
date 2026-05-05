@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 
 revision: str = "20260505_phase_o"
 down_revision: str | Sequence[str] | None = "20260505_phase_rp"
@@ -16,7 +17,31 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _rename_legacy_admin_audit_log_if_present() -> None:
+    """Production hosts running the legacy admin_console Flask have an
+    `admin_audit_log` table with a DIFFERENT schema (target_type/target_id/
+    diff_json/created_at) created at process startup via `CREATE TABLE
+    IF NOT EXISTS`. To avoid `DuplicateTable` errors when this migration
+    runs for the first time on those hosts, rename the legacy table out
+    of the way to `admin_audit_log_legacy`. Fresh DBs (CI / dev) skip
+    this branch since the table doesn't exist there yet.
+    """
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        # SQLite tests use fresh DBs, never have the legacy table
+        return
+    insp = inspect(bind)
+    if "admin_audit_log" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("admin_audit_log")}
+    legacy_fingerprint = {"target_type", "diff_json", "created_at"}
+    if legacy_fingerprint.issubset(cols):
+        op.execute("ALTER TABLE admin_audit_log RENAME TO admin_audit_log_legacy")
+
+
 def upgrade() -> None:
+    _rename_legacy_admin_audit_log_if_present()
+
     op.create_table(
         "engine_health_daily",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
