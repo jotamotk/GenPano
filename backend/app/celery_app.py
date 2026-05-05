@@ -37,6 +37,7 @@ def _build_celery_app() -> Celery:
         backend=settings.redis_url,
         include=[
             "app.tasks.health",
+            "app.tasks.kg",
             "app.tasks.reports",
             "geo_tracker.tasks.scheduler",
             "geo_tracker.tasks.hotspots",
@@ -57,6 +58,7 @@ def _build_celery_app() -> Celery:
         "app.tasks.reports.generate": {"queue": "beat", "routing_key": "beat"},
         "app.tasks.reports.run_schedules": {"queue": "beat", "routing_key": "beat"},
         "app.tasks.reports.expire_share_tokens": {"queue": "beat", "routing_key": "beat"},
+        "app.tasks.kg.promote_candidates": {"queue": "beat", "routing_key": "beat"},
         "geo_tracker.tasks.scheduler.run_daily_dispatch": {"queue": "beat", "routing_key": "beat"},
         "hotspots.collect_source": {"queue": "beat", "routing_key": "beat"},
         "hotspots.archive_expired": {"queue": "beat", "routing_key": "beat"},
@@ -123,6 +125,13 @@ def _build_celery_app() -> Celery:
         "reports-expire-share-tokens": {
             "task": "app.tasks.reports.expire_share_tokens",
             "schedule": crontab(minute=0, hour=4),
+        },
+        # Phase K — drain approved KG candidates to canonical relations
+        # every 15 min. Idempotent; reconciles with pre-existing rows
+        # rather than failing on the unique constraint.
+        "kg-promote-candidates": {
+            "task": "app.tasks.kg.promote_candidates",
+            "schedule": crontab(minute="*/15"),
         },
     }
 
