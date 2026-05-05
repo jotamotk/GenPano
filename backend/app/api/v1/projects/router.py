@@ -1,4 +1,4 @@
-"""/v1/projects router (Phase 1 + 2.1 + 2.2).
+"""/v1/projects router (Phase 1 + 2.1 + 2.2 + 2.3).
 
 Endpoints:
   GET    /v1/projects                          List user's projects
@@ -13,6 +13,9 @@ Endpoints:
   GET    /v1/projects/:id/topics               Project topics + pin state
   GET    /v1/projects/:id/sentiment            Sentiment distribution + drivers
   GET    /v1/projects/:id/citations            Citation list + top domains
+  GET    /v1/projects/:id/products             SKU rollup (Phase 2.3)
+  GET    /v1/projects/:id/competitors/metrics  Competitor matrix (Phase 2.3)
+  GET    /v1/projects/:id/diagnostics          Derived diagnostics (Phase 2.3)
 """
 
 from __future__ import annotations
@@ -25,6 +28,16 @@ from genpano_models import User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects import service
+from app.api.v1.projects._brand_dto import (
+    CompetitorMetricsOut,
+    DiagnosticsOut,
+    ProductsOut,
+)
+from app.api.v1.projects._brand_service import (
+    get_competitor_metrics,
+    get_diagnostics,
+    get_products,
+)
 from app.api.v1.projects._dto import (
     CompetitorIn,
     ProjectIn,
@@ -168,12 +181,12 @@ async def project_overview(
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
 ) -> BrandOverviewOut:
-    """Brand Overview composite — KPI cards + 30d trends + top prompts (PRD §4.6.1a)."""
+    """Brand Overview composite — KPI cards + 30d trends + top prompts."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_brand_overview(session, project)
 
 
-# ── Phase 2.2 endpoints ──────────────────────────────────────────
+# ── Phase 2.2 ────────────────────────────────────────────────────
 
 
 @router.get("/{project_id}/metrics", response_model=MetricsOut)
@@ -181,15 +194,11 @@ async def project_metrics(
     project_id: str,
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
-    series: str | None = Query(
-        None,
-        description="csv subset of: mention_rate,sov,rank,sentiment,citation",
-    ),
+    series: str | None = Query(None),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
-    engine: str | None = Query(None, description="csv: chatgpt,doubao,deepseek"),
+    engine: str | None = Query(None),
 ) -> MetricsOut:
-    """Per-metric time series for the project's primary brand (PRD §4.6.1b)."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_metrics(
         session,
@@ -207,7 +216,6 @@ async def project_topics(
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
 ) -> TopicsOut:
-    """Topics tracked / ignored on the project (PRD §4.6.1c)."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_topics(session, project)
 
@@ -220,7 +228,6 @@ async def project_sentiment(
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
 ) -> SentimentOut:
-    """Sentiment distribution + 30d trend + top keywords / drivers (PRD §4.6.1d)."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment(
         session,
@@ -239,7 +246,6 @@ async def project_citations(
     to: str | None = Query(None),
     page_size: int = Query(50, ge=1, le=500),
 ) -> CitationsOut:
-    """Citation list + top cited domains (PRD §4.6.1e)."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_citations(
         session,
@@ -247,4 +253,64 @@ async def project_citations(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         page_size=page_size,
+    )
+
+
+# ── Phase 2.3 ────────────────────────────────────────────────────
+
+
+@router.get("/{project_id}/products", response_model=ProductsOut)
+async def project_products(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> ProductsOut:
+    """SKU-level rollup with top features + scenarios (PRD §4.6.1f)."""
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_products(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/competitors/metrics",
+    response_model=CompetitorMetricsOut,
+)
+async def project_competitor_metrics(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> CompetitorMetricsOut:
+    """Primary brand vs each pinned competitor across 4 metrics (PRD §4.6.1g)."""
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_competitor_metrics(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get("/{project_id}/diagnostics", response_model=DiagnosticsOut)
+async def project_diagnostics(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> DiagnosticsOut:
+    """Derived diagnostics list (Phase 2.3 stub; Phase D wires real engine)."""
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_diagnostics(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
     )
