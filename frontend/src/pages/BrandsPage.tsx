@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Badge, Card } from '../components/ui';
 import { MiniSparkline } from '../components/charts';
 import { useLocale } from '../contexts/LocaleContext';
+import { useProject } from '../contexts/ProjectContext';
+import BrandsListLiveBanner from '../components/brand/BrandsListLiveBanner';
 import { BRANDS, PROJECTS, TREND_DATA } from '../data/mock';
 
 /* ─────────────────────────────────────────────────────────────
@@ -25,7 +27,11 @@ import { BRANDS, PROJECTS, TREND_DATA } from '../data/mock';
 export default function BrandsPage() {
   const navigate = useNavigate();
   const { t, formatNumber } = useLocale();
-  const activeProject = PROJECTS[0];
+  // ProjectContext is hybrid live/mock since PR #293 — when the user
+  // has a real backend project, activeProject reflects it; otherwise
+  // it falls back to the first mock project.
+  const { activeProject: liveActiveProject } = useProject();
+  const activeProject = liveActiveProject || PROJECTS[0];
 
   // 列表数据 = 主品牌 + 竞品 (不含全行业)
   const rows = useMemo(() => {
@@ -55,6 +61,10 @@ export default function BrandsPage() {
           </p>
         </div>
       </div>
+
+      {/* LIVE strip — primary + competitors from
+          /v1/projects/:id/competitors/metrics */}
+      <BrandsListLiveBanner />
 
       {/* List table */}
       <Card className="p-0 overflow-hidden">
