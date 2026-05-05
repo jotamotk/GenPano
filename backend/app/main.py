@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1._meta.router import router as meta_router
 from app.api.v1.alerts.router import prefs_router as notifications_router
 from app.api.v1.alerts.router import router as alerts_router
+from app.api.v1.api_keys.router import mcp_router
+from app.api.v1.api_keys.router import router as api_keys_router
 from app.api.v1.auth import router as user_auth_router
 from app.api.v1.brands.router import router as brands_router
 from app.api.v1.citations.router import router as citations_router
@@ -56,6 +58,8 @@ app.include_router(exports_router, prefix=f"{V1_PREFIX}/projects")
 app.include_router(brand_submissions_router, prefix=f"{V1_PREFIX}/brands")
 app.include_router(alerts_router, prefix=f"{V1_PREFIX}/alerts")
 app.include_router(notifications_router, prefix=f"{V1_PREFIX}/users/me")
+app.include_router(api_keys_router, prefix=f"{V1_PREFIX}/users/me")
+app.include_router(mcp_router, prefix="/mcp")
 app.include_router(meta_router, prefix=V1_PREFIX)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
