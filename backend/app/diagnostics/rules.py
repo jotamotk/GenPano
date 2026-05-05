@@ -228,11 +228,21 @@ class GeoScoreDropRule(BaseRule):
         ]
 
 
-REGISTRY: list[type[BaseRule]] = [
+_BASE_REGISTRY: list[type[BaseRule]] = [
     VisibilityDeclineRule,
     NegativeSentimentGrowthRule,
     GeoScoreDropRule,
 ]
+
+
+def _full_registry() -> list[type[BaseRule]]:
+    """Combine base 3 + extended 22 rules (Phase D.2)."""
+    from app.diagnostics.rules_extended import REGISTRY_EXTENDED
+
+    return _BASE_REGISTRY + REGISTRY_EXTENDED
+
+
+REGISTRY: list[type[BaseRule]] = _full_registry()
 
 
 # Stubbed categories for full PRD §4.7.1.1 coverage (Phase D follow-up wires)
