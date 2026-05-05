@@ -23,6 +23,11 @@ Backward compatibility:
 - `backend/app/db/base.py` re-exports `Base` for the same reason.
 """
 
+from genpano_models.alert import (
+    Alert,
+    AlertRule,
+    UserNotificationPreferences,
+)
 from genpano_models.analyzer import (
     BrandMention,
     CitationSource,
@@ -43,6 +48,8 @@ from genpano_models.project import Project, ProjectCompetitor, ProjectTopicPin
 from genpano_models.user import User, UserAuthToken
 
 __all__ = [
+    "Alert",
+    "AlertRule",
     "Base",
     "BrandMention",
     "BrandSubmission",
@@ -62,4 +69,5 @@ __all__ = [
     "SentimentDriver",
     "User",
     "UserAuthToken",
+    "UserNotificationPreferences",
 ]
