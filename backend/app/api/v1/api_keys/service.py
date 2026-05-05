@@ -161,9 +161,18 @@ async def authenticate_mcp_token(session: AsyncSession, *, token: str) -> UserAp
 async def dispatch_mcp_request(
     method: str,
     params: dict[str, Any] | None,
+    *,
+    session: AsyncSession | None = None,
+    user: User | None = None,
 ) -> dict[str, Any]:
-    """Phase M stub — implements `initialize` / `tools/list` / `resources/list`.
-    `tools/call` returns 'not_implemented_yet' for now (Phase M.3+ wires real tools)."""
+    """JSON-RPC dispatcher (PRD §4.5.2.1).
+
+    `initialize` / `tools/list` / `resources/list` are pure metadata and don't
+    need session+user. `tools/call` invokes Phase M.2 real implementations
+    via `dispatch_tool_call` and requires both.
+    """
+    from app.api.v1.api_keys.mcp_tools import TOOLS, dispatch_tool_call
+
     if method == "initialize":
         return {
             "protocolVersion": "2024-11-05",
@@ -175,10 +184,10 @@ async def dispatch_mcp_request(
             "tools": [
                 {
                     "name": name,
-                    "description": f"GenPano tool: {name} (Phase M.3 wires schema)",
+                    "description": f"GenPano tool: {name}",
                     "inputSchema": {"type": "object"},
                 }
-                for name in MCP_TOOLS
+                for name in TOOLS
             ]
         }
     if method == "resources/list":
@@ -188,17 +197,14 @@ async def dispatch_mcp_request(
             ]
         }
     if method == "tools/call":
-        tool_name = (params or {}).get("name")
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        f"tool '{tool_name}' is registered but not yet executable; "
-                        "Phase M.3 wires the actual data fetcher."
-                    ),
-                }
-            ],
-            "isError": False,
-        }
+        tool_name = (params or {}).get("name") or ""
+        arguments = (params or {}).get("arguments") or {}
+        if session is None or user is None:
+            return {
+                "content": [{"type": "text", "text": "session/user not propagated"}],
+                "isError": True,
+            }
+        return await dispatch_tool_call(
+            session, user=user, tool_name=tool_name, arguments=arguments
+        )
     return {"error": {"code": -32601, "message": f"Method not found: {method}"}}

@@ -109,7 +109,17 @@ async def mcp_jsonrpc(
     if key is None:
         raise mcp_auth_required("invalid or revoked token")
 
-    result = await dispatch_mcp_request(payload.method, payload.params)
+    # Resolve the principal user for tool dispatch (multi-tenant enforcement)
+    from genpano_models import User as UserModel
+    from sqlalchemy import select as _select
+
+    user_row = (
+        await session.execute(_select(UserModel).where(UserModel.id == key.user_id))
+    ).scalar_one_or_none()
+
+    result = await dispatch_mcp_request(
+        payload.method, payload.params, session=session, user=user_row
+    )
     if "error" in result:
         return JsonRpcResponse(id=payload.id, error=result["error"])
     return JsonRpcResponse(id=payload.id, result=result)
