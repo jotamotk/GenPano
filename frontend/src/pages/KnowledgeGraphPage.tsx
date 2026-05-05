@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Graph } from '@antv/g6';
 import { Card } from '../components/ui';
 import { BRANDS as GLOBAL_BRANDS } from '../data/mock';
+import IndustrySubpageLiveBanner from '../components/industry/IndustrySubpageLiveBanner';
 
 /* ══════════════════════════════════════════════════════════════
    Knowledge Graph — AntV G6 force layout
@@ -676,8 +677,19 @@ export default function KnowledgeGraphPage() {
     { type: 'PAIRS_WITH',    label: '搭配推荐',     token: '--color-accent-2' },
   ];
 
+  // KG page has no project / industry context state of its own — read it
+  // from URL ?industryId=. Numeric ids hit /v1/industries/:id/kg; mock
+  // ('beauty') skips.
+  const kgIndustryParam = new URLSearchParams(window.location.search).get(
+    'industryId',
+  );
+  const liveKgIndustryId = kgIndustryParam && /^\d+$/.test(kgIndustryParam)
+    ? Number(kgIndustryParam)
+    : null;
+
   return (
     <div className="space-y-4">
+      <IndustrySubpageLiveBanner variant="kg" industryId={liveKgIndustryId} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
