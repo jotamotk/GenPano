@@ -8,6 +8,11 @@ from genpano_models import (
     BrandMention,
     GeoScoreDaily,
     IndustryBenchmarkDaily,
+    KgBrand,
+    KgBrandRelation,
+    KgCategory,
+    KgProduct,
+    KgProductRelation,
 )
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -319,14 +324,67 @@ async def get_industry_kg(
     focus: str | None = None,
     depth: int = 2,
 ) -> IndustryKgOut:
+    """Industry knowledge graph (Phase K.6).
+
+    Layers, in order of containment:
+        depth 0: industry root
+        depth 1: kg_categories under industry_id (level=1 only)
+        depth 1: kg_brands joined with the brands surfaced by 30d
+                 geo_score_daily — name comes from kg_brands.primary_name
+                 when present, fallback to f"brand-{id}".
+        depth 2: kg_products belonging to the discovered brands
+                 (only when depth >= 2)
+
+    Edges:
+        BELONGS_TO    industry → category, industry → brand
+        IN_CATEGORY   product  → category
+        OF_BRAND      product  → brand
+        COMPETES_WITH brand    ↔ brand   (kg_brand_relations)
+        SAME_GROUP    brand    ↔ brand
+        SUBSTITUTES / UPGRADES_TO / BUDGET_ALT_OF / PAIRS_WITH / COMPETES_WITH
+                       product ↔ product (kg_product_relations) — depth >= 2
+    """
     today = date.today()
+
+    # Discover brands via 30d geo_score_daily (existing behavior — keeps
+    # the graph populated even when kg_brands has no rows yet).
     stmt = select(GeoScoreDaily.brand_id, func.avg(GeoScoreDaily.avg_geo_score).label("g")).where(
         GeoScoreDaily.date >= datetime.combine(today - timedelta(days=29), datetime.min.time())
     )
     if industry_name:
         stmt = stmt.where(GeoScoreDaily.industry == industry_name)
-    stmt = stmt.group_by(GeoScoreDaily.brand_id).order_by(desc("g")).limit(20)
+    stmt = stmt.group_by(GeoScoreDaily.brand_id).order_by(desc("g")).limit(50)
     brand_rows = (await session.execute(stmt)).all()
+    brand_ids: list[int] = [r[0] for r in brand_rows]
+    brand_score: dict[int, float | None] = {
+        r[0]: (round(r[1], 2) if r[1] else None) for r in brand_rows
+    }
+
+    # kg_brands metadata for richer naming + group membership
+    kg_brand_rows: list[KgBrand] = []
+    if brand_ids:
+        kg_brand_rows = list(
+            (await session.execute(select(KgBrand).where(KgBrand.brand_id.in_(brand_ids))))
+            .scalars()
+            .all()
+        )
+    kg_brand_by_id: dict[int, KgBrand] = {kb.brand_id: kb for kb in kg_brand_rows}
+
+    # kg_categories (level=1 under this industry)
+    cat_rows: list[KgCategory] = list(
+        (
+            await session.execute(
+                select(KgCategory).where(
+                    and_(
+                        KgCategory.industry_id == industry_id,
+                        KgCategory.status == "approved",
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     industry_node_id = f"industry-{industry_id}"
     nodes: list[KGNode] = [
@@ -339,18 +397,123 @@ async def get_industry_kg(
     ]
     edges: list[KGEdge] = []
 
-    for r in brand_rows:
-        bid = r[0]
+    # Category nodes
+    for cat in cat_rows:
+        cat_node_id = f"category-{cat.id}"
+        nodes.append(
+            KGNode(
+                id=cat_node_id,
+                type="category",
+                name=cat.name_zh,
+                metadata={
+                    "level": cat.level,
+                    "parent_id": (
+                        f"category-{cat.parent_id}" if cat.parent_id is not None else None
+                    ),
+                },
+            )
+        )
+        # Top-level categories belong to the industry; children to parent.
+        parent = f"category-{cat.parent_id}" if cat.parent_id is not None else industry_node_id
+        edges.append(KGEdge(source=parent, target=cat_node_id, type="BELONGS_TO", weight=1.0))
+
+    # Brand nodes
+    for bid in brand_ids:
         node_id = f"brand-{bid}"
+        kb = kg_brand_by_id.get(bid)
         nodes.append(
             KGNode(
                 id=node_id,
                 type="brand",
-                name=f"brand-{bid}",
-                metadata={"avg_geo_score": round(r[1], 2) if r[1] else None},
+                name=kb.primary_name if kb else f"brand-{bid}",
+                metadata={
+                    "avg_geo_score": brand_score.get(bid),
+                    "group_id": kb.group_id if kb else None,
+                    "official_domains": kb.official_domains if kb else None,
+                },
             )
         )
         edges.append(KGEdge(source=industry_node_id, target=node_id, type="BELONGS_TO", weight=1.0))
+
+    # Brand-to-brand relations (COMPETES_WITH / SAME_GROUP)
+    if len(brand_ids) >= 2:
+        rel_stmt = select(KgBrandRelation).where(
+            and_(
+                KgBrandRelation.brand_a_id.in_(brand_ids),
+                KgBrandRelation.brand_b_id.in_(brand_ids),
+            )
+        )
+        for rel in (await session.execute(rel_stmt)).scalars().all():
+            edges.append(
+                KGEdge(
+                    source=f"brand-{rel.brand_a_id}",
+                    target=f"brand-{rel.brand_b_id}",
+                    type=rel.type,
+                    weight=rel.confidence,
+                )
+            )
+
+    # Products (depth >= 2)
+    if depth >= 2 and brand_ids:
+        prod_rows: list[KgProduct] = list(
+            (
+                await session.execute(
+                    select(KgProduct).where(
+                        and_(
+                            KgProduct.brand_id.in_(brand_ids),
+                            KgProduct.status == "approved",
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        product_ids: list[int] = []
+        for p in prod_rows:
+            pn_id = f"product-{p.product_id}"
+            product_ids.append(p.product_id)
+            nodes.append(
+                KGNode(
+                    id=pn_id,
+                    type="product",
+                    name=p.primary_name,
+                    metadata={
+                        "brand_id": p.brand_id,
+                        "category_id": p.category_id,
+                    },
+                )
+            )
+            edges.append(
+                KGEdge(source=f"brand-{p.brand_id}", target=pn_id, type="OF_BRAND", weight=1.0)
+            )
+            if p.category_id is not None:
+                edges.append(
+                    KGEdge(
+                        source=f"category-{p.category_id}",
+                        target=pn_id,
+                        type="IN_CATEGORY",
+                        weight=1.0,
+                    )
+                )
+
+        # Product-to-product relations
+        if len(product_ids) >= 2:
+            prel_stmt = select(KgProductRelation).where(
+                and_(
+                    KgProductRelation.product_a_id.in_(product_ids),
+                    KgProductRelation.product_b_id.in_(product_ids),
+                )
+            )
+            for prel in (await session.execute(prel_stmt)).scalars().all():
+                edges.append(
+                    KGEdge(
+                        source=f"product-{prel.product_a_id}",
+                        target=f"product-{prel.product_b_id}",
+                        type=prel.type,
+                        weight=prel.confidence or 1.0,
+                    )
+                )
 
     return IndustryKgOut(
         industry_id=industry_id,
@@ -358,5 +521,5 @@ async def get_industry_kg(
         depth=depth,
         nodes=nodes,
         edges=edges,
-        state="ok" if brand_rows else "empty",
+        state="ok" if (brand_rows or cat_rows) else "empty",
     )
