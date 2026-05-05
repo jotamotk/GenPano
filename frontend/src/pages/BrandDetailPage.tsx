@@ -20,6 +20,7 @@ import PrTargetsPanel from '../components/citation/PrTargetsPanel';
 import AuthorityRadarChart from '../components/citation/AuthorityRadarChart';
 import SameGroupAndAcquisition from '../components/citation/SameGroupAndAcquisition';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
+import BrandDetailLiveBanner from '../components/brand/BrandDetailLiveBanner';
 import {
   BRANDS, PRODUCTS, DIAGNOSTICS,
   SENTIMENT_DISTRIBUTION,
@@ -888,6 +889,9 @@ export default function BrandDetailPage() {
         breadcrumbHref={breadcrumb.href}
         t={t}
       />
+
+      {/* LIVE strip — primary brand metrics from /v1/projects/:id/metrics */}
+      <BrandDetailLiveBanner />
 
       {/* PRD §4.6.1b — state B / C 顶部 banner */}
       <BrandStateBanner state={watchState} brand={brand} t={t} formatBrand={formatBrand} />
