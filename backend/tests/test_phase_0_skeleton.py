@@ -39,8 +39,12 @@ def test_meta_routes_lists_v1_routes() -> None:
 
 
 def test_phase_0_stub_returns_501() -> None:
-    """Each Phase 0 stub returns 501 with `state=phase_0_stub` body."""
-    resp = client.get("/api/v1/projects/")
+    """A still-stubbed Phase 0 endpoint returns 501 + phase_0_stub body.
+
+    `/v1/projects/` was wired in Phase 1; pick a still-stubbed one:
+    `/v1/brands/` (Phase 1 doesn't implement brand search).
+    """
+    resp = client.get("/api/v1/brands/")
     assert resp.status_code == 501
     body = resp.json()
     assert body.get("state") == "phase_0_stub"

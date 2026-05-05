@@ -34,6 +34,7 @@ from genpano_models.analyzer import (
     SentimentDriver,
 )
 from genpano_models.base import Base
+from genpano_models.project import Project, ProjectCompetitor, ProjectTopicPin
 from genpano_models.user import User, UserAuthToken
 
 __all__ = [
@@ -44,6 +45,9 @@ __all__ = [
     "IndustryBenchmarkDaily",
     "ProductFeatureMention",
     "ProductScoreDaily",
+    "Project",
+    "ProjectCompetitor",
+    "ProjectTopicPin",
     "ResponseAnalysis",
     "SentimentDriver",
     "User",

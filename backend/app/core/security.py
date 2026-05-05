@@ -51,11 +51,11 @@ async def current_user(
     #     return await _resolve_api_key_principal(token, session)
 
     try:
-        user_id = verify_user_access_token(token)
+        payload = verify_user_access_token(token)
     except UserJwtInvalidError as exc:
         raise unauthorized(str(exc)) from exc
 
-    result = await session.execute(select(User).where(User.id == user_id))
+    result = await session.execute(select(User).where(User.id == payload.sub))
     user = result.scalar_one_or_none()
     if user is None:
         raise unauthorized("user not found")
