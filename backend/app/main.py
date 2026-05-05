@@ -18,6 +18,8 @@ from app.api.v1.citations.router import router as citations_router
 from app.api.v1.competitors.router import router as competitors_router
 from app.api.v1.crawl.router import router as crawl_router
 from app.api.v1.diagnostics.router import router as diagnostics_router
+from app.api.v1.exports.router import router as exports_router
+from app.api.v1.exports.router import submission_router as brand_submissions_router
 from app.api.v1.industries.router import router as industries_router
 from app.api.v1.leads.router import router as leads_router
 from app.api.v1.products.router import router as products_router
@@ -48,6 +50,8 @@ app.include_router(reports_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/
 app.include_router(diagnostics_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/diagnostics")
 app.include_router(leads_router, prefix=f"{V1_PREFIX}/leads")
 app.include_router(crawl_router, prefix=f"{V1_PREFIX}/projects")
+app.include_router(exports_router, prefix=f"{V1_PREFIX}/projects")
+app.include_router(brand_submissions_router, prefix=f"{V1_PREFIX}/brands")
 app.include_router(meta_router, prefix=V1_PREFIX)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
