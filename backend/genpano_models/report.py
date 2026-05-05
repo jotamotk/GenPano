@@ -1,4 +1,4 @@
-"""ReportSchedule + ReportShareToken ORMs (Phase RP)."""
+"""ReportJob + ReportSchedule + ReportShareToken ORMs (Phase RP)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -22,6 +23,30 @@ from genpano_models.base import Base
 
 def _new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+class ReportJob(Base):
+    """Single report generation job (Phase 0 schema; Phase RP.2 fills logic)."""
+
+    __tablename__ = "report_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope: Mapped[Any] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    output_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ReportSchedule(Base):

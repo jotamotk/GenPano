@@ -62,6 +62,11 @@ def conflict(code: str, detail: str | None = None) -> HTTPException:
     return _problem(409, code, "Conflict", detail=detail)
 
 
+def gone(detail: str | None = None) -> HTTPException:
+    """410 — resource expired or revoked (e.g., public share link)."""
+    return _problem(410, "gone", "Resource gone", detail=detail)
+
+
 def validation_error(field: str, reason: str) -> HTTPException:
     return _problem(
         422,
