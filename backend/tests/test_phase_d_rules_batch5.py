@@ -30,9 +30,7 @@ def test_registry_meets_prd_target() -> None:
 
 
 def test_planned_categories_empty() -> None:
-    assert PLANNED_CATEGORIES == [], (
-        "All PRD §4.7.1.1 categories shipped; queue should be empty."
-    )
+    assert PLANNED_CATEGORIES == [], "All PRD §4.7.1.1 categories shipped; queue should be empty."
 
 
 def test_batch5_metadata_consistent() -> None:
