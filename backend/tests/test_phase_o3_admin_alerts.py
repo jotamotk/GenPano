@@ -117,9 +117,7 @@ async def test_list_admin_alerts_returns_operator_only(
 
 
 @pytest.mark.asyncio
-async def test_list_admin_alerts_filters_by_status(
-    client, admin_operator, operator_alert
-):
+async def test_list_admin_alerts_filters_by_status(client, admin_operator, operator_alert):
     resp = await client.get(
         "/api/admin/alerts/?status=unread",
         headers=_bearer(admin_operator),
@@ -138,9 +136,7 @@ async def test_list_admin_alerts_non_operator_403(client, regular_user, operator
 
 
 @pytest.mark.asyncio
-async def test_update_alert_status_emits_audit(
-    client, admin_operator, operator_alert, db_session
-):
+async def test_update_alert_status_emits_audit(client, admin_operator, operator_alert, db_session):
     resp = await client.patch(
         f"/api/admin/alerts/{operator_alert.id}",
         headers=_bearer(admin_operator),

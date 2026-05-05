@@ -76,9 +76,7 @@ async def update_operator_alert(
         raise validation_error("status", "must be read|acknowledged|ignored|resolved")
 
     row = (
-        await session.execute(
-            select(Alert).where(Alert.id == alert_id, Alert.scope == "operator")
-        )
+        await session.execute(select(Alert).where(Alert.id == alert_id, Alert.scope == "operator"))
     ).scalar_one_or_none()
     if row is None:
         raise not_found("alert not found")
@@ -113,9 +111,7 @@ async def mark_all_operator_alerts_read(
     rows = list(
         (
             await session.execute(
-                select(Alert).where(
-                    Alert.scope == "operator", Alert.status == "unread"
-                )
+                select(Alert).where(Alert.scope == "operator", Alert.status == "unread")
             )
         )
         .scalars()
