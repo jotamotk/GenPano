@@ -174,10 +174,12 @@ async def test_mcp_tools_list(client, user):
     )
     assert resp.status_code == 200
     tools = resp.json()["result"]["tools"]
-    assert len(tools) == 9  # PRD §4.5.2.2 lists 9 tools
+    # PRD §4.5.2.2 originally listed 9 tools; phase-K.6 adds get_industry_kg.
+    assert len(tools) == 10
     names = {t["name"] for t in tools}
     assert "genpano_get_brand_visibility" in names
     assert "genpano_simulate_authority_boost" in names
+    assert "genpano_get_industry_kg" in names
 
 
 @pytest.mark.asyncio
@@ -373,6 +375,7 @@ async def test_mcp_tools_list_returns_real_tool_names(client, user):
         "genpano_get_brand_visibility",
         "genpano_compare_brands",
         "genpano_get_industry_trends",
+        "genpano_get_industry_kg",
         "genpano_get_product_ranking",
         "genpano_generate_report",
         "genpano_get_optimization_insights",

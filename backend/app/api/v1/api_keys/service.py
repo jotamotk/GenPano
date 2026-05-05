@@ -117,6 +117,7 @@ MCP_TOOLS = [
     "genpano_get_brand_visibility",
     "genpano_compare_brands",
     "genpano_get_industry_trends",
+    "genpano_get_industry_kg",
     "genpano_get_product_ranking",
     "genpano_generate_report",
     "genpano_get_optimization_insights",
