@@ -4,6 +4,7 @@ import { Target, Globe } from 'lucide-react';
 import { PROJECTS } from '../data/mock';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
+import { useUnreadAlertCount } from '../hooks/useAlerts';
 
 /* ─────────────────────────────────────────────────────────────
    DashboardLayout — Brand/Industry Mode IA v2.0 (see PRD §4.6-IA-v2)
@@ -154,6 +155,9 @@ function ModeToggle({ mode, onSwitch, t }) {
    Topbar (§4.6-IA-v2.C.1)
    ───────────────────────────────────────────────────────────── */
 function Topbar({ mode, onSwitchMode, t, locale, setLocale, onNavigate }) {
+  // Phase N — bell badge fed by /v1/alerts/unread-count.
+  // 30s polling keeps it close-to-fresh; webhook push lands later.
+  const { data: unreadCount } = useUnreadAlertCount();
   return (
     <header
       className="h-14 shrink-0 flex items-center gap-4 px-6 bg-themed-card border-b border-themed-card"
@@ -198,20 +202,22 @@ function Topbar({ mode, onSwitchMode, t, locale, setLocale, onNavigate }) {
         {icons.search}
       </button>
 
-      {/* Alert Bell */}
+      {/* Alert Bell — count from /v1/alerts/unread-count (Phase N) */}
       <button
         aria-label={t('topbar.alerts.aria')}
+        onClick={() => onNavigate('/alerts')}
         className="relative p-2 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle transition-colors"
         title={t('topbar.alerts.aria')}
       >
         {icons.bell}
-        {/* Count badge — real count wired via useAlertsStore() in T1' final step */}
-        <span
-          className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center text-white"
-          style={{ background: 'var(--color-danger, #E2434B)' }}
-        >
-          3
-        </span>
+        {unreadCount !== undefined && unreadCount > 0 && (
+          <span
+            className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center text-white"
+            style={{ background: 'var(--color-danger, #E2434B)' }}
+          >
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
       </button>
 
       {/* Language toggle (moved from sidebar bottom, §4.6-IA-v2.C.1) */}

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Badge, Button, Card } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
+import { useNotifications, useUpdateNotifications } from '../hooks/useNotifications';
 
 /* ─────────────────────────────────────────────────────────────
    SettingsPage — PRD §4.10 国际化覆盖
@@ -8,18 +9,43 @@ import { useLocale } from '../contexts/LocaleContext';
    所有 UI 文案通过 useLocale().t() 读取 messages.settings.*
    用户名 / 邮箱 / 注册时间 来自 LocaleContext 默认 user 对象
    (未来接入 auth 后替换为 useAuth() hook 输出).
+
+   Notifications toggles are persisted via PATCH /v1/users/me/notifications
+   (Phase N) — optimistic update + rollback on failure (rate limit / 401 /
+   network). Pre-load default (all off) until the GET resolves.
 */
 export default function SettingsPage() {
   const { t, locale, formatDate } = useLocale();
 
-  const [toggles, setToggles] = useState({
+  const { data: prefs, isLoading: prefsLoading } = useNotifications();
+  const updatePrefs = useUpdateNotifications();
+
+  // Backend prefs are the source of truth; while loading, fall back to
+  // defaults so the UI doesn't flash wrong state.
+  const [localToggles, setLocalToggles] = useState({
     p0p1Alerts: true,
     weeklyReport: true,
     competitorAlert: false,
   });
+  const toggles = prefs
+    ? {
+        p0p1Alerts: prefs.p0p1_alerts,
+        weeklyReport: prefs.weekly_report,
+        competitorAlert: prefs.competitor_alert,
+      }
+    : localToggles;
 
-  const toggleSwitch = (key) => {
-    setToggles((prev) => ({ ...prev, [key]: !prev[key] }));
+  const toggleSwitch = (key: 'p0p1Alerts' | 'weeklyReport' | 'competitorAlert') => {
+    const next = !toggles[key];
+    setLocalToggles((prev) => ({ ...prev, [key]: next }));
+    if (!prefs) return; // not loaded yet — local-only optimistic
+    const apiKey =
+      key === 'p0p1Alerts'
+        ? 'p0p1_alerts'
+        : key === 'weeklyReport'
+          ? 'weekly_report'
+          : 'competitor_alert';
+    updatePrefs.mutate({ [apiKey]: next });
   };
 
   // Mock 用户资料 — 之后由 useAuth() 提供
