@@ -539,8 +539,7 @@ class SentimentDropRule(BaseRule):
                     "delta": round(delta, 3),
                 },
                 if_untreated=(
-                    "Sustained sentiment drop typically depresses ranking signals "
-                    "next quarter."
+                    "Sustained sentiment drop typically depresses ranking signals next quarter."
                 ),
             )
         ]
