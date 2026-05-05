@@ -26,6 +26,8 @@ from app.api.v1.projects._dto import (
     ProjectOut,
     ProjectPatch,
 )
+from app.api.v1.projects._overview_dto import BrandOverviewOut
+from app.api.v1.projects._overview_service import get_brand_overview
 from app.core.security import _DependsDb, current_user
 
 router = APIRouter(tags=["Projects"])
@@ -121,3 +123,17 @@ async def remove_competitor(
 ) -> None:
     project = await service.get_project_for_user(session, user, project_id)
     await service.remove_competitor(session, project, brand_id=brand_id)
+
+
+@router.get("/{project_id}/overview", response_model=BrandOverviewOut)
+async def project_overview(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> BrandOverviewOut:
+    """Brand Overview composite — KPI cards + 30d trends + top prompts.
+
+    Phase 2.1 implementation. See PRD §4.6.1a.
+    """
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_brand_overview(session, project)
