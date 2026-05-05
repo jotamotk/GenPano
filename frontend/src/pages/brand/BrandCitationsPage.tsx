@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge, Button } from '../../components/ui';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
 import { TrendChart, DonutChart } from '../../components/charts';
 import ContentGapPanel from '../../components/citation/ContentGapPanel';
 import PrTargetsPanel from '../../components/citation/PrTargetsPanel';
@@ -250,6 +251,7 @@ function AuthoritySimulator({ baseline, presets }) {
 
   return (
     <div className="space-y-4">
+      <BrandSubpageLiveBanner variant="citations" />
       {/* Baseline info card */}
       <Card className="p-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

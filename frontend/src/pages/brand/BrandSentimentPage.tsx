@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge } from '../../components/ui';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
 import { TrendChart, DonutChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -121,6 +122,7 @@ export default function BrandSentimentPage() {
 
   return (
     <div className="space-y-4">
+      <BrandSubpageLiveBanner variant="sentiment" />
       {/* Page header */}
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
