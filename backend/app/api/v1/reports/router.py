@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import PlainTextResponse, Response
 from genpano_models import ReportJob, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +26,11 @@ from app.api.v1.reports.service import (
     read_public_report,
     revoke_share_token,
 )
+from app.core.errors import not_found, validation_error
 from app.core.security import _DependsDb, current_user
+from app.reports.renderers import render_csv, render_json, render_markdown
+
+VALID_DOWNLOAD_FORMATS = {"json", "markdown", "md", "csv"}
 
 router = APIRouter(tags=["Reports"])
 
@@ -95,6 +100,59 @@ async def get_my_report(
     )
     out = _to_out(job)
     return ReportDetailOut(**out.model_dump(), payload=body)
+
+
+@router.get(
+    "/{project_id}/reports/{report_id}/download",
+    response_class=Response,
+)
+async def download_my_report(
+    project_id: str,
+    report_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    format: str = Query("markdown"),
+) -> Response:
+    """Download a report payload in the requested format.
+
+    Phase RP.5 supports: markdown / md / json / csv. PDF (Phase RP.5
+    follow-up) requires weasyprint and is intentionally deferred.
+    """
+    fmt = format.lower()
+    if fmt not in VALID_DOWNLOAD_FORMATS:
+        raise validation_error("format", f"must be one of {sorted(VALID_DOWNLOAD_FORMATS)}")
+
+    job, payload = await get_job_with_payload(
+        session, user=user, project_id=project_id, job_id=report_id
+    )
+    if payload is None:
+        raise not_found("report payload not available (job not done)")
+
+    if fmt in {"markdown", "md"}:
+        body = render_markdown(payload)
+        return PlainTextResponse(
+            body,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{job.id}.md"',
+            },
+        )
+    if fmt == "json":
+        body = render_json(payload)
+        return Response(
+            content=body,
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{job.id}.json"',
+            },
+        )
+    # csv
+    body = render_csv(payload)
+    return PlainTextResponse(
+        body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{job.id}.csv"'},
+    )
 
 
 @router.post(
