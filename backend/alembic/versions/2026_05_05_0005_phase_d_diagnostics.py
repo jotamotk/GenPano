@@ -1,7 +1,7 @@
 """Phase D — Diagnostics table.
 
 Revision ID: 20260505_phase_d
-Revises: 20260505_phase_m
+Revises: 20260505_phase_k
 Create Date: 2026-05-05
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260505_phase_d"
-down_revision: str | Sequence[str] | None = "20260505_phase_m"
+down_revision: str | Sequence[str] | None = "20260505_phase_k"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
