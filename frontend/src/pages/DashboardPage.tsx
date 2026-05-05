@@ -5,7 +5,9 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
+import BrandOverviewLiveBanner from '../components/dashboard/BrandOverviewLiveBanner';
 import { BRANDS, INDUSTRIES } from '../data/mock';
+import { useProjects } from '../hooks/useProjects';
 
 /* ─────────────────────────────────────────────────────────────
    DashboardPage ("我的品牌") — PRD §4.6.1a 市场宏观视角
@@ -20,9 +22,16 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const { t } = useLocale();
   const { projects, activeProject } = useProject();
+  // If the user has a real backend project, the LiveBanner above the
+  // existing mock viz will render real KPIs. Mock-only users see the
+  // banner empty (returns null) and only the existing viz.
+  const { data: liveProjects } = useProjects();
 
-  /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ── */
-  if (projects.length === 0) {
+  /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ──
+     Skip the empty state when the user has at least one real project
+     in the backend (just signed up + onboarded but mock context
+     hasn't been wired yet). */
+  if (projects.length === 0 && (!liveProjects || liveProjects.length === 0)) {
     return <DashboardEmptyState />;
   }
 
@@ -51,12 +60,15 @@ export default function DashboardPage() {
   );
 
   return (
-    <BrandPanoramaPanel
-      primary={primary}
-      industry={industry}
-      competitors={competitors}
-      headerSlot={header}
-      scrollAnchorId="dashboard-competition"
-    />
+    <>
+      <BrandOverviewLiveBanner />
+      <BrandPanoramaPanel
+        primary={primary}
+        industry={industry}
+        competitors={competitors}
+        headerSlot={header}
+        scrollAnchorId="dashboard-competition"
+      />
+    </>
   );
 }
