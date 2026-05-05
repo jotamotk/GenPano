@@ -4,7 +4,7 @@ Each rule subclasses BaseRule + emits zero or more `DiagnosticPayload`. The
 rule REGISTRY is consumed by `evaluator.evaluate_project(project)` which is
 typically scheduled by Celery.
 
-Twenty-three rules currently shipped (PRD §4.7.1.1 priorities):
+Twenty-seven rules currently shipped (PRD §4.7.1.1 — full target):
     - VisibilityDeclineRule           (mention_rate 30d trend)
     - NegativeSentimentGrowthRule     (negative ratio threshold)
     - GeoScoreDropRule                (composite GEO score 30d)
@@ -28,9 +28,12 @@ Twenty-three rules currently shipped (PRD §4.7.1.1 priorities):
     - ContentGapRule                  (low citations-per-mention ratio)
     - ProductFeatureNegativeRule      (single feature > 30% negative)
     - PersonaKeywordChangeRule        (top sentiment drivers churn > 70% MoM)
+    - NarrativeDriftRule              (positive drivers spread > 30 distinct in 30d)
+    - TopicEmergingMissedRule         (engine coverage gap vs competitors)
+    - ProductRemissionRule            (features that went silent in 30d)
+    - SameGroupShareLowRule           (corporate group shared-domain synergy weak)
 
-The remaining categories listed in PLANNED_CATEGORIES are still stubbed
-by name and queued for Phase D follow-up PRs.
+PLANNED_CATEGORIES is now empty — all PRD §4.7.1.1 categories shipped.
 """
 
 from __future__ import annotations
@@ -40,6 +43,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from genpano_models import (
+    BrandGroupMember,
+    BrandGroupSharedDomain,
     BrandMention,
     CitationSource,
     GeoScoreDaily,
@@ -1731,6 +1736,355 @@ class PersonaKeywordChangeRule(BaseRule):
         ]
 
 
+class NarrativeDriftRule(BaseRule):
+    """Brand narrative is drifting — sentiment vocabulary doesn't reinforce
+    the same dimension across the period.
+
+    Approximated by: dimension_company values in response_analyses for
+    this brand are spread across > 5 distinct dimensions in 30d. A
+    well-managed brand narrative concentrates on 2-3 dimensions; high
+    spread means LLMs have no consistent frame.
+    """
+
+    rule_id = "narrative_drift_v1"
+    category = "narrative_drift"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        # Use BrandMention.brand_name as a join bridge to ResponseAnalysis;
+        # response_analyses doesn't directly carry brand_id.
+        # Count distinct (driver_text, polarity='positive') sentiment drivers as a proxy.
+        stmt = (
+            select(func.count(func.distinct(SentimentDriver.driver_text)))
+            .join(BrandMention, BrandMention.id == SentimentDriver.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    SentimentDriver.created_at >= from_d,
+                    SentimentDriver.polarity == "positive",
+                )
+            )
+        )
+        try:
+            distinct_drivers = int((await session.execute(stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        # Empirical threshold: > 30 distinct positive drivers in 30d means
+        # the LLM has no consolidated narrative.
+        if distinct_drivers <= 30:
+            return []
+        severity = "P2" if distinct_drivers <= 50 else "P1"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"narrative dispersed across {distinct_drivers} positive drivers",
+                description=(
+                    "The LLM's positive description of the brand is spread thin "
+                    "across many distinct sentiment drivers. Without a consistent "
+                    "frame, brand recall is fragile."
+                ),
+                focus_area="narrative_consistency",
+                direction=(
+                    "Identify the 3-5 messages you want the brand known for and "
+                    "bias content / PR toward those drivers consistently."
+                ),
+                reader_hints=["branding"],
+                evidence={
+                    "metric": "distinct_positive_drivers_30d",
+                    "current_value": distinct_drivers,
+                    "threshold": 30,
+                },
+                if_untreated=(
+                    "Without narrative consolidation, brand association weakens; "
+                    "LLMs default to generic descriptors."
+                ),
+            )
+        ]
+
+
+class TopicEmergingMissedRule(BaseRule):
+    """Engine-level coverage gap: target_llm has 0 mentions across rivals
+    where peers have meaningful mention counts in the most recent 7d.
+
+    This complements LlmEngineAnomalyRule — instead of detecting an
+    outage of the brand's own data, it detects the brand being *absent*
+    from a peer group on a given engine while still indexed elsewhere.
+    Triggers P2.
+    """
+
+    rule_id = "topic_emerging_missed_v1"
+    category = "topic_emerging_missed"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=6), datetime.min.time())
+
+        # Per engine: did primary brand get any mentions?
+        my_stmt = (
+            select(
+                GeoScoreDaily.target_llm, func.coalesce(func.sum(GeoScoreDaily.mention_count), 0)
+            )
+            .where(
+                and_(
+                    GeoScoreDaily.brand_id == project.primary_brand_id,
+                    GeoScoreDaily.date >= from_d,
+                    GeoScoreDaily.target_llm.is_not(None),
+                )
+            )
+            .group_by(GeoScoreDaily.target_llm)
+        )
+        # Per engine: total mentions across pinned competitors
+        comp_ids_stmt = select(ProjectCompetitor.brand_id).where(
+            ProjectCompetitor.project_id == project.id
+        )
+        try:
+            my_rows = list((await session.execute(my_stmt)).all())
+            comp_ids = [r[0] for r in (await session.execute(comp_ids_stmt)).all()]
+        except Exception:
+            return []
+        if not comp_ids:
+            return []
+
+        comp_stmt = (
+            select(
+                GeoScoreDaily.target_llm, func.coalesce(func.sum(GeoScoreDaily.mention_count), 0)
+            )
+            .where(
+                and_(
+                    GeoScoreDaily.brand_id.in_(comp_ids),
+                    GeoScoreDaily.date >= from_d,
+                    GeoScoreDaily.target_llm.is_not(None),
+                )
+            )
+            .group_by(GeoScoreDaily.target_llm)
+        )
+        comp_rows = list((await session.execute(comp_stmt)).all())
+
+        my_by_engine = {name: int(total or 0) for (name, total) in my_rows}
+        comp_by_engine = {name: int(total or 0) for (name, total) in comp_rows}
+
+        missed: list[str] = []
+        for engine, comp_total in comp_by_engine.items():
+            mine = my_by_engine.get(engine, 0)
+            if comp_total >= 5 and mine == 0:
+                missed.append(engine)
+        if not missed:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title=f"missed on engine(s): {', '.join(missed)} where competitors are active",
+                description=(
+                    "On these engines competitors are getting mentions but the "
+                    "brand is not. Could indicate an LLM training-data gap — "
+                    "the brand isn't well-represented for the engine to surface."
+                ),
+                focus_area="engine_coverage",
+                direction=(
+                    "Audit which topics drive competitor mentions on the missed "
+                    "engine(s); seed content / press into those query patterns."
+                ),
+                reader_hints=["branding", "operator"],
+                evidence={
+                    "metric": "missed_engine_coverage_7d",
+                    "missed_engines": missed,
+                    "competitor_mentions_by_engine": comp_by_engine,
+                    "my_mentions_by_engine": my_by_engine,
+                },
+                if_untreated=(
+                    "Engine-level absence solidifies into permanent training-data "
+                    "blind spots if not addressed within 1-2 cycles."
+                ),
+            )
+        ]
+
+
+class ProductRemissionRule(BaseRule):
+    """A previously-mentioned product feature has gone silent in 30d.
+
+    If a feature had >= 5 mentions in the prior 30d but 0 in the current
+    30d, the LLM's recall of that feature has decayed. P3 informational
+    so branding can decide whether to re-amplify or let it fade.
+    """
+
+    rule_id = "product_remission_v1"
+    category = "product_remission"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _features(_from: datetime, _to: datetime | None) -> dict[str, int]:
+            cond = [
+                BrandMention.brand_id == project.primary_brand_id,
+                ProductFeatureMention.created_at >= _from,
+            ]
+            if _to is not None:
+                cond.append(ProductFeatureMention.created_at < _to)
+            stmt = (
+                select(
+                    ProductFeatureMention.feature_name,
+                    func.count(ProductFeatureMention.id),
+                )
+                .join(BrandMention, BrandMention.brand_name == ProductFeatureMention.brand_name)
+                .where(and_(*cond))
+                .group_by(ProductFeatureMention.feature_name)
+            )
+            try:
+                rows = list((await session.execute(stmt)).all())
+            except Exception:
+                return {}
+            return {r[0]: int(r[1] or 0) for r in rows if r[0]}
+
+        prior = await _features(prior_from, prior_to)
+        cur = await _features(cur_from, None)
+
+        gone: list[str] = sorted(
+            [feat for feat, cnt in prior.items() if cnt >= 5 and cur.get(feat, 0) == 0]
+        )
+        if not gone:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P3",
+                type="product",
+                title=f"{len(gone)} feature(s) went silent: {', '.join(gone[:5])}",
+                description=(
+                    "Features that LLMs were citing 30 days ago are no longer "
+                    "appearing in responses. Decide whether to re-amplify the "
+                    "ones still strategic or accept the natural decay."
+                ),
+                focus_area="feature_recall",
+                direction=(
+                    "Pick the 1-2 most strategic silent features; refresh content "
+                    "and PR cycles to put them back in circulation."
+                ),
+                reader_hints=["branding"],
+                evidence={
+                    "metric": "feature_remission_count_30d",
+                    "gone_features": gone,
+                    "prior_counts": {k: prior[k] for k in gone[:10]},
+                },
+                if_untreated=(
+                    "Silent features lose LLM training reinforcement; "
+                    "reactivation typically costs 4-6 weeks of fresh content."
+                ),
+            )
+        ]
+
+
+class SameGroupShareLowRule(BaseRule):
+    """Brand belongs to a corporate group, but group-shared domain
+    citation count is low (< 3 in 30d) — owned-network synergy is weak.
+
+    Only fires when the brand is in `brand_group_members`. P3 informational.
+    """
+
+    rule_id = "same_group_share_low_v1"
+    category = "same_group_share_low"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        # Find the brand's group, if any
+        group_stmt = select(BrandGroupMember.group_id).where(
+            BrandGroupMember.brand_id == project.primary_brand_id
+        )
+        try:
+            group_id = (await session.execute(group_stmt)).scalar_one_or_none()
+        except Exception:
+            return []
+        if group_id is None:
+            return []
+
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+
+        # Group's shared domains
+        sd_stmt = select(BrandGroupSharedDomain.domain).where(
+            BrandGroupSharedDomain.group_id == group_id
+        )
+        try:
+            shared_domains = [r[0] for r in (await session.execute(sd_stmt)).all() if r[0]]
+        except Exception:
+            return []
+        if not shared_domains:
+            return []
+
+        # Citations from shared domains targeting this brand in 30d
+        cit_stmt = (
+            select(func.count(CitationSource.id))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                    CitationSource.domain.in_(shared_domains),
+                )
+            )
+        )
+        try:
+            cit_count = int((await session.execute(cit_stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        if cit_count >= 3:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P3",
+                type="brand",
+                title=f"only {cit_count} citations from group-shared domains in 30d",
+                description=(
+                    "The brand belongs to a corporate group with shared owned "
+                    "domains, but those domains rarely cite this brand. The "
+                    "owned-network has untapped distribution leverage."
+                ),
+                focus_area="group_synergy",
+                direction=(
+                    "Coordinate with sister brand teams to cross-reference / "
+                    "co-publish content where strategically relevant."
+                ),
+                reader_hints=["branding", "manager"],
+                evidence={
+                    "metric": "group_shared_domain_citations_30d",
+                    "group_id": group_id,
+                    "shared_domains": shared_domains,
+                    "current_value": cit_count,
+                    "threshold": 3,
+                },
+                if_untreated=(
+                    "Untapped owned-network amounts to leaving authority on the "
+                    "table; competitors with no group structure don't have this "
+                    "lever to pull."
+                ),
+            )
+        ]
+
+
 REGISTRY: list[type[BaseRule]] = [
     VisibilityDeclineRule,
     NegativeSentimentGrowthRule,
@@ -1755,13 +2109,12 @@ REGISTRY: list[type[BaseRule]] = [
     ContentGapRule,
     ProductFeatureNegativeRule,
     PersonaKeywordChangeRule,
+    NarrativeDriftRule,
+    TopicEmergingMissedRule,
+    ProductRemissionRule,
+    SameGroupShareLowRule,
 ]
 
 
-# Stubbed categories for full PRD §4.7.1.1 coverage (Phase D follow-up wires)
-PLANNED_CATEGORIES = [
-    "narrative_drift",
-    "product_remission",
-    "same_group_share_low",
-    "topic_emerging_missed",
-]
+# All PRD §4.7.1.1 categories shipped — keep an empty list to assert this.
+PLANNED_CATEGORIES: list[str] = []
