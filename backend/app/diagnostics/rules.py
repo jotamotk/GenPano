@@ -4,17 +4,25 @@ Each rule subclasses BaseRule + emits zero or more `DiagnosticPayload`. The
 rule REGISTRY is consumed by `evaluator.evaluate_project(project)` which is
 typically scheduled by Celery.
 
-Ten rules currently shipped (PRD §4.7.1.1 priorities):
-    - VisibilityDeclineRule       (mention_rate 30d trend)
-    - NegativeSentimentGrowthRule (negative ratio threshold)
-    - GeoScoreDropRule            (composite GEO score)
-    - CompetitorOvertakeRule      (project_competitors vs primary)
-    - MonitoringOutageRule        (24h pipeline outage detection)
-    - CitationVolumeDropRule      (citation count 30d trend)
-    - SentimentDropRule           (avg sentiment_score trend)
-    - ShareOfVoiceMinorRule       (avg_sov < 5% sustained)
-    - IndustryLagTop10Rule        (geo_score lag vs industry top-10)
-    - CitationDiversityLowRule    (< 5 unique citation domains in 30d)
+Eighteen rules currently shipped (PRD §4.7.1.1 priorities):
+    - VisibilityDeclineRule           (mention_rate 30d trend)
+    - NegativeSentimentGrowthRule     (negative ratio threshold)
+    - GeoScoreDropRule                (composite GEO score 30d)
+    - CompetitorOvertakeRule          (project_competitors vs primary)
+    - MonitoringOutageRule            (24h pipeline outage detection)
+    - CitationVolumeDropRule          (citation count 30d trend)
+    - SentimentDropRule               (avg sentiment_score trend)
+    - ShareOfVoiceMinorRule           (avg_sov < 5% sustained)
+    - IndustryLagTop10Rule            (geo_score lag vs industry top-10)
+    - CitationDiversityLowRule        (< 5 unique citation domains in 30d)
+    - GeoScoreDropSevereRule          (7d geo_score drop >= 20)
+    - CompetitorRadicalGrowthRule     (competitor 30d growth >= 25%)
+    - CategoryRankDropRule            (avg_position_rank slipped)
+    - CitationAttributionMismatchRule (official-domain share < 20%)
+    - WikiMissingRule                 (no wiki/baidu baike citations)
+    - TopicLossRule                   (mention rate collapsed)
+    - FirstPlaceLossRule              (first-place mentions down >= 30%)
+    - CitationGrowthSurgeRule         (P3 informational positive signal)
 
 The remaining categories listed in PLANNED_CATEGORIES are still stubbed
 by name and queued for Phase D follow-up PRs.
@@ -751,6 +759,575 @@ class CitationDiversityLowRule(BaseRule):
         ]
 
 
+class GeoScoreDropSevereRule(BaseRule):
+    """7-day geo_score dropped >= 20 points vs. prior 7d.
+
+    Triggers P0 — sharp short-window drops are usually pipeline / engine
+    problems or PR crisis, both warrant immediate operator attention.
+    """
+
+    rule_id = "geo_score_drop_severe_v1"
+    category = "geo_score_drop_severe"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=6), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=13), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=7), datetime.min.time())
+
+        async def _avg(_from: datetime, _to: datetime | None) -> float | None:
+            cond = [
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= _from,
+            ]
+            if _to is not None:
+                cond.append(GeoScoreDaily.date < _to)
+            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+        cur = await _avg(cur_from, None)
+        prior = await _avg(prior_from, prior_to)
+        if cur is None or prior is None or prior == 0:
+            return []
+        delta = cur - prior
+        if delta > -20:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P0",
+                type="brand",
+                title=f"GEO score down {delta:.1f} in 7d (severe)",
+                description=(
+                    "Composite GEO score dropped sharply in the last week. Common "
+                    "root causes: pipeline outage on one engine, PR incident, or "
+                    "competitor surge. Investigate before it compounds."
+                ),
+                focus_area="geo_score",
+                direction=(
+                    "Pull `/v1/projects/:id/metrics?series=mention_rate,sov,sentiment` "
+                    "and the engine breakdown to isolate the cause."
+                ),
+                reader_hints=["operator", "manager"],
+                evidence={
+                    "metric": "avg_geo_score",
+                    "current_7d": round(cur, 2),
+                    "prior_7d": round(prior, 2),
+                    "delta": round(delta, 2),
+                },
+                if_untreated=(
+                    "Severe weekly drops compound: 4 weeks unattended typically "
+                    "trigger a 2-3 month recovery cycle."
+                ),
+            )
+        ]
+
+
+class CompetitorRadicalGrowthRule(BaseRule):
+    """Any pinned competitor's 30d avg geo_score grew >= 25% vs. prior 30d."""
+
+    rule_id = "competitor_radical_growth_v1"
+    category = "competitor_radical_growth"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        comp_ids = [
+            r[0]
+            for r in (
+                await session.execute(
+                    select(ProjectCompetitor.brand_id).where(
+                        ProjectCompetitor.project_id == project.id
+                    )
+                )
+            ).all()
+        ]
+        if not comp_ids:
+            return []
+
+        async def _avg(brand_id: int, _from: datetime, _to: datetime | None) -> float | None:
+            cond = [
+                GeoScoreDaily.brand_id == brand_id,
+                GeoScoreDaily.date >= _from,
+            ]
+            if _to is not None:
+                cond.append(GeoScoreDaily.date < _to)
+            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+        out: list[DiagnosticPayload] = []
+        for cid in comp_ids:
+            cur = await _avg(cid, cur_from, None)
+            prior = await _avg(cid, prior_from, prior_to)
+            if cur is None or prior is None or prior == 0:
+                continue
+            growth = (cur - prior) / prior * 100.0
+            if growth < 25.0:
+                continue
+            severity = "P1" if growth >= 40 else "P2"
+            out.append(
+                DiagnosticPayload(
+                    rule_id=self.rule_id,
+                    rule_version=self.rule_version,
+                    category=self.category,
+                    severity=severity,
+                    type="brand",
+                    title=f"competitor brand-{cid} grew {growth:.1f}% in 30d",
+                    description=(
+                        "A pinned competitor's 30-day average GEO score is growing "
+                        "rapidly. Investigate which topics / engines they are winning."
+                    ),
+                    focus_area="competitor_landscape",
+                    direction=(
+                        "Compare topic-level metrics to identify what they're doing "
+                        "that you aren't."
+                    ),
+                    reader_hints=["operator", "manager", "branding"],
+                    evidence={
+                        "metric": "avg_geo_score_30d_growth_pct",
+                        "competitor_brand_id": cid,
+                        "current_30d": round(cur, 2),
+                        "prior_30d": round(prior, 2),
+                        "growth_pct": round(growth, 2),
+                    },
+                    if_untreated=(
+                        "Radical competitor growth typically eats share-of-voice in "
+                        "the next 4-6 weeks if not contested."
+                    ),
+                )
+            )
+        return out
+
+
+class CategoryRankDropRule(BaseRule):
+    """Average position rank worsened (higher number = worse) by >= 2 vs. prior 30d."""
+
+    rule_id = "category_rank_drop_v1"
+    category = "category_rank_drop"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _avg(_from: datetime, _to: datetime | None) -> float | None:
+            cond = [
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= _from,
+                GeoScoreDaily.avg_position_rank.is_not(None),
+            ]
+            if _to is not None:
+                cond.append(GeoScoreDaily.date < _to)
+            stmt = select(func.avg(GeoScoreDaily.avg_position_rank)).where(and_(*cond))
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+        cur = await _avg(cur_from, None)
+        prior = await _avg(prior_from, prior_to)
+        if cur is None or prior is None:
+            return []
+        delta = cur - prior
+        if delta < 2.0:  # "higher rank number" = worse position
+            return []
+        severity = "P1" if delta >= 4 else "P2"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"avg position rank slipped from #{prior:.1f} to #{cur:.1f}",
+                description=(
+                    "Across LLM responses where the brand is mentioned, it is now "
+                    "appearing later in the list. Lower visibility on the page "
+                    "feeds into the GEO composite."
+                ),
+                focus_area="position_rank",
+                direction=(
+                    "Audit which topics drive the slip; PR pieces that bring brand "
+                    "to first-mention slot are the typical lever."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "avg_position_rank_30d",
+                    "current_value": round(cur, 2),
+                    "prior_value": round(prior, 2),
+                    "delta": round(delta, 2),
+                },
+                if_untreated=(
+                    "Steady rank slippage is a leading indicator of mention-rate "
+                    "decline in the next 2-4 weeks."
+                ),
+            )
+        ]
+
+
+class CitationAttributionMismatchRule(BaseRule):
+    """Less than 20% of citations come from official-domain sources.
+
+    Phase A.3 attribution_classifier writes the official-vs-third-party
+    flag onto `citation_sources.source_type` (we treat 'official_*'
+    prefix as official). When most citations reference 3rd-party reviews
+    or comparison pages without attribution back to the brand site, the
+    LLM's narrative is built on uncontrolled material.
+    """
+
+    rule_id = "citation_attribution_mismatch_v1"
+    category = "citation_attribution_mismatch"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        # total citations
+        base_q = (
+            select(func.count(CitationSource.id))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                )
+            )
+        )
+        official_q = base_q.where(CitationSource.source_type.like("official_%"))
+        try:
+            total = int((await session.execute(base_q)).scalar_one() or 0)
+            official = int((await session.execute(official_q)).scalar_one() or 0)
+        except Exception:
+            return []
+        if total < 10:
+            return []
+        official_pct = official / total * 100.0
+        if official_pct >= 20.0:
+            return []
+        severity = "P1" if official_pct < 10.0 else "P2"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"official-domain attribution only {official_pct:.1f}% of citations",
+                description=(
+                    "LLMs are citing third-party material more than your owned "
+                    "channels. The brand narrative is being built without your "
+                    "input."
+                ),
+                focus_area="citation_attribution",
+                direction=(
+                    "Strengthen owned content (press kit, knowledge hub, FAQ) "
+                    "and seed clear attribution snippets that LLMs can quote."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "official_attribution_pct_30d",
+                    "official_count": official,
+                    "total_count": total,
+                    "official_pct": round(official_pct, 2),
+                    "threshold_pct": 20.0,
+                },
+                if_untreated=(
+                    "Without official attribution dominance, narrative drift is "
+                    "permanent in the LLM's training cycle."
+                ),
+            )
+        ]
+
+
+class WikiMissingRule(BaseRule):
+    """No wikipedia.org / baike.baidu.com citation in 30d for primary brand."""
+
+    rule_id = "wiki_missing_v1"
+    category = "wiki_missing"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        wiki_domains = ["wikipedia.org", "baike.baidu.com", "zh.wikipedia.org", "en.wikipedia.org"]
+        stmt = (
+            select(func.count(CitationSource.id))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                    CitationSource.domain.in_(wiki_domains),
+                )
+            )
+        )
+        try:
+            wiki_count = int((await session.execute(stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        if wiki_count > 0:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title="no wiki / encyclopedia citations in 30d",
+                description=(
+                    "LLMs treat Wikipedia and Baidu Baike as anchor sources for "
+                    "factual consistency. Absence here means the brand is missing "
+                    "from the LLM's reference scaffold."
+                ),
+                focus_area="anchor_sources",
+                direction=(
+                    "Submit / refresh a Wikipedia page in zh-CN and en. Long-tail "
+                    "but necessary for sustained authority."
+                ),
+                reader_hints=["branding"],
+                evidence={
+                    "metric": "wiki_citation_count_30d",
+                    "current_value": 0,
+                    "wiki_domains": wiki_domains,
+                },
+                if_untreated=(
+                    "Without wiki anchor, every LLM has to rely on third-party "
+                    "summaries — narrative drift compounds over time."
+                ),
+            )
+        ]
+
+
+class TopicLossRule(BaseRule):
+    """Mention rate has fallen to 0% on a previously-tracked topic.
+
+    Approximated at the brand level: if 30d mention_rate is below 1% AND
+    prior 30d was above 5%, surface as topic_loss until per-topic
+    aggregations land.
+    """
+
+    rule_id = "topic_loss_v1"
+    category = "topic_loss"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _avg(_from: datetime, _to: datetime | None) -> float | None:
+            cond = [
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= _from,
+            ]
+            if _to is not None:
+                cond.append(GeoScoreDaily.date < _to)
+            stmt = select(func.avg(GeoScoreDaily.mention_rate)).where(and_(*cond))
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+        cur = await _avg(cur_from, None)
+        prior = await _avg(prior_from, prior_to)
+        if cur is None or prior is None:
+            return []
+        if cur >= 0.01 or prior < 0.05:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P1",
+                type="brand",
+                title="mention rate collapsed (< 1%) — topic loss suspected",
+                description=(
+                    "The brand was mentioned >5% on average over the prior 30 days "
+                    "but is below 1% in the current window. Likely cause: removed "
+                    "from a recommendation list or knocked out of a key topic."
+                ),
+                focus_area="topic_coverage",
+                direction=(
+                    "Audit which topics drove the prior period's mentions and "
+                    "where the current window is silent."
+                ),
+                reader_hints=["operator", "manager"],
+                evidence={
+                    "metric": "avg_mention_rate",
+                    "current_30d": round(cur, 4),
+                    "prior_30d": round(prior, 4),
+                },
+                if_untreated=(
+                    "Once a brand is dropped from an LLM's topic recall set, "
+                    "reinclusion typically requires fresh PR content + 4-8 weeks."
+                ),
+            )
+        ]
+
+
+class FirstPlaceLossRule(BaseRule):
+    """First-place mentions / total mentions ratio fell sharply.
+
+    First-place positioning has outsized weight in LLM answer ranking.
+    Triggers P2 when 30d first_place_count is >= 30% lower than prior 30d
+    (with both windows having meaningful sample size).
+    """
+
+    rule_id = "first_place_loss_v1"
+    category = "first_place_loss"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _sum(_from: datetime, _to: datetime | None) -> int:
+            cond = [
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= _from,
+            ]
+            if _to is not None:
+                cond.append(GeoScoreDaily.date < _to)
+            stmt = select(func.coalesce(func.sum(GeoScoreDaily.first_place_count), 0)).where(
+                and_(*cond)
+            )
+            return int((await session.execute(stmt)).scalar_one() or 0)
+
+        cur = await _sum(cur_from, None)
+        prior = await _sum(prior_from, prior_to)
+        if prior < 10:  # not enough sample
+            return []
+        if cur >= prior:
+            return []
+        drop_pct = (prior - cur) / prior * 100.0
+        if drop_pct < 30.0:
+            return []
+        severity = "P1" if drop_pct >= 60 else "P2"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"first-place mentions down {drop_pct:.1f}% in 30d",
+                description=(
+                    "Top-slot mentions carry the most weight in LLM answer "
+                    "rankings. A sharp drop usually means competitors took the "
+                    "lead-mention slot in shared topics."
+                ),
+                focus_area="first_place",
+                direction=(
+                    "Drill into engine + topic to see which slots flipped; "
+                    "answer-engine PR content typically restores within 2 weeks."
+                ),
+                reader_hints=["operator", "manager"],
+                evidence={
+                    "metric": "first_place_count_30d",
+                    "current_value": cur,
+                    "prior_value": prior,
+                    "drop_pct": round(drop_pct, 2),
+                },
+                if_untreated=(
+                    "First-place erosion compounds: a 30% drop usually drags "
+                    "average position rank by >1.0 within the next month."
+                ),
+            )
+        ]
+
+
+class CitationGrowthSurgeRule(BaseRule):
+    """Citation count grew > 100% in 30d vs. prior 30d.
+
+    Positive signal — surface as P3 informational so that branding /
+    operator readers can capitalise on momentum (e.g. amplify the new
+    content sources to reinforce authority).
+    """
+
+    rule_id = "citation_growth_surge_v1"
+    category = "citation_growth_surge"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _count(_from: datetime, _to: datetime | None) -> int:
+            cond = [
+                BrandMention.brand_id == project.primary_brand_id,
+                CitationSource.created_at >= _from,
+            ]
+            if _to is not None:
+                cond.append(CitationSource.created_at < _to)
+            stmt = (
+                select(func.count(CitationSource.id))
+                .select_from(CitationSource)
+                .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+                .where(and_(*cond))
+            )
+            return int((await session.execute(stmt)).scalar_one() or 0)
+
+        cur = await _count(cur_from, None)
+        prior = await _count(prior_from, prior_to)
+        if prior < 5:  # noisy below 5
+            return []
+        if cur < prior:
+            return []
+        growth_pct = (cur - prior) / prior * 100.0
+        if growth_pct < 100.0:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P3",
+                type="brand",
+                title=f"citation count surged {growth_pct:.1f}% in 30d",
+                description=(
+                    "Citations more than doubled. Likely a recent PR / launch / "
+                    "review wave is paying off."
+                ),
+                focus_area="citation_growth",
+                direction=(
+                    "Identify the new source domains and mirror the strategy on "
+                    "adjacent topics to sustain the momentum."
+                ),
+                reader_hints=["operator", "branding", "manager"],
+                evidence={
+                    "metric": "citation_count_30d",
+                    "current_value": cur,
+                    "prior_value": prior,
+                    "growth_pct": round(growth_pct, 2),
+                },
+                if_untreated=(
+                    "Surge windows close fast; if the new content isn't "
+                    "amplified, citation counts typically revert in 4-6 weeks."
+                ),
+            )
+        ]
+
+
 REGISTRY: list[type[BaseRule]] = [
     VisibilityDeclineRule,
     NegativeSentimentGrowthRule,
@@ -762,24 +1339,26 @@ REGISTRY: list[type[BaseRule]] = [
     ShareOfVoiceMinorRule,
     IndustryLagTop10Rule,
     CitationDiversityLowRule,
+    GeoScoreDropSevereRule,
+    CompetitorRadicalGrowthRule,
+    CategoryRankDropRule,
+    CitationAttributionMismatchRule,
+    WikiMissingRule,
+    TopicLossRule,
+    FirstPlaceLossRule,
+    CitationGrowthSurgeRule,
 ]
 
 
 # Stubbed categories for full PRD §4.7.1.1 coverage (Phase D follow-up wires)
 PLANNED_CATEGORIES = [
-    "citation_attribution_mismatch",
-    "topic_loss",
     "narrative_drift",
     "persona_keyword_change",
     "content_gap",
-    "wiki_missing",
     "product_feature_negative",
     "product_remission",
     "same_group_share_low",
     "llm_engine_anomaly",
-    "geo_score_drop_severe",
-    "competitor_radical_growth",
     "attribution_anchor_low",
     "topic_emerging_missed",
-    "category_rank_drop",
 ]
