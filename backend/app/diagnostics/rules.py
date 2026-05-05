@@ -4,7 +4,7 @@ Each rule subclasses BaseRule + emits zero or more `DiagnosticPayload`. The
 rule REGISTRY is consumed by `evaluator.evaluate_project(project)` which is
 typically scheduled by Celery.
 
-Eighteen rules currently shipped (PRD §4.7.1.1 priorities):
+Twenty-three rules currently shipped (PRD §4.7.1.1 priorities):
     - VisibilityDeclineRule           (mention_rate 30d trend)
     - NegativeSentimentGrowthRule     (negative ratio threshold)
     - GeoScoreDropRule                (composite GEO score 30d)
@@ -23,6 +23,11 @@ Eighteen rules currently shipped (PRD §4.7.1.1 priorities):
     - TopicLossRule                   (mention rate collapsed)
     - FirstPlaceLossRule              (first-place mentions down >= 30%)
     - CitationGrowthSurgeRule         (P3 informational positive signal)
+    - LlmEngineAnomalyRule            (single engine 0 mentions while peers active)
+    - AttributionAnchorLowRule        (< 5 citations against >= 10 mentions)
+    - ContentGapRule                  (low citations-per-mention ratio)
+    - ProductFeatureNegativeRule      (single feature > 30% negative)
+    - PersonaKeywordChangeRule        (top sentiment drivers churn > 70% MoM)
 
 The remaining categories listed in PLANNED_CATEGORIES are still stubbed
 by name and queued for Phase D follow-up PRs.
@@ -38,8 +43,10 @@ from genpano_models import (
     BrandMention,
     CitationSource,
     GeoScoreDaily,
+    ProductFeatureMention,
     Project,
     ProjectCompetitor,
+    SentimentDriver,
 )
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1328,6 +1335,402 @@ class CitationGrowthSurgeRule(BaseRule):
         ]
 
 
+class LlmEngineAnomalyRule(BaseRule):
+    """Single engine has 0 mentions in 7d while others continue producing.
+
+    A common operational issue — one adapter (chatgpt / doubao / deepseek)
+    silently breaks (cookies expired / IP banned / model-side throttle)
+    while peers keep flowing data. The composite GEO score still trends
+    okay, but the cross-engine sample is biased. Triggers P1.
+    """
+
+    rule_id = "llm_engine_anomaly_v1"
+    category = "llm_engine_anomaly"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=6), datetime.min.time())
+        stmt = (
+            select(
+                GeoScoreDaily.target_llm, func.coalesce(func.sum(GeoScoreDaily.mention_count), 0)
+            )
+            .where(
+                and_(
+                    GeoScoreDaily.brand_id == project.primary_brand_id,
+                    GeoScoreDaily.date >= from_d,
+                    GeoScoreDaily.target_llm.is_not(None),
+                )
+            )
+            .group_by(GeoScoreDaily.target_llm)
+        )
+        try:
+            rows = list((await session.execute(stmt)).all())
+        except Exception:
+            return []
+        if len(rows) < 2:
+            return []
+        zero_engines = [name for (name, total) in rows if int(total or 0) == 0]
+        active_engines = [name for (name, total) in rows if int(total or 0) > 0]
+        if not zero_engines or not active_engines:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P1",
+                type="brand",
+                title=f"engine outage suspected: {', '.join(zero_engines)} — 0 mentions in 7d",
+                description=(
+                    "At least one LLM engine produced no mentions in the last "
+                    "week while peers continue to deliver data. Cross-engine "
+                    "sample is biased — composite metrics are unreliable until "
+                    "the engine is restored."
+                ),
+                focus_area="engine_health",
+                direction=(
+                    "Inspect adapter cookies / proxy / throttle logs for the "
+                    "affected engine(s). Restore before the next aggregation."
+                ),
+                reader_hints=["operator"],
+                evidence={
+                    "metric": "mention_count_by_engine_7d",
+                    "zero_engines": zero_engines,
+                    "active_engines": active_engines,
+                },
+                if_untreated=(
+                    "Composite GEO score will skew toward the surviving engines "
+                    "and reports will misrepresent cross-LLM coverage."
+                ),
+            )
+        ]
+
+
+class AttributionAnchorLowRule(BaseRule):
+    """Total citation count in 30d is < 5 — narrative has no anchor.
+
+    Even if the brand has high mention rate, without citations the LLM is
+    free-associating without source material. Anchor sources (owned web,
+    knowledge base) are needed to steer the narrative. Triggers P2.
+    """
+
+    rule_id = "attribution_anchor_low_v1"
+    category = "attribution_anchor_low"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        stmt = (
+            select(func.count(CitationSource.id))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                )
+            )
+        )
+        # Guard: only fire when brand actually had mentions to anchor
+        mention_stmt = select(func.count(BrandMention.id)).where(
+            and_(
+                BrandMention.brand_id == project.primary_brand_id,
+                BrandMention.created_at >= from_d,
+            )
+        )
+        try:
+            cit_count = int((await session.execute(stmt)).scalar_one() or 0)
+            mention_count = int((await session.execute(mention_stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        if cit_count >= 5 or mention_count < 10:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title=f"only {cit_count} citations against {mention_count} mentions in 30d",
+                description=(
+                    "Brand is being mentioned but without source anchors. LLMs "
+                    "are free-associating — narrative has no traceable evidence "
+                    "to ground or update."
+                ),
+                focus_area="citation_anchor",
+                direction=(
+                    "Publish anchorable owned content (press kit, knowledge "
+                    "hub, FAQ); seed reviews on tier-2 review sites."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "citation_to_mention_ratio_30d",
+                    "citation_count": cit_count,
+                    "mention_count": mention_count,
+                },
+                if_untreated=(
+                    "Without anchor sources the brand narrative will drift "
+                    "based on whatever third-party text the LLM happens to find."
+                ),
+            )
+        ]
+
+
+class ContentGapRule(BaseRule):
+    """High mention but low citation — content gap exists.
+
+    Mentions imply demand to talk about the brand; citations tell you
+    where text comes from. When the ratio is low (< 30 citations per
+    100 mentions in 30d), there's an easy growth lever: produce content
+    that LLMs can quote.
+
+    Trigger requires baseline volume (>= 50 mentions) so we don't fire
+    on cold-start projects.
+    """
+
+    rule_id = "content_gap_v1"
+    category = "content_gap"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+
+        mention_stmt = select(func.count(BrandMention.id)).where(
+            and_(
+                BrandMention.brand_id == project.primary_brand_id,
+                BrandMention.created_at >= from_d,
+            )
+        )
+        cit_stmt = (
+            select(func.count(CitationSource.id))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                )
+            )
+        )
+        try:
+            mentions = int((await session.execute(mention_stmt)).scalar_one() or 0)
+            citations = int((await session.execute(cit_stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        if mentions < 50:
+            return []
+        ratio = citations / mentions * 100.0 if mentions else 0.0
+        if ratio >= 30.0:
+            return []
+        severity = "P2" if ratio >= 15.0 else "P1"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"content gap — {ratio:.1f} citations per 100 mentions",
+                description=(
+                    "Brand is being talked about but few sources are quoted. "
+                    "Topical gap exists between LLM demand and the available "
+                    "anchorable text — a clear growth opportunity."
+                ),
+                focus_area="content_gap",
+                direction=(
+                    "Inspect top-mentioned topics with no citations; produce "
+                    "PR / blog content tailored to each topic."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "citations_per_100_mentions_30d",
+                    "mention_count": mentions,
+                    "citation_count": citations,
+                    "ratio": round(ratio, 2),
+                },
+                if_untreated=(
+                    "Demand without supply is captured by competitors; "
+                    "expect SoV erosion over the next 4-6 weeks."
+                ),
+            )
+        ]
+
+
+class ProductFeatureNegativeRule(BaseRule):
+    """A specific product feature has > 30% negative sentiment in 30d.
+
+    Surfaces product-level pain points the operator should respond to —
+    e.g. "delivery", "pricing", "battery". Triggers P1 when negative
+    ratio crosses 30% with at least 10 mentions.
+    """
+
+    rule_id = "product_feature_negative_v1"
+    category = "product_feature_negative"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+
+        stmt = (
+            select(
+                ProductFeatureMention.feature_name,
+                func.count(ProductFeatureMention.id),
+                func.sum(case((ProductFeatureMention.feature_sentiment == "negative", 1), else_=0)),
+            )
+            .join(BrandMention, BrandMention.brand_name == ProductFeatureMention.brand_name)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    ProductFeatureMention.created_at >= from_d,
+                )
+            )
+            .group_by(ProductFeatureMention.feature_name)
+            .having(func.count(ProductFeatureMention.id) >= 10)
+        )
+        try:
+            rows = list((await session.execute(stmt)).all())
+        except Exception:
+            return []
+
+        out: list[DiagnosticPayload] = []
+        for feature, total, negative in rows:
+            t = int(total or 0)
+            n = int(negative or 0)
+            if t < 10:
+                continue
+            neg_pct = n / t * 100.0
+            if neg_pct < 30.0:
+                continue
+            severity = "P0" if neg_pct >= 60 else "P1"
+            out.append(
+                DiagnosticPayload(
+                    rule_id=self.rule_id,
+                    rule_version=self.rule_version,
+                    category=self.category,
+                    severity=severity,
+                    type="product",
+                    title=f"feature '{feature}' negative {neg_pct:.1f}%",
+                    description=(
+                        "Product feature is generating disproportionate "
+                        "negative sentiment in LLM responses. Top-of-funnel "
+                        "perception risk."
+                    ),
+                    focus_area="product_feature_sentiment",
+                    direction=(
+                        "Drill into product_feature_mentions where "
+                        "feature_sentiment='negative' to see context snippets; "
+                        "coordinate with product team."
+                    ),
+                    reader_hints=["operator", "manager"],
+                    evidence={
+                        "metric": "feature_negative_ratio_30d",
+                        "feature_name": feature,
+                        "total": t,
+                        "negative": n,
+                        "negative_pct": round(neg_pct, 2),
+                    },
+                    if_untreated=(
+                        "Compounding negative perception on a single feature "
+                        "becomes an LLM 'fact' within 1-2 months."
+                    ),
+                )
+            )
+        return out
+
+
+class PersonaKeywordChangeRule(BaseRule):
+    """Top sentiment keyword set churned > 70% month-over-month.
+
+    Sentiment drivers are the 'why' behind brand perception. When the
+    topic of conversation shifts radically (different vocabulary
+    dominating month-over-month), branding risks losing narrative
+    control. Triggers P2.
+    """
+
+    rule_id = "persona_keyword_change_v1"
+    category = "persona_keyword_change"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
+        prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
+
+        async def _top_drivers(_from: datetime, _to: datetime | None) -> set[str]:
+            cond = [
+                BrandMention.brand_id == project.primary_brand_id,
+                SentimentDriver.created_at >= _from,
+            ]
+            if _to is not None:
+                cond.append(SentimentDriver.created_at < _to)
+            stmt = (
+                select(SentimentDriver.driver_text, func.count(SentimentDriver.id).label("cnt"))
+                .join(BrandMention, BrandMention.id == SentimentDriver.mention_id)
+                .where(and_(*cond))
+                .group_by(SentimentDriver.driver_text)
+                .order_by(func.count(SentimentDriver.id).desc())
+                .limit(10)
+            )
+            try:
+                rows = list((await session.execute(stmt)).all())
+            except Exception:
+                return set()
+            return {r[0] for r in rows if r[0]}
+
+        cur = await _top_drivers(cur_from, None)
+        prior = await _top_drivers(prior_from, prior_to)
+        if len(cur) < 5 or len(prior) < 5:
+            return []
+        overlap = len(cur & prior)
+        churn_pct = (1 - overlap / max(len(cur), 1)) * 100.0
+        if churn_pct < 70.0:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title=f"sentiment keywords churned {churn_pct:.0f}% MoM",
+                description=(
+                    "The vocabulary describing the brand changed sharply "
+                    "month-over-month. The narrative is shifting — likely "
+                    "external (PR cycle, competitor launches) — and may "
+                    "require branding to re-anchor."
+                ),
+                focus_area="sentiment_drivers",
+                direction=(
+                    "Compare current vs. prior top-10 sentiment drivers; "
+                    "decide whether the new set is on-message or drift."
+                ),
+                reader_hints=["branding"],
+                evidence={
+                    "metric": "top10_driver_overlap_mom",
+                    "current_top": sorted(cur),
+                    "prior_top": sorted(prior),
+                    "overlap_count": overlap,
+                    "churn_pct": round(churn_pct, 2),
+                },
+                if_untreated=(
+                    "Unmanaged narrative drift typically reduces brand-led "
+                    "messaging share by 20-40% within a quarter."
+                ),
+            )
+        ]
+
+
 REGISTRY: list[type[BaseRule]] = [
     VisibilityDeclineRule,
     NegativeSentimentGrowthRule,
@@ -1347,18 +1750,18 @@ REGISTRY: list[type[BaseRule]] = [
     TopicLossRule,
     FirstPlaceLossRule,
     CitationGrowthSurgeRule,
+    LlmEngineAnomalyRule,
+    AttributionAnchorLowRule,
+    ContentGapRule,
+    ProductFeatureNegativeRule,
+    PersonaKeywordChangeRule,
 ]
 
 
 # Stubbed categories for full PRD §4.7.1.1 coverage (Phase D follow-up wires)
 PLANNED_CATEGORIES = [
     "narrative_drift",
-    "persona_keyword_change",
-    "content_gap",
-    "product_feature_negative",
     "product_remission",
     "same_group_share_low",
-    "llm_engine_anomaly",
-    "attribution_anchor_low",
     "topic_emerging_missed",
 ]
