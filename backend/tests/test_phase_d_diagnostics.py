@@ -43,8 +43,8 @@ async def user(db_session: AsyncSession) -> User:
     return u
 
 
-def test_registry_has_3_rules():
-    assert len(REGISTRY) == 3
+def test_registry_has_at_least_6_rules():
+    assert len(REGISTRY) >= 6
     assert VisibilityDeclineRule in REGISTRY
     assert NegativeSentimentGrowthRule in REGISTRY
     assert GeoScoreDropRule in REGISTRY
