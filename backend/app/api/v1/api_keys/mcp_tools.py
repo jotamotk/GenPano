@@ -451,12 +451,39 @@ async def simulate_authority_boost_tool(
     )
 
 
+# ────── tool 10: get_industry_kg (REUSE Phase K.6 service) ───────
+
+
+async def get_industry_kg_tool(
+    session: AsyncSession,
+    *,
+    user: User,
+    industry_id: int,
+    industry_name: str | None = None,
+    focus: str | None = None,
+    depth: int = 2,
+) -> dict[str, Any]:
+    """Industry knowledge graph — reuses Phase K.6 service for byte-equal output."""
+    from app.api.v1.industries.service import get_industry_kg
+
+    out = await get_industry_kg(
+        session,
+        industry_id,
+        industry_name=industry_name,
+        focus=focus,
+        depth=depth,
+    )
+    # Pydantic → primitive dict (FE-shape) so MCP clients can re-encode.
+    return out.model_dump(mode="json")
+
+
 # ────── tool registry: name → function ──────────────────────────
 
 TOOLS: dict[str, Any] = {
     "genpano_get_brand_visibility": get_brand_visibility,
     "genpano_compare_brands": compare_brands,
     "genpano_get_industry_trends": get_industry_trends,
+    "genpano_get_industry_kg": get_industry_kg_tool,
     "genpano_get_product_ranking": get_product_ranking,
     "genpano_generate_report": generate_report,
     "genpano_get_optimization_insights": get_optimization_insights,
