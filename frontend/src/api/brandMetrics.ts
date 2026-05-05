@@ -97,6 +97,62 @@ export interface CitationsOut {
   state: 'ok' | 'empty' | 'partial'
 }
 
+export interface TopicRow {
+  topic_id: number
+  topic_name: string
+  state: 'tracked' | 'ignored' | 'unpinned'
+  mention_count: number
+  avg_sentiment: number | null
+  avg_position_rank: number | null
+  last_seen_at: string | null
+}
+
+export interface TopicsOut {
+  project_id: string
+  items: TopicRow[]
+  total: number
+  state: 'ok' | 'empty' | 'partial'
+}
+
+export interface ProductRow {
+  product_id: number
+  product_name: string
+  brand_id: number | null
+  sku: string | null
+  category: string | null
+  mention_count: number
+  avg_position_rank: number | null
+  avg_geo_score: number | null
+  win_rate: number | null
+}
+
+export interface ProductsOut {
+  project_id: string
+  items: ProductRow[]
+  total: number
+  state: 'ok' | 'empty' | 'partial'
+}
+
+export interface CompetitorBrandRow {
+  brand_id: number
+  brand_name: string | null
+  avg_geo_score: number | null
+  avg_mention_rate: number | null
+  avg_sov: number | null
+  avg_sentiment: number | null
+  co_mention_count: number
+  delta_30d_pct: number | null
+}
+
+export interface CompetitorMetricsOut {
+  project_id: string
+  primary_brand_id: number | null
+  period: { from: string; to: string }
+  primary: CompetitorBrandRow | null
+  competitors: CompetitorBrandRow[]
+  state?: 'ok' | 'empty' | 'partial'
+}
+
 export const brandMetricsApi = {
   metrics(
     projectId: string,
@@ -111,6 +167,17 @@ export const brandMetricsApi = {
   citations(projectId: string, pageSize = 50): Promise<CitationsOut> {
     return apiClient.get<CitationsOut>(
       `/v1/projects/${projectId}/citations?page_size=${pageSize}`,
+    )
+  },
+  topics(projectId: string): Promise<TopicsOut> {
+    return apiClient.get<TopicsOut>(`/v1/projects/${projectId}/topics`)
+  },
+  products(projectId: string): Promise<ProductsOut> {
+    return apiClient.get<ProductsOut>(`/v1/projects/${projectId}/products`)
+  },
+  competitorMetrics(projectId: string): Promise<CompetitorMetricsOut> {
+    return apiClient.get<CompetitorMetricsOut>(
+      `/v1/projects/${projectId}/competitors/metrics`,
     )
   },
 }

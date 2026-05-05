@@ -44,3 +44,33 @@ export function useBrandCitations(
     retry: false,
   })
 }
+
+export function useBrandTopics(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['brand', 'topics', projectId],
+    queryFn: () => brandMetricsApi.topics(projectId as string),
+    enabled: isLiveProjectId(projectId),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useBrandProducts(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['brand', 'products', projectId],
+    queryFn: () => brandMetricsApi.products(projectId as string),
+    enabled: isLiveProjectId(projectId),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useCompetitorMetrics(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['brand', 'competitor-metrics', projectId],
+    queryFn: () => brandMetricsApi.competitorMetrics(projectId as string),
+    enabled: isLiveProjectId(projectId),
+    staleTime: 60_000,
+    retry: false,
+  })
+}

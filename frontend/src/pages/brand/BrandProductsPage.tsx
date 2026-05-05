@@ -4,6 +4,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge } from '../../components/ui';
 import { MiniSparkline, CompetitorQuadrantChart } from '../../components/charts';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import {
@@ -96,6 +97,7 @@ export default function BrandProductsPage() {
 
   return (
     <div className="space-y-3">
+      <BrandSubpageLiveBanner variant="products" />
       {/* Page title */}
       <div>
         <h2 className="text-xl font-brand font-bold text-themed-primary">

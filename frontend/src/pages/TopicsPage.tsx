@@ -4,6 +4,7 @@ import ProfileGroupFilter, { ProfileGroupSampleWarning } from '../components/fil
 import ProjectRequiredBanner from '../components/ProjectRequiredBanner';
 import TopicIntentMatrix from '../components/topics/TopicIntentMatrix';
 import { TOPICS, PROMPTS, QUERIES, RESPONSES, INDUSTRY_TOPIC_HEATMAP } from '../data/mock';
+import BrandSubpageLiveBanner from '../components/dashboard/BrandSubpageLiveBanner';
 
 /* ─────────────────────────────────────────────────────────────
    TopicsPage — PRD §4.2 four-layer drill-down
@@ -641,6 +642,7 @@ export default function TopicsPage() {
 
   return (
     <div>
+      <BrandSubpageLiveBanner variant="topics" />
       {/* PRD §4.1.1d E4 — Gated-surface banner.
           Topics drilldown depends on a Project for scope/filter semantics, so
           authenticated-zero-Project users see a conversion prompt at the top.
