@@ -37,6 +37,7 @@ def _build_celery_app() -> Celery:
         backend=settings.redis_url,
         include=[
             "app.tasks.health",
+            "app.tasks.reports",
             "geo_tracker.tasks.scheduler",
             "geo_tracker.tasks.hotspots",
         ],
@@ -53,6 +54,9 @@ def _build_celery_app() -> Celery:
 
     app.conf.task_routes = {
         "app.tasks.health.heartbeat": {"queue": "beat", "routing_key": "beat"},
+        "app.tasks.reports.generate": {"queue": "beat", "routing_key": "beat"},
+        "app.tasks.reports.run_schedules": {"queue": "beat", "routing_key": "beat"},
+        "app.tasks.reports.expire_share_tokens": {"queue": "beat", "routing_key": "beat"},
         "geo_tracker.tasks.scheduler.run_daily_dispatch": {"queue": "beat", "routing_key": "beat"},
         "hotspots.collect_source": {"queue": "beat", "routing_key": "beat"},
         "hotspots.archive_expired": {"queue": "beat", "routing_key": "beat"},
@@ -107,6 +111,18 @@ def _build_celery_app() -> Celery:
         "hotspots-archive": {
             "task": "hotspots.archive_expired",
             "schedule": crontab(minute=0, hour=3),
+        },
+        # Phase RP.7 — scan report_schedules every 5 min and enqueue
+        # reports.generate for any due rows.
+        "reports-run-schedules": {
+            "task": "app.tasks.reports.run_schedules",
+            "schedule": crontab(minute="*/5"),
+        },
+        # Daily 04:00 UTC housekeeping — mark expired share tokens as
+        # revoked so public reads return 410 even if rows linger.
+        "reports-expire-share-tokens": {
+            "task": "app.tasks.reports.expire_share_tokens",
+            "schedule": crontab(minute=0, hour=4),
         },
     }
 
