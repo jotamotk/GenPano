@@ -70,6 +70,19 @@ export function useIndustries() {
  * Issues N+1 fan-out queries (one /top-brands per industry) but caches
  * each independently in React Query so re-renders don't refetch.
  */
+export function useIndustryOverview(
+  industryId: number | null | undefined,
+  params: { name?: string } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'overview', industryId, params],
+    queryFn: () => industriesApi.overview(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
 export function useIndustriesWithTopBrands() {
   const industries = useIndustries()
   const topBrandsList = useQueries({

@@ -26,6 +26,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 
 import IndustryHero from '../../components/industry/IndustryHero';
+import IndustryOverviewLiveBanner from '../../components/industry/IndustryOverviewLiveBanner';
 import IndustryDistributionCard from '../../components/industry/IndustryDistributionCard';
 import IndustryLeaderboardTable from '../../components/industry/IndustryLeaderboardTable';
 import IndustrySovPie from '../../components/industry/IndustrySovPie';
@@ -201,8 +202,15 @@ export default function IndustryOverviewPage() {
     [primaryBrand]
   );
 
+  // Live banner only fires when industryId is numeric (real backend
+  // industry); mock 'beauty' / 'fashion' string IDs short-circuit.
+  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+
   return (
     <div className="space-y-3">
+      {/* LIVE banner — pulled from /v1/industries/:id/overview when industryId is numeric */}
+      <IndustryOverviewLiveBanner industryId={liveIndustryId} />
+
       {/* ── 段 ② Hero (page banner; 置顶并用 border-b 与 FilterBar 分隔) ── */}
       <IndustryHero
         industryName={`${industry.icon || ''} ${industry.name} 行业总览`.trim()}
