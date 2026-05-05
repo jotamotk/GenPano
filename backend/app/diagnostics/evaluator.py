@@ -13,6 +13,9 @@ from genpano_models import Diagnostic, Project
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.diagnostics.anchor_questions import build_anchor_questions
+from app.diagnostics.benchmark import build_industry_benchmark
+from app.diagnostics.causal_chain import build_causal_chain
 from app.diagnostics.rules import REGISTRY, DiagnosticPayload
 
 
@@ -53,6 +56,34 @@ async def evaluate_project(session: AsyncSession, project: Project) -> list[Diag
         for p in payloads:
             if await _is_cooldown_active(session, project, p, rule.cooldown_days):
                 continue
+
+            # Phase D.4 / D.5 / D.6 enrichment — fields are nullable so any
+            # exception here must not block the diagnostic from being saved.
+            try:
+                causal = build_causal_chain(rule_id=p.rule_id, evidence=p.evidence)
+            except Exception:
+                causal = None
+            try:
+                anchor = build_anchor_questions(
+                    category=p.category,
+                    reader_hints=p.reader_hints,
+                    evidence=p.evidence,
+                )
+            except Exception:
+                anchor = None
+            metric_for_benchmark = (p.evidence or {}).get("metric")
+            benchmark: dict[str, object] | None = None
+            if metric_for_benchmark:
+                try:
+                    benchmark = (
+                        await build_industry_benchmark(
+                            session, project=project, metric=metric_for_benchmark
+                        )
+                        or None
+                    )
+                except Exception:
+                    benchmark = None
+
             row = Diagnostic(
                 id=_new_id(),
                 project_id=project.id,
@@ -66,6 +97,9 @@ async def evaluate_project(session: AsyncSession, project: Project) -> list[Diag
                 direction=p.direction,
                 reader_hints=p.reader_hints,
                 evidence=p.evidence,
+                causal_chain=causal,
+                industry_benchmark=benchmark,
+                anchor_questions=anchor,
                 if_untreated=p.if_untreated,
                 rule_id=p.rule_id,
                 rule_version=p.rule_version,
