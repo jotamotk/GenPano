@@ -47,7 +47,7 @@ app.include_router(competitors_router, prefix=f"{V1_PREFIX}/projects/{{project_i
 app.include_router(reports_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/reports")
 app.include_router(diagnostics_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/diagnostics")
 app.include_router(leads_router, prefix=f"{V1_PREFIX}/leads")
-app.include_router(crawl_router, prefix=f"{V1_PREFIX}/projects/{{project_id}}/crawl-requests")
+app.include_router(crawl_router, prefix=f"{V1_PREFIX}/projects")
 app.include_router(meta_router, prefix=V1_PREFIX)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
