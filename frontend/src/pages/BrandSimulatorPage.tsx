@@ -10,6 +10,8 @@ import {
   SIMULATOR_BASELINE,
   SIMULATOR_PRESETS,
 } from '../data/mock';
+import { useProjects } from '../hooks/useProjects';
+import { useRunSimulator } from '../hooks/useSimulator';
 
 /* ─────────────────────────────────────────────────────────────
    BrandSimulatorPage — PRD §4.2.7.E v1.1 "PANO A 模拟器"
@@ -127,6 +129,17 @@ export default function BrandSimulatorPage() {
 
   const expectedDelta = calcDelta(deltaByTier, baseline);
   const expectedNewScore = Math.round((baseline.currentPanoA + expectedDelta) * 10) / 10;
+
+  // Live-mode hook: only fires when there's a real backend Project.
+  // The brand_id passed to the API must be int — falls back to a
+  // placeholder for mock-shape ids so the button can still render.
+  const { data: liveProjects } = useProjects();
+  const liveProjectId =
+    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const numericBrandId = id && /^\d+$/.test(id) ? Number(id) : null;
+  const liveBrandId = numericBrandId ?? liveProjects?.[0]?.primary_brand_id ?? null;
+  const runSim = useRunSimulator(liveProjectId);
+  const liveCanRun = liveProjectId != null && liveBrandId != null;
   const budget = calcBudget(deltaByTier, baseline);
   const budgetPerPoint =
     expectedDelta > 0 ? Math.round(budget / expectedDelta) : null;
@@ -156,10 +169,85 @@ export default function BrandSimulatorPage() {
             调一调各 Tier 增加的引用数, 看 PANO A 会走到哪里, 以及大概需要投入多少
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={reset}>
-          重置
-        </Button>
+        <div className="flex items-center gap-2">
+          {liveCanRun && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() =>
+                runSim.mutate({
+                  brand_id: liveBrandId as number,
+                  delta_by_tier: Object.fromEntries(
+                    Object.entries(deltaByTier).map(([k, v]) => [k, Number(v)]),
+                  ),
+                })
+              }
+              disabled={runSim.isPending}
+            >
+              {runSim.isPending ? '后端计算中…' : '运行真实模拟'}
+            </Button>
+          )}
+          <Button variant="secondary" size="sm" onClick={reset}>
+            重置
+          </Button>
+        </div>
       </div>
+
+      {/* Live result panel — shows the authoritative simulated_pano_a
+          + base price equivalent from /v1/projects/:id/simulator/run */}
+      {runSim.data && (
+        <Card
+          className="p-4 border"
+          onClick={undefined}
+          style={{
+            background: 'linear-gradient(135deg, rgba(99, 91, 255, 0.06), rgba(139, 92, 246, 0.04))',
+            borderColor: 'var(--color-accent, #635bff)',
+          }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <span
+              className="px-2 py-0.5 rounded-pill text-[10px] font-bold tabular-nums"
+              style={{ background: 'var(--color-accent)', color: 'white' }}
+            >
+              LIVE
+            </span>
+            <span className="text-sm font-semibold text-themed-primary">后端真实模拟结果</span>
+            <span className="text-[10px] text-themed-faint">
+              POST /v1/projects/.../simulator/run
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="rounded-card p-3" style={{ background: 'var(--color-bg-card, #fff)' }}>
+              <div className="text-[11px] uppercase text-themed-muted mb-1">当前 PANO A</div>
+              <div className="text-xl font-bold tabular-nums text-themed-primary">
+                {runSim.data.current_pano_a.toFixed(1)}
+              </div>
+            </div>
+            <div className="rounded-card p-3" style={{ background: 'var(--color-bg-card, #fff)' }}>
+              <div className="text-[11px] uppercase text-themed-muted mb-1">模拟后 PANO A</div>
+              <div className="text-xl font-bold tabular-nums" style={{ color: '#635bff' }}>
+                {runSim.data.simulated_pano_a.toFixed(1)}
+              </div>
+            </div>
+            <div className="rounded-card p-3" style={{ background: 'var(--color-bg-card, #fff)' }}>
+              <div className="text-[11px] uppercase text-themed-muted mb-1">Δ</div>
+              <div className="text-xl font-bold tabular-nums" style={{ color: '#16a34a' }}>
+                +{runSim.data.delta.toFixed(1)}
+              </div>
+            </div>
+            <div className="rounded-card p-3" style={{ background: 'var(--color-bg-card, #fff)' }}>
+              <div className="text-[11px] uppercase text-themed-muted mb-1">估算预算 (CNY)</div>
+              <div className="text-xl font-bold tabular-nums text-themed-primary">
+                {runSim.data.base_price_equivalent_cny.toLocaleString()}
+              </div>
+            </div>
+          </div>
+          <div className="text-[11px] text-themed-faint mt-2">
+            置信度 {(runSim.data.confidence * 100).toFixed(0)}% · citation_authority Δ{' '}
+            {runSim.data.delta_breakdown.citation_authority.toFixed(2)}
+          </div>
+        </Card>
+      )}
 
       {/* Presets */}
       <div className="flex flex-wrap gap-2">
