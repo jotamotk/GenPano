@@ -220,3 +220,164 @@ async def test_mcp_resources_list(client, user):
     assert resp.status_code == 200
     resources = resp.json()["result"]["resources"]
     assert len(resources) == 3  # PRD §4.5.2.3
+
+
+# ── Phase M.2 tools/call dispatch ────────────────────────────────
+
+
+async def _new_secret(client, user) -> str:
+    return (
+        await client.post(
+            "/api/v1/users/me/api-keys",
+            headers=_bearer(user),
+            json={"name": "mcp-call"},
+        )
+    ).json()["secret"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_call_unknown_tool(client, user):
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {"name": "genpano_does_not_exist", "arguments": {}},
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()["result"]
+    assert body["isError"] is True
+    assert "unknown tool" in body["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_call_brand_visibility_empty(client, user):
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "genpano_get_brand_visibility",
+                "arguments": {
+                    "brand_id": 999999,
+                    "project_id": "00000000-0000-0000-0000-000000000000",
+                    "period": "30d",
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()["result"]
+    assert body["isError"] is False
+    assert body["structuredContent"]["brand_id"] == 999999
+    assert body["structuredContent"]["mention_rate"] == 0
+    assert "time_series" in body["structuredContent"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_call_simulate_authority_boost(client, user):
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "genpano_simulate_authority_boost",
+                "arguments": {
+                    "brand_id": 1,
+                    "delta_by_tier": {"1": 5, "2": 10},
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()["result"]
+    assert body["isError"] is False
+    sc = body["structuredContent"]
+    # Phase E simulator returns these keys
+    assert "current_pano_a" in sc
+    assert "simulated_pano_a" in sc
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_call_optimization_insights_empty(client, user):
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "genpano_get_optimization_insights",
+                "arguments": {
+                    "project_id": "00000000-0000-0000-0000-000000000000",
+                    "brand_id": 1,
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()["result"]
+    assert body["isError"] is False
+    assert body["structuredContent"]["diagnostics"] == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_call_invalid_arguments(client, user):
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": {
+                "name": "genpano_get_brand_visibility",
+                # missing required brand_id / project_id
+                "arguments": {"unrelated": 1},
+            },
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()["result"]
+    assert body["isError"] is True
+    assert "invalid arguments" in body["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_list_returns_real_tool_names(client, user):
+    """Phase M.2 — tools/list now reflects the live TOOLS dict."""
+    secret = await _new_secret(client, user)
+    resp = await client.post(
+        "/mcp/v1",
+        headers={"Authorization": f"Bearer {secret}"},
+        json={"jsonrpc": "2.0", "id": 15, "method": "tools/list"},
+    )
+    tools = resp.json()["result"]["tools"]
+    names = {t["name"] for t in tools}
+    expected = {
+        "genpano_get_brand_visibility",
+        "genpano_compare_brands",
+        "genpano_get_industry_trends",
+        "genpano_get_product_ranking",
+        "genpano_generate_report",
+        "genpano_get_optimization_insights",
+        "genpano_get_citations",
+        "genpano_list_pr_targets",
+        "genpano_simulate_authority_boost",
+    }
+    assert names == expected
