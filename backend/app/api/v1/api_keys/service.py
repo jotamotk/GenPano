@@ -176,7 +176,7 @@ async def dispatch_mcp_request(
     `scope` is the API key's `scope` JSONB, applied as an allowlist for
     `tools/call` and `resources/read`. None means full access.
     """
-    from app.api.v1.api_keys.mcp_tools import TOOLS, dispatch_tool_call
+    from app.api.v1.api_keys.mcp_tools import dispatch_tool_call
     from app.api.v1.api_keys.scope import is_resource_allowed, is_tool_allowed
 
     if method == "initialize":
@@ -186,16 +186,9 @@ async def dispatch_mcp_request(
             "capabilities": {"tools": {}, "resources": {}},
         }
     if method == "tools/list":
-        return {
-            "tools": [
-                {
-                    "name": name,
-                    "description": f"GenPano tool: {name}",
-                    "inputSchema": {"type": "object"},
-                }
-                for name in TOOLS
-            ]
-        }
+        from app.api.v1.api_keys.mcp_schemas import get_tool_descriptors
+
+        return {"tools": get_tool_descriptors()}
     if method == "resources/list":
         return {
             "resources": [
