@@ -13,10 +13,19 @@ import {
   useBrandMetrics,
   useBrandSentiment,
   useBrandCitations,
+  useBrandTopics,
+  useBrandProducts,
+  useCompetitorMetrics,
 } from '../../hooks/useBrandMetrics'
 import { isLiveProjectId } from '../../hooks/useBrandOverview'
 
-type Variant = 'visibility' | 'sentiment' | 'citations'
+type Variant =
+  | 'visibility'
+  | 'sentiment'
+  | 'citations'
+  | 'topics'
+  | 'products'
+  | 'competitors'
 
 interface Card {
   label: string
@@ -48,6 +57,11 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
   )
   const citations = useBrandCitations(
     variant === 'citations' ? liveProjectId : null,
+  )
+  const topics = useBrandTopics(variant === 'topics' ? liveProjectId : null)
+  const products = useBrandProducts(variant === 'products' ? liveProjectId : null)
+  const competitorMetrics = useCompetitorMetrics(
+    variant === 'competitors' ? liveProjectId : null,
   )
 
   if (!isLiveProjectId(liveProjectId)) return null
@@ -113,6 +127,87 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
       {
         label: '平均情感分',
         value: s.distribution.avg_sentiment_score.toFixed(2),
+      },
+    ]
+  } else if (variant === 'topics') {
+    isLoading = topics.isLoading
+    if (!topics.data) return null
+    const t = topics.data
+    isEmpty = t.state === 'empty'
+    title = `Topic 监测 — ${t.total} 个话题`
+    endpointLabel = `/v1/projects/${t.project_id.slice(0, 8)}…/topics`
+    const tracked = t.items.filter((it) => it.state === 'tracked').length
+    const totalMentions = t.items.reduce((s, it) => s + (it.mention_count || 0), 0)
+    const avgSent = t.items
+      .filter((it) => it.avg_sentiment != null)
+      .map((it) => it.avg_sentiment as number)
+    cards = [
+      { label: '已追踪', value: tracked },
+      { label: '已忽略', value: t.items.filter((it) => it.state === 'ignored').length },
+      { label: '总提及', value: totalMentions },
+      {
+        label: '平均情感',
+        value: avg(avgSent).toFixed(2),
+      },
+    ]
+  } else if (variant === 'products') {
+    isLoading = products.isLoading
+    if (!products.data) return null
+    const p = products.data
+    isEmpty = p.state === 'empty'
+    title = `产品 — ${p.total} 个 SKU`
+    endpointLabel = `/v1/projects/${p.project_id.slice(0, 8)}…/products`
+    const totalMentions = p.items.reduce((s, it) => s + (it.mention_count || 0), 0)
+    const winRates = p.items
+      .filter((it) => it.win_rate != null)
+      .map((it) => it.win_rate as number)
+    const topProduct = [...p.items].sort(
+      (a, b) => (b.mention_count || 0) - (a.mention_count || 0),
+    )[0]
+    cards = [
+      { label: '产品数', value: p.total },
+      { label: '总提及', value: totalMentions },
+      { label: 'Top 产品', value: topProduct ? topProduct.product_name : '—' },
+      {
+        label: '平均胜率',
+        value: winRates.length ? (avg(winRates) * 100).toFixed(1) : '—',
+        unit: winRates.length ? '%' : undefined,
+      },
+    ]
+  } else if (variant === 'competitors') {
+    isLoading = competitorMetrics.isLoading
+    if (!competitorMetrics.data) return null
+    const c = competitorMetrics.data
+    isEmpty = c.competitors.length === 0 && c.primary == null
+    title = `竞品矩阵 — 我品牌 vs ${c.competitors.length} 个竞品`
+    endpointLabel = `/v1/projects/${c.project_id.slice(0, 8)}…/competitors/metrics`
+    const myScore = c.primary?.avg_geo_score ?? null
+    const topCompetitor = [...c.competitors].sort(
+      (a, b) => (b.avg_geo_score ?? 0) - (a.avg_geo_score ?? 0),
+    )[0]
+    cards = [
+      {
+        label: '我的 GEO 分',
+        value: myScore == null ? '—' : myScore.toFixed(1),
+      },
+      {
+        label: 'Top 竞品 GEO',
+        value:
+          topCompetitor?.avg_geo_score == null
+            ? '—'
+            : topCompetitor.avg_geo_score.toFixed(1),
+      },
+      {
+        label: 'Top 竞品名',
+        value: topCompetitor?.brand_name ?? '—',
+      },
+      {
+        label: '差距',
+        value:
+          myScore != null && topCompetitor?.avg_geo_score != null
+            ? (topCompetitor.avg_geo_score - myScore).toFixed(1)
+            : '—',
+        unit: myScore != null && topCompetitor?.avg_geo_score != null ? 'pts' : undefined,
       },
     ]
   } else if (variant === 'citations') {

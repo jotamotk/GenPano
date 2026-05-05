@@ -6,6 +6,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge } from '../../components/ui';
 import { TrendChart } from '../../components/charts';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
@@ -170,6 +171,7 @@ export default function BrandCompetitorsPage() {
 
   return (
     <div className="space-y-3 pb-4">
+      <BrandSubpageLiveBanner variant="competitors" />
       {/* Page header */}
       <div>
         <h2 className="text-xl font-brand font-bold text-themed-primary">
