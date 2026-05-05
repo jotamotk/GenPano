@@ -93,6 +93,152 @@ async def get_export_job(session: AsyncSession, *, project: Project, export_id: 
     return job
 
 
+async def materialize_export_csv(
+    session: AsyncSession, *, project: Project, job: ExportJob
+) -> tuple[str, int]:
+    """Synchronously materialize the export rows as CSV text + row count.
+
+    Returns (csv_text, row_count). Marks the job done with row_count
+    populated. Raises NotImplementedError for export types we haven't
+    wired yet.
+
+    The 4 wired types pull only data the project owner can see — the
+    project ownership check has already been done by the caller (router).
+    """
+    import csv
+    import io
+
+    from genpano_models import (
+        BrandMention,
+        GeoScoreDaily,
+        ProjectCompetitor,
+        SentimentDriver,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    row_count = 0
+
+    if job.export_type == "mention_list":
+        writer.writerow(["created_at", "brand_id", "brand_name", "sentiment", "sentiment_score"])
+        scope = job.scope or {}
+        brand_filter = scope.get("brand_ids")
+        stmt = select(BrandMention).order_by(BrandMention.created_at.desc()).limit(50000)
+        if brand_filter:
+            stmt = stmt.where(BrandMention.brand_id.in_(brand_filter))
+        elif project.primary_brand_id is not None:
+            stmt = stmt.where(BrandMention.brand_id == project.primary_brand_id)
+        for m in (await session.execute(stmt)).scalars().all():
+            writer.writerow(
+                [
+                    m.created_at.isoformat() if m.created_at else "",
+                    m.brand_id,
+                    m.brand_name or "",
+                    m.sentiment or "",
+                    m.sentiment_score if m.sentiment_score is not None else "",
+                ]
+            )
+            row_count += 1
+
+    elif job.export_type == "sentiment_list":
+        writer.writerow(
+            ["created_at", "brand_name", "polarity", "category", "strength", "driver_text"]
+        )
+        if project.primary_brand_id is not None:
+            # SentimentDriver has no brand_id column — join via mention.
+            sd_stmt = (
+                select(SentimentDriver)
+                .join(BrandMention, BrandMention.id == SentimentDriver.mention_id)
+                .where(BrandMention.brand_id == project.primary_brand_id)
+                .order_by(SentimentDriver.created_at.desc())
+                .limit(50000)
+            )
+            for d in (await session.execute(sd_stmt)).scalars().all():
+                writer.writerow(
+                    [
+                        d.created_at.isoformat() if d.created_at else "",
+                        d.brand_name or "",
+                        d.polarity or "",
+                        d.category or "",
+                        d.strength if d.strength is not None else "",
+                        (d.driver_text or "").replace("\n", " ")[:500],
+                    ]
+                )
+                row_count += 1
+
+    elif job.export_type == "industry_ranking":
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        writer.writerow(["brand_id", "avg_geo_score_30d", "rank"])
+        today = _date.today()
+        from_d = today - _td(days=29)
+        rank_stmt = (
+            select(
+                GeoScoreDaily.brand_id,
+                func.avg(GeoScoreDaily.avg_geo_score).label("g"),
+            )
+            .where(GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()))
+            .group_by(GeoScoreDaily.brand_id)
+            .order_by(func.avg(GeoScoreDaily.avg_geo_score).desc())
+            .limit(500)
+        )
+        for i, r in enumerate((await session.execute(rank_stmt)).all()):
+            writer.writerow([r[0], round(r[1] or 0, 2), i + 1])
+            row_count += 1
+
+    elif job.export_type == "competitor_matrix":
+        writer.writerow(
+            ["my_brand_id", "competitor_brand_id", "my_geo_30d", "comp_geo_30d", "delta"]
+        )
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        comp_stmt = select(ProjectCompetitor.brand_id).where(
+            ProjectCompetitor.project_id == project.id
+        )
+        comp_ids = [r[0] for r in (await session.execute(comp_stmt)).all()]
+        if project.primary_brand_id is None or not comp_ids:
+            row_count = 0
+        else:
+            today = _date.today()
+            from_d = today - _td(days=29)
+
+            async def _avg(bid: int) -> float | None:
+                s = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
+                    and_(
+                        GeoScoreDaily.brand_id == bid,
+                        GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                    )
+                )
+                return (await session.execute(s)).scalar_one_or_none()
+
+            my = await _avg(project.primary_brand_id)
+            for cid in comp_ids:
+                comp = await _avg(cid)
+                writer.writerow(
+                    [
+                        project.primary_brand_id,
+                        cid,
+                        round(my, 2) if my is not None else "",
+                        round(comp, 2) if comp is not None else "",
+                        round((comp or 0) - (my or 0), 2),
+                    ]
+                )
+                row_count += 1
+
+    else:
+        # Other types (citation_list / topic_coverage / products_list /
+        # report_data) are scaffolded for future PRs.
+        raise NotImplementedError(f"export_type '{job.export_type}' not yet implemented")
+
+    job.status = "done"
+    job.row_count = row_count
+    job.finished_at = datetime.now(UTC).replace(tzinfo=None)
+    await session.commit()
+    return buf.getvalue(), row_count
+
+
 # ── Brand Submission ─────────────────────────────────────────────
 
 
