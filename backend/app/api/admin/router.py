@@ -24,6 +24,7 @@ from app.api.admin.alerts import router as alerts_router
 from app.api.admin.comms import router as comms_router
 from app.api.admin.cost import router as cost_router
 from app.api.admin.stats import router as stats_router
+from app.api.admin.users import router as users_router
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin"])
@@ -31,6 +32,7 @@ router.include_router(alerts_router, prefix="/alerts")
 router.include_router(comms_router, prefix="/comms")
 router.include_router(cost_router, prefix="/cost")
 router.include_router(stats_router, prefix="/stats")
+router.include_router(users_router, prefix="/users")
 
 
 @router.get("/_meta/routes")
