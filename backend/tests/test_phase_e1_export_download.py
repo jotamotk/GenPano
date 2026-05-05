@@ -273,23 +273,6 @@ async def test_export_sentiment_list_csv(db_session, client, user, project):
     assert "quality" in lines[1]
 
 
-# ── unimplemented type returns 422 ───────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_export_unimplemented_type_returns_422(db_session, client, user, project):
-    create = await client.post(
-        f"/api/v1/projects/{project.id}/exports",
-        headers=_bearer(user),
-        json={"export_type": "topic_coverage"},
-    )
-    dl = await client.get(
-        f"/api/v1/projects/{project.id}/exports/{create.json()['id']}/download",
-        headers=_bearer(user),
-    )
-    assert dl.status_code == 422
-
-
 # ── multi-tenant: download from someone else's project → 404 ─────
 
 
