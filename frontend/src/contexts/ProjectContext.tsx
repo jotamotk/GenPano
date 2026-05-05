@@ -3,13 +3,17 @@
  * ─────────────────────────────────────────────────
  * Holds the active Project + auth state + WatchBrand operations.
  *
- * In production this becomes a thin SWR/React Query hook around
- *   GET    /api/v1/projects
- *   POST   /api/v1/projects/:id/competitors
- *   DELETE /api/v1/projects/:id/competitors/:brandId
- * For the prototype, mutations rewrite the in-memory PROJECTS array
- * (mock.js) and broadcast via React state — wired so optimistic
- * updates / rollback / 30s debounce / 10-cap can be exercised.
+ * Hybrid mode (post-Phase-FE切mock):
+ *   - useProjects() pulls /v1/projects/ on mount.
+ *   - When backend returns >= 1 project, those become the source of
+ *     truth (transformed to the legacy mock shape so all 20+ existing
+ *     consumers keep working without rewrites).
+ *   - When backend returns empty / errors, the static SEED_PROJECTS
+ *     (mock.js) is used — useful for unauthenticated visitors and
+ *     dev-without-backend.
+ *   - Mutations: in live mode, call POST/DELETE /v1/projects/.../competitors
+ *     + invalidate the React Query cache. In mock mode, optimistic
+ *     in-memory update with rollback (legacy behaviour).
  *
  * ⚠️ 开发者约束 (不作为 UI 文案 — PRD §4.6.0a):
  *   This module is shared infra for header buttons and Brand Detail
@@ -18,10 +22,30 @@
  *   (`brand_watch.*`, `formatBrand` / `formatProject`).
  */
 import React, {
-  createContext, useCallback, useContext, useMemo, useRef, useState,
+  createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { PROJECTS as SEED_PROJECTS, BRANDS, INDUSTRIES } from '../data/mock';
 import { useLocale } from './LocaleContext';
+import { useProjects, PROJECTS_QUERY_KEY, type ProjectOut } from '../hooks/useProjects';
+import { projectsApi } from '../api/projects';
+
+/** Convert backend ProjectOut to the legacy mock shape (str ids, camelCase). */
+function toMockShape(p: ProjectOut): {
+  id: string;
+  name: string;
+  industryId: string | null;
+  primaryBrandId: string | null;
+  competitorBrandIds: string[];
+} {
+  return {
+    id: p.id,
+    name: p.name,
+    industryId: p.industry_id != null ? String(p.industry_id) : null,
+    primaryBrandId: p.primary_brand_id != null ? String(p.primary_brand_id) : null,
+    competitorBrandIds: (p.competitors ?? []).map((c) => String(c.brand_id)),
+  };
+}
 
 const COMPETITOR_CAP = 10;
 const DEBOUNCE_MS = 30 * 1000;
@@ -41,11 +65,45 @@ const ProjectContext = createContext({
 });
 
 export function ProjectProvider({ children, initialAuthenticated = true }) {
-  // Deep-clone projects so mutations don't leak back into mock module.
-  const [projects, setProjects] = useState(() =>
+  const qc = useQueryClient();
+  // Live backend projects (null when the user is not authenticated /
+  // backend is offline / no projects exist). When >= 1 project lands,
+  // we treat live mode as authoritative.
+  const { data: liveProjectsRaw } = useProjects();
+  const liveProjects = useMemo(
+    () => (liveProjectsRaw ?? []).map(toMockShape),
+    [liveProjectsRaw],
+  );
+  const isLiveMode = liveProjects.length > 0;
+
+  // Local state — used as the source of truth in mock mode, and as a
+  // mutable mirror of live data so optimistic updates render
+  // immediately (we still call the backend behind the scenes).
+  const [mockProjects, setMockProjects] = useState(() =>
     SEED_PROJECTS.map((p) => ({ ...p, competitorBrandIds: [...p.competitorBrandIds] }))
   );
-  const [activeProjectId, setActiveProjectId] = useState(() => SEED_PROJECTS[0]?.id);
+  // When live mode flips on (or live projects update), sync mockProjects
+  // to the latest live snapshot so consumers always see fresh state
+  // without reading liveProjects directly.
+  useEffect(() => {
+    if (isLiveMode) {
+      setMockProjects(liveProjects.map((p) => ({ ...p, competitorBrandIds: [...p.competitorBrandIds] })));
+    }
+  }, [isLiveMode, liveProjects]);
+  const projects = mockProjects;
+
+  const [activeProjectId, setActiveProjectIdState] = useState(() => SEED_PROJECTS[0]?.id);
+  // When live data loads, jump to first live project if no active set.
+  useEffect(() => {
+    if (isLiveMode && liveProjects.length > 0) {
+      const stillExists = liveProjects.some((p) => p.id === activeProjectId);
+      if (!stillExists) {
+        setActiveProjectIdState(liveProjects[0].id);
+      }
+    }
+  }, [isLiveMode, liveProjects, activeProjectId]);
+  const setActiveProjectId = setActiveProjectIdState;
+
   const [isAuthenticated, setIsAuthenticated] = useState(initialAuthenticated);
   const [toasts, setToasts] = useState([]);
   const debounceMapRef = useRef(new Map()); // key = `${projectId}::${brandId}` → timestamp
@@ -104,7 +162,7 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
       stampDebounce(projectId, brandId);
 
       // Optimistic add
-      setProjects((prev) =>
+      setMockProjects((prev) =>
         prev.map((p) =>
           p.id === projectId
             ? { ...p, competitorBrandIds: [...p.competitorBrandIds, brandId] }
@@ -113,13 +171,27 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
       );
 
       try {
-        // Simulated API — always succeeds in mock; real impl does
-        //   await fetch(`/api/v1/projects/${projectId}/competitors`, {...})
-        await Promise.resolve();
+        if (isLiveMode) {
+          // Live mode — brand IDs are int strings ("101"); convert back
+          // to int for the backend POST. Mock IDs ('estee-lauder') won't
+          // pass Number() validation, but in live mode every brandId
+          // came from a live project so should be numeric.
+          const brandIdInt = Number(brandId);
+          if (!Number.isFinite(brandIdInt)) {
+            throw new Error('non-numeric brandId in live mode');
+          }
+          await projectsApi.addCompetitor(projectId, brandIdInt);
+          qc.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
+        } else {
+          // Mock mode — local state is the source of truth; nothing
+          // to call. Microtask resolution preserves the original
+          // optimistic-success contract from the mock prototype.
+          await Promise.resolve();
+        }
         return { ok: true };
       } catch (err) {
-        // Rollback
-        setProjects((prev) =>
+        // Rollback optimistic local state
+        setMockProjects((prev) =>
           prev.map((p) =>
             p.id === projectId
               ? { ...p, competitorBrandIds: p.competitorBrandIds.filter((b) => b !== brandId) }
@@ -129,7 +201,7 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
         return { ok: false, reason: 'api_error' };
       }
     },
-    [projects, isDebounced, stampDebounce]
+    [projects, isDebounced, stampDebounce, isLiveMode, qc]
   );
 
   const removeCompetitor = useCallback(
@@ -146,7 +218,7 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
 
       // Optimistic remove
       const previous = target.competitorBrandIds.slice();
-      setProjects((prev) =>
+      setMockProjects((prev) =>
         prev.map((p) =>
           p.id === projectId
             ? { ...p, competitorBrandIds: p.competitorBrandIds.filter((b) => b !== brandId) }
@@ -155,11 +227,20 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
       );
 
       try {
-        await Promise.resolve();
+        if (isLiveMode) {
+          const brandIdInt = Number(brandId);
+          if (!Number.isFinite(brandIdInt)) {
+            throw new Error('non-numeric brandId in live mode');
+          }
+          await projectsApi.removeCompetitor(projectId, brandIdInt);
+          qc.invalidateQueries({ queryKey: PROJECTS_QUERY_KEY });
+        } else {
+          await Promise.resolve();
+        }
         return { ok: true };
       } catch (err) {
-        // Rollback
-        setProjects((prev) =>
+        // Rollback to previous state
+        setMockProjects((prev) =>
           prev.map((p) =>
             p.id === projectId
               ? { ...p, competitorBrandIds: previous }
@@ -169,7 +250,7 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
         return { ok: false, reason: 'api_error' };
       }
     },
-    [projects, isDebounced, stampDebounce]
+    [projects, isDebounced, stampDebounce, isLiveMode, qc]
   );
 
   /* ── Watch state classifier — drives WatchBrandButton + Brand Detail banner.
