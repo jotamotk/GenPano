@@ -38,6 +38,7 @@ from genpano_models.analyzer import (
     ResponseAnalysis,
     SentimentDriver,
 )
+from genpano_models.api_key import Organization, UserApiKey
 from genpano_models.base import Base
 from genpano_models.brand_submission import BrandSubmission
 from genpano_models.commercial_lead import CommercialLead
@@ -60,6 +61,7 @@ __all__ = [
     "GeoScoreDaily",
     "IndustryBenchmarkDaily",
     "IndustryPricingParams",
+    "Organization",
     "ProductFeatureMention",
     "ProductScoreDaily",
     "Project",
@@ -68,6 +70,7 @@ __all__ = [
     "ResponseAnalysis",
     "SentimentDriver",
     "User",
+    "UserApiKey",
     "UserAuthToken",
     "UserNotificationPreferences",
 ]
