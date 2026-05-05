@@ -123,13 +123,17 @@ async def admin_demo_mutation(
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
 
-# ── Sub-router stubs (Phase R.4 follow-up PRs migrate each) ───────
+# ── Sub-router migration status (auto-detected from routes) ──────
 
 
-# These are intentionally empty so each sub-router can be opened in
-# its own PR migrating routes from admin_console/app.py one by one.
-# When migrating, each PR adds: app/api/admin/<name>/router.py + tests.
+# Phase R.4 originally listed 13 stubs from admin_console Flask. Phase O
+# expanded this with operator-side sub-routers that don't map 1:1 to the
+# original Flask routes (cost, comms, mcp_ops, leads, alerts, etc.).
+#
+# Master list of all expected sub-routers (Phase R.4 originals + Phase O
+# additions). Order shown to operator preserves PRD reading order.
 SUB_ROUTERS: list[str] = [
+    # Phase R.4 originals (admin_console migration targets)
     "session",
     "brands",
     "topic_plan",
@@ -143,16 +147,60 @@ SUB_ROUTERS: list[str] = [
     "analyzer",
     "artifacts",
     "stats",
+    # Phase O additions (new operator surfaces)
+    "alerts",
+    "comms",
+    "cost",
+    "engine_health",
+    "kg_discovery",
+    "leads",
+    "mcp_ops",
+    "proxy_pool",
 ]
+
+
+def _sub_router_path_segments(app_routes: list[object]) -> set[str]:
+    """Extract registered sub-router segments from /api/admin/{seg}/... paths."""
+    seen: set[str] = set()
+    for route in app_routes:
+        if not (hasattr(route, "path") and hasattr(route, "methods")):
+            continue
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/admin/"):
+            continue
+        rest = path[len("/api/admin/") :]
+        if not rest or rest.startswith("_"):
+            continue
+        segment = rest.split("/", 1)[0]
+        # Hyphen → underscore so URL `mcp-ops` matches package `mcp_ops`
+        seen.add(segment.replace("-", "_"))
+    return seen
 
 
 @router.get("/_meta/sub-routers")
 async def admin_sub_routers_status(
+    request: Request,
     operator: Annotated[User, Depends(current_admin_operator)],
 ) -> dict[str, object]:
-    """Migration status: which Phase R.4 sub-routers are wired vs pending."""
+    """Migration status: which sub-routers are wired vs pending.
+
+    Auto-detects 'wired' from the live FastAPI route table — the moment a
+    new sub-router lands and registers any path under /api/admin/<name>/,
+    this view flips to 'wired'. No manual list bumps required.
+    """
+    wired_segments = _sub_router_path_segments(list(request.app.routes))
+    items = [
+        {
+            "name": name,
+            "status": "wired" if name in wired_segments else "pending",
+        }
+        for name in SUB_ROUTERS
+    ]
+    wired_count = sum(1 for it in items if it["status"] == "wired")
     return {
-        "items": [{"name": name, "status": "pending"} for name in SUB_ROUTERS],
-        "total": len(SUB_ROUTERS),
-        "note": "Each sub-router migrated in dedicated PR; see docs/ADR/001.",
+        "items": items,
+        "total": len(items),
+        "wired": wired_count,
+        "pending": len(items) - wired_count,
+        "note": "Status is auto-detected from live FastAPI route table.",
     }

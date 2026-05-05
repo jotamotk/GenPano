@@ -87,13 +87,16 @@ async def test_admin_no_auth_returns_401(client):
 
 
 @pytest.mark.asyncio
-async def test_admin_sub_routers_status_lists_13(client, admin_operator):
-    """Phase R.4 sub-router migration status list includes all 13 routers."""
+async def test_admin_sub_routers_status_lists_originals_and_phase_o(client, admin_operator):
+    """Sub-router status list includes Phase R.4 originals + Phase O additions."""
     resp = await client.get("/api/admin/_meta/sub-routers", headers=_bearer(admin_operator))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 13
-    expected = {
+    # Phase R.4 originals (13) + Phase O operator surfaces
+    assert body["total"] >= 13
+    actual = {it["name"] for it in body["items"]}
+    # All 13 Phase R.4 originals must remain in the list
+    originals = {
         "session",
         "brands",
         "topic_plan",
@@ -108,8 +111,22 @@ async def test_admin_sub_routers_status_lists_13(client, admin_operator):
         "artifacts",
         "stats",
     }
-    actual = {it["name"] for it in body["items"]}
-    assert actual == expected
+    assert originals.issubset(actual)
+
+
+@pytest.mark.asyncio
+async def test_admin_sub_routers_auto_detect_wired_status(client, admin_operator):
+    """Wired sub-routers (e.g. users) are flipped to status='wired' automatically."""
+    resp = await client.get("/api/admin/_meta/sub-routers", headers=_bearer(admin_operator))
+    body = resp.json()
+    by_name = {it["name"]: it["status"] for it in body["items"]}
+    # users sub-router was migrated in PR #247
+    assert by_name["users"] == "wired"
+    # session is not yet migrated
+    assert by_name["session"] == "pending"
+    # wired count matches what we see
+    assert body["wired"] == sum(1 for it in body["items"] if it["status"] == "wired")
+    assert body["pending"] == sum(1 for it in body["items"] if it["status"] == "pending")
 
 
 @pytest.mark.asyncio
