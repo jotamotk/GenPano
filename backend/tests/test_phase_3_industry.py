@@ -183,8 +183,10 @@ async def test_industry_kg_synthesizes_graph(client, user, industry_data):
     brand_nodes = [n for n in body["nodes"] if n["type"] == "brand"]
     assert len(industry_nodes) == 1
     assert len(brand_nodes) >= 1
-    # Each brand has BELONGS_TO edge to industry
-    assert all(e["type"] == "BELONGS_TO" for e in body["edges"])
+    # Industry → brand edges exist; relation edges (COMPETES_WITH / SAME_GROUP)
+    # may also be present depending on kg_brand_relations data.
+    belongs_to = [e for e in body["edges"] if e["type"] == "BELONGS_TO"]
+    assert len(belongs_to) >= len(brand_nodes)
 
 
 @pytest.mark.asyncio
