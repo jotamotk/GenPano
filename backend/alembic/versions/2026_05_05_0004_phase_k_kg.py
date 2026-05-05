@@ -19,11 +19,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "kg_categories",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("industry_id", sa.Integer, nullable=True),
         sa.Column(
             "parent_id",
-            sa.BigInteger,
+            sa.Integer,
             sa.ForeignKey("kg_categories.id", ondelete="SET NULL"),
             nullable=True,
         ),
@@ -40,7 +40,7 @@ def upgrade() -> None:
 
     op.create_table(
         "kg_brands",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("brand_id", sa.Integer, nullable=False, unique=True),
         sa.Column("industry_id", sa.Integer, nullable=True),
         sa.Column("primary_name", sa.String(256), nullable=False),
@@ -56,10 +56,10 @@ def upgrade() -> None:
 
     op.create_table(
         "kg_products",
-        sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column("product_id", sa.Integer, nullable=False, unique=True),
         sa.Column("brand_id", sa.Integer, nullable=False),
-        sa.Column("category_id", sa.BigInteger, nullable=True),
+        sa.Column("category_id", sa.Integer, nullable=True),
         sa.Column("primary_name", sa.String(256), nullable=False),
         sa.Column("name_zh", sa.String(256), nullable=True),
         sa.Column("name_en", sa.String(256), nullable=True),

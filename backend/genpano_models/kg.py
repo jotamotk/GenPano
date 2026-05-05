@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
-    BigInteger,
     CheckConstraint,
     DateTime,
     Float,
@@ -33,10 +32,10 @@ class KgCategory(Base):
 
     __tablename__ = "kg_categories"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     industry_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parent_id: Mapped[int | None] = mapped_column(
-        BigInteger,
+        Integer,
         ForeignKey("kg_categories.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -55,7 +54,7 @@ class KgBrand(Base):
 
     __tablename__ = "kg_brands"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     brand_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
     industry_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     primary_name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -78,10 +77,10 @@ class KgProduct(Base):
 
     __tablename__ = "kg_products"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     product_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
     brand_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     primary_name: Mapped[str] = mapped_column(String(256), nullable=False)
     name_zh: Mapped[str | None] = mapped_column(String(256), nullable=True)
     name_en: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -129,7 +128,10 @@ class KgBrandRelation(Base):
 
 
 class KgProductRelation(Base):
-    """Product-to-product edge (COMPETES_WITH | SUBSTITUTES | UPGRADES_TO | BUDGET_ALT_OF | PAIRS_WITH)."""
+    """Product-to-product edge.
+
+    Types: COMPETES_WITH | SUBSTITUTES | UPGRADES_TO | BUDGET_ALT_OF | PAIRS_WITH.
+    """
 
     __tablename__ = "kg_product_relations"
     __table_args__ = (
