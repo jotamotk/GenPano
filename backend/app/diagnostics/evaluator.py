@@ -111,4 +111,18 @@ async def evaluate_project(session: AsyncSession, project: Project) -> list[Diag
         await session.commit()
         for r in inserted:
             await session.refresh(r)
+        # Phase D.8 — auto-create alerts for severity P0/P1. Best-effort:
+        # a failure here MUST NOT roll back the diagnostic insert.
+        try:
+            from app.alerts.triggers import create_alert_from_diagnostic
+
+            for r in inserted:
+                if r.severity in {"P0", "P1"}:
+                    await create_alert_from_diagnostic(session, r, autocommit=False)
+            await session.commit()
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
     return inserted
