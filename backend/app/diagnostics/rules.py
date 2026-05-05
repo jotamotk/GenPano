@@ -4,13 +4,17 @@ Each rule subclasses BaseRule + emits zero or more `DiagnosticPayload`. The
 rule REGISTRY is consumed by `evaluator.evaluate_project(project)` which is
 typically scheduled by Celery.
 
-Six rules currently shipped (PRD §4.7.1.1 priorities):
-    - VisibilityDeclineRule    (mention_rate 30d trend)
-    - NegativeSentimentGrowthRule
-    - GeoScoreDropRule         (composite GEO score)
-    - CompetitorOvertakeRule   (project_competitors vs primary)
-    - MonitoringOutageRule     (24h pipeline outage detection)
-    - CitationVolumeDropRule   (citation count 30d trend)
+Ten rules currently shipped (PRD §4.7.1.1 priorities):
+    - VisibilityDeclineRule       (mention_rate 30d trend)
+    - NegativeSentimentGrowthRule (negative ratio threshold)
+    - GeoScoreDropRule            (composite GEO score)
+    - CompetitorOvertakeRule      (project_competitors vs primary)
+    - MonitoringOutageRule        (24h pipeline outage detection)
+    - CitationVolumeDropRule      (citation count 30d trend)
+    - SentimentDropRule           (avg sentiment_score trend)
+    - ShareOfVoiceMinorRule       (avg_sov < 5% sustained)
+    - IndustryLagTop10Rule        (geo_score lag vs industry top-10)
+    - CitationDiversityLowRule    (< 5 unique citation domains in 30d)
 
 The remaining categories listed in PLANNED_CATEGORIES are still stubbed
 by name and queued for Phase D follow-up PRs.
@@ -467,6 +471,286 @@ class CitationVolumeDropRule(BaseRule):
         ]
 
 
+class SentimentDropRule(BaseRule):
+    """30d avg `sentiment_score` dropped vs prior 30d.
+
+    Distinct from NegativeSentimentGrowthRule (which thresholds the
+    *ratio* of negatives at any point). This rule fires when the
+    *average* sentiment score trend declines — captures gradual
+    perception erosion that doesn't necessarily push negatives over
+    25%.
+    """
+
+    rule_id = "sentiment_drop_v1"
+    category = "sentiment_drop"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        cur_from = today - timedelta(days=29)
+        prior_from = today - timedelta(days=59)
+        prior_to = today - timedelta(days=30)
+
+        async def _avg(d_lo: date, d_hi: date) -> float | None:
+            stmt = select(func.avg(BrandMention.sentiment_score)).where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    BrandMention.created_at >= datetime.combine(d_lo, datetime.min.time()),
+                    BrandMention.created_at <= datetime.combine(d_hi, datetime.max.time()),
+                )
+            )
+            try:
+                return (await session.execute(stmt)).scalar_one_or_none()
+            except Exception:
+                return None
+
+        cur = await _avg(cur_from, today)
+        prior = await _avg(prior_from, prior_to)
+        if cur is None or prior is None:
+            return []
+        # absolute drop in score (sentiment is in [-1, 1])
+        delta = cur - prior
+        if delta >= -0.1:
+            return []
+        severity = "P1" if delta <= -0.25 else "P2"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"avg sentiment score dropped {abs(delta):.2f} pts",
+                description=(
+                    "30d average sentiment score trended down vs the prior 30d. "
+                    "Inspect sentiment_drivers top negatives + recent campaigns."
+                ),
+                focus_area="sentiment_average",
+                direction=(
+                    "Pull `/v1/projects/:id/sentiment` for the keyword breakdown; "
+                    "verify whether a single topic is dragging the mean."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "avg_sentiment_score",
+                    "current_value": round(cur, 3),
+                    "previous_value": round(prior, 3),
+                    "delta": round(delta, 3),
+                },
+                if_untreated=(
+                    "Sustained sentiment drop typically depresses ranking signals next quarter."
+                ),
+            )
+        ]
+
+
+class ShareOfVoiceMinorRule(BaseRule):
+    """30d avg `avg_sov` consistently below 5%.
+
+    Distinct from VisibilityDeclineRule (which detects relative drop).
+    This fires when SoV is *low in absolute terms* — flags brands that
+    have never been visible enough to warrant existing PR / SEO spend.
+    """
+
+    rule_id = "share_of_voice_minor_v1"
+    category = "share_of_voice_minor"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = today - timedelta(days=29)
+        stmt = select(func.avg(GeoScoreDaily.avg_sov)).where(
+            and_(
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+            )
+        )
+        try:
+            sov = (await session.execute(stmt)).scalar_one_or_none()
+        except Exception:
+            return []
+        if sov is None:
+            return []
+        if sov >= 0.05:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title=f"share of voice persistently low ({sov * 100:.1f}%)",
+                description=(
+                    "Average share of voice over the last 30 days is below 5%. "
+                    "Suggests fundamental visibility issue — content / topic gaps."
+                ),
+                focus_area="share_of_voice",
+                direction=(
+                    "Inspect competitor SoV via `/v1/projects/:id/competitors/metrics` and "
+                    "topic coverage gaps via `/topics` to identify where to invest."
+                ),
+                reader_hints=["manager", "branding"],
+                evidence={
+                    "metric": "avg_sov_30d",
+                    "current_value": round(sov, 4),
+                    "threshold": 0.05,
+                },
+                if_untreated=(
+                    "A brand stuck below 5% SoV typically requires structural content "
+                    "investment (new topic clusters, KOL partnerships) rather than "
+                    "incremental tuning."
+                ),
+            )
+        ]
+
+
+class IndustryLagTop10Rule(BaseRule):
+    """Brand 30d avg geo_score lags industry top-10 average by >= 10 pts.
+
+    Compares against `industry_benchmark_daily` for the brand's
+    industry. P1 when lag >= 20 pts, P2 for 10-20.
+    """
+
+    rule_id = "industry_lag_top10_v1"
+    category = "industry_lag_top10"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = today - timedelta(days=29)
+        my_stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
+            and_(
+                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+            )
+        )
+        try:
+            my_score = (await session.execute(my_stmt)).scalar_one_or_none()
+        except Exception:
+            return []
+        if my_score is None:
+            return []
+
+        # Industry top-10 avg from geo_score_daily aggregation
+        # (industry_benchmark_daily lacks the top-10 cut directly).
+        top_stmt = (
+            select(func.avg(GeoScoreDaily.avg_geo_score).label("g"))
+            .where(GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()))
+            .group_by(GeoScoreDaily.brand_id)
+            .order_by(func.avg(GeoScoreDaily.avg_geo_score).desc())
+            .limit(10)
+        )
+        rows = list((await session.execute(top_stmt)).all())
+        if not rows:
+            return []
+        top10_avg = sum(float(r[0] or 0) for r in rows) / len(rows)
+        lag = top10_avg - my_score
+        if lag < 10:
+            return []
+        severity = "P1" if lag >= 20 else "P2"
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity=severity,
+                type="brand",
+                title=f"GEO score lags industry top-10 by {lag:.1f} pts",
+                description=(
+                    "Your 30d avg GEO score is behind the industry top-10 average by "
+                    "more than 10 points. Identify which sub-metric (visibility / sov / "
+                    "sentiment / citation_authority) accounts for the gap."
+                ),
+                focus_area="industry_position",
+                direction=(
+                    "Compare against top-10 brands via `/industries/:iid/ranking` — "
+                    "drill into each sub-metric they outperform on."
+                ),
+                reader_hints=["manager", "branding"],
+                evidence={
+                    "metric": "avg_geo_score_30d",
+                    "my_value": round(my_score, 2),
+                    "industry_top10_avg": round(top10_avg, 2),
+                    "lag": round(lag, 2),
+                },
+                if_untreated=(
+                    "Industry leaders compound advantage — the gap typically widens "
+                    "without targeted closure of the dominant sub-metric."
+                ),
+            )
+        ]
+
+
+class CitationDiversityLowRule(BaseRule):
+    """Unique citation domains over 30d below threshold.
+
+    Concentration risk: if all citations come from 2-3 domains, a single
+    site change tanks visibility. Threshold: < 5 distinct domains in 30d
+    triggers P2.
+    """
+
+    rule_id = "citation_diversity_low_v1"
+    category = "citation_diversity_low"
+
+    async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
+        if project.primary_brand_id is None:
+            return []
+        today = date.today()
+        from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        stmt = (
+            select(func.count(func.distinct(CitationSource.domain)))
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    CitationSource.created_at >= from_d,
+                    CitationSource.domain.is_not(None),
+                )
+            )
+        )
+        try:
+            unique_domains = int((await session.execute(stmt)).scalar_one() or 0)
+        except Exception:
+            return []
+        # Only fire if there's at least 1 citation but < 5 unique domains
+        if unique_domains == 0 or unique_domains >= 5:
+            return []
+        return [
+            DiagnosticPayload(
+                rule_id=self.rule_id,
+                rule_version=self.rule_version,
+                category=self.category,
+                severity="P2",
+                type="brand",
+                title=f"only {unique_domains} unique citation domains in 30d",
+                description=(
+                    "Citation footprint is concentrated. A single site change or "
+                    "removal could meaningfully drop the brand's authority score."
+                ),
+                focus_area="citation_diversity",
+                direction=(
+                    "Diversify into Tier-2 review / KOL / wiki-class properties; "
+                    "see `/citations/domains` for current concentration."
+                ),
+                reader_hints=["operator", "branding"],
+                evidence={
+                    "metric": "unique_citation_domains_30d",
+                    "current_value": unique_domains,
+                    "threshold": 5,
+                },
+                if_untreated=(
+                    "Concentration risk persists; single-source removal can drop "
+                    "citation count > 50% overnight."
+                ),
+            )
+        ]
+
+
 REGISTRY: list[type[BaseRule]] = [
     VisibilityDeclineRule,
     NegativeSentimentGrowthRule,
@@ -474,12 +758,15 @@ REGISTRY: list[type[BaseRule]] = [
     CompetitorOvertakeRule,
     MonitoringOutageRule,
     CitationVolumeDropRule,
+    SentimentDropRule,
+    ShareOfVoiceMinorRule,
+    IndustryLagTop10Rule,
+    CitationDiversityLowRule,
 ]
 
 
 # Stubbed categories for full PRD §4.7.1.1 coverage (Phase D follow-up wires)
 PLANNED_CATEGORIES = [
-    "sentiment_drop",
     "citation_attribution_mismatch",
     "topic_loss",
     "narrative_drift",
@@ -488,14 +775,11 @@ PLANNED_CATEGORIES = [
     "wiki_missing",
     "product_feature_negative",
     "product_remission",
-    "industry_lag_top10",
     "same_group_share_low",
     "llm_engine_anomaly",
     "geo_score_drop_severe",
     "competitor_radical_growth",
-    "share_of_voice_minor",
     "attribution_anchor_low",
-    "citation_diversity_low",
     "topic_emerging_missed",
     "category_rank_drop",
 ]
