@@ -43,6 +43,7 @@ from genpano_models.base import Base
 from genpano_models.brand_submission import BrandSubmission
 from genpano_models.commercial_lead import CommercialLead
 from genpano_models.crawl_request import CrawlRequest
+from genpano_models.diagnostic import Diagnostic
 from genpano_models.export_job import ExportJob
 from genpano_models.industry_pricing import IndustryPricingParams
 from genpano_models.kg import (
@@ -65,6 +66,7 @@ __all__ = [
     "CitationSource",
     "CommercialLead",
     "CrawlRequest",
+    "Diagnostic",
     "ExportJob",
     "GeoScoreDaily",
     "IndustryBenchmarkDaily",
