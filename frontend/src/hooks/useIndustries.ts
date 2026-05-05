@@ -83,6 +83,45 @@ export function useIndustryOverview(
   })
 }
 
+export function useIndustryRanking(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'ranking', industryId, params],
+    queryFn: () => industriesApi.ranking(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryTopics(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'topics', industryId, params],
+    queryFn: () => industriesApi.topics(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryKg(
+  industryId: number | null | undefined,
+  params: { name?: string; focus?: string; depth?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'kg', industryId, params],
+    queryFn: () => industriesApi.kg(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
 export function useIndustriesWithTopBrands() {
   const industries = useIndustries()
   const topBrandsList = useQueries({
