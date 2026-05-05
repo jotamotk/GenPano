@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
 from app.admin.security import current_admin_operator
+from app.api.admin.alerts import router as alerts_router
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin"])
+router.include_router(alerts_router, prefix="/alerts")
 
 
 @router.get("/_meta/routes")
