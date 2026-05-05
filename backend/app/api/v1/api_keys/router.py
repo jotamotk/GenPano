@@ -139,7 +139,11 @@ async def mcp_jsonrpc(
         tool=tool_name,
     ) as ctx:
         result = await dispatch_mcp_request(
-            payload.method, payload.params, session=session, user=user_row
+            payload.method,
+            payload.params,
+            session=session,
+            user=user_row,
+            scope=key.scope,
         )
         # If dispatch returned a JSON-RPC error envelope, record the code
         if "error" in result and isinstance(result["error"], dict):

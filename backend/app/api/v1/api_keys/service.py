@@ -164,14 +164,19 @@ async def dispatch_mcp_request(
     *,
     session: AsyncSession | None = None,
     user: User | None = None,
+    scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """JSON-RPC dispatcher (PRD §4.5.2.1).
 
     `initialize` / `tools/list` / `resources/list` are pure metadata and don't
     need session+user. `tools/call` invokes Phase M.2 real implementations
     via `dispatch_tool_call` and requires both.
+
+    `scope` is the API key's `scope` JSONB, applied as an allowlist for
+    `tools/call` and `resources/read`. None means full access.
     """
     from app.api.v1.api_keys.mcp_tools import TOOLS, dispatch_tool_call
+    from app.api.v1.api_keys.scope import is_resource_allowed, is_tool_allowed
 
     if method == "initialize":
         return {
@@ -212,6 +217,20 @@ async def dispatch_mcp_request(
                 "isError": True,
                 "_meta": {"error": "session not propagated"},
             }
+        if not is_resource_allowed(scope, uri):
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": (
+                            '{"error":{"code":"resource_forbidden",'
+                            '"message":"api key scope does not permit this resource"}}'
+                        ),
+                    }
+                ],
+                "isError": True,
+            }
         return await read_resource(session, user=user, uri=uri)
     if method == "tools/call":
         tool_name = (params or {}).get("name") or ""
@@ -220,6 +239,17 @@ async def dispatch_mcp_request(
             return {
                 "content": [{"type": "text", "text": "session/user not propagated"}],
                 "isError": True,
+            }
+        if not is_tool_allowed(scope, tool_name):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"api key scope does not permit tool: {tool_name}",
+                    }
+                ],
+                "isError": True,
+                "_meta": {"error_code": "tool_forbidden"},
             }
         return await dispatch_tool_call(
             session, user=user, tool_name=tool_name, arguments=arguments
