@@ -30,6 +30,9 @@ import { useMemo, useState } from 'react';
 import { Badge, Button, Card, Tabs } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
 import { DIAGNOSTICS } from '../data/mock';
+import { useProjects } from '../hooks/useProjects';
+import { isLiveProjectId, useCreateReport } from '../hooks/useReports';
+import ReportsLiveBanner from '../components/reports/ReportsLiveBanner';
 
 /* ─────────────────────────────────────────────────────────────
  * 1. 报告类型 × Section 矩阵 (PRD 4.7.2 + 2026-04-16 升级)
@@ -1166,6 +1169,36 @@ function GenerateModal({ onClose }) {
   const { t, locale } = useLocale();
   const [type, setType] = useState('on_demand');
   const [outputLocale, setOutputLocale] = useState(locale);
+  const [fromDate, setFromDate] = useState('2026-04-05');
+  const [toDate, setToDate] = useState('2026-05-05');
+
+  // Live wiring: when the user has a real backend project, the submit
+  // button POSTs to /v1/projects/:id/reports and renders job state.
+  const { data: liveProjects } = useProjects();
+  const liveProjectId =
+    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveCanGenerate = isLiveProjectId(liveProjectId);
+  const createReport = useCreateReport(liveProjectId);
+
+  const handleSubmit = () => {
+    if (!liveCanGenerate) {
+      onClose();
+      return;
+    }
+    createReport.mutate(
+      {
+        report_type: type as 'weekly' | 'monthly' | 'on_demand',
+        locale: outputLocale as 'zh-CN' | 'en-US',
+        from_date: type === 'on_demand' ? fromDate : null,
+        to_date: type === 'on_demand' ? toDate : null,
+      },
+      {
+        onSuccess: () => {
+          window.setTimeout(onClose, 1200);
+        },
+      },
+    );
+  };
 
   return (
     <div
@@ -1205,13 +1238,23 @@ function GenerateModal({ onClose }) {
                 <label className="text-xs font-medium text-themed-secondary block mb-1.5">
                   {t('reports.generate_modal.start')}
                 </label>
-                <input type="date" defaultValue="2026-03-15" className="t-input w-full" />
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="t-input w-full"
+                />
               </div>
               <div>
                 <label className="text-xs font-medium text-themed-secondary block mb-1.5">
                   {t('reports.generate_modal.end')}
                 </label>
-                <input type="date" defaultValue="2026-04-14" className="t-input w-full" />
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="t-input w-full"
+                />
               </div>
             </div>
           )}
@@ -1249,17 +1292,39 @@ function GenerateModal({ onClose }) {
         </div>
 
         <div className="flex gap-3 mt-6">
-          <Button variant="primary" size="md" className="flex-1" onClick={onClose}>
-            {t('reports.generate_modal.submit')}
+          <Button
+            variant="primary"
+            size="md"
+            className="flex-1"
+            onClick={handleSubmit}
+            disabled={createReport.isPending}
+          >
+            {createReport.isPending
+              ? '生成中…'
+              : liveCanGenerate
+              ? '生成真实报告'
+              : t('reports.generate_modal.submit')}
           </Button>
           <Button variant="outline" size="md" onClick={onClose}>
             {t('common.cancel')}
           </Button>
         </div>
-        <p
-          className="text-[11px] text-themed-faint mt-3 text-center"
-          dangerouslySetInnerHTML={{ __html: t('reports.generate_modal.eta') }}
-        />
+        {liveCanGenerate && createReport.isSuccess && (
+          <p className="text-[11px] text-themed-accent mt-3 text-center">
+            报告已生成 (job {createReport.data?.id?.slice(0, 8)}) — 见上方 LIVE 列表
+          </p>
+        )}
+        {liveCanGenerate && createReport.isError && (
+          <p className="text-[11px] text-themed-muted mt-3 text-center">
+            生成失败：{createReport.error.message}
+          </p>
+        )}
+        {!liveCanGenerate && (
+          <p
+            className="text-[11px] text-themed-faint mt-3 text-center"
+            dangerouslySetInnerHTML={{ __html: t('reports.generate_modal.eta') }}
+          />
+        )}
       </div>
     </div>
   );
@@ -1316,6 +1381,9 @@ export default function ReportsPage() {
           {t('reports.actions.generate')}
         </Button>
       </div>
+
+      {/* Live banner — real backend reports (Phase RP) */}
+      <ReportsLiveBanner />
 
       {/* Tabs */}
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
