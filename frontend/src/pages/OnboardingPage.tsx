@@ -5,6 +5,7 @@ import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import { useLocale } from '../contexts/LocaleContext';
 import { INDUSTRIES, BRANDS } from '../data/mock';
+import { useIndustriesWithTopBrands } from '../hooks/useIndustries';
 
 /* ══════════════════════════════════════════════════════════════
    Onboarding Page — PRD 4.1.1b Single-Path Flow
@@ -14,11 +15,15 @@ import { INDUSTRIES, BRANDS } from '../data/mock';
    不设分流问卷、不在用户理解价值之前要求决策。
 
    流程: 注册/登录完成 → 选择行业(唯一必选步骤) → 直接进入行业探索视图
+
+   Data source: GET /v1/industries/ + per-industry /top-brands.
+   When backend returns 0 industries (fresh deployment) we fall back
+   to the static INDUSTRIES + BRANDS mock so the page is never blank.
    ══════════════════════════════════════════════════════════════ */
 
-// Get top 3 brands by PanoScore for an industry
-function getTopBrands(industryId, count = 3) {
-  return BRANDS
+// Get top 3 brands by PanoScore for an industry — mock fallback
+function getTopBrandsMock(industryId: string | number, count = 3) {
+  return (BRANDS as any[])
     .filter(b => b.industryId === industryId)
     .sort((a, b) => (b.panoScore || 0) - (a.panoScore || 0))
     .slice(0, count);
@@ -31,7 +36,14 @@ export default function OnboardingPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t } = useLocale();
-  const [hoveredIndustry, setHoveredIndustry] = useState(null);
+  const [hoveredIndustry, setHoveredIndustry] = useState<string | number | null>(null);
+
+  // Live backend data (with overlays for icon / nameEn)
+  const { data: liveIndustries, isLoading, isError } = useIndustriesWithTopBrands();
+
+  // Fallback: when backend returns nothing (or errors), show the static
+  // mock so onboarding is never blank pre-seeded.
+  const useLive = !isLoading && !isError && liveIndustries.length > 0;
 
   /* ── PRD §4.1.2a flow continuation ──
      If the user arrived here from /register?monitor_brand=X&return_to=Y,
@@ -50,10 +62,10 @@ export default function OnboardingPage() {
     navigate('/dashboard');
   };
 
-  const handleSelectIndustry = (industryId) => {
+  const handleSelectIndustry = (industryKey: string | number) => {
     // PRD: 选完即走 — 点击卡片后零延迟进入行业探索视图
-    // Store selected industry (would use context/store in production)
-    localStorage?.setItem?.('genpano_industry', industryId);
+    // industryKey is either the live industry_id (number) or the mock slug.
+    localStorage?.setItem?.('genpano_industry', String(industryKey));
     // monitorBrand intent is preserved through the URL so the destination
     // page (Brand Detail) can re-evaluate WatchBrandButton state once the
     // ProjectContext is bootstrapped post-onboarding.
@@ -66,6 +78,33 @@ export default function OnboardingPage() {
       navigate('/dashboard');
     }
   };
+
+  // Normalise to a single render shape regardless of source.
+  const cards = useLive
+    ? liveIndustries.map(it => ({
+        key: it.industry_id,
+        nameZh: it.nameZh,
+        nameEn: it.nameEn,
+        icon: it.icon,
+        brandCount: it.brandCount,
+        topBrands: it.topBrands.map(b => ({
+          id: String(b.brand_id),
+          name: b.brand_name ?? `brand-${b.brand_id}`,
+          panoScore: b.avg_geo_score == null ? null : Math.round(b.avg_geo_score),
+        })),
+      }))
+    : INDUSTRIES.map(it => ({
+        key: it.id,
+        nameZh: it.name,
+        nameEn: it.nameEn,
+        icon: it.icon,
+        brandCount: it.brandCount,
+        topBrands: getTopBrandsMock(it.id).map(b => ({
+          id: b.id,
+          name: b.name,
+          panoScore: b.panoScore ?? null,
+        })),
+      }));
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--color-bg-page, #f8fafc)' }}>
@@ -82,19 +121,21 @@ export default function OnboardingPage() {
           <p className="text-themed-secondary text-sm mt-2 max-w-md mx-auto">
             平台已为每个行业完成全量数据采集，选择后即刻查看品牌排名、竞争格局和 AI 可见度数据
           </p>
+          {isLoading && (
+            <p className="text-[11px] text-themed-faint mt-3">加载行业数据…</p>
+          )}
         </div>
 
         {/* Industry Cards with Data Hooks — PRD 4.1.1b */}
         <div className="grid grid-cols-2 gap-5">
-          {INDUSTRIES.map(industry => {
-            const topBrands = getTopBrands(industry.id);
-            const isHovered = hoveredIndustry === industry.id;
+          {cards.map(industry => {
+            const isHovered = hoveredIndustry === industry.key;
 
             return (
               <div
-                key={industry.id}
-                onClick={() => handleSelectIndustry(industry.id)}
-                onMouseEnter={() => setHoveredIndustry(industry.id)}
+                key={industry.key}
+                onClick={() => handleSelectIndustry(industry.key)}
+                onMouseEnter={() => setHoveredIndustry(industry.key)}
                 onMouseLeave={() => setHoveredIndustry(null)}
                 className="group relative rounded-xl border cursor-pointer transition-all duration-200 overflow-hidden"
                 style={{
@@ -111,7 +152,7 @@ export default function OnboardingPage() {
                   <div className="flex items-start justify-between mb-4">
                     <div>
                       <div className="text-3xl mb-2">{industry.icon}</div>
-                      <h3 className="text-lg font-semibold text-themed-primary">{industry.name}</h3>
+                      <h3 className="text-lg font-semibold text-themed-primary">{industry.nameZh}</h3>
                       <p className="text-xs text-themed-faint mt-0.5">{industry.nameEn}</p>
                     </div>
                     <div className="text-right">
@@ -130,7 +171,7 @@ export default function OnboardingPage() {
                       今日 AI 热度 Top 3
                     </div>
                     <div className="space-y-1.5">
-                      {topBrands.map((brand, i) => (
+                      {industry.topBrands.map((brand, i) => (
                         <div key={brand.id} className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <span
@@ -142,11 +183,11 @@ export default function OnboardingPage() {
                             <span className="text-sm font-medium text-themed-primary">{brand.name}</span>
                           </div>
                           <span className="text-sm font-bold tabular-nums" style={{ color: '#635bff' }}>
-                            {brand.panoScore}
+                            {brand.panoScore ?? '—'}
                           </span>
                         </div>
                       ))}
-                      {topBrands.length === 0 && (
+                      {industry.topBrands.length === 0 && (
                         <div className="text-xs text-themed-faint py-2">数据加载中...</div>
                       )}
                     </div>
