@@ -101,7 +101,12 @@ async def mcp_jsonrpc(
     authorization: Annotated[str | None, Header()] = None,
     session: AsyncSession = _DependsDb,
 ) -> JsonRpcResponse:
-    """JSON-RPC entrypoint. Auth: Bearer gp_sk_xxx (PRD §4.5.2.1, ADR-006)."""
+    """JSON-RPC entrypoint. Auth: Bearer gp_sk_xxx (PRD §4.5.2.1, ADR-006).
+
+    Every successful auth records an `mcp_call_log` row (Phase O.2.3
+    observability). Auth failures are NOT logged here — they raise
+    `mcp_auth_required` before we have a session+key context.
+    """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise mcp_auth_required("missing Bearer token")
     token = authorization[len("bearer ") :].strip()
@@ -117,9 +122,29 @@ async def mcp_jsonrpc(
         await session.execute(_select(UserModel).where(UserModel.id == key.user_id))
     ).scalar_one_or_none()
 
-    result = await dispatch_mcp_request(
-        payload.method, payload.params, session=session, user=user_row
-    )
+    # Pull tool name from JSON-RPC params for observability — only present
+    # for tools/call. Other methods (initialize / tools/list / resources/list)
+    # log with tool=None.
+    tool_name: str | None = None
+    if payload.method == "tools/call" and isinstance(payload.params, dict):
+        tool_name = payload.params.get("name")
+
+    from app.api.v1.api_keys.call_log import measure_mcp_call
+
+    async with measure_mcp_call(
+        session,
+        api_key_id=key.id,
+        user_id=key.user_id,
+        method=payload.method,
+        tool=tool_name,
+    ) as ctx:
+        result = await dispatch_mcp_request(
+            payload.method, payload.params, session=session, user=user_row
+        )
+        # If dispatch returned a JSON-RPC error envelope, record the code
+        if "error" in result and isinstance(result["error"], dict):
+            ctx["error_code"] = result["error"].get("message") or "rpc_error"
+
     if "error" in result:
         return JsonRpcResponse(id=payload.id, error=result["error"])
     return JsonRpcResponse(id=payload.id, result=result)
