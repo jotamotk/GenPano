@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects.service import get_project_for_user
 from app.core.errors import gone, not_found, validation_error
 from app.reports import build_report
+from app.reports.lead_diagnostic_builder import build_lead_diagnostic
 
 VALID_REPORT_TYPES: set[str] = {"weekly", "monthly", "on_demand", "lead_diagnostic"}
 
@@ -64,15 +65,19 @@ async def create_job(
 
     project = await get_project_for_user(session, user, project_id)
 
-    payload = await build_report(
-        session,
-        project=project,
-        report_type=report_type,
-        locale=locale,
-        reader_perspective=reader_perspective,
-        from_date=from_date,
-        to_date=to_date,
-    )
+    if report_type == "lead_diagnostic":
+        # Phase RP.8 — dedicated 4-layer view, NOT SECTION_MATRIX
+        payload = await build_lead_diagnostic(session, project=project, locale=locale)
+    else:
+        payload = await build_report(
+            session,
+            project=project,
+            report_type=report_type,
+            locale=locale,
+            reader_perspective=reader_perspective,
+            from_date=from_date,
+            to_date=to_date,
+        )
 
     job = ReportJob(
         id=_new_id(),
@@ -111,13 +116,21 @@ async def get_job_with_payload(
     payload: dict[str, Any] | None = None
     if job.status == "done":
         scope = _decode_scope(job.scope)
-        payload = await build_report(
-            session,
-            project=project,
-            report_type=scope.get("report_type", "weekly"),
-            locale=scope.get("locale", "zh-CN"),
-            reader_perspective=scope.get("reader_perspective", "manager"),
-        )
+        rt = scope.get("report_type", "weekly")
+        if rt == "lead_diagnostic":
+            payload = await build_lead_diagnostic(
+                session,
+                project=project,
+                locale=scope.get("locale", "zh-CN"),
+            )
+        else:
+            payload = await build_report(
+                session,
+                project=project,
+                report_type=rt,
+                locale=scope.get("locale", "zh-CN"),
+                reader_perspective=scope.get("reader_perspective", "manager"),
+            )
     return job, payload
 
 
@@ -194,13 +207,21 @@ async def read_public_report(
         raise not_found("underlying project not found")
 
     scope = _decode_scope(job.scope)
-    payload = await build_report(
-        session,
-        project=project,
-        report_type=scope.get("report_type", "weekly"),
-        locale=scope.get("locale", "zh-CN"),
-        reader_perspective=scope.get("reader_perspective", "manager"),
-    )
+    rt = scope.get("report_type", "weekly")
+    if rt == "lead_diagnostic":
+        payload = await build_lead_diagnostic(
+            session,
+            project=project,
+            locale=scope.get("locale", "zh-CN"),
+        )
+    else:
+        payload = await build_report(
+            session,
+            project=project,
+            report_type=rt,
+            locale=scope.get("locale", "zh-CN"),
+            reader_perspective=scope.get("reader_perspective", "manager"),
+        )
 
     row.view_count = (row.view_count or 0) + 1
     await session.commit()
