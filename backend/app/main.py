@@ -35,6 +35,7 @@ from app.api.v1.reports.router import public_router as reports_public_router
 from app.api.v1.reports.router import router as reports_router
 from app.api.v1.topics.router import router as topics_router
 from app.core.rate_limit import setup_rate_limit
+from app.core.security_headers import setup_security
 from app.db.session import get_db
 
 app = FastAPI(
@@ -60,6 +61,7 @@ app.add_middleware(
     max_age=3600,
 )
 setup_rate_limit(app)
+setup_security(app)
 
 # Auth router is self-prefixed with /api/auth (legacy)
 app.include_router(user_auth_router)
