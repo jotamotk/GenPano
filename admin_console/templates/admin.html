@@ -1894,6 +1894,8 @@
                 <option value="zhihu">知乎</option>
                 <option value="weibo">微博</option>
                 <option value="toutiao">头条</option>
+                <option value="douyin">抖音</option>
+                <option value="xhs">小红书</option>
                 <option value="llm_search">LLM 搜索</option>
               </select>
               <select x-model="hotspotFilter.brandId" @change="loadHotspotsList()"
@@ -12355,7 +12357,7 @@ function adminApp() {
           method:'POST', credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
           body: JSON.stringify({
-            sources: ['llm_search', 'baidu', 'zhihu', 'weibo', 'toutiao'],
+            sources: ['llm_search', 'baidu', 'zhihu', 'weibo', 'toutiao', 'douyin', 'xhs'],
             industry: this.hotspotFilter.industry || '',
             brand_id: this.hotspotFilter.brandId || null,
           }),
@@ -12369,7 +12371,10 @@ function adminApp() {
         const summary = Object.keys(bySource).length
           ? ' [' + Object.entries(bySource).map(([k, v]) => `${k}:${v}`).join(' / ') + ']'
           : '';
-        this.toast(`本次采集 ${body.collected || 0} 条${summary} → 入库 ${body.inserted || 0} 条 (待审区)`);
+        const queued = (body.queued_sources || []).length
+          ? '，已投递 worker: ' + body.queued_sources.join(' / ')
+          : '';
+        this.toast(`本次采集 ${body.collected || 0} 条${summary} → 入库 ${body.inserted || 0} 条 (待审区)${queued}`);
         await this.loadHotspotsList();
       } catch (e) {
         this.toast('采集失败: ' + (e.message || e));

@@ -7226,7 +7226,6 @@ def _discover_brand_products_llm(brand, *, query="", limit=8):
         messages=_build_product_discovery_messages(brand, query=query, limit=limit),
         temperature=0.2,
         max_tokens=max(1024, min(4096, 512 + limit * 320)),
-        response_format={"type": "json_object"},
     )
     content = response.choices[0].message.content if response.choices else ""
     return _parse_product_discovery_response(content), {
@@ -7899,11 +7898,17 @@ def admin_hot_topics_collect_api():
         return error_response
 
     payload = request.get_json(silent=True) or {}
+    source_aliases = {"xiaohongshu": "xhs", "red": "xhs", "xiaohongshu_hots": "xhs"}
+    browser_sources = {"douyin", "xhs"}
     sources_raw = payload.get("sources") or ["baidu", "zhihu", "llm_search"]
     if isinstance(sources_raw, str):
-        sources = [s.strip() for s in sources_raw.split(",") if s.strip()]
+        sources = [source_aliases.get(s.strip().lower(), s.strip().lower()) for s in sources_raw.split(",") if s.strip()]
     else:
-        sources = [str(s).strip() for s in sources_raw if str(s).strip()]
+        sources = [
+            source_aliases.get(str(s).strip().lower(), str(s).strip().lower())
+            for s in sources_raw
+            if str(s).strip()
+        ]
     industry_filter = (payload.get("industry") or "").strip() or None
     try:
         brand_id = int(payload.get("brand_id")) if payload.get("brand_id") else None
@@ -7933,18 +7938,49 @@ def admin_hot_topics_collect_api():
         return jsonify({"success": False, "error": "collectors_unavailable",
                         "message": str(e)[:200]}), 503
 
-    try:
-        result = run_collection_cycle(
-            sources=sources,
-            industry_filter=industry_filter,
-            brand_context=brand_context,
-            get_db=get_db,
-        )
-    except Exception as e:
-        return jsonify({"success": False, "error": "collection_failed",
-                        "message": str(e)[:200]}), 502
+    local_sources = [source for source in sources if source not in browser_sources]
+    queued_sources: list[str] = []
+    queued_tasks: list[dict] = []
+    result = {"collected": 0, "inserted": 0, "by_source": {}, "errors": {}}
 
-    return jsonify({"success": True, **result})
+    if local_sources:
+        try:
+            result = run_collection_cycle(
+                sources=local_sources,
+                industry_filter=industry_filter,
+                brand_context=brand_context,
+                get_db=get_db,
+            )
+        except Exception as e:
+            return jsonify({"success": False, "error": "collection_failed",
+                            "message": str(e)[:200]}), 502
+
+    for source in [source for source in sources if source in browser_sources]:
+        if not HAS_CELERY or celery_app is None:
+            result.setdefault("errors", {})[source] = "browser_collection_requires_worker"
+            continue
+        try:
+            task = celery_app.send_task(
+                "geo_tracker.tasks.celery_tasks.collect_hotspot_source",
+                args=[source],
+                kwargs={
+                    "industry": industry_filter,
+                    "brand_id": brand_id,
+                    "brand_context": brand_context,
+                },
+                queue="celery",
+            )
+            queued_sources.append(source)
+            queued_tasks.append({"source": source, "task_id": getattr(task, "id", None)})
+        except Exception as e:
+            result.setdefault("errors", {})[source] = f"queue_failed: {str(e)[:160]}"
+
+    return jsonify({
+        "success": True,
+        **result,
+        "queued_sources": queued_sources,
+        "queued_tasks": queued_tasks,
+    })
 
 
 @app.route('/api/admin/topic-plan/config')

@@ -1,4 +1,5 @@
 import json
+import types
 
 import admin_console.app as app_mod
 
@@ -161,6 +162,45 @@ def test_product_discovery_endpoint_creates_new_llm_products(monkeypatch):
     assert conn.inserted_products[0]["aliases"] == ["Cloud Repair"]
 
 
+def test_product_discovery_llm_omits_unsupported_response_format(monkeypatch):
+    captured = {}
+
+    class FakeUsage:
+        def model_dump(self):
+            return {"total_tokens": 9}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            message = types.SimpleNamespace(
+                content=json.dumps({
+                    "products": [
+                        {"name": "Pegasus 41", "category": "running shoes"},
+                    ]
+                })
+            )
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice], model="fake-model", usage=FakeUsage())
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        app_mod,
+        "load_doubao_config",
+        lambda: types.SimpleNamespace(api_key="k", base_url="https://ark.example", model="doubao-lite"),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+
+    products, metadata = app_mod._discover_brand_products_llm({"name": "NIKE"}, query="", limit=1)
+
+    assert products[0]["name"] == "Pegasus 41"
+    assert metadata["model"] == "fake-model"
+    assert "response_format" not in captured
+
+
 def test_hotspot_batch_status_update(monkeypatch):
     app_mod.app.config.update(TESTING=True, SECRET_KEY="test-secret")
     client = app_mod.app.test_client()
@@ -204,3 +244,42 @@ def test_hotspot_collect_uses_brand_industry_context(monkeypatch):
     assert captured["industry_filter"] == "beauty"
     assert captured["brand_context"]["id"] == 7
     assert captured["brand_context"]["name"] == "Acme Beauty"
+
+
+def test_hotspot_collect_queues_browser_cookie_sources(monkeypatch):
+    app_mod.app.config.update(TESTING=True, SECRET_KEY="test-secret")
+    client = app_mod.app.test_client()
+    login(monkeypatch)
+    conn = FakeConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+
+    queued = []
+
+    class FakeCelery:
+        def send_task(self, name, args=None, kwargs=None, queue=None, **extra):
+            task = types.SimpleNamespace(id=f"task-{len(queued) + 1}")
+            queued.append({"name": name, "args": args or [], "kwargs": kwargs or {}, "queue": queue, "id": task.id})
+            return task
+
+    def fake_run_collection_cycle(**kwargs):
+        assert kwargs["sources"] == ["llm_search"]
+        return {"collected": 1, "inserted": 1, "by_source": {"llm_search": 1}, "errors": {}}
+
+    import admin_console.hotspot_collectors as hc
+
+    monkeypatch.setattr(app_mod, "HAS_CELERY", True)
+    monkeypatch.setattr(app_mod, "celery_app", FakeCelery())
+    monkeypatch.setattr(hc, "run_collection_cycle", fake_run_collection_cycle)
+
+    response = client.post(
+        "/api/admin/hot-topics/collect",
+        json={"brand_id": 7, "sources": ["llm_search", "douyin", "xhs"]},
+    )
+
+    body = response.get_json()
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert body["queued_sources"] == ["douyin", "xhs"]
+    assert [item["args"] for item in queued] == [["douyin"], ["xhs"]]
+    assert all(item["name"] == "geo_tracker.tasks.celery_tasks.collect_hotspot_source" for item in queued)
+    assert all(item["kwargs"]["brand_context"]["name"] == "Acme Beauty" for item in queued)
