@@ -15,6 +15,17 @@ def test_prompt_matrix_template_uses_real_api_hooks():
     assert "/admin/prompt-matrix/prompts" in html
 
 
+def test_products_and_hotspots_new_admin_actions_are_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert "/admin/brands/' + e.brand_id + '/products/discover" in html
+    assert "openProductDiscoveryModal()" in html
+    assert "productDiscoveryModalOpen" in html
+    assert "/admin/hot-topics/batch" in html
+    assert "selectedHotspotIds()" in html
+    assert "hotspotFilter.brandId" in html
+    assert "hotspotFilter.industry" in html
+
+
 def test_prompt_matrix_selector_controls_are_wired():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     assert 'x-model="promptMatrixTopicQuery"' in html

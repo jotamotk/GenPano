@@ -338,13 +338,28 @@ def collect_toutiao(*, limit: int = 30) -> list[HotspotCandidate]:
 
 # ─── LLM search (Doubao) ────────────────────────────────────────────────
 
-def _build_llm_search_messages(industry: str | None, limit: int) -> list[dict]:
+def _build_llm_search_messages(industry: str | None, limit: int, brand_context: dict[str, Any] | None = None) -> list[dict]:
     industry_label = (industry or "").strip()
+    brand_context = brand_context or {}
+    brand_name = str(brand_context.get("name") or "").strip()
     scope_text = (
         f"行业：{industry_label}"
         if industry_label
         else "行业：通用消费 / 大众生活 / 数码 / 社会 (覆盖面尽量广)"
     )
+    if brand_name:
+        scope_text += (
+            "\n"
+            + json.dumps(
+                {
+                    "brand": brand_name,
+                    "brand_aliases": brand_context.get("aliases") or [],
+                    "target_market": brand_context.get("target_market") or "",
+                    "brand_description": brand_context.get("description") or "",
+                },
+                ensure_ascii=False,
+            )
+        )
     schema = {
         "hotspots": [
             {
@@ -415,6 +430,7 @@ def _parse_llm_search_response(raw: str) -> list[dict[str, Any]]:
 def collect_llm_search(
     *,
     industry: str | None = None,
+    brand_context: dict[str, Any] | None = None,
     limit: int = 20,
     client_factory=None,
 ) -> list[HotspotCandidate]:
@@ -455,7 +471,7 @@ def collect_llm_search(
         print(f"[hotspots.llm_search] client init failed: {e}")
         return []
 
-    messages = _build_llm_search_messages(industry, limit)
+    messages = _build_llm_search_messages(industry, limit, brand_context=brand_context)
 
     try:
         response = client.chat.completions.create(
@@ -550,6 +566,7 @@ def run_collection_cycle(
     *,
     sources: list[str] | None = None,
     industry_filter: str | None = None,
+    brand_context: dict[str, Any] | None = None,
     per_source_limit: int = 30,
     get_db=None,
 ) -> dict:
@@ -571,7 +588,10 @@ def run_collection_cycle(
             continue
         try:
             if name == "llm_search":
-                items = fn(industry=industry_filter, limit=per_source_limit)
+                if brand_context is not None:
+                    items = fn(industry=industry_filter, brand_context=brand_context, limit=per_source_limit)
+                else:
+                    items = fn(industry=industry_filter, limit=per_source_limit)
             else:
                 items = fn(limit=per_source_limit)
             by_source[name] = len(items)
@@ -613,9 +633,9 @@ def run_collection_cycle(
                         """
                         INSERT INTO hot_topics
                             (title, summary, category, source, source_url,
-                             raw_rank, raw_metric, industry, status,
+                             raw_rank, raw_metric, industry, brand_id, status,
                              effective_from, effective_until)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft',
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft',
                                 NOW(), NOW() + INTERVAL '14 days')
                         """,
                         (
@@ -627,6 +647,7 @@ def run_collection_cycle(
                             c.raw_rank,
                             c.raw_metric,
                             c.industry or industry_filter,
+                            (brand_context or {}).get("id"),
                         ),
                     )
                     inserted += 1
