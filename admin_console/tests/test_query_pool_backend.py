@@ -64,6 +64,19 @@ class StreamingConnection(FakeConnection):
         return StreamingCursor(self)
 
 
+def test_query_pool_candidate_migration_backfills_review_return_columns(monkeypatch):
+    conn = StreamingConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+
+    app_mod._ensure_query_pool_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)" in statements
+    assert "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP" in statements
+    assert "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT" in statements
+    assert "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS scheduler_intake_batch_id VARCHAR(64)" in statements
+
+
 @pytest.fixture
 def client():
     app_mod.app.config.update(TESTING=True, SECRET_KEY="test-secret")
