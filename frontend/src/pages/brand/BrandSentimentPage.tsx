@@ -1,368 +1,177 @@
-import React, { useState } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { useLocale } from '../../contexts/LocaleContext';
-import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge } from '../../components/ui';
-import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
-import { TrendChart, DonutChart } from '../../components/charts';
-import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
-import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
-import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { useNavigate } from 'react-router-dom';
 import {
-  BRANDS,
-  SENTIMENT_DISTRIBUTION,
-  SENTIMENT_TREND_BY_ENGINE,
-  SENTIMENT_KEYWORDS,
-  SENTIMENT_DETAIL_LIST,
-  SENTIMENT_TOPIC_ATTRIBUTION,
-  COMPETITOR_SENTIMENT_BUBBLE,
-} from '../../data/mock';
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+} from 'recharts';
+import { Badge, Card } from '../../components/ui';
+import { useLocale } from '../../contexts/LocaleContext';
+import { useProjects } from '../../hooks/useProjects';
+import { useBrandSentiment } from '../../hooks/useBrandMetrics';
+import { isLiveProjectId } from '../../hooks/useReports';
+import {
+  LoadingCard,
+  NoProjectCard,
+  EmptyCard,
+  ErrorCard,
+} from './BrandVisibilityPage';
 
-/* ─────────────────────────────────────────────────────────────
-   BrandSentimentPage — /brand/sentiment (§4.6-IA-v2.C.2.2 + K/L/N)
-   ─────────────────────────────────────────────────────────────
-   T6' rebuild (2026-04-20):
-   - Mounts shared BrandAnalysisFilterBar (sticky top)
-   - §4.6-IA-v2.N / C12: Sentiment Distribution MUST be a Donut (the
-     previous "three giant text % numbers" looked like a broken chart)
-   - §4.6-IA-v2.L: Brand × Topic sentiment heatmap (diverging scale)
-     replaces the flat竞品情感对比 table as the primary comparison.
-   - Compact spacing, unified card header style.
-*/
+/* Phase 5 §"mock 退役" — 整页来自 GET /v1/projects/:id/sentiment. */
 export default function BrandSentimentPage() {
-  const { t } = useLocale();
-  const { activeProject } = useProject();
-  const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
-  // C10: page must reference useBrandAnalysisFilters (filter state lives in URL
-  // and drives downstream fetches once the backend is wired).
-  const { filters } = useBrandAnalysisFilters();
+  const navigate = useNavigate();
+  const { formatDate } = useLocale();
+  const { data: projects } = useProjects();
+  const liveProjectId = projects && projects.length > 0 ? projects[0].id : null;
+  const enabled = isLiveProjectId(liveProjectId);
+  const { data, isLoading, error, refetch } = useBrandSentiment(
+    enabled ? liveProjectId : null,
+  );
 
-  // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
-  const [polarity, setPolarity] = useState('all');
+  if (!enabled)
+    return (
+      <NoProjectCard onStart={() => navigate('/onboarding')} title="情感" />
+    );
+  if (isLoading) return <LoadingCard />;
+  if (error)
+    return (
+      <ErrorCard
+        msg={error instanceof Error ? error.message : 'unknown'}
+        onRetry={() => refetch()}
+      />
+    );
+  if (!data || data.state === 'empty')
+    return <EmptyCard onRefresh={() => refetch()} title="情感" />;
 
-  // ──────────────────────────────────────────────────────────────
-  // Sentiment distribution — aggregate across all engines.
-  // ──────────────────────────────────────────────────────────────
-  const positive = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.positive, 0);
-  const negative = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.negative, 0);
-  const neutral = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.neutral, 0);
-  const total = positive + negative + neutral || 1;
-  const positivePct = Math.round((positive / total) * 100);
-  const negativePct = Math.round((negative / total) * 100);
-  const neutralPct = Math.round((neutral / total) * 100);
-
-  // §4.6-IA-v2.N / C12: Sentiment Distribution renders as a Donut.
-  const distributionSegments = [
-    { name: '正面', value: positivePct, color: 'var(--color-chart-7)' },
-    { name: '中性', value: neutralPct, color: 'var(--color-chart-line-grid)' },
-    { name: '负面', value: negativePct, color: 'var(--color-danger)' },
+  const dist = data.distribution;
+  const distData = [
+    { name: '正面', value: dist.positive_pct, color: '#16a34a' },
+    { name: '中性', value: dist.neutral_pct, color: '#64748b' },
+    { name: '负面', value: dist.negative_pct, color: '#dc2626' },
   ];
-
-  // ──────────────────────────────────────────────────────────────
-  // Engine stacked bar (% stack)
-  // ──────────────────────────────────────────────────────────────
-  const stackedChartData = SENTIMENT_DISTRIBUTION.map((d) => ({
-    engine: d.engine,
-    positive: d.positive,
-    negative: d.negative,
-    neutral: d.neutral,
-  }));
-
-  // ──────────────────────────────────────────────────────────────
-  // Brand × Topic sentiment heatmap (diverging -1 … +1).
-  // Real data lands from API; here we fabricate from primary.sentiment +
-  // COMPETITOR_SENTIMENT_BUBBLE using a deterministic wave so the cells are
-  // non-uniform while still being reproducible for visual baselines.
-  // ──────────────────────────────────────────────────────────────
-  const heatmapTopics = [
-    { topicId: 's1', topicLabel: '保湿精华推荐' },
-    { topicId: 's2', topicLabel: '抗老护肤品牌' },
-    { topicId: 's3', topicLabel: '敏感肌适用' },
-    { topicId: 's4', topicLabel: '高端美白面霜' },
-    { topicId: 's5', topicLabel: '抗皱眼霜对比' },
-    { topicId: 's6', topicLabel: '性价比精华' },
-    { topicId: 's7', topicLabel: '孕妇可用成分' },
-    { topicId: 's8', topicLabel: '夜间修护方案' },
-  ];
-
-  const sentimentRowSeeds = [
-    { brandId: primary.id, brandName: primary.name, _base: (primary.sentiment ?? 0.5) * 2 - 1 },
-    ...(COMPETITOR_SENTIMENT_BUBBLE || []).slice(0, 4).map((comp, idx) => ({
-      brandId: `sent-comp-${idx}`,
-      brandName: comp.brand,
-      _base: (comp.sentiment ?? 0.5) * 2 - 1,
-    })),
-  ];
-
-  const sentimentHeatmapRows = sentimentRowSeeds.map((r) => ({
-    brandId: r.brandId,
-    brandName: r.brandName,
-    values: heatmapTopics.map((topic, i) => {
-      const wave = Math.sin((r.brandName.length + i) * 0.91) * 0.3;
-      const drift = i % 3 === 0 ? 0.08 : i % 3 === 1 ? -0.05 : 0.02;
-      const v = Math.max(-1, Math.min(1, r._base + wave + drift));
-      return {
-        topicId: topic.topicId,
-        topicLabel: topic.topicLabel,
-        value: v,
-        sample: 32 + ((i + r.brandName.length) % 21),
-      };
-    }),
-  }));
-
-  // ──────────────────────────────────────────────────────────────
-  // Filter response samples by polarity (local control)
-  // ──────────────────────────────────────────────────────────────
-  const filteredResponses = (SENTIMENT_DETAIL_LIST || []).filter((item) => {
-    if (polarity === 'all') return true;
-    if (polarity === 'positive') return item.label === '正面';
-    if (polarity === 'negative') return item.label === '负面';
-    return true;
-  });
+  const trend = data.trend_30d;
 
   return (
-    <div className="space-y-4">
-      <BrandSubpageLiveBanner variant="sentiment" />
-      {/* Page header */}
-      <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-2xl font-brand font-bold text-themed-primary">
-            {t('brand_sentiment.page_title')}
-          </h2>
-          <p className="text-sm text-themed-muted mt-0.5">
-            {t('brand_sentiment.page_subtitle', { brand: primary.name })}
-          </p>
-        </div>
+    <div className="space-y-5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Badge variant="default">LIVE</Badge>
+        <h2 className="text-heading-2 font-bold text-themed-primary">情感</h2>
+        <span className="text-sm text-themed-muted">
+          {formatDate(data.period.from)} – {formatDate(data.period.to)}
+        </span>
       </div>
 
-      {/* Shared filter bar */}
-      <BrandAnalysisFilterBar />
-
-      {/* ① Distribution (Donut) + Engine breakdown (Stacked Bar) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-2">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.distribution_title')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_sentiment.distribution_subtitle', { default: '全引擎汇总' })}
-            </span>
-          </div>
-          <div className="flex items-center justify-center gap-6 mt-2">
-            <DonutChart segments={distributionSegments} size={180} />
-            <div className="flex flex-col gap-2.5">
-              {distributionSegments.map((s) => (
-                <div key={s.name} className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
-                  <span className="text-xs text-themed-muted w-8">{s.name}</span>
-                  <span className="text-sm font-semibold text-themed-primary tabular-nums">{s.value}%</span>
-                </div>
-              ))}
-            </div>
-          </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card className="p-5" onClick={undefined} style={{}}>
+          <h3 className="text-sm font-semibold text-themed-primary mb-3">
+            情感分布
+          </h3>
+          <p className="text-xs text-themed-muted mb-3">
+            正面 {dist.positive_count} · 中性 {dist.neutral_count} · 负面{' '}
+            {dist.negative_count} (avg = {dist.avg_sentiment_score.toFixed(2)})
+          </p>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={distData}>
+              <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 10 }} unit="%" />
+              <Tooltip />
+              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                {distData.map((d) => (
+                  <Cell key={d.name} fill={d.color} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </Card>
 
-        <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-2">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.by_engine_title')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_sentiment.by_engine_subtitle', { default: '按引擎统计' })}
-            </span>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={stackedChartData} margin={{ top: 8, right: 16, left: -8, bottom: 0 }}>
-              <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="engine" tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }} axisLine={{ stroke: 'var(--color-border-subtle)' }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }} axisLine={{ stroke: 'var(--color-border-subtle)' }} tickLine={false} />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--color-bg-card)',
-                  border: '1px solid var(--color-border-subtle)',
-                  borderRadius: 'var(--radius-btn)',
-                  fontSize: 12,
-                  boxShadow: 'var(--shadow-card-hover)',
-                }}
+        <Card className="p-5" onClick={undefined} style={{}}>
+          <h3 className="text-sm font-semibold text-themed-primary mb-3">
+            情感趋势 (30 天)
+          </h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={trend}>
+              <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 10 }}
+                tickFormatter={(d) => formatDate(d, { month: 'short', day: 'numeric' })}
               />
-              <Bar dataKey="positive" stackId="a" fill="var(--color-chart-7)" />
-              <Bar dataKey="neutral" stackId="a" fill="var(--color-chart-line-grid)" />
-              <Bar dataKey="negative" stackId="a" fill="var(--color-danger)" />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip
+                labelFormatter={(d) =>
+                  formatDate(d, { year: 'numeric', month: 'short', day: 'numeric' })
+                }
+              />
+              <Bar dataKey="positive_pct" name="正面%" fill="#16a34a" stackId="a" />
+              <Bar dataKey="negative_pct" name="负面%" fill="#dc2626" stackId="a" />
             </BarChart>
           </ResponsiveContainer>
         </Card>
       </div>
 
-      {/* ② Sentiment trend (engine lines) */}
-      <Card className="p-4">
-        <div className="flex items-baseline justify-between mb-2">
-          <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand_sentiment.trend_title')}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card className="p-5" onClick={undefined} style={{}}>
+          <h3 className="text-sm font-semibold text-themed-primary mb-3">
+            Top 关键词
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_sentiment.trend_subtitle')}
-          </span>
-        </div>
-        <TrendChart
-          data={SENTIMENT_TREND_BY_ENGINE}
-          lines={[
-            { key: 'chatgpt', label: 'ChatGPT', color: 'var(--color-engine-chatgpt)', area: true },
-            { key: 'doubao', label: '豆包', color: 'var(--color-engine-doubao)', area: false },
-            { key: 'deepseek', label: 'DeepSeek', color: 'var(--color-engine-deepseek)', area: false, dashed: true },
-          ]}
-          height={240}
-        />
-      </Card>
-
-      {/* ③ Brand × Topic sentiment heatmap (diverging scale) */}
-      <div>
-        <div className="flex items-baseline justify-between mb-2 px-1">
-          <h3 className="text-sm font-semibold text-themed-primary">品牌 × Topic 情感热力图</h3>
-          <span className="text-[11px] text-themed-muted">我 + Top 4 竞品 × Top 8 Topic · 红负蓝正 · 点击进入 Topic 详情</span>
-        </div>
-        <BrandTopicHeatmap
-          rows={sentimentHeatmapRows}
-          scale="diverging"
-          metric="sentiment"
-          highlightBrandId={primary.id}
-        />
-      </div>
-
-      {/* ④ Topic 归因：哪些 Topic 拉低了情感？ */}
-      <Card className="p-4">
-        <div className="flex items-baseline justify-between mb-2">
-          <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand_sentiment.topic_attribution_title', { default: '哪些 Topic 拉低了情感?' })}
-          </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_sentiment.topic_attribution_subtitle', { default: '负面情感集中的主题识别' })}
-          </span>
-        </div>
-        <div className="flex flex-col gap-2.5">
-          {(SENTIMENT_TOPIC_ATTRIBUTION || []).slice(0, 5).map((topic, idx) => (
-            <div
-              key={idx}
-              className="rounded-card bg-themed-subtle p-3 hover:bg-themed-subtle/80 transition-colors cursor-pointer border-l-4"
-              style={{ borderLeftColor: 'var(--color-danger)' }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-themed-primary text-sm">{topic.topicName}</p>
-                  <p className="text-xs text-themed-muted mt-1 leading-relaxed line-clamp-2">{topic.sampleSnippet}</p>
-                </div>
-                <div className="text-right flex-shrink-0">
-                  <Badge variant="red" size="sm">{topic.negativeCount}条</Badge>
-                  <p className="text-[10px] text-themed-muted mt-1 tabular-nums">
-                    {Math.round(topic.negativeRatio * 100)}%
-                  </p>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* ⑤ 正面/负面关键词 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.positive_keywords')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">Top 10</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {(SENTIMENT_KEYWORDS.positive || []).slice(0, 10).map((kw, idx) => (
-              <Badge key={idx} variant="green" size="sm">
-                {kw.word}
-                <span className="ml-1 opacity-70">×{kw.weight}</span>
-              </Badge>
-            ))}
-          </div>
-        </Card>
-
-        <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.negative_keywords')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">Top 10</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {(SENTIMENT_KEYWORDS.negative || []).slice(0, 10).map((kw, idx) => (
-              <Badge key={idx} variant="red" size="sm">
-                {kw.word}
-                <span className="ml-1 opacity-70">×{kw.weight}</span>
-              </Badge>
-            ))}
-          </div>
-        </Card>
-      </div>
-
-      {/* ⑥ Response 样本 */}
-      <Card className="p-4">
-        <div className="flex items-baseline justify-between mb-3">
-          <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand_sentiment.samples_title')}
-          </h3>
-          <span className="text-[11px] text-themed-muted">{filteredResponses.length} 条</span>
-        </div>
-
-        <div className="flex gap-1.5 mb-4">
-          {['all', 'positive', 'negative'].map((pol) => (
-            <button
-              key={pol}
-              onClick={() => setPolarity(pol)}
-              className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors"
-              style={
-                polarity === pol
-                  ? { background: 'var(--color-accent-bg-light)', color: 'var(--color-text-accent)' }
-                  : { background: 'var(--color-bg-card)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-muted)' }
-              }
-            >
-              {pol === 'all' && '全部'}
-              {pol === 'positive' && '正面'}
-              {pol === 'negative' && '负面'}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-col gap-3">
-          {filteredResponses.slice(0, 6).map((item, idx) => (
-            <div
-              key={idx}
-              className="rounded-card bg-themed-subtle p-3 border-l-4"
-              style={{
-                borderLeftColor:
-                  item.label === '正面' ? 'var(--color-chart-7)'
-                  : item.label === '负面' ? 'var(--color-danger)'
-                  : 'var(--color-chart-line-grid)',
-              }}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <Badge
-                  variant={item.label === '正面' ? 'green' : item.label === '负面' ? 'red' : 'default'}
-                  size="sm"
+          {data.top_keywords.length === 0 ? (
+            <p className="text-xs text-themed-muted">暂无</p>
+          ) : (
+            <ul className="space-y-2 text-sm">
+              {data.top_keywords.slice(0, 12).map((k) => (
+                <li
+                  key={`${k.keyword}-${k.polarity}`}
+                  className="flex items-center justify-between border-b border-themed-subtle pb-1.5"
                 >
-                  {item.label}
-                </Badge>
-                <span className="text-[10px] text-themed-muted">{item.engine} · {item.time}</span>
-              </div>
-              <p className="font-medium text-[10px] text-themed-muted mb-1">{item.topic}</p>
-              <p className="text-sm text-themed-primary leading-relaxed">{item.summary}</p>
-            </div>
-          ))}
-
-          {filteredResponses.length === 0 && (
-            <div className="text-center py-8">
-              <p className="text-themed-muted text-sm">
-                {t('brand_sentiment.no_samples', { default: '暂无数据' })}
-              </p>
-            </div>
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2 h-2 rounded-full"
+                      style={{
+                        background: k.polarity === 'positive' ? '#16a34a' : '#dc2626',
+                      }}
+                    />
+                    <span className="text-themed-primary">{k.keyword}</span>
+                  </span>
+                  <span className="tabular-nums text-themed-muted">{k.count}</span>
+                </li>
+              ))}
+            </ul>
           )}
-        </div>
-      </Card>
+        </Card>
+
+        <Card className="p-5" onClick={undefined} style={{}}>
+          <h3 className="text-sm font-semibold text-themed-primary mb-3">
+            Top 情感驱动因子
+          </h3>
+          {data.top_drivers.length === 0 ? (
+            <p className="text-xs text-themed-muted">暂无</p>
+          ) : (
+            <ul className="space-y-2 text-sm">
+              {data.top_drivers.slice(0, 12).map((d, idx) => (
+                <li
+                  key={idx}
+                  className="flex items-center justify-between border-b border-themed-subtle pb-1.5"
+                >
+                  <span className="flex items-center gap-2 truncate max-w-md">
+                    <span className="text-themed-primary">{d.driver_text}</span>
+                    {d.category && (
+                      <span className="text-[11px] text-themed-muted">
+                        {d.category}
+                      </span>
+                    )}
+                  </span>
+                  <span className="tabular-nums text-themed-muted">{d.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
