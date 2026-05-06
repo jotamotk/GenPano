@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Badge, Button, Card } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
@@ -9,7 +9,6 @@ import {
   useCreateReport,
 } from '../hooks/useReports';
 import { reportsApi } from '../api/reports';
-import type { ReportDetailOut } from '../api/reports';
 import {
   LoadingCard,
   NoProjectCard,
@@ -17,9 +16,8 @@ import {
   ErrorCard,
 } from './brand/BrandVisibilityPage';
 
-/* Phase 5 §"mock 退役" — 报告系统接入 /v1/projects/:id/reports.
-   恢复了 4-mode viewer (preview / markdown / json / pdf) + GenerateModal,
-   全部由后端 payload 驱动. */
+/* Phase 5 §"mock 退役" — 整页来自 GET/POST /v1/projects/:id/reports.
+   Removes the 1440-LOC mock SECTION_MATRIX / DIAGNOSTICS-driven view. */
 export default function ReportsPage() {
   const navigate = useNavigate();
   const { formatDate } = useLocale();
@@ -29,10 +27,11 @@ export default function ReportsPage() {
   const reportsQ = useReports(enabled ? liveProjectId : null, 50);
   const createReport = useCreateReport(enabled ? liveProjectId : null);
   const [showGenerate, setShowGenerate] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   if (!enabled)
-    return <NoProjectCard onStart={() => navigate('/onboarding')} title="报告" />;
+    return (
+      <NoProjectCard onStart={() => navigate('/onboarding')} title="报告" />
+    );
   if (reportsQ.isLoading) return <LoadingCard />;
   if (reportsQ.error)
     return (
@@ -44,16 +43,6 @@ export default function ReportsPage() {
 
   const items = reportsQ.data?.items ?? [];
 
-  if (selectedId) {
-    return (
-      <ReportDetailView
-        projectId={liveProjectId as string}
-        reportId={selectedId}
-        onBack={() => setSelectedId(null)}
-      />
-    );
-  }
-
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -62,15 +51,14 @@ export default function ReportsPage() {
           <h2 className="text-heading-2 font-bold text-themed-primary">报告</h2>
           <span className="text-xs text-themed-muted">共 {items.length}</span>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setShowGenerate(true)}
-          >
-            生成新报告
-          </Button>
-        </div>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => setShowGenerate(true)}
+          disabled={createReport.isPending}
+        >
+          {createReport.isPending ? '生成中…' : '生成新报告'}
+        </Button>
       </div>
 
       {items.length === 0 ? (
@@ -85,7 +73,7 @@ export default function ReportsPage() {
                   <th className="py-2 px-3">Job ID</th>
                   <th className="py-2 px-3">状态</th>
                   <th className="py-2 px-3">创建时间</th>
-                  <th className="py-2 px-3 text-right">操作</th>
+                  <th className="py-2 px-3 text-right">下载</th>
                 </tr>
               </thead>
               <tbody>
@@ -95,7 +83,9 @@ export default function ReportsPage() {
                     className="border-t border-themed-subtle hover:bg-themed-subtle"
                   >
                     <td className="py-2 pl-5 pr-3">
-                      <Badge variant="default" size="sm">{r.type}</Badge>
+                      <Badge variant="default" size="sm">
+                        {r.type}
+                      </Badge>
                     </td>
                     <td className="py-2 px-3 text-themed-muted text-xs tabular-nums">
                       {r.id.slice(0, 8)}
@@ -125,13 +115,44 @@ export default function ReportsPage() {
                     </td>
                     <td className="py-2 px-3 text-right">
                       {r.status === 'done' ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedId(r.id)}
-                        >
-                          查看
-                        </Button>
+                        <div className="flex items-center justify-end gap-2">
+                          <a
+                            href={reportsApi.downloadUrl(
+                              liveProjectId as string,
+                              r.id,
+                              'markdown',
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-themed-accent hover:opacity-80"
+                          >
+                            MD
+                          </a>
+                          <a
+                            href={reportsApi.downloadUrl(
+                              liveProjectId as string,
+                              r.id,
+                              'json',
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-themed-accent hover:opacity-80"
+                          >
+                            JSON
+                          </a>
+                          <a
+                            href={reportsApi.downloadUrl(
+                              liveProjectId as string,
+                              r.id,
+                              'csv',
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-themed-accent hover:opacity-80"
+                          >
+                            CSV
+                          </a>
+                        </div>
                       ) : (
                         <span className="text-themed-muted text-xs">—</span>
                       )}
@@ -154,224 +175,6 @@ export default function ReportsPage() {
   );
 }
 
-/* ─────────────────────────────────────────────────────────────
-   ReportDetailView — 4-mode viewer (preview / markdown / json / pdf)
-   ───────────────────────────────────────────────────────────── */
-function ReportDetailView({
-  projectId,
-  reportId,
-  onBack,
-}: {
-  projectId: string;
-  reportId: string;
-  onBack: () => void;
-}) {
-  const { formatDate } = useLocale();
-  const [report, setReport] = useState<ReportDetailOut | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<'preview' | 'markdown' | 'json'>('preview');
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    reportsApi
-      .get(projectId, reportId)
-      .then((r) => {
-        if (!cancelled) setReport(r);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'unknown');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, reportId]);
-
-  const handleShare = async () => {
-    try {
-      const r = await reportsApi.share(projectId, reportId, 72);
-      setShareUrl(`${window.location.origin}${r.url}`);
-    } catch (e) {
-      setShareUrl(`error: ${e instanceof Error ? e.message : 'unknown'}`);
-    }
-  };
-
-  if (loading) return <LoadingCard />;
-  if (error)
-    return (
-      <ErrorCard msg={error} onRetry={onBack} />
-    );
-  if (!report) return null;
-
-  const payload = report.payload ?? {};
-  const sections = (payload as { sections?: Array<Record<string, unknown>> }).sections ?? [];
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <button
-            type="button"
-            onClick={onBack}
-            className="text-sm text-themed-muted hover:text-themed-primary"
-          >
-            ← 报告列表
-          </button>
-          <div className="h-4 w-px bg-themed-card" />
-          <Badge variant="default">LIVE</Badge>
-          <Badge variant="default" size="sm">{report.type}</Badge>
-          <span className="text-xs text-themed-muted">
-            {formatDate(report.created_at, {
-              year: 'numeric',
-              month: 'short',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <a
-            href={reportsApi.downloadUrl(projectId, reportId, 'csv')}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs px-3 py-1.5 rounded-pill border border-themed-card text-themed-primary hover:bg-themed-subtle"
-          >
-            下载 CSV
-          </a>
-          <Button variant="outline" size="sm" onClick={handleShare}>
-            生成分享链接
-          </Button>
-        </div>
-      </div>
-
-      {shareUrl && (
-        <Card className="p-3" onClick={undefined} style={{}}>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <code className="text-xs text-themed-secondary truncate">{shareUrl}</code>
-            <button
-              type="button"
-              onClick={() => navigator.clipboard?.writeText(shareUrl)}
-              className="text-xs text-themed-accent hover:opacity-80"
-            >
-              复制
-            </button>
-          </div>
-        </Card>
-      )}
-
-      {/* Viewer mode tabs */}
-      <div className="t-tabs">
-        {(['preview', 'markdown', 'json'] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            className={`t-tab ${viewer === mode ? 't-tab-active' : ''}`}
-            onClick={() => setViewer(mode)}
-          >
-            {mode === 'preview' ? '预览' : mode === 'markdown' ? 'Markdown' : 'JSON'}
-          </button>
-        ))}
-      </div>
-
-      {/* Viewer content */}
-      {viewer === 'preview' && (
-        <Card className="p-6" onClick={undefined} style={{}}>
-          {sections.length === 0 ? (
-            <p className="text-sm text-themed-muted">
-              报告 payload 中无 sections. 切到 Markdown 或 JSON 查看原始内容.
-            </p>
-          ) : (
-            <div className="space-y-6">
-              {sections.map((sec, idx) => (
-                <SectionPreview key={idx} section={sec} />
-              ))}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {viewer === 'markdown' && (
-        <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
-          <iframe
-            title={`report-${reportId}-markdown`}
-            src={reportsApi.downloadUrl(projectId, reportId, 'markdown')}
-            className="w-full"
-            style={{ height: 600, border: 'none', background: 'white' }}
-          />
-        </Card>
-      )}
-
-      {viewer === 'json' && (
-        <Card className="p-5" onClick={undefined} style={{}}>
-          <pre
-            className="text-xs overflow-auto"
-            style={{
-              maxHeight: 600,
-              background: 'var(--color-bg-elevated)',
-              padding: 12,
-              borderRadius: 6,
-            }}
-          >
-            {JSON.stringify(payload, null, 2)}
-          </pre>
-        </Card>
-      )}
-    </div>
-  );
-}
-
-function SectionPreview({ section }: { section: Record<string, unknown> }) {
-  const title =
-    typeof section.title === 'string'
-      ? section.title
-      : typeof section.section_type === 'string'
-        ? String(section.section_type)
-        : 'Section';
-  const narrative =
-    typeof section.narrative === 'string' ? section.narrative : null;
-  const summary =
-    typeof section.summary === 'string' ? section.summary : null;
-  return (
-    <div>
-      <h3 className="text-base font-semibold text-themed-primary mb-2">
-        {title}
-      </h3>
-      {summary && (
-        <p className="text-sm text-themed-secondary mb-2 leading-relaxed">
-          {summary}
-        </p>
-      )}
-      {narrative && (
-        <div
-          className="text-sm text-themed-body leading-relaxed"
-          style={{ whiteSpace: 'pre-wrap' }}
-        >
-          {narrative}
-        </div>
-      )}
-      {!summary && !narrative && (
-        <pre
-          className="text-xs"
-          style={{
-            background: 'var(--color-bg-badge)',
-            padding: 8,
-            borderRadius: 6,
-            overflow: 'auto',
-          }}
-        >
-          {JSON.stringify(section, null, 2)}
-        </pre>
-      )}
-    </div>
-  );
-}
-
 function GenerateModal({
   onClose,
   createReport,
@@ -379,7 +182,9 @@ function GenerateModal({
   onClose: () => void;
   createReport: ReturnType<typeof useCreateReport>;
 }) {
-  const [type, setType] = useState<'on_demand' | 'weekly' | 'monthly'>('on_demand');
+  const [type, setType] = useState<'on_demand' | 'weekly' | 'monthly'>(
+    'on_demand',
+  );
   const [outputLocale, setOutputLocale] = useState<'zh-CN' | 'en-US'>('zh-CN');
   const [fromDate, setFromDate] = useState('2026-04-05');
   const [toDate, setToDate] = useState('2026-05-05');
@@ -393,7 +198,9 @@ function GenerateModal({
         to_date: type === 'on_demand' ? toDate : null,
       },
       {
-        onSuccess: () => window.setTimeout(onClose, 800),
+        onSuccess: () => {
+          window.setTimeout(onClose, 800);
+        },
       },
     );
   };
