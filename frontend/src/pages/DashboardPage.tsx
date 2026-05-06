@@ -5,7 +5,6 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
-import BrandOverviewLiveBanner from '../components/dashboard/BrandOverviewLiveBanner';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 
@@ -22,9 +21,6 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const { t } = useLocale();
   const { projects, activeProject } = useProject();
-  // If the user has a real backend project, the LiveBanner above the
-  // existing mock viz will render real KPIs. Mock-only users see the
-  // banner empty (returns null) and only the existing viz.
   const { data: liveProjects } = useProjects();
 
   /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ──
@@ -61,7 +57,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      <BrandOverviewLiveBanner />
       <BrandPanoramaPanel
         primary={primary}
         industry={industry}
