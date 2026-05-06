@@ -184,9 +184,11 @@ def test_product_discovery_llm_omits_unsupported_response_format(monkeypatch):
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
+            captured["client_timeout"] = kwargs.get("timeout")
             self.kwargs = kwargs
             self.chat = types.SimpleNamespace(completions=FakeCompletions())
 
+    monkeypatch.delenv("PRODUCT_DISCOVERY_LLM_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setattr(
         app_mod,
         "load_doubao_config",
@@ -199,6 +201,8 @@ def test_product_discovery_llm_omits_unsupported_response_format(monkeypatch):
     assert products[0]["name"] == "Pegasus 41"
     assert metadata["model"] == "fake-model"
     assert "response_format" not in captured
+    assert captured["client_timeout"] == 90
+    assert captured["timeout"] == 90
 
 
 def test_hotspot_batch_status_update(monkeypatch):

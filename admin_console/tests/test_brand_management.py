@@ -240,10 +240,11 @@ def test_brand_generate_endpoint_records_log_and_returns_drafts(monkeypatch, cli
     monkeypatch.setattr(app_mod, "_table_columns", lambda cur, name: ["id", "name", "industry"])
 
     conn.script("FROM brands WHERE industry =", [{"name": "Existing"}])
+    captured = {}
 
     class FakeService:
         def __init__(self, *args, **kwargs):
-            pass
+            captured.update(kwargs)
 
         def generate_brands(self, **kwargs):
             assert kwargs["industry"] == "Beauty"
@@ -273,6 +274,7 @@ def test_brand_generate_endpoint_records_log_and_returns_drafts(monkeypatch, cli
     assert body["industry"] == "Beauty"
     assert body["model"] == "fake-model"
     assert len(body["drafts"]) == 1
+    assert captured["allow_fallback"] is False
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "INSERT INTO brand_generation_logs" in statements
     assert "INSERT INTO admin_audit_log" in statements
@@ -476,10 +478,16 @@ def test_brand_enrich_endpoint_requires_name(monkeypatch, client):
     assert body["error"] == "name_required"
 
 
-def test_brand_enrich_endpoint_uses_fast_timeout_and_fallback(monkeypatch, client):
+def test_brand_enrich_timeout_defaults_to_shared_llm_window(monkeypatch):
+    monkeypatch.delenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS", raising=False)
+
+    assert app_mod._brand_management_enrich_timeout_seconds() == 90
+
+
+def test_brand_enrich_endpoint_uses_long_timeout_without_fallback(monkeypatch, client):
     login(monkeypatch)
     fake_db(monkeypatch)
-    monkeypatch.setenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS", "120")
     captured = {}
 
     class FakeService:
@@ -503,8 +511,8 @@ def test_brand_enrich_endpoint_uses_fast_timeout_and_fallback(monkeypatch, clien
     )
 
     assert response.status_code == 200
-    assert captured["allow_fallback"] is True
-    assert captured["timeout_seconds"] == 12
+    assert captured["allow_fallback"] is False
+    assert captured["timeout_seconds"] == 120
 
 
 def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
@@ -568,7 +576,7 @@ def test_brand_delete_endpoint_archives_brand(monkeypatch, client):
     assert "UPDATE kg_brands SET status = 'archived'" in statements
 
 
-def test_product_discovery_endpoint_falls_back_when_llm_fails(monkeypatch, client):
+def test_product_discovery_endpoint_reports_llm_failure(monkeypatch, client):
     login(monkeypatch)
     conn = fake_db(monkeypatch)
 
@@ -623,11 +631,9 @@ def test_product_discovery_endpoint_falls_back_when_llm_fails(monkeypatch, clien
         content_type="application/json",
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.get_json()
-    assert body["success"] is True
-    assert body["created_count"] == 1
-    assert body["products"][0]["name"] == "Nike Air Force 1"
-    assert body["discovery_source"] == "fallback"
-    assert body["llm_error"] == "llm_call_failed"
-    assert conn.commits == 1
+    assert body["success"] is False
+    assert body["error"] == "llm_call_failed"
+    assert body["message"] == "LLM timeout"
+    assert conn.commits == 0

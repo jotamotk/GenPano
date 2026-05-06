@@ -7344,7 +7344,6 @@ def _coerce_product_aliases(value):
     return []
 
 
-PRODUCT_DISCOVERY_FALLBACK_MODEL = "fallback-product-discovery-v1"
 PRODUCT_DISCOVERY_KNOWN_CATALOGS = {
     "nike": [
         {
@@ -7425,57 +7424,18 @@ PRODUCT_DISCOVERY_KNOWN_CATALOGS = {
 
 def _product_discovery_llm_timeout_seconds():
     try:
-        value = int(os.getenv("PRODUCT_DISCOVERY_LLM_TIMEOUT_SECONDS") or 25)
+        value = int(os.getenv("PRODUCT_DISCOVERY_LLM_TIMEOUT_SECONDS") or 90)
     except (TypeError, ValueError):
-        value = 25
-    return max(5, min(value, 45))
+        value = 90
+    return max(30, min(value, 240))
 
 
-def _product_catalog_keys_for_brand(brand):
-    raw_values = [brand.get("name"), brand.get("name_en"), brand.get("name_zh")]
-    aliases = brand.get("aliases") or []
-    if isinstance(aliases, str):
-        try:
-            aliases = json.loads(aliases)
-        except Exception:
-            aliases = [aliases]
-    if isinstance(aliases, list):
-        raw_values.extend(aliases)
-    keys = set()
-    for raw in raw_values:
-        key = normalize_topic_title(str(raw or ""))
-        if key:
-            keys.add(key)
-    return keys
-
-
-def _fallback_product_discovery_candidates(brand, *, query="", limit=8):
-    brand_name = str(brand.get("name") or "").strip()
-    keys = _product_catalog_keys_for_brand(brand)
-    catalog = []
-    for catalog_key, items in PRODUCT_DISCOVERY_KNOWN_CATALOGS.items():
-        fuzzy_match = any(
-            len(catalog_key) > 3 and len(key) > 3 and (catalog_key in key or key in catalog_key)
-            for key in keys
-        )
-        if catalog_key in keys or fuzzy_match:
-            catalog = list(items)
-            break
-
-    if not catalog and brand_name:
-        hint = str(query or "").strip()
-        industry = str(brand.get("industry") or "").strip()
-        generic_category = industry or "Flagship"
-        generic_name = f"{brand_name} {hint}".strip() if hint else f"{brand_name} Flagship Product"
-        catalog = [{
-            "name": generic_name[:256],
-            "sku": "",
-            "category": generic_category[:128],
-            "description": f"Auto-discovered fallback product candidate for {brand_name}.",
-            "aliases": [],
-        }]
-
-    return _parse_product_discovery_response({"products": catalog[:limit]})
+def _product_discovery_llm_status_for_error(error):
+    if not isinstance(error, TopicPlanLLMError):
+        return 503
+    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+        return 503
+    return 502
 
 
 def _parse_product_discovery_response(raw):
@@ -7733,24 +7693,21 @@ def admin_brand_products_discover_api(brand_id):
             cur.execute("SELECT name, sku, category FROM products WHERE brand_id = %s", (brand_id,))
             existing_names = {str(row.get("name") or "").strip().casefold() for row in cur.fetchall()}
 
-            discovery_source = "llm"
-            llm_error = None
             try:
                 candidates, metadata = _discover_brand_products_llm(brand, query=query, limit=limit)
             except TopicPlanLLMError as error:
-                llm_error = error.code
-                candidates = _fallback_product_discovery_candidates(brand, query=query, limit=limit)
-                metadata = {"model": PRODUCT_DISCOVERY_FALLBACK_MODEL, "usage": {}}
-                discovery_source = "fallback"
+                return jsonify(
+                    {"success": False, "error": error.code, "message": error.message}
+                ), _product_discovery_llm_status_for_error(error)
             except Exception as error:
-                llm_error = "product_discovery_failed"
-                candidates = _fallback_product_discovery_candidates(brand, query=query, limit=limit)
-                metadata = {
-                    "model": PRODUCT_DISCOVERY_FALLBACK_MODEL,
-                    "usage": {},
-                    "error_message": str(error)[:200],
-                }
-                discovery_source = "fallback"
+                app.logger.exception("Product discovery failed for brand_id=%s", brand_id)
+                detail = str(error).strip()
+                message = "Product discovery failed"
+                if detail:
+                    message += ": " + detail[:500]
+                return jsonify(
+                    {"success": False, "error": "product_discovery_failed", "message": message}
+                ), 503
 
             created = []
             skipped = []
@@ -7798,8 +7755,8 @@ def admin_brand_products_discover_api(brand_id):
             "candidates_count": len(candidates),
             "llm_model": metadata.get("model"),
             "llm_usage": metadata.get("usage") or {},
-            "discovery_source": discovery_source,
-            "llm_error": llm_error,
+            "discovery_source": "llm",
+            "llm_error": None,
         })
     except Exception:
         conn.rollback()
@@ -13446,7 +13403,10 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
                 return
             brand_id = segment.get("brand_id") or _brand_id_value(payload)
             draft_brand_name = segment.get("brand_name") or brand_name
-            service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+            service = SegmentProfileGenerationService(
+                model=payload.get("llm_model"),
+                allow_fallback=False,
+            )
             result = service.generate_profiles(
                 segment=segment,
                 brand_name=brand_name,
@@ -13625,7 +13585,10 @@ def admin_segments_generate_api():
     payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
-    service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+    service = SegmentProfileGenerationService(
+        model=payload.get("llm_model"),
+        allow_fallback=False,
+    )
     try:
         result = service.generate_segments(
             brand_name=brand_name,
@@ -13941,7 +13904,10 @@ def admin_segment_profiles_generate_api(segment_id):
                 return jsonify({"success": False, "error": "segment_not_found"}), 404
             brand_id = segment.get("brand_id") or _brand_id_value(payload)
             draft_brand_name = segment.get("brand_name") or brand_name
-            service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+            service = SegmentProfileGenerationService(
+                model=payload.get("llm_model"),
+                allow_fallback=False,
+            )
             try:
                 result = service.generate_profiles(
                     segment=segment,
@@ -16942,10 +16908,10 @@ def _brand_management_status_for_error(error):
 
 def _brand_management_enrich_timeout_seconds():
     try:
-        value = int(os.getenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS") or 25)
+        value = int(os.getenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS") or 90)
     except (TypeError, ValueError):
-        value = 25
-    return max(5, min(value, 45))
+        value = 90
+    return max(30, min(value, 240))
 
 
 def _persist_brand_draft(cur, draft, *, admin_id, brand_id=None):
@@ -17418,7 +17384,10 @@ def admin_brand_management_generate_api():
                         (industry,),
                     )
                     seeds = [r["name"] for r in cur.fetchall() if r.get("name")]
-        service = BrandManagementService(model=payload.get("llm_model"))
+        service = BrandManagementService(
+            model=payload.get("llm_model"),
+            allow_fallback=False,
+        )
         try:
             result = service.generate_brands(
                 industry=industry,
@@ -17499,7 +17468,7 @@ def admin_brand_management_enrich_api():
 
     service = BrandManagementService(
         model=payload.get("llm_model"),
-        allow_fallback=True,
+        allow_fallback=False,
         timeout_seconds=_brand_management_enrich_timeout_seconds(),
     )
     try:

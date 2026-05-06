@@ -338,8 +338,9 @@ class BrandManagementService:
     Mirrors :class:`SegmentProfileGenerationService` semantics: a single
     ``generate_brands`` entry point that returns reviewable drafts, using
     the project's Doubao/Ark configuration. When LLM generation fails and
-    ``allow_fallback`` is enabled (default in tests / dev), a deterministic
-    archetype-based fallback is used so the UI still receives drafts.
+    ``allow_fallback`` is explicitly enabled, a deterministic archetype-based
+    fallback is used by tests or local tooling; Admin API endpoints report LLM
+    errors directly.
     """
 
     def __init__(
