@@ -74,3 +74,22 @@ export function useCompetitorMetrics(projectId: string | null | undefined) {
     retry: false,
   })
 }
+
+export function useCompetitorTrends(
+  projectId: string | null | undefined,
+  metric:
+    | 'geo_score'
+    | 'mention_rate'
+    | 'sov'
+    | 'sentiment'
+    | 'rank'
+    | 'citation' = 'geo_score',
+) {
+  return useQuery({
+    queryKey: ['brand', 'competitor-trends', projectId, metric],
+    queryFn: () => brandMetricsApi.competitorTrends(projectId as string, metric),
+    enabled: isLiveProjectId(projectId),
+    staleTime: 60_000,
+    retry: false,
+  })
+}

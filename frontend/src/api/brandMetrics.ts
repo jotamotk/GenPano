@@ -180,4 +180,32 @@ export const brandMetricsApi = {
       `/v1/projects/${projectId}/competitors/metrics`,
     )
   },
+  competitorTrends(
+    projectId: string,
+    metric: 'geo_score' | 'mention_rate' | 'sov' | 'sentiment' | 'rank' | 'citation' = 'geo_score',
+  ): Promise<CompetitorTrendsOut> {
+    return apiClient.get<CompetitorTrendsOut>(
+      `/v1/projects/${projectId}/competitors/trends?metric=${metric}`,
+    )
+  },
+}
+
+export interface CompetitorTrendPoint {
+  date: string
+  value: number | null
+}
+
+export interface CompetitorTrendSeries {
+  brand_id: number
+  brand_name: string | null
+  is_primary: boolean
+  points: CompetitorTrendPoint[]
+}
+
+export interface CompetitorTrendsOut {
+  project_id: string
+  metric: string
+  period: { from: string; to: string }
+  series: CompetitorTrendSeries[]
+  state: 'ok' | 'empty' | 'partial'
 }

@@ -105,3 +105,21 @@ class IndustryKgOut(BaseModel):
     nodes: list[KGNode]
     edges: list[KGEdge]
     state: str = "ok"
+
+
+# ── /avg-geo-score (Phase 5 sparkline coverage) ────────────────────
+class IndustryAvgGeoPoint(BaseModel):
+    date: str
+    avg_geo_score: float | None = None
+    industry_median: float | None = None
+    top10_avg: float | None = None
+    total_brands: int | None = None
+
+
+class IndustryAvgGeoOut(BaseModel):
+    industry_id: int
+    industry_name: str | None
+    period: dict[str, str]
+    points: list[IndustryAvgGeoPoint]
+    summary: dict[str, float | None] = {}
+    state: str = "ok"

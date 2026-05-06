@@ -24,6 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects._brand_dto import (
     CompetitorBrandRow,
     CompetitorMetricsOut,
+    CompetitorTrendPoint,
+    CompetitorTrendSeries,
+    CompetitorTrendsOut,
     DiagnosticEvidence,
     DiagnosticRow,
     DiagnosticsOut,
@@ -422,4 +425,95 @@ async def get_diagnostics(
         items=items,
         counts_by_severity=counts,
         state="ok" if items else "empty",
+    )
+
+
+# ─── /competitors/trends ──────────────────────────────────────────
+ALLOWED_TREND_METRICS = {
+    "geo_score": GeoScoreDaily.avg_geo_score,
+    "mention_rate": GeoScoreDaily.mention_rate,
+    "sov": GeoScoreDaily.avg_sov,
+    "sentiment": GeoScoreDaily.avg_sentiment,
+    "rank": GeoScoreDaily.avg_position_rank,
+    "citation": GeoScoreDaily.citation_rate,
+}
+
+
+async def get_competitor_trends(
+    session: AsyncSession,
+    project: Project,
+    *,
+    metric: str = "geo_score",
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> CompetitorTrendsOut:
+    """Daily 30d trend for primary brand + each pinned competitor.
+
+    Reads geo_score_daily and groups by (brand_id, date) so the FE can
+    render the per-competitor PANO trend chart with real pipeline data.
+    """
+    if metric not in ALLOWED_TREND_METRICS:
+        metric = "geo_score"
+    metric_col = ALLOWED_TREND_METRICS[metric]
+
+    from_d, to_d = _resolve_window(from_date, to_date)
+
+    competitor_stmt = select(ProjectCompetitor.brand_id).where(
+        ProjectCompetitor.project_id == project.id
+    )
+    competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+    primary_id = project.primary_brand_id
+
+    brand_ids = list({*competitor_ids, *([primary_id] if primary_id is not None else [])})
+    if not brand_ids:
+        return CompetitorTrendsOut(
+            project_id=project.id,
+            metric=metric,
+            period=_period(from_d, to_d),
+            series=[],
+            state="empty",
+        )
+
+    stmt = (
+        select(
+            GeoScoreDaily.brand_id,
+            GeoScoreDaily.date,
+            func.avg(metric_col).label("value"),
+        )
+        .where(
+            and_(
+                GeoScoreDaily.brand_id.in_(brand_ids),
+                GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                GeoScoreDaily.date <= datetime.combine(to_d, datetime.max.time()),
+            )
+        )
+        .group_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
+        .order_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
+    )
+    rows = list((await session.execute(stmt)).all())
+
+    series_by_brand: dict[int, list[CompetitorTrendPoint]] = {bid: [] for bid in brand_ids}
+    for brand_id, dt, value in rows:
+        series_by_brand[brand_id].append(
+            CompetitorTrendPoint(
+                date=dt.date().isoformat() if hasattr(dt, "date") else str(dt),
+                value=float(value) if value is not None else None,
+            )
+        )
+
+    output_series = [
+        CompetitorTrendSeries(
+            brand_id=bid,
+            brand_name=None,  # Phase A.7 will JOIN brands.name
+            is_primary=(bid == primary_id),
+            points=series_by_brand[bid],
+        )
+        for bid in brand_ids
+    ]
+    return CompetitorTrendsOut(
+        project_id=project.id,
+        metric=metric,
+        period=_period(from_d, to_d),
+        series=output_series,
+        state="ok" if any(s.points for s in output_series) else "empty",
     )

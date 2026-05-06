@@ -9,8 +9,13 @@
  */
 
 import type { BrandOverviewOut } from '../api/brandOverview'
-import type { CompetitorMetricsOut } from '../api/brandMetrics'
+import type {
+  CompetitorMetricsOut,
+  CompetitorTrendsOut,
+  MetricsOut,
+} from '../api/brandMetrics'
 import type { DiagnosticOut } from '../api/diagnostics'
+import type { IndustryAvgGeoOut } from '../api/industries'
 
 export interface PrimaryBrandAdapted {
   id: string
@@ -213,4 +218,122 @@ export function adaptDiagnostics(
       engine: '',
       type: d.type,
     }))
+}
+
+
+// ── Sparkline arrays (for KpiSparklineSummary in BrandPanoramaPanel) ──
+//
+// Each sparkline is a number[]; positions correspond to days in
+// chronological order. We pull these from the /metrics endpoint which
+// returns a series-per-metric shape with date-aligned points.
+
+export interface SparklineSet {
+  mention: number[]
+  sov: number[]
+  sentiment: number[]
+  citation: number[]
+  rank: number[]
+}
+
+export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
+  const empty: SparklineSet = {
+    mention: [],
+    sov: [],
+    sentiment: [],
+    citation: [],
+    rank: [],
+  }
+  if (!metrics?.series) return empty
+
+  const find = (name: string) => metrics.series.find((s) => s.metric === name)
+
+  const mention = find('mention_rate')
+  const sov = find('sov')
+  const sentiment = find('sentiment')
+  const citation = find('citation')
+  const rank = find('rank')
+
+  return {
+    mention: mention ? mention.points.map((p) => +(p.value * 100).toFixed(1)) : [],
+    sov: sov ? sov.points.map((p) => +(p.value * 100).toFixed(1)) : [],
+    sentiment: sentiment ? sentiment.points.map((p) => +(p.value * 100).toFixed(1)) : [],
+    citation: citation ? citation.points.map((p) => +(p.value * 100).toFixed(1)) : [],
+    rank: rank ? rank.points.map((p) => +p.value.toFixed(1)) : [],
+  }
+}
+
+
+// ── Per-competitor 30d trend (replaces synthetic sin lines on PanoTrendChart) ──
+//
+// Returns trend data shaped like the legacy mock TREND_DATA:
+//   [{ day: 1, panoScore: <primary>, mentionRate, sentiment, <comp_id>: score }]
+// PanoTrendChart consumes `trendData[d.day]: { primaryName: panoScore, c1.name: score, ... }`
+// — but our backend gives us per-brand series, so we merge them by date.
+
+export interface TrendRowAdapted {
+  day: number
+  panoScore: number
+  mentionRate: number
+  sentiment: number
+  // dynamic competitor brand scores keyed by brand_name
+  [brand: string]: number | string
+}
+
+export function adaptCompetitorTrendsToTrendData(
+  trends: CompetitorTrendsOut,
+  overviewTrend: BrandOverviewOut | null,
+): TrendRowAdapted[] {
+  // Find primary series
+  const primarySeries = trends.series.find((s) => s.is_primary)
+  const competitorSeries = trends.series.filter((s) => !s.is_primary)
+
+  // Use primary's date list as the canonical timeline (or overview's if primary missing)
+  const dateList: string[] = primarySeries
+    ? primarySeries.points.map((p) => p.date)
+    : overviewTrend
+      ? overviewTrend.geo_score_30d.map((p) => p.date)
+      : []
+
+  if (dateList.length === 0) return []
+
+  return dateList.map((date, idx) => {
+    const row: TrendRowAdapted = {
+      day: idx + 1,
+      panoScore: 0,
+      mentionRate: 0,
+      sentiment: 0,
+    }
+    // Primary panoScore
+    if (primarySeries) {
+      const p = primarySeries.points.find((q) => q.date === date)
+      row.panoScore = p?.value != null ? Math.round(p.value) : 0
+    } else if (overviewTrend) {
+      const p = overviewTrend.geo_score_30d.find((q) => q.date === date)
+      row.panoScore = p?.value != null ? Math.round(p.value) : 0
+    }
+    // mentionRate / sentiment from overview's other series
+    if (overviewTrend) {
+      const sov = overviewTrend.sov_30d.find((q) => q.date === date)
+      row.mentionRate = sov?.value != null ? +(sov.value * 100).toFixed(1) : 0
+      const sent = overviewTrend.sentiment_30d.find((q) => q.date === date)
+      row.sentiment = sent?.value ?? 0
+    }
+    // Per-competitor scores keyed by brand name (or fallback id)
+    for (const comp of competitorSeries) {
+      const key =
+        comp.brand_name && comp.brand_name.length > 0
+          ? comp.brand_name
+          : `Brand #${comp.brand_id}`
+      const cp = comp.points.find((q) => q.date === date)
+      row[key] = cp?.value != null ? Math.round(cp.value) : 0
+    }
+    return row
+  })
+}
+
+
+// ── Industry average GEO (for hero comparison bar) ──
+
+export function adaptIndustryAvgGeo(avgOut: IndustryAvgGeoOut): number | null {
+  return avgOut?.summary?.avg_geo_score ?? null
 }

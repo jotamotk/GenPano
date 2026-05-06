@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.industries._dto import (
     IndustriesListOut,
+    IndustryAvgGeoOut,
+    IndustryAvgGeoPoint,
     IndustryEvent,
     IndustryKgOut,
     IndustryKpiCard,
@@ -523,3 +525,110 @@ async def get_industry_kg(
         edges=edges,
         state="ok" if (brand_rows or cat_rows) else "empty",
     )
+
+
+# ─── /industries/:id/avg-geo-score ─────────────────────────────────
+async def get_industry_avg_geo_score(
+    session: AsyncSession,
+    industry_id: int,
+    *,
+    industry_name: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> IndustryAvgGeoOut:
+    """Daily industry-level GEO benchmark from `industry_benchmark_daily`.
+
+    Replaces the FE-side mock fallback in BrandPanoramaPanel's hero
+    industry-average comparison bar. Pipeline writes this table via
+    aggregator.aggregate_industry_benchmark() each day.
+    """
+    today = date.today()
+    to_d = to_date or today
+    from_d = from_date or (to_d - timedelta(days=29))
+
+    name = industry_name or await _resolve_industry_name(session, industry_id)
+    if not name:
+        return IndustryAvgGeoOut(
+            industry_id=industry_id,
+            industry_name=None,
+            period={"from": from_d.isoformat(), "to": to_d.isoformat()},
+            points=[],
+            summary={},
+            state="empty",
+        )
+
+    # Pipeline writes score_p25/p50/p75 (percentiles) — use p50 as median.
+    # top10_avg derivation from top_brands_json is deferred (Phase A
+    # follow-up); return None for now.
+    stmt = (
+        select(
+            IndustryBenchmarkDaily.date,
+            func.avg(IndustryBenchmarkDaily.avg_geo_score).label("avg_geo"),
+            func.avg(IndustryBenchmarkDaily.score_p50).label("median"),
+            func.max(IndustryBenchmarkDaily.total_brands).label("total"),
+        )
+        .where(
+            and_(
+                IndustryBenchmarkDaily.industry == name,
+                IndustryBenchmarkDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                IndustryBenchmarkDaily.date <= datetime.combine(to_d, datetime.max.time()),
+            )
+        )
+        .group_by(IndustryBenchmarkDaily.date)
+        .order_by(IndustryBenchmarkDaily.date)
+    )
+    rows = list((await session.execute(stmt)).all())
+
+    points = [
+        IndustryAvgGeoPoint(
+            date=(d.date().isoformat() if hasattr(d, "date") else str(d)),
+            avg_geo_score=float(g) if g is not None else None,
+            industry_median=float(m) if m is not None else None,
+            top10_avg=None,
+            total_brands=int(n) if n is not None else None,
+        )
+        for d, g, m, n in rows
+    ]
+
+    summary: dict[str, float | None] = {}
+    if points:
+        latest = points[-1]
+        summary = {
+            "avg_geo_score": latest.avg_geo_score,
+            "industry_median": latest.industry_median,
+            "top10_avg": None,
+        }
+
+    return IndustryAvgGeoOut(
+        industry_id=industry_id,
+        industry_name=name,
+        period={"from": from_d.isoformat(), "to": to_d.isoformat()},
+        points=points,
+        summary=summary,
+        state="ok" if points else "empty",
+    )
+
+
+async def _resolve_industry_name(session: AsyncSession, industry_id: int) -> str | None:
+    """Map numeric industry_id → industry_name (the table key).
+
+    Currently leverages the same lookup used by industry_overview/ranking:
+    pick the most-represented industry name in industry_benchmark_daily
+    matching industry_id. (industry table has 1:1 id↔name; this is a
+    deliberate fallback in case the upstream `industries` mirror is empty.)
+    """
+    stmt = (
+        select(IndustryBenchmarkDaily.industry, func.count())
+        .where(IndustryBenchmarkDaily.industry.isnot(None))
+        .group_by(IndustryBenchmarkDaily.industry)
+        .order_by(func.count().desc())
+    )
+    rows = list((await session.execute(stmt)).all())
+    if not rows:
+        return None
+    # Pick the row whose industry slug ends in the numeric id, or the
+    # most-frequent if no match.
+    for name, _ in rows:
+        if name and (str(industry_id) in name or name == str(industry_id)):
+            return str(name)
+    return str(rows[0][0]) if rows[0][0] is not None else None

@@ -8,15 +8,23 @@ import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
-import { useCompetitorMetrics } from '../hooks/useBrandMetrics';
+import {
+  useBrandMetrics,
+  useCompetitorMetrics,
+  useCompetitorTrends,
+} from '../hooks/useBrandMetrics';
 import { useDiagnostics } from '../hooks/useDiagnostics';
+import { useIndustryAvgGeo } from '../hooks/useIndustries';
 import {
   adaptOverviewToPrimary,
   adaptCompetitorMetricsToList,
   adaptCompetitorMetricsToSov,
   adaptCompetitorMetricsToBubble,
   adaptOverviewToTrend,
+  adaptCompetitorTrendsToTrendData,
   adaptDiagnostics,
+  adaptMetricsToSparklines,
+  adaptIndustryAvgGeo,
 } from '../adapters/dashboardAdapter';
 
 /* ─────────────────────────────────────────────────────────────
@@ -55,11 +63,28 @@ export default function DashboardPage() {
 
   /* ── Live data hooks (gated on isLive — mock-only sessions skip) ── */
   const overviewQ = useBrandOverview(isLive ? liveProjectId : null);
+  const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
+    'mention_rate',
+    'sov',
+    'sentiment',
+    'rank',
+    'citation',
+  ]);
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const competitorTrendsQ = useCompetitorTrends(
+    isLive ? liveProjectId : null,
+    'geo_score',
+  );
   const diagnosticsQ = useDiagnostics(isLive ? liveProjectId : null, {
     status: 'open',
     limit: 5,
   });
+
+  // Industry avg GEO depends on the project's industry_id (from overview)
+  const liveIndustryId = overviewQ.data?.industry_id ?? null;
+  const industryAvgQ = useIndustryAvgGeo(
+    isLive && liveIndustryId ? liveIndustryId : null,
+  );
 
   /* ── Adapter: convert backend → BrandPanoramaPanel prop shape ── */
   const adapted = useMemo(() => {
@@ -70,9 +95,18 @@ export default function DashboardPage() {
     const overviewPrimary = overviewQ.data
       ? adaptOverviewToPrimary(overviewQ.data)
       : null;
-    // Prefer the overview-derived primary (richer KPIs); fall back to the
-    // competitor-metrics primary; final fallback to mock primaryBrand.
     const primaryFromBackend = overviewPrimary ?? compsList.primary;
+    // Prefer per-competitor 30d trends when available — gives real
+    // competitor lines on the trend chart instead of synthetic sin curves.
+    const trend =
+      competitorTrendsQ.data && competitorTrendsQ.data.series.length > 0
+        ? adaptCompetitorTrendsToTrendData(
+            competitorTrendsQ.data,
+            overviewQ.data ?? null,
+          )
+        : overviewQ.data
+          ? adaptOverviewToTrend(overviewQ.data)
+          : [];
     return {
       primary: primaryFromBackend,
       competitors: compsList.competitors,
@@ -82,7 +116,13 @@ export default function DashboardPage() {
       bubble: competitorsQ.data
         ? adaptCompetitorMetricsToBubble(competitorsQ.data)
         : [],
-      trend: overviewQ.data ? adaptOverviewToTrend(overviewQ.data) : [],
+      trend,
+      sparklines: metricsQ.data
+        ? adaptMetricsToSparklines(metricsQ.data)
+        : null,
+      industryAvg: industryAvgQ.data
+        ? adaptIndustryAvgGeo(industryAvgQ.data)
+        : null,
       diagnostics: diagnosticsQ.data
         ? adaptDiagnostics(diagnosticsQ.data.items)
         : [],
@@ -91,6 +131,9 @@ export default function DashboardPage() {
     isLive,
     overviewQ.data,
     competitorsQ.data,
+    competitorTrendsQ.data,
+    metricsQ.data,
+    industryAvgQ.data,
     diagnosticsQ.data,
   ]);
 
@@ -156,6 +199,8 @@ export default function DashboardPage() {
       bubbleDataOverride={adapted?.bubble}
       trendDataOverride={adapted?.trend}
       diagnosticsOverride={adapted?.diagnostics}
+      sparklineOverride={adapted?.sparklines ?? undefined}
+      industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
       isLive={isLive}
     />
   );

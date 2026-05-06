@@ -117,3 +117,24 @@ class DateOverride(BaseModel):
 
     from_date: date | None = None
     to_date: date | None = None
+
+
+# ── /competitors/trends (new, Phase 5 sparkline coverage) ─────────
+class CompetitorTrendPoint(BaseModel):
+    date: str
+    value: float | None = None
+
+
+class CompetitorTrendSeries(BaseModel):
+    brand_id: int
+    brand_name: str | None
+    is_primary: bool = False
+    points: list[CompetitorTrendPoint]
+
+
+class CompetitorTrendsOut(BaseModel):
+    project_id: str
+    metric: str
+    period: dict[str, str]
+    series: list[CompetitorTrendSeries]
+    state: str = "ok"

@@ -679,12 +679,14 @@ export default function BrandPanoramaPanel({
   /* Phase 5 §"mock 退役" — 真实数据接入. 任意 override 为 undefined 时
      回退到 mock 数组, 让没有 Project 的访客仍能看到 demo 数据.
      有 Project + pipeline 已生成数据时, DashboardPage 通过 adapter 把
-     /v1/projects/:id/{overview, competitors/metrics, diagnostics} 的
-     响应注入下面四个 prop. */
+     /v1/projects/:id/{overview, metrics, competitors/metrics,
+     competitors/trends, diagnostics} 的响应注入下面 prop. */
   sovDataOverride,
   bubbleDataOverride,
   trendDataOverride,
   diagnosticsOverride,
+  sparklineOverride,
+  industryAvgScoreOverride,
   isLive,
 }) {
   const navigate = useNavigate();
@@ -774,19 +776,29 @@ export default function BrandPanoramaPanel({
   const citationShare    = 18.2;
   const industryRank     = primary.ranking;
 
-  /* ── Sparklines ── */
-  const sparkMention = trendData.map((d) => d.mentionRate ?? 0);
-  const sparkSov     = trendData.map((d, i) => Math.max(0, Math.round(
-    (sovValue || (d.mentionRate ?? 0) * 0.6) + Math.sin(i / 4) * 2 + (i % 7 === 0 ? -1.5 : 0.4)
-  )));
-  const sparkSent    = trendData.map((d) => Math.round((d.sentiment ?? 0) * 100));
-  const sparkCite    = trendData.map((_, i) => Math.round(15 + Math.sin(i / 5) * 2));
-  const sparkRank    = trendData.map((_, i) => {
-    const progress = i / Math.max(trendData.length - 1, 1);
-    const base     = primary.ranking + 2 * (1 - progress);
-    const jitter   = Math.sin(i / 3) * 0.35;
-    return Math.max(1, Math.round((base + jitter) * 10) / 10);
-  });
+  /* ── Sparklines ── (live: from /v1/projects/:id/metrics; mock: synthesized) */
+  const sparkMention = isLive && sparklineOverride
+    ? sparklineOverride.mention
+    : trendData.map((d) => d.mentionRate ?? 0);
+  const sparkSov = isLive && sparklineOverride
+    ? sparklineOverride.sov
+    : trendData.map((d, i) => Math.max(0, Math.round(
+        (sovValue || (d.mentionRate ?? 0) * 0.6) + Math.sin(i / 4) * 2 + (i % 7 === 0 ? -1.5 : 0.4)
+      )));
+  const sparkSent = isLive && sparklineOverride
+    ? sparklineOverride.sentiment
+    : trendData.map((d) => Math.round((d.sentiment ?? 0) * 100));
+  const sparkCite = isLive && sparklineOverride
+    ? sparklineOverride.citation
+    : trendData.map((_, i) => Math.round(15 + Math.sin(i / 5) * 2));
+  const sparkRank = isLive && sparklineOverride
+    ? sparklineOverride.rank
+    : trendData.map((_, i) => {
+        const progress = i / Math.max(trendData.length - 1, 1);
+        const base     = primary.ranking + 2 * (1 - progress);
+        const jitter   = Math.sin(i / 3) * 0.35;
+        return Math.max(1, Math.round((base + jitter) * 10) / 10);
+      });
 
   const onKpiClick = () => {
     navigate(`/brands/${primary.id}?tab=overview`);
@@ -857,10 +869,13 @@ export default function BrandPanoramaPanel({
   ];
 
   const industryAvgScore = useMemo(() => {
+    if (isLive && industryAvgScoreOverride != null) {
+      return Math.round(industryAvgScoreOverride);
+    }
     const sameBrands = BRANDS.filter((b) => b.industryId === primary.industryId);
     if (!sameBrands.length) return 60;
     return Math.round(sameBrands.reduce((sum, b) => sum + b.panoScore, 0) / sameBrands.length);
-  }, [primary.industryId]);
+  }, [isLive, industryAvgScoreOverride, primary.industryId]);
 
   return (
     <div className="space-y-4 pb-4">

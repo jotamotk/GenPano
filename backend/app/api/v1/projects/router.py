@@ -30,11 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects import service
 from app.api.v1.projects._brand_dto import (
     CompetitorMetricsOut,
+    CompetitorTrendsOut,
     DiagnosticsOut,
     ProductsOut,
 )
 from app.api.v1.projects._brand_service import (
     get_competitor_metrics,
+    get_competitor_trends,
     get_diagnostics,
     get_products,
 )
@@ -293,6 +295,33 @@ async def project_competitor_metrics(
     return await get_competitor_metrics(
         session,
         project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/competitors/trends",
+    response_model=CompetitorTrendsOut,
+)
+async def project_competitor_trends(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    metric: str = Query("geo_score"),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> CompetitorTrendsOut:
+    """Per-brand 30-day trend for primary + each pinned competitor.
+
+    Reads geo_score_daily so the FE PanoTrendChart can plot real
+    pipeline data instead of synthetic per-competitor lines.
+    """
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_competitor_trends(
+        session,
+        project,
+        metric=metric,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
     )
