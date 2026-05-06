@@ -194,7 +194,7 @@ def fake_db(monkeypatch):
     return conn
 
 
-def test_admin_audit_log_insert_populates_legacy_resource_columns():
+def test_admin_audit_log_insert_populates_legacy_not_null_columns():
     class AuditCursor:
         def __init__(self):
             self.rows = []
@@ -204,23 +204,33 @@ def test_admin_audit_log_insert_populates_legacy_resource_columns():
         def execute(self, sql, params=None):
             compact = " ".join(str(sql).split())
             if "information_schema.columns" in compact:
-                self.rows = [
-                    {"column_name": name}
-                    for name in (
-                        "id",
-                        "operator_id",
-                        "action",
-                        "resource_type",
-                        "resource_id",
-                        "target_type",
-                        "target_id",
-                        "diff_json",
-                        "reason",
-                        "ip",
-                        "ua",
-                        "created_at",
+                self.rows = []
+                for name in (
+                    "id",
+                    "operator_id",
+                    "action",
+                    "resource_type",
+                    "resource_id",
+                    "severity",
+                    "metadata_json",
+                    "target_type",
+                    "target_id",
+                    "diff_json",
+                    "audit_version",
+                    "reason",
+                    "ip",
+                    "ua",
+                    "created_at",
+                    "updated_at",
+                ):
+                    self.rows.append(
+                        {
+                            "column_name": name,
+                            "is_nullable": "NO" if name in {"id", "action", "resource_type", "severity", "metadata_json", "audit_version", "created_at", "updated_at"} else "YES",
+                            "column_default": "now()" if name in {"created_at", "updated_at"} else None,
+                            "data_type": "integer" if name == "audit_version" else ("jsonb" if name in {"diff_json", "metadata_json"} else "character varying"),
+                        }
                     )
-                ]
                 return
             self.insert_sql = compact
             self.insert_params = params
@@ -242,9 +252,15 @@ def test_admin_audit_log_insert_populates_legacy_resource_columns():
 
     assert "resource_type" in cur.insert_sql
     assert "resource_id" in cur.insert_sql
+    assert "severity" in cur.insert_sql
+    assert "metadata_json" in cur.insert_sql
+    assert "audit_version" in cur.insert_sql
     assert "target_type" in cur.insert_sql
-    assert cur.insert_params[3] == "brand"
-    assert cur.insert_params[5] == "brand"
+    assert "updated_at" in cur.insert_sql
+    assert "brand" in cur.insert_params
+    assert "info" in cur.insert_params
+    assert "{}" in cur.insert_params
+    assert 0 in cur.insert_params
 
 
 def test_brand_management_migration_alters_brands_and_creates_logs(monkeypatch):

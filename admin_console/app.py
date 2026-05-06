@@ -706,6 +706,36 @@ def _table_columns(cur, table_name):
     return cols
 
 
+def _table_column_metadata(cur, table_name):
+    cur.execute(
+        """
+        SELECT column_name, is_nullable, column_default, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        """,
+        (table_name,),
+    )
+    meta = {}
+    for row in cur.fetchall():
+        if isinstance(row, dict):
+            name = row.get("column_name")
+            if not name:
+                continue
+            meta[name] = {
+                "is_nullable": row.get("is_nullable"),
+                "column_default": row.get("column_default"),
+                "data_type": row.get("data_type"),
+            }
+        elif row:
+            name = row[0]
+            meta[name] = {
+                "is_nullable": row[1] if len(row) > 1 else None,
+                "column_default": row[2] if len(row) > 2 else None,
+                "data_type": row[3] if len(row) > 3 else None,
+            }
+    return meta
+
+
 def _ensure_admin_tables():
     """Ensure additive user-admin tables/columns used by the Admin console.
 
@@ -891,9 +921,17 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
     ip = _client_ip() if has_request_context() else None
     user_agent = request.headers.get("user-agent") if has_request_context() else None
     try:
-        cols = {col for col in _table_columns(cur, "admin_audit_log") if col}
+        column_meta = _table_column_metadata(cur, "admin_audit_log")
     except Exception:
-        cols = set()
+        column_meta = {}
+    cols = {col for col in column_meta if col}
+    if not cols:
+        try:
+            cols = {col for col in _table_columns(cur, "admin_audit_log") if col}
+            column_meta = {col: {} for col in cols}
+        except Exception:
+            cols = set()
+            column_meta = {}
     if not cols:
         cols = {
             "id",
@@ -907,8 +945,10 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
             "ua",
             "created_at",
         }
+        column_meta = {col: {} for col in cols}
     target_id_text = str(target_id) if target_id is not None else None
     diff_json = json_mod.dumps(diff or {}, default=_json_default)
+    empty_json = json_mod.dumps({}, default=_json_default)
     values_by_column = {
         "id": str(uuid.uuid4()),
         "operator_id": operator_id,
@@ -919,7 +959,22 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
         "resource_id": target_id_text,
         "target_type": target_type,
         "target_id": target_id_text,
+        "severity": "info",
+        "level": "info",
+        "status": "success",
+        "outcome": "success",
+        "event_type": action,
+        "category": target_type,
+        "source": "admin",
+        "message": action,
+        "description": action,
         "diff_json": diff_json,
+        "payload_json": diff_json,
+        "metadata_json": empty_json,
+        "context_json": empty_json,
+        "details_json": empty_json,
+        "before_json": empty_json,
+        "after_json": empty_json,
         "reason": reason,
         "ip": ip,
         "ip_address": ip,
@@ -936,18 +991,80 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
         "resource_id",
         "target_type",
         "target_id",
+        "severity",
+        "level",
+        "status",
+        "outcome",
+        "event_type",
+        "category",
+        "source",
+        "message",
+        "description",
         "diff_json",
+        "payload_json",
+        "metadata_json",
+        "context_json",
+        "details_json",
+        "before_json",
+        "after_json",
         "reason",
         "ip",
         "ip_address",
         "ua",
         "user_agent",
     ]
+
+    def is_required(column):
+        meta = column_meta.get(column) or {}
+        return str(meta.get("is_nullable") or "").upper() == "NO" and not meta.get("column_default")
+
+    def generic_required_value(column):
+        name = str(column or "").lower()
+        data_type = str((column_meta.get(column) or {}).get("data_type") or "").lower()
+        if "json" in data_type or name.endswith("_json") or name in {"metadata", "payload", "details", "context"}:
+            return empty_json
+        if "bool" in data_type:
+            return False
+        if any(token in data_type for token in ("int", "numeric", "decimal", "double", "real")):
+            return 0
+        if "uuid" in data_type:
+            return str(uuid.uuid4())
+        if "time" in data_type or "date" in data_type:
+            return "NOW()"
+        if name.endswith("_type") or name in {"type", "entity", "entity_type"}:
+            return target_type
+        if name.endswith("_id"):
+            return target_id_text or ""
+        return ""
+
+    def placeholder_for(column):
+        data_type = str((column_meta.get(column) or {}).get("data_type") or "").lower()
+        if data_type == "jsonb":
+            return "%s::jsonb"
+        if data_type == "json":
+            return "%s::json"
+        if column.endswith("_json"):
+            return "%s::jsonb"
+        return "%s"
+
     insert_columns = [column for column in ordered if column in cols]
-    placeholders = ["%s::jsonb" if column == "diff_json" else "%s" for column in insert_columns]
     values = [values_by_column[column] for column in insert_columns]
+    placeholders = [placeholder_for(column) for column in insert_columns]
+    for column in sorted(cols - set(insert_columns) - {"created_at", "updated_at"}):
+        if not is_required(column):
+            continue
+        value = generic_required_value(column)
+        insert_columns.append(column)
+        if value == "NOW()":
+            placeholders.append("NOW()")
+        else:
+            values.append(value)
+            placeholders.append(placeholder_for(column))
     if "created_at" in cols:
         insert_columns.append("created_at")
+        placeholders.append("NOW()")
+    if "updated_at" in cols:
+        insert_columns.append("updated_at")
         placeholders.append("NOW()")
 
     cur.execute(
