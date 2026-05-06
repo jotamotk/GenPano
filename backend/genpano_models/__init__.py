@@ -23,6 +23,20 @@ Backward compatibility:
 - `backend/app/db/base.py` re-exports `Base` for the same reason.
 """
 
+from genpano_models.admin_console import (
+    AdminLoginAttempt,
+    AdminUser,
+    BrandGenerationLog,
+    Profile,
+    PromptCandidate,
+    PromptGenerationRun,
+    QueryGenerationCandidate,
+    QueryGenerationRun,
+    Segment,
+    TopicCandidate,
+    TopicPlanRun,
+    UserModerationAction,
+)
 from genpano_models.admin_ops import (
     AdminAuditLog,
     BudgetThreshold,
@@ -82,9 +96,12 @@ from genpano_models.user import User, UserAuthToken
 
 __all__ = [
     "AdminAuditLog",
+    "AdminLoginAttempt",
+    "AdminUser",
     "Alert",
     "AlertRule",
     "Base",
+    "BrandGenerationLog",
     "BrandGroup",
     "BrandGroupMember",
     "BrandGroupSharedDomain",
@@ -119,18 +136,27 @@ __all__ = [
     "Organization",
     "ProductFeatureMention",
     "ProductScoreDaily",
+    "Profile",
     "Project",
     "ProjectCompetitor",
     "ProjectTopicPin",
+    "PromptCandidate",
+    "PromptGenerationRun",
     "ProxyHealthDaily",
+    "QueryGenerationCandidate",
+    "QueryGenerationRun",
     "ReportJob",
     "ReportSchedule",
     "ReportShareToken",
     "ResponseAnalysis",
+    "Segment",
     "SentimentDriver",
+    "TopicCandidate",
+    "TopicPlanRun",
     "TopicScoreDaily",
     "User",
     "UserApiKey",
     "UserAuthToken",
+    "UserModerationAction",
     "UserNotificationPreferences",
 ]

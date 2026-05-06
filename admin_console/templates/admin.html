@@ -15842,7 +15842,7 @@ function adminApp() {
 
     async checkAdminSession() {
       try {
-        const res = await fetch(API_BASE + '/admin/session', { credentials:'same-origin' });
+        const res = await fetch('/api/admin/auth/session', { credentials:'same-origin' });
         const body = await res.json();
         this.isLoggedIn = !!body.authenticated;
         this.adminUser = body.admin || null;
@@ -15863,14 +15863,15 @@ function adminApp() {
       this.loginLoading = true;
       this.loginError = '';
       try {
-        const res = await fetch(API_BASE + '/admin/login', {
+        const res = await fetch('/api/admin/auth/login', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
           body: JSON.stringify({ email:this.loginEmail, password:this.loginPassword }),
         });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(this.adminLoginErrorMessage(body.error));
+        const errCode = (body && body.detail && body.detail.code) || body.error;
+        if (!res.ok || body.success === false) throw new Error(this.adminLoginErrorMessage(errCode));
         this.adminUser = body.admin;
         this.isLoggedIn = true;
         this.loginPassword = '';
@@ -15892,7 +15893,7 @@ function adminApp() {
 
     async adminLogout() {
       try {
-        await fetch(API_BASE + '/admin/logout', { method:'POST', credentials:'same-origin' });
+        await fetch('/api/admin/auth/logout', { method:'POST', credentials:'same-origin' });
       } catch (e) {}
       this.isLoggedIn = false;
       this.adminUser = null;

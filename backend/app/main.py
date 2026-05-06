@@ -12,8 +12,10 @@ from fastapi import Depends, FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.admin import router as admin_router
+from app.api.admin.auth import router as admin_auth_router
 from app.api.v1._meta.router import router as meta_router
 from app.api.v1.alerts.router import prefs_router as notifications_router
 from app.api.v1.alerts.router import router as alerts_router
@@ -61,6 +63,24 @@ app.add_middleware(
 )
 setup_rate_limit(app)
 
+# Cookie-based session for admin operator auth (Phase 2 of admin → backend
+# consolidation). The same secret protects every signed cookie this app sets.
+# Falls back to USER_JWT_SECRET (already required to be ≥32 bytes) so a
+# minimum-config dev setup needs no extra env var.
+_session_secret = (
+    os.environ.get("ADMIN_SESSION_SECRET")
+    or os.environ.get("USER_JWT_SECRET")
+    or "dev-session-secret-change-in-production-32-bytes-minimum"
+)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret,
+    session_cookie="genpano_admin_session",
+    same_site="lax",
+    https_only=os.environ.get("GENPANO_ENVIRONMENT") == "production",
+    max_age=60 * 60 * 24 * 7,  # 7 days
+)
+
 # Auth router is self-prefixed with /api/auth (legacy)
 app.include_router(user_auth_router)
 
@@ -86,6 +106,7 @@ app.include_router(mcp_router, prefix="/mcp")
 app.include_router(meta_router, prefix=V1_PREFIX)
 app.include_router(reports_public_router, prefix="/reports/public")
 app.include_router(admin_router, prefix="/api/admin")
+app.include_router(admin_auth_router, prefix="/api/admin/auth")
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
