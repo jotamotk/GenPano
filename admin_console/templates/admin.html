@@ -13267,7 +13267,7 @@ function adminApp() {
         });
         const body = await res.json().catch(()=>({}));
         if (!res.ok || body.success === false) {
-          this.productDiscoveryError = body.message || body.error || '自动添加失败';
+          this.productDiscoveryError = body.message || body.error || ('自动添加失败 (HTTP ' + res.status + ')');
           return;
         }
         this.closeProductDiscoveryModal();

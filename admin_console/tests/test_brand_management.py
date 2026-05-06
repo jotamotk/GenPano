@@ -369,3 +369,68 @@ def test_brand_delete_endpoint_archives_brand(monkeypatch, client):
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "UPDATE brands SET status = 'archived'" in statements
     assert "UPDATE kg_brands SET status = 'archived'" in statements
+
+
+def test_product_discovery_endpoint_falls_back_when_llm_fails(monkeypatch, client):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    def table_columns(_cur, name):
+        if name == "brands":
+            return ["id", "name", "industry", "target_market", "description", "aliases"]
+        return []
+
+    monkeypatch.setattr(app_mod, "_table_columns", table_columns)
+    monkeypatch.setattr(
+        app_mod,
+        "_discover_brand_products_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            app_mod.TopicPlanLLMError("llm_call_failed", "LLM timeout")
+        ),
+    )
+    conn.script(
+        "FROM brands WHERE id =",
+        [
+            {
+                "id": 5,
+                "name": "NIKE",
+                "industry": "Sportswear",
+                "target_market": "global",
+                "description": "",
+                "aliases": [],
+            }
+        ],
+    )
+    conn.script("FROM products WHERE brand_id =", [])
+    conn.script(
+        "INSERT INTO products",
+        [
+            {
+                "id": 1001,
+                "brand_id": 5,
+                "name": "Nike Air Force 1",
+                "sku": "",
+                "category": "Shoes",
+                "description": "Iconic Nike lifestyle sneaker.",
+                "aliases": ["AF1"],
+                "status": "active",
+                "created_at": None,
+                "updated_at": None,
+            }
+        ],
+    )
+
+    response = client.post(
+        "/api/admin/brands/5/products/discover",
+        data=json.dumps({"query": "热门鞋款", "limit": 1}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["created_count"] == 1
+    assert body["products"][0]["name"] == "Nike Air Force 1"
+    assert body["discovery_source"] == "fallback"
+    assert body["llm_error"] == "llm_call_failed"
+    assert conn.commits == 1
