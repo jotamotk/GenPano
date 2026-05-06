@@ -1136,6 +1136,7 @@ def _ensure_prompt_matrix_tables():
                     )
                     """
                 )
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP")
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_prompt_candidates_status_created
@@ -1385,12 +1386,17 @@ def _fetch_topic_plan_brands(cur):
             )
             topic_counts = {row["brand_id"]: row["topic_count"] for row in cur.fetchall()}
             if "category" in topic_cols:
+                category_order = (
+                    "created_at DESC NULLS LAST, id DESC"
+                    if "created_at" in topic_cols
+                    else "id DESC"
+                )
                 cur.execute(
-                    """
+                    f"""
                     SELECT DISTINCT ON (brand_id) brand_id, category
                     FROM topics
                     WHERE category IS NOT NULL AND category <> ''
-                    ORDER BY brand_id, created_at DESC NULLS LAST, id DESC
+                    ORDER BY brand_id, {category_order}
                     """
                 )
                 primary_categories = {row["brand_id"]: row["category"] for row in cur.fetchall()}
@@ -2781,6 +2787,10 @@ def _query_pool_prompt_ids_from_selection(cur, selection, max_prompts):
     intent = (filters.get("intent") or "").strip().lower()
     language = (filters.get("language") or filters.get("lang") or "").strip()
     query = (filters.get("q") or filters.get("query") or "").strip()
+    try:
+        topic_ids = _parse_int_list(filters.get("topic_ids") or filters.get("topic_id"))
+    except ValueError:
+        topic_ids = []
     excluded = set(selection.get("excluded_prompt_ids") or [])
     if not _table_exists(cur, "prompts"):
         return []
@@ -2795,6 +2805,9 @@ def _query_pool_prompt_ids_from_selection(cur, selection, max_prompts):
     if language and "language" in prompt_cols:
         where.append("p.language = %s")
         params.append(language)
+    if topic_ids and "topic_id" in prompt_cols:
+        where.append("p.topic_id = ANY(%s)")
+        params.append(topic_ids)
     if query:
         like = f"%{query}%"
         where.append("(p.text ILIKE %s OR CAST(p.id AS TEXT) ILIKE %s)")
@@ -4310,7 +4323,15 @@ def _prompt_matrix_gaps_for_topics(cur, topic_ids=None, filters=None, config=Non
     return gaps[:limit]
 
 
-def _fetch_prompt_matrix_prompts(cur, intent=None, language=None, query=None, page=1, per_page=50):
+def _fetch_prompt_matrix_prompts(
+    cur,
+    intent=None,
+    language=None,
+    query=None,
+    page=1,
+    per_page=50,
+    topic_ids=None,
+):
     if not _table_exists(cur, "prompts"):
         return [], 0
     prompt_cols = _table_columns(cur, "prompts")
@@ -4338,6 +4359,10 @@ def _fetch_prompt_matrix_prompts(cur, intent=None, language=None, query=None, pa
     if language and "language" in prompt_cols:
         where.append("p.language = %s")
         params.append(language)
+    topic_ids = [int(item) for item in (topic_ids or [])]
+    if topic_ids:
+        where.append("p.topic_id = ANY(%s)")
+        params.append(topic_ids)
     query = (query or "").strip()
     if query:
         like_query = f"%{query}%"
@@ -9605,6 +9630,11 @@ def admin_prompt_matrix_prompts_api():
     if language and language not in ALLOWED_LANGUAGES:
         return jsonify({"success": False, "error": "invalid_language"}), 400
     query = (request.args.get("q") or "").strip() or None
+    topic_id_arg = request.args.get("topic_ids") or request.args.get("topic_id")
+    try:
+        topic_ids = _parse_int_list(topic_id_arg) if topic_id_arg is not None else None
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_topic_ids"}), 400
     page = _clamp_int(request.args.get("page"), 1, 1, 100000)
     per_page = _clamp_int(request.args.get("per_page"), 50, 1, 100)
 
@@ -9618,6 +9648,7 @@ def admin_prompt_matrix_prompts_api():
                 query=query,
                 page=page,
                 per_page=per_page,
+                topic_ids=topic_ids,
             )
             stats = _prompt_matrix_stats(cur)
         return jsonify(
@@ -12339,6 +12370,80 @@ def _brand_name_value(data):
     return str(value).strip()
 
 
+class BrandSelectionAmbiguous(ValueError):
+    def __init__(self, candidates):
+        super().__init__("ambiguous_brand")
+        self.candidates = candidates
+
+
+def _brand_option_from_row(row):
+    item = dict(row or {})
+    raw_id = item.get("id")
+    try:
+        brand_id = int(raw_id)
+    except (TypeError, ValueError):
+        brand_id = str(raw_id or "").strip()
+    return {
+        "id": brand_id,
+        "name": str(item.get("name") or "").strip(),
+        "industry": str(item.get("industry") or item.get("industry_name") or "").strip(),
+        "target_market": str(item.get("target_market") or item.get("targetMarket") or "").strip(),
+    }
+
+
+def _resolve_admin_brand_selection(cur, payload):
+    brand_id = _brand_id_value(payload)
+    brand_name = _brand_name_value(payload)
+    if brand_id and brand_name:
+        return {"brand_id": brand_id, "brand_name": brand_name}
+    if not _table_exists(cur, "brands"):
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    cols = _table_columns(cur, "brands")
+    if not {"id", "name"}.issubset(cols):
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    industry_select = "industry" if "industry" in cols else "NULL::text AS industry"
+    target_market_select = "target_market" if "target_market" in cols else "NULL::text AS target_market"
+    if brand_id:
+        cur.execute(
+            f"""
+            SELECT id, name, {industry_select}, {target_market_select}
+            FROM brands
+            WHERE CAST(id AS TEXT) = %s
+            LIMIT 1
+            """,
+            (str(brand_id),),
+        )
+        row = cur.fetchone()
+        if row:
+            option = _brand_option_from_row(row)
+            return {"brand_id": str(option["id"]), "brand_name": option["name"] or brand_name}
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    if not brand_name:
+        return {"brand_id": None, "brand_name": ""}
+
+    cur.execute(
+        f"""
+        SELECT id, name, {industry_select}, {target_market_select}
+        FROM brands
+        WHERE LOWER(name) = LOWER(%s)
+        ORDER BY id
+        LIMIT 20
+        """,
+        (brand_name,),
+    )
+    matches = [_brand_option_from_row(row) for row in cur.fetchall()]
+    matches = [item for item in matches if item.get("id") and item.get("name")]
+    if len(matches) > 1:
+        raise BrandSelectionAmbiguous(matches)
+    if len(matches) == 1:
+        option = matches[0]
+        return {"brand_id": str(option["id"]), "brand_name": option["name"]}
+    return {"brand_id": None, "brand_name": brand_name}
+
+
 def _profile_sequence_row_value(row, key, index=0):
     if not row:
         return None
@@ -13333,8 +13438,18 @@ def admin_segments_generate_api():
     from psycopg2.extras import RealDictCursor
 
     payload = request.get_json(silent=True) or {}
-    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
-    brand_id = _brand_id_value(payload)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                brand_selection = _resolve_admin_brand_selection(cur, payload)
+            except BrandSelectionAmbiguous as error:
+                return jsonify({"success": False, "error": "ambiguous_brand", "brands": error.candidates}), 409
+    finally:
+        conn.close()
+    brand_name = brand_selection.get("brand_name") or ""
+    brand_id = brand_selection.get("brand_id")
+    payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
     service = SegmentProfileGenerationService(model=payload.get("llm_model"))

@@ -195,12 +195,13 @@ def test_prompts_support_server_side_query_for_query_pool(client, monkeypatch):
     login(monkeypatch)
     monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
 
-    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50):
+    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50, topic_ids=None):
         assert intent == "commercial"
         assert language == "zh-CN"
         assert query == "barrier"
         assert page == 4
         assert per_page == 25
+        assert topic_ids is None
         return ([{"id": "p-1", "templateText": "How to repair skin barrier?", "intent": "commercial"}], 126)
 
     monkeypatch.setattr(app_mod, "_fetch_prompt_matrix_prompts", fake_fetch)
@@ -212,6 +213,36 @@ def test_prompts_support_server_side_query_for_query_pool(client, monkeypatch):
     assert response.status_code == 200
     assert body["rows"][0]["id"] == "p-1"
     assert body["pagination"] == {"page": 4, "per_page": 25, "total": 126, "total_pages": 6}
+
+
+def test_prompts_support_topic_filter_for_query_pool(client, monkeypatch):
+    login(monkeypatch)
+    monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
+
+    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50, topic_ids=None):
+        assert topic_ids == [101, 202]
+        return ([{"id": "p-2", "topic_id": 101, "templateText": "Prompt for topic 101"}], 1)
+
+    monkeypatch.setattr(app_mod, "_fetch_prompt_matrix_prompts", fake_fetch)
+    monkeypatch.setattr(app_mod, "_prompt_matrix_stats", lambda cur: {"totalPrompts": 1})
+
+    response = client.get("/api/admin/prompt-matrix/prompts?topic_ids=101,202&page=1&per_page=25")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["rows"][0]["topic_id"] == 101
+    assert body["pagination"]["total"] == 1
+
+
+def test_prompt_candidate_migration_backfills_updated_at(monkeypatch):
+    conn = FakeConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: False)
+
+    app_mod._ensure_prompt_matrix_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP" in statements
 
 
 def test_query_pool_candidates_use_cursor_api_contract(client, monkeypatch):

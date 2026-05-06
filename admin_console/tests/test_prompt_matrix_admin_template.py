@@ -104,6 +104,22 @@ def test_query_pool_prompt_selector_is_paginated_for_large_prompt_sets():
     assert "filteredQueryPoolPrompts()" not in html
 
 
+def test_prompt_lists_can_filter_by_topic():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'x-model="promptMatrixPromptTopic"' in html
+    assert 'x-model="queryPoolPromptTopic"' in html
+    assert "if (filters.topic_id) qp.set('topic_id', filters.topic_id);" in html
+    assert "if (this.promptMatrixPromptTopic) qp.set('topic_id', this.promptMatrixPromptTopic);" in html
+
+
+def test_segment_llm_brand_selects_use_brand_ids_for_disambiguation():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'x-model="segmentLlmForm.brandId"' in html
+    assert 'x-model="llmForm.brandId"' in html
+    assert ':value="brand.id"' in html
+    assert "selectedBrandOptionById" in html
+
+
 def test_query_pool_assembly_panel_only_exposes_actionable_controls():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[

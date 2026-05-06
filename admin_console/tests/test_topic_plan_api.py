@@ -118,6 +118,51 @@ def test_topic_plan_generation_batches_do_not_call_llm_without_gaps(monkeypatch)
     assert batches == []
 
 
+def test_brand_options_do_not_require_topic_created_at(monkeypatch):
+    class BrandCursor:
+        def __init__(self):
+            self.rows = []
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "created_at" in compact:
+                raise AssertionError("brand options should not require topics.created_at")
+            if "FROM brands" in compact:
+                self.rows = [
+                    {
+                        "id": 13,
+                        "name": "NIKE",
+                        "industry": "Sports",
+                        "target_market": "",
+                        "description": "",
+                        "aliases": [],
+                    }
+                ]
+            elif "COUNT(*) AS topic_count" in compact:
+                self.rows = [{"brand_id": 13, "topic_count": 2}]
+            elif "SELECT DISTINCT ON (brand_id)" in compact:
+                self.rows = [{"brand_id": 13, "category": "running"}]
+
+        def fetchall(self):
+            return self.rows
+
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table in {"brands", "topics"})
+    monkeypatch.setattr(
+        app_mod,
+        "_table_columns",
+        lambda cur, table: (
+            {"id", "name", "industry", "target_market", "description", "aliases"}
+            if table == "brands"
+            else {"id", "brand_id", "text", "category"}
+        ),
+    )
+
+    rows = app_mod._fetch_topic_plan_brands(BrandCursor())
+
+    assert rows[0]["id"] == 13
+    assert rows[0]["category_id"] == "running"
+
+
 def test_topic_plan_candidate_batch_accepts_consumer_search_topic():
     class InsertCursor:
         def __init__(self):
