@@ -21,6 +21,8 @@ try:
         is_natural_consumer_topic,
         load_doubao_config,
         normalize_topic_title,
+        over_request_count,
+        sample_existing_for_context,
         transition_candidate_status,
     )
     from .prompt_matrix import (
@@ -64,6 +66,8 @@ except ImportError:
         is_natural_consumer_topic,
         load_doubao_config,
         normalize_topic_title,
+        over_request_count,
+        sample_existing_for_context,
         transition_candidate_status,
     )
     from prompt_matrix import (
@@ -8607,10 +8611,6 @@ def _execute_topic_plan_generation(
             # Module B-2: send the LLM a recency+sample mix instead of the
             # naive existing_titles[:300] slice so it doesn't re-generate
             # prompts that already exist past the first 300.
-            from .topic_plan import (
-                over_request_count as _over_req,
-                sample_existing_for_context as _sample_ex,
-            )
             llm_topics, llm_meta = client.generate_topics(
                 industry=industry_id or "All industries",
                 category=category_id or "All categories",
@@ -8624,8 +8624,8 @@ def _execute_topic_plan_generation(
                     for brand in batch_brands
                 ],
                 coverage_gaps=batch_gaps,
-                max_topics=_over_req(batch_max),
-                existing_topics=_sample_ex(existing_titles, total_quota=400),
+                max_topics=over_request_count(batch_max),
+                existing_topics=sample_existing_for_context(existing_titles, total_quota=400),
             )
             batches += 1
             llm_model = (llm_meta or {}).get("model") or llm_model
