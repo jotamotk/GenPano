@@ -3349,6 +3349,7 @@ def _build_query_pool_llm_messages(contexts):
     )
     user = (
         "请为 payload.candidates 中的每个 candidate_key 生成 1 条 Query。\n"
+        "质检会修复或拒绝 query_not_natural、内部词、标题短语、产品漂移和非完整问题；被修复的 query_repaired 会进入质量指标，无法修复的会进入 rejected_sample。\n"
         "核心规则：\n"
         "1. Query 必须像真实消费者在搜索框、社媒、购物前或和 LLM 对话时会直接输入的一句话。\n"
         "2. Prompt 是任务意图，Topic 是主题边界，Segment/Profile 是消费者背景；三者都要影响最终 Query。\n"

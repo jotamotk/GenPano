@@ -572,6 +572,9 @@ def test_query_pool_llm_prompt_uses_profile_context_without_internal_terms():
     assert "送礼不踩雷" in joined
     assert "价格别太夸张" in joined
     assert "不要出现 Segment/Profile/用户画像" in joined
+    assert "质检会修复或拒绝" in joined
+    assert "query_not_natural" in joined
+    assert "query_repaired" in joined
     assert '"candidate_key": "c-1"' in joined
 
 

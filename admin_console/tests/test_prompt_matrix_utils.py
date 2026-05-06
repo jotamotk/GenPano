@@ -3,6 +3,7 @@ import unittest
 from admin_console.prompt_matrix import (
     LLMPromptCandidate,
     PromptMatrixError,
+    build_prompt_matrix_messages,
     consumer_aliases_for_brand_name,
     dedupe_prompt_candidates,
     detect_brand_leaks,
@@ -277,6 +278,36 @@ class PromptMatrixUtilsTest(unittest.TestCase):
         self.assertFalse(is_natural_user_prompt("Is perfume or a small leather good a safer LVMH gift for someone at work?"))
         self.assertTrue(is_natural_user_prompt("送职场女生大牌礼物，选香水还是小皮具更稳？"))
         self.assertTrue(is_natural_user_prompt("Is perfume or a small leather good a safer luxury gift for someone at work?"))
+
+    def test_build_prompt_matrix_messages_names_quality_gate_rejections(self):
+        messages = build_prompt_matrix_messages(
+            topics=[
+                {
+                    "raw_id": 9,
+                    "title": "NIKE跑鞋尺码选择指南",
+                    "brand": "NIKE",
+                    "dimension": "question",
+                }
+            ],
+            config={
+                "intent_count": 1,
+                "language_count": 1,
+                "max_per_topic": 1,
+                "max_prompts": 1,
+                "template_strategy": "latest",
+                "prompt_style": "natural",
+                "audience_mode": "consumer",
+            },
+            known_brands=[{"name": "NIKE", "aliases": ["耐克"]}],
+            existing_prompts=[],
+        )
+        combined = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("质检会拒绝", combined)
+        self.assertIn("prompt_not_natural", combined)
+        self.assertIn("looks_like_topic", combined)
+        self.assertIn("不要输出 SEO 标题", combined)
+        self.assertIn("完整的自然用户问题", combined)
 
     def test_consumer_aliases_for_group_brand(self):
         aliases = consumer_aliases_for_brand_name("LVMH", ["路威酩轩"])
