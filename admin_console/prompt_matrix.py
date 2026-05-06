@@ -867,6 +867,8 @@ def build_prompt_matrix_messages(
     user = (
         "请根据 payload 生成 Prompt Matrix 候选。\n"
         "核心任务：对每个 topic / intent / language 组合，生成 1 条自然、有场景、像真人会问的问题。\n\n"
+        "质检会拒绝 prompt_not_natural、looks_like_topic、looks_like_query、prompt_language_mismatch、category_brand_leak。"
+        "每条必须是完整的自然用户问题；不要输出 SEO 标题、Topic 名词短语、关键词堆砌、后台任务或 Query 个性化执行文本。\n\n"
         "真人问法规则，优先级最高：\n"
         "1. 尽量短，像搜索框或聊天里打出来的一句话；中文通常 12-32 个汉字，英文通常 7-18 个词。\n"
         "2. 可以有口语感：会不会、值不值、哪款、怎么选、送人合不合适、日常用够不够、容易踩雷吗。\n"

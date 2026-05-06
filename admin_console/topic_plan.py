@@ -632,6 +632,9 @@ def build_topic_plan_messages(
     consumer_title_examples = [
         "\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009",
         "NIKE\u8dd1\u978b\u9002\u5408\u65b0\u624b\u6162\u8dd1\u5417",
+        "NIKE\u54c1\u724c\u771f\u4f2a\u8fa8\u522b\u65b9\u6cd5",
+        "NIKE\u7bee\u7403\u978b\u6293\u5730\u529b\u6027\u80fd\u6d4b\u8bc4",
+        "NIKE\u513f\u7ae5\u8fd0\u52a8\u978b\u5c3a\u7801\u9009\u62e9\u6307\u5357",
         "\u53ef\u53e3\u53ef\u4e50\u65e0\u7cd6\u548c\u666e\u901a\u7248\u53e3\u611f\u533a\u522b",
         "\u5b9d\u9a6c\u65b0\u80fd\u6e90\u8f66\u65e5\u5e38\u901a\u52e4\u4f53\u9a8c\u600e\u4e48\u6837",
         "\u9884\u7b97\u4e00\u4e07\u5de6\u53f3\u9001\u5973\u751f\u5927\u724c\u5305\u600e\u4e48\u9009",
@@ -667,7 +670,7 @@ def build_topic_plan_messages(
         "Hard rules:\n"
         f"1. The only allowed brand values are: {payload['allowed_brand_names_text']}.\n"
         "2. topics[].brand must copy exactly one allowed brand value. Do not use brand id, numbers, aliases, or any other brand.\n"
-        "3. topics[].title must be Chinese and sound like a real consumer search, shopping, comparison, review, usage, gifting, or troubleshooting question.\n"
+        "3. topics[].title must be Chinese and sound like a real consumer search subject: either a shopping question or a concise guide, review, comparison, usage, gifting, authenticity, sizing, policy, or troubleshooting topic; not every Topic needs to be a question.\n"
         "4. Do not write topics for brand operators, CRM teams, retail teams, private-domain operations, member operations, or channel operations.\n"
         "5. Never include banned_title_terms in topics[].title. Especially avoid member, private-domain, repurchase, channel, CRM, conversion, data-operations, and lifecycle wording.\n"
         "6. topics[].reason must be Chinese for an admin reviewer, but it should explain consumer intent and coverage gap, not an internal operations plan.\n"
@@ -676,6 +679,7 @@ def build_topic_plan_messages(
         "9. Never write phrases like 旗下, 集团, 产品线, 品类线, 品牌档次, 知名品牌, 爆款新款, 市场表现, 趋势分析, 用户画像, 转化路径.\n"
         "10. Good group-brand style: 预算一万左右送女生大牌包怎么选 / 想买大牌香水送人哪种味道不容易踩雷 / LV入门款包包买哪只更实用.\n"
         "11. Bad group-brand style: LVMH旗下的香水线哪些性价比更高 / LVMH集团旗下的奢品品牌档次是怎么划分的.\n"
+        "11a. The quality gate rejects internal operator wording, Prompt-like complete user inputs, Query-like personalized text, and titles that lack a natural consumer demand signal.\n"
         "12. Avoid duplicates or near-duplicates with existing_topics.\n"
         "13. dimension must be one of brand, product, category, scenario, question.\n"
         "14. If allowed brand values are masked as question marks by the model, use the same placeholder consistently in title, brand, and coverage_gap.\n"

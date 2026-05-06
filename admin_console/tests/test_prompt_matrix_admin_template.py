@@ -104,6 +104,22 @@ def test_query_pool_prompt_selector_is_paginated_for_large_prompt_sets():
     assert "filteredQueryPoolPrompts()" not in html
 
 
+def test_prompt_lists_can_filter_by_topic():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'x-model="promptMatrixPromptTopic"' in html
+    assert 'x-model="queryPoolPromptTopic"' in html
+    assert "if (filters.topic_id) qp.set('topic_id', filters.topic_id);" in html
+    assert "if (this.promptMatrixPromptTopic) qp.set('topic_id', this.promptMatrixPromptTopic);" in html
+
+
+def test_segment_llm_brand_selects_use_brand_ids_for_disambiguation():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert 'x-model="segmentLlmForm.brandId"' in html
+    assert 'x-model="llmForm.brandId"' in html
+    assert ':value="brand.id"' in html
+    assert "selectedBrandOptionById" in html
+
+
 def test_query_pool_assembly_panel_only_exposes_actionable_controls():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[
@@ -336,7 +352,36 @@ def test_query_pool_run_polling_retry_does_not_mark_assembly_failed():
     assert "this.queryPoolRunLoadFailures = 0" in polling
     assert "this.queryPoolRunStatusNotice = ''" in polling
     assert "await this.loadQueryPoolCandidates()" in polling
-    assert "this.queryPoolAssembleError = error.message" not in polling
+    assert "this.queryPoolRunLoadFailures >= Number(this.queryPoolRunPollMaxFailures || 3)" in polling
+    assert "this.queryPoolAssembleError = error.message || 'Query run polling failed'" in polling
+
+
+def test_prompt_matrix_quality_blocked_and_poll_failure_feedback_are_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    apply_start = html.index("promptMatrixApplyRunProgress(run)")
+    apply_section = html[apply_start:html.index("promptMatrixRunStatusLabel()", apply_start)]
+    polling = html[html.index("startPromptMatrixRunPolling") : html.index("async startPromptMatrixGenerate")]
+
+    assert "promptMatrixRunPollFailures" in html
+    assert "promptMatrixRunPollMaxFailures" in html
+    assert "this.promptMatrixRunPollFailures += 1" in polling
+    assert "this.clearPromptMatrixRunPolling()" in polling
+    assert "quality_gate_blocked" in html
+    assert "prompt_not_natural" in html
+    assert "this.promptMatrixShowRejected = true" in apply_section
+    assert "this.generationQualityBlockedMessage('Prompt', run.metrics" in apply_section
+
+
+def test_query_pool_quality_blocked_feedback_and_poll_limit_are_wired():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    polling = html[html.index("startQueryPoolRunPolling") : html.index("async startQueryPoolPreflight")]
+
+    assert "queryPoolRunPollMaxFailures" in html
+    assert "this.queryPoolAssembling = false" in polling
+    assert "queryPoolQualityBlockedMessage()" in html
+    assert "this.generationQualityBlockedMessage('Query', s)" in html
+    assert "query_not_natural" in html
+    assert "query_repaired" in html
 
 
 def test_query_pool_visible_copy_is_chinese():

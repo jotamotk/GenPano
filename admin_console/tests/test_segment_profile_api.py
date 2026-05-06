@@ -402,6 +402,42 @@ def test_llm_segment_generation_service_boundary(client, monkeypatch):
     assert any("generate_segments" in str(params) for _sql, params in conn.statements)
 
 
+def test_llm_segment_generation_returns_brand_choices_when_name_is_ambiguous(client, monkeypatch):
+    login(monkeypatch)
+
+    class BrandCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM brands" in compact and "LOWER" in compact:
+                self.rows = [
+                    {"id": 42, "name": "CHANEL", "industry": "beauty", "target_market": "CN"},
+                    {"id": 84, "name": "CHANEL", "industry": "luxury", "target_market": "US"},
+                ]
+
+    class BrandConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return BrandCursor(self)
+
+    conn = BrandConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table == "brands")
+    monkeypatch.setattr(app_mod, "_table_columns", lambda cur, table: {"id", "name", "industry", "target_market"})
+
+    class UnexpectedService:
+        def __init__(self, model=None):
+            raise AssertionError("service should not run before brand ambiguity is resolved")
+
+    monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", UnexpectedService)
+
+    response = client.post("/api/segments/generate", json={"brand_name": "CHANEL", "count": 1})
+    body = response.get_json()
+
+    assert response.status_code == 409
+    assert body["error"] == "ambiguous_brand"
+    assert [brand["id"] for brand in body["brands"]] == [42, 84]
+
+
 def test_profile_list_under_segment(client, monkeypatch):
     login(monkeypatch)
     fake_db(monkeypatch)

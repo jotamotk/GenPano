@@ -2746,10 +2746,10 @@
                 <div class="grid grid-cols-2 gap-4 text-[12px]">
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">品牌</span>
-                    <select x-model="llmForm.brand" @change="syncSelectedBrand('profile')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    <select x-model="llmForm.brandId" @change="syncSelectedBrand('profile')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
                       <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
                       <template x-for="brand in brandOptions" :key="brand.id">
-                        <option :value="brand.name" x-text="brandLabel(brand)"></option>
+                        <option :value="brand.id" x-text="brandDisambiguationLabel(brand)"></option>
                       </template>
                     </select>
                   </label>
@@ -2766,7 +2766,7 @@
                     <textarea x-model="llmForm.notes" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="col-span-2 flex justify-end gap-2">
-                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !llmForm.brand" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !(llmForm.brandId || llmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="profileLlmLoading ? '生成中...' : '生成 Profile'"></span>
                     </button>
@@ -3119,10 +3119,10 @@
                   <div class="grid grid-cols-2 gap-4">
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">品牌</span>
-                      <select x-model="segmentLlmForm.brand" @change="syncSelectedBrand('segment')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                      <select x-model="segmentLlmForm.brandId" @change="syncSelectedBrand('segment')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
                         <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
                         <template x-for="brand in brandOptions" :key="brand.id">
-                          <option :value="brand.name" x-text="brandLabel(brand)"></option>
+                          <option :value="brand.id" x-text="brandDisambiguationLabel(brand)"></option>
                         </template>
                       </select>
                     </label>
@@ -3155,7 +3155,7 @@
                     <textarea x-model="segmentLlmForm.constraints" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="flex items-center justify-end gap-2">
-                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !segmentLlmForm.brand" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !(segmentLlmForm.brandId || segmentLlmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="segmentLlmLoading ? '生成中...' : '生成 Segment 草稿'"></span>
                     </button>
@@ -4929,6 +4929,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <option value="">全部语言</option>
                       <option value="zh-CN">zh-CN</option><option value="en-US">en-US</option>
                     </select>
+                    <input x-model="promptMatrixPromptTopic" @input.debounce.350ms="loadPromptMatrixPrompts()" placeholder="Topic ID"
+                           class="h-8 w-24 px-2 rounded-btn border border-b-default text-[12px] bg-white outline-none focus:ring-2 focus:ring-accent/20" />
                   </div>
                 </div>
                 <div class="divide-y divide-b-card">
@@ -5031,6 +5033,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <option value="zh-CN">zh-CN</option>
                           <option value="en-US">en-US</option>
                         </select>
+                        <input x-model="queryPoolPromptTopic" @input.debounce.350ms="onQueryPoolPromptFilterChanged()" placeholder="Topic ID"
+                               class="h-8 w-24 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink outline-none focus:shadow-focus-accent" />
                         <select x-model.number="queryPoolPromptPerPage" @change="onQueryPoolPromptPageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option :value="100">100 / 页</option>
                           <option :value="50">50 / 页</option>
@@ -5217,7 +5221,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <span x-show="queryPoolRunStatusNotice" class="ml-2 text-ink-muted" x-text="queryPoolRunStatusNotice"></span>
                         </div>
                       </template>
-                      <template x-if="queryPoolAssembleError">
+                      <template x-if="queryPoolQualityBlockedMessage()">
+                        <div class="rounded-card bg-danger/5 border border-danger/20 px-3 py-2 text-[11px] text-danger" x-text="queryPoolQualityBlockedMessage()"></div>
+                      </template>
+                      <template x-if="queryPoolAssembleError && !queryPoolQualityBlockedMessage()">
                         <div class="rounded-card bg-danger/5 border border-danger/20 px-3 py-2 text-[11px] text-danger">
                           <span x-text="'Query 组装失败：' + queryPoolAssembleError"></span>
                         </div>
@@ -9686,6 +9693,7 @@ function segmentCrudPanel() {
     brandOptionsError: '',
     segmentForm: { id: '', brandId: '', brandName: '', name: '', industry: '', status: 'active', weight: 0.25, ageRange: '', income: '', regions: '', samplingRate: '', note: '' },
     segmentLlmForm: {
+      brandId: '',
       brand: '',
       industry: 'Beauty',
       count: 6,
@@ -9696,6 +9704,7 @@ function segmentCrudPanel() {
     },
     profileForm: { id: '', name: '', demographic: '', need: '', weight: '1.0', status: 'active', persona_json: {} },
     llmForm: {
+      brandId: '',
       brand: '',
       count: 6,
       goal: 'Generate reviewable Profile drafts for the current Segment.',
@@ -9769,13 +9778,16 @@ function segmentCrudPanel() {
             industry: String(row.industry || row.industry_name || '').trim(),
             targetMarket: String(row.target_market || row.targetMarket || '').trim(),
             description: String(row.description || '').trim(),
+            topicCount: Number(row.topic_count || row.topicCount || 0),
           }))
           .filter(row => row.id && row.name);
         this.ensureSelectedBrandIsValid('segment');
         this.ensureSelectedBrandIsValid('profile');
       } catch (error) {
         this.brandOptions = [];
+        this.segmentLlmForm.brandId = '';
         this.segmentLlmForm.brand = '';
+        this.llmForm.brandId = '';
         this.llmForm.brand = '';
         this.brandOptionsError = error.message || 'Brand options load failed';
       } finally {
@@ -9786,6 +9798,15 @@ function segmentCrudPanel() {
 
     brandLabel(brand) {
       return brand?.industry ? (brand.name + ' · ' + brand.industry) : brand?.name || '';
+    },
+
+    brandDisambiguationLabel(brand) {
+      if (!brand) return '';
+      const parts = [brand.name || 'Brand #' + brand.id];
+      if (brand.industry) parts.push(brand.industry);
+      if (brand.targetMarket) parts.push(brand.targetMarket);
+      if (brand.id) parts.push('#' + brand.id);
+      return parts.join(' / ');
     },
 
     statusToneClass(tone) {
@@ -9799,9 +9820,13 @@ function segmentCrudPanel() {
       return this.brandOptions.find(brand => String(brand.id) === value) || null;
     },
 
+    selectedBrandOptionById(id) {
+      return this.brandById(id);
+    },
+
     selectedBrandOption(name) {
       const value = String(name || '').trim();
-      return this.brandOptions.find(brand => brand.name === value) || null;
+      return this.selectedBrandOptionById(value) || this.brandOptions.find(brand => brand.name === value) || null;
     },
 
     segmentBrandLabel(segment) {
@@ -9823,17 +9848,26 @@ function segmentCrudPanel() {
     ensureSelectedBrandIsValid(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
       if (!this.brandOptions.length) {
+        form.brandId = '';
         form.brand = '';
         return;
       }
-      if (form.brand && this.selectedBrandOption(form.brand)) return;
+      const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
+      if (brand) {
+        form.brandId = String(brand.id || '');
+        form.brand = brand.name || form.brand;
+        return;
+      }
+      form.brandId = '';
       form.brand = '';
     },
 
     syncSelectedBrand(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
-      const brand = this.selectedBrandOption(form.brand);
+      const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
       if (!brand) return;
+      form.brandId = String(brand.id || '');
+      form.brand = brand.name || form.brand;
       if (scope === 'segment' && brand.industry) {
         this.segmentLlmForm.industry = brand.industry;
       }
@@ -10060,12 +10094,14 @@ function segmentCrudPanel() {
       this.segmentLlmApplyTone = 'info';
     },
     async generateBrandSegments() {
-      const brand = String(this.segmentLlmForm.brand || '').trim();
+      const brandOption = this.selectedBrandOptionById(this.segmentLlmForm.brandId) || this.selectedBrandOption(this.segmentLlmForm.brand);
+      const brand = String(brandOption?.name || this.segmentLlmForm.brand || '').trim();
       if (!brand) {
         this.segmentLlmError = 'Brand is required';
         return;
       }
-      const brandOption = this.selectedBrandOption(brand);
+      this.segmentLlmForm.brandId = String(brandOption?.id || this.segmentLlmForm.brandId || '');
+      this.segmentLlmForm.brand = brand;
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
       this.segmentLlmApplyMessage = '';
@@ -10289,7 +10325,11 @@ function segmentCrudPanel() {
       this.profileLlmDraftSegmentId = segment.id;
       const segmentBrand = this.brandById(segment.brandId || segment.brand_id);
       if (segmentBrand || segment.brandName || segment.brand_name) {
+        this.llmForm.brandId = String(segmentBrand?.id || segment.brandId || segment.brand_id || '');
         this.llmForm.brand = segmentBrand?.name || segment.brandName || segment.brand_name;
+      } else {
+        this.llmForm.brandId = '';
+        this.llmForm.brand = '';
       }
       this.profileLlmError = '';
       this.llmPanelOpen = true;
@@ -10331,11 +10371,14 @@ function segmentCrudPanel() {
     async generateSegmentLlm() {
       const segment = this.currentSegment();
       if (!segment) return;
-      if (!String(this.llmForm.brand || '').trim()) {
+      const brandOption = this.selectedBrandOptionById(this.llmForm.brandId) || this.selectedBrandOption(this.llmForm.brand);
+      const brand = String(brandOption?.name || this.llmForm.brand || '').trim();
+      if (!brand) {
         this.profileLlmError = 'Brand is required';
         return;
       }
-      const brandOption = this.selectedBrandOption(this.llmForm.brand);
+      this.llmForm.brandId = String(brandOption?.id || this.llmForm.brandId || '');
+      this.llmForm.brand = brand;
       this.profileLlmLoading = true;
       this.profileLlmError = '';
       this.profileLlmApplyMessage = '';
@@ -10349,7 +10392,7 @@ function segmentCrudPanel() {
           method: 'POST',
           body: JSON.stringify({
             brand_id: brandOption?.id || null,
-            brand_name: this.llmForm.brand,
+            brand_name: brand,
             count: this.llmForm.count,
             goal: this.llmForm.goal,
             constraints: this.llmForm.notes,
@@ -11031,6 +11074,8 @@ function adminApp() {
     promptMatrixStopLoading: false,
     promptMatrixRunPollTimer: null,
     promptMatrixRunPollDelay: 3000,
+    promptMatrixRunPollFailures: 0,
+    promptMatrixRunPollMaxFailures: 3,
     promptMatrixCandidateReviewing: false,
     promptMatrixBrands: [],
     promptMatrixIndustries: [],
@@ -11071,9 +11116,11 @@ function adminApp() {
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
     promptMatrixPromptLanguage: '',
+    promptMatrixPromptTopic: '',
     queryPoolPromptQuery: '',
     queryPoolPromptIntent: '',
     queryPoolPromptLanguage: '',
+    queryPoolPromptTopic: '',
     queryPoolPromptPage: 1,
     queryPoolPromptPerPage: 100,
     queryPoolPromptTotal: 0,
@@ -11101,6 +11148,7 @@ function adminApp() {
     queryPoolRunPollTimer: null,
     queryPoolRunPollDelay: 3000,
     queryPoolRunLoadFailures: 0,
+    queryPoolRunPollMaxFailures: 3,
     queryPoolRunStatusNotice: '',
     queryPoolPreflighting: false,
     queryPoolPreflightSummary: null,
@@ -13256,10 +13304,17 @@ function adminApp() {
         }
         return step;
       });
-      if (failed) this.topicPlanGenerateError = run.llm_error || 'Topic generation failed';
-      if (finished && run.metrics && Object.keys(run.metrics).length){
+      if ((finished || failed) && run.metrics && Object.keys(run.metrics).length){
         this.topicPlanLastMetrics = run.metrics;
         this.topicPlanLastRejected = Array.isArray(run.metrics.rejected_sample) ? run.metrics.rejected_sample : [];
+      }
+      if (failed) {
+        if (this.isGenerationQualityBlocked(run.metrics, run.llm_error)) {
+          this.topicPlanGenerateError = this.generationQualityBlockedMessage('Topic', run.metrics);
+          this.topicPlanShowRejected = true;
+        } else {
+          this.topicPlanGenerateError = run.llm_error || 'Topic generation failed';
+        }
       }
     },
 
@@ -13650,6 +13705,31 @@ function adminApp() {
       return '';
     },
 
+    isGenerationQualityBlocked(metrics, errorCode = ''){
+      return Boolean(metrics && metrics.quality_blocked) || errorCode === 'quality_gate_blocked';
+    },
+
+    generationQualityBlockedMessage(layer, metrics){
+      const m = metrics || {};
+      const requested = Number(m.requested || m.raw_candidates_estimated || 0);
+      const rejected = Number(m.rejected_total || 0);
+      const pieces = [layer + ' 生成被质检阻断：本次没有可进入待审核的候选。'];
+      if (requested) pieces.push('请求 ' + requested.toLocaleString() + ' 条。');
+      if (rejected) pieces.push('质检拒收 ' + rejected.toLocaleString() + ' 条。');
+      pieces.push('请展开拒收原因，调整输入或重试。');
+      return pieces.join('');
+    },
+
+    generationFailureMessage(layer, errorCode, metrics){
+      if (this.isGenerationQualityBlocked(metrics, errorCode)) {
+        return this.generationQualityBlockedMessage(layer, metrics);
+      }
+      if (errorCode === 'query_pool_no_candidates') {
+        return layer + ' 没有生成可用候选，请检查选择范围和质量规则。';
+      }
+      return errorCode || (layer + ' generation failed');
+    },
+
     rejectionReasonLabel(reason){
       const map = {
         duplicate_db: '重复 (与已有内容)',
@@ -13657,6 +13737,19 @@ function adminApp() {
         looks_like_topic: '越界：写成了主题',
         looks_like_prompt: '越界：写成了提问',
         looks_like_query: '越界：含个性化锚点',
+        topic_not_natural: '质检：Topic 不像自然消费者主题',
+        prompt_not_natural: '质检：Prompt 不像自然用户问题',
+        prompt_language_mismatch: '质检：语言不匹配',
+        topic_not_selected: '质检：Topic 未被选中',
+        brand_not_selected: '质检：品牌未被选中',
+        invalid_topic_id: '质检：Topic ID 无效',
+        category_brand_leak: '质检：品类 Topic 泄露品牌',
+        prompt_topic_mismatch: '质检：Prompt 偏离 Topic',
+        query_not_natural: '质检：Query 不像自然消费者问题',
+        render_failure: '质检：模板渲染失败',
+        duplicate_review: '重复待审',
+        query_repaired: 'Query 已自动修复',
+        quality_gate_blocked: '质检阻断',
         over_limit: '超过请求数量',
       };
       return map[reason] || reason || '其他';
@@ -13670,6 +13763,13 @@ function adminApp() {
           count: (by.duplicate_db||0) + (by.duplicate_intra_batch||0) },
         { key:'cross',label:'越界',     color:'bg-accent',  note:'(写成了其他层级)',
           count: (by.looks_like_topic||0) + (by.looks_like_prompt||0) + (by.looks_like_query||0) },
+        { key:'quality',label:'质检',    color:'bg-danger',  note:'(自然度 / 语言 / Topic 贴合 / 品牌边界)',
+          count: (by.topic_not_natural||0) + (by.prompt_not_natural||0) + (by.prompt_language_mismatch||0) +
+            (by.topic_not_selected||0) + (by.brand_not_selected||0) + (by.invalid_topic_id||0) +
+            (by.category_brand_leak||0) + (by.prompt_topic_mismatch||0) + (by.query_not_natural||0) +
+            (by.render_failure||0) + (by.quality_gate_blocked||0) },
+        { key:'repair',label:'修复',     color:'bg-success', note:'(Query 已自动修复后保留)',
+          count: by.query_repaired || 0 },
         { key:'over', label:'超出限制', color:'bg-ink-muted',note:'(LLM 返回多于请求数)',
           count: by.over_limit || 0 },
       ];
@@ -13749,7 +13849,10 @@ function adminApp() {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
             this.topicPlanRunPollFailures = 0;
-            this.toast('Topic 生成失败: ' + (run.llm_error || 'unknown_error'));
+            const message = this.isGenerationQualityBlocked(run.metrics, run.llm_error)
+              ? this.generationQualityBlockedMessage('Topic', run.metrics)
+              : (run.llm_error || 'unknown_error');
+            this.toast('Topic 生成失败: ' + message);
           } else if (run.status === 'cancelled') {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
@@ -14419,6 +14522,7 @@ function adminApp() {
         const qp = new URLSearchParams({ page:'1', per_page:'60' });
         if (this.promptMatrixPromptIntent) qp.set('intent', this.promptMatrixPromptIntent);
         if (this.promptMatrixPromptLanguage) qp.set('language', this.promptMatrixPromptLanguage);
+        if (this.promptMatrixPromptTopic) qp.set('topic_id', this.promptMatrixPromptTopic);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
@@ -14468,10 +14572,17 @@ function adminApp() {
         }
         return step;
       });
-      if (failed) this.promptMatrixGenerateError = run.llm_error || 'Prompt generation failed';
-      if (finished && run.metrics && Object.keys(run.metrics).length){
+      if ((finished || failed) && run.metrics && Object.keys(run.metrics).length){
         this.promptMatrixLastMetrics = run.metrics;
         this.promptMatrixLastRejected = Array.isArray(run.metrics.rejected_sample) ? run.metrics.rejected_sample : [];
+      }
+      if (failed) {
+        if (this.isGenerationQualityBlocked(run.metrics, run.llm_error)) {
+          this.promptMatrixGenerateError = this.generationQualityBlockedMessage('Prompt', run.metrics);
+          this.promptMatrixShowRejected = true;
+        } else {
+          this.promptMatrixGenerateError = run.llm_error || 'Prompt generation failed';
+        }
       }
     },
 
@@ -14527,11 +14638,13 @@ function adminApp() {
         let keepPolling = false;
         try {
           const run = await this.loadPromptMatrixRun(runId);
+          this.promptMatrixRunPollFailures = 0;
           this.promptMatrixApplyRunProgress(run);
           await this.loadPromptMatrixCandidates();
           if (run.status === 'completed') {
             this.promptMatrixGenerateLoading = false;
             this.promptMatrixActiveRunId = '';
+            this.promptMatrixRunPollFailures = 0;
             await this.loadPromptMatrixGaps();
             await this.loadPromptMatrixPrompts();
             await this.loadPromptMatrixTopics();
@@ -14539,10 +14652,15 @@ function adminApp() {
           } else if (run.status === 'failed') {
             this.promptMatrixGenerateLoading = false;
             this.promptMatrixActiveRunId = '';
-            this.toast('Prompt 生成失败: ' + (run.llm_error || 'unknown_error'));
+            this.promptMatrixRunPollFailures = 0;
+            const message = this.isGenerationQualityBlocked(run.metrics, run.llm_error)
+              ? this.generationQualityBlockedMessage('Prompt', run.metrics)
+              : (run.llm_error || 'unknown_error');
+            this.toast('Prompt 生成失败: ' + message);
           } else if (run.status === 'cancelled') {
             this.promptMatrixGenerateLoading = false;
             this.promptMatrixActiveRunId = '';
+            this.promptMatrixRunPollFailures = 0;
             await this.loadPromptMatrixGaps();
             await this.loadPromptMatrixPrompts();
             await this.loadPromptMatrixTopics();
@@ -14551,8 +14669,17 @@ function adminApp() {
             keepPolling = true;
           }
         } catch (e) {
+          this.promptMatrixRunPollFailures += 1;
           this.promptMatrixGenerateError = e.message || 'Run polling failed';
-          keepPolling = true;
+          if (this.promptMatrixRunPollFailures >= Number(this.promptMatrixRunPollMaxFailures || 3)) {
+            this.promptMatrixGenerateLoading = false;
+            this.promptMatrixActiveRunId = '';
+            this.promptMatrixRunStatus = 'polling_failed';
+            this.clearPromptMatrixRunPolling();
+            this.toast('Prompt 生成状态查询失败: ' + this.promptMatrixGenerateError);
+          } else {
+            keepPolling = true;
+          }
         } finally {
           if (keepPolling) {
             this.promptMatrixRunPollTimer = setTimeout(poll, Number(this.promptMatrixRunPollDelay || 3000));
@@ -14580,6 +14707,7 @@ function adminApp() {
         return;
       }
       this.clearPromptMatrixRunPolling();
+      this.promptMatrixRunPollFailures = 0;
       this.promptMatrixGenerateStarted = true;
       this.promptMatrixGenerateLoading = true;
       this.promptMatrixGenerateError = '';
@@ -14727,6 +14855,8 @@ function adminApp() {
       if (q) payload.q = q;
       if (this.queryPoolPromptIntent) payload.intent = this.queryPoolPromptIntent;
       if (this.queryPoolPromptLanguage) payload.language = this.queryPoolPromptLanguage;
+      const topicId = String(this.queryPoolPromptTopic || '').trim().replace(/^T-/i, '');
+      if (topicId) payload.topic_id = topicId;
       return payload;
     },
 
@@ -14884,6 +15014,7 @@ function adminApp() {
         if (filters.q) qp.set('q', filters.q);
         if (filters.intent) qp.set('intent', filters.intent);
         if (filters.language) qp.set('language', filters.language);
+        if (filters.topic_id) qp.set('topic_id', filters.topic_id);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
@@ -15033,6 +15164,12 @@ function adminApp() {
       return number >= target ? 'success' : 'warning';
     },
 
+    queryPoolQualityBlockedMessage(){
+      const s = this.queryPoolPreflightSummary;
+      if (!this.isGenerationQualityBlocked(s, this.queryPoolAssembleError)) return '';
+      return this.generationQualityBlockedMessage('Query', s);
+    },
+
     queryPoolQualityGateRows(){
       const s = this.queryPoolPreflightSummary;
       if (!s) {
@@ -15047,10 +15184,13 @@ function adminApp() {
       }
       const duplicate = Number(s.duplicate_review || 0);
       const renderFailures = Number(s.render_failures || 0);
+      const rejected = Number(s.rejected_total || 0);
+      const repaired = Number(s.query_repaired || ((s.by_reason || {}).query_repaired) || 0);
       const ready = Number(s.candidate_ready || 0);
       return [
         { title:'候选就绪', value:this.queryPoolFormatCount(ready), tone:ready > 0 ? 'success' : 'warning', meta:'后端预检/组装返回的候选数' },
         { title:'渲染通过率', value:this.queryPoolFormatRate(s.render_pass_rate), tone:this.queryPoolRateTone(s.render_pass_rate, 0.98), meta:renderFailures.toLocaleString() + ' 个渲染失败' },
+        { title:'质检结果', value:s.quality_blocked ? '阻断' : (rejected ? rejected.toLocaleString() + ' 个拒收' : '通过'), tone:s.quality_blocked ? 'warning' : (rejected ? 'warning' : 'success'), meta:repaired ? repaired.toLocaleString() + ' 个 query_repaired；关注 query_not_natural' : '关注 query_not_natural / query_repaired' },
         { title:'Segment 覆盖', value:this.queryPoolFormatRate(s.segment_coverage), tone:this.queryPoolRateTone(s.segment_coverage), meta:'启用且有权重的 Segment 覆盖率' },
         { title:'Profile 覆盖', value:this.queryPoolFormatRate(s.profile_coverage), tone:this.queryPoolRateTone(s.profile_coverage), meta:'每 Prompt ' + Number(s.profiles_per_prompt || this.queryPoolConfig.profilesPerPrompt || 0).toLocaleString() + ' 个 Profile' },
         { title:'重复待审', value:duplicate.toLocaleString() + ' 个待审', tone:duplicate > 0 ? 'warning' : 'success', meta:'后端渲染文本去重结果' },
@@ -15339,7 +15479,7 @@ function adminApp() {
       const completed = status === 'completed';
       const cancelled = status === 'cancelled';
       const stopped = failed || cancelled;
-      if (failed) this.queryPoolAssembleError = run.llm_error || 'unknown_error';
+      if (failed) this.queryPoolAssembleError = this.generationFailureMessage('Query', run.llm_error, summary);
       this.queryPoolAssembleSteps = this.queryPoolAssembleSteps.map(step => {
         if (step.name === 'Prompt 校验') {
           return { ...step, status:'done', label:'通过', value:promptCount.toLocaleString() + ' 个 Prompt' };
@@ -15423,7 +15563,8 @@ function adminApp() {
             this.toast('Query 组装完成，候选列表已刷新');
           } else if (run.status === 'failed') {
             this.queryPoolAssembling = false;
-            this.toast('Query 组装失败: ' + (run.llm_error || 'unknown_error'));
+            const message = this.generationFailureMessage('Query', run.llm_error, run.preflight_summary || {});
+            this.toast('Query 组装失败: ' + message);
           } else if (run.status === 'cancelled') {
             this.queryPoolAssembling = false;
             this.queryPoolCandidateCursor = { next: null, prev: null };
@@ -15438,11 +15579,20 @@ function adminApp() {
           }
         } catch (error) {
           this.queryPoolRunLoadFailures = Number(this.queryPoolRunLoadFailures || 0) + 1;
-          this.queryPoolRunStatusNotice = this.queryPoolRunLoadFailures >= 2
-            ? '状态读取暂时失败，正在重试；候选列表会继续刷新。'
-            : '';
-          await this.loadQueryPoolCandidates();
-          keepPolling = true;
+          if (this.queryPoolRunLoadFailures >= Number(this.queryPoolRunPollMaxFailures || 3)) {
+            this.queryPoolAssembling = false;
+            this.queryPoolRunStatus = 'polling_failed';
+            this.queryPoolRunStatusNotice = '';
+            this.queryPoolAssembleError = error.message || 'Query run polling failed';
+            this.clearQueryPoolRunPolling();
+            this.toast('Query 状态查询失败: ' + this.queryPoolAssembleError);
+          } else {
+            this.queryPoolRunStatusNotice = this.queryPoolRunLoadFailures >= 2
+              ? '状态读取暂时失败，正在重试；候选列表会继续刷新。'
+              : '';
+            await this.loadQueryPoolCandidates();
+            keepPolling = true;
+          }
         } finally {
           if (keepPolling) {
             this.queryPoolRunPollTimer = setTimeout(poll, Number(this.queryPoolRunPollDelay || 3000));

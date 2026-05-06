@@ -118,6 +118,51 @@ def test_topic_plan_generation_batches_do_not_call_llm_without_gaps(monkeypatch)
     assert batches == []
 
 
+def test_brand_options_do_not_require_topic_created_at(monkeypatch):
+    class BrandCursor:
+        def __init__(self):
+            self.rows = []
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "created_at" in compact:
+                raise AssertionError("brand options should not require topics.created_at")
+            if "FROM brands" in compact:
+                self.rows = [
+                    {
+                        "id": 13,
+                        "name": "NIKE",
+                        "industry": "Sports",
+                        "target_market": "",
+                        "description": "",
+                        "aliases": [],
+                    }
+                ]
+            elif "COUNT(*) AS topic_count" in compact:
+                self.rows = [{"brand_id": 13, "topic_count": 2}]
+            elif "SELECT DISTINCT ON (brand_id)" in compact:
+                self.rows = [{"brand_id": 13, "category": "running"}]
+
+        def fetchall(self):
+            return self.rows
+
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table in {"brands", "topics"})
+    monkeypatch.setattr(
+        app_mod,
+        "_table_columns",
+        lambda cur, table: (
+            {"id", "name", "industry", "target_market", "description", "aliases"}
+            if table == "brands"
+            else {"id", "brand_id", "text", "category"}
+        ),
+    )
+
+    rows = app_mod._fetch_topic_plan_brands(BrandCursor())
+
+    assert rows[0]["id"] == 13
+    assert rows[0]["category_id"] == "running"
+
+
 def test_topic_plan_candidate_batch_accepts_consumer_search_topic():
     class InsertCursor:
         def __init__(self):
@@ -333,6 +378,98 @@ def test_topic_plan_completion_survives_audit_log_schema_drift(monkeypatch):
     assert conn.run["status"] == "completed"
     assert conn.commits >= 2
     assert conn.rollbacks == 1
+
+
+def test_topic_plan_quality_blocked_run_fails_with_metrics(monkeypatch):
+    class RunCursor:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=None):
+            compact = " ".join(str(query).split())
+            self.conn.statements.append((compact, params))
+            if "UPDATE topic_plan_runs" in compact and "status = 'failed'" in compact:
+                self.conn.run["status"] = "failed"
+                self.conn.run["llm_error"] = next((value for value in params if value == "quality_gate_blocked"), None)
+                self.conn.run["metrics_json"] = next((value for value in params if isinstance(value, str) and "quality_blocked" in value), None)
+
+        def fetchone(self):
+            return None
+
+    class RunConnection:
+        def __init__(self):
+            self.run = {"id": "run-1", "status": "running", "llm_error": None, "metrics_json": None}
+            self.statements = []
+            self.commits = 0
+
+        def cursor(self, *args, **kwargs):
+            return RunCursor(self)
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        def generate_topics(self, **kwargs):
+            return [LLMTopic(
+                title="NIKE私域会员运营策略分析",
+                brand="NIKE",
+                dimension="brand",
+                reason="bad internal topic",
+                confidence=0.8,
+                coverage_gap="NIKE:brand",
+            )], {"model": "fake-model", "usage": {}}
+
+    def reject_all(*args, **kwargs):
+        kwargs["skipped"].append({"title": "NIKE私域会员运营策略分析", "reason": "topic_not_natural"})
+        return []
+
+    conn = RunConnection()
+    monkeypatch.setattr(app_mod, "load_doubao_config", lambda: type("Cfg", (), {"model": "fake-model"})())
+    monkeypatch.setattr(app_mod, "DoubaoTopicPlanClient", FakeClient)
+    monkeypatch.setattr(
+        app_mod,
+        "_topic_plan_brand_batches",
+        lambda *args, **kwargs: iter([([{"id": 18, "name": "NIKE"}], [{"brand_id": 18, "count": 1}], 1)]),
+    )
+    monkeypatch.setattr(app_mod, "_is_generation_run_cancelled", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app_mod, "_insert_topic_plan_candidate_batch", reject_all)
+    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *args, **kwargs: None)
+
+    result = app_mod._execute_topic_plan_generation(
+        run_id="run-1",
+        admin_id="admin-1",
+        industry_id="运动户外",
+        category_id=None,
+        brands=[{"id": 18, "name": "NIKE"}],
+        llm_gaps=[{"brand_id": 18, "count": 1}],
+        max_per_brand=40,
+        max_topics=1,
+        existing_titles=[],
+        request_config={"max_topics": 1},
+        coverage_summary={},
+        conn=conn,
+    )
+
+    assert result["quality_blocked"] is True
+    assert conn.run["status"] == "failed"
+    assert conn.run["llm_error"] == "quality_gate_blocked"
+    assert '"quality_blocked": true' in conn.run["metrics_json"]
+    assert '"topic_not_natural": 1' in conn.run["metrics_json"]
 
 
 def test_topic_plan_failure_status_survives_audit_log_schema_drift(monkeypatch):

@@ -45,3 +45,17 @@ def test_topic_plan_generation_loads_candidates_for_completed_run():
     assert "topicPlanCandidateRunId" in html
     assert "this.topicPlanCandidateRunId = body.run_id || ''" in generate_section
     assert "qp.set('run_id', this.topicPlanCandidateRunId)" in candidates_section
+
+
+def test_topic_plan_quality_blocked_feedback_is_visible_and_actionable():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    apply_start = html.index("topicPlanApplyRunProgress(run)")
+    apply_section = html[apply_start:html.index("async loadProductsList()", apply_start)]
+    polling = _topic_plan_polling_section(html)
+
+    assert "generationQualityBlockedMessage(layer, metrics)" in html
+    assert "quality_gate_blocked" in html
+    assert "topic_not_natural" in html
+    assert "this.topicPlanShowRejected = true" in apply_section
+    assert "this.generationQualityBlockedMessage('Topic', run.metrics" in apply_section
+    assert "this.generationQualityBlockedMessage('Topic', run.metrics" in polling

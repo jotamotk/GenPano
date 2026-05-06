@@ -243,6 +243,9 @@ class TopicPlanUtilsTest(unittest.TestCase):
 
         self.assertIn("consumer-facing", combined)
         self.assertIn("real consumer search", combined)
+        self.assertIn("consumer search subject", combined)
+        self.assertIn("not every Topic needs to be a question", combined)
+        self.assertIn("quality gate", combined)
         self.assertIn("consumer_search_and_shopping_intent", combined)
         self.assertIn("\u79c1\u57df", combined)
         self.assertIn("\u9999\u5948\u513f\u53e3\u7ea2\u70ed\u95e8\u8272\u53f7\u600e\u4e48\u9009", combined)

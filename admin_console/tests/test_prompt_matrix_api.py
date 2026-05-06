@@ -195,12 +195,13 @@ def test_prompts_support_server_side_query_for_query_pool(client, monkeypatch):
     login(monkeypatch)
     monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
 
-    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50):
+    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50, topic_ids=None):
         assert intent == "commercial"
         assert language == "zh-CN"
         assert query == "barrier"
         assert page == 4
         assert per_page == 25
+        assert topic_ids is None
         return ([{"id": "p-1", "templateText": "How to repair skin barrier?", "intent": "commercial"}], 126)
 
     monkeypatch.setattr(app_mod, "_fetch_prompt_matrix_prompts", fake_fetch)
@@ -212,6 +213,36 @@ def test_prompts_support_server_side_query_for_query_pool(client, monkeypatch):
     assert response.status_code == 200
     assert body["rows"][0]["id"] == "p-1"
     assert body["pagination"] == {"page": 4, "per_page": 25, "total": 126, "total_pages": 6}
+
+
+def test_prompts_support_topic_filter_for_query_pool(client, monkeypatch):
+    login(monkeypatch)
+    monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
+
+    def fake_fetch(cur, intent=None, language=None, query=None, page=1, per_page=50, topic_ids=None):
+        assert topic_ids == [101, 202]
+        return ([{"id": "p-2", "topic_id": 101, "templateText": "Prompt for topic 101"}], 1)
+
+    monkeypatch.setattr(app_mod, "_fetch_prompt_matrix_prompts", fake_fetch)
+    monkeypatch.setattr(app_mod, "_prompt_matrix_stats", lambda cur: {"totalPrompts": 1})
+
+    response = client.get("/api/admin/prompt-matrix/prompts?topic_ids=101,202&page=1&per_page=25")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["rows"][0]["topic_id"] == 101
+    assert body["pagination"]["total"] == 1
+
+
+def test_prompt_candidate_migration_backfills_updated_at(monkeypatch):
+    conn = FakeConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: False)
+
+    app_mod._ensure_prompt_matrix_tables()
+
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP" in statements
 
 
 def test_query_pool_candidates_use_cursor_api_contract(client, monkeypatch):
@@ -392,6 +423,97 @@ def test_generate_does_not_use_local_generation_when_llm_quality_gate_fails(clie
     assert conn.inserted_candidates == []
     assert any("UPDATE prompt_generation_runs" in sql for sql, _ in conn.statements)
     assert any("INSERT INTO admin_audit_log" in sql for sql, _ in conn.statements)
+
+
+def test_prompt_matrix_quality_blocked_run_fails_with_metrics(monkeypatch):
+    class RunCursor:
+        def __init__(self, conn):
+            self.conn = conn
+            self.rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            self.conn.statements.append((compact, params))
+            if "UPDATE prompt_generation_runs" in compact and "status = 'failed'" in compact:
+                self.conn.run["status"] = "failed"
+                self.conn.run["llm_error"] = next((value for value in params if value == "quality_gate_blocked"), None)
+                self.conn.run["metrics_json"] = next((value for value in params if isinstance(value, str) and "quality_blocked" in value), None)
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    class RunConnection:
+        def __init__(self):
+            self.run = {"id": "run-1", "status": "running", "llm_error": None, "metrics_json": None}
+            self.statements = []
+            self.commits = 0
+
+        def cursor(self, *args, **kwargs):
+            return RunCursor(self)
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    class BadPromptClient:
+        def generate_prompts(self, **kwargs):
+            return (
+                [
+                    LLMPromptCandidate(
+                        topic_id=1,
+                        intent="informational",
+                        language="zh-CN",
+                        text="给我做一个NIKE私域会员运营策略分析",
+                        template_strategy="latest",
+                        template_version="v1",
+                        confidence=0.8,
+                        reason="keyword-stuffed",
+                        tags={},
+                    )
+                ],
+                {"model": "fake-prompt-llm", "usage": {}},
+            )
+
+    conn = RunConnection()
+    monkeypatch.setattr(app_mod, "PromptMatrixClient", BadPromptClient)
+    monkeypatch.setattr(app_mod, "_is_generation_run_cancelled", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *args, **kwargs: None)
+
+    result = app_mod._execute_prompt_matrix_generation(
+        run_id="run-1",
+        admin_id="admin-1",
+        topics=[{"raw_id": 1, "title": "NIKE跑鞋尺码选择", "brand": "NIKE", "brand_id": 18, "dimension_key": "question"}],
+        config={
+            "template_strategy": "latest",
+            "max_per_topic": 1,
+            "max_prompts": 1,
+            "intents": ["informational"],
+            "languages": ["zh-CN"],
+            "combinations": [],
+        },
+        known_brands=[{"id": 18, "name": "NIKE", "aliases": []}],
+        existing_prompts=[],
+        estimated=1,
+        request_config={"max_prompts": 1},
+        conn=conn,
+    )
+
+    assert result["quality_blocked"] is True
+    assert conn.run["status"] == "failed"
+    assert conn.run["llm_error"] == "quality_gate_blocked"
+    assert '"quality_blocked": true' in conn.run["metrics_json"]
+    assert '"prompt_not_natural": 1' in conn.run["metrics_json"]
 
 
 def test_approve_candidate_writes_prompt(client, monkeypatch):
