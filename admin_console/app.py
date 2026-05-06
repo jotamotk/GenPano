@@ -890,24 +890,73 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
     import json as json_mod
     ip = _client_ip() if has_request_context() else None
     user_agent = request.headers.get("user-agent") if has_request_context() else None
+    try:
+        cols = {col for col in _table_columns(cur, "admin_audit_log") if col}
+    except Exception:
+        cols = set()
+    if not cols:
+        cols = {
+            "id",
+            "operator_id",
+            "action",
+            "target_type",
+            "target_id",
+            "diff_json",
+            "reason",
+            "ip",
+            "ua",
+            "created_at",
+        }
+    target_id_text = str(target_id) if target_id is not None else None
+    diff_json = json_mod.dumps(diff or {}, default=_json_default)
+    values_by_column = {
+        "id": str(uuid.uuid4()),
+        "operator_id": operator_id,
+        "actor_id": operator_id,
+        "admin_id": operator_id,
+        "action": action,
+        "resource_type": target_type,
+        "resource_id": target_id_text,
+        "target_type": target_type,
+        "target_id": target_id_text,
+        "diff_json": diff_json,
+        "reason": reason,
+        "ip": ip,
+        "ip_address": ip,
+        "ua": user_agent,
+        "user_agent": user_agent,
+    }
+    ordered = [
+        "id",
+        "operator_id",
+        "actor_id",
+        "admin_id",
+        "action",
+        "resource_type",
+        "resource_id",
+        "target_type",
+        "target_id",
+        "diff_json",
+        "reason",
+        "ip",
+        "ip_address",
+        "ua",
+        "user_agent",
+    ]
+    insert_columns = [column for column in ordered if column in cols]
+    placeholders = ["%s::jsonb" if column == "diff_json" else "%s" for column in insert_columns]
+    values = [values_by_column[column] for column in insert_columns]
+    if "created_at" in cols:
+        insert_columns.append("created_at")
+        placeholders.append("NOW()")
+
     cur.execute(
-        """
+        f"""
         INSERT INTO admin_audit_log
-            (id, operator_id, action, target_type, target_id, diff_json,
-             reason, ip, ua, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, NOW())
+            ({', '.join(insert_columns)})
+        VALUES ({', '.join(placeholders)})
         """,
-        (
-            str(uuid.uuid4()),
-            operator_id,
-            action,
-            target_type,
-            str(target_id) if target_id is not None else None,
-            json_mod.dumps(diff or {}, default=_json_default),
-            reason,
-            ip,
-            user_agent,
-        ),
+        values,
     )
 
 
