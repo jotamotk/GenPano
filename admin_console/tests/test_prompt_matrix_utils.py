@@ -232,7 +232,7 @@ class PromptMatrixUtilsTest(unittest.TestCase):
             ["敏感肌换季时应该怎么挑选温和保湿面霜？"],
         )
         self.assertEqual([item.text for item in accepted], [candidates[1].text])
-        self.assertEqual([item["reason"] for item in skipped], ["duplicate", "duplicate"])
+        self.assertEqual([item["reason"] for item in skipped], ["duplicate_db", "duplicate_intra_batch"])
 
     def test_category_prompt_brand_leak_is_rejected(self):
         with self.assertRaises(PromptMatrixError) as ctx:

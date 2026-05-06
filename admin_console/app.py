@@ -7127,6 +7127,114 @@ def _coerce_product_aliases(value):
     return []
 
 
+def _parse_product_discovery_response(raw):
+    data = raw if isinstance(raw, dict) else json.loads(_query_pool_strip_markdown_fence(str(raw or "")))
+    products = data.get("products") if isinstance(data, dict) else None
+    if not isinstance(products, list):
+        raise TopicPlanLLMError("llm_schema_invalid", "Product discovery JSON must contain a products array")
+
+    parsed = []
+    seen = set()
+    for index, item in enumerate(products):
+        if not isinstance(item, dict):
+            raise TopicPlanLLMError("llm_schema_invalid", f"Product item #{index + 1} must be an object")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise TopicPlanLLMError("llm_schema_invalid", f"Product item #{index + 1} is missing name")
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append({
+            "name": name[:256],
+            "sku": str(item.get("sku") or "").strip()[:128],
+            "category": str(item.get("category") or "").strip()[:128],
+            "description": str(item.get("description") or "").strip(),
+            "aliases": _coerce_product_aliases(item.get("aliases")),
+        })
+    return parsed
+
+
+def _build_product_discovery_messages(brand, *, query="", limit=8):
+    payload = {
+        "brand": {
+            "name": brand.get("name") or "",
+            "aliases": brand.get("aliases") or [],
+            "industry": brand.get("industry") or "",
+            "target_market": brand.get("target_market") or "",
+            "description": brand.get("description") or "",
+        },
+        "operator_hint": query or "",
+        "limit": limit,
+    }
+    system = (
+        "You discover real, commercially meaningful products/SKUs for a brand. "
+        "Use current public knowledge when available. Return strict JSON only."
+    )
+    user = (
+        "Find products that should be tracked in GENPANO Admin. "
+        "Prefer flagship, current, high-search-interest products. "
+        "Return JSON: {\"products\":[{\"name\":\"...\",\"sku\":\"...\","
+        "\"category\":\"...\",\"description\":\"...\",\"aliases\":[\"...\"]}]}. "
+        "Do not invent internal product codes. Keep names concise.\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _fetch_admin_brand_context(cur, brand_id):
+    cols = _table_columns(cur, "brands")
+    name_expr = "name" if "name" in cols else "('Brand #' || id::text)"
+    industry_expr = "COALESCE(NULLIF(industry, ''), '')" if "industry" in cols else "''"
+    target_market_expr = "COALESCE(NULLIF(target_market, ''), '')" if "target_market" in cols else "''"
+    description_expr = "COALESCE(description, '')" if "description" in cols else "''"
+    aliases_expr = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
+    cur.execute(
+        f"""
+        SELECT id, {name_expr} AS name, {industry_expr} AS industry,
+               {target_market_expr} AS target_market,
+               {description_expr} AS description,
+               {aliases_expr}
+        FROM brands WHERE id = %s
+        """,
+        (brand_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    brand = dict(row)
+    aliases = brand.get("aliases") or []
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    brand["aliases"] = aliases if isinstance(aliases, list) else []
+    return brand
+
+
+def _discover_brand_products_llm(brand, *, query="", limit=8):
+    cfg = load_doubao_config()
+    try:
+        from openai import OpenAI
+    except Exception as error:
+        raise TopicPlanLLMError("llm_client_unavailable", "OpenAI-compatible client is unavailable") from error
+
+    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=90)
+    response = client.chat.completions.create(
+        model=cfg.model,
+        messages=_build_product_discovery_messages(brand, query=query, limit=limit),
+        temperature=0.2,
+        max_tokens=max(1024, min(4096, 512 + limit * 320)),
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content if response.choices else ""
+    return _parse_product_discovery_response(content), {
+        "model": getattr(response, "model", None) or cfg.model,
+        "usage": getattr(response, "usage", None).model_dump() if getattr(response, "usage", None) else {},
+    }
+
+
 @app.route('/api/admin/products', methods=['GET'])
 def admin_products_list_api():
     """List products across all brands. Query params: brand_id, status, q, limit, offset."""
@@ -7238,6 +7346,92 @@ def admin_brand_products_create_api(brand_id):
                 row["brand_name"] = br["name"]
         conn.commit()
         return jsonify({"success": True, "product": _product_row(row)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brands/<int:brand_id>/products/discover', methods=['POST'])
+def admin_brand_products_discover_api(brand_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    query = (payload.get("query") or payload.get("hint") or "").strip()
+    try:
+        limit = max(1, min(int(payload.get("limit") or 8), 20))
+    except (TypeError, ValueError):
+        limit = 8
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            brand = _fetch_admin_brand_context(cur, brand_id)
+            if not brand:
+                return jsonify({"success": False, "error": "brand_not_found"}), 404
+
+            cur.execute("SELECT name, sku, category FROM products WHERE brand_id = %s", (brand_id,))
+            existing_names = {str(row.get("name") or "").strip().casefold() for row in cur.fetchall()}
+
+            try:
+                candidates, metadata = _discover_brand_products_llm(brand, query=query, limit=limit)
+            except TopicPlanLLMError as error:
+                return jsonify({"success": False, "error": error.code, "message": str(error)}), 502
+            except Exception as error:
+                return jsonify({"success": False, "error": "product_discovery_failed", "message": str(error)[:200]}), 502
+
+            created = []
+            skipped = []
+            for item in candidates:
+                key = str(item.get("name") or "").strip().casefold()
+                if not key or key in existing_names:
+                    skipped.append({"name": item.get("name"), "reason": "duplicate"})
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO products
+                        (brand_id, name, sku, category, description, aliases, status)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                    ON CONFLICT (brand_id, name) DO NOTHING
+                    RETURNING id, brand_id, name, sku, category, description,
+                              aliases, status, created_at, updated_at
+                    """,
+                    (
+                        brand_id,
+                        item.get("name"),
+                        item.get("sku") or None,
+                        item.get("category") or None,
+                        item.get("description") or None,
+                        json.dumps(item.get("aliases") or [], ensure_ascii=False),
+                        "active",
+                    ),
+                )
+                row = cur.fetchone()
+                if not row:
+                    skipped.append({"name": item.get("name"), "reason": "duplicate"})
+                    existing_names.add(key)
+                    continue
+                row["brand_name"] = brand.get("name")
+                row["topic_count"] = 0
+                created.append(_product_row(row))
+                existing_names.add(key)
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "products": created,
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+            "candidates_count": len(candidates),
+            "llm_model": metadata.get("model"),
+            "llm_usage": metadata.get("usage") or {},
+        })
     except Exception:
         conn.rollback()
         raise
@@ -7618,6 +7812,77 @@ def admin_hot_topics_archive_expired_api():
         conn.close()
 
 
+@app.route('/api/admin/hot-topics/batch', methods=['POST'])
+def admin_hot_topics_batch_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("ids") or []
+    ids = []
+    for value in raw_ids:
+        try:
+            hot_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if hot_id > 0 and hot_id not in ids:
+            ids.append(hot_id)
+    ids = ids[:500]
+    if not ids:
+        return jsonify({"success": False, "error": "ids_required"}), 400
+
+    action = (payload.get("action") or "").strip().lower()
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            if action == "status":
+                status = (payload.get("status") or "").strip().lower()
+                if status not in ("draft", "active", "expired", "rejected"):
+                    return jsonify({"success": False, "error": "invalid_status"}), 400
+                cur.execute(
+                    "UPDATE hot_topics SET status = %s, updated_at = NOW() WHERE id = ANY(%s)",
+                    (status, ids),
+                )
+                updated = cur.rowcount
+                conn.commit()
+                return jsonify({"success": True, "updated": updated})
+            if action == "industry":
+                industry = (payload.get("industry") or "").strip() or None
+                cur.execute(
+                    "UPDATE hot_topics SET industry = %s, updated_at = NOW() WHERE id = ANY(%s)",
+                    (industry, ids),
+                )
+                updated = cur.rowcount
+                conn.commit()
+                return jsonify({"success": True, "updated": updated})
+            if action == "brand":
+                try:
+                    brand_id = int(payload.get("brand_id")) if payload.get("brand_id") else None
+                except (TypeError, ValueError):
+                    return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+                cur.execute(
+                    "UPDATE hot_topics SET brand_id = %s, updated_at = NOW() WHERE id = ANY(%s)",
+                    (brand_id, ids),
+                )
+                updated = cur.rowcount
+                conn.commit()
+                return jsonify({"success": True, "updated": updated})
+            if action == "delete":
+                cur.execute("UPDATE prompts SET hotspot_id = NULL WHERE hotspot_id = ANY(%s)", (ids,))
+                unlinked = cur.rowcount
+                cur.execute("DELETE FROM hot_topics WHERE id = ANY(%s)", (ids,))
+                deleted = cur.rowcount
+                conn.commit()
+                return jsonify({"success": True, "deleted": deleted, "unlinked_prompts": unlinked})
+        return jsonify({"success": False, "error": "invalid_action"}), 400
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @app.route('/api/admin/hot-topics/collect', methods=['POST'])
 def admin_hot_topics_collect_api():
     """Module D-2.5: trigger a collection cycle for one or more sources.
@@ -7640,6 +7905,24 @@ def admin_hot_topics_collect_api():
     else:
         sources = [str(s).strip() for s in sources_raw if str(s).strip()]
     industry_filter = (payload.get("industry") or "").strip() or None
+    try:
+        brand_id = int(payload.get("brand_id")) if payload.get("brand_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "invalid_brand_id"}), 400
+
+    brand_context = None
+    if brand_id:
+        from psycopg2.extras import RealDictCursor
+        conn = get_db()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                brand_context = _fetch_admin_brand_context(cur, brand_id)
+                if not brand_context:
+                    return jsonify({"success": False, "error": "brand_not_found"}), 404
+                if not industry_filter:
+                    industry_filter = (brand_context.get("industry") or "").strip() or None
+        finally:
+            conn.close()
 
     try:
         try:
@@ -7654,6 +7937,7 @@ def admin_hot_topics_collect_api():
         result = run_collection_cycle(
             sources=sources,
             industry_filter=industry_filter,
+            brand_context=brand_context,
             get_db=get_db,
         )
     except Exception as e:

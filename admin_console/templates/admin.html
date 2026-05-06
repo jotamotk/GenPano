@@ -1650,8 +1650,8 @@
                   添加产品后，可在 Topic 生成时勾选定向，让 Topic / Prompt / Query 聚焦到具体 SKU。
                 </div>
               </div>
-              <button @click="openProductModal()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
-                <i data-lucide="plus" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i> 添加产品
+              <button @click="openProductDiscoveryModal()" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i> LLM 自动添加
               </button>
             </div>
           </div>
@@ -1785,6 +1785,47 @@
               </div>
             </div>
           </div>
+
+          <div x-show="productDiscoveryModalOpen" x-cloak
+               class="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-sm p-4"
+               @keydown.escape.window="closeProductDiscoveryModal()">
+            <div class="rounded-card-lg bg-surface shadow-modal max-w-lg w-full overflow-hidden" @click.outside="closeProductDiscoveryModal()">
+              <div class="px-5 py-3 border-b border-b-card flex items-center justify-between">
+                <h3 class="text-[15px] font-bold text-ink">LLM 自动添加产品</h3>
+                <button @click="closeProductDiscoveryModal()" class="text-ink-muted hover:text-ink text-[14px]">×</button>
+              </div>
+              <div class="p-5 space-y-3">
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">品牌 *</label>
+                  <select x-model="productDiscoveryForm.brand_id"
+                          class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]">
+                    <option value="">选择品牌...</option>
+                    <template x-for="b in productsBrands" :key="b.id">
+                      <option :value="b.id" x-text="b.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">搜索线索</label>
+                  <input x-model="productDiscoveryForm.query" type="text" placeholder="如：明星产品 / 热门 SKU / 新品"
+                         class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                </div>
+                <div>
+                  <label class="text-[11px] font-semibold text-ink-muted">数量</label>
+                  <input x-model.number="productDiscoveryForm.limit" type="number" min="1" max="20"
+                         class="mt-1 w-full h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px]" />
+                </div>
+                <div x-show="productDiscoveryError" class="text-[12px] text-danger" x-text="productDiscoveryError"></div>
+              </div>
+              <div class="px-5 py-3 border-t border-b-card flex items-center justify-end gap-2">
+                <button @click="closeProductDiscoveryModal()" class="h-9 px-4 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body">取消</button>
+                <button @click="discoverProducts()" :disabled="productDiscoverySaving"
+                        class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn disabled:opacity-50">
+                  <span x-text="productDiscoverySaving ? '发现中...' : '自动添加'"></span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -1855,12 +1896,51 @@
                 <option value="toutiao">头条</option>
                 <option value="llm_search">LLM 搜索</option>
               </select>
+              <select x-model="hotspotFilter.brandId" @change="loadHotspotsList()"
+                      class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">全部品牌</option>
+                <template x-for="b in productsBrands" :key="b.id">
+                  <option :value="b.id" x-text="b.name"></option>
+                </template>
+              </select>
+              <input x-model="hotspotFilter.industry" @input.debounce.300ms="loadHotspotsList()" type="text"
+                     placeholder="行业"
+                     class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] w-36" />
               <span class="text-[11px] text-ink-muted ml-auto" x-text="'共 ' + (hotspotsList.length || 0) + ' 条'"></span>
+            </div>
+            <div class="px-5 py-3 border-b border-b-card flex flex-wrap items-center gap-2 bg-surface-page/50">
+              <span class="text-[11px] font-semibold text-ink-muted" x-text="'已选 ' + selectedHotspotIds().length + ' 条'"></span>
+              <button @click="setHotspotPageSelection(true)" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold">全选本页</button>
+              <button @click="setHotspotPageSelection(false)" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold">清空</button>
+              <button @click="bulkUpdateHotspots('status', {status:'active'})" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn bg-success text-white text-[12px] font-semibold disabled:opacity-40">批量通过</button>
+              <button @click="bulkUpdateHotspots('status', {status:'rejected'})" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold disabled:opacity-40">批量驳回</button>
+              <button @click="bulkUpdateHotspots('status', {status:'expired'})" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold disabled:opacity-40">批量归档</button>
+              <select x-model="hotspotBulkBrandId" class="h-8 px-2 rounded-btn border border-b-default bg-surface text-[12px]">
+                <option value="">不指定品牌</option>
+                <template x-for="b in productsBrands" :key="b.id">
+                  <option :value="b.id" x-text="b.name"></option>
+                </template>
+              </select>
+              <button @click="bulkUpdateHotspots('brand', {brand_id: hotspotBulkBrandId || null})" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold disabled:opacity-40">绑定品牌</button>
+              <input x-model="hotspotBulkIndustry" type="text" placeholder="行业" class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] w-36" />
+              <button @click="bulkUpdateHotspots('industry', {industry: hotspotBulkIndustry})" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold disabled:opacity-40">绑定行业</button>
+              <button @click="bulkDeleteHotspots()" :disabled="selectedHotspotIds().length === 0"
+                      class="h-8 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12px] font-semibold disabled:opacity-40">批量删除</button>
             </div>
 
             <table class="w-full text-[12.5px]">
               <thead>
                 <tr class="text-[11px] text-ink-muted bg-surface-page">
+                  <th class="text-left font-semibold px-4 py-2 w-10">
+                    <input type="checkbox"
+                           :checked="hotspotsList.length > 0 && hotspotsList.every(h => hotspotSelectedIds[h.id])"
+                           @change="setHotspotPageSelection($event.target.checked)" />
+                  </th>
                   <th class="text-left font-semibold px-4 py-2">状态</th>
                   <th class="text-left font-semibold px-4 py-2">标题</th>
                   <th class="text-left font-semibold px-4 py-2">摘要</th>
@@ -1874,6 +1954,10 @@
               <tbody>
                 <template x-for="h in hotspotsList" :key="h.id">
                   <tr class="border-t border-b-card hover:bg-surface-page/50">
+                    <td class="px-4 py-2">
+                      <input type="checkbox" :checked="!!hotspotSelectedIds[h.id]"
+                             @change="toggleHotspotSelection(h.id, $event.target.checked)" />
+                    </td>
                     <td class="px-4 py-2">
                       <span class="text-[10px] font-semibold rounded-badge px-2 h-5 inline-flex items-center"
                             :class="hotspotStatusClass(h.status)" x-text="h.status"></span>
@@ -1906,10 +1990,10 @@
                   </tr>
                 </template>
                 <template x-if="!hotspotsLoading && hotspotsList.length === 0">
-                  <tr><td colspan="8" class="px-4 py-12 text-center text-[12px] text-ink-muted">暂无热点 — 点击「手填」或「立即采集」开始。</td></tr>
+                  <tr><td colspan="9" class="px-4 py-12 text-center text-[12px] text-ink-muted">暂无热点 — 点击「手填」或「立即采集」开始。</td></tr>
                 </template>
                 <template x-if="hotspotsLoading">
-                  <tr><td colspan="8" class="px-4 py-8 text-center text-[12px] text-ink-muted">加载中...</td></tr>
+                  <tr><td colspan="9" class="px-4 py-8 text-center text-[12px] text-ink-muted">加载中...</td></tr>
                 </template>
               </tbody>
             </table>
@@ -9822,11 +9906,18 @@ function adminApp() {
     productSaving: false,
     productSaveError: '',
     productEditing: { id: null, brand_id: '', name: '', sku: '', category: '', description: '', aliasesText: '', status: 'active' },
+    productDiscoveryModalOpen: false,
+    productDiscoverySaving: false,
+    productDiscoveryError: '',
+    productDiscoveryForm: { brand_id: '', query: '', limit: 8 },
     hotspotsList: [],
     hotspotCounts: { draft: 0, active: 0, expired: 0, total: 0 },
     hotspotsLoading: false,
     hotspotCollecting: false,
-    hotspotFilter: { status: '', source: '' },
+    hotspotFilter: { status: '', source: '', brandId: '', industry: '' },
+    hotspotSelectedIds: {},
+    hotspotBulkBrandId: '',
+    hotspotBulkIndustry: '',
     hotspotModalOpen: false,
     hotspotSaving: false,
     hotspotSaveError: '',
@@ -11976,6 +12067,50 @@ function adminApp() {
       this.productSaveError = '';
     },
 
+    async openProductDiscoveryModal(){
+      if (this.productsBrands.length === 0) await this.loadProductsList();
+      this.productDiscoveryError = '';
+      this.productDiscoveryForm = {
+        brand_id: this.productsFilter.brandId || (this.productsBrands[0] && this.productsBrands[0].id) || '',
+        query: this.productsFilter.q || '',
+        limit: 8,
+      };
+      this.productDiscoveryModalOpen = true;
+    },
+
+    closeProductDiscoveryModal(){
+      this.productDiscoveryModalOpen = false;
+      this.productDiscoveryError = '';
+    },
+
+    async discoverProducts(){
+      if (this.productDiscoverySaving) return;
+      const e = this.productDiscoveryForm;
+      if (!e.brand_id) { this.productDiscoveryError = '请选择品牌'; return; }
+      this.productDiscoverySaving = true;
+      this.productDiscoveryError = '';
+      try {
+        const res = await fetch(API_BASE + '/admin/brands/' + e.brand_id + '/products/discover', {
+          method:'POST', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ query: e.query || '', limit: e.limit || 8 }),
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) {
+          this.productDiscoveryError = body.message || body.error || '自动添加失败';
+          return;
+        }
+        this.closeProductDiscoveryModal();
+        this.productsFilter.brandId = String(e.brand_id);
+        this.toast(`已自动添加 ${body.created_count || 0} 个产品，跳过 ${body.skipped_count || 0} 个重复项`);
+        await this.loadProductsList();
+      } catch (err) {
+        this.productDiscoveryError = err.message || '自动添加失败';
+      } finally {
+        this.productDiscoverySaving = false;
+      }
+    },
+
     async saveProduct(){
       if (this.productSaving) return;
       const e = this.productEditing;
@@ -12052,17 +12187,71 @@ function adminApp() {
         const qs = new URLSearchParams();
         if (this.hotspotFilter.status) qs.set('status', this.hotspotFilter.status);
         if (this.hotspotFilter.source) qs.set('source', this.hotspotFilter.source);
+        if (this.hotspotFilter.brandId) qs.set('brand_id', this.hotspotFilter.brandId);
+        if (this.hotspotFilter.industry) qs.set('industry', this.hotspotFilter.industry);
         qs.set('limit', '300');
         const res = await fetch(API_BASE + '/admin/hot-topics?' + qs.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(()=>({}));
         if (!res.ok || body.success === false) throw new Error(body.error || 'load_failed');
         this.hotspotsList = body.hot_topics || [];
+        this.hotspotSelectedIds = {};
         this.hotspotCounts = body.counts || { draft:0, active:0, expired:0, total:0 };
       } catch (e) {
         this.toast('加载热点失败: ' + (e.message || e));
       } finally {
         this.hotspotsLoading = false;
         this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    selectedHotspotIds(){
+      return Object.keys(this.hotspotSelectedIds || {}).filter(id => this.hotspotSelectedIds[id]).map(id => Number(id));
+    },
+
+    toggleHotspotSelection(id, checked){
+      this.hotspotSelectedIds = { ...(this.hotspotSelectedIds || {}), [id]: !!checked };
+    },
+
+    setHotspotPageSelection(checked){
+      const next = { ...(this.hotspotSelectedIds || {}) };
+      (this.hotspotsList || []).forEach(h => { next[h.id] = !!checked; });
+      this.hotspotSelectedIds = next;
+    },
+
+    async bulkUpdateHotspots(action, extra){
+      const ids = this.selectedHotspotIds();
+      if (!ids.length) return;
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/batch', {
+          method:'POST', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ ids, action, ...(extra || {}) }),
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'batch_failed');
+        this.toast(`批量更新 ${body.updated || 0} 条热点`);
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('批量操作失败: ' + (e.message || e));
+      }
+    },
+
+    async bulkDeleteHotspots(){
+      const ids = this.selectedHotspotIds();
+      if (!ids.length) return;
+      if (!confirm(`确认删除 ${ids.length} 条热点？`)) return;
+      try {
+        const res = await fetch(API_BASE + '/admin/hot-topics/batch', {
+          method:'POST', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ ids, action:'delete' }),
+        });
+        const body = await res.json().catch(()=>({}));
+        if (!res.ok || body.success === false) throw new Error(body.error || 'delete_failed');
+        this.toast(`已删除 ${body.deleted || 0} 条热点`);
+        await this.loadHotspotsList();
+      } catch (e) {
+        this.toast('批量删除失败: ' + (e.message || e));
       }
     },
 
@@ -12167,6 +12356,8 @@ function adminApp() {
           headers:{ 'Content-Type':'application/json' },
           body: JSON.stringify({
             sources: ['llm_search', 'baidu', 'zhihu', 'weibo', 'toutiao'],
+            industry: this.hotspotFilter.industry || '',
+            brand_id: this.hotspotFilter.brandId || null,
           }),
         });
         const body = await res.json().catch(()=>({}));

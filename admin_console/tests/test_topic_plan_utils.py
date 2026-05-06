@@ -82,7 +82,7 @@ class TopicPlanUtilsTest(unittest.TestCase):
         )
 
         self.assertEqual([item.title for item in accepted], [candidates[1].title])
-        self.assertEqual([item["reason"] for item in skipped], ["duplicate", "duplicate"])
+        self.assertEqual([item["reason"] for item in skipped], ["duplicate_db", "looks_like_prompt"])
 
     def test_review_candidate_status_transition(self):
         self.assertEqual(transition_candidate_status("pending", "approved"), "approved")
