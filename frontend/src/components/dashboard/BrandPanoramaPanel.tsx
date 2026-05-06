@@ -342,6 +342,13 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
 
 /* ─── SoV Pie ─── */
 function SovPieChart({ data, primaryName }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-[240px] text-sm text-themed-muted">
+        暂无声量份额数据
+      </div>
+    );
+  }
   return (
     <ResponsiveContainer width="100%" height={240}>
       <PieChart>
@@ -396,6 +403,13 @@ function SovPieChart({ data, primaryName }) {
 
 /* ─── Competitor Quadrant ─── */
 function CompetitorQuadrant({ data, primaryName, t }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-[300px] text-sm text-themed-muted">
+        暂无竞品共现数据
+      </div>
+    );
+  }
   const xMax = Math.ceil(Math.max(...data.map((d) => d.sov)) * 1.1);
   const labels = {
     leader:    { x: xMax * 0.78, y: 0.92, text: t('dashboard.competition.q_leader') },
@@ -512,7 +526,7 @@ function CompetitorQuadrant({ data, primaryName, t }) {
 
 /* ─── PANO Trend ─── */
 function PanoTrendChart({ trendData, primaryName, competitors, t }) {
-  const data = useMemo(() => trendData.map((d, i) => {
+  const data = useMemo(() => (trendData ?? []).map((d, i) => {
     const row = { name: `${d.day}日`, [primaryName]: d.panoScore };
     competitors.forEach((c, idx) => {
       const base = c.panoScore;
@@ -520,6 +534,14 @@ function PanoTrendChart({ trendData, primaryName, competitors, t }) {
     });
     return row;
   }), [trendData, primaryName, competitors]);
+
+  if (!data.length) {
+    return (
+      <div className="flex items-center justify-center h-[280px] text-sm text-themed-muted">
+        暂无趋势数据
+      </div>
+    );
+  }
 
   return (
     <ResponsiveContainer width="100%" height={240}>
@@ -735,10 +757,14 @@ export default function BrandPanoramaPanel({
   /* ── KPI values ──
      PRD §4.6-IA-v2.N / DESIGN_TOKENS C11 (2026-04-20): mentionRate stored as
      decimal 0-1; render layer converts to percentage. Prevents "1620%" bug. */
-  /* ── Effective data sources (live override OR mock fallback) ── */
-  const sovData     = sovDataOverride && sovDataOverride.length > 0 ? sovDataOverride : SOV_DATA;
-  const bubbleData  = bubbleDataOverride && bubbleDataOverride.length > 0 ? bubbleDataOverride : COMPETITOR_SENTIMENT_BUBBLE;
-  const trendData   = trendDataOverride && trendDataOverride.length > 0 ? trendDataOverride : TREND_DATA;
+  /* ── Effective data sources ──
+     Live mode: use override (may be empty array → chart renders empty state).
+     Demo mode (no project): use mock arrays so anonymous visitors see content.
+     Important: never silently mix mock with live — once isLive=true, missing
+     data shows as empty so operators can see which pipeline parts have gaps. */
+  const sovData     = isLive ? (sovDataOverride ?? []) : SOV_DATA;
+  const bubbleData  = isLive ? (bubbleDataOverride ?? []) : COMPETITOR_SENTIMENT_BUBBLE;
+  const trendData   = isLive ? (trendDataOverride ?? []) : TREND_DATA;
 
   const mentionRateDec   = primary.mentionRate || 0;
   const mentionRateValue = +(mentionRateDec * 100).toFixed(1);
@@ -814,13 +840,13 @@ export default function BrandPanoramaPanel({
   ];
 
   const primaryAlerts = useMemo(() => {
-    if (diagnosticsOverride && diagnosticsOverride.length > 0) {
-      return diagnosticsOverride.slice(0, 3);
+    if (isLive) {
+      return (diagnosticsOverride ?? []).slice(0, 3);
     }
     return DIAGNOSTICS
       .filter((d) => d.severity === 'P0' || d.severity === 'P1')
       .slice(0, 3);
-  }, [diagnosticsOverride]);
+  }, [isLive, diagnosticsOverride]);
 
   const sparklineRows = [
     { label: t('dashboard.kpi.mention_rate'),   spark: sparkMention, value: `${mentionRateValue}%`,    color: 'var(--color-chart-2)' },
@@ -838,12 +864,6 @@ export default function BrandPanoramaPanel({
 
   return (
     <div className="space-y-4 pb-4">
-      {isLive && (
-        <div className="flex items-center gap-2 text-xs text-themed-muted">
-          <Badge variant="default" size="sm">LIVE</Badge>
-          <span>来自 /v1/projects/:id/{'{overview, competitors/metrics, diagnostics}'}</span>
-        </div>
-      )}
       {headerSlot}
 
       {/* ⓪ Hero */}

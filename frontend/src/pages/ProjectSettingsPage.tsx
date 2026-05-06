@@ -119,14 +119,6 @@ export default function ProjectSettingsPage() {
       <div className="border-b border-border px-8 py-6">
         <h1 className="text-3xl font-semibold text-ink mb-1">{t('project_settings.page_title')}</h1>
         <p className="text-sm text-ink-secondary">{project.name}</p>
-        {liveProjectId && (
-          <div className="mt-2 inline-flex items-center gap-2 text-xs">
-            <Badge variant="default">LIVE</Badge>
-            <span className="text-ink-muted">
-              已连接真实项目 — 保存 / 删除将持久化到后端
-            </span>
-          </div>
-        )}
       </div>
 
       {/* Main content */}
