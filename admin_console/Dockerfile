@@ -11,6 +11,8 @@ COPY app.py .
 COPY topic_plan.py .
 COPY prompt_matrix.py .
 COPY segment_profiles.py .
+COPY hotspot_collectors.py .
+COPY _layer_classifier.py .
 COPY templates/ ./templates/
 COPY scripts/ ./scripts/
 
