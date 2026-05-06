@@ -1,190 +1,412 @@
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useMemo } from 'react';
 import {
-  RadarChart,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
-  Radar,
-  ResponsiveContainer,
-  Legend,
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend, ResponsiveContainer,
 } from 'recharts';
-import { Badge, Card } from '../../components/ui';
 import { useLocale } from '../../contexts/LocaleContext';
-import { useProjects } from '../../hooks/useProjects';
-import { useCompetitorMetrics } from '../../hooks/useBrandMetrics';
-import { isLiveProjectId } from '../../hooks/useReports';
+import { useProject } from '../../contexts/ProjectContext';
+import { Card, Badge } from '../../components/ui';
+import { TrendChart } from '../../components/charts';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
+import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
+import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
+import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import {
-  LoadingCard,
-  NoProjectCard,
-  EmptyCard,
-  ErrorCard,
-} from './BrandVisibilityPage';
+  BRANDS,
+  AUTHORITY_RADAR_DATA,
+  SAME_GROUP_SHARED,
+  COMPETITOR_SENTIMENT_BUBBLE,
+  TIER2_COVERAGE_MATRIX,
+} from '../../data/mock';
 
-/* Phase 5 §"mock 退役" — 整页来自 /v1/projects/:id/competitors/metrics. */
+/* ─────────────────────────────────────────────────────────────
+   BrandCompetitorsPage — /brand/competitors (§4.6-IA-v2.C.2.2 + M)
+   ─────────────────────────────────────────────────────────────
+   T6' rebuild (2026-04-20): "我在哪些维度输给谁"
+   The old page listed 7 competitor-related charts with no narrative.
+   New structure answers one question, top-down:
+
+     ① Top 3 威胁卡 — 基于 PanoGap × SoV × Sentiment 综合威胁分
+     ② 选中竞品的深度拆解:
+        - Authority Radar 5 维对比 (我 vs 所选竞品 vs 行业中位)
+        - Brand × Topic 提及率热力图 (我 vs 所选竞品)
+        - 30d PANO 趋势对比
+     ③ 结构上下文 (非主干): Same-Group 共享域
+
+   Compact spacing, shared filter bar.
+*/
 export default function BrandCompetitorsPage() {
-  const navigate = useNavigate();
-  const { formatDate } = useLocale();
-  const { data: projects } = useProjects();
-  const liveProjectId = projects && projects.length > 0 ? projects[0].id : null;
-  const enabled = isLiveProjectId(liveProjectId);
-  const { data, isLoading, error, refetch } = useCompetitorMetrics(
-    enabled ? liveProjectId : null,
+  const { t } = useLocale();
+  const { activeProject } = useProject();
+  const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const { filters } = useBrandAnalysisFilters(); // C10
+
+  const competitors = useMemo(
+    () =>
+      (activeProject?.competitorBrandIds || [])
+        .map((id) => BRANDS.find((b) => b.id === id))
+        .filter(Boolean)
+        .slice(0, 6),
+    [activeProject],
   );
 
-  if (!enabled)
-    return (
-      <NoProjectCard onStart={() => navigate('/onboarding')} title="竞品" />
-    );
-  if (isLoading) return <LoadingCard />;
-  if (error)
-    return (
-      <ErrorCard
-        msg={error instanceof Error ? error.message : 'unknown'}
-        onRetry={() => refetch()}
-      />
-    );
-  if (!data || (!data.primary && data.competitors.length === 0))
-    return <EmptyCard onRefresh={() => refetch()} title="竞品" />;
+  // ──────────────────────────────────────────────────────────────
+  // ① Threat scoring. We rank competitors by a composite threat score:
+  //   panoGap     = max(0, competitor.panoScore − primary.panoScore)
+  //   sovStrength = competitor SoV (from COMPETITOR_SENTIMENT_BUBBLE if available, else mentionRate proxy)
+  //   sentGap     = max(0, competitor.sentiment − primary.sentiment)
+  //   threatScore = 0.45 × panoGap + 0.35 × sovStrength + 0.20 × sentGap*100
+  // Higher = more threatening.
+  // ──────────────────────────────────────────────────────────────
+  const threatCards = useMemo(() => {
+    const bubbleByName = new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
+    return competitors
+      .map((c) => {
+        const bubble = bubbleByName.get(c.name);
+        const sov = bubble?.sov ?? (c.mentionRate || 0) * 100;
+        const panoGap = Math.max(0, (c.panoScore || 0) - (primary.panoScore || 0));
+        const sentGap = Math.max(0, (c.sentiment || 0) - (primary.sentiment || 0));
+        const threatScore = 0.45 * panoGap + 0.35 * sov + 0.20 * sentGap * 100;
 
-  const rows = [
-    ...(data.primary ? [data.primary] : []),
-    ...data.competitors,
-  ];
+        // Identify which dimension they're beating us on hardest
+        const wins = [];
+        if (panoGap >= 2) wins.push({ key: 'pano', label: 'PANO', delta: panoGap.toFixed(1) });
+        if (sov > (primary.mentionRate || 0) * 100) wins.push({ key: 'sov', label: 'SoV', delta: `+${(sov - (primary.mentionRate || 0) * 100).toFixed(1)}%` });
+        if (sentGap >= 0.05) wins.push({ key: 'sentiment', label: '情感', delta: `+${Math.round(sentGap * 100)}pt` });
+        return { brand: c, sov, panoGap, sentGap, threatScore, wins };
+      })
+      .sort((a, b) => b.threatScore - a.threatScore)
+      .slice(0, 3);
+  }, [competitors, primary]);
 
-  // Radar data: each metric scaled 0-100 for fair comparison
-  const radarMetrics = ['avg_geo_score', 'avg_mention_rate', 'avg_sov', 'avg_sentiment'] as const;
-  const radarLabels: Record<string, string> = {
-    avg_geo_score: 'GEO 分',
-    avg_mention_rate: '提及率',
-    avg_sov: 'SoV',
-    avg_sentiment: '情感',
-  };
-  const radarData = radarMetrics.map((metric) => {
-    const point: Record<string, number | string> = { metric: radarLabels[metric] };
-    for (const r of rows) {
-      const raw = r[metric];
-      let scaled = 0;
-      if (raw != null) {
-        if (metric === 'avg_geo_score') scaled = raw;
-        else if (metric === 'avg_sentiment') scaled = (raw + 1) * 50;
-        else scaled = raw * 100;
-      }
-      point[`brand_${r.brand_id}`] = scaled;
-    }
-    return point;
-  });
-  const radarColors = [
-    '#635bff',
-    '#16a34a',
-    '#f59e0b',
-    '#dc2626',
-    '#0ea5e9',
-    '#a855f7',
+  const [focusCompetitorId, setFocusCompetitorId] = useState(
+    threatCards[0]?.brand?.id || competitors[0]?.id,
+  );
+  const focus = competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
+
+  // ──────────────────────────────────────────────────────────────
+  // ②a Authority Radar — 1:1 我 vs 所选竞品 vs 行业中位
+  // ──────────────────────────────────────────────────────────────
+  const radarData = useMemo(
+    () =>
+      (AUTHORITY_RADAR_DATA || []).map((row) => ({
+        dimension: row.tier,
+        me: row.me,
+        industryMedian: row.industryMedian,
+        focus: row.topCompetitor, // mock reuses "topCompetitor" — treated as the selected
+      })),
+    [],
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // ②b Brand × Topic mention-rate heatmap for me vs focus (sequential).
+  //     Deterministic synthetic generator until API lands.
+  // ──────────────────────────────────────────────────────────────
+  const heatmapTopics = [
+    { topicId: 'c1', topicLabel: '保湿精华推荐' },
+    { topicId: 'c2', topicLabel: '抗老护肤品牌' },
+    { topicId: 'c3', topicLabel: '敏感肌适用' },
+    { topicId: 'c4', topicLabel: '高端美白面霜' },
+    { topicId: 'c5', topicLabel: '抗皱眼霜对比' },
+    { topicId: 'c6', topicLabel: '性价比精华' },
+    { topicId: 'c7', topicLabel: '孕妇可用成分' },
+    { topicId: 'c8', topicLabel: '夜间修护方案' },
   ];
+  const rowSeeds = focus
+    ? [
+        { brandId: primary.id, brandName: primary.name, _base: primary.mentionRate || 0 },
+        { brandId: focus.id, brandName: focus.name, _base: focus.mentionRate || 0 },
+      ]
+    : [];
+  const compareHeatmapRows = rowSeeds.map((r) => ({
+    brandId: r.brandId,
+    brandName: r.brandName,
+    values: heatmapTopics.map((topic, i) => {
+      const wave = Math.sin((r.brandName.length + i) * 1.23) * 0.07;
+      const v = Math.max(0, Math.min(1, r._base + wave + (i % 2 === 0 ? 0.015 : -0.01)));
+      return { topicId: topic.topicId, topicLabel: topic.topicLabel, value: v, sample: 36 + ((i + r.brandName.length) % 19) };
+    }),
+  }));
+
+  // ──────────────────────────────────────────────────────────────
+  // ②c PANO trend (我 vs focus)
+  // ──────────────────────────────────────────────────────────────
+  const trendData = useMemo(() => {
+    const maxDays = primary.sparkPano?.length || 14;
+    return Array.from({ length: maxDays }, (_, i) => {
+      const point = { name: `D${i + 1}` };
+      point[primary.id] = primary.sparkPano?.[i] || 0;
+      if (focus) point[focus.id] = focus.sparkPano?.[i] || 0;
+      return point;
+    });
+  }, [primary, focus]);
+
+  const trendLines = focus
+    ? [
+        { key: primary.id, label: primary.name, color: 'var(--color-accent)', area: true },
+        { key: focus.id, label: focus.name, color: 'var(--color-chart-3)', area: false, dashed: true },
+      ]
+    : [];
+
+  // ──────────────────────────────────────────────────────────────
+  // ③ Structural context (kept but pushed below the fold)
+  // ──────────────────────────────────────────────────────────────
+  const sameGroupItems = SAME_GROUP_SHARED?.sharedDomains?.filter(
+    (d) => d.domain !== `${primary.id}.com.cn`,
+  ) || [];
+
+  // ──────────────────────────────────────────────────────────────
+  // ④ Tier 2 权威媒体覆盖矩阵 (我 vs 3 主要竞品)
+  // ──────────────────────────────────────────────────────────────
+  const tier2Matrix = TIER2_COVERAGE_MATRIX;
+  const tier2MaxCount = useMemo(() => {
+    if (!tier2Matrix?.brands) return 1;
+    let max = 0;
+    tier2Matrix.brands.forEach((row) => {
+      (row.counts || []).forEach((v) => {
+        if (v > max) max = v;
+      });
+    });
+    return max || 1;
+  }, [tier2Matrix]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Badge variant="default">LIVE</Badge>
-        <h2 className="text-heading-2 font-bold text-themed-primary">竞品</h2>
-        <span className="text-sm text-themed-muted">
-          {formatDate(data.period.from)} – {formatDate(data.period.to)}
-        </span>
+    <div className="space-y-3 pb-4">
+      <BrandSubpageLiveBanner variant="competitors" />
+      {/* Page header */}
+      <div>
+        <h2 className="text-xl font-brand font-bold text-themed-primary">
+          {t('brand_competitors.page_title')}
+        </h2>
+        <p className="text-xs text-themed-muted mt-0.5">
+          {t('brand_competitors.page_subtitle', { brand: primary.name })}
+        </p>
       </div>
 
-      <Card className="p-5" onClick={undefined} style={{}}>
-        <h3 className="text-sm font-semibold text-themed-primary mb-3">
-          四维雷达
-        </h3>
-        <ResponsiveContainer width="100%" height={360}>
-          <RadarChart data={radarData}>
-            <PolarGrid stroke="var(--color-chart-line-grid)" />
-            <PolarAngleAxis dataKey="metric" tick={{ fontSize: 11 }} />
-            <PolarRadiusAxis tick={{ fontSize: 9 }} angle={90} />
-            <Legend />
-            {rows.map((r, idx) => (
-              <Radar
-                key={r.brand_id}
-                name={r.brand_name ?? `Brand #${r.brand_id}`}
-                dataKey={`brand_${r.brand_id}`}
-                stroke={radarColors[idx % radarColors.length]}
-                fill={radarColors[idx % radarColors.length]}
-                fillOpacity={0.15}
-              />
-            ))}
-          </RadarChart>
-        </ResponsiveContainer>
-      </Card>
+      {/* Shared filter bar */}
+      <BrandAnalysisFilterBar />
 
-      <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[10px] uppercase tracking-wider text-themed-muted">
-                <th className="py-2 pl-5">品牌</th>
-                <th className="py-2 px-3 text-right">GEO 分</th>
-                <th className="py-2 px-3 text-right">提及率</th>
-                <th className="py-2 px-3 text-right">SoV</th>
-                <th className="py-2 px-3 text-right">情感</th>
-                <th className="py-2 px-3 text-right">共现</th>
-                <th className="py-2 px-3 text-right">30d Δ%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const isPrimary = data.primary?.brand_id === r.brand_id;
-                const delta = r.delta_30d_pct;
-                const tone =
-                  delta == null
-                    ? 'text-themed-muted'
-                    : delta > 0
-                      ? 'text-themed-success'
-                      : delta < 0
-                        ? 'text-themed-danger'
-                        : 'text-themed-muted';
-                return (
-                  <tr
-                    key={r.brand_id}
-                    className="border-t border-themed-subtle hover:bg-themed-subtle cursor-pointer"
-                    onClick={() => navigate(`/brands/${r.brand_id}?tab=overview`)}
-                  >
-                    <td className="py-2 pl-5 pr-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-themed-primary font-medium">
-                          {r.brand_name ?? `Brand #${r.brand_id}`}
-                        </span>
-                        {isPrimary && <Badge variant="accent" size="sm">主品牌</Badge>}
-                      </div>
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums text-themed-primary font-semibold">
-                      {r.avg_geo_score != null ? r.avg_geo_score.toFixed(1) : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                      {r.avg_mention_rate != null
-                        ? `${(r.avg_mention_rate * 100).toFixed(1)}%`
-                        : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                      {r.avg_sov != null ? `${(r.avg_sov * 100).toFixed(1)}%` : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                      {r.avg_sentiment != null ? r.avg_sentiment.toFixed(2) : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                      {r.co_mention_count}
-                    </td>
-                    <td className={`py-2 px-3 text-right tabular-nums ${tone}`}>
-                      {delta != null
-                        ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`
-                        : '—'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* ① Top 3 威胁卡 */}
+      <div>
+        <div className="flex items-baseline justify-between mb-1.5 px-1">
+          <h3 className="text-[13px] font-semibold text-themed-primary">Top 3 威胁竞品</h3>
+          <span className="text-[11px] text-themed-muted">
+            按 PANO 差距 × SoV × 情感综合排序 · 点击卡片切换下方深度拆解
+          </span>
         </div>
-      </Card>
+        {threatCards.length === 0 ? (
+          <Card className="p-3">
+            <p className="text-xs text-themed-muted">暂未配置竞品，可在 Settings · 品牌 中添加 3-5 个竞品开始对比。</p>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {threatCards.map((card, idx) => {
+              const isFocus = card.brand.id === focusCompetitorId;
+              return (
+                <Card
+                  key={card.brand.id}
+                  className="p-3 cursor-pointer transition-all"
+                  style={{
+                    borderColor: isFocus ? 'var(--color-accent)' : 'var(--color-border-subtle)',
+                    borderWidth: isFocus ? 2 : 1,
+                    background: isFocus ? 'var(--color-accent-bg-light)' : 'var(--color-bg-card)',
+                  }}
+                  onClick={() => setFocusCompetitorId(card.brand.id)}
+                >
+                  <div className="flex items-start justify-between mb-1.5">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold text-themed-muted">#{idx + 1} 威胁</span>
+                        {isFocus && <Badge variant="accent" size="xs">聚焦中</Badge>}
+                      </div>
+                      <h4 className="text-sm font-semibold text-themed-primary mt-0.5">{card.brand.name}</h4>
+                    </div>
+                    <span className="text-lg font-brand font-bold text-themed-primary tabular-nums leading-none">
+                      {card.threatScore.toFixed(0)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-themed-muted mb-1.5">在以下维度领先我们:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {card.wins.length === 0 ? (
+                      <span className="text-[11px] text-themed-muted">整体略胜我方</span>
+                    ) : (
+                      card.wins.map((w) => (
+                        <Badge key={w.key} variant="red" size="sm">
+                          {w.label} {w.delta}
+                        </Badge>
+                      ))
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {focus && (
+        <>
+          {/* ②a Authority Radar */}
+          <Card className="p-3">
+            <div className="flex items-baseline justify-between mb-1">
+              <h3 className="text-[13px] font-semibold text-themed-primary">
+                Authority Radar · 我 vs {focus.name}
+              </h3>
+              <span className="text-[11px] text-themed-muted">
+                Tier 1 官方 / Tier 2 权威媒体 / Tier 3 KOL / Tier 4 UGC / 总覆盖
+              </span>
+            </div>
+            <ResponsiveContainer width="100%" height={260}>
+              <RadarChart data={radarData} margin={{ top: 12, right: 48, bottom: 12, left: 48 }}>
+                <PolarGrid stroke="var(--color-border-subtle)" />
+                <PolarAngleAxis dataKey="dimension" tick={{ fontSize: 11, fill: 'var(--color-chart-axis-text)' }} />
+                <PolarRadiusAxis tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }} />
+                <Radar name={primary.name} dataKey="me" stroke="var(--color-accent)" fill="var(--color-accent)" fillOpacity={0.2} strokeWidth={2} />
+                <Radar name={focus.name} dataKey="focus" stroke="var(--color-chart-3)" fill="var(--color-chart-3)" fillOpacity={0.1} strokeWidth={1.5} />
+                <Radar name="行业中位" dataKey="industryMedian" stroke="var(--color-chart-line-grid)" fill="var(--color-chart-line-grid)" fillOpacity={0.05} strokeWidth={1} />
+                <Legend verticalAlign="bottom" height={24} iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, color: 'var(--color-text-muted)' }} />
+              </RadarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* ②b Brand × Topic heatmap (我 vs focus) */}
+          <div>
+            <div className="flex items-baseline justify-between mb-1.5 px-1">
+              <h3 className="text-[13px] font-semibold text-themed-primary">
+                Topic 胜负图 · 我 vs {focus.name}
+              </h3>
+              <span className="text-[11px] text-themed-muted">
+                颜色越深 = 提及率越高 · 对比同一列看谁在该 Topic 占优
+              </span>
+            </div>
+            <BrandTopicHeatmap
+              rows={compareHeatmapRows}
+              scale="sequential"
+              metric="mentionRate"
+              highlightBrandId={primary.id}
+            />
+          </div>
+
+          {/* ②c PANO trend */}
+          <Card className="p-3">
+            <div className="flex items-baseline justify-between mb-1">
+              <h3 className="text-[13px] font-semibold text-themed-primary">
+                PANO 趋势 · 我 vs {focus.name}
+              </h3>
+              <span className="text-[11px] text-themed-muted">近 14 天走势</span>
+            </div>
+            <TrendChart data={trendData} lines={trendLines} height={200} />
+          </Card>
+        </>
+      )}
+
+      {/* ③ Tier 2 权威媒体覆盖对比 (我 vs 3 主要竞品 × 8 家媒体) */}
+      {tier2Matrix?.brands?.length > 0 && (
+        <Card className="p-3">
+          <div className="flex items-baseline justify-between mb-1">
+            <h3 className="text-[13px] font-semibold text-themed-primary">
+              Tier 2 权威媒体覆盖对比
+            </h3>
+            <span className="text-[11px] text-themed-muted">
+              行 = 媒体域 · 列 = 品牌 · 单元格 = 近 30 天被引用次数 · 颜色越深 = 次数越多
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-themed-card">
+                  <th className="py-1.5 px-2 text-left text-[10px] uppercase tracking-wider text-themed-muted font-medium">媒体域</th>
+                  {tier2Matrix.brands.map((b) => (
+                    <th
+                      key={b.brandId}
+                      className="py-1.5 px-2 text-right text-[10px] uppercase tracking-wider font-medium"
+                      style={{
+                        color: b.brandId === primary.id
+                          ? 'var(--color-accent)'
+                          : 'var(--color-text-muted)',
+                      }}
+                    >
+                      {b.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tier2Matrix.domains.map((domain, di) => (
+                  <tr key={domain} className="border-b border-themed-card last:border-b-0">
+                    <td className="py-1.5 px-2 text-themed-primary tabular-nums">{domain}</td>
+                    {tier2Matrix.brands.map((b) => {
+                      const v = b.counts[di] ?? 0;
+                      const intensity = Math.min(1, v / tier2MaxCount);
+                      const isMe = b.brandId === primary.id;
+                      // Use accent for me, neutral gray for competitors
+                      const bg = isMe
+                        ? `color-mix(in srgb, var(--color-accent) ${Math.round(intensity * 60)}%, transparent)`
+                        : `color-mix(in srgb, var(--color-chart-line-grid) ${Math.round(intensity * 55)}%, transparent)`;
+                      return (
+                        <td
+                          key={b.brandId}
+                          className="py-1.5 px-2 text-right tabular-nums"
+                          style={{
+                            background: bg,
+                            color: isMe && intensity > 0.3 ? 'var(--color-accent)' : 'var(--color-text-body)',
+                            fontWeight: isMe ? 600 : 400,
+                          }}
+                        >
+                          {v || '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-themed-muted mt-2">
+            {'读法: 同一行颜色最深的列 = 在该媒体拿到最多曝光的品牌; '}
+            {'如果"我"一整列都很浅 = 在 Tier 2 权威媒体整体失声, 对应的行动面在 '}
+            <span className="text-themed-primary font-medium">引用 → 内容缺口 / PR 目标</span>。
+          </p>
+        </Card>
+      )}
+
+      {/* ④ Same-Group 共享外链 (结构背景, 非胜负信号) */}
+      {sameGroupItems.length > 0 && (
+        <Card className="p-3">
+          <div className="flex items-baseline justify-between mb-1">
+            <h3 className="text-[13px] font-semibold text-themed-primary">
+              {t('brand_competitors.same_group_title')}
+            </h3>
+            <span className="text-[11px] text-themed-muted">
+              {SAME_GROUP_SHARED?.group && `隶属集团: ${SAME_GROUP_SHARED.group}`}
+              {SAME_GROUP_SHARED?.sharedRatio != null && ` · 共享占总引用 ${Math.round(SAME_GROUP_SHARED.sharedRatio * 100)}%`}
+            </span>
+          </div>
+          <p className="text-[11px] text-themed-muted mb-2 leading-relaxed">
+            {`你和以下子品牌属于同一母集团。当 AI 引擎引用这些官方/权威域名时, 母集团叙事会被加强, 但同一母集团的 `}
+            <span className="text-themed-primary">兄弟品牌之间也会在同一 Topic 里互相稀释 SoV</span>
+            {` — 这些不算"敌方竞品", 但在做 Topic 层策略时需要识别出来, 以免和自家人抢占位。`}
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {sameGroupItems.map((item, idx) => (
+              <div key={idx} className="flex items-center justify-between py-1.5 px-2 rounded bg-themed-subtle/40">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-themed-primary tabular-nums">{item.domain}</span>
+                  <Badge variant="gray" size="xs">{`Tier ${item.tier}`}</Badge>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-themed-muted">子品牌:</span>
+                  {(item.sharedWith || []).map((brand) => (
+                    <Badge key={brand} variant={brand === primary.id ? 'blue' : 'gray'} size="xs">
+                      {brand}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
     </div>
   );
 }
