@@ -1,6 +1,11 @@
+import os
+import sys
 import unittest
+from types import SimpleNamespace
 
 from admin_console.topic_plan import (
+    DoubaoConfig,
+    DoubaoTopicPlanClient,
     LLMTopic,
     TopicPlanLLMError,
     build_topic_plan_messages,
@@ -138,6 +143,63 @@ class TopicPlanUtilsTest(unittest.TestCase):
         self.assertFalse(is_natural_consumer_topic("LVMH珠宝腕表品类线上消费人群画像与转化路径分析"))
         self.assertTrue(is_natural_consumer_topic("想买大牌香水送人哪种味道不容易踩雷"))
         self.assertTrue(is_natural_consumer_topic("hiking有什么鞋子推荐"))
+
+
+    def test_topic_plan_client_applies_configurable_timeout(self):
+        captured = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                captured["request_timeout"] = kwargs.get("timeout")
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=(
+                                    '{"topics":[{"title":"Which NIKE running shoes fit beginners?",'
+                                    '"brand":"NIKE","dimension":"question","reason":"Covers a gap",'
+                                    '"confidence":0.82,"coverage_gap":"NIKE:question"}]}'
+                                )
+                            )
+                        )
+                    ],
+                    usage={"total_tokens": 12},
+                )
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured["client_timeout"] = kwargs.get("timeout")
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        original_openai = sys.modules.get("openai")
+        original_timeout = os.environ.get("TOPIC_PLAN_LLM_TIMEOUT_SECONDS")
+        sys.modules["openai"] = SimpleNamespace(OpenAI=FakeOpenAI)
+        os.environ["TOPIC_PLAN_LLM_TIMEOUT_SECONDS"] = "120"
+        try:
+            client = DoubaoTopicPlanClient(
+                DoubaoConfig(api_key="key", base_url="https://example.test", model="model")
+            )
+            topics, _ = client.generate_topics(
+                industry="Sports",
+                category="All categories",
+                brands=[{"name": "NIKE"}],
+                coverage_gaps=[{"brand_id": 18, "brand": "NIKE", "type": "question", "count": 1}],
+                max_topics=1,
+                existing_topics=[],
+            )
+        finally:
+            if original_openai is None:
+                sys.modules.pop("openai", None)
+            else:
+                sys.modules["openai"] = original_openai
+            if original_timeout is None:
+                os.environ.pop("TOPIC_PLAN_LLM_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["TOPIC_PLAN_LLM_TIMEOUT_SECONDS"] = original_timeout
+
+        self.assertEqual(captured["client_timeout"], 120)
+        self.assertEqual(captured["request_timeout"], 120)
+        self.assertEqual(topics[0].brand, "NIKE")
 
 
 if __name__ == "__main__":
