@@ -372,10 +372,12 @@ def test_llm_segment_generation_service_boundary(client, monkeypatch):
     login(monkeypatch)
     conn = fake_db(monkeypatch)
     calls = []
+    service_options = {}
 
     class FakeService:
-        def __init__(self, model=None):
+        def __init__(self, model=None, allow_fallback=None):
             self.model = model
+            service_options["allow_fallback"] = allow_fallback
 
         def generate_segments(self, **kwargs):
             calls.append(kwargs)
@@ -398,6 +400,7 @@ def test_llm_segment_generation_service_boundary(client, monkeypatch):
     assert body["drafts"][0]["brand_id"] == "42"
     assert body["drafts"][0]["brand_name"] == "CHANEL"
     assert calls[0]["brand_name"] == "CHANEL"
+    assert service_options["allow_fallback"] is False
     assert any("INSERT INTO segment_generation_logs" in sql for sql, _ in conn.statements)
     assert any("generate_segments" in str(params) for _sql, params in conn.statements)
 
@@ -560,10 +563,12 @@ def test_llm_profile_generation_service_boundary(client, monkeypatch):
         lambda cur, segment_id: {"id": segment_id, "name": "Segment", "brand_id": "42", "brand_name": "CHANEL"},
     )
     calls = []
+    service_options = {}
 
     class FakeService:
-        def __init__(self, model=None):
+        def __init__(self, model=None, allow_fallback=None):
             self.model = model
+            service_options["allow_fallback"] = allow_fallback
 
         def generate_profiles(self, **kwargs):
             calls.append(kwargs)
@@ -586,6 +591,7 @@ def test_llm_profile_generation_service_boundary(client, monkeypatch):
     assert body["drafts"][0]["brand_id"] == "42"
     assert body["drafts"][0]["brand_name"] == "CHANEL"
     assert calls[0]["segment"]["id"] == "SEG-001"
+    assert service_options["allow_fallback"] is False
     assert any("INSERT INTO profile_generation_logs" in sql for sql, _ in conn.statements)
 
 
