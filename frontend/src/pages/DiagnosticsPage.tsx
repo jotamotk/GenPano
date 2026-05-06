@@ -8,11 +8,12 @@
  * 不存在 "执行剧本" / "优化步骤" 字段, 任何剧本式建议属付费咨询业务边界 (PRD §4.8.6).
  */
 import { useMemo, useState } from 'react';
-import { Card } from '../components/ui';
+import { useNavigate } from 'react-router-dom';
+import { Button, Card } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
-import { DIAGNOSTICS } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useDiagnostics, toMockShape } from '../hooks/useDiagnostics';
+import { isLiveProjectId } from '../hooks/useReports';
 
 const SEVERITY_META = [
   { id: 'P0', label: '紧急', borderClass: 'border-l-red-500', textClass: 'text-themed-danger' },
@@ -28,21 +29,65 @@ const TYPE_META = [
 ];
 
 export default function DiagnosticsPage() {
+  const navigate = useNavigate();
   const [expandedId, setExpandedId] = useState(null);
   const [filterSev, setFilterSev] = useState('all');
   const [filterType, setFilterType] = useState('all');
   const [showLeadForm, setShowLeadForm] = useState(false);
   const [leadDiagId, setLeadDiagId] = useState(null);
 
-  // Live data: when the user has a real backend project, prefer those
-  // diagnostics. Mock fallback when project list is empty.
-  const { data: liveProjects } = useProjects();
+  // Phase 5 §"mock 退役" — diagnostics 100% from backend.
+  const { data: liveProjects, isLoading: projLoading } = useProjects();
   const liveProjectId =
     liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
-  const { data: liveDiag } = useDiagnostics(liveProjectId, { limit: 200 });
-  const liveItems = liveDiag?.items ?? [];
-  const useLive = liveItems.length > 0;
-  const allItems: any[] = useLive ? liveItems.map(toMockShape) : DIAGNOSTICS;
+  const enabled = isLiveProjectId(liveProjectId);
+  const { data: liveDiag, isLoading: diagLoading, refetch } = useDiagnostics(
+    enabled ? liveProjectId : null,
+    { limit: 200 },
+  );
+  const allItems: any[] = (liveDiag?.items ?? []).map(toMockShape);
+
+  if (projLoading || (enabled && diagLoading)) {
+    return (
+      <Card className="p-12 text-center" onClick={undefined} style={{}}>
+        <div className="text-sm text-themed-muted">加载…</div>
+      </Card>
+    );
+  }
+
+  if (!enabled) {
+    return (
+      <Card className="p-12 text-center" onClick={undefined} style={{}}>
+        <div className="text-3xl mb-3">🩺</div>
+        <h3 className="text-base font-semibold text-themed-primary mb-2">
+          先创建 Project
+        </h3>
+        <p className="text-sm text-themed-muted mb-4 max-w-md mx-auto">
+          诊断引擎需要 Project 上下文才能工作.
+        </p>
+        <Button variant="primary" size="sm" onClick={() => navigate('/onboarding')}>
+          开始引导
+        </Button>
+      </Card>
+    );
+  }
+
+  if (allItems.length === 0) {
+    return (
+      <Card className="p-12 text-center" onClick={undefined} style={{}}>
+        <div className="text-3xl mb-3">✨</div>
+        <h3 className="text-base font-semibold text-themed-primary mb-2">
+          暂无诊断
+        </h3>
+        <p className="text-sm text-themed-muted mb-4 max-w-md mx-auto">
+          诊断引擎在每日 cron 触发. 也可以手动触发刷新.
+        </p>
+        <Button variant="primary" size="sm" onClick={() => refetch()}>
+          刷新
+        </Button>
+      </Card>
+    );
+  }
 
   const openLeadForm = (diagId) => {
     setLeadDiagId(diagId);
