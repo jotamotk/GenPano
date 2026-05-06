@@ -374,8 +374,39 @@ def _record_admin_login_attempt(cur, email, success, failure_code=None):
     )
 
 
+def _read_backend_session_admin_id():
+    """Decode the Starlette ``SessionMiddleware`` cookie set by FastAPI.
+
+    Backend's admin auth (``/api/admin/auth/login``) signs the session
+    payload with ``itsdangerous.TimestampSigner(ADMIN_SESSION_SECRET)``,
+    base64-encodes the JSON, and stores it under ``genpano_admin_session``.
+    During the admin_console → backend migration the Flask app must trust
+    the same cookie so any not-yet-migrated admin route still sees
+    "logged in" after the user authenticated through FastAPI.
+    """
+    raw = request.cookies.get("genpano_admin_session") if has_request_context() else None
+    if not raw:
+        return None
+    secret = (
+        os.environ.get("ADMIN_SESSION_SECRET")
+        or os.environ.get("USER_JWT_SECRET")
+        or "dev-session-secret-change-in-production-32-bytes-minimum"
+    )
+    try:
+        import itsdangerous
+        from base64 import b64decode
+        signer = itsdangerous.TimestampSigner(secret)
+        # Match SessionMiddleware default max_age set in backend main.py (7 days).
+        payload = signer.unsign(raw.encode("utf-8"), max_age=60 * 60 * 24 * 7)
+        data = json.loads(b64decode(payload))
+    except Exception:
+        return None
+    admin_user_id = data.get("admin_user_id") if isinstance(data, dict) else None
+    return admin_user_id or None
+
+
 def _current_admin():
-    admin_user_id = session.get("admin_user_id")
+    admin_user_id = session.get("admin_user_id") or _read_backend_session_admin_id()
     if not admin_user_id:
         return None
     conn = get_db()
@@ -6427,80 +6458,6 @@ def admin_api_mount_alias(api_path):
 def admin_page(admin_path=None):
     """Serve the Admin console shell and its sub-routes."""
     return render_template('admin.html')
-
-
-@app.route('/api/admin/session')
-def admin_session_api():
-    admin = _current_admin()
-    if not admin:
-        return jsonify({"authenticated": False})
-    return jsonify({"authenticated": True, "admin": admin})
-
-
-@app.route('/api/admin/login', methods=['POST'])
-def admin_login_api():
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    email = (payload.get("email") or "").strip().lower()
-    password = payload.get("password") or ""
-    if not email or not password:
-        return jsonify({"success": False, "error": "email_and_password_required"}), 400
-
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, email, password_hash, role, status
-                FROM admin_users
-                WHERE LOWER(email) = LOWER(%s)
-                """,
-                (email,),
-            )
-            admin = cur.fetchone()
-            if not admin:
-                _record_admin_login_attempt(cur, email, False, "UNKNOWN_EMAIL")
-                conn.commit()
-                return jsonify({"success": False, "error": "invalid_credentials"}), 401
-
-            if admin.get("status") != "active":
-                _record_admin_login_attempt(cur, email, False, "USER_SUSPENDED")
-                conn.commit()
-                return jsonify({"success": False, "error": "admin_suspended"}), 403
-
-            if not _verify_admin_password(password, admin.get("password_hash")):
-                _record_admin_login_attempt(cur, email, False, "WRONG_PASSWORD")
-                conn.commit()
-                return jsonify({"success": False, "error": "invalid_credentials"}), 401
-
-            cur.execute(
-                "UPDATE admin_users SET last_login_at = NOW(), updated_at = NOW() WHERE id = %s",
-                (admin["id"],),
-            )
-            _record_admin_login_attempt(cur, email, True, None)
-            conn.commit()
-
-            session.clear()
-            session.permanent = True
-            session["admin_user_id"] = admin["id"]
-            return jsonify({
-                "success": True,
-                "admin": {
-                    "id": admin["id"],
-                    "email": admin["email"],
-                    "role": admin["role"],
-                    "status": admin["status"],
-                },
-            })
-    finally:
-        conn.close()
-
-
-@app.route('/api/admin/logout', methods=['POST'])
-def admin_logout_api():
-    session.clear()
-    return jsonify({"success": True})
 
 
 @app.route('/api/admin/brands')

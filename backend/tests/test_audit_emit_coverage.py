@@ -28,7 +28,14 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Paths exempt from emit_audit requirement. Each entry must be justified.
 # Add only when migrating an admin route that legitimately cannot or should
 # not call emit_audit (e.g., session login). Keep the list narrow.
-EXEMPT_PATHS: dict[str, str] = {}
+EXEMPT_PATHS: dict[str, str] = {
+    # Login + logout audit themselves through admin_login_attempts (every
+    # probe, success or failure). Calling emit_audit() would either fail
+    # (no operator yet on a failed login) or duplicate the trail. The
+    # existing audit-log dashboard already surfaces login_attempts.
+    "/api/admin/auth/login": "writes admin_login_attempts directly (login probe)",
+    "/api/admin/auth/logout": "session clear has no security-relevant state to log",
+}
 
 
 def _list_admin_write_routes(app: FastAPI) -> list[APIRoute]:
