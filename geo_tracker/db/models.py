@@ -643,3 +643,30 @@ class ProductScoreDaily(Base):
         UniqueConstraint("brand_id", "product_name", "date", "target_llm",
                          name="uq_product_daily"),
     )
+
+
+class TopicScoreDaily(Base):
+    """Per-(brand, topic, date) aggregation backing the projects /topics endpoint.
+
+    Computed by Aggregator._aggregate_topic_daily by joining BrandMention →
+    LLMResponse → Query → Prompt.topic_id.
+    """
+    __tablename__ = "topic_score_daily"
+
+    id                  = Column(Integer, primary_key=True)
+    brand_id            = Column(Integer, ForeignKey("brands.id"), nullable=False)
+    topic_id            = Column(Integer, nullable=False)
+    date                = Column(DateTime, nullable=False)
+    mention_count       = Column(Integer, default=0)
+    total_responses     = Column(Integer, default=0)
+    mention_rate        = Column(Float, default=0.0)
+    avg_position_rank   = Column(Float, nullable=True)
+    avg_sentiment_score = Column(Float, nullable=True)
+    avg_geo_score       = Column(Float, nullable=True)
+    created_at          = Column(DateTime, server_default=func.now())
+
+    brand               = relationship("Brand")
+
+    __table_args__ = (
+        UniqueConstraint("brand_id", "topic_id", "date", name="uq_topic_daily"),
+    )

@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from geo_tracker.db.models import (
     Brand, BrandMention, CitationSource, GEOScoreDaily,
     IndustryBenchmarkDaily, LLMResponse, ProductFeatureMention,
-    ProductScoreDaily, Query, ResponseAnalysis, AnalysisStatus,
+    ProductScoreDaily, Prompt, Query, ResponseAnalysis, AnalysisStatus,
+    TopicScoreDaily,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,12 @@ class Aggregator:
             date: 聚合日期
             brand_id: 指定品牌 ID，None 则聚合所有品牌
         """
-        stats = {"geo_score_daily": 0, "industry_benchmark": 0, "product_score": 0}
+        stats = {
+            "geo_score_daily": 0,
+            "industry_benchmark": 0,
+            "product_score": 0,
+            "topic_score": 0,
+        }
 
         # Get all analyzed responses for the given date
         stmt = (
@@ -70,6 +76,8 @@ class Aggregator:
         response_ids = [a.response_id for a in analyses]
         mentions = await self._get_mentions(response_ids)
         queries = await self._get_queries(response_ids)
+        cited_response_ids = await self._get_cited_response_ids(response_ids)
+        prompts_by_query = await self._get_prompts_for_queries(queries.values())
 
         # Group by brand
         brand_analyses = defaultdict(list)
@@ -82,6 +90,7 @@ class Aggregator:
         for bid, brand_analyses_list in brand_analyses.items():
             count = await self._aggregate_brand_daily(
                 bid, date, brand_analyses_list, mentions, queries,
+                cited_response_ids, prompts_by_query,
             )
             stats["geo_score_daily"] += count
 
@@ -91,6 +100,11 @@ class Aggregator:
         # 3. Aggregate ProductScoreDaily
         stats["product_score"] = await self._aggregate_product_daily(
             date, mentions, queries,
+        )
+
+        # 4. Aggregate TopicScoreDaily — backs projects/:id/topics endpoint
+        stats["topic_score"] = await self._aggregate_topic_daily(
+            date, analyses, mentions, queries,
         )
 
         await self.session.commit()
@@ -104,11 +118,68 @@ class Aggregator:
         analyses: list[ResponseAnalysis],
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
+        cited_response_ids: set[int],
+        prompts_by_query: dict[int, tuple[str | None, str | None]],
     ) -> int:
-        """Aggregate GEOScoreDaily for one brand on one day."""
+        """Aggregate GEOScoreDaily for one brand on one day.
+
+        Writes the all-NULL rollup row (preserving prior behavior so
+        IndustryBenchmarkDaily and other consumers that filter on all-NULL
+        keep working), plus one row per (target_llm, intent, language)
+        combination so analyzer-quality + frontend can drill into dimensions.
+        """
         total_queries = len(analyses)
         if total_queries == 0:
             return 0
+
+        date_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # all-NULL rollup (existing behavior, plus citation_rate)
+        await self._upsert_brand_daily_row(
+            brand_id, date_start, analyses, mentions,
+            cited_response_ids,
+            target_llm=None, intent=None, language=None,
+        )
+        rows_written = 1
+
+        # Group analyses by (target_llm, intent, language) — only writing a
+        # dimension row when the tuple has at least one non-None value, to avoid
+        # duplicating the all-NULL rollup.
+        groups: dict[tuple[str | None, str | None, str | None], list[ResponseAnalysis]] = defaultdict(list)
+        for a in analyses:
+            q = queries.get(a.response_id)
+            if not q:
+                continue
+            intent, language = prompts_by_query.get(q.id, (None, None))
+            key = (q.target_llm, intent, language)
+            if key == (None, None, None):
+                continue
+            groups[key].append(a)
+
+        for (llm, intent, language), group_analyses in groups.items():
+            if not group_analyses:
+                continue
+            await self._upsert_brand_daily_row(
+                brand_id, date_start, group_analyses, mentions,
+                cited_response_ids,
+                target_llm=llm, intent=intent, language=language,
+            )
+            rows_written += 1
+
+        return rows_written
+
+    async def _upsert_brand_daily_row(
+        self,
+        brand_id: int,
+        date_start: datetime,
+        analyses: list[ResponseAnalysis],
+        mentions: dict[int, list[BrandMention]],
+        cited_response_ids: set[int],
+        target_llm: str | None,
+        intent: str | None,
+        language: str | None,
+    ) -> None:
+        total_queries = len(analyses)
 
         target_mentions = []
         for a in analyses:
@@ -138,19 +209,22 @@ class Aggregator:
         cit_scores = [a.citation_score for a in analyses if a.citation_score]
         geo_scores = [a.geo_score for a in analyses if a.geo_score]
 
+        # citation_rate = (responses with ≥1 citation) / (total responses for this group)
+        cited_in_group = sum(1 for a in analyses if a.response_id in cited_response_ids)
+        citation_rate = cited_in_group / total_queries if total_queries else 0
+
         # Industry from first analysis that has it
         industry = next(
             (a.dimension_industry for a in analyses if a.dimension_industry),
             None,
         )
 
-        # UPSERT: all-platform, all-intent, all-language aggregate
         row = GEOScoreDaily(
             brand_id=brand_id,
-            date=date.replace(hour=0, minute=0, second=0, microsecond=0),
-            target_llm=None,
-            intent=None,
-            language=None,
+            date=date_start,
+            target_llm=target_llm,
+            intent=intent,
+            language=language,
             total_queries=total_queries,
             mention_count=mention_count,
             mention_rate=round(mention_rate, 4),
@@ -160,7 +234,7 @@ class Aggregator:
             positive_rate=round(positives / mention_count, 4) if mention_count else 0,
             negative_rate=round(negatives / mention_count, 4) if mention_count else 0,
             avg_sentiment_score=round(sum(sentiments) / len(sentiments), 4) if sentiments else 0,
-            citation_rate=0.0,  # TODO: compute from CitationSource
+            citation_rate=round(citation_rate, 4),
             avg_sov=round(sum(sov_scores) / len(sov_scores), 2) if sov_scores else 0,
             avg_visibility=round(sum(vis_scores) / len(vis_scores), 2) if vis_scores else 0,
             avg_sentiment=round(sum(sent_scores) / len(sent_scores), 2) if sent_scores else 0,
@@ -170,24 +244,30 @@ class Aggregator:
             industry=industry,
         )
 
-        # Check for existing row and update or insert
+        # Check existing row for this exact dimension tuple
+        # Use is_() for None comparisons (NULL = NULL would never match in SQL)
+        conditions = [
+            GEOScoreDaily.brand_id == brand_id,
+            GEOScoreDaily.date == date_start,
+        ]
+        for col, val in (
+            (GEOScoreDaily.target_llm, target_llm),
+            (GEOScoreDaily.intent, intent),
+            (GEOScoreDaily.language, language),
+        ):
+            conditions.append(col.is_(None) if val is None else col == val)
+
         existing = await self.session.execute(
-            select(GEOScoreDaily).where(
-                GEOScoreDaily.brand_id == brand_id,
-                GEOScoreDaily.date == row.date,
-                GEOScoreDaily.target_llm.is_(None),
-                GEOScoreDaily.intent.is_(None),
-                GEOScoreDaily.language.is_(None),
-            )
+            select(GEOScoreDaily).where(and_(*conditions))
         )
         existing_row = existing.scalar_one_or_none()
 
         if existing_row:
-            # Update existing
             for col in [
                 "total_queries", "mention_count", "mention_rate",
                 "avg_position_rank", "first_place_count", "first_place_rate",
                 "positive_rate", "negative_rate", "avg_sentiment_score",
+                "citation_rate",
                 "avg_sov", "avg_visibility", "avg_sentiment",
                 "avg_sov_score", "avg_citation_score", "avg_geo_score",
                 "industry",
@@ -195,8 +275,6 @@ class Aggregator:
                 setattr(existing_row, col, getattr(row, col))
         else:
             self.session.add(row)
-
-        return 1
 
     async def _aggregate_industry_daily(self, date: datetime) -> int:
         """Aggregate IndustryBenchmarkDaily from GEOScoreDaily rows."""
@@ -435,6 +513,108 @@ class Aggregator:
 
         return count
 
+    async def _aggregate_topic_daily(
+        self,
+        date: datetime,
+        analyses: list[ResponseAnalysis],
+        mentions: dict[int, list[BrandMention]],
+        queries: dict[int, Query],
+    ) -> int:
+        """Aggregate per-(brand, topic, date) mention stats from BrandMention.
+
+        Joins: BrandMention.response_id → Query.prompt_id → Prompt.topic_id.
+        Backs the projects /topics endpoint.
+        """
+        date_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Map prompt_id -> topic_id for the prompts referenced by today's queries
+        prompt_ids = {q.prompt_id for q in queries.values() if q.prompt_id is not None}
+        if not prompt_ids:
+            return 0
+        result = await self.session.execute(
+            select(Prompt.id, Prompt.topic_id).where(Prompt.id.in_(prompt_ids))
+        )
+        topic_by_prompt = {row[0]: row[1] for row in result.all() if row[1] is not None}
+
+        # Bucket by (brand_id, topic_id)
+        # response_count[(brand, topic)]: # responses where the brand was queried under this topic
+        # mention_count[(brand, topic)]: # of those responses where target brand actually mentioned
+        # rank/sentiment/geo aggregates collected from target mentions / analyses
+        groups: dict[tuple[int, int], dict] = defaultdict(lambda: {
+            "response_count": 0,
+            "mention_count": 0,
+            "ranks": [],
+            "sentiments": [],
+            "geo_scores": [],
+        })
+
+        # Index analyses by response_id for quick GEO lookup
+        analysis_by_resp = {a.response_id: a for a in analyses}
+
+        for resp_id, q in queries.items():
+            topic_id = topic_by_prompt.get(q.prompt_id)
+            if topic_id is None:
+                continue
+            key = (q.brand_id, topic_id)
+            g = groups[key]
+            g["response_count"] += 1
+
+            target_mentions = [m for m in mentions.get(resp_id, []) if m.is_target]
+            if target_mentions:
+                g["mention_count"] += 1
+                for m in target_mentions:
+                    if m.position_rank:
+                        g["ranks"].append(m.position_rank)
+                    if m.sentiment_score is not None:
+                        g["sentiments"].append(m.sentiment_score)
+            a = analysis_by_resp.get(resp_id)
+            if a and a.geo_score:
+                g["geo_scores"].append(a.geo_score)
+
+        count = 0
+        for (brand_id, topic_id), g in groups.items():
+            total = g["response_count"]
+            mc = g["mention_count"]
+            row = TopicScoreDaily(
+                brand_id=brand_id,
+                topic_id=topic_id,
+                date=date_start,
+                mention_count=mc,
+                total_responses=total,
+                mention_rate=round(mc / total, 4) if total else 0,
+                avg_position_rank=(
+                    round(sum(g["ranks"]) / len(g["ranks"]), 2) if g["ranks"] else None
+                ),
+                avg_sentiment_score=(
+                    round(sum(g["sentiments"]) / len(g["sentiments"]), 4)
+                    if g["sentiments"] else None
+                ),
+                avg_geo_score=(
+                    round(sum(g["geo_scores"]) / len(g["geo_scores"]), 2)
+                    if g["geo_scores"] else None
+                ),
+            )
+
+            existing = await self.session.execute(
+                select(TopicScoreDaily).where(
+                    TopicScoreDaily.brand_id == brand_id,
+                    TopicScoreDaily.topic_id == topic_id,
+                    TopicScoreDaily.date == date_start,
+                )
+            )
+            existing_row = existing.scalar_one_or_none()
+            if existing_row:
+                for col in [
+                    "mention_count", "total_responses", "mention_rate",
+                    "avg_position_rank", "avg_sentiment_score", "avg_geo_score",
+                ]:
+                    setattr(existing_row, col, getattr(row, col))
+            else:
+                self.session.add(row)
+            count += 1
+
+        return count
+
     async def _get_mentions(
         self, response_ids: list[int],
     ) -> dict[int, list[BrandMention]]:
@@ -471,4 +651,40 @@ class Aggregator:
             resp_id: queries_by_id[qid]
             for resp_id, qid in resp_query_map.items()
             if qid in queries_by_id
+        }
+
+    async def _get_cited_response_ids(self, response_ids: list[int]) -> set[int]:
+        """Return the subset of response_ids that have at least one citation.
+
+        Used to compute geo_score_daily.citation_rate per dimension group.
+        """
+        if not response_ids:
+            return set()
+        result = await self.session.execute(
+            select(CitationSource.response_id)
+            .where(CitationSource.response_id.in_(response_ids))
+            .distinct()
+        )
+        return {row[0] for row in result.all()}
+
+    async def _get_prompts_for_queries(
+        self, queries,
+    ) -> dict[int, tuple[str | None, str | None]]:
+        """Map query.id -> (intent, language) by joining Prompt.
+
+        Used to drive the dimension split when writing per-(llm/intent/language)
+        rows in geo_score_daily.
+        """
+        prompt_ids = {q.prompt_id for q in queries if q.prompt_id is not None}
+        if not prompt_ids:
+            return {}
+        result = await self.session.execute(
+            select(Prompt.id, Prompt.intent, Prompt.language)
+            .where(Prompt.id.in_(prompt_ids))
+        )
+        prompt_attrs = {row[0]: (row[1], row[2]) for row in result.all()}
+        return {
+            q.id: prompt_attrs.get(q.prompt_id, (None, None))
+            for q in queries
+            if q.prompt_id is not None
         }
