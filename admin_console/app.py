@@ -1394,12 +1394,15 @@ def _topic_plan_no_prompt_count(cur, brand_ids):
     return int(cur.fetchone()["cnt"] or 0)
 
 
-def _topic_plan_pending_summary(cur, brand_ids):
+def _topic_plan_pending_summary(cur, brand_ids=None, run_id=None):
     if not _table_exists(cur, "topic_candidates"):
         return {"pending": 0, "low_confidence": 0}
     params = []
     where = ["status = 'pending'"]
-    if brand_ids:
+    if run_id:
+        where.append("run_id = %s")
+        params.append(run_id)
+    elif brand_ids:
         where.append("brand_id = ANY(%s)")
         params.append(brand_ids)
     cur.execute(
@@ -8109,6 +8112,7 @@ def admin_topic_plan_candidates_api():
         return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
     query = (request.args.get("q") or "").strip() or None
     run_id = (request.args.get("run_id") or "").strip() or None
+    candidate_brand_ids = None if run_id else brand_ids
 
     conn = get_db()
     try:
@@ -8116,12 +8120,12 @@ def admin_topic_plan_candidates_api():
             rows = _fetch_topic_plan_candidates(
                 cur,
                 status=status,
-                brand_ids=brand_ids,
+                brand_ids=candidate_brand_ids,
                 query=query,
                 limit=limit,
                 run_id=run_id,
             )
-            pending = _topic_plan_pending_summary(cur, brand_ids)
+            pending = _topic_plan_pending_summary(cur, candidate_brand_ids, run_id=run_id)
         return jsonify(
             {
                 "success": True,
@@ -8303,6 +8307,51 @@ def _topic_plan_run_row(row):
     }
 
 
+def _topic_plan_run_timeout_seconds(row):
+    item = dict(row or {})
+    request_config = _prompt_matrix_json_value(item.get("request_config"), {}) or {}
+    estimated = _clamp_int(request_config.get("max_topics"), 180, 1, 2000)
+    default_timeout = max(600, min(3600, estimated * 10))
+    return _clamp_int(os.getenv("TOPIC_PLAN_RUN_TIMEOUT_SECONDS"), default_timeout, 120, 7200)
+
+
+def _topic_plan_run_timestamp(value):
+    if value is None or not hasattr(value, "tzinfo"):
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _mark_stale_topic_plan_run(cur, row, now=None):
+    item = dict(row or {})
+    if item.get("status") != "running":
+        return row, False
+    now = now or datetime.now(timezone.utc)
+    last_progress = _topic_plan_run_timestamp(
+        item.get("updated_at") or item.get("started_at") or item.get("created_at")
+    )
+    if not last_progress:
+        return row, False
+    elapsed = (now - last_progress).total_seconds()
+    if elapsed <= _topic_plan_run_timeout_seconds(item):
+        return row, False
+    cur.execute(
+        """
+        UPDATE topic_plan_runs
+        SET status = 'failed',
+            llm_error = 'topic_plan_run_timeout',
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = %s AND status = 'running'
+        RETURNING *,
+               EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+        """,
+        (item.get("id"),),
+    )
+    return cur.fetchone() or row, True
+
+
 def _compute_generation_metrics(*, requested, accepted, skipped, batches,
                                  llm_model, llm_returned=None,
                                  rejected_sample_size=20):
@@ -8343,14 +8392,32 @@ def _compute_generation_metrics(*, requested, accepted, skipped, batches,
 
 def _topic_plan_brand_batches(brands, gaps, *, max_topics, max_per_brand):
     batch_size = _clamp_int(os.getenv("TOPIC_PLAN_LLM_BRANDS_PER_REQUEST"), 1, 1, 5)
-    for index in range(0, len(brands), batch_size):
-        batch_brands = brands[index : index + batch_size]
+    gaps_by_brand = {}
+    for gap in gaps or []:
+        raw_brand_id = gap.get("brand_id")
+        try:
+            brand_id = int(raw_brand_id)
+        except (TypeError, ValueError):
+            continue
+        gaps_by_brand.setdefault(brand_id, []).append(gap)
+    if not gaps_by_brand:
+        return
+
+    gap_brands = [
+        brand
+        for brand in brands
+        if int(brand["id"]) in gaps_by_brand
+    ]
+    for index in range(0, len(gap_brands), batch_size):
+        batch_brands = gap_brands[index : index + batch_size]
         batch_brand_ids = {int(brand["id"]) for brand in batch_brands}
         batch_gaps = [
             gap for gap in gaps
-            if str(gap.get("brand_id") or "").isdigit() and int(gap.get("brand_id")) in batch_brand_ids
+            if str(gap.get("brand_id") or "").isdigit()
+            and int(gap.get("brand_id")) in batch_brand_ids
         ]
-        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1))
+        gap_count = sum(_clamp_int(gap.get("count"), 1, 1, max_per_brand) for gap in batch_gaps)
+        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1), max(gap_count, 1))
         yield batch_brands, batch_gaps, batch_cap
 
 
@@ -8752,6 +8819,9 @@ def admin_topic_plan_run_api(run_id):
             row = cur.fetchone()
             if not row:
                 return jsonify({"success": False, "error": "run_not_found"}), 404
+            row, stale_changed = _mark_stale_topic_plan_run(cur, row)
+            if stale_changed:
+                conn.commit()
             return jsonify({"success": True, "run": _topic_plan_run_row(row)})
     finally:
         conn.close()
