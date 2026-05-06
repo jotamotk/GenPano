@@ -59,3 +59,14 @@ def test_topic_plan_quality_blocked_feedback_is_visible_and_actionable():
     assert "this.topicPlanShowRejected = true" in apply_section
     assert "this.generationQualityBlockedMessage('Topic', run.metrics" in apply_section
     assert "this.generationQualityBlockedMessage('Topic', run.metrics" in polling
+
+
+def test_topic_plan_bulk_review_handles_partial_failures():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    start = html.index("async bulkReviewTopicCandidates(status)")
+    end = html.index("async loadPromptMatrixConfig()", start)
+    bulk_review = html[start:end]
+
+    assert "const failed = Array.isArray(body.failed) ? body.failed : []" in bulk_review
+    assert "if (res.status !== 409)" in bulk_review
+    assert "\\u90e8\\u5206\\u5b8c\\u6210" in bulk_review

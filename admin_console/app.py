@@ -1136,6 +1136,10 @@ def _ensure_prompt_matrix_tables():
                     )
                     """
                 )
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)")
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP")
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT")
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS approved_prompt_id INTEGER")
                 cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP")
                 cur.execute(
                     """
@@ -1257,6 +1261,7 @@ def _ensure_query_pool_tables():
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT")
+                cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS scheduler_intake_batch_id VARCHAR(64)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS generation_method VARCHAR(32)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128)")
                 cur.execute("ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS llm_usage_json JSONB")
