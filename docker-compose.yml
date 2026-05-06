@@ -66,6 +66,8 @@ services:
       --max-memory-per-child=300000
       -Q celery,llm_chatgpt,llm_gemini,llm_doubao,llm_deepseek,account_login
     env_file: .env
+    environment:
+      - HOTSPOT_BROWSER_COLLECTORS=1
     volumes:
       - screenshots_data:/data/screenshots
     depends_on:

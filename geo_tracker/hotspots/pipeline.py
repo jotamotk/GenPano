@@ -62,6 +62,8 @@ def _existing_titles(conn) -> set[str]:
 def run_collection_cycle(*,
                          sources: list[str] | None = None,
                          industry_filter: str | None = None,
+                         brand_context: dict | None = None,
+                         brand_id: int | None = None,
                          per_source_limit: int = 30) -> dict:
     """Return ``{collected: int, inserted: int, by_source: {...}, errors: {...}}``."""
     sources = sources or list(COLLECTOR_REGISTRY.keys())
@@ -104,6 +106,7 @@ def run_collection_cycle(*,
                 "errors": errors,
             }
         conn = get_db()
+        linked_brand_id = brand_id or (brand_context or {}).get("id")
         try:
             existing = _existing_titles(conn)
             with conn.cursor() as cur:
@@ -114,14 +117,14 @@ def run_collection_cycle(*,
                         """
                         INSERT INTO hot_topics
                             (title, summary, category, source, source_url,
-                             raw_rank, raw_metric, industry, status,
+                             raw_rank, raw_metric, industry, brand_id, status,
                              effective_from, effective_until)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft',
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft',
                                 NOW(), NOW() + INTERVAL '14 days')
                         """,
                         (c.title[:256], c.summary, c.category, c.source,
                          c.source_url, c.raw_rank, c.raw_metric,
-                         c.industry or industry_filter),
+                         c.industry or industry_filter, linked_brand_id),
                     )
                     inserted += 1
             conn.commit()

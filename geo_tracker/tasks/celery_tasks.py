@@ -73,6 +73,18 @@ if os.getenv("ANALYZER_AUTO_SCHEDULE", "false").lower() == "true":
         "schedule": crontab(hour=2, minute=0),
     }
 
+if os.getenv("HOTSPOT_AUTO_SCHEDULE", "false").lower() == "true":
+    _beat_schedule["hotspots-douyin"] = {
+        "task":     "geo_tracker.tasks.celery_tasks.collect_hotspot_source",
+        "schedule": crontab(hour="*/6", minute=5),
+        "args":     ("douyin",),
+    }
+    _beat_schedule["hotspots-xhs"] = {
+        "task":     "geo_tracker.tasks.celery_tasks.collect_hotspot_source",
+        "schedule": crontab(hour="*/6", minute=20),
+        "args":     ("xhs",),
+    }
+
 app.conf.update(
     task_serializer   = "json",
     result_serializer = "json",
@@ -91,6 +103,32 @@ app.conf.update(
         "geo_tracker.tasks.celery_tasks.aggregate_daily_scores": {"queue": "analysis"},
     },
 )
+
+
+@app.task(name="geo_tracker.tasks.celery_tasks.collect_hotspot_source", queue="celery")
+def collect_hotspot_source(
+    source: str,
+    *,
+    industry: str | None = None,
+    brand_id: int | None = None,
+    brand_context: dict | None = None,
+) -> dict:
+    """Collect one hotspot source in the worker image.
+
+    Browser-backed sources such as Douyin and Xiaohongshu need the worker's
+    browser stack and the uploaded ``llm_accounts`` cookies, so Admin queues
+    them here instead of importing geo_tracker from the Admin image.
+    """
+    from geo_tracker.hotspots.pipeline import run_collection_cycle
+
+    result = run_collection_cycle(
+        sources=[source],
+        industry_filter=industry,
+        brand_context=brand_context,
+        brand_id=brand_id,
+    )
+    logger.info("collect_hotspot_source(%s) -> %s", source, result)
+    return result
 
 
 async def _cleanup_previous_response(db, query_id: int) -> None:
