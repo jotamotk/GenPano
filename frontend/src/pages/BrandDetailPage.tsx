@@ -3,7 +3,7 @@ import { Badge, Button, Card } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProjects } from '../hooks/useProjects';
 import { isLiveProjectId } from '../hooks/useReports';
-import BrandOverviewLiveView from '../components/dashboard/BrandOverviewLiveView';
+import BrandPanoramaPanelLive from '../components/dashboard/BrandPanoramaPanelLive';
 import BrandVisibilityPage from './brand/BrandVisibilityPage';
 import BrandSentimentPage from './brand/BrandSentimentPage';
 import BrandCitationsPage from './brand/BrandCitationsPage';
@@ -122,7 +122,10 @@ export default function BrandDetailPage() {
       {/* Tab content */}
       <div>
         {activeTab === 'overview' && (
-          <BrandOverviewLiveView projectId={liveProjectId as string} />
+          <BrandPanoramaPanelLive
+            projectId={liveProjectId as string}
+            embedded
+          />
         )}
         {activeTab === 'visibility' && <BrandVisibilityPage />}
         {activeTab === 'sentiment' && <BrandSentimentPage />}
