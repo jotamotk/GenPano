@@ -1,127 +1,418 @@
-import { useNavigate } from 'react-router-dom';
-import { Badge, Card } from '../../components/ui';
+import React, { useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
-import { useProjects } from '../../hooks/useProjects';
-import { useBrandCitations } from '../../hooks/useBrandMetrics';
-import { isLiveProjectId } from '../../hooks/useReports';
+import { useProject } from '../../contexts/ProjectContext';
+import { Card, Badge, Button } from '../../components/ui';
+import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
+import { TrendChart, DonutChart } from '../../components/charts';
+import ContentGapPanel from '../../components/citation/ContentGapPanel';
+import PrTargetsPanel from '../../components/citation/PrTargetsPanel';
+import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
+import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import {
-  LoadingCard,
-  NoProjectCard,
-  EmptyCard,
-  ErrorCard,
-} from './BrandVisibilityPage';
+  BRANDS,
+  AUTHORITY_SHARE_SERIES,
+  CITATION_SOURCE_COMPOSITION,
+  TOP_CITED_DOMAINS,
+  TOP_CITED_PAGES,
+  CONTENT_GAP_TOPICS,
+  CONTENT_GAP_PAGE_TYPE_DISTRIBUTION,
+  PR_TARGETS,
+  TIER2_COVERAGE_MATRIX,
+  KOL_SCORECARDS,
+  SIMULATOR_BASELINE,
+  SIMULATOR_PRESETS,
+} from '../../data/mock';
 
-/* Phase 5 §"mock 退役" — 整页来自 GET /v1/projects/:id/citations. */
+/* ─────────────────────────────────────────────────────────────
+   BrandCitationsPage — /brand/citations (§4.6-IA-v2.C.2.2 + §4.2.7)
+   ─────────────────────────────────────────────────────────────
+   Citation 归因 / Authority Share / Content Gap / PR 目标. 用 ?sub=
+   参数切换子视图 (overview / content-gap / pr-targets / simulator).
+*/
 export default function BrandCitationsPage() {
-  const navigate = useNavigate();
-  const { formatDate } = useLocale();
-  const { data: projects } = useProjects();
-  const liveProjectId = projects && projects.length > 0 ? projects[0].id : null;
-  const enabled = isLiveProjectId(liveProjectId);
-  const { data, isLoading, error, refetch } = useBrandCitations(
-    enabled ? liveProjectId : null,
-    100,
-  );
+  const [params, setParams] = useSearchParams();
+  const sub = params.get('sub') || 'overview';
+  const { t, formatNumber } = useLocale();
+  const { activeProject } = useProject();
+  const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const { filters } = useBrandAnalysisFilters(); // C10
 
-  if (!enabled)
-    return (
-      <NoProjectCard onStart={() => navigate('/onboarding')} title="引用" />
-    );
-  if (isLoading) return <LoadingCard />;
-  if (error)
-    return (
-      <ErrorCard
-        msg={error instanceof Error ? error.message : 'unknown'}
-        onRetry={() => refetch()}
-      />
-    );
-  if (!data || data.state === 'empty' || data.items.length === 0)
-    return <EmptyCard onRefresh={() => refetch()} title="引用" />;
+  const setSub = (next) => {
+    const nextParams = new URLSearchParams(params);
+    if (next === 'overview') nextParams.delete('sub');
+    else nextParams.set('sub', next);
+    setParams(nextParams, { replace: true });
+  };
+
+  const subTabs = [
+    { id: 'overview',     label: t('brand_citations.sub_overview') },
+    { id: 'content-gap',  label: t('brand_citations.sub_content_gap') },
+    { id: 'pr-targets',   label: t('brand_citations.sub_pr_targets') },
+    { id: 'simulator',    label: t('brand_citations.sub_simulator') },
+  ];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
+      {/* Page header */}
+      <header>
+        <h2 className="text-2xl font-brand font-bold text-themed-primary">
+          {t('brand_citations.page_title')}
+        </h2>
+        <p className="text-sm text-themed-muted mt-0.5">
+          {t('brand_citations.page_subtitle', { brand: primary.name })}
+        </p>
+      </header>
+
+      {/* Shared filter bar */}
+      <BrandAnalysisFilterBar />
+
+      {/* Sub-view tabs — FilterPill style */}
       <div className="flex items-center gap-2 flex-wrap">
-        <Badge variant="default">LIVE</Badge>
-        <h2 className="text-heading-2 font-bold text-themed-primary">引用</h2>
-        <span className="text-sm text-themed-muted">
-          {formatDate(data.period.from)} – {formatDate(data.period.to)}
-        </span>
-        <span className="text-xs text-themed-muted">
-          共 {data.total} 条 (展示前 {data.items.length})
-        </span>
+        {subTabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setSub(tab.id)}
+            className={`px-3 py-1.5 rounded-pill text-xs font-medium transition-colors ${
+              sub === tab.id
+                ? 'text-themed-accent'
+                : 'text-themed-muted'
+            }`}
+            style={sub === tab.id
+              ? { background: 'var(--color-accent-bg-light)' }
+              : { background: 'var(--color-bg-card)', border: '1px solid var(--color-border-subtle)' }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <Card className="p-5" onClick={undefined} style={{}}>
-        <h3 className="text-sm font-semibold text-themed-primary mb-3">
-          Top 引用域
-        </h3>
-        {data.by_domain_top.length === 0 ? (
-          <p className="text-xs text-themed-muted">暂无</p>
-        ) : (
-          <ul className="space-y-2">
-            {data.by_domain_top.map((row) => (
-              <li
-                key={row.domain}
-                className="flex items-center justify-between text-sm border-b border-themed-subtle pb-1.5"
-              >
-                <span className="text-themed-primary truncate">{row.domain}</span>
-                <span className="text-themed-muted text-xs tabular-nums">
-                  {row.count} 次
+      {sub === 'overview' && (
+        <div className="space-y-4">
+          {/* Authority share trend */}
+          <Card className="p-4">
+            <div className="flex items-baseline justify-between mb-3">
+              <h3 className="text-sm font-semibold text-themed-primary">
+                {t('brand_citations.authority_trend_title')}
+              </h3>
+              <span className="text-[11px] text-themed-muted">
+                {t('brand_citations.authority_trend_subtitle')}
+              </span>
+            </div>
+            <TrendChart
+              data={AUTHORITY_SHARE_SERIES.map((d) => ({ name: d.date, ...d }))}
+              lines={[
+                { key: 'official_domain_pct', label: t('brand_citations.official_domain'), color: 'var(--color-accent)', area: true },
+                { key: 'co_occurrence_pct', label: t('brand_citations.co_occurrence'), color: 'var(--color-chart-3)', area: false },
+                { key: 'text_match_pct', label: t('brand_citations.text_match'), color: 'var(--color-chart-line-grid)', area: false, dashed: true },
+              ]}
+              height={260}
+            />
+          </Card>
+
+          {/* Source composition + top domains */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <Card className="p-4">
+              <h3 className="text-sm font-semibold text-themed-primary mb-3">
+                {t('brand_citations.composition_title')}
+              </h3>
+              <DonutChart segments={CITATION_SOURCE_COMPOSITION} size={200} />
+            </Card>
+            <Card className="p-4">
+              <h3 className="text-sm font-semibold text-themed-primary mb-3">
+                {t('brand_citations.top_domains_title')}
+              </h3>
+              <div className="space-y-2">
+                {(TOP_CITED_DOMAINS || []).slice(0, 8).map((d) => (
+                  <div key={d.domain} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="muted">{`T${d.tier}`}</Badge>
+                      <span className="text-sm text-themed-primary">{d.domain}</span>
+                    </div>
+                    <span className="text-sm text-themed-muted tabular-nums">{formatNumber(d.count)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          {/* Top cited pages */}
+          <Card className="p-4">
+            <h3 className="text-sm font-semibold text-themed-primary mb-3">
+              {t('brand_citations.top_pages_title')}
+            </h3>
+            <div className="space-y-2">
+              {(TOP_CITED_PAGES || []).slice(0, 6).map((p, i) => (
+                <a
+                  key={i}
+                  href={p.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block p-3 rounded-btn bg-themed-subtle hover:bg-themed-card transition-colors"
+                >
+                  <div className="text-sm font-medium text-themed-primary truncate">{p.title}</div>
+                  <div className="text-xs text-themed-muted truncate mt-0.5">{p.url}</div>
+                  <div className="text-xs text-themed-muted mt-1">
+                    {formatNumber(p.count)} × · Tier {p.tier}
+                  </div>
+                </a>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {sub === 'content-gap' && (
+        <ContentGapPanel
+          topics={CONTENT_GAP_TOPICS}
+          distribution={CONTENT_GAP_PAGE_TYPE_DISTRIBUTION}
+          maxTopics={20}
+        />
+      )}
+
+      {sub === 'pr-targets' && (
+        <PrTargetsPanel
+          targets={PR_TARGETS}
+          tier2Matrix={TIER2_COVERAGE_MATRIX}
+          kolScorecards={KOL_SCORECARDS}
+        />
+      )}
+
+      {sub === 'simulator' && (
+        <AuthoritySimulator baseline={SIMULATOR_BASELINE} presets={SIMULATOR_PRESETS} />
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+   AuthoritySimulator — PRD §4.2.7.E
+   Tier 权重模拟器: 4 个滑块 (Tier 1-4 delta) + 3 个预设 + PANO 计算
+   ─────────────────────────────────────────────────────────────── */
+function AuthoritySimulator({ baseline, presets }) {
+  const { t, formatNumber } = useLocale();
+  const [deltas, setDeltas] = useState([0, 0, 0, 0]); // [T1, T2, T3, T4]
+
+  const tiers = [1, 2, 3, 4];
+
+  const calculated = useMemo(() => {
+    // Calculate new PANO A based on baseline + deltas
+    const weights = baseline.tierWeights || {};
+    const confidence = baseline.defaultConfidence || {};
+    let panoDelta = 0;
+
+    tiers.forEach((tier, i) => {
+      const weight = weights[tier] || 0;
+      const conf = confidence[tier] || 0.5;
+      const delta = deltas[i] || 0;
+      // Contribution = weight × (delta count) × confidence
+      panoDelta += weight * delta * conf;
+    });
+
+    const newPanoA = baseline.currentPanoA + panoDelta;
+
+    return {
+      newPanoA: Math.max(0, Math.min(100, newPanoA)), // Clamp 0-100
+      panoDelta: Math.round(panoDelta * 10) / 10,
+    };
+  }, [deltas, baseline]);
+
+  const handleDeltaChange = (idx, val) => {
+    const newDeltas = [...deltas];
+    newDeltas[idx] = parseInt(val, 10) || 0;
+    setDeltas(newDeltas);
+  };
+
+  const applyPreset = (preset) => {
+    const newDeltas = [0, 0, 0, 0];
+    tiers.forEach((tier, i) => {
+      newDeltas[i] = preset.deltaByTier?.[tier] || 0;
+    });
+    setDeltas(newDeltas);
+  };
+
+  const resetDeltas = () => {
+    setDeltas([0, 0, 0, 0]);
+  };
+
+  const panoStatus = useMemo(() => {
+    const delta = calculated.panoDelta;
+    if (delta >= baseline.industryTop3Avg - baseline.currentPanoA) {
+      return { label: '超越 Top 3 平均', color: 'var(--color-success)' };
+    }
+    if (delta >= baseline.industryMedian - baseline.currentPanoA) {
+      return { label: '达到行业中位', color: 'var(--color-accent)' };
+    }
+    if (delta > 0) {
+      return { label: '有改善', color: 'var(--color-accent)' };
+    }
+    return { label: '保持现状', color: 'var(--color-text-muted)' };
+  }, [calculated, baseline]);
+
+  return (
+    <div className="space-y-4">
+      <BrandSubpageLiveBanner variant="citations" />
+      {/* Baseline info card */}
+      <Card className="p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-sm font-semibold text-themed-primary">
+                {t('brand_citations.simulator_current_status') || '当前状态'}
+              </h3>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-themed-muted">你的 PANO 评分</span>
+                <span className="text-lg font-bold text-themed-primary tabular-nums">
+                  {baseline.currentPanoA}
                 </span>
-              </li>
-            ))}
-          </ul>
-        )}
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-themed-muted">行业中位</span>
+                <span className="text-sm text-themed-primary tabular-nums">
+                  {baseline.industryMedian}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-themed-muted">Top 3 平均</span>
+                <span className="text-sm text-themed-primary tabular-nums">
+                  {baseline.industryTop3Avg}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-sm font-semibold text-themed-primary">
+                {t('brand_citations.simulator_breakdown') || '各层 citation 数'}
+              </h3>
+            </div>
+            <div className="space-y-2">
+              {tiers.map((tier, i) => (
+                <div key={tier} className="flex items-center justify-between">
+                  <span className="text-xs text-themed-muted">Tier {tier}</span>
+                  <span className="text-sm font-medium text-themed-primary tabular-nums">
+                    {baseline.currentByTier[tier] || 0}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </Card>
 
-      <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
-        <div className="px-5 py-3 border-b border-themed-subtle">
+      {/* Preset buttons */}
+      <Card className="p-4">
+        <div className="mb-3">
           <h3 className="text-sm font-semibold text-themed-primary">
-            最近引用 ({data.items.length})
+            {t('brand_citations.simulator_presets') || '快速场景'}
           </h3>
+          <span className="text-[11px] text-themed-muted">
+            {t('brand_citations.simulator_presets_hint') || '选择典型场景快速设置'}
+          </span>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[10px] uppercase tracking-wider text-themed-muted">
-                <th className="py-2 pl-5">域名</th>
-                <th className="py-2 px-3">标题 / URL</th>
-                <th className="py-2 px-3">类型</th>
-                <th className="py-2 px-3 text-right">时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((c) => (
-                <tr
-                  key={c.citation_id}
-                  className="border-t border-themed-subtle hover:bg-themed-subtle"
-                >
-                  <td className="py-2 pl-5 pr-3 text-themed-primary">
-                    {c.domain ?? '—'}
-                  </td>
-                  <td className="py-2 px-3 text-themed-secondary truncate max-w-md">
-                    <a
-                      href={c.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:text-themed-accent"
-                    >
-                      {c.title || c.url}
-                    </a>
-                  </td>
-                  <td className="py-2 px-3 text-themed-muted text-xs">
-                    {c.source_type ?? '—'}
-                  </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-themed-muted text-xs">
-                    {c.occurred_at ? formatDate(c.occurred_at, {
-                      month: 'short',
-                      day: 'numeric',
-                    }) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="flex flex-wrap gap-2">
+          {presets.map((preset) => (
+            <button
+              key={preset.id}
+              onClick={() => applyPreset(preset)}
+              className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors border border-themed-card hover:border-themed-accent hover:bg-themed-subtle text-themed-primary"
+            >
+              {preset.label}
+            </button>
+          ))}
+          <button
+            onClick={resetDeltas}
+            className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors text-themed-muted hover:text-themed-primary hover:bg-themed-subtle border border-themed-card"
+          >
+            重置
+          </button>
+        </div>
+      </Card>
+
+      {/* Delta sliders */}
+      <Card className="p-4">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold text-themed-primary">
+            {t('brand_citations.simulator_adjust_deltas') || '调整各层增长'}
+          </h3>
+          <span className="text-[11px] text-themed-muted">
+            {t('brand_citations.simulator_adjust_hint') || '拖动滑块调整各权威层的新增引用数'}
+          </span>
+        </div>
+        <div className="space-y-4">
+          {tiers.map((tier, i) => (
+            <div key={tier}>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-medium text-themed-primary">
+                  Tier {tier} {tier === 1 ? '(官方)' : tier === 2 ? '(权威媒体)' : tier === 3 ? '(KOL)' : '(UGC)'}
+                </label>
+                <span className="text-sm font-semibold text-themed-accent tabular-nums">
+                  {deltas[i] >= 0 ? '+' : ''}
+                  {deltas[i]}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="-5"
+                max="10"
+                step="1"
+                value={deltas[i]}
+                onChange={(e) => handleDeltaChange(i, e.target.value)}
+                className="w-full cursor-pointer accent-[var(--color-accent)]"
+              />
+              <div className="flex items-center justify-between mt-1 text-[10px] text-themed-muted">
+                <span>-5</span>
+                <span className="tabular-nums">{baseline.currentByTier[tier]}</span>
+                <span>+10</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Result card */}
+      <Card className="p-4 border-l-4" style={{ borderLeftColor: panoStatus.color }}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div>
+            <p className="text-[10px] text-themed-muted mb-1">当前 PANO</p>
+            <p className="text-3xl font-bold tabular-nums text-themed-primary leading-none">
+              {baseline.currentPanoA}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] text-themed-muted mb-1">预估 PANO</p>
+            <p className="text-3xl font-bold tabular-nums text-themed-primary leading-none">
+              {calculated.newPanoA.toFixed(1)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] text-themed-muted mb-1">变化</p>
+            <p
+              className="text-3xl font-bold tabular-nums leading-none"
+              style={{ color: panoStatus.color }}
+            >
+              {calculated.panoDelta >= 0 ? '+' : ''}
+              {calculated.panoDelta}
+            </p>
+            <p className="text-[10px] mt-1" style={{ color: panoStatus.color }}>
+              {panoStatus.label}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--color-border-subtle)' }}>
+          <a
+            href="mailto:hello@genpano.com?subject=我想要定制化优化方案"
+            className="inline-flex items-center justify-center px-4 py-2.5 rounded-btn bg-themed-accent text-white font-medium text-sm transition-colors hover:opacity-90"
+          >
+            获取定制优化方案
+            <span className="ml-1.5">→</span>
+          </a>
+          <p className="text-[10px] text-themed-muted mt-2">
+            {t('brand_citations.simulator_cta_hint') || '了解如何通过内容策略、外联 PR、平台合作等方式实现增长'}
+          </p>
         </div>
       </Card>
     </div>

@@ -1,123 +1,124 @@
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Badge, Card } from '../../components/ui';
-import { useLocale } from '../../contexts/LocaleContext';
-import { useIndustries, useIndustryRanking } from '../../hooks/useIndustries';
-import {
-  LoadingCard,
-  EmptyCard,
-  ErrorCard,
-} from '../brand/BrandVisibilityPage';
+/**
+ * IndustryRankingPage — /industry/ranking (PRD §4.6.1f v3, 2026-04-20)
+ * ────────────────────────────────────────────────────────────────────
+ * 行业多口径排行 8-段式 (从 Overview v3 迁入 Top Citation Domains 段):
+ *   ① Sticky Filter Bar (复用 BrandAnalysisFilterBar)
+ *   ② Ranking Hero (Top 3 / Top 10 / 总排名数 + 我的位置卡)
+ *   ③ Tier Breakdown (Top 3 / 4-10 / 11-25 / 26+, 高度 ∝ totalSov)
+ *   ④ Multi-Metric Matrix (Top 15 × PANO/SoV/引用/情感/提及 5 口径 + σ dispersion)
+ *   ⑤ Ranking Movers Grid (30d gainers / losers 2-col + sparkline + 主驱动)
+ *   ⑥ Engine Ranking Matrix (Top 10 × 3 引擎 heatmap + ΔMax warning)
+ *   ⑦ Top 10 引用源 (从 Overview v2 段⑧ 迁入 — 权威域在"谁能赢"里是关键)
+ *   ⑧ Segment Ranking (国际高端 / 大众高端 / 小众-新锐 3 列 Top 5)
+ *
+ * 字段契约 (§4.6.1f.D 硬约束):
+ *   - 禁 b.primaryName (→ b.name) / b.isPrimary (→ b.id === primaryBrandId)
+ *   - 禁 b.categoryName (行业排行不分品类)
+ *   - 禁 Math.round(v * 100) on sov / citationShare (已是 0-100 整数)
+ *   - mentionRate 0-1 小数, UI (×100).toFixed(1)% 渲染
+ */
+import React, { useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useProject } from '../../contexts/ProjectContext';
+import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
+import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 
-/* Phase 5 §"mock 退役" — 整页来自 GET /v1/industries/:id/ranking. */
+import IndustryRankingHero from '../../components/industry/IndustryRankingHero';
+import IndustrySubpageLiveBanner from '../../components/industry/IndustrySubpageLiveBanner';
+import IndustryTierBreakdown from '../../components/industry/IndustryTierBreakdown';
+import IndustryMultiMetricMatrix from '../../components/industry/IndustryMultiMetricMatrix';
+import IndustryRankingMoversGrid from '../../components/industry/IndustryRankingMoversGrid';
+import IndustryEngineRankingMatrix from '../../components/industry/IndustryEngineRankingMatrix';
+import IndustryTopCitationDomains from '../../components/industry/IndustryTopCitationDomains';
+import IndustrySegmentRanking from '../../components/industry/IndustrySegmentRanking';
+
+import { INDUSTRIES, BRANDS, TOP_CITED_DOMAINS } from '../../data/mock';
+
 export default function IndustryRankingPage() {
-  const navigate = useNavigate();
-  const { formatDate } = useLocale();
-  const [params, setParams] = useSearchParams();
-  const industriesQ = useIndustries();
-  const list = industriesQ.data?.items ?? [];
-  const industryParam = params.get('industryId');
-  const industryId = industryParam
-    ? Number(industryParam)
-    : list.length > 0
-      ? list[0].industry_id
-      : null;
-  const { data, isLoading, error, refetch } = useIndustryRanking(industryId);
+  const [searchParams] = useSearchParams();
+  const { activeProject } = useProject();
+  // 占位: FilterBar 是 URL-driven 单一真相源, 组件读 filters 未来扩筛选下钻用
+  const { filters } = useBrandAnalysisFilters();
+  void filters;
 
-  if (industriesQ.isLoading || isLoading) return <LoadingCard />;
-  if (error)
-    return (
-      <ErrorCard
-        msg={error instanceof Error ? error.message : 'unknown'}
-        onRetry={() => refetch()}
-      />
-    );
-  if (!data || data.state === 'empty' || data.items.length === 0)
-    return <EmptyCard onRefresh={() => refetch()} title="行业排名" />;
+  /* Resolve industry: ?industryId= → activeProject.industryId → 'beauty' */
+  const industryId =
+    searchParams.get('industryId') || activeProject?.industryId || 'beauty';
+  const industry = useMemo(
+    () => INDUSTRIES.find((i) => i.id === industryId) || INDUSTRIES[0],
+    [industryId]
+  );
 
-  const setIndustry = (id: number) => {
-    const next = new URLSearchParams(params);
-    next.set('industryId', String(id));
-    setParams(next);
-  };
+  /* Brands scoped to industry */
+  const industryBrands = useMemo(() => {
+    const filtered = BRANDS.filter((b) => b.industryId === industry.id);
+    return filtered.length ? filtered : BRANDS;
+  }, [industry.id]);
+
+  const primaryBrand = useMemo(
+    () =>
+      activeProject?.primaryBrandId
+        ? industryBrands.find((b) => b.id === activeProject.primaryBrandId) ||
+          BRANDS.find((b) => b.id === activeProject.primaryBrandId) ||
+          null
+        : null,
+    [activeProject?.primaryBrandId, industryBrands]
+  );
+
+  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant="default">LIVE</Badge>
-          <h2 className="text-heading-2 font-bold text-themed-primary">
-            行业排名
-          </h2>
-          <span className="text-sm text-themed-muted">
-            {formatDate(data.period.from)} – {formatDate(data.period.to)}
-          </span>
-          <span className="text-xs text-themed-muted">共 {data.total}</span>
-        </div>
-        <select
-          className="t-input text-sm"
-          value={industryId ?? ''}
-          onChange={(e) => setIndustry(Number(e.target.value))}
-        >
-          {list.map((it) => (
-            <option key={it.industry_id} value={it.industry_id}>
-              {it.name}
-            </option>
-          ))}
-        </select>
-      </div>
+    <div className="space-y-3">
+      <IndustrySubpageLiveBanner variant="ranking" industryId={liveIndustryId} />
+      {/* ── 段 ② Hero (page banner, 置顶且 border-b 与 FilterBar 分隔) ── */}
+      <IndustryRankingHero
+        industryName={`${industry.icon || ''} ${industry.name} 排行榜`.trim()}
+        brands={industryBrands}
+        primaryBrand={primaryBrand}
+      />
 
-      <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[10px] uppercase tracking-wider text-themed-muted">
-                <th className="py-2 pl-5">排名</th>
-                <th className="py-2 px-3">品牌</th>
-                <th className="py-2 px-3 text-right">GEO 分</th>
-                <th className="py-2 px-3 text-right">提及率</th>
-                <th className="py-2 px-3 text-right">SoV</th>
-                <th className="py-2 px-3 text-right">情感</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((row) => (
-                <tr
-                  key={row.brand_id}
-                  className="border-t border-themed-subtle hover:bg-themed-subtle cursor-pointer"
-                  onClick={() => navigate(`/brands/${row.brand_id}?tab=overview`)}
-                >
-                  <td className="py-2 pl-5 pr-3 text-themed-muted tabular-nums">
-                    #{row.rank}
-                  </td>
-                  <td className="py-2 px-3 text-themed-primary font-medium">
-                    {row.brand_name ?? `Brand #${row.brand_id}`}
-                  </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-themed-primary font-semibold">
-                    {row.avg_geo_score != null
-                      ? row.avg_geo_score.toFixed(1)
-                      : '—'}
-                  </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                    {row.avg_mention_rate != null
-                      ? `${(row.avg_mention_rate * 100).toFixed(1)}%`
-                      : '—'}
-                  </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                    {row.avg_sov != null
-                      ? `${(row.avg_sov * 100).toFixed(1)}%`
-                      : '—'}
-                  </td>
-                  <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
-                    {row.avg_sentiment != null
-                      ? row.avg_sentiment.toFixed(2)
-                      : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      {/* ── 段 ① Filter bar (sticky, 复用 Brand Mode FilterBar) ── */}
+      <BrandAnalysisFilterBar />
+
+      {/* ── 段 ③ Tier Breakdown ── */}
+      <IndustryTierBreakdown
+        brands={industryBrands}
+        primaryBrandId={primaryBrand?.id || null}
+      />
+
+      {/* ── 段 ④ Multi-Metric Matrix (Top 15 × 5 口径 + σ) ── */}
+      <IndustryMultiMetricMatrix
+        brands={industryBrands}
+        primaryBrandId={primaryBrand?.id || null}
+        limit={15}
+      />
+
+      {/* ── 段 ⑤ 30d Movers grid (gainers / losers) ── */}
+      <IndustryRankingMoversGrid
+        brands={industryBrands}
+        primaryBrandId={primaryBrand?.id || null}
+      />
+
+      {/* ── 段 ⑥ Engine Ranking Matrix (Top 10 × 3 引擎) ── */}
+      <IndustryEngineRankingMatrix
+        brands={industryBrands}
+        primaryBrandId={primaryBrand?.id || null}
+        limit={10}
+      />
+
+      {/* ── 段 ⑦ Top 10 引用源 (从 Overview v2 段⑧ 迁入) ── */}
+      <IndustryTopCitationDomains
+        domains={TOP_CITED_DOMAINS}
+        primaryBrandId={primaryBrand?.id || null}
+        limit={10}
+      />
+
+      {/* ── 段 ⑧ Segment Ranking (3 赛道 × Top 5) ── */}
+      <IndustrySegmentRanking
+        brands={industryBrands}
+        primaryBrandId={primaryBrand?.id || null}
+        limit={5}
+      />
     </div>
   );
 }

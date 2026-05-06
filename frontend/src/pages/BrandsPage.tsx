@@ -1,206 +1,153 @@
+import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Badge, Button, Card } from '../components/ui';
+import { Badge, Card } from '../components/ui';
+import { MiniSparkline } from '../components/charts';
 import { useLocale } from '../contexts/LocaleContext';
-import { useProjects } from '../hooks/useProjects';
-import { useCompetitorMetrics } from '../hooks/useBrandMetrics';
-import { isLiveProjectId } from '../hooks/useReports';
+import { useProject } from '../contexts/ProjectContext';
+import BrandsListLiveBanner from '../components/brand/BrandsListLiveBanner';
+import { BRANDS, PROJECTS, TREND_DATA } from '../data/mock';
 
 /* ─────────────────────────────────────────────────────────────
    BrandsPage — PRD §4.6.1b 列表入口
    ─────────────────────────────────────────────────────────────
-   Phase 5 §"mock 退役" — 列表数据 100% 来自
-   GET /v1/projects/:id/competitors/metrics (Phase 2.2). 不再 import
-   mock; 用户没有 Project 时跳引导, 有 Project 但 0 竞品时显示空态.
+   职责: 仅列出 Project 范围内的品牌(主品牌 + 竞品), 点击行进入
+         /brands/:id 单品牌深度视图.
+
+   🚫 本页不做:
+     - 跨品牌 SoV 饼图 / 竞品四象限 / 跨品牌 PANO 趋势对比
+       → 回到「面板」
+     - 单品牌的 V/S/R/A 子维度展开 / Diagnostics 列表 / 产品明细
+       → 进入 /brands/:id
+     - 情感分布 / 引用来源 / Top Domains
+       → 进入 /brands/:id 概览 Tab
+
+   样式: 颜色全部走 var(--color-*) / .text-themed-* / .bg-themed-*.
 */
+
 export default function BrandsPage() {
   const navigate = useNavigate();
   const { t, formatNumber } = useLocale();
-  const { data: liveProjects, isLoading: projLoading } = useProjects();
-  const liveProjectId =
-    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
-  const enabled = isLiveProjectId(liveProjectId);
-  const { data, isLoading, error, refetch } = useCompetitorMetrics(
-    enabled ? liveProjectId : null,
-  );
+  // ProjectContext is hybrid live/mock since PR #293 — when the user
+  // has a real backend project, activeProject reflects it; otherwise
+  // it falls back to the first mock project.
+  const { activeProject: liveActiveProject } = useProject();
+  const activeProject = liveActiveProject || PROJECTS[0];
 
-  if (projLoading || (enabled && isLoading)) {
-    return (
-      <Card className="p-12 text-center" onClick={undefined} style={{}}>
-        <div className="text-sm text-themed-muted">加载…</div>
-      </Card>
-    );
-  }
-
-  if (!enabled) {
-    return (
-      <Card className="p-12 text-center" onClick={undefined} style={{}}>
-        <div className="text-3xl mb-3">🏷️</div>
-        <h3 className="text-base font-semibold text-themed-primary mb-2">
-          还没有 Project
-        </h3>
-        <p className="text-sm text-themed-muted mb-4 max-w-md mx-auto">
-          创建 Project 后, 这里会列出你的主品牌 + 选择的竞品矩阵.
-        </p>
-        <Button variant="primary" size="sm" onClick={() => navigate('/onboarding')}>
-          开始引导
-        </Button>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card className="p-12 text-center" onClick={undefined} style={{}}>
-        <div className="text-sm text-themed-muted mb-3">
-          加载失败: {error instanceof Error ? error.message : 'unknown'}
-        </div>
-        <Button variant="secondary" size="sm" onClick={() => refetch()}>
-          重试
-        </Button>
-      </Card>
-    );
-  }
-
-  const primary = data?.primary ?? null;
-  const competitors = data?.competitors ?? [];
-  const rows = primary ? [primary, ...competitors] : competitors;
-
-  if (rows.length === 0) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-xl font-brand font-bold text-themed-primary">
-            {t('brand.list_title')}
-          </h2>
-          <p className="text-sm text-themed-muted mt-1">{t('brand.list_subtitle')}</p>
-        </div>
-        <Card className="p-12 text-center" onClick={undefined} style={{}}>
-          <div className="text-3xl mb-3">📡</div>
-          <h3 className="text-base font-semibold text-themed-primary mb-2">
-            首批数据采集中
-          </h3>
-          <p className="text-sm text-themed-muted mb-4 max-w-md mx-auto">
-            Project 已创建, 后端正在采集. 通常首批数据在 24h 内入库.
-          </p>
-          <Button variant="primary" size="sm" onClick={() => refetch()}>
-            刷新
-          </Button>
-        </Card>
-      </div>
-    );
-  }
+  // 列表数据 = 主品牌 + 竞品 (不含全行业)
+  const rows = useMemo(() => {
+    const primaryId = activeProject?.primaryBrandId;
+    const competitorIds = activeProject?.competitorBrandIds || [];
+    const all = [primaryId, ...competitorIds]
+      .map((id) => BRANDS.find((b) => b.id === id))
+      .filter(Boolean);
+    return all.map((b) => ({
+      ...b,
+      isPrimary: b.id === primaryId,
+      // MiniSparkline expects raw number[], not { value } objects.
+      sparkData: TREND_DATA.slice(-14).map((d) => d.panoScore),
+    }));
+  }, [activeProject]);
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h2 className="text-xl font-brand font-bold text-themed-primary">
             {t('brand.list_title')}
           </h2>
-          <p className="text-sm text-themed-muted mt-1">{t('brand.list_subtitle')}</p>
+          <p className="text-sm text-themed-muted mt-1">
+            {t('brand.list_subtitle')}
+          </p>
         </div>
-        <Badge variant="default">LIVE</Badge>
       </div>
 
-      <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
+      {/* LIVE strip — primary + competitors from
+          /v1/projects/:id/competitors/metrics */}
+      <BrandsListLiveBanner />
+
+      {/* List table */}
+      <Card className="p-0 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full t-table">
             <thead>
               <tr>
                 <th className="text-left py-3 px-5 font-medium text-themed-muted text-xs">
-                  品牌
+                  {t('brand.list_col.brand')}
                 </th>
                 <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  GEO 分
+                  {t('brand.list_col.pano')}
                 </th>
                 <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  提及率
+                  {t('brand.list_col.change')}
                 </th>
                 <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  SoV
+                  {t('brand.list_col.mention')}
                 </th>
                 <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  情感
+                  {t('brand.list_col.sentiment')}
                 </th>
                 <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  共现
+                  {t('brand.list_col.rank')}
                 </th>
-                <th className="text-right py-3 px-4 font-medium text-themed-muted text-xs">
-                  30d Δ%
+                <th className="text-left py-3 px-4 font-medium text-themed-muted text-xs w-40">
+                  PANO 14d
                 </th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const isPrimary = primary != null && row.brand_id === primary.brand_id;
-                const delta = row.delta_30d_pct;
-                const deltaTone =
-                  delta == null
-                    ? 'text-themed-muted'
-                    : delta > 0
-                      ? 'text-themed-success'
-                      : delta < 0
-                        ? 'text-themed-danger'
-                        : 'text-themed-muted';
+                const positive = row.change && row.change.startsWith('+');
                 return (
                   <tr
-                    key={row.brand_id}
+                    key={row.id}
                     className="border-t border-themed-subtle hover:bg-themed-subtle cursor-pointer transition-colors"
-                    onClick={() =>
-                      navigate(`/brands/${row.brand_id}?tab=overview`)
-                    }
-                    style={
-                      isPrimary
-                        ? { background: 'var(--color-accent-subtle)' }
-                        : undefined
-                    }
+                    onClick={() => navigate(`/brands/${row.id}?tab=overview`)}
+                    style={row.isPrimary ? { background: 'var(--color-accent-subtle)' } : undefined}
                   >
                     <td className="py-3 px-5">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-themed-primary">
-                          {row.brand_name ?? `Brand #${row.brand_id}`}
+                          {row.name}
                         </span>
                         <span className="text-[11px] text-themed-muted">
-                          #{row.brand_id}
+                          {row.nameEn}
                         </span>
-                        {isPrimary ? (
-                          <Badge variant="accent" size="sm">主品牌</Badge>
+                        {row.isPrimary ? (
+                          <Badge variant="accent" size="sm">
+                            {t('brand.list_col.primary_badge')}
+                          </Badge>
                         ) : (
-                          <Badge variant="default" size="sm">竞品</Badge>
+                          <Badge variant="default" size="sm">
+                            {t('brand.list_col.competitor_badge')}
+                          </Badge>
                         )}
                       </div>
                     </td>
                     <td className="py-3 px-4 text-right text-sm font-semibold tabular-nums text-themed-primary">
-                      {row.avg_geo_score != null ? row.avg_geo_score.toFixed(1) : '—'}
+                      {row.panoScore}
+                    </td>
+                    <td className="py-3 px-4 text-right text-sm tabular-nums">
+                      <span className={positive ? 'text-themed-success' : 'text-themed-danger'}>
+                        {row.change}
+                      </span>
                     </td>
                     <td className="py-3 px-4 text-right text-sm tabular-nums text-themed-secondary">
-                      {row.avg_mention_rate != null
-                        ? formatNumber(row.avg_mention_rate * 100, {
-                            maximumFractionDigits: 1,
-                          }) + '%'
-                        : '—'}
+                      {formatNumber(row.mentionRate, { maximumFractionDigits: 1 })}%
                     </td>
                     <td className="py-3 px-4 text-right text-sm tabular-nums text-themed-secondary">
-                      {row.avg_sov != null
-                        ? formatNumber(row.avg_sov * 100, {
-                            maximumFractionDigits: 1,
-                          }) + '%'
-                        : '—'}
+                      {formatNumber(row.sentiment, { maximumFractionDigits: 2 })}
                     </td>
                     <td className="py-3 px-4 text-right text-sm tabular-nums text-themed-secondary">
-                      {row.avg_sentiment != null
-                        ? row.avg_sentiment.toFixed(2)
-                        : '—'}
+                      #{row.ranking}
                     </td>
-                    <td className="py-3 px-4 text-right text-sm tabular-nums text-themed-secondary">
-                      {row.co_mention_count}
-                    </td>
-                    <td
-                      className={`py-3 px-4 text-right text-sm tabular-nums ${deltaTone}`}
-                    >
-                      {delta != null
-                        ? `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`
-                        : '—'}
+                    <td className="py-3 px-4">
+                      <div className="h-7 -mx-1">
+                        <MiniSparkline
+                          data={row.sparkData}
+                          color={row.isPrimary ? 'var(--color-accent)' : 'var(--color-chart-3)'}
+                        />
+                      </div>
                     </td>
                   </tr>
                 );
