@@ -194,6 +194,59 @@ def fake_db(monkeypatch):
     return conn
 
 
+def test_admin_audit_log_insert_populates_legacy_resource_columns():
+    class AuditCursor:
+        def __init__(self):
+            self.rows = []
+            self.insert_sql = ""
+            self.insert_params = None
+
+        def execute(self, sql, params=None):
+            compact = " ".join(str(sql).split())
+            if "information_schema.columns" in compact:
+                self.rows = [
+                    {"column_name": name}
+                    for name in (
+                        "id",
+                        "operator_id",
+                        "action",
+                        "resource_type",
+                        "resource_id",
+                        "target_type",
+                        "target_id",
+                        "diff_json",
+                        "reason",
+                        "ip",
+                        "ua",
+                        "created_at",
+                    )
+                ]
+                return
+            self.insert_sql = compact
+            self.insert_params = params
+
+        def fetchall(self):
+            return list(self.rows)
+
+    cur = AuditCursor()
+
+    app_mod._insert_admin_audit_log(
+        cur,
+        operator_id="admin-1",
+        action="enrich_brand",
+        target_type="brand",
+        target_id=None,
+        diff={"name": "Best Coffer"},
+        reason=None,
+    )
+
+    assert "resource_type" in cur.insert_sql
+    assert "resource_id" in cur.insert_sql
+    assert "target_type" in cur.insert_sql
+    assert cur.insert_params[3] == "brand"
+    assert cur.insert_params[5] == "brand"
+
+
 def test_brand_management_migration_alters_brands_and_creates_logs(monkeypatch):
     conn = fake_db(monkeypatch)
     monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: name == "brands")
