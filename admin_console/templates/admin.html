@@ -14009,16 +14009,23 @@ function adminApp() {
           }),
         });
         const body = await res.json().catch(() => ({}));
+        const failed = Array.isArray(body.failed) ? body.failed : [];
         if (!res.ok || body.success === false) {
-          const failed = body.summary && body.summary.failed_count ? '，失败 ' + body.summary.failed_count + ' 个' : '';
-          throw new Error((body.message || body.error || 'Bulk review failed') + failed);
+          if (res.status !== 409) {
+            const failedText = body.summary && body.summary.failed_count ? '，失败 ' + body.summary.failed_count + ' 个' : '';
+            throw new Error((body.message || body.error || 'Bulk review failed') + failedText);
+          }
         }
         this.topicPlanSelectedCandidateIds = {};
         await this.loadTopicPlanCandidates();
         await this.loadTopicPlanCoverage();
         await this.loadTopicPlanTopics();
         const count = body.summary && body.summary.updated_count ? body.summary.updated_count : ids.length;
-        this.toast('已批量' + label + ' ' + count + ' 个候选 Topic');
+        if (failed.length) {
+          this.toast('\u6279\u91cf' + label + '\u90e8\u5206\u5b8c\u6210\uff1a\u6210\u529f ' + count + ' \u4e2a\uff0c\u5931\u8d25 ' + failed.length + ' \u4e2a');
+        } else {
+          this.toast('已批量' + label + ' ' + count + ' 个候选 Topic');
+        }
       } catch (e) {
         this.toast('批量审核失败: ' + (e.message || e));
       } finally {
