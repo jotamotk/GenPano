@@ -20,6 +20,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     repair_json = None
 
+try:
+    from ._layer_classifier import LAYER_BOUNDARY_PROMPT, reject_reason as _layer_reject_reason
+except ImportError:  # pragma: no cover - Docker runs admin_console as copied script modules
+    from _layer_classifier import LAYER_BOUNDARY_PROMPT, reject_reason as _layer_reject_reason
+
 
 ALLOWED_TOPIC_DIMENSIONS = {"brand", "product", "category", "scenario", "question"}
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
@@ -399,8 +404,6 @@ def dedupe_topic_candidates(
       - ``looks_like_query``     layer violation: this is a Query
       - ``over_limit``           accepted enough already, this is the tail
     """
-    from ._layer_classifier import reject_reason as _reject_reason
-
     db_normalized = {normalize_topic_title(title) for title in existing_titles if title}
     db_normalized.discard("")
     batch_normalized: set[str] = set()
@@ -412,7 +415,7 @@ def dedupe_topic_candidates(
             skipped.append({"title": item.title, "reason": "over_limit"})
             continue
         if layer_check:
-            layer_reason = _reject_reason(item.title, "topic")
+            layer_reason = _layer_reject_reason(item.title, "topic")
             if layer_reason is not None:
                 skipped.append({"title": item.title, "reason": layer_reason})
                 continue
@@ -614,7 +617,6 @@ def build_topic_plan_messages(
     }
     # Module 0.5: prepend the layer-boundary header so the LLM knows it must
     # produce *Topics* (noun-phrase research areas), not Prompts or Queries.
-    from ._layer_classifier import LAYER_BOUNDARY_PROMPT
     system = (
         LAYER_BOUNDARY_PROMPT.replace("{LAYER}", "topic")
         + "\n\n"

@@ -1,6 +1,9 @@
 import os
+import subprocess
 import sys
+import textwrap
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from admin_console.topic_plan import (
@@ -16,6 +19,119 @@ from admin_console.topic_plan import (
     repair_single_brand_placeholders,
     transition_candidate_status,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ADMIN_CONSOLE_DIR = REPO_ROOT / "admin_console"
+
+
+def _run_script_mode_python(code: str):
+    env = os.environ.copy()
+    env["ADMIN_CONSOLE_SKIP_STARTUP_MIGRATIONS"] = "1"
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_topic_plan_helpers_work_when_imported_as_docker_script_modules():
+    result = _run_script_mode_python(
+        f"""
+        import sys
+        sys.path.insert(0, {str(ADMIN_CONSOLE_DIR)!r})
+        import topic_plan
+
+        messages = topic_plan.build_topic_plan_messages(
+            industry="运动户外",
+            category="All categories",
+            brands=[{{"id": 18, "name": "NIKE", "topic_count": 2}}],
+            coverage_gaps=[{{"brand_id": 18, "brand": "NIKE", "type": "brand", "count": 1}}],
+            max_topics=1,
+            existing_topics=[],
+        )
+        candidates, skipped = topic_plan.dedupe_topic_candidates(
+            [
+                topic_plan.LLMTopic(
+                    title="NIKE beginner road running shoes",
+                    brand="NIKE",
+                    dimension="product",
+                    reason="覆盖新手跑步购买意图",
+                    confidence=0.9,
+                    coverage_gap="NIKE:product",
+                )
+            ],
+            [],
+            1,
+        )
+        assert len(messages) == 2
+        assert len(candidates) == 1
+        assert skipped == []
+        """
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_topic_plan_generation_helpers_work_when_app_imported_as_docker_script_module():
+    result = _run_script_mode_python(
+        f"""
+        import sys
+        import types
+        sys.path.insert(0, {str(ADMIN_CONSOLE_DIR)!r})
+        import app
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def execute(self, *args, **kwargs):
+                return None
+
+        class FakeConn:
+            def cursor(self, *args, **kwargs):
+                return FakeCursor()
+            def commit(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, config):
+                self.config = config
+            def generate_topics(self, **kwargs):
+                return [], {{"model": "fake-model", "usage": {{}}}}
+
+        app.load_doubao_config = lambda: types.SimpleNamespace(model="fake-model")
+        app.DoubaoTopicPlanClient = FakeClient
+        app._topic_plan_brand_batches = lambda *args, **kwargs: iter([
+            ([{{"id": 18, "name": "NIKE"}}], [{{"brand_id": 18, "count": 1}}], 1)
+        ])
+        app._is_generation_run_cancelled = lambda *args, **kwargs: False
+        app._insert_topic_plan_candidate_batch = lambda *args, **kwargs: []
+        app._insert_admin_audit_log = lambda *args, **kwargs: None
+
+        app._execute_topic_plan_generation(
+            run_id="run-1",
+            admin_id=1,
+            industry_id="运动户外",
+            category_id=None,
+            brands=[{{"id": 18, "name": "NIKE"}}],
+            llm_gaps=[{{"brand_id": 18, "count": 1}}],
+            max_per_brand=40,
+            max_topics=1,
+            existing_titles=[],
+            request_config={{"max_topics": 1}},
+            coverage_summary={{}},
+            conn=FakeConn(),
+        )
+        """
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 class TopicPlanUtilsTest(unittest.TestCase):
