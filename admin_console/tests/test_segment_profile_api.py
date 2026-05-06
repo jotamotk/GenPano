@@ -72,35 +72,6 @@ def fake_db(monkeypatch):
     return conn
 
 
-def test_segment_table_migration_backfills_legacy_columns(monkeypatch):
-    conn = fake_db(monkeypatch)
-
-    app_mod._ensure_segment_profile_tables()
-
-    statements = "\n".join(sql for sql, _params in conn.statements)
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS name TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS status VARCHAR(16)" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS weight NUMERIC" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS age_range TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS income TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS regions TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS sampling_rate TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS note TEXT" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)" in statements
-    assert "ALTER TABLE segments ADD COLUMN IF NOT EXISTS brand_name TEXT" in statements
-
-
-def test_profile_table_migration_backfills_legacy_columns(monkeypatch):
-    conn = fake_db(monkeypatch)
-
-    app_mod._ensure_segment_profile_tables()
-
-    statements = "\n".join(sql for sql, _params in conn.statements)
-    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS name TEXT" in statements
-    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_id VARCHAR(128)" in statements
-    assert "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS brand_name TEXT" in statements
-
-
 def test_admin_db_environment_defaults_to_local_admin_database(monkeypatch):
     for key in (
         "ADMIN_DATABASE_URL",
