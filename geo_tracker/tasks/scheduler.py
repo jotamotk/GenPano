@@ -32,6 +32,17 @@ LLM_DEFAULT_GEO = {
     "gemini": "US",
 }
 
+SCHEDULER_EXCLUDED_ENGINE_SUFFIXES = ("_hots",)
+
+
+def _normalize_scheduler_engine_name(llm_name: Any) -> str:
+    return str(llm_name or "").strip().lower()
+
+
+def _is_scheduler_query_engine(llm_name: Any) -> bool:
+    engine = _normalize_scheduler_engine_name(llm_name)
+    return bool(engine) and not engine.endswith(SCHEDULER_EXCLUDED_ENGINE_SUFFIXES)
+
 
 def _db_url() -> str:
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
@@ -101,10 +112,18 @@ def _quotas(cur, paused_engines: List[str]) -> List[Dict[str, Any]]:
         """
     )
     rows = [dict(r) for r in cur.fetchall()]
+    rows = [r for r in rows if _is_scheduler_query_engine(r.get("engine"))]
 
     # Drop entries whose engine is paused right now.
-    paused = set((paused_engines or []))
-    rows = [r for r in rows if r["engine"] not in paused]
+    paused = {
+        _normalize_scheduler_engine_name(engine)
+        for engine in (paused_engines or [])
+        if _is_scheduler_query_engine(engine)
+    }
+    rows = [
+        r for r in rows
+        if _normalize_scheduler_engine_name(r.get("engine")) not in paused
+    ]
 
     # Cap the total quota per account at its daily_limit (binding rows may
     # over-allocate; we shrink proportionally if so).
@@ -265,6 +284,10 @@ def run_daily_dispatch(
                 (json.dumps(paused_lower),),
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
+            due_schedules = [
+                sch for sch in due_schedules
+                if _is_scheduler_query_engine(sch.get("target_llm"))
+            ]
             for sch in due_schedules:
                 # SAVEPOINT per row so a single bad schedule (profile_id type
                 # mismatch, missing schedule_id column) doesn't poison the

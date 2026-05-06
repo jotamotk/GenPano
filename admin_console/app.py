@@ -14402,6 +14402,52 @@ LLM_DEFAULT_GEO = {
     "doubao": "CN", "deepseek": "CN", "chatgpt": "US", "gemini": "US",
 }
 
+SCHEDULER_EXCLUDED_ENGINE_SUFFIXES = ("_hots",)
+
+
+def _normalize_scheduler_engine_name(llm_name):
+    return str(llm_name or '').strip().lower()
+
+
+def _is_scheduler_query_engine(llm_name):
+    engine = _normalize_scheduler_engine_name(llm_name)
+    return bool(engine) and not engine.endswith(SCHEDULER_EXCLUDED_ENGINE_SUFFIXES)
+
+
+def _normalize_scheduler_paused_engines(values):
+    normalized = []
+    seen = set()
+    for value in values or []:
+        engine = _normalize_scheduler_engine_name(value)
+        if not _is_scheduler_query_engine(engine) or engine in seen:
+            continue
+        normalized.append(engine)
+        seen.add(engine)
+    return normalized
+
+
+def _normalize_scheduler_engine_caps(engine_caps, *, strict=True):
+    normalized_caps = {}
+    for k, v in (engine_caps or {}).items():
+        key = _normalize_scheduler_engine_name(k)
+        if not _is_scheduler_query_engine(key):
+            continue
+        if v in ('', None):
+            normalized_caps[key] = None
+            continue
+        try:
+            iv = int(v)
+            if iv < 0:
+                raise ValueError
+        except Exception:
+            if strict:
+                raise ValueError(
+                    f"engine_caps['{key}'] must be a non-negative integer or null"
+                )
+            continue
+        normalized_caps[key] = iv
+    return normalized_caps
+
 
 def _account_engine_geo(llm_name):
     if not llm_name:
@@ -14884,16 +14930,19 @@ def _account_capacity_breakdown(cur):
         """
     )
     rows = cur.fetchall()
-    return [
-        {
-            'engine': r['engine'],
+    capacity = []
+    for r in rows:
+        engine = _normalize_scheduler_engine_name(r['engine'])
+        if not _is_scheduler_query_engine(engine):
+            continue
+        capacity.append({
+            'engine': engine,
             'accounts_total': int(r['account_total'] or 0),
             'accounts_active': int(r['account_active'] or 0),
             'daily_capacity': int(r['daily_capacity'] or 0),
-            'expected_geo': _account_engine_geo(r['engine']),
-        }
-        for r in rows
-    ]
+            'expected_geo': _account_engine_geo(engine),
+        })
+    return capacity
 
 
 @app.route('/api/scheduler/config')
@@ -14908,6 +14957,12 @@ def scheduler_config_get():
             return jsonify({'error': 'scheduler_config missing'}), 500
         cfg = dict(cfg)
         cfg['updated_at'] = _isoformat(cfg.get('updated_at'))
+        cfg['paused_engines'] = _normalize_scheduler_paused_engines(
+            cfg.get('paused_engines') or []
+        )
+        cfg['engine_caps'] = _normalize_scheduler_engine_caps(
+            cfg.get('engine_caps') or {}, strict=False
+        )
         cfg['capacity'] = cap
         cfg['capacity_total'] = sum(int(c['daily_capacity'] or 0) for c in cap)
         return jsonify(cfg)
@@ -14951,6 +15006,8 @@ def scheduler_config_put():
     paused_engines = payload.get('paused_engines')
     if paused_engines is not None and not isinstance(paused_engines, list):
         return jsonify({'error': 'paused_engines must be a list'}), 400
+    if paused_engines is not None:
+        paused_engines = _normalize_scheduler_paused_engines(paused_engines)
 
     # Per-engine caps. Shape: {"doubao": 100, "deepseek": null, "chatgpt": 50}.
     # ``null`` / missing key / 0 = no cap for that engine. Negative = error.
@@ -14958,24 +15015,10 @@ def scheduler_config_put():
     if engine_caps is not None:
         if not isinstance(engine_caps, dict):
             return jsonify({'error': 'engine_caps must be an object'}), 400
-        normalized_caps = {}
-        for k, v in engine_caps.items():
-            key = str(k or '').strip().lower()
-            if not key:
-                continue
-            if v in ('', None):
-                normalized_caps[key] = None
-                continue
-            try:
-                iv = int(v)
-                if iv < 0:
-                    raise ValueError
-            except Exception:
-                return jsonify({
-                    'error': f"engine_caps['{key}'] must be a non-negative integer or null"
-                }), 400
-            normalized_caps[key] = iv
-        engine_caps = normalized_caps
+        try:
+            engine_caps = _normalize_scheduler_engine_caps(engine_caps)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
 
     sets = []
     args = []
@@ -15070,8 +15113,12 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 )
                 cfg = cur.fetchone()
             cfg = dict(cfg)
-            paused_engines = cfg.get('paused_engines') or []
-            engine_caps = cfg.get('engine_caps') or {}
+            paused_engines = _normalize_scheduler_paused_engines(
+                cfg.get('paused_engines') or []
+            )
+            engine_caps = _normalize_scheduler_engine_caps(
+                cfg.get('engine_caps') or {}, strict=False
+            )
 
             # Compute per-(account, profile) quotas. Falls back to legacy
             # llm_accounts.profile_id when no apm rows exist for an account.
@@ -15090,7 +15137,8 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 """
             )
             quotas = [dict(r) for r in cur.fetchall()
-                      if r.get('profile_id') is not None]
+                      if r.get('profile_id') is not None
+                      and _is_scheduler_query_engine(r.get('engine'))]
 
             # Drop paused engines
             paused_set = set(str(e).lower() for e in paused_engines)
@@ -15169,6 +15217,10 @@ def _run_manual_dispatch(cap_override=None, note=None):
                 (json.dumps([str(e).lower() for e in paused_engines]),),
             )
             due_schedules = [dict(r) for r in cur.fetchall()]
+            due_schedules = [
+                sch for sch in due_schedules
+                if _is_scheduler_query_engine(sch.get('target_llm'))
+            ]
             target_total = len(due_schedules) + sum(int(q['quota'] or 0) for q in quotas)
 
             # Defer the scheduler_runs INSERT until we know we did real work.
