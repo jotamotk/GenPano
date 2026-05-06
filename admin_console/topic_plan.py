@@ -130,6 +130,14 @@ def _parse_env_value(raw_value: str) -> str:
     return value
 
 
+def _bounded_int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(min_value, min(number, max_value))
+
+
 def _read_dotenv_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists() or not path.is_file():
@@ -671,13 +679,18 @@ class DoubaoTopicPlanClient:
             max_topics=max_topics,
             existing_topics=existing_topics,
         )
-        client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
+        timeout_seconds = _bounded_int(os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 90, 90, 30, 240)
+        client = OpenAI(
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
+            timeout=timeout_seconds,
+        )
         try:
             response = client.chat.completions.create(
                 model=self.config.model,
                 messages=messages,
                 temperature=0.1,
-                timeout=90,
+                timeout=timeout_seconds,
             )
         except Exception as error:
             raise TopicPlanLLMError("llm_call_failed", "Doubao 2 topic generation failed") from error
