@@ -1806,11 +1806,14 @@ def _delete_topic_plan_topics(cur, topic_ids):
     return {"deleted": deleted, "blocked": blocked, "missing": missing}
 
 
-def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, query=None, limit=100):
+def _fetch_topic_plan_candidates(cur, status="pending", brand_ids=None, query=None, limit=100, run_id=None):
     if not _table_exists(cur, "topic_candidates"):
         return []
     where = []
     params = []
+    if run_id:
+        where.append("run_id = %s")
+        params.append(run_id)
     if status and status != "all":
         where.append("status = %s")
         params.append(status)
@@ -8105,6 +8108,7 @@ def admin_topic_plan_candidates_api():
     except ValueError:
         return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
     query = (request.args.get("q") or "").strip() or None
+    run_id = (request.args.get("run_id") or "").strip() or None
 
     conn = get_db()
     try:
@@ -8115,6 +8119,7 @@ def admin_topic_plan_candidates_api():
                 brand_ids=brand_ids,
                 query=query,
                 limit=limit,
+                run_id=run_id,
             )
             pending = _topic_plan_pending_summary(cur, brand_ids)
         return jsonify(
