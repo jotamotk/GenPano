@@ -87,6 +87,41 @@ CONSUMER_TOPIC_SIGNALS = (
     "耐造",
 )
 
+CONSUMER_TOPIC_SUBJECT_SIGNALS = (
+    "选购",
+    "选择",
+    "指南",
+    "攻略",
+    "技巧",
+    "方法",
+    "测评",
+    "评测",
+    "对比",
+    "辨别",
+    "真伪",
+    "正品",
+    "购买",
+    "途径",
+    "售后",
+    "退换货",
+    "政策",
+    "整理",
+    "清洗",
+    "修复",
+    "处理",
+    "护理",
+    "尺码",
+    "穿搭",
+    "性价比",
+    "缓震",
+    "抓地力",
+    "支撑",
+    "防水",
+    "保暖",
+    "透气",
+    "适配性",
+)
+
 
 class TopicPlanLLMError(ValueError):
     """Controlled error returned to the API layer when LLM output is unusable."""
@@ -271,7 +306,9 @@ def is_natural_consumer_topic(title: str) -> bool:
         return False
     if any(term.casefold() in lowered for term in ("operations", "strategy", "analysis", "crm")):
         return False
-    return any(signal.casefold() in lowered for signal in CONSUMER_TOPIC_SIGNALS)
+    if any(signal.casefold() in lowered for signal in CONSUMER_TOPIC_SIGNALS):
+        return True
+    return any(signal.casefold() in lowered for signal in CONSUMER_TOPIC_SUBJECT_SIGNALS)
 
 
 def is_near_duplicate_title(title: str, existing_normalized: set[str]) -> bool:

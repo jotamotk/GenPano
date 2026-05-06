@@ -260,6 +260,15 @@ class TopicPlanUtilsTest(unittest.TestCase):
         self.assertTrue(is_natural_consumer_topic("想买大牌香水送人哪种味道不容易踩雷"))
         self.assertTrue(is_natural_consumer_topic("hiking有什么鞋子推荐"))
 
+    def test_natural_topic_rules_accept_consumer_topic_subjects(self):
+        self.assertTrue(is_natural_consumer_topic("NIKE品牌真伪辨别方法"))
+        self.assertTrue(is_natural_consumer_topic("NIKE篮球鞋抓地力性能测评"))
+        self.assertTrue(is_natural_consumer_topic("NIKE跑鞋日常慢跑适配性分析"))
+        self.assertTrue(is_natural_consumer_topic("NIKE品牌退换货政策整理"))
+        self.assertTrue(is_natural_consumer_topic("NIKE儿童运动鞋尺码选择指南"))
+        self.assertFalse(is_natural_consumer_topic("NIKE私域会员运营策略分析"))
+        self.assertFalse(is_natural_consumer_topic("NIKE用户画像与转化路径分析"))
+
 
     def test_topic_plan_client_applies_configurable_timeout(self):
         captured = {}
