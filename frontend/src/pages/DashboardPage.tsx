@@ -1,41 +1,74 @@
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Card } from '../components/ui';
+import { Button } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
+import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
-import BrandOverviewLiveView from '../components/dashboard/BrandOverviewLiveView';
+import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
+import BrandOverviewLiveBanner from '../components/dashboard/BrandOverviewLiveBanner';
+import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 
 /* ─────────────────────────────────────────────────────────────
    DashboardPage ("我的品牌") — PRD §4.6.1a 市场宏观视角
    ─────────────────────────────────────────────────────────────
-   Phase 5 §"mock 退役" — 整页数据来自后端 (GET /v1/projects/:id/overview).
-   - 用户没有 Project: 显示 onboarding 引导 (DashboardEmptyState)
-   - 有 Project 但还没采集数据: 显示 "首批数据采集中" 空状态 + 重试按钮
-   - 有 Project + 有数据: 渲染 KPI / 趋势 / Top prompts / 同集团共享域
-   不再 import mock; mock.js 在 Phase 5 末整体迁出 pages/**.
+   ⚠️ 开发者约束 (不作为 UI 文案 — PRD §4.6.0a):
+     本页是 Project.primaryBrand 的快捷入口, 沿用 BrandPanoramaPanel 渲染
+     与 /brands/:id?tab=overview 完全相同的单品牌全景视图. 此文件保留
+     为 legacy 路由兼容 (/dashboard), 未来可改为 301 重定向到
+     /brands/:primaryBrandId?tab=overview.
 */
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { t } = useLocale();
-  const { data: liveProjects, isLoading } = useProjects();
+  const { projects, activeProject } = useProject();
+  // If the user has a real backend project, the LiveBanner above the
+  // existing mock viz will render real KPIs. Mock-only users see the
+  // banner empty (returns null) and only the existing viz.
+  const { data: liveProjects } = useProjects();
 
-  if (isLoading) {
-    return (
-      <Card className="p-12 text-center" onClick={undefined} style={{}}>
-        <div className="text-sm text-themed-muted">加载…</div>
-      </Card>
-    );
-  }
-
-  // No project yet — guide to onboarding (Phase 1 entry).
-  if (!liveProjects || liveProjects.length === 0) {
+  /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ──
+     Skip the empty state when the user has at least one real project
+     in the backend (just signed up + onboarded but mock context
+     hasn't been wired yet). */
+  if (projects.length === 0 && (!liveProjects || liveProjects.length === 0)) {
     return <DashboardEmptyState />;
   }
 
-  // Use the first project. Multi-project picker is on /project-settings.
-  const projectId = liveProjects[0].id;
+  const project = activeProject;
+  const primary = BRANDS.find((b) => b.id === project?.primaryBrandId) || BRANDS[1];
+  const industry = INDUSTRIES.find((ind) => ind.id === project?.industryId);
+  const competitors = (project?.competitorBrandIds || [])
+    .map((id) => BRANDS.find((b) => b.id === id))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const header = (
+    <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-baseline gap-3">
+        <span className="text-sm text-themed-muted">{t('dashboard.page_subtitle')}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" size="sm" onClick={() => navigate('/project-settings')}>
+          {t('dashboard.toolbar.project_settings')}
+        </Button>
+        <Button variant="primary" size="sm" onClick={() => navigate(`/brands/${primary.id}?tab=diagnostics`)}>
+          {t('dashboard.toolbar.share_pdf')}
+        </Button>
+      </div>
+    </div>
+  );
 
   return (
-    <BrandOverviewLiveView projectId={projectId} />
+    <>
+      <BrandOverviewLiveBanner />
+      <BrandPanoramaPanel
+        primary={primary}
+        industry={industry}
+        competitors={competitors}
+        headerSlot={header}
+        scrollAnchorId="dashboard-competition"
+      />
+    </>
   );
 }
