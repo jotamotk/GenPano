@@ -4,7 +4,6 @@ import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import Badge from '../components/ui/Badge';
 import { useLocale } from '../contexts/LocaleContext';
-import { INDUSTRIES, BRANDS } from '../data/mock';
 import { useIndustriesWithTopBrands } from '../hooks/useIndustries';
 import { useCreateProject } from '../hooks/useProjects';
 
@@ -18,17 +17,9 @@ import { useCreateProject } from '../hooks/useProjects';
    流程: 注册/登录完成 → 选择行业(唯一必选步骤) → 直接进入行业探索视图
 
    Data source: GET /v1/industries/ + per-industry /top-brands.
-   When backend returns 0 industries (fresh deployment) we fall back
-   to the static INDUSTRIES + BRANDS mock so the page is never blank.
+   Phase 5 §"mock 退役": when backend returns 0 industries we show an
+   explicit empty state instead of mock fallback.
    ══════════════════════════════════════════════════════════════ */
-
-// Get top 3 brands by PanoScore for an industry — mock fallback
-function getTopBrandsMock(industryId: string | number, count = 3) {
-  return (BRANDS as any[])
-    .filter(b => b.industryId === industryId)
-    .sort((a, b) => (b.panoScore || 0) - (a.panoScore || 0))
-    .slice(0, count);
-}
 
 // Rank badge colors
 const RANK_COLORS = ['#f5a623', '#94a3b8', '#cd7f32']; // gold, silver, bronze
@@ -43,9 +34,7 @@ export default function OnboardingPage() {
   const { data: liveIndustries, isLoading, isError } = useIndustriesWithTopBrands();
   const createProject = useCreateProject();
 
-  // Fallback: when backend returns nothing (or errors), show the static
-  // mock so onboarding is never blank pre-seeded.
-  const useLive = !isLoading && !isError && liveIndustries.length > 0;
+  const hasIndustries = !isLoading && !isError && liveIndustries.length > 0;
 
   /* ── PRD §4.1.2a flow continuation ──
      If the user arrived here from /register?monitor_brand=X&return_to=Y,
@@ -74,7 +63,7 @@ export default function OnboardingPage() {
     // instead of the empty zero-project view. Best-effort: failures
     // (offline / 401 / quota) silently fall through to navigation, since
     // the user can retry from /project-settings.
-    if (useLive && typeof industryKey === 'number') {
+    if (hasIndustries && typeof industryKey === 'number') {
       const card = liveIndustries.find((it) => it.industry_id === industryKey);
       const industryName = card?.nameZh ?? `industry-${industryKey}`;
       try {
@@ -100,32 +89,19 @@ export default function OnboardingPage() {
     }
   };
 
-  // Normalise to a single render shape regardless of source.
-  const cards = useLive
-    ? liveIndustries.map(it => ({
-        key: it.industry_id,
-        nameZh: it.nameZh,
-        nameEn: it.nameEn,
-        icon: it.icon,
-        brandCount: it.brandCount,
-        topBrands: it.topBrands.map(b => ({
-          id: String(b.brand_id),
-          name: b.brand_name ?? `brand-${b.brand_id}`,
-          panoScore: b.avg_geo_score == null ? null : Math.round(b.avg_geo_score),
-        })),
-      }))
-    : INDUSTRIES.map(it => ({
-        key: it.id,
-        nameZh: it.name,
-        nameEn: it.nameEn,
-        icon: it.icon,
-        brandCount: it.brandCount,
-        topBrands: getTopBrandsMock(it.id).map(b => ({
-          id: b.id,
-          name: b.name,
-          panoScore: b.panoScore ?? null,
-        })),
-      }));
+  // Render shape derived strictly from backend (Phase 5 §"mock 退役").
+  const cards = liveIndustries.map((it) => ({
+    key: it.industry_id,
+    nameZh: it.nameZh,
+    nameEn: it.nameEn,
+    icon: it.icon,
+    brandCount: it.brandCount,
+    topBrands: it.topBrands.map((b) => ({
+      id: String(b.brand_id),
+      name: b.brand_name ?? `brand-${b.brand_id}`,
+      panoScore: b.avg_geo_score == null ? null : Math.round(b.avg_geo_score),
+    })),
+  }));
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--color-bg-page, #f8fafc)' }}>
