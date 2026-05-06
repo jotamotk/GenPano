@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.industries._dto import (
     IndustriesListOut,
+    IndustryAvgGeoOut,
     IndustryKgOut,
     IndustryOverviewOut,
     IndustryRankingOut,
@@ -18,6 +19,7 @@ from app.api.v1.industries._dto import (
     TopBrandRow,
 )
 from app.api.v1.industries.service import (
+    get_industry_avg_geo_score,
     get_industry_kg,
     get_industry_overview,
     get_industry_ranking,
@@ -115,6 +117,27 @@ async def industry_topics(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         limit=limit,
+    )
+
+
+@router.get("/{industry_id}/avg-geo-score", response_model=IndustryAvgGeoOut)
+async def industry_avg_geo_score(
+    industry_id: int,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    name: str | None = Query(None),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> IndustryAvgGeoOut:
+    """30-day industry GEO benchmark (avg / median / top10) from
+    industry_benchmark_daily. Replaces the FE mock fallback used by
+    BrandPanoramaPanel's hero industry-comparison bar."""
+    return await get_industry_avg_geo_score(
+        session,
+        industry_id,
+        industry_name=name,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
     )
 
 

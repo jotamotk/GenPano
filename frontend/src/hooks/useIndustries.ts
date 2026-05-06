@@ -122,6 +122,19 @@ export function useIndustryKg(
   })
 }
 
+export function useIndustryAvgGeo(
+  industryId: number | null | undefined,
+  params: { name?: string; from?: string; to?: string } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'avg-geo-score', industryId, params],
+    queryFn: () => industriesApi.avgGeoScore(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
 export function useIndustriesWithTopBrands() {
   const industries = useIndustries()
   const topBrandsList = useQueries({

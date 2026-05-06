@@ -112,6 +112,23 @@ export interface IndustryKgOut {
   state: 'ok' | 'empty' | 'partial'
 }
 
+export interface IndustryAvgGeoPoint {
+  date: string
+  avg_geo_score: number | null
+  industry_median: number | null
+  top10_avg: number | null
+  total_brands: number | null
+}
+
+export interface IndustryAvgGeoOut {
+  industry_id: number
+  industry_name: string | null
+  period: { from: string; to: string }
+  points: IndustryAvgGeoPoint[]
+  summary: Record<string, number | null>
+  state: 'ok' | 'empty' | 'partial'
+}
+
 export const industriesApi = {
   list(): Promise<IndustriesListOut> {
     return apiClient.get<IndustriesListOut>('/v1/industries/')
@@ -151,6 +168,14 @@ export const industriesApi = {
   ): Promise<IndustryKgOut> {
     return apiClient.get<IndustryKgOut>(
       `/v1/industries/${industryId}/kg${buildQuery(params)}`,
+    )
+  },
+  avgGeoScore(
+    industryId: number,
+    params: { name?: string; from?: string; to?: string } = {},
+  ): Promise<IndustryAvgGeoOut> {
+    return apiClient.get<IndustryAvgGeoOut>(
+      `/v1/industries/${industryId}/avg-geo-score${buildQuery(params)}`,
     )
   },
 }
