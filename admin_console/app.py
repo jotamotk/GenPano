@@ -774,6 +774,19 @@ def _ensure_admin_tables():
                     )
                     """
                 )
+                for statement in (
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS id VARCHAR(36)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS operator_id VARCHAR(36)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS action VARCHAR(64)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_type VARCHAR(64)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_id VARCHAR(255)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS diff_json JSONB",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS reason TEXT",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ip VARCHAR(45)",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ua TEXT",
+                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created
@@ -896,6 +909,47 @@ def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id,
             user_agent,
         ),
     )
+
+
+def _insert_admin_audit_log_nonfatal(
+    conn,
+    *,
+    operator_id,
+    action,
+    target_type,
+    target_id,
+    diff,
+    reason,
+):
+    try:
+        with conn.cursor() as cur:
+            _insert_admin_audit_log(
+                cur,
+                operator_id=operator_id,
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                diff=diff,
+                reason=reason,
+            )
+        conn.commit()
+        return True
+    except Exception as error:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            app.logger.warning(
+                "Admin audit log skipped for %s %s/%s: %s",
+                action,
+                target_type,
+                target_id,
+                error,
+            )
+        except Exception:
+            pass
+        return False
 
 
 def _ensure_topic_plan_tables():
@@ -8457,7 +8511,15 @@ def _insert_topic_plan_candidate_batch(
 ):
     if remaining <= 0:
         return []
-    accepted, batch_skipped = dedupe_topic_candidates(candidates, existing_titles, remaining)
+    # Topic Plan titles are consumer search subjects, so they may naturally
+    # contain "怎么/吗/推荐" style intent words. Keep de-dupe here, then let
+    # is_natural_consumer_topic reject corporate/internal wording below.
+    accepted, batch_skipped = dedupe_topic_candidates(
+        candidates,
+        existing_titles,
+        remaining,
+        layer_check=False,
+    )
     skipped.extend(batch_skipped)
     brand_by_norm = {
         normalize_topic_title(brand["name"]): brand
@@ -8684,21 +8746,21 @@ def _execute_topic_plan_generation(
                         run_id,
                     ),
                 )
-                _insert_admin_audit_log(
-                    cur,
-                    operator_id=admin_id,
-                    action="generate_topic_plan_cancelled",
-                    target_type="topic_plan_run",
-                    target_id=run_id,
-                    diff={
-                        "request_config": request_config,
-                        "candidates_generated": len(inserted),
-                        "batches": batches,
-                        "skipped": skipped,
-                    },
-                    reason="topic_plan_generate",
-                )
             conn.commit()
+            _insert_admin_audit_log_nonfatal(
+                conn,
+                operator_id=admin_id,
+                action="generate_topic_plan_cancelled",
+                target_type="topic_plan_run",
+                target_id=run_id,
+                diff={
+                    "request_config": request_config,
+                    "candidates_generated": len(inserted),
+                    "batches": batches,
+                    "skipped": skipped,
+                },
+                reason="topic_plan_generate",
+            )
             return {
                 "inserted": inserted,
                 "skipped": skipped,
@@ -8737,21 +8799,21 @@ def _execute_topic_plan_generation(
                     run_id,
                 ),
             )
-            _insert_admin_audit_log(
-                cur,
-                operator_id=admin_id,
-                action="generate_topic_plan",
-                target_type="topic_plan_run",
-                target_id=run_id,
-                diff={
-                    "request_config": request_config,
-                    "candidates_generated": len(inserted),
-                    "batches": batches,
-                    "skipped": skipped,
-                },
-                reason="topic_plan_generate",
-            )
         conn.commit()
+        _insert_admin_audit_log_nonfatal(
+            conn,
+            operator_id=admin_id,
+            action="generate_topic_plan",
+            target_type="topic_plan_run",
+            target_id=run_id,
+            diff={
+                "request_config": request_config,
+                "candidates_generated": len(inserted),
+                "batches": batches,
+                "skipped": skipped,
+            },
+            reason="topic_plan_generate",
+        )
         return {
             "inserted": inserted,
             "skipped": skipped,
@@ -8784,16 +8846,16 @@ def _execute_topic_plan_generation(
                         run_id,
                     ),
                 )
-                _insert_admin_audit_log(
-                    cur,
-                    operator_id=admin_id,
-                    action="generate_topic_plan_failed",
-                    target_type="topic_plan_run",
-                    target_id=run_id,
-                    diff={"request_config": request_config, "error": topic_error.code},
-                    reason="topic_plan_generate",
-                )
             conn.commit()
+            _insert_admin_audit_log_nonfatal(
+                conn,
+                operator_id=admin_id,
+                action="generate_topic_plan_failed",
+                target_type="topic_plan_run",
+                target_id=run_id,
+                diff={"request_config": request_config, "error": topic_error.code},
+                reason="topic_plan_generate",
+            )
         except Exception:
             conn.rollback()
         raise topic_error from error
