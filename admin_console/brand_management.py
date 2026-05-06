@@ -88,6 +88,28 @@ def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def _extract_llm_items(data: dict[str, Any], root_key: str) -> list[Any]:
+    items = data.get(root_key)
+    if isinstance(items, list):
+        return items
+
+    singular_key = root_key[:-1] if root_key.endswith("s") else ""
+    for key in (singular_key, "candidates", "choices", "items", "results"):
+        if not key:
+            continue
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+
+    if data.get("name"):
+        return [data]
+    raise BrandManagementError(
+        "llm_schema_invalid", f"LLM JSON must contain a {root_key} array"
+    )
+
+
 def _usage_to_dict(usage_obj: Any) -> dict[str, Any]:
     if usage_obj is None:
         return {}
@@ -430,11 +452,7 @@ class BrandManagementService:
 
         content = response.choices[0].message.content or "{}"
         data = _load_json_object(content)
-        items = data.get(root_key)
-        if not isinstance(items, list):
-            raise BrandManagementError(
-                "llm_schema_invalid", f"LLM JSON must contain a {root_key} array"
-            )
+        items = _extract_llm_items(data, root_key)
         return items, model, _usage_to_dict(getattr(response, "usage", None))
 
     def generate_brands(
@@ -521,9 +539,9 @@ class BrandManagementService:
         )
         try:
             raw_items, model, usage = self._call_llm_json(
-                prompt=prompt, root_key="brands", max_count=1
+                prompt=prompt, root_key="brands", max_count=5
             )
-            drafts = validate_brand_candidates(raw_items, max_count=1)
+            drafts = validate_brand_candidates(raw_items, max_count=5)
             if drafts and not drafts[0].get("name"):
                 drafts[0]["name"] = name
             return BrandGenerationResult(
