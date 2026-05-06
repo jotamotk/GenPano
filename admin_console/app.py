@@ -7211,8 +7211,145 @@ def _coerce_product_aliases(value):
     return []
 
 
+PRODUCT_DISCOVERY_FALLBACK_MODEL = "fallback-product-discovery-v1"
+PRODUCT_DISCOVERY_KNOWN_CATALOGS = {
+    "nike": [
+        {
+            "name": "Nike Air Force 1",
+            "sku": "",
+            "category": "Shoes",
+            "description": "Iconic Nike lifestyle sneaker.",
+            "aliases": ["AF1"],
+        },
+        {
+            "name": "Nike Dunk Low",
+            "sku": "",
+            "category": "Shoes",
+            "description": "Popular low-top Nike sneaker line.",
+            "aliases": ["Dunk"],
+        },
+        {
+            "name": "Nike Air Max 90",
+            "sku": "",
+            "category": "Shoes",
+            "description": "Classic Air Max running-inspired sneaker.",
+            "aliases": ["Air Max"],
+        },
+        {
+            "name": "Nike Pegasus",
+            "sku": "",
+            "category": "Running Shoes",
+            "description": "Nike everyday running shoe franchise.",
+            "aliases": ["Pegasus"],
+        },
+        {
+            "name": "Nike Vaporfly",
+            "sku": "",
+            "category": "Running Shoes",
+            "description": "Nike carbon-plate racing shoe franchise.",
+            "aliases": ["Vaporfly"],
+        },
+        {
+            "name": "Nike Tech Fleece",
+            "sku": "",
+            "category": "Apparel",
+            "description": "Nike premium fleece apparel line.",
+            "aliases": ["Tech Fleece"],
+        },
+    ],
+    "adidas": [
+        {"name": "Adidas Samba OG", "sku": "", "category": "Shoes", "description": "Classic Adidas terrace sneaker.", "aliases": ["Samba"]},
+        {"name": "Adidas Gazelle", "sku": "", "category": "Shoes", "description": "Classic suede Adidas sneaker line.", "aliases": ["Gazelle"]},
+        {"name": "Adidas Superstar", "sku": "", "category": "Shoes", "description": "Iconic shell-toe Adidas sneaker.", "aliases": ["Superstar"]},
+        {"name": "Adidas Ultraboost", "sku": "", "category": "Running Shoes", "description": "Adidas Boost-cushioned running shoe franchise.", "aliases": ["Ultraboost"]},
+    ],
+    "apple": [
+        {"name": "iPhone", "sku": "", "category": "Smartphone", "description": "Apple flagship smartphone line.", "aliases": []},
+        {"name": "MacBook Air", "sku": "", "category": "Laptop", "description": "Apple thin-and-light laptop line.", "aliases": []},
+        {"name": "AirPods Pro", "sku": "", "category": "Audio", "description": "Apple noise-cancelling wireless earbuds.", "aliases": ["AirPods"]},
+        {"name": "Apple Watch", "sku": "", "category": "Wearable", "description": "Apple smartwatch line.", "aliases": []},
+    ],
+    "lancome": [
+        {"name": "Lancôme Advanced Génifique", "sku": "", "category": "Skincare", "description": "Lancôme serum franchise.", "aliases": ["小黑瓶", "Genifique"]},
+        {"name": "Lancôme Absolue Soft Cream", "sku": "", "category": "Skincare", "description": "Premium Lancôme cream line.", "aliases": ["Absolue"]},
+        {"name": "Lancôme Teint Idole Ultra Wear", "sku": "", "category": "Makeup", "description": "Lancôme long-wear foundation line.", "aliases": ["Teint Idole"]},
+    ],
+    "esteelauder": [
+        {"name": "Estée Lauder Advanced Night Repair", "sku": "", "category": "Skincare", "description": "Estée Lauder flagship serum.", "aliases": ["小棕瓶", "ANR"]},
+        {"name": "Estée Lauder Double Wear", "sku": "", "category": "Makeup", "description": "Estée Lauder long-wear foundation line.", "aliases": ["DW"]},
+    ],
+    "skii": [
+        {"name": "SK-II Facial Treatment Essence", "sku": "", "category": "Skincare", "description": "SK-II signature essence.", "aliases": ["神仙水", "FTE"]},
+        {"name": "SK-II GenOptics Ultraura Essence", "sku": "", "category": "Skincare", "description": "SK-II brightening serum line.", "aliases": ["小灯泡"]},
+    ],
+    "dior": [
+        {"name": "Dior Sauvage", "sku": "", "category": "Fragrance", "description": "Dior men's fragrance franchise.", "aliases": ["旷野"]},
+        {"name": "Dior Addict Lip Glow", "sku": "", "category": "Makeup", "description": "Dior tinted lip balm line.", "aliases": ["变色唇膏"]},
+        {"name": "Dior Capture", "sku": "", "category": "Skincare", "description": "Dior skincare franchise.", "aliases": []},
+    ],
+}
+
+
+def _product_discovery_llm_timeout_seconds():
+    try:
+        value = int(os.getenv("PRODUCT_DISCOVERY_LLM_TIMEOUT_SECONDS") or 25)
+    except (TypeError, ValueError):
+        value = 25
+    return max(5, min(value, 45))
+
+
+def _product_catalog_keys_for_brand(brand):
+    raw_values = [brand.get("name"), brand.get("name_en"), brand.get("name_zh")]
+    aliases = brand.get("aliases") or []
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    if isinstance(aliases, list):
+        raw_values.extend(aliases)
+    keys = set()
+    for raw in raw_values:
+        key = normalize_topic_title(str(raw or ""))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _fallback_product_discovery_candidates(brand, *, query="", limit=8):
+    brand_name = str(brand.get("name") or "").strip()
+    keys = _product_catalog_keys_for_brand(brand)
+    catalog = []
+    for catalog_key, items in PRODUCT_DISCOVERY_KNOWN_CATALOGS.items():
+        fuzzy_match = any(
+            len(catalog_key) > 3 and len(key) > 3 and (catalog_key in key or key in catalog_key)
+            for key in keys
+        )
+        if catalog_key in keys or fuzzy_match:
+            catalog = list(items)
+            break
+
+    if not catalog and brand_name:
+        hint = str(query or "").strip()
+        industry = str(brand.get("industry") or "").strip()
+        generic_category = industry or "Flagship"
+        generic_name = f"{brand_name} {hint}".strip() if hint else f"{brand_name} Flagship Product"
+        catalog = [{
+            "name": generic_name[:256],
+            "sku": "",
+            "category": generic_category[:128],
+            "description": f"Auto-discovered fallback product candidate for {brand_name}.",
+            "aliases": [],
+        }]
+
+    return _parse_product_discovery_response({"products": catalog[:limit]})
+
+
 def _parse_product_discovery_response(raw):
-    data = raw if isinstance(raw, dict) else json.loads(_query_pool_strip_markdown_fence(str(raw or "")))
+    try:
+        data = raw if isinstance(raw, dict) else json.loads(_query_pool_strip_markdown_fence(str(raw or "")))
+    except Exception as error:
+        raise TopicPlanLLMError("llm_json_invalid", "Product discovery returned invalid JSON") from error
     products = data.get("products") if isinstance(data, dict) else None
     if not isinstance(products, list):
         raise TopicPlanLLMError("llm_schema_invalid", "Product discovery JSON must contain a products array")
@@ -7304,12 +7441,14 @@ def _discover_brand_products_llm(brand, *, query="", limit=8):
     except Exception as error:
         raise TopicPlanLLMError("llm_client_unavailable", "OpenAI-compatible client is unavailable") from error
 
-    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=90)
+    timeout_seconds = _product_discovery_llm_timeout_seconds()
+    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=timeout_seconds)
     response = client.chat.completions.create(
         model=cfg.model,
         messages=_build_product_discovery_messages(brand, query=query, limit=limit),
         temperature=0.2,
         max_tokens=max(1024, min(4096, 512 + limit * 320)),
+        timeout=timeout_seconds,
     )
     content = response.choices[0].message.content if response.choices else ""
     return _parse_product_discovery_response(content), {
@@ -7461,12 +7600,24 @@ def admin_brand_products_discover_api(brand_id):
             cur.execute("SELECT name, sku, category FROM products WHERE brand_id = %s", (brand_id,))
             existing_names = {str(row.get("name") or "").strip().casefold() for row in cur.fetchall()}
 
+            discovery_source = "llm"
+            llm_error = None
             try:
                 candidates, metadata = _discover_brand_products_llm(brand, query=query, limit=limit)
             except TopicPlanLLMError as error:
-                return jsonify({"success": False, "error": error.code, "message": str(error)}), 502
+                llm_error = error.code
+                candidates = _fallback_product_discovery_candidates(brand, query=query, limit=limit)
+                metadata = {"model": PRODUCT_DISCOVERY_FALLBACK_MODEL, "usage": {}}
+                discovery_source = "fallback"
             except Exception as error:
-                return jsonify({"success": False, "error": "product_discovery_failed", "message": str(error)[:200]}), 502
+                llm_error = "product_discovery_failed"
+                candidates = _fallback_product_discovery_candidates(brand, query=query, limit=limit)
+                metadata = {
+                    "model": PRODUCT_DISCOVERY_FALLBACK_MODEL,
+                    "usage": {},
+                    "error_message": str(error)[:200],
+                }
+                discovery_source = "fallback"
 
             created = []
             skipped = []
@@ -7514,6 +7665,8 @@ def admin_brand_products_discover_api(brand_id):
             "candidates_count": len(candidates),
             "llm_model": metadata.get("model"),
             "llm_usage": metadata.get("usage") or {},
+            "discovery_source": discovery_source,
+            "llm_error": llm_error,
         })
     except Exception:
         conn.rollback()
