@@ -464,6 +464,43 @@ def test_enrich_brand_uses_timeout_override(monkeypatch):
     assert captured["create_timeout"] == 12
 
 
+def test_enrich_brand_accepts_singular_brand_object(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "brand": {
+                                        "name": "Lancome",
+                                        "industry": "Beauty",
+                                    }
+                                }
+                            )
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    service = brand_management.BrandManagementService(
+        config=SimpleNamespace(api_key="key", base_url="https://example.test", model="fake-model"),
+        timeout_seconds=12,
+    )
+
+    result = service.enrich_brand_by_name(name="Lancome")
+
+    assert result.items[0]["name"] == "Lancome"
+    assert result.items[0]["industry"] == "Beauty"
+
+
 def test_brand_enrich_endpoint_requires_name(monkeypatch, client):
     login(monkeypatch)
     fake_db(monkeypatch)
@@ -557,6 +594,128 @@ def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "INSERT INTO admin_audit_log" in statements
     assert conn.commits == 1
+
+
+def test_brand_enrich_endpoint_returns_async_job(monkeypatch, client):
+    login(monkeypatch)
+    with app_mod._brand_enrich_jobs_lock:
+        app_mod._brand_enrich_jobs.clear()
+    started = {}
+
+    class FakeThread:
+        def __init__(self, target=None, kwargs=None, daemon=None):
+            started["target"] = target
+            started["kwargs"] = kwargs
+            started["daemon"] = daemon
+
+        def start(self):
+            started["started"] = True
+
+    monkeypatch.setattr(app_mod.threading, "Thread", FakeThread)
+
+    response = client.post(
+        "/api/admin/brand-management/enrich",
+        data=json.dumps({"name": "Lancome", "async": True}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 202
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["pending"] is True
+    assert body["job_id"]
+    assert body["status"] == "queued"
+    assert started["started"] is True
+    assert started["daemon"] is True
+    assert started["kwargs"]["name"] == "Lancome"
+    job = app_mod._get_brand_enrich_job(body["job_id"])
+    assert job["status"] == "queued"
+
+
+def test_brand_enrich_job_poll_returns_choices(monkeypatch, client):
+    login(monkeypatch)
+    with app_mod._brand_enrich_jobs_lock:
+        app_mod._brand_enrich_jobs.clear()
+    drafts = [
+        brand_management.normalize_brand_draft({"name": "Lancome", "industry": "Beauty"}),
+        brand_management.normalize_brand_draft({"name": "Lancome Paris", "industry": "Beauty"}),
+    ]
+    app_mod._set_brand_enrich_job(
+        "job-1",
+        status="completed",
+        drafts=drafts,
+        model="fake-model",
+        usage={"total_tokens": 7},
+    )
+
+    response = client.get("/api/admin/brand-management/enrich/job-1")
+
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["success"] is False
+    assert body["error"] == "ambiguous_brand"
+    assert [choice["name"] for choice in body["choices"]] == ["Lancome", "Lancome Paris"]
+
+
+def test_brand_enrich_job_poll_reports_llm_error_as_json(monkeypatch, client):
+    login(monkeypatch)
+    with app_mod._brand_enrich_jobs_lock:
+        app_mod._brand_enrich_jobs.clear()
+    app_mod._set_brand_enrich_job(
+        "job-failed",
+        status="failed",
+        error="llm_schema_invalid",
+        message="LLM JSON must contain a brands array",
+        http_status=503,
+    )
+
+    response = client.get("/api/admin/brand-management/enrich/job-failed")
+
+    assert response.status_code == 503
+    body = response.get_json()
+    assert body["success"] is False
+    assert body["error"] == "llm_schema_invalid"
+    assert body["message"] == "LLM JSON must contain a brands array"
+
+
+def test_brand_enrich_background_job_completes_and_audits(monkeypatch, client):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+    with app_mod._brand_enrich_jobs_lock:
+        app_mod._brand_enrich_jobs.clear()
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def enrich_brand_by_name(self, *, name):
+            return brand_management.BrandGenerationResult(
+                items=[brand_management.normalize_brand_draft({"name": name, "industry": "Beauty"})],
+                model="fake-model",
+                prompt="enrich-prompt",
+                usage={"total_tokens": 7},
+            )
+
+    monkeypatch.setattr(app_mod, "BrandManagementService", FakeService)
+
+    app_mod._run_brand_enrich_job(
+        "job-complete",
+        admin_id="admin-1",
+        name="Lancome",
+        payload={},
+    )
+
+    response = client.get("/api/admin/brand-management/enrich/job-complete")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["pending"] is False
+    assert body["draft"]["name"] == "Lancome"
+    assert body["model"] == "fake-model"
+    assert conn.commits == 1
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "INSERT INTO admin_audit_log" in statements
 
 
 def test_brand_delete_endpoint_archives_brand(monkeypatch, client):

@@ -3497,7 +3497,7 @@ def _delete_non_llm_query_pool_candidates(cur):
 
 
 def _query_pool_llm_error_status(error):
-    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+    if str(error.code or "").startswith("llm_"):
         return 503
     return 502
 
@@ -7433,7 +7433,7 @@ def _product_discovery_llm_timeout_seconds():
 def _product_discovery_llm_status_for_error(error):
     if not isinstance(error, TopicPlanLLMError):
         return 503
-    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+    if str(error.code or "").startswith("llm_"):
         return 503
     return 502
 
@@ -8850,7 +8850,7 @@ def _insert_topic_plan_candidate_batch(
 
 
 def _topic_plan_run_failed_status(error):
-    return 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
+    return 503 if str(error.code or "").startswith("llm_") else 502
 
 
 def _is_generation_run_cancelled(conn, table, run_id):
@@ -10416,7 +10416,7 @@ def _insert_prompt_matrix_candidate_batch(
 
 
 def _prompt_matrix_run_failed_status(error):
-    return 503 if error.code in {"llm_config_missing", "llm_call_failed"} else 502
+    return 503 if str(error.code or "").startswith("llm_") else 502
 
 
 def _execute_prompt_matrix_generation(
@@ -16899,11 +16899,11 @@ def _select_brand_management_sql(cols):
 def _brand_management_status_for_error(error):
     if not isinstance(error, BrandManagementError):
         return 500
-    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+    if str(error.code or "").startswith("llm_") or error.code in {"missing_llm_field", "invalid_llm_output"}:
         return 503
     if error.code in {"missing_industry", "missing_brand_name", "invalid_brand_payload"}:
         return 400
-    return 502
+    return 500
 
 
 def _brand_management_enrich_timeout_seconds():
@@ -16912,6 +16912,150 @@ def _brand_management_enrich_timeout_seconds():
     except (TypeError, ValueError):
         value = 90
     return max(30, min(value, 240))
+
+
+_brand_enrich_jobs = {}
+_brand_enrich_jobs_lock = threading.Lock()
+_BRAND_ENRICH_JOB_LIMIT = 100
+
+
+def _brand_enrich_job_snapshot(job):
+    if not job:
+        return None
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status"),
+        "pending": job.get("status") in {"queued", "running"},
+        "error": job.get("error"),
+        "message": job.get("message"),
+        "draft": job.get("draft"),
+        "drafts": job.get("drafts") or [],
+        "model": job.get("model"),
+        "usage": job.get("usage") or {},
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "http_status": job.get("http_status"),
+    }
+
+
+def _set_brand_enrich_job(job_id, **updates):
+    now = datetime.now(timezone.utc).isoformat()
+    with _brand_enrich_jobs_lock:
+        job = _brand_enrich_jobs.setdefault(
+            job_id,
+            {"job_id": job_id, "created_at": now, "status": "queued"},
+        )
+        job.update(updates)
+        job["updated_at"] = now
+        if len(_brand_enrich_jobs) > _BRAND_ENRICH_JOB_LIMIT:
+            stale = sorted(
+                _brand_enrich_jobs.values(),
+                key=lambda item: item.get("created_at") or "",
+            )[: len(_brand_enrich_jobs) - _BRAND_ENRICH_JOB_LIMIT]
+            for item in stale:
+                _brand_enrich_jobs.pop(item["job_id"], None)
+        return _brand_enrich_job_snapshot(job)
+
+
+def _get_brand_enrich_job(job_id):
+    with _brand_enrich_jobs_lock:
+        return _brand_enrich_job_snapshot(_brand_enrich_jobs.get(job_id))
+
+
+def _brand_enrich_success_response(result):
+    drafts = list(result.items or [])
+    if len(drafts) > 1:
+        return jsonify(
+            {
+                "success": False,
+                "pending": False,
+                "error": "ambiguous_brand",
+                "message": "Multiple brand matches were returned. Please choose one.",
+                "choices": drafts,
+                "model": result.model,
+                "usage": result.usage,
+            }
+        ), 409
+    draft = drafts[0] if drafts else None
+    if not draft:
+        return jsonify(
+            {
+                "success": False,
+                "error": "empty_result",
+                "message": "LLM returned no usable draft",
+            }
+        ), 503
+    return jsonify(
+        {
+            "success": True,
+            "pending": False,
+            "draft": draft,
+            "model": result.model,
+            "usage": result.usage,
+        }
+    )
+
+
+def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
+    from psycopg2.extras import RealDictCursor
+
+    payload = dict(payload or {})
+    _set_brand_enrich_job(job_id, status="running", message="Brand enrichment started")
+    conn = None
+    try:
+        service = BrandManagementService(
+            model=payload.get("llm_model"),
+            allow_fallback=False,
+            timeout_seconds=_brand_management_enrich_timeout_seconds(),
+        )
+        result = service.enrich_brand_by_name(name=name)
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin_id,
+                action="enrich_brand",
+                target_type="brand",
+                target_id=None,
+                diff={"name": name, "model": result.model},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        drafts = list(result.items or [])
+        _set_brand_enrich_job(
+            job_id,
+            status="completed",
+            message="Brand enrichment completed",
+            draft=drafts[0] if len(drafts) == 1 else None,
+            drafts=drafts,
+            model=result.model,
+            usage=result.usage,
+            http_status=200,
+        )
+    except BrandManagementError as error:
+        if conn:
+            conn.rollback()
+        _set_brand_enrich_job(
+            job_id,
+            status="failed",
+            error=error.code,
+            message=error.message,
+            http_status=_brand_management_status_for_error(error),
+        )
+    except Exception as error:
+        if conn:
+            conn.rollback()
+        app.logger.exception("Async brand enrichment failed: %s", error)
+        _set_brand_enrich_job(
+            job_id,
+            status="failed",
+            error="brand_enrich_failed",
+            message=str(error) or "Brand enrichment failed",
+            http_status=500,
+        )
+    finally:
+        if conn:
+            conn.close()
 
 
 def _persist_brand_draft(cur, draft, *, admin_id, brand_id=None):
@@ -17455,7 +17599,7 @@ def admin_brand_management_generate_api():
 
 @app.route('/api/admin/brand-management/enrich', methods=['POST'])
 def admin_brand_management_enrich_api():
-    """Run LLM to enrich one brand from just its name; returns a single draft (no DB write)."""
+    """Run LLM to enrich one brand from just its name; returns reviewable draft data."""
     admin, error_response = _require_admin()
     if error_response:
         return error_response
@@ -17465,6 +17609,32 @@ def admin_brand_management_enrich_api():
     name = (payload.get("name") or payload.get("brand_name") or "").strip()
     if not name:
         return jsonify({"success": False, "error": "name_required"}), 400
+    if payload.get("async_generation") or payload.get("async"):
+        job_id = str(uuid.uuid4())
+        _set_brand_enrich_job(
+            job_id,
+            status="queued",
+            message="Brand enrichment queued",
+        )
+        thread = threading.Thread(
+            target=_run_brand_enrich_job,
+            kwargs={
+                "job_id": job_id,
+                "admin_id": admin["id"],
+                "name": name,
+                "payload": payload,
+            },
+            daemon=True,
+        )
+        thread.start()
+        return jsonify(
+            {
+                "success": True,
+                "pending": True,
+                "status": "queued",
+                "job_id": job_id,
+            }
+        ), 202
 
     service = BrandManagementService(
         model=payload.get("llm_model"),
@@ -17477,10 +17647,6 @@ def admin_brand_management_enrich_api():
         return jsonify(
             {"success": False, "error": error.code, "message": error.message}
         ), _brand_management_status_for_error(error)
-
-    draft = result.items[0] if result.items else None
-    if not draft:
-        return jsonify({"success": False, "error": "empty_result", "message": "LLM returned no usable draft"}), 502
 
     conn = get_db()
     try:
@@ -17498,12 +17664,74 @@ def admin_brand_management_enrich_api():
     finally:
         conn.close()
 
+    return _brand_enrich_success_response(result)
+
+
+@app.route('/api/admin/brand-management/enrich/<job_id>', methods=['GET'])
+def admin_brand_management_enrich_job_api(job_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    job = _get_brand_enrich_job(job_id)
+    if not job:
+        return jsonify({"success": False, "error": "brand_enrich_job_not_found"}), 404
+    if job.get("status") == "failed":
+        return jsonify(
+            {
+                "success": False,
+                "pending": False,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "error": job.get("error") or "brand_enrich_failed",
+                "message": job.get("message") or "Brand enrichment failed",
+            }
+        ), int(job.get("http_status") or 500)
+    if job.get("pending"):
+        return jsonify(
+            {
+                "success": True,
+                "pending": True,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "message": job.get("message"),
+            }
+        )
+    drafts = list(job.get("drafts") or [])
+    if len(drafts) > 1:
+        return jsonify(
+            {
+                "success": False,
+                "pending": False,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "error": "ambiguous_brand",
+                "message": "Multiple brand matches were returned. Please choose one.",
+                "choices": drafts,
+                "model": job.get("model"),
+                "usage": job.get("usage") or {},
+            }
+        ), 409
+    draft = job.get("draft") or (drafts[0] if drafts else None)
+    if not draft:
+        return jsonify(
+            {
+                "success": False,
+                "pending": False,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "error": "empty_result",
+                "message": "LLM returned no usable draft",
+            }
+        ), 503
     return jsonify(
         {
             "success": True,
+            "pending": False,
+            "job_id": job_id,
+            "status": job.get("status"),
             "draft": draft,
-            "model": result.model,
-            "usage": result.usage,
+            "model": job.get("model"),
+            "usage": job.get("usage") or {},
         }
     )
 

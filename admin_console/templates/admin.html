@@ -1299,6 +1299,15 @@
                     <div x-show="enrichNotice" x-cloak class="mt-1 text-[11px]"
                          :class="enrichNoticeTone === 'error' ? 'text-danger' : 'text-success'"
                          x-text="enrichNotice"></div>
+                    <div x-show="enrichChoices.length" x-cloak class="mt-2 flex flex-wrap gap-1.5">
+                      <template x-for="choice in enrichChoices" :key="choice.name">
+                        <button type="button" @click="applyEnrichChoice(choice)"
+                                class="inline-flex items-center gap-1 h-7 px-2 rounded-btn border border-accent/25 bg-accent/5 text-accent text-[11px] font-semibold hover:bg-accent/10">
+                          <i data-lucide="check" class="w-3 h-3"></i>
+                          <span x-text="choice.name"></span>
+                        </button>
+                      </template>
+                    </div>
                   </div>
                   <div>
                     <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">行业</label>
@@ -10583,6 +10592,8 @@ function brandManagementPanel() {
     enrichLoading: false,
     enrichNotice: '',
     enrichNoticeTone: 'info',
+    enrichChoices: [],
+    enrichJobId: '',
 
     async init() {
       await this.loadIndustries();
@@ -10769,6 +10780,8 @@ function brandManagementPanel() {
       this.form.industry = this.filters.industry || '';
       this.formError = '';
       this.enrichNotice = '';
+      this.enrichChoices = [];
+      this.enrichJobId = '';
       this.formModalOpen = true;
       this.refreshIcons();
     },
@@ -10793,6 +10806,8 @@ function brandManagementPanel() {
       };
       this.formError = '';
       this.enrichNotice = '';
+      this.enrichChoices = [];
+      this.enrichJobId = '';
       this.formModalOpen = true;
       this.refreshIcons();
     },
@@ -10817,6 +10832,75 @@ function brandManagementPanel() {
       );
     },
 
+    delay(ms) {
+      return new Promise(resolve => window.setTimeout(resolve, ms));
+    },
+
+    applyEnrichedDraft(draft, model) {
+      const d = draft || {};
+      if (d.name) this.form.name = d.name;
+      this.form.name_zh = d.name_zh || '';
+      this.form.name_en = d.name_en || '';
+      this.form.industry = d.industry || this.form.industry || '';
+      this.form.target_market = d.target_market || '';
+      this.form.description = d.description || '';
+      this.form.positioning = d.positioning || '';
+      this.form.headquarters = d.headquarters || '';
+      this.form.founded_year = d.founded_year || null;
+      this.form.aliasesText = (d.aliases || []).join(', ');
+      this.form.domainsText = (d.official_domains || []).join(', ');
+      this.form.competitorsText = (d.competitors || []).map(c => c.name).filter(Boolean).join(', ');
+      this.enrichChoices = [];
+      this.enrichNotice = '已用 ' + (model || 'LLM') + ' 补全表单，可继续修改后保存';
+      this.enrichNoticeTone = 'success';
+    },
+
+    applyEnrichChoice(choice) {
+      this.applyEnrichedDraft(choice, 'LLM');
+      this.refreshIcons();
+    },
+
+    handleBrandEnrichPayload(body) {
+      if (body && body.choices && body.choices.length) {
+        this.enrichChoices = body.choices;
+        this.enrichNotice = '返回多个品牌，请选择一个';
+        this.enrichNoticeTone = 'error';
+        this.refreshIcons();
+        return true;
+      }
+      if (body && body.draft) {
+        this.applyEnrichedDraft(body.draft, body.model);
+        return true;
+      }
+      return false;
+    },
+
+    async pollBrandEnrichJob(jobId) {
+      this.enrichJobId = jobId;
+      for (let attempt = 0; attempt < 80; attempt++) {
+        await this.delay(attempt < 2 ? 800 : 2000);
+        const res = await fetch(API_BASE + '/admin/brand-management/enrich/' + encodeURIComponent(jobId), {
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && body.error === 'ambiguous_brand') {
+          this.handleBrandEnrichPayload(body);
+          return;
+        }
+        if (!res.ok || body.success === false) {
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        if (body.pending) {
+          this.enrichNotice = body.message || 'AI 补全仍在生成中...';
+          this.enrichNoticeTone = 'info';
+          continue;
+        }
+        if (this.handleBrandEnrichPayload(body)) return;
+        throw new Error('AI 补全没有返回可用结果');
+      }
+      throw new Error('AI 补全超时，请稍后重试');
+    },
+
     async enrichForm() {
       const name = (this.form.name || '').trim();
       if (!name) {
@@ -10829,30 +10913,28 @@ function brandManagementPanel() {
       }
       this.enrichLoading = true;
       this.enrichNotice = '';
+      this.enrichChoices = [];
+      this.enrichJobId = '';
       this.formError = '';
       try {
         const body = await this.apiJson(API_BASE + '/admin/brand-management/enrich', {
           method: 'POST',
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, async: true }),
         });
-        const d = body.draft || {};
-        if (d.name) this.form.name = d.name;
-        this.form.name_zh = d.name_zh || '';
-        this.form.name_en = d.name_en || '';
-        this.form.industry = d.industry || this.form.industry || '';
-        this.form.target_market = d.target_market || '';
-        this.form.description = d.description || '';
-        this.form.positioning = d.positioning || '';
-        this.form.headquarters = d.headquarters || '';
-        this.form.founded_year = d.founded_year || null;
-        this.form.aliasesText = (d.aliases || []).join(', ');
-        this.form.domainsText = (d.official_domains || []).join(', ');
-        this.form.competitorsText = (d.competitors || []).map(c => c.name).filter(Boolean).join(', ');
-        this.enrichNotice = '已用 ' + (body.model || 'LLM') + ' 补全表单，可继续修改后保存';
-        this.enrichNoticeTone = 'success';
+        if (body.pending && body.job_id) {
+          this.enrichNotice = 'AI 补全已提交，正在生成...';
+          this.enrichNoticeTone = 'info';
+          await this.pollBrandEnrichJob(body.job_id);
+        } else if (!this.handleBrandEnrichPayload(body)) {
+          throw new Error('AI 补全没有返回可用结果');
+        }
       } catch (error) {
-        this.enrichNotice = error.message || 'AI 补全失败';
-        this.enrichNoticeTone = 'error';
+        if (error.body && error.body.error === 'ambiguous_brand') {
+          this.handleBrandEnrichPayload(error.body);
+        } else {
+          this.enrichNotice = error.message || 'AI 补全失败';
+          this.enrichNoticeTone = 'error';
+        }
       } finally {
         this.enrichLoading = false;
         this.refreshIcons();
