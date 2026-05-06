@@ -1807,7 +1807,7 @@
                 <button @click="collectHotspots()" :disabled="hotspotCollecting"
                         class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12.5px] font-semibold disabled:opacity-50">
                   <i data-lucide="refresh-cw" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i>
-                  <span x-text="hotspotCollecting ? '采集中...' : '🔄 立即采集 (baidu / zhihu)'"></span>
+                  <span x-text="hotspotCollecting ? '采集中...' : '🔄 立即采集 (LLM + 百度 / 知乎 / 微博 / 头条)'"></span>
                 </button>
                 <button @click="archiveExpiredHotspots()" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body">
                   归档过期
@@ -1852,8 +1852,7 @@
                 <option value="baidu">百度</option>
                 <option value="zhihu">知乎</option>
                 <option value="weibo">微博</option>
-                <option value="douyin">抖音</option>
-                <option value="xhs">小红书</option>
+                <option value="toutiao">头条</option>
                 <option value="llm_search">LLM 搜索</option>
               </select>
               <span class="text-[11px] text-ink-muted ml-auto" x-text="'共 ' + (hotspotsList.length || 0) + ' 条'"></span>
@@ -12166,14 +12165,20 @@ function adminApp() {
         const res = await fetch(API_BASE + '/admin/hot-topics/collect', {
           method:'POST', credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
-          body: JSON.stringify({ sources: ['baidu', 'zhihu', 'llm_search'] }),
+          body: JSON.stringify({
+            sources: ['llm_search', 'baidu', 'zhihu', 'weibo', 'toutiao'],
+          }),
         });
         const body = await res.json().catch(()=>({}));
         if (!res.ok || body.success === false) {
           this.toast('采集失败: ' + (body.message || body.error || ''));
           return;
         }
-        this.toast(`本次采集 ${body.collected || 0} 条 → 入库 ${body.inserted || 0} 条 (待审区)`);
+        const bySource = body.by_source || {};
+        const summary = Object.keys(bySource).length
+          ? ' [' + Object.entries(bySource).map(([k, v]) => `${k}:${v}`).join(' / ') + ']'
+          : '';
+        this.toast(`本次采集 ${body.collected || 0} 条${summary} → 入库 ${body.inserted || 0} 条 (待审区)`);
         await this.loadHotspotsList();
       } catch (e) {
         this.toast('采集失败: ' + (e.message || e));

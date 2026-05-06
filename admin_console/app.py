@@ -7622,9 +7622,12 @@ def admin_hot_topics_archive_expired_api():
 def admin_hot_topics_collect_api():
     """Module D-2.5: trigger a collection cycle for one or more sources.
 
-    Currently supports the lightweight collectors that don't need a browser
-    (baidu / zhihu public APIs + LLM web-search fallback). The browser-use
-    collectors (weibo / douyin / xhs) ship in the D-B follow-up.
+    Supports the lightweight collectors that don't need a browser (baidu /
+    zhihu public APIs + LLM web-search via Doubao). The collectors live in
+    ``admin_console.hotspot_collectors`` so this endpoint works inside the
+    admin Docker image, which does not ship the ``geo_tracker`` package.
+    Browser-use collectors (weibo / douyin / xhs) still live in geo_tracker
+    and run from the worker container's Beat schedule.
     """
     admin, error_response = _require_admin()
     if error_response:
@@ -7639,13 +7642,20 @@ def admin_hot_topics_collect_api():
     industry_filter = (payload.get("industry") or "").strip() or None
 
     try:
-        from geo_tracker.hotspots.pipeline import run_collection_cycle
+        try:
+            from .hotspot_collectors import run_collection_cycle
+        except ImportError:
+            from hotspot_collectors import run_collection_cycle
     except Exception as e:
         return jsonify({"success": False, "error": "collectors_unavailable",
                         "message": str(e)[:200]}), 503
 
     try:
-        result = run_collection_cycle(sources=sources, industry_filter=industry_filter)
+        result = run_collection_cycle(
+            sources=sources,
+            industry_filter=industry_filter,
+            get_db=get_db,
+        )
     except Exception as e:
         return jsonify({"success": False, "error": "collection_failed",
                         "message": str(e)[:200]}), 502
