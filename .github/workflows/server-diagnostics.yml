@@ -9,12 +9,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Run read-only diagnostics
+      - name: Run Topic Plan diagnostics
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 12m
           script: |
             set -euo pipefail
             cd /opt/genpano
@@ -22,68 +23,280 @@ jobs:
             echo "=== Docker compose status ==="
             docker compose ps
 
-            echo "=== Backend email env (password masked) ==="
-            docker compose exec -T backend python - <<'PY'
+            echo "=== Production revision ==="
+            if [ -f .env ]; then
+              grep -E '^(IMAGE_TAG|ARK_BASE_URL|ARK_MODEL|TOPIC_PLAN_)=' .env || true
+            fi
+            docker compose images admin-console || true
+
+            echo "=== Admin-console env (secrets masked) ==="
+            docker compose exec -T admin-console python - <<'PY'
             import os
 
-            keys = [
-                "USER_EMAIL_PROVIDER",
-                "EMAIL_PROVIDER",
-                "USER_EMAIL_FROM",
-                "EMAIL_FROM",
-                "USER_EMAIL_REPLY_TO",
-                "EMAIL_REPLY_TO",
-                "ALIYUN_DM_SMTP_USER",
-                "ALIYUN_DM_SMTP_HOST",
-                "ALIYUN_DM_SMTP_PORT",
-                "ALIYUN_DM_SMTP_SSL",
-                "ALIYUN_DM_SMTP_STARTTLS",
-                "ALIYUN_DM_SMTP_PASSWORD",
-                "USER_BASE_URL",
-                "FRONTEND_URL",
-            ]
-            for key in keys:
+            for key in [
+                "DATABASE_URL",
+                "ARK_API_KEY",
+                "ARK_BASE_URL",
+                "ARK_MODEL",
+                "TOPIC_PLAN_LLM_TIMEOUT_SECONDS",
+                "TOPIC_PLAN_RUN_TIMEOUT_SECONDS",
+                "TOPIC_PLAN_LLM_BRANDS_PER_REQUEST",
+            ]:
                 value = os.getenv(key, "")
-                if "PASSWORD" in key and value:
+                if "KEY" in key and value:
+                    value = "***"
+                if key == "DATABASE_URL" and value:
                     value = "***"
                 print(f"{key}={value}")
             PY
 
-            echo "=== Aliyun DM SMTP login probe (no email is sent) ==="
-            docker compose exec -T backend python - <<'PY'
+            echo "=== Topic Plan application diagnostics ==="
+            docker compose exec -T admin-console python - <<'PY'
+            import json
             import os
-            import smtplib
-            import ssl
+            import traceback
 
-            def env_bool(name: str, default: bool) -> bool:
-                raw = os.getenv(name)
-                if raw is None:
-                    return default
-                return raw.strip().lower() in {"1", "true", "yes", "on"}
+            from psycopg2.extras import RealDictCursor
 
-            host = os.getenv("ALIYUN_DM_SMTP_HOST", "smtpdm.aliyun.com")
-            port = int(os.getenv("ALIYUN_DM_SMTP_PORT", "465"))
-            user = os.getenv("ALIYUN_DM_SMTP_USER", "")
-            password = os.getenv("ALIYUN_DM_SMTP_PASSWORD", "")
-            use_ssl = env_bool("ALIYUN_DM_SMTP_SSL", port == 465)
-            use_starttls = env_bool("ALIYUN_DM_SMTP_STARTTLS", not use_ssl)
+            import app
+            import topic_plan
 
-            print(f"SMTP_TARGET={host}:{port} ssl={use_ssl} starttls={use_starttls} user={user} password_set={bool(password)}")
+            def dump(label, value):
+                print(label)
+                print(json.dumps(value, ensure_ascii=False, default=str, indent=2))
+
+            def table_exists(cur, name):
+                cur.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public' AND table_name = %s
+                    )
+                    """,
+                    (name,),
+                )
+                row = cur.fetchone()
+                return bool(row["exists"] if isinstance(row, dict) else row[0])
+
+            def table_columns(cur, name):
+                if not table_exists(cur, name):
+                    return {"exists": False, "columns": []}
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (name,),
+                )
+                return {"exists": True, "columns": [row["column_name"] for row in cur.fetchall()]}
+
+            dump("APP_IMPORT_OK", {"app_module": app.__name__, "topic_plan_module": topic_plan.__name__})
+
+            skipped = []
+            class FakeCursor:
+                def __init__(self):
+                    self.row = None
+                def execute(self, query, params=None):
+                    self.row = {
+                        "id": params[0],
+                        "run_id": params[1],
+                        "brand_id": params[2],
+                        "brand_name": params[3],
+                        "title": params[4],
+                        "dimension": params[5],
+                        "reason": params[6],
+                        "confidence": params[7],
+                        "coverage_gap": params[8],
+                        "normalized_title": params[9],
+                        "product_id": params[10],
+                        "product_name": params[11],
+                        "status": "pending",
+                    }
+                def fetchone(self):
+                    return self.row
+
+            synthetic_inserted = app._insert_topic_plan_candidate_batch(
+                FakeCursor(),
+                run_id="diagnostic-run",
+                candidates=[
+                    topic_plan.LLMTopic(
+                        title="NIKE\u8dd1\u978b\u9002\u5408\u65b0\u624b\u6162\u8dd1\u5417",
+                        brand="NIKE",
+                        dimension="question",
+                        reason="\u8986\u76d6\u65b0\u624b\u6162\u8dd1\u8d2d\u4e70\u610f\u56fe",
+                        confidence=0.9,
+                        coverage_gap="NIKE:question",
+                    )
+                ],
+                brands=[{"id": 18, "name": "NIKE"}],
+                existing_titles=[],
+                remaining=5,
+                skipped=skipped,
+            )
+            dump("SYNTHETIC_INSERT_FILTER_RESULT", {"inserted": synthetic_inserted, "skipped": skipped})
+
+            conn = app.get_db()
             try:
-                context = ssl.create_default_context()
-                if use_ssl:
-                    smtp = smtplib.SMTP_SSL(host, port, timeout=15, context=context)
-                else:
-                    smtp = smtplib.SMTP(host, port, timeout=15)
-                    if use_starttls:
-                        smtp.starttls(context=context)
-                with smtp:
-                    smtp.ehlo()
-                    smtp.login(user, password)
-                print("SMTP_LOGIN_OK")
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    dump("TABLE admin_audit_log", table_columns(cur, "admin_audit_log"))
+                    dump("TABLE topic_plan_runs", table_columns(cur, "topic_plan_runs"))
+                    dump("TABLE topic_candidates", table_columns(cur, "topic_candidates"))
+
+                    if table_exists(cur, "brands"):
+                        cur.execute(
+                            """
+                            SELECT b.id, b.name, b.industry,
+                                   (SELECT COUNT(*)::int FROM topics t WHERE t.brand_id = b.id) AS topic_count,
+                                   (SELECT COUNT(*)::int FROM topic_candidates c WHERE c.brand_id = b.id) AS candidate_count,
+                                   (SELECT COUNT(*)::int FROM topic_candidates c WHERE c.brand_id = b.id AND c.status = 'pending') AS pending_candidate_count
+                            FROM brands b
+                            WHERE UPPER(b.name) LIKE '%NIKE%'
+                            ORDER BY b.id
+                            """
+                        )
+                        nike_brands = cur.fetchall()
+                        dump("NIKE_BRANDS", nike_brands)
+
+                        nike_ids = [int(row["id"]) for row in nike_brands]
+                        if nike_ids:
+                            all_brands = app._fetch_topic_plan_brands(cur)
+                            scoped = app._topic_plan_scope_brands(
+                                all_brands,
+                                industry_id="\u8fd0\u52a8\u6237\u5916",
+                                brand_ids=nike_ids,
+                            )
+                            coverage = app._build_topic_plan_coverage(
+                                cur,
+                                scoped,
+                                category_id=None,
+                                max_per_brand=40,
+                            )
+                            llm_gaps = [
+                                gap for gap in coverage["gaps"]
+                                if gap.get("priority") in {"P1", "P2"}
+                            ] or coverage["gaps"]
+                            batches = [
+                                {
+                                    "brand_ids": [brand["id"] for brand in batch_brands],
+                                    "gap_count": len(batch_gaps),
+                                    "batch_cap": batch_cap,
+                                    "gaps": batch_gaps,
+                                }
+                                for batch_brands, batch_gaps, batch_cap in app._topic_plan_brand_batches(
+                                    scoped,
+                                    llm_gaps,
+                                    max_topics=180,
+                                    max_per_brand=40,
+                                )
+                            ]
+                            dump(
+                                "LIVE_NIKE_COVERAGE_AND_BATCHES",
+                                {
+                                    "scoped_brands": scoped,
+                                    "coverage": coverage,
+                                    "llm_gaps": llm_gaps,
+                                    "batches": batches,
+                                },
+                            )
+
+                    if table_exists(cur, "topic_plan_runs"):
+                        cur.execute(
+                            """
+                            SELECT id, status, brand_ids, request_config, coverage_snapshot,
+                                   candidates_generated, llm_model, llm_error, metrics_json,
+                                   created_at, started_at, updated_at, completed_at,
+                                   EXTRACT(EPOCH FROM (
+                                       COALESCE(completed_at, NOW())
+                                       - COALESCE(started_at, created_at, NOW())
+                                   )) AS elapsed_seconds
+                            FROM topic_plan_runs
+                            ORDER BY created_at DESC
+                            LIMIT 20
+                            """
+                        )
+                        latest_runs = cur.fetchall()
+                        dump("LATEST_TOPIC_PLAN_RUNS", latest_runs)
+
+                        cur.execute(
+                            """
+                            WITH latest AS (
+                                SELECT id
+                                FROM topic_plan_runs
+                                ORDER BY created_at DESC
+                                LIMIT 20
+                            )
+                            SELECT c.run_id, c.status, COUNT(*)::int AS count,
+                                   MIN(c.created_at) AS first_created_at,
+                                   MAX(c.created_at) AS last_created_at
+                            FROM topic_candidates c
+                            WHERE c.run_id IN (SELECT id FROM latest)
+                            GROUP BY c.run_id, c.status
+                            ORDER BY last_created_at DESC NULLS LAST
+                            """
+                        )
+                        dump("LATEST_RUN_CANDIDATE_COUNTS", cur.fetchall())
+
+                    if table_exists(cur, "topic_candidates"):
+                        cur.execute(
+                            """
+                            SELECT id, run_id, brand_id, brand_name, title, dimension,
+                                   status, confidence, coverage_gap, created_at, updated_at
+                            FROM topic_candidates
+                            WHERE UPPER(brand_name) LIKE '%NIKE%' OR brand_id IN (
+                                SELECT id FROM brands WHERE UPPER(name) LIKE '%NIKE%'
+                            )
+                            ORDER BY created_at DESC
+                            LIMIT 80
+                            """
+                        )
+                        dump("LATEST_NIKE_TOPIC_CANDIDATES", cur.fetchall())
+            finally:
+                conn.close()
+
+            try:
+                config = topic_plan.load_doubao_config()
+                client = topic_plan.DoubaoTopicPlanClient(config)
+                topics, meta = client.generate_topics(
+                    industry="\u8fd0\u52a8\u6237\u5916",
+                    category="All categories",
+                    brands=[{"id": 18, "name": "NIKE", "topic_count": 2}],
+                    coverage_gaps=[
+                        {
+                            "brand_id": 18,
+                            "brand": "NIKE",
+                            "type": "question",
+                            "count": 3,
+                            "priority": "P1",
+                            "coverage_gap": "NIKE:question",
+                        }
+                    ],
+                    max_topics=3,
+                    existing_topics=[],
+                )
+                dump(
+                    "LIVE_LLM_PROBE_OK",
+                    {
+                        "count": len(topics),
+                        "topics": [topic.as_dict() for topic in topics],
+                        "meta": meta,
+                    },
+                )
             except Exception as exc:
-                print(f"SMTP_LOGIN_FAIL {type(exc).__name__}: {exc}")
+                dump(
+                    "LIVE_LLM_PROBE_ERROR",
+                    {
+                        "type": type(exc).__name__,
+                        "code": getattr(exc, "code", None),
+                        "message": str(exc),
+                        "traceback": traceback.format_exc(limit=6),
+                    },
+                )
             PY
 
-            echo "=== Recent backend logs ==="
-            docker compose logs --tail=220 backend
+            echo "=== Recent admin-console logs (Topic Plan focus) ==="
+            docker compose logs --since=6h admin-console \
+              | grep -Ei 'topic plan|topic_plan|topic-plan|candidate|generation|audit|Traceback|ERROR|failed|warning|llm|Doubao|Ark|timeout' \
+              | tail -500 || true
