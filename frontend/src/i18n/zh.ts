@@ -126,6 +126,28 @@ export const zh = {
     networkError: '网络异常，请稍后重试',
     serverError: '服务器异常，请联系支持',
     unknown: '未知错误，请重试',
+    copy: '复制详情',
+    copied: '已复制',
+    showMore: '显示完整诊断',
+    requestId: '请求 ID',
+    // 错误码 → 用户文案。code 本身始终展示在错误面板顶部，便于支持检索；
+    // 未翻译的 code 会回退到 problem.title。
+    codes: {
+      unauthorized: '登录状态已失效，请重新登录。',
+      forbidden: '没有访问该资源的权限。',
+      not_found: '资源不存在或已删除。',
+      gone: '该资源已不可用。',
+      validation_error: '输入校验未通过。',
+      conflict: '当前状态与该操作冲突。',
+      rate_limit_exceeded: '请求过于频繁，请稍后再试。',
+      internal_error: '服务端错误，请稍后重试或联系支持。',
+      service_degraded: '服务当前不可用，请稍后再试。',
+      network_error: '网络异常，请检查网络后重试。',
+      invalid_credentials: '邮箱或密码错误。',
+      MCP_AUTH_REQUIRED: '需要 MCP API key。',
+      project_name_taken: '项目名称已存在。',
+      competitor_capacity_full: '竞品列表已满。',
+    } as Record<string, string>,
   },
 }
 

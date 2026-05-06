@@ -5,11 +5,13 @@ auth router. All product endpoints currently return 501 stub; Phase 1+ fills
 them in.
 """
 
+import logging
 import os
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
@@ -37,7 +39,16 @@ from app.api.v1.reports.router import public_router as reports_public_router
 from app.api.v1.reports.router import router as reports_router
 from app.api.v1.topics.router import router as topics_router
 from app.core.rate_limit import setup_rate_limit
+from app.core.request_id import (
+    REQUEST_ID_HEADER,
+    RequestIDMiddleware,
+    current_request_id,
+    install_logging_filter,
+)
 from app.db.session import get_db
+
+logger = logging.getLogger("app")
+install_logging_filter()
 
 app = FastAPI(
     title="GenPano API",
@@ -61,6 +72,7 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
     max_age=3600,
 )
+app.add_middleware(RequestIDMiddleware)
 setup_rate_limit(app)
 
 # Cookie-based session for admin operator auth (Phase 2 of admin → backend
@@ -225,10 +237,6 @@ app.include_router(_misc_router, prefix="/api")
 # every browser holding an old cookie 401s forever. This handler turns
 # that ratchet off by emitting Max-Age=0 on the 401 response when
 # current_admin tagged the request.
-from fastapi import HTTPException, Request  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
-
-
 @app.exception_handler(HTTPException)
 async def _admin_session_clear_on_bad_cookie(request: Request, exc: HTTPException) -> JSONResponse:
     response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
@@ -244,6 +252,33 @@ async def _admin_session_clear_on_bad_cookie(request: Request, exc: HTTPExceptio
             secure=_ADMIN_COOKIE_SECURE,
         )
     return response
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Log full stack with request_id; return safe internal_error body.
+
+    HTTPException continues to use the handler above (default
+    ``{"detail": ...}`` envelope, plus the bad-cookie self-heal). This
+    catch-all kicks in only for *unhandled* exceptions and must never leak
+    the traceback to the client. ``app.core.errors._problem(...)`` already
+    embeds ``request_id`` into structured detail dicts via the contextvar,
+    so HTTPException bodies stay correlated; here we synthesise the same
+    shape for the 500 path.
+    """
+    logger.exception("unhandled exception on %s %s", request.method, request.url.path)
+    rid = current_request_id() or ""
+    body = {
+        "detail": {
+            "type": "about:blank",
+            "title": "Internal server error",
+            "status": 500,
+            "code": "internal_error",
+            "request_id": rid,
+            "instance": request.url.path,
+        }
+    }
+    return JSONResponse(status_code=500, content=body, headers={REQUEST_ID_HEADER: rid})
 
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
