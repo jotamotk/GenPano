@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import _problem, forbidden, unauthorized
+from app.core.errors import _problem
 from app.core.security import _DependsDb
 from app.db.session import get_db
 
@@ -181,9 +181,7 @@ async def login(
     admin.updated_at = _now()
     await db.commit()
     await db.refresh(admin)
-    await _record_login_attempt(
-        db, request=request, email=email, success=True, failure_code=None
-    )
+    await _record_login_attempt(db, request=request, email=email, success=True, failure_code=None)
 
     request.session.clear()
     request.session["admin_user_id"] = admin.id

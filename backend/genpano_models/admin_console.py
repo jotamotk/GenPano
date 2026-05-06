@@ -293,18 +293,10 @@ class QueryGenerationRun(Base):
         String(64), nullable=False, server_default="inherit"
     )
     engine_panel_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    max_candidates: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="12000"
-    )
-    overflow_policy: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="split"
-    )
-    candidates_estimated: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
-    )
-    candidates_assembled: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
-    )
+    max_candidates: Mapped[int] = mapped_column(Integer, nullable=False, server_default="12000")
+    overflow_policy: Mapped[str] = mapped_column(String(32), nullable=False, server_default="split")
+    candidates_estimated: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    candidates_assembled: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     estimated_cost: Mapped[Any | None] = mapped_column(Numeric, nullable=True)
     preflight_summary: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
     llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -340,9 +332,7 @@ class QueryGenerationCandidate(Base):
     profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rendered_query: Mapped[str] = mapped_column(Text, nullable=False)
     render_hash: Mapped[str] = mapped_column(String(128), nullable=False)
-    generation_method: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="llm"
-    )
+    generation_method: Mapped[str] = mapped_column(String(32), nullable=False, server_default="llm")
     llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     llm_usage_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
     candidate_status: Mapped[str] = mapped_column(

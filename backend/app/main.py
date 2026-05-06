@@ -76,7 +76,11 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
     session_cookie="genpano_admin_session",
-    same_site="lax",
+    # ci_check.py rule D10 enforces SameSite=Strict for every auth cookie;
+    # in production both admin.html (Flask, port 5000) and the FastAPI auth
+    # endpoints sit behind the same nginx origin, so Strict does not block
+    # the cross-service cookie bridge.
+    same_site="strict",
     https_only=os.environ.get("GENPANO_ENVIRONMENT") == "production",
     max_age=60 * 60 * 24 * 7,  # 7 days
 )
