@@ -347,9 +347,11 @@ class BrandManagementService:
         model: str | None = None,
         config: Any | None = None,
         allow_fallback: bool | None = None,
+        timeout_seconds: int | None = None,
     ):
         self.model_override = (model or os.getenv("BRAND_MANAGEMENT_LLM_MODEL") or "").strip()
         self.config = config
+        self.timeout_seconds = timeout_seconds
         self.allow_fallback = (
             allow_fallback
             if allow_fallback is not None
@@ -375,12 +377,17 @@ class BrandManagementService:
 
         config = self._llm_config()
         model = self.model_override or getattr(config, "model", "")
-        timeout_seconds = _bounded_count(
-            os.getenv("BRAND_MANAGEMENT_LLM_TIMEOUT_SECONDS")
+        timeout_source = (
+            self.timeout_seconds
+            if self.timeout_seconds is not None
+            else os.getenv("BRAND_MANAGEMENT_LLM_TIMEOUT_SECONDS")
             or getattr(config, "timeout", None)
-            or 90,
+            or 90
+        )
+        timeout_seconds = _bounded_count(
+            timeout_source,
             90,
-            30,
+            5,
             240,
         )
         max_tokens = _bounded_count(

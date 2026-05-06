@@ -16940,6 +16940,14 @@ def _brand_management_status_for_error(error):
     return 502
 
 
+def _brand_management_enrich_timeout_seconds():
+    try:
+        value = int(os.getenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS") or 25)
+    except (TypeError, ValueError):
+        value = 25
+    return max(5, min(value, 45))
+
+
 def _persist_brand_draft(cur, draft, *, admin_id, brand_id=None):
     """Insert (when ``brand_id`` is None) or update a brands row from a draft."""
     cols = _coerce_brand_columns(cur)
@@ -17489,7 +17497,11 @@ def admin_brand_management_enrich_api():
     if not name:
         return jsonify({"success": False, "error": "name_required"}), 400
 
-    service = BrandManagementService(model=payload.get("llm_model"))
+    service = BrandManagementService(
+        model=payload.get("llm_model"),
+        allow_fallback=True,
+        timeout_seconds=_brand_management_enrich_timeout_seconds(),
+    )
     try:
         result = service.enrich_brand_by_name(name=name)
     except BrandManagementError as error:

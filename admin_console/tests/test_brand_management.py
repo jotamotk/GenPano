@@ -1,4 +1,6 @@
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -416,6 +418,50 @@ def test_enrich_brand_returns_canonicalized_draft(monkeypatch):
     assert types_by_name["L'Oréal Paris"] == "SAME_GROUP"
 
 
+def test_enrich_brand_uses_timeout_override(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["create_timeout"] = kwargs.get("timeout")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "brands": [
+                                        {
+                                            "name": "Lancome",
+                                            "industry": "Beauty",
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_timeout"] = kwargs.get("timeout")
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    service = brand_management.BrandManagementService(
+        config=SimpleNamespace(api_key="key", base_url="https://example.test", model="fake-model"),
+        timeout_seconds=12,
+    )
+
+    result = service.enrich_brand_by_name(name="Lancome")
+
+    assert result.items[0]["name"] == "Lancome"
+    assert captured["client_timeout"] == 12
+    assert captured["create_timeout"] == 12
+
+
 def test_brand_enrich_endpoint_requires_name(monkeypatch, client):
     login(monkeypatch)
     fake_db(monkeypatch)
@@ -428,6 +474,37 @@ def test_brand_enrich_endpoint_requires_name(monkeypatch, client):
     assert response.status_code == 400
     body = response.get_json()
     assert body["error"] == "name_required"
+
+
+def test_brand_enrich_endpoint_uses_fast_timeout_and_fallback(monkeypatch, client):
+    login(monkeypatch)
+    fake_db(monkeypatch)
+    monkeypatch.setenv("BRAND_MANAGEMENT_ENRICH_TIMEOUT_SECONDS", "12")
+    captured = {}
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def enrich_brand_by_name(self, *, name):
+            return brand_management.BrandGenerationResult(
+                items=[brand_management.normalize_brand_draft({"name": name, "status": "draft"})],
+                model="fallback-brand-management-v1",
+                prompt="enrich-prompt",
+                usage={"total_tokens": 0},
+            )
+
+    monkeypatch.setattr(app_mod, "BrandManagementService", FakeService)
+
+    response = client.post(
+        "/api/admin/brand-management/enrich",
+        data=json.dumps({"name": "Lancome"}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert captured["allow_fallback"] is True
+    assert captured["timeout_seconds"] == 12
 
 
 def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
