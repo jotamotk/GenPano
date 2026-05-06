@@ -164,15 +164,9 @@ async def get_topics(
             .group_by(TopicScoreDaily.topic_id)
         )
         for row in (await session.execute(stmt_agg)).all():
-            avg_sent = (
-                float(row.avg_sentiment) if row.avg_sentiment is not None else None
-            )
-            avg_rank = (
-                float(row.avg_position_rank) if row.avg_position_rank is not None else None
-            )
-            last_seen = (
-                row.last_seen_at.isoformat() if row.last_seen_at is not None else None
-            )
+            avg_sent = float(row.avg_sentiment) if row.avg_sentiment is not None else None
+            avg_rank = float(row.avg_position_rank) if row.avg_position_rank is not None else None
+            last_seen = row.last_seen_at.isoformat() if row.last_seen_at is not None else None
             aggregates[row.topic_id] = _TopicAgg(
                 mention_count=int(row.mention_count or 0),
                 avg_sentiment=avg_sent,

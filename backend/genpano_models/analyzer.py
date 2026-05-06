@@ -219,6 +219,7 @@ class GeoScoreDaily(Base):
 
 class TopicScoreDaily(Base):
     """Per-(brand, topic, date) aggregation, populated by Aggregator._aggregate_topic_daily."""
+
     __tablename__ = "topic_score_daily"
     __table_args__ = (UniqueConstraint("brand_id", "topic_id", "date", name="uq_topic_daily"),)
 
