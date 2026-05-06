@@ -1,106 +1,122 @@
-/**
- * IndustryTopicsPage — /industry/topics (PRD §4.6.1g v3.2, 2026-04-21)
- * ──────────────────────────────────────────────────────────────────
- * 行业 Topic 格局 5-段式:
- *   ① Sticky Filter Bar (复用 BrandAnalysisFilterBar)
- *   ② Topics Hero (活跃 Topic / 新兴 Topic / 平均情感 — 3 卡)
- *   ③ 新兴 / 衰退 Topic 雷达 (2 列 Top 5 卡, 金边 / 灰边)
- *   ④ Topic × Intent 交叉矩阵 (Top 8 × 4 Intent 堆叠 100% 相对占比, 组件共享自 components/topics/)
- *   ⑤ Topic Detail Drawer (点击 ③/④ 任意 Topic → 600px 右抽屉)
- *
- * v3.2 (2026-04-21) 变更:
- *   - 删除原段 ③ Brand × Topic 覆盖热图 (IndustryTopicCoverageHeatmap): 数据语义与 Brand Mode
- *     Visibility 页 BrandTopicHeatmap (mentionRate 0-1 真实比值) 重复, 本页 brandTopicHits 0-100
- *     合成 ordinal 只是"相对位感", MVP mock 期两张图回答同一问题. 留 Visibility 那张更贴近
- *     用户"我在哪些 Topic 上强/弱"叙事.
- *   - 段 ④ Topic × Intent Matrix 组件从 components/industry/ 迁到 components/topics/ 以便 Brand Mode 复用 (详见 PRD §4.2.5).
- *
- * v3.1 (保留) 字段契约 (§4.6.1g.D 硬约束):
- *   - 禁 topic.title (→ topic.topicName)
- *   - 禁 topic.heat (→ topic.mentionCount, 且 UI 不再展示绝对数量)
- *   - 禁 topic.industryId / topic.categoryName (行业 Topic 不分品类)
- *   - 禁 typeof 宽松判断 isEmerging (严格 === true)
- *   - v3.1 新增: 禁以"热度 / 提及量"作为主视觉 (Scatter 已删除)
- *
- * §4.6.0a 边界: 不在 UI 出现 "本页只做 / 详情请进入 X".
- */
-import React, { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useProject } from '../../contexts/ProjectContext';
-import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
-import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { Badge, Card } from '../../components/ui';
+import { useLocale } from '../../contexts/LocaleContext';
+import { useIndustries, useIndustryTopics } from '../../hooks/useIndustries';
+import {
+  LoadingCard,
+  EmptyCard,
+  ErrorCard,
+} from '../brand/BrandVisibilityPage';
 
-import IndustryTopicsHero from '../../components/industry/IndustryTopicsHero';
-import IndustrySubpageLiveBanner from '../../components/industry/IndustrySubpageLiveBanner';
-import IndustryTopicEmergingRadar from '../../components/industry/IndustryTopicEmergingRadar';
-import TopicIntentMatrix from '../../components/topics/TopicIntentMatrix';
-import IndustryTopicDetailDrawer from '../../components/industry/IndustryTopicDetailDrawer';
-
-import { INDUSTRIES, BRANDS, INDUSTRY_TOPIC_HEATMAP } from '../../data/mock';
-
+/* Phase 5 §"mock 退役" — 整页来自 GET /v1/industries/:id/topics. */
 export default function IndustryTopicsPage() {
-  const [searchParams] = useSearchParams();
-  const { activeProject } = useProject();
-  const { filters } = useBrandAnalysisFilters();
-  void filters;
+  const { formatDate } = useLocale();
+  const [params, setParams] = useSearchParams();
+  const industriesQ = useIndustries();
+  const list = industriesQ.data?.items ?? [];
+  const industryParam = params.get('industryId');
+  const industryId = industryParam
+    ? Number(industryParam)
+    : list.length > 0
+      ? list[0].industry_id
+      : null;
+  const { data, isLoading, error, refetch } = useIndustryTopics(industryId);
 
-  const [selectedTopic, setSelectedTopic] = useState(null);
+  if (industriesQ.isLoading || isLoading) return <LoadingCard />;
+  if (error)
+    return (
+      <ErrorCard
+        msg={error instanceof Error ? error.message : 'unknown'}
+        onRetry={() => refetch()}
+      />
+    );
+  if (!data || data.state === 'empty' || data.items.length === 0)
+    return <EmptyCard onRefresh={() => refetch()} title="行业主题" />;
 
-  /* Resolve industry: ?industryId= → activeProject.industryId → 'beauty' */
-  const industryId =
-    searchParams.get('industryId') || activeProject?.industryId || 'beauty';
-  const industry =
-    INDUSTRIES.find((i) => i.id === industryId) || INDUSTRIES[0];
+  const setIndustry = (id: number) => {
+    const next = new URLSearchParams(params);
+    next.set('industryId', String(id));
+    setParams(next);
+  };
 
-  const industryBrands = BRANDS.filter((b) => b.industryId === industry.id)
-    .length
-    ? BRANDS.filter((b) => b.industryId === industry.id)
-    : BRANDS;
-
-  const primaryBrandId = activeProject?.primaryBrandId || null;
-
-  const handleTopicClick = useCallback((topic) => {
-    if (topic) setSelectedTopic(topic);
-  }, []);
-  const handleClose = useCallback(() => setSelectedTopic(null), []);
-
-  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  const maxHot = Math.max(...data.items.map((t) => t.hot_score ?? 0));
 
   return (
-    <div className="space-y-3">
-      <IndustrySubpageLiveBanner variant="topics" industryId={liveIndustryId} />
-      {/* ── 段 ② Topics Hero (page banner) ── */}
-      <IndustryTopicsHero
-        industryName={`${industry.icon || ''} ${industry.name} Topic 格局`.trim()}
-        heatmap={INDUSTRY_TOPIC_HEATMAP}
-      />
+    <div className="space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge variant="default">LIVE</Badge>
+          <h2 className="text-heading-2 font-bold text-themed-primary">
+            行业主题热度
+          </h2>
+          <span className="text-sm text-themed-muted">
+            {formatDate(data.period.from)} – {formatDate(data.period.to)}
+          </span>
+          <span className="text-xs text-themed-muted">共 {data.total}</span>
+        </div>
+        <select
+          className="t-input text-sm"
+          value={industryId ?? ''}
+          onChange={(e) => setIndustry(Number(e.target.value))}
+        >
+          {list.map((it) => (
+            <option key={it.industry_id} value={it.industry_id}>
+              {it.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
-      {/* ── 段 ① Filter bar (sticky, 复用 Brand Mode FilterBar) ── */}
-      <BrandAnalysisFilterBar />
-
-      {/* ── 段 ③ 新兴 / 衰退 Topic 雷达 ── */}
-      <IndustryTopicEmergingRadar
-        topics={INDUSTRY_TOPIC_HEATMAP}
-        brands={industryBrands}
-        limit={5}
-        onTopicClick={handleTopicClick}
-      />
-
-      {/* ── 段 ④ Topic × Intent 交叉矩阵 (组件共享 Brand Mode) ── */}
-      <TopicIntentMatrix
-        topics={INDUSTRY_TOPIC_HEATMAP}
-        limit={8}
-        onTopicClick={handleTopicClick}
-      />
-
-      {/* ── 段 ⑤ Topic Detail Drawer (点击 ③/④ 触发) ── */}
-      <IndustryTopicDetailDrawer
-        open={selectedTopic != null}
-        topic={selectedTopic}
-        brands={industryBrands}
-        primaryBrandId={primaryBrandId}
-        onClose={handleClose}
-      />
+      <Card className="p-0 overflow-hidden" onClick={undefined} style={{}}>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[10px] uppercase tracking-wider text-themed-muted">
+                <th className="py-2 pl-5">主题</th>
+                <th className="py-2 px-3 text-right">提及次数</th>
+                <th className="py-2 px-3 text-right">独立品牌数</th>
+                <th className="py-2 px-3">热度</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((t) => {
+                const hot = t.hot_score ?? 0;
+                const pct = maxHot > 0 ? (hot / maxHot) * 100 : 0;
+                return (
+                  <tr
+                    key={`${t.topic_id ?? t.topic_name}`}
+                    className="border-t border-themed-subtle"
+                  >
+                    <td className="py-2 pl-5 pr-3 text-themed-primary font-medium">
+                      {t.topic_name}
+                    </td>
+                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
+                      {t.mention_count}
+                    </td>
+                    <td className="py-2 px-3 text-right tabular-nums text-themed-secondary">
+                      {t.unique_brand_count}
+                    </td>
+                    <td className="py-2 px-3 w-1/3">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-2 rounded-full"
+                          style={{
+                            width: `${pct.toFixed(1)}%`,
+                            background: 'linear-gradient(90deg, #635bff, #f59e0b)',
+                          }}
+                        />
+                        <span className="text-[11px] text-themed-muted tabular-nums">
+                          {hot.toFixed(1)}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }
