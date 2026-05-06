@@ -758,47 +758,59 @@ def _ensure_admin_tables():
                     """
                 )
 
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS admin_audit_log (
-                        id VARCHAR(36) PRIMARY KEY,
-                        operator_id VARCHAR(36),
-                        action VARCHAR(64) NOT NULL,
-                        target_type VARCHAR(64) NOT NULL,
-                        target_id VARCHAR(255),
-                        diff_json JSONB,
-                        reason TEXT,
-                        ip VARCHAR(45),
-                        ua TEXT,
-                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                    )
-                    """
-                )
-                for statement in (
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS id VARCHAR(36)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS operator_id VARCHAR(36)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS action VARCHAR(64)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_type VARCHAR(64)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_id VARCHAR(255)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS diff_json JSONB",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS reason TEXT",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ip VARCHAR(45)",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ua TEXT",
-                    "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
+                # admin_audit_log: backend Alembic Phase-O
+                # (`2026_05_05_0007_phase_o_admin_ops.py`) now owns this
+                # table with a NEW schema (resource_type/resource_id/severity/
+                # before/after/occurred_at/user_agent). Detect that schema by
+                # the presence of `severity` and skip the legacy ALTER TABLE
+                # block — running it would re-add the legacy columns onto the
+                # new table and create the schema-drift state where
+                # `INSERT ... (target_type, ...)` violates the new
+                # `resource_type` / `severity` NOT NULL constraints.
+                if not _table_exists(cur, "admin_audit_log") or "severity" not in _table_columns(
+                    cur, "admin_audit_log"
                 ):
-                    cur.execute(statement)
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created
-                    ON admin_audit_log (target_type, target_id, created_at DESC)
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_admin_audit_operator_created
-                    ON admin_audit_log (operator_id, created_at DESC)
-                    """
-                )
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS admin_audit_log (
+                            id VARCHAR(36) PRIMARY KEY,
+                            operator_id VARCHAR(36),
+                            action VARCHAR(64) NOT NULL,
+                            target_type VARCHAR(64) NOT NULL,
+                            target_id VARCHAR(255),
+                            diff_json JSONB,
+                            reason TEXT,
+                            ip VARCHAR(45),
+                            ua TEXT,
+                            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                        )
+                        """
+                    )
+                    for statement in (
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS id VARCHAR(36)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS operator_id VARCHAR(36)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS action VARCHAR(64)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_type VARCHAR(64)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_id VARCHAR(255)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS diff_json JSONB",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS reason TEXT",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ip VARCHAR(45)",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS ua TEXT",
+                        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
+                    ):
+                        cur.execute(statement)
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created
+                        ON admin_audit_log (target_type, target_id, created_at DESC)
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_admin_audit_operator_created
+                        ON admin_audit_log (operator_id, created_at DESC)
+                        """
+                    )
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS admin_login_attempts (
@@ -887,75 +899,75 @@ def _require_admin():
 
 
 def _insert_admin_audit_log(cur, *, operator_id, action, target_type, target_id, diff, reason):
+    """Insert one row into ``admin_audit_log``, tolerant of legacy/new schema drift.
+
+    Production drifted: rows now contain both the legacy admin_console columns
+    (``target_type/target_id/diff_json/created_at/ua``) AND the newer Alembic
+    Phase-O columns (``resource_type/resource_id/severity/before/after/
+    occurred_at/user_agent``). Some new columns are NOT NULL with no default,
+    so a hardcoded INSERT of only the legacy column list raises a null-violation
+    on every audit write — which manifests as 500s on every audit-emitting admin
+    endpoint (brand enrich, topic-plan review, query-pool assemble, etc.).
+
+    We introspect the live table and fill whichever columns exist. If the
+    introspection result is unreliable (missing ``id`` / ``action`` — which
+    only happens under fake-cursor unit tests), we fall back to the original
+    hardcoded INSERT so existing tests keep working.
+    """
     import json as json_mod
     ip = _client_ip() if has_request_context() else None
-    user_agent = request.headers.get("user-agent") if has_request_context() else None
+    user_agent_value = request.headers.get("user-agent") if has_request_context() else None
     try:
-        cols = {col for col in _table_columns(cur, "admin_audit_log") if col}
+        available = {col for col in _table_columns(cur, "admin_audit_log") if col}
     except Exception:
-        cols = set()
-    if not cols:
-        cols = {
-            "id",
-            "operator_id",
-            "action",
-            "target_type",
-            "target_id",
-            "diff_json",
-            "reason",
-            "ip",
-            "ua",
-            "created_at",
+        available = set()
+    if not available:
+        # FakeCursor / empty introspection (unit tests) — assume legacy columns.
+        available = {
+            "id", "operator_id", "action",
+            "target_type", "target_id", "diff_json",
+            "reason", "ip", "ua", "created_at",
         }
-    target_id_text = str(target_id) if target_id is not None else None
-    diff_json = json_mod.dumps(diff or {}, default=_json_default)
-    values_by_column = {
-        "id": str(uuid.uuid4()),
-        "operator_id": operator_id,
-        "actor_id": operator_id,
-        "admin_id": operator_id,
-        "action": action,
-        "resource_type": target_type,
-        "resource_id": target_id_text,
-        "target_type": target_type,
-        "target_id": target_id_text,
-        "diff_json": diff_json,
-        "reason": reason,
-        "ip": ip,
-        "ip_address": ip,
-        "ua": user_agent,
-        "user_agent": user_agent,
-    }
-    ordered = [
-        "id",
-        "operator_id",
-        "actor_id",
-        "admin_id",
-        "action",
-        "resource_type",
-        "resource_id",
-        "target_type",
-        "target_id",
-        "diff_json",
-        "reason",
-        "ip",
-        "ip_address",
-        "ua",
-        "user_agent",
-    ]
-    insert_columns = [column for column in ordered if column in cols]
-    placeholders = ["%s::jsonb" if column == "diff_json" else "%s" for column in insert_columns]
-    values = [values_by_column[column] for column in insert_columns]
-    if "created_at" in cols:
-        insert_columns.append("created_at")
-        placeholders.append("NOW()")
+
+    target_id_str = str(target_id) if target_id is not None else None
+    diff_payload = json_mod.dumps(diff or {}, default=_json_default)
+    now_ts = datetime.utcnow()
+
+    column_specs = []
+
+    def add(col, placeholder, value):
+        if col in available:
+            column_specs.append((col, placeholder, value))
+
+    add("id", "%s", str(uuid.uuid4()))
+    add("operator_id", "%s", operator_id)
+    add("actor_id", "%s", operator_id)        # legacy alias retained for compat
+    add("admin_id", "%s", operator_id)        # legacy alias retained for compat
+    add("action", "%s", action)
+    # Legacy admin_console columns
+    add("target_type", "%s", target_type)
+    add("target_id", "%s", target_id_str)
+    add("diff_json", "%s::jsonb", diff_payload)
+    add("reason", "%s", reason)
+    add("ip", "%s", ip)
+    add("ip_address", "%s", ip)               # legacy alias retained for compat
+    add("ua", "%s", user_agent_value)
+    add("created_at", "%s", now_ts)
+    # Newer Alembic Phase-O columns (resource_type / severity NOT NULL — must populate)
+    add("resource_type", "%s", target_type)
+    add("resource_id", "%s", target_id_str)
+    add("severity", "%s", "low")
+    add("before", "%s::jsonb", None)
+    add("after", "%s::jsonb", diff_payload)
+    add("user_agent", "%s", user_agent_value)
+    add("occurred_at", "%s", now_ts)
+
+    cols_sql = ", ".join(spec[0] for spec in column_specs)
+    placeholders = ", ".join(spec[1] for spec in column_specs)
+    values = tuple(spec[2] for spec in column_specs)
 
     cur.execute(
-        f"""
-        INSERT INTO admin_audit_log
-            ({', '.join(insert_columns)})
-        VALUES ({', '.join(placeholders)})
-        """,
+        f"INSERT INTO admin_audit_log ({cols_sql}) VALUES ({placeholders})",
         values,
     )
 
