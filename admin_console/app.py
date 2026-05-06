@@ -17188,6 +17188,57 @@ def admin_brand_management_generate_api():
         conn.close()
 
 
+@app.route('/api/admin/brand-management/enrich', methods=['POST'])
+def admin_brand_management_enrich_api():
+    """Run LLM to enrich one brand from just its name; returns a single draft (no DB write)."""
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or payload.get("brand_name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "name_required"}), 400
+
+    service = BrandManagementService(model=payload.get("llm_model"))
+    try:
+        result = service.enrich_brand_by_name(name=name)
+    except BrandManagementError as error:
+        return jsonify(
+            {"success": False, "error": error.code, "message": error.message}
+        ), _brand_management_status_for_error(error)
+
+    draft = result.items[0] if result.items else None
+    if not draft:
+        return jsonify({"success": False, "error": "empty_result", "message": "LLM returned no usable draft"}), 502
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="enrich_brand",
+                target_type="brand",
+                target_id=None,
+                diff={"name": name, "model": result.model},
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify(
+        {
+            "success": True,
+            "draft": draft,
+            "model": result.model,
+            "usage": result.usage,
+        }
+    )
+
+
 @app.route('/api/admin/brand-management/import', methods=['POST'])
 def admin_brand_management_import_api():
     """Persist reviewed drafts. Mirrors `/api/segments/import`.

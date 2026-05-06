@@ -354,6 +354,126 @@ def test_brand_create_endpoint_persists_and_logs(monkeypatch, client):
     assert conn.commits == 1
 
 
+def test_enrich_brand_uses_fallback_when_llm_unavailable(monkeypatch):
+    service = brand_management.BrandManagementService(allow_fallback=True)
+
+    def boom(**kwargs):
+        raise brand_management.BrandManagementError("llm_call_failed", "offline")
+
+    monkeypatch.setattr(service, "_call_llm_json", boom)
+    result = service.enrich_brand_by_name(name="兰蔻 Lancôme")
+    assert len(result.items) == 1
+    assert result.items[0]["name"] == "兰蔻 Lancôme"
+    assert result.model == "fallback-brand-management-v1"
+
+
+def test_enrich_brand_rejects_blank_name():
+    service = brand_management.BrandManagementService(allow_fallback=True)
+    with pytest.raises(brand_management.BrandManagementError) as info:
+        service.enrich_brand_by_name(name="   ")
+    assert info.value.code == "missing_brand_name"
+
+
+def test_enrich_brand_returns_canonicalized_draft(monkeypatch):
+    service = brand_management.BrandManagementService(allow_fallback=False)
+
+    def fake_call(**kwargs):
+        return (
+            [
+                {
+                    "name": "Lancôme",
+                    "name_zh": "兰蔻",
+                    "name_en": "Lancome",
+                    "industry": "Beauty",
+                    "target_market": "global",
+                    "description": "Premier French luxury beauty house under L'Oréal.",
+                    "positioning": "Premium skincare and fragrance",
+                    "headquarters": "Paris, France",
+                    "founded_year": 1935,
+                    "aliases": ["LC"],
+                    "official_domains": ["lancome.com"],
+                    "competitors": [
+                        {"name": "Estée Lauder", "type": "COMPETES_WITH"},
+                        {"name": "L'Oréal Paris", "type": "SAME_GROUP"},
+                    ],
+                    "status": "active",
+                    "tags": ["luxury"],
+                }
+            ],
+            "fake-model",
+            {"total_tokens": 42},
+        )
+
+    monkeypatch.setattr(service, "_call_llm_json", fake_call)
+    result = service.enrich_brand_by_name(name="Lancôme")
+    assert result.model == "fake-model"
+    draft = result.items[0]
+    assert draft["name"] == "Lancôme"
+    assert draft["industry"] == "Beauty"
+    assert draft["founded_year"] == 1935
+    assert {c["name"] for c in draft["competitors"]} == {"Estée Lauder", "L'Oréal Paris"}
+    types_by_name = {c["name"]: c["type"] for c in draft["competitors"]}
+    assert types_by_name["L'Oréal Paris"] == "SAME_GROUP"
+
+
+def test_brand_enrich_endpoint_requires_name(monkeypatch, client):
+    login(monkeypatch)
+    fake_db(monkeypatch)
+
+    response = client.post(
+        "/api/admin/brand-management/enrich",
+        data=json.dumps({}),
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["error"] == "name_required"
+
+
+def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def enrich_brand_by_name(self, *, name):
+            assert name == "Lancôme"
+            return brand_management.BrandGenerationResult(
+                items=[
+                    brand_management.normalize_brand_draft(
+                        {
+                            "name": "Lancôme",
+                            "name_zh": "兰蔻",
+                            "industry": "Beauty",
+                            "founded_year": 1935,
+                        }
+                    )
+                ],
+                model="fake-model",
+                prompt="enrich-prompt",
+                usage={"total_tokens": 7},
+            )
+
+    monkeypatch.setattr(app_mod, "BrandManagementService", FakeService)
+
+    response = client.post(
+        "/api/admin/brand-management/enrich",
+        data=json.dumps({"name": "Lancôme"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["draft"]["name"] == "Lancôme"
+    assert body["draft"]["name_zh"] == "兰蔻"
+    assert body["model"] == "fake-model"
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "INSERT INTO admin_audit_log" in statements
+    assert conn.commits == 1
+
+
 def test_brand_delete_endpoint_archives_brand(monkeypatch, client):
     login(monkeypatch)
     conn = fake_db(monkeypatch)
