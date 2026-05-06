@@ -486,6 +486,57 @@ class BrandManagementService:
             prompt=prompt,
         )
 
+    def enrich_brand_by_name(self, *, name: str) -> BrandGenerationResult:
+        """Return a single enriched brand draft from just a brand name.
+
+        Used by the manual-create UI's "AI 补全" button: the operator types a
+        brand name and the LLM fills the remaining form fields (中英文 / 行业 /
+        市场 / 简介 / 定位 / 总部 / 成立年份 / 别名 / 官方域名 / 竞品 / 标签).
+        Returns a single-element ``items`` list to stay shape-compatible with
+        the existing draft pipeline.
+        """
+        name = (name or "").strip()
+        if not name:
+            raise BrandManagementError("missing_brand_name", "Brand name is required")
+        payload = {"brand_name": name}
+        prompt = (
+            "You are enriching ONE Brand entry for the GENPANO knowledge graph.\n"
+            "Return only strict JSON. Do not include markdown, comments, prose, or code fences.\n"
+            "The output `brands` array must contain EXACTLY ONE element whose `name` is the "
+            "given brand. Use real, publicly known facts about that brand. Do NOT invent. "
+            "If a field is genuinely unknown, return null or an empty array.\n"
+            "Suggested competitors (1-4 well-known peers) become COMPETES_WITH edges "
+            "in the knowledge graph; SAME_GROUP only when truly part of the same parent.\n"
+            "Task: enrich_brand\n"
+            f"Input: {json.dumps(payload, ensure_ascii=False)}\n"
+            f"Output schema: {json.dumps(_brand_schema_hint(), ensure_ascii=False, sort_keys=True)}"
+        )
+        try:
+            raw_items, model, usage = self._call_llm_json(
+                prompt=prompt, root_key="brands", max_count=1
+            )
+            drafts = validate_brand_candidates(raw_items, max_count=1)
+            if drafts and not drafts[0].get("name"):
+                drafts[0]["name"] = name
+            return BrandGenerationResult(
+                items=drafts,
+                model=model,
+                prompt=prompt,
+                usage=usage,
+                estimated_cost=None,
+            )
+        except BrandManagementError:
+            if not self.allow_fallback:
+                raise
+        stub = normalize_brand_draft({"name": name, "source": "llm", "status": "draft"})
+        return BrandGenerationResult(
+            items=[stub],
+            model="fallback-brand-management-v1",
+            prompt=prompt,
+            usage={"total_tokens": 0, "source": "deterministic_fallback"},
+            estimated_cost=0.0,
+        )
+
     def _fallback_brands(
         self,
         *,
