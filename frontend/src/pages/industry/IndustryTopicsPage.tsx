@@ -31,7 +31,6 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 
 import IndustryTopicsHero from '../../components/industry/IndustryTopicsHero';
-import IndustrySubpageLiveBanner from '../../components/industry/IndustrySubpageLiveBanner';
 import IndustryTopicEmergingRadar from '../../components/industry/IndustryTopicEmergingRadar';
 import TopicIntentMatrix from '../../components/topics/TopicIntentMatrix';
 import IndustryTopicDetailDrawer from '../../components/industry/IndustryTopicDetailDrawer';
@@ -68,7 +67,6 @@ export default function IndustryTopicsPage() {
 
   return (
     <div className="space-y-3">
-      <IndustrySubpageLiveBanner variant="topics" industryId={liveIndustryId} />
       {/* ── 段 ② Topics Hero (page banner) ── */}
       <IndustryTopicsHero
         industryName={`${industry.icon || ''} ${industry.name} Topic 格局`.trim()}

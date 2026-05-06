@@ -5,7 +5,6 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from 'recharts';
 import { Badge, Card } from '../components/ui';
-import ProductDetailLiveBanner from '../components/brand/ProductDetailLiveBanner';
 import { useLocale } from '../contexts/LocaleContext';
 import {
   BRANDS, PRODUCTS, INDUSTRIES, CATEGORIES,
@@ -142,7 +141,6 @@ export default function BrandProductDetailPage() {
 
       {/* LIVE strip — surfaces this product from /v1/projects/:id/products
           when it matches by numeric product_id; null otherwise. */}
-      <ProductDetailLiveBanner productId={productId} />
 
       {/* Product hero */}
       <Card className="p-6">

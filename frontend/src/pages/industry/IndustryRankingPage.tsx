@@ -24,7 +24,6 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 
 import IndustryRankingHero from '../../components/industry/IndustryRankingHero';
-import IndustrySubpageLiveBanner from '../../components/industry/IndustrySubpageLiveBanner';
 import IndustryTierBreakdown from '../../components/industry/IndustryTierBreakdown';
 import IndustryMultiMetricMatrix from '../../components/industry/IndustryMultiMetricMatrix';
 import IndustryRankingMoversGrid from '../../components/industry/IndustryRankingMoversGrid';
@@ -69,7 +68,6 @@ export default function IndustryRankingPage() {
 
   return (
     <div className="space-y-3">
-      <IndustrySubpageLiveBanner variant="ranking" industryId={liveIndustryId} />
       {/* ── 段 ② Hero (page banner, 置顶且 border-b 与 FilterBar 分隔) ── */}
       <IndustryRankingHero
         industryName={`${industry.icon || ''} ${industry.name} 排行榜`.trim()}

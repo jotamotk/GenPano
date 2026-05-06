@@ -4,7 +4,6 @@ import { Badge, Card } from '../components/ui';
 import { MiniSparkline } from '../components/charts';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
-import BrandsListLiveBanner from '../components/brand/BrandsListLiveBanner';
 import { BRANDS, PROJECTS, TREND_DATA } from '../data/mock';
 
 /* ─────────────────────────────────────────────────────────────
@@ -64,7 +63,6 @@ export default function BrandsPage() {
 
       {/* LIVE strip — primary + competitors from
           /v1/projects/:id/competitors/metrics */}
-      <BrandsListLiveBanner />
 
       {/* List table */}
       <Card className="p-0 overflow-hidden">

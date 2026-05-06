@@ -32,7 +32,6 @@ import { useLocale } from '../contexts/LocaleContext';
 import { DIAGNOSTICS } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { isLiveProjectId, useCreateReport } from '../hooks/useReports';
-import ReportsLiveBanner from '../components/reports/ReportsLiveBanner';
 
 /* ─────────────────────────────────────────────────────────────
  * 1. 报告类型 × Section 矩阵 (PRD 4.7.2 + 2026-04-16 升级)
@@ -1383,7 +1382,6 @@ export default function ReportsPage() {
       </div>
 
       {/* Live banner — real backend reports (Phase RP) */}
-      <ReportsLiveBanner />
 
       {/* Tabs */}
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />

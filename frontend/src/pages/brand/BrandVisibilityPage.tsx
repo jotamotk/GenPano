@@ -10,7 +10,6 @@ import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import KpiCard from '../../components/dashboard/KpiCard';
-import BrandSubpageLiveBanner from '../../components/dashboard/BrandSubpageLiveBanner';
 import {
   BRANDS,
   MENTION_TREND_BY_ENGINE,
@@ -105,7 +104,6 @@ export default function BrandVisibilityPage() {
 
   return (
     <div className="space-y-3">
-      <BrandSubpageLiveBanner variant="visibility" />
       {/* Page header */}
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>

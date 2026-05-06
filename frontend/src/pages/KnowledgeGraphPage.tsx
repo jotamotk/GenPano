@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { Graph } from '@antv/g6';
 import { Card } from '../components/ui';
 import { BRANDS as GLOBAL_BRANDS } from '../data/mock';
-import IndustrySubpageLiveBanner from '../components/industry/IndustrySubpageLiveBanner';
 
 /* ══════════════════════════════════════════════════════════════
    Knowledge Graph — AntV G6 force layout
@@ -689,7 +688,6 @@ export default function KnowledgeGraphPage() {
 
   return (
     <div className="space-y-4">
-      <IndustrySubpageLiveBanner variant="kg" industryId={liveKgIndustryId} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
