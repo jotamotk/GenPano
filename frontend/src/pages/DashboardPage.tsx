@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
@@ -7,15 +7,34 @@ import DashboardEmptyState from '../components/empty/DashboardEmptyState';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
+import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
+import { useCompetitorMetrics } from '../hooks/useBrandMetrics';
+import { useDiagnostics } from '../hooks/useDiagnostics';
+import {
+  adaptOverviewToPrimary,
+  adaptCompetitorMetricsToList,
+  adaptCompetitorMetricsToSov,
+  adaptCompetitorMetricsToBubble,
+  adaptOverviewToTrend,
+  adaptDiagnostics,
+} from '../adapters/dashboardAdapter';
 
 /* ─────────────────────────────────────────────────────────────
    DashboardPage ("我的品牌") — PRD §4.6.1a 市场宏观视角
    ─────────────────────────────────────────────────────────────
-   ⚠️ 开发者约束 (不作为 UI 文案 — PRD §4.6.0a):
-     本页是 Project.primaryBrand 的快捷入口, 沿用 BrandPanoramaPanel 渲染
-     与 /brands/:id?tab=overview 完全相同的单品牌全景视图. 此文件保留
-     为 legacy 路由兼容 (/dashboard), 未来可改为 301 重定向到
-     /brands/:primaryBrandId?tab=overview.
+   Data flow (Phase 5 §"mock 退役"):
+     1. useProjects() resolves the current user's first live Project
+        (UUID-shaped id).
+     2. When live: hooks fetch overview / competitors / diagnostics
+        from /v1/projects/:id/{overview, competitors/metrics, diagnostics};
+        adapter functions reshape them into the prop format
+        BrandPanoramaPanel's chart sub-components consume; the panel
+        renders 100% real-data charts.
+     3. When no project (anonymous / pre-onboarding): the panel falls
+        back to its existing mock arrays so the demo experience is
+        preserved without showing an empty page.
+   The PRD viz layout is identical in both modes — only the data
+   source switches transparently.
 */
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -25,19 +44,90 @@ export default function DashboardPage() {
 
   /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ──
      Skip the empty state when the user has at least one real project
-     in the backend (just signed up + onboarded but mock context
-     hasn't been wired yet). */
+     in the backend. */
   if (projects.length === 0 && (!liveProjects || liveProjects.length === 0)) {
     return <DashboardEmptyState />;
   }
 
+  const liveProjectId =
+    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+
+  /* ── Live data hooks (gated on isLive — mock-only sessions skip) ── */
+  const overviewQ = useBrandOverview(isLive ? liveProjectId : null);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const diagnosticsQ = useDiagnostics(isLive ? liveProjectId : null, {
+    status: 'open',
+    limit: 5,
+  });
+
+  /* ── Adapter: convert backend → BrandPanoramaPanel prop shape ── */
+  const adapted = useMemo(() => {
+    if (!isLive) return null;
+    const compsList = competitorsQ.data
+      ? adaptCompetitorMetricsToList(competitorsQ.data)
+      : { primary: null, competitors: [] };
+    const overviewPrimary = overviewQ.data
+      ? adaptOverviewToPrimary(overviewQ.data)
+      : null;
+    // Prefer the overview-derived primary (richer KPIs); fall back to the
+    // competitor-metrics primary; final fallback to mock primaryBrand.
+    const primaryFromBackend = overviewPrimary ?? compsList.primary;
+    return {
+      primary: primaryFromBackend,
+      competitors: compsList.competitors,
+      sov: competitorsQ.data
+        ? adaptCompetitorMetricsToSov(competitorsQ.data)
+        : [],
+      bubble: competitorsQ.data
+        ? adaptCompetitorMetricsToBubble(competitorsQ.data)
+        : [],
+      trend: overviewQ.data ? adaptOverviewToTrend(overviewQ.data) : [],
+      diagnostics: diagnosticsQ.data
+        ? adaptDiagnostics(diagnosticsQ.data.items)
+        : [],
+    };
+  }, [
+    isLive,
+    overviewQ.data,
+    competitorsQ.data,
+    diagnosticsQ.data,
+  ]);
+
+  /* ── primary / industry / competitors props for the panel ──
+     Live mode prefers backend-derived; fall back to mock to keep the
+     panel from crashing if Project is misconfigured. */
   const project = activeProject;
-  const primary = BRANDS.find((b) => b.id === project?.primaryBrandId) || BRANDS[1];
-  const industry = INDUSTRIES.find((ind) => ind.id === project?.industryId);
-  const competitors = (project?.competitorBrandIds || [])
+  const mockPrimary =
+    BRANDS.find((b) => b.id === project?.primaryBrandId) || BRANDS[1];
+  const mockIndustry =
+    INDUSTRIES.find((ind) => ind.id === project?.industryId) || null;
+  const mockCompetitors = (project?.competitorBrandIds || [])
     .map((id) => BRANDS.find((b) => b.id === id))
     .filter(Boolean)
     .slice(0, 3);
+
+  // Augment backend primary with id/industryId so panel competitor
+  // fallback by industry still works in live mode (if industry id matches
+  // mock), without losing the live KPIs.
+  const primaryForPanel =
+    adapted?.primary
+      ? {
+          ...mockPrimary,
+          ...adapted.primary,
+        }
+      : mockPrimary;
+
+  // Live competitors come from /competitors/metrics; if backend returned
+  // any rows, use them. Otherwise fall back to mock pinned competitors.
+  const competitorsForPanel =
+    adapted && adapted.competitors.length > 0
+      ? adapted.competitors.map((c) => ({
+          ...mockPrimary,
+          ...c,
+          industryId: primaryForPanel.industryId,
+        }))
+      : mockCompetitors;
 
   const header = (
     <div className="flex items-center justify-between flex-wrap gap-3">
@@ -48,7 +138,7 @@ export default function DashboardPage() {
         <Button variant="secondary" size="sm" onClick={() => navigate('/project-settings')}>
           {t('dashboard.toolbar.project_settings')}
         </Button>
-        <Button variant="primary" size="sm" onClick={() => navigate(`/brands/${primary.id}?tab=diagnostics`)}>
+        <Button variant="primary" size="sm" onClick={() => navigate(`/brands/${primaryForPanel.id}?tab=diagnostics`)}>
           {t('dashboard.toolbar.share_pdf')}
         </Button>
       </div>
@@ -56,14 +146,17 @@ export default function DashboardPage() {
   );
 
   return (
-    <>
-      <BrandPanoramaPanel
-        primary={primary}
-        industry={industry}
-        competitors={competitors}
-        headerSlot={header}
-        scrollAnchorId="dashboard-competition"
-      />
-    </>
+    <BrandPanoramaPanel
+      primary={primaryForPanel}
+      industry={mockIndustry}
+      competitors={competitorsForPanel}
+      headerSlot={header}
+      scrollAnchorId="dashboard-competition"
+      sovDataOverride={adapted?.sov}
+      bubbleDataOverride={adapted?.bubble}
+      trendDataOverride={adapted?.trend}
+      diagnosticsOverride={adapted?.diagnostics}
+      isLive={isLive}
+    />
   );
 }

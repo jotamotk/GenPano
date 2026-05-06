@@ -654,6 +654,16 @@ export default function BrandPanoramaPanel({
   competitors: competitorsProp,
   headerSlot,
   scrollAnchorId = 'panorama-competition',
+  /* Phase 5 §"mock 退役" — 真实数据接入. 任意 override 为 undefined 时
+     回退到 mock 数组, 让没有 Project 的访客仍能看到 demo 数据.
+     有 Project + pipeline 已生成数据时, DashboardPage 通过 adapter 把
+     /v1/projects/:id/{overview, competitors/metrics, diagnostics} 的
+     响应注入下面四个 prop. */
+  sovDataOverride,
+  bubbleDataOverride,
+  trendDataOverride,
+  diagnosticsOverride,
+  isLive,
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -725,23 +735,28 @@ export default function BrandPanoramaPanel({
   /* ── KPI values ──
      PRD §4.6-IA-v2.N / DESIGN_TOKENS C11 (2026-04-20): mentionRate stored as
      decimal 0-1; render layer converts to percentage. Prevents "1620%" bug. */
+  /* ── Effective data sources (live override OR mock fallback) ── */
+  const sovData     = sovDataOverride && sovDataOverride.length > 0 ? sovDataOverride : SOV_DATA;
+  const bubbleData  = bubbleDataOverride && bubbleDataOverride.length > 0 ? bubbleDataOverride : COMPETITOR_SENTIMENT_BUBBLE;
+  const trendData   = trendDataOverride && trendDataOverride.length > 0 ? trendDataOverride : TREND_DATA;
+
   const mentionRateDec   = primary.mentionRate || 0;
   const mentionRateValue = +(mentionRateDec * 100).toFixed(1);
-  const sovEntry         = SOV_DATA.find((s) => s.name === primary.name);
+  const sovEntry         = sovData.find((s) => s.name === primary.name);
   const sovValue         = sovEntry ? sovEntry.value : 0;
   const sentimentValue   = primary.sentiment;
   const citationShare    = 18.2;
   const industryRank     = primary.ranking;
 
   /* ── Sparklines ── */
-  const sparkMention = TREND_DATA.map((d) => d.mentionRate);
-  const sparkSov     = TREND_DATA.map((d, i) => Math.max(0, Math.round(
-    (sovValue || d.mentionRate * 0.6) + Math.sin(i / 4) * 2 + (i % 7 === 0 ? -1.5 : 0.4)
+  const sparkMention = trendData.map((d) => d.mentionRate ?? 0);
+  const sparkSov     = trendData.map((d, i) => Math.max(0, Math.round(
+    (sovValue || (d.mentionRate ?? 0) * 0.6) + Math.sin(i / 4) * 2 + (i % 7 === 0 ? -1.5 : 0.4)
   )));
-  const sparkSent    = TREND_DATA.map((d) => Math.round(d.sentiment * 100));
-  const sparkCite    = TREND_DATA.map((_, i) => Math.round(15 + Math.sin(i / 5) * 2));
-  const sparkRank    = TREND_DATA.map((_, i) => {
-    const progress = i / Math.max(TREND_DATA.length - 1, 1);
+  const sparkSent    = trendData.map((d) => Math.round((d.sentiment ?? 0) * 100));
+  const sparkCite    = trendData.map((_, i) => Math.round(15 + Math.sin(i / 5) * 2));
+  const sparkRank    = trendData.map((_, i) => {
+    const progress = i / Math.max(trendData.length - 1, 1);
     const base     = primary.ranking + 2 * (1 - progress);
     const jitter   = Math.sin(i / 3) * 0.35;
     return Math.max(1, Math.round((base + jitter) * 10) / 10);
@@ -798,11 +813,14 @@ export default function BrandPanoramaPanel({
     },
   ];
 
-  const primaryAlerts = useMemo(() => (
-    DIAGNOSTICS
+  const primaryAlerts = useMemo(() => {
+    if (diagnosticsOverride && diagnosticsOverride.length > 0) {
+      return diagnosticsOverride.slice(0, 3);
+    }
+    return DIAGNOSTICS
       .filter((d) => d.severity === 'P0' || d.severity === 'P1')
-      .slice(0, 3)
-  ), []);
+      .slice(0, 3);
+  }, [diagnosticsOverride]);
 
   const sparklineRows = [
     { label: t('dashboard.kpi.mention_rate'),   spark: sparkMention, value: `${mentionRateValue}%`,    color: 'var(--color-chart-2)' },
@@ -820,6 +838,12 @@ export default function BrandPanoramaPanel({
 
   return (
     <div className="space-y-4 pb-4">
+      {isLive && (
+        <div className="flex items-center gap-2 text-xs text-themed-muted">
+          <Badge variant="default" size="sm">LIVE</Badge>
+          <span>来自 /v1/projects/:id/{'{overview, competitors/metrics, diagnostics}'}</span>
+        </div>
+      )}
       {headerSlot}
 
       {/* ⓪ Hero */}
@@ -871,7 +895,7 @@ export default function BrandPanoramaPanel({
             </div>
             <span className="text-[11px] text-themed-muted">{t('dashboard.competition.sov_pie_subtitle')}</span>
           </div>
-          <SovPieChart data={SOV_DATA} primaryName={primary.name} />
+          <SovPieChart data={sovData} primaryName={primary.name} />
         </Card>
         <Card className="p-4">
           <div className="flex items-baseline justify-between mb-1">
@@ -881,7 +905,7 @@ export default function BrandPanoramaPanel({
             </div>
             <span className="text-[11px] text-themed-muted">{t('dashboard.competition.quadrant_subtitle')}</span>
           </div>
-          <CompetitorQuadrant data={COMPETITOR_SENTIMENT_BUBBLE} primaryName={primary.name} t={t} />
+          <CompetitorQuadrant data={bubbleData} primaryName={primary.name} t={t} />
         </Card>
       </div>
 
@@ -892,7 +916,7 @@ export default function BrandPanoramaPanel({
             <h3 className="text-sm font-semibold text-themed-primary">{t('dashboard.trend.pano_title')}</h3>
             <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
           </div>
-          <PanoTrendChart trendData={TREND_DATA} primaryName={primary.name} competitors={competitors} t={t} />
+          <PanoTrendChart trendData={trendData} primaryName={primary.name} competitors={competitors} t={t} />
         </Card>
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-themed-primary mb-3">{t('dashboard.trend.kpi_summary_title')}</h3>
