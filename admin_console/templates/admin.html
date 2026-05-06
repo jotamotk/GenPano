@@ -982,6 +982,394 @@
         </div>
       </template>
 
+      <!-- ============ PAGE: KG BRAND MANAGEMENT ============ -->
+      <template x-if="page==='kg-brand-management'">
+        <div x-data="brandManagementPanel()" x-init="init()" class="space-y-4">
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <div class="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">BRAND MANAGEMENT</div>
+                <h2 class="mt-1 text-[20px] font-bold text-ink">品牌管理</h2>
+                <p class="mt-1 text-[12px] text-ink-muted">按行业自动生成或手动维护品牌；保存后会直接成为知识图谱的节点，竞品自动登记为关系候选边。</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="openLlmModal()"
+                        class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5"
+                        title="按行业 LLM 生成品牌">
+                  <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                  <span>按行业生成</span>
+                </button>
+                <button @click="openCreateModal()"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink hover:bg-surface-page inline-flex items-center gap-1.5"
+                        title="手动新建品牌">
+                  <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                  <span>手动新建</span>
+                </button>
+              </div>
+            </div>
+
+            <div x-show="notice" x-cloak class="mt-4 rounded-btn border px-3 py-2 text-[12px] font-semibold"
+                 :class="statusToneClass(noticeTone)" x-text="notice"></div>
+
+            <div class="mt-5 grid grid-cols-4 gap-3">
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">品牌总数</div>
+                <div class="mt-1 text-[22px] font-bold text-ink tabular-nums" x-text="pagination.total || 0"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">行业覆盖</div>
+                <div class="mt-1 text-[22px] font-bold text-ink tabular-nums" x-text="industries.length"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">来源 · LLM</div>
+                <div class="mt-1 text-[22px] font-bold text-accent tabular-nums" x-text="brandsBySource('llm')"></div>
+              </div>
+              <div class="rounded-card border border-b-card bg-surface-page px-4 py-3">
+                <div class="text-[11px] text-ink-muted font-semibold">来源 · 手动</div>
+                <div class="mt-1 text-[22px] font-bold text-ink tabular-nums" x-text="brandsBySource('manual')"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <div class="px-5 py-4 border-b border-b-card bg-surface-page flex items-center justify-between gap-4 flex-wrap">
+              <div class="relative flex-1 min-w-[260px] max-w-2xl">
+                <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                <input x-model="filters.q"
+                       @input.debounce.350ms="loadBrands(1)"
+                       class="w-full h-10 pl-9 pr-3 rounded-btn border border-b-default bg-surface text-[13px] outline-none focus:ring-2 focus:ring-accent/20"
+                       placeholder="搜索品牌名 / 中英文 / 描述">
+              </div>
+              <select x-model="filters.industry" @change="loadBrands(1)"
+                      class="h-10 rounded-btn border border-b-default bg-surface px-3 text-[12px] font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="">全部行业</option>
+                <template x-for="ind in industries" :key="ind.industry">
+                  <option :value="ind.industry" x-text="ind.industry + ' (' + ind.brand_count + ')'"></option>
+                </template>
+              </select>
+              <select x-model="filters.source" @change="loadBrands(1)"
+                      class="h-10 rounded-btn border border-b-default bg-surface px-3 text-[12px] font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="">全部来源</option>
+                <option value="llm">LLM 生成</option>
+                <option value="manual">手动添加</option>
+                <option value="import">批量导入</option>
+              </select>
+              <select x-model="filters.status" @change="loadBrands(1)"
+                      class="h-10 rounded-btn border border-b-default bg-surface px-3 text-[12px] font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20">
+                <option value="">全部状态</option>
+                <option value="active">active</option>
+                <option value="draft">draft</option>
+                <option value="pending">pending</option>
+                <option value="archived">archived</option>
+              </select>
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-[12px]">
+                <thead class="bg-surface-page text-[10px] font-semibold uppercase text-ink-muted border-b border-b-card">
+                  <tr>
+                    <th class="px-5 py-3 w-[80px]">ID</th>
+                    <th class="px-5 py-3 min-w-[260px]">品牌</th>
+                    <th class="px-5 py-3 min-w-[160px]">行业</th>
+                    <th class="px-5 py-3 min-w-[140px]">市场</th>
+                    <th class="px-5 py-3 min-w-[120px]">别名</th>
+                    <th class="px-5 py-3 w-[100px]">来源</th>
+                    <th class="px-5 py-3 w-[100px]">状态</th>
+                    <th class="px-5 py-3 w-[120px] text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-b-card">
+                  <tr x-show="!loading && brands.length === 0">
+                    <td colspan="8" class="px-5 py-14 text-center text-[12px] text-ink-muted">
+                      <span x-show="filtersActive()">没有匹配的品牌，调整筛选条件试试</span>
+                      <span x-show="!filtersActive()">还没有品牌，使用「按行业生成」或「手动新建」开始</span>
+                    </td>
+                  </tr>
+                  <tr x-show="loading">
+                    <td colspan="8" class="px-5 py-12 text-center text-[12px] text-ink-muted">加载中...</td>
+                  </tr>
+                  <template x-for="brand in brands" :key="brand.id">
+                    <tr class="hover:bg-surface-page">
+                      <td class="px-5 py-4 font-mono font-semibold text-ink-muted tabular-nums" x-text="brand.id"></td>
+                      <td class="px-5 py-4">
+                        <div class="font-semibold text-ink" x-text="brand.name"></div>
+                        <div class="text-[11px] text-ink-muted">
+                          <span x-show="brand.name_zh" x-text="brand.name_zh"></span>
+                          <span x-show="brand.name_zh && brand.name_en" class="mx-1">·</span>
+                          <span x-show="brand.name_en" x-text="brand.name_en"></span>
+                          <span x-show="!brand.name_zh && !brand.name_en" class="text-ink-muted/70" x-text="brand.description ? (brand.description.slice(0, 64) + (brand.description.length > 64 ? '…' : '')) : '—'"></span>
+                        </div>
+                      </td>
+                      <td class="px-5 py-4 text-ink-body" x-text="brand.industry || '—'"></td>
+                      <td class="px-5 py-4 text-ink-body" x-text="brand.target_market || '—'"></td>
+                      <td class="px-5 py-4 text-ink-muted text-[11px]"
+                          x-text="(brand.aliases || []).slice(0, 3).join(', ') || '—'"></td>
+                      <td class="px-5 py-4">
+                        <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                              :class="brand.source === 'llm' ? 'bg-accent/10 text-accent' : brand.source === 'import' ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-body'"
+                              x-text="sourceLabel(brand.source)"></span>
+                      </td>
+                      <td class="px-5 py-4">
+                        <span class="inline-flex items-center h-5 px-2 rounded-badge text-[10px] font-semibold"
+                              :class="statusBadgeClass(brand.status)"
+                              x-text="brand.status || 'active'"></span>
+                      </td>
+                      <td class="px-5 py-4">
+                        <div class="flex items-center justify-end gap-1">
+                          <button @click="openEditModal(brand)"
+                                  class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-accent hover:border-accent/30 inline-flex items-center justify-center"
+                                  title="编辑">
+                            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                          </button>
+                          <button @click="archiveBrand(brand)" :disabled="brand.status === 'archived'"
+                                  class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-danger hover:border-danger/30 disabled:opacity-40 inline-flex items-center justify-center"
+                                  title="归档">
+                            <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="px-5 py-3 border-t border-b-card bg-surface-page flex items-center justify-between text-[12px] text-ink-muted">
+              <span x-text="'Page ' + pagination.page + ' / ' + Math.max(pagination.total_pages || 1, 1) + ' · ' + (pagination.total || 0) + ' total'"></span>
+              <div class="flex items-center gap-2">
+                <button @click="loadBrands(pagination.page - 1)" :disabled="pagination.page <= 1"
+                        class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink disabled:opacity-40">Prev</button>
+                <button @click="loadBrands(pagination.page + 1)" :disabled="pagination.page >= (pagination.total_pages || 1)"
+                        class="h-8 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink disabled:opacity-40">Next</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- LLM 生成弹窗 -->
+          <div x-show="llmModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6"
+               @keydown.escape.window="closeLlmModal()">
+            <div class="w-full max-w-5xl max-h-[90vh] rounded-card-lg bg-surface shadow-modal flex flex-col overflow-hidden" @click.stop>
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">按行业生成品牌</h3>
+                  <p class="text-[11.5px] text-ink-muted">LLM 会基于行业 / 区域 / 已存在品牌避重，输出待审稿，确认后写入品牌库与图谱节点。</p>
+                </div>
+                <button @click="closeLlmModal()" class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-ink inline-flex items-center justify-center">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div class="grid grid-cols-2 gap-0 flex-1 overflow-hidden">
+                <div class="p-5 border-r border-b-card overflow-y-auto space-y-3">
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">行业</label>
+                    <input x-model="llmForm.industry" required list="brand-mgmt-industry-options"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20"
+                           placeholder="例如：Beauty / 智能手机 / EV">
+                    <datalist id="brand-mgmt-industry-options">
+                      <template x-for="ind in industries" :key="ind.industry">
+                        <option :value="ind.industry"></option>
+                      </template>
+                    </datalist>
+                  </div>
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">数量</label>
+                      <input x-model.number="llmForm.count" type="number" min="1" max="30" step="1"
+                             class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">语言偏好</label>
+                      <select x-model="llmForm.language" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                        <option value="auto">自动</option>
+                        <option value="zh-CN">中文</option>
+                        <option value="en-US">English</option>
+                        <option value="mixed">中英混合</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">区域 / 市场</label>
+                    <input x-model="llmForm.region" placeholder="global / china / EU / SEA"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">定位提示</label>
+                    <textarea x-model="llmForm.positioning" rows="2"
+                              placeholder="例如：高端化妆品 / 大众快时尚 / 高性能 EV"
+                              class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">约束</label>
+                    <textarea x-model="llmForm.constraints" rows="2"
+                              placeholder="覆盖核心头部 + 1 个 DTC 挑战者 + 1 个区域强势品牌；避免虚构。"
+                              class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                  </div>
+                  <div class="text-[11px] text-ink-muted">
+                    已知该行业品牌数：<span class="font-semibold text-ink-body tabular-nums" x-text="seedCount()"></span> · 将作为去重提示传给 LLM
+                  </div>
+                  <button type="button" @click="generateBrands()"
+                          :disabled="llmLoading || !llmForm.industry"
+                          class="h-10 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i x-show="llmLoading" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                    <i x-show="!llmLoading" data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                    <span x-text="llmLoading ? '生成中…' : '生成品牌草稿'"></span>
+                  </button>
+                  <div x-show="llmError" x-cloak class="rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="llmError"></div>
+                </div>
+
+                <div class="flex flex-col overflow-hidden">
+                  <div class="px-5 py-3 border-b border-b-card flex items-center justify-between">
+                    <div>
+                      <div class="text-[12px] font-semibold text-ink">候选品牌</div>
+                      <div class="text-[11px] text-ink-muted" x-text="llmDrafts.length ? llmDrafts.length + ' 个待审稿' : (llmDraftsApplied ? '已加入品牌库' : '尚未生成')"></div>
+                    </div>
+                    <button type="button" @click="applyDrafts()"
+                            :disabled="applyLoading || llmDrafts.length === 0"
+                            class="h-9 px-3 rounded-btn bg-success text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                      <i x-show="applyLoading" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                      <i x-show="!applyLoading" data-lucide="check" class="w-3.5 h-3.5"></i>
+                      <span x-text="applyLoading ? '保存中…' : '加入品牌库 + 图谱'"></span>
+                    </button>
+                  </div>
+                  <div class="flex-1 overflow-y-auto p-3 space-y-2">
+                    <div x-show="llmDrafts.length === 0" class="p-8 text-center text-[12px] text-ink-muted">点击生成后，候选品牌会出现在这里。</div>
+                    <template x-for="(draft, index) in llmDrafts" :key="index">
+                      <div class="rounded-card border border-b-card bg-surface-page p-3">
+                        <div class="flex items-start justify-between gap-2">
+                          <div class="min-w-0">
+                            <div class="font-semibold text-ink truncate" x-text="draft.name"></div>
+                            <div class="text-[11px] text-ink-muted mt-0.5">
+                              <span x-show="draft.name_zh" x-text="draft.name_zh"></span>
+                              <span x-show="draft.name_zh && draft.name_en" class="mx-1">·</span>
+                              <span x-show="draft.name_en" x-text="draft.name_en"></span>
+                              <span x-show="draft.headquarters" class="ml-1" x-text="' · ' + draft.headquarters"></span>
+                              <span x-show="draft.founded_year" class="ml-1" x-text="' · ' + draft.founded_year"></span>
+                            </div>
+                          </div>
+                          <button type="button" @click="removeDraft(index)" class="text-ink-muted hover:text-danger" title="移除该候选">
+                            <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                          </button>
+                        </div>
+                        <div class="mt-2 text-[11.5px] text-ink-body" x-text="draft.description || draft.positioning || ''"></div>
+                        <div class="mt-2 flex flex-wrap gap-1" x-show="draft.aliases && draft.aliases.length">
+                          <template x-for="alias in (draft.aliases || []).slice(0, 6)" :key="alias">
+                            <span class="inline-flex items-center h-5 px-2 rounded-badge bg-ink-muted/10 text-ink-muted text-[10px]" x-text="alias"></span>
+                          </template>
+                        </div>
+                        <div class="mt-2 text-[11px] text-ink-muted" x-show="draft.competitors && draft.competitors.length">
+                          竞品建议：
+                          <template x-for="(comp, ci) in (draft.competitors || []).slice(0, 4)" :key="ci">
+                            <span class="inline-flex items-center h-5 px-2 ml-1 rounded-badge bg-accent/10 text-accent text-[10px]" x-text="comp.name + ' · ' + (comp.type || 'COMPETES_WITH')"></span>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 手动新建 / 编辑 弹窗 -->
+          <div x-show="formModalOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6"
+               @keydown.escape.window="closeFormModal()">
+            <div class="w-full max-w-2xl max-h-[90vh] rounded-card-lg bg-surface shadow-modal flex flex-col overflow-hidden" @click.stop>
+              <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink" x-text="editingId ? '编辑品牌' : '手动新建品牌'"></h3>
+                  <p class="text-[11.5px] text-ink-muted">必填项以 * 标记。保存后会同步写入知识图谱节点。</p>
+                </div>
+                <button @click="closeFormModal()" class="w-8 h-8 rounded-btn border border-b-card bg-surface text-ink-muted hover:text-ink inline-flex items-center justify-center">
+                  <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <form @submit.prevent="saveForm()" class="flex-1 overflow-y-auto p-5 space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">名称 *</label>
+                    <input x-model="form.name" required class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">行业</label>
+                    <input x-model="form.industry" list="brand-mgmt-industry-options-form"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                    <datalist id="brand-mgmt-industry-options-form">
+                      <template x-for="ind in industries" :key="ind.industry">
+                        <option :value="ind.industry"></option>
+                      </template>
+                    </datalist>
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">中文名</label>
+                    <input x-model="form.name_zh" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">English Name</label>
+                    <input x-model="form.name_en" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">市场</label>
+                    <input x-model="form.target_market" placeholder="global / china / EU"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">总部</label>
+                    <input x-model="form.headquarters" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">成立年份</label>
+                    <input x-model.number="form.founded_year" type="number" min="1500" max="2100"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">状态</label>
+                    <select x-model="form.status" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                      <option value="active">active</option>
+                      <option value="draft">draft</option>
+                      <option value="pending">pending</option>
+                      <option value="archived">archived</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">定位</label>
+                  <input x-model="form.positioning" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">简介</label>
+                  <textarea x-model="form.description" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">别名（逗号分隔）</label>
+                    <input x-model="form.aliasesText" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">官方域名（逗号分隔）</label>
+                    <input x-model="form.domainsText" placeholder="example.com, brand.cn"
+                           class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-ink-muted uppercase mb-1.5">竞品 / 关联（逗号分隔，名称 → 默认 COMPETES_WITH）</label>
+                  <input x-model="form.competitorsText"
+                         class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20"
+                         placeholder="保存后会落入图谱关系候选队列">
+                </div>
+                <div x-show="formError" x-cloak class="rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="formError"></div>
+                <div class="flex items-center justify-end gap-2 pt-2">
+                  <button type="button" @click="closeFormModal()" :disabled="formSaving" class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12px] font-semibold text-ink disabled:opacity-50">取消</button>
+                  <button type="submit" :disabled="formSaving" class="h-9 min-w-[120px] px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center justify-center gap-1.5 disabled:opacity-50">
+                    <i x-show="formSaving" data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+                    <span x-text="formSaving ? '保存中…' : (editingId ? '保存修改' : '创建品牌')"></span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+        </div>
+      </template>
+
       <!-- ============ PAGE: KG BRAND REVIEW ============ -->
       <template x-if="page==='kg-brand-review'">
         <div class="space-y-4">
@@ -10089,6 +10477,342 @@ function segmentCrudPanel() {
   };
 }
 
+function brandManagementPanel() {
+  const blankForm = () => ({
+    id: null,
+    name: '',
+    name_zh: '',
+    name_en: '',
+    industry: '',
+    target_market: '',
+    description: '',
+    positioning: '',
+    headquarters: '',
+    founded_year: null,
+    aliasesText: '',
+    domainsText: '',
+    competitorsText: '',
+    status: 'active',
+  });
+  return {
+    loading: false,
+    notice: '',
+    noticeTone: 'info',
+    noticeTimer: null,
+    brands: [],
+    industries: [],
+    pagination: { page: 1, per_page: 25, total: 0, total_pages: 1 },
+    filters: { q: '', industry: '', source: '', status: '' },
+
+    llmModalOpen: false,
+    llmLoading: false,
+    llmError: '',
+    llmDrafts: [],
+    llmDraftsApplied: false,
+    applyLoading: false,
+    llmForm: {
+      industry: '',
+      count: 8,
+      region: '',
+      positioning: '',
+      constraints: '',
+      language: 'auto',
+    },
+
+    formModalOpen: false,
+    formSaving: false,
+    formError: '',
+    editingId: null,
+    form: blankForm(),
+
+    async init() {
+      await this.loadIndustries();
+      await this.loadBrands(1);
+      this.refreshIcons();
+    },
+
+    refreshIcons() {
+      this.$nextTick(() => {
+        if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();
+      });
+    },
+
+    statusToneClass(tone) {
+      if (tone === 'success') return 'border-success/20 bg-success/10 text-success';
+      if (tone === 'error') return 'border-danger/20 bg-danger/10 text-danger';
+      return 'border-accent/20 bg-accent/10 text-accent';
+    },
+
+    statusBadgeClass(status) {
+      if (status === 'active') return 'bg-success/10 text-success';
+      if (status === 'pending') return 'bg-warning/10 text-warning';
+      if (status === 'archived') return 'bg-ink-muted/10 text-ink-muted';
+      return 'bg-accent/10 text-accent';
+    },
+
+    sourceLabel(source) {
+      if (source === 'llm') return 'LLM 生成';
+      if (source === 'import') return '批量导入';
+      return '手动添加';
+    },
+
+    filtersActive() {
+      return Boolean(this.filters.q || this.filters.industry || this.filters.source || this.filters.status);
+    },
+
+    seedCount() {
+      const ind = (this.llmForm.industry || '').trim();
+      if (!ind) return 0;
+      const match = this.industries.find(item => item.industry === ind);
+      return match ? match.brand_count : 0;
+    },
+
+    brandsBySource(source) {
+      return this.brands.filter(b => (b.source || 'manual') === source).length;
+    },
+
+    showNotice(message, tone) {
+      this.notice = message;
+      this.noticeTone = tone || 'info';
+      if (this.noticeTimer) window.clearTimeout(this.noticeTimer);
+      this.noticeTimer = window.setTimeout(() => { this.notice = ''; }, 5000);
+    },
+
+    async apiJson(url, options = {}) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.success === false) {
+        const error = new Error(body.message || body.error || ('HTTP ' + res.status));
+        error.body = body;
+        error.status = res.status;
+        throw error;
+      }
+      return body;
+    },
+
+    async loadIndustries() {
+      try {
+        const body = await this.apiJson(API_BASE + '/admin/brand-management/industries');
+        this.industries = (body.industries || []).filter(item => item.industry);
+      } catch (error) {
+        this.industries = [];
+      }
+    },
+
+    async loadBrands(page) {
+      page = Math.max(1, Number(page) || 1);
+      this.loading = true;
+      try {
+        const params = new URLSearchParams({
+          page: String(page),
+          per_page: String(this.pagination.per_page || 25),
+        });
+        if (this.filters.q) params.set('q', this.filters.q.trim());
+        if (this.filters.industry) params.set('industry', this.filters.industry);
+        if (this.filters.source) params.set('source', this.filters.source);
+        if (this.filters.status) params.set('status', this.filters.status);
+        const body = await this.apiJson(API_BASE + '/admin/brand-management?' + params.toString());
+        this.brands = body.brands || [];
+        this.pagination = body.pagination || { page, per_page: 25, total: this.brands.length, total_pages: 1 };
+      } catch (error) {
+        this.brands = [];
+        this.showNotice('加载品牌失败: ' + (error.message || ''), 'error');
+      } finally {
+        this.loading = false;
+        this.refreshIcons();
+      }
+    },
+
+    openLlmModal() {
+      this.llmError = '';
+      this.llmDrafts = [];
+      this.llmDraftsApplied = false;
+      this.llmForm.industry = this.filters.industry || this.llmForm.industry || '';
+      this.llmModalOpen = true;
+      this.refreshIcons();
+    },
+
+    closeLlmModal() {
+      this.llmModalOpen = false;
+    },
+
+    async generateBrands() {
+      const industry = (this.llmForm.industry || '').trim();
+      if (!industry) {
+        this.llmError = '请选择或填写行业';
+        return;
+      }
+      this.llmLoading = true;
+      this.llmError = '';
+      try {
+        const body = await this.apiJson(API_BASE + '/admin/brand-management/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            industry,
+            count: this.llmForm.count || 8,
+            region: this.llmForm.region || '',
+            positioning: this.llmForm.positioning || '',
+            constraints: this.llmForm.constraints || '',
+            language: this.llmForm.language || 'auto',
+          }),
+        });
+        this.llmDrafts = body.drafts || [];
+        this.llmDraftsApplied = false;
+        if (!this.llmDrafts.length) {
+          this.llmError = 'LLM 没有返回有效品牌，请调整提示后重试';
+        }
+      } catch (error) {
+        this.llmError = error.message || '生成失败';
+      } finally {
+        this.llmLoading = false;
+        this.refreshIcons();
+      }
+    },
+
+    removeDraft(index) {
+      this.llmDrafts.splice(index, 1);
+    },
+
+    async applyDrafts() {
+      if (!this.llmDrafts.length) return;
+      this.applyLoading = true;
+      try {
+        const body = await this.apiJson(API_BASE + '/admin/brand-management/import', {
+          method: 'POST',
+          body: JSON.stringify({
+            drafts: this.llmDrafts,
+            default_industry: this.llmForm.industry || '',
+          }),
+        });
+        const message = '新增 ' + (body.added || 0) + ' · 更新 ' + (body.updated || 0)
+          + ' · 跳过 ' + (body.skipped || 0)
+          + ' · 关系候选 ' + (body.relation_candidates || 0);
+        this.showNotice(message, 'success');
+        this.llmDrafts = [];
+        this.llmDraftsApplied = true;
+        await this.loadIndustries();
+        await this.loadBrands(1);
+        this.closeLlmModal();
+      } catch (error) {
+        this.llmError = error.message || '保存失败';
+      } finally {
+        this.applyLoading = false;
+      }
+    },
+
+    openCreateModal() {
+      this.editingId = null;
+      this.form = blankForm();
+      this.form.industry = this.filters.industry || '';
+      this.formError = '';
+      this.formModalOpen = true;
+      this.refreshIcons();
+    },
+
+    openEditModal(brand) {
+      this.editingId = brand.id;
+      this.form = {
+        id: brand.id,
+        name: brand.name || '',
+        name_zh: brand.name_zh || '',
+        name_en: brand.name_en || '',
+        industry: brand.industry || '',
+        target_market: brand.target_market || '',
+        description: brand.description || '',
+        positioning: brand.positioning || '',
+        headquarters: brand.headquarters || '',
+        founded_year: brand.founded_year || null,
+        aliasesText: (brand.aliases || []).join(', '),
+        domainsText: (brand.official_domains || []).join(', '),
+        competitorsText: '',
+        status: brand.status || 'active',
+      };
+      this.formError = '';
+      this.formModalOpen = true;
+      this.refreshIcons();
+    },
+
+    closeFormModal() {
+      this.formModalOpen = false;
+    },
+
+    parseList(text) {
+      if (!text) return [];
+      return String(text)
+        .split(/[,;\n]/)
+        .map(t => t.trim())
+        .filter(Boolean);
+    },
+
+    async saveForm() {
+      const name = (this.form.name || '').trim();
+      if (!name) {
+        this.formError = '名称必填';
+        return;
+      }
+      this.formSaving = true;
+      this.formError = '';
+      const competitors = this.parseList(this.form.competitorsText).map(name => ({ name, type: 'COMPETES_WITH' }));
+      const payload = {
+        name,
+        name_zh: this.form.name_zh || '',
+        name_en: this.form.name_en || '',
+        industry: this.form.industry || '',
+        target_market: this.form.target_market || '',
+        description: this.form.description || '',
+        positioning: this.form.positioning || '',
+        headquarters: this.form.headquarters || '',
+        founded_year: this.form.founded_year || null,
+        aliases: this.parseList(this.form.aliasesText),
+        official_domains: this.parseList(this.form.domainsText),
+        competitors,
+        status: this.form.status || 'active',
+        source: this.editingId ? undefined : 'manual',
+      };
+      try {
+        if (this.editingId) {
+          await this.apiJson(API_BASE + '/admin/brand-management/' + encodeURIComponent(this.editingId), {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          });
+          this.showNotice('已更新品牌：' + name, 'success');
+        } else {
+          await this.apiJson(API_BASE + '/admin/brand-management', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          });
+          this.showNotice('已创建品牌：' + name, 'success');
+        }
+        this.formModalOpen = false;
+        await this.loadIndustries();
+        await this.loadBrands(this.pagination.page);
+      } catch (error) {
+        this.formError = error.message || '保存失败';
+      } finally {
+        this.formSaving = false;
+      }
+    },
+
+    async archiveBrand(brand) {
+      if (!brand || !brand.id) return;
+      if (!window.confirm('归档品牌「' + brand.name + '」？后续可在状态筛选「archived」中查看。')) return;
+      try {
+        await this.apiJson(API_BASE + '/admin/brand-management/' + encodeURIComponent(brand.id), {
+          method: 'DELETE',
+        });
+        this.showNotice('已归档：' + brand.name, 'success');
+        await this.loadBrands(this.pagination.page);
+      } catch (error) {
+        this.showNotice('归档失败：' + (error.message || ''), 'error');
+      }
+    },
+  };
+}
+
 function adminApp() {
   return {
     // state
@@ -10476,6 +11200,7 @@ function adminApp() {
       ]},
       { title: '知识图谱', items: [
         { key:'kg-tree',          label:'行业 & 品类', icon:'folder-tree',     group:'知识图谱', subtitle:'4 行业 · 品类 3 级树编辑' },
+        { key:'kg-brand-management', label:'品牌管理', icon:'building-2', group:'知识图谱', pageTitle:'品牌管理', subtitle:'按行业 LLM 生成 + 手动维护 · 直接落入图谱节点 / 边' },
         { key:'kg-brand-review',  label:'品牌审核',    icon:'badge-check',     badge:'8', group:'知识图谱', pageTitle:'品牌审核队列', subtitle:'用户提交 → 自动核验 → 人工确认' },
         { key:'kg-product-review',label:'产品审核',    icon:'package-check',   badge:'23', group:'知识图谱', subtitle:'LLM 抽取 + 关系自动建议' },
         { key:'kg-aliases',       label:'别名 & 关系', icon:'link-2',          group:'知识图谱', subtitle:'品牌/产品别名编辑 + 5 种关系边' },

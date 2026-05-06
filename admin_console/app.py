@@ -46,6 +46,16 @@ try:
         SegmentProfileGenerationError,
         SegmentProfileGenerationService,
     )
+    from .brand_management import (
+        ALLOWED_BRAND_SOURCES,
+        ALLOWED_BRAND_STATUSES,
+        ALLOWED_RELATION_TYPES,
+        BrandGenerationResult,
+        BrandManagementError,
+        BrandManagementService,
+        brand_to_kg_payload,
+        normalize_brand_draft,
+    )
 except ImportError:
     from topic_plan import (
         DoubaoTopicPlanClient,
@@ -78,6 +88,16 @@ except ImportError:
     from segment_profiles import (
         SegmentProfileGenerationError,
         SegmentProfileGenerationService,
+    )
+    from brand_management import (
+        ALLOWED_BRAND_SOURCES,
+        ALLOWED_BRAND_STATUSES,
+        ALLOWED_RELATION_TYPES,
+        BrandGenerationResult,
+        BrandManagementError,
+        BrandManagementService,
+        brand_to_kg_payload,
+        normalize_brand_draft,
     )
 
 # Add parent directory to path so we can import geo_tracker
@@ -16174,6 +16194,828 @@ def queries_by_day():
         conn.close()
 
 
+# ─── Module BM: Brand Management ────────────────────────────────────────────
+
+def _ensure_brand_management_tables():
+    """Add columns/log table needed by Brand Management.
+
+    Idempotent: extends the legacy ``brands`` table with the columns the
+    knowledge-graph node projection requires, and creates an audit log table
+    for LLM generations. Brand records remain in ``brands`` so existing
+    Tracker / Analyzer / Topic Plan integrations are unaffected.
+    """
+    try:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                if _table_exists(cur, "brands"):
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS name_zh VARCHAR(256)")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS name_en VARCHAR(256)")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS official_domains JSONB")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS group_id INTEGER")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS positioning TEXT")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS headquarters VARCHAR(128)")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS founded_year INTEGER")
+                    cur.execute("ALTER TABLE brands ADD COLUMN IF NOT EXISTS tags JSONB")
+                    cur.execute(
+                        "ALTER TABLE brands ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'active'"
+                    )
+                    cur.execute(
+                        "ALTER TABLE brands ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'manual'"
+                    )
+                    cur.execute(
+                        "ALTER TABLE brands ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()"
+                    )
+                    cur.execute(
+                        "ALTER TABLE brands ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()"
+                    )
+                    cur.execute(
+                        "ALTER TABLE brands ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_brands_industry_status "
+                        "ON brands (industry, status)"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_brands_source_created_at "
+                        "ON brands (source, created_at DESC)"
+                    )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS brand_generation_logs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        industry VARCHAR(128),
+                        seed_brands JSONB,
+                        llm_model VARCHAR(128),
+                        prompt_used TEXT,
+                        input_params JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        output_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        brands_generated INTEGER NOT NULL DEFAULT 0,
+                        brands_imported INTEGER NOT NULL DEFAULT 0,
+                        tokens_used INTEGER,
+                        estimated_cost NUMERIC,
+                        created_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_brand_generation_logs_created_at "
+                    "ON brand_generation_logs (created_at DESC)"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as error:  # pragma: no cover - defensive
+        app.logger.warning("brand_management migration skipped: %s", error)
+
+
+def _coerce_brand_id_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_brand_columns(cur):
+    """Return the set of brand columns currently defined in the DB."""
+    if not _table_exists(cur, "brands"):
+        return set()
+    return set(_table_columns(cur, "brands"))
+
+
+def _brand_row_to_dict(row, *, available_cols=None):
+    if not row:
+        return None
+    aliases = row.get("aliases")
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    domains = row.get("official_domains")
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            domains = []
+    tags = row.get("tags")
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except Exception:
+            tags = []
+    return {
+        "id": int(row["id"]) if row.get("id") is not None else None,
+        "name": row.get("name") or "",
+        "name_zh": row.get("name_zh") or "",
+        "name_en": row.get("name_en") or "",
+        "industry": row.get("industry") or "",
+        "target_market": row.get("target_market") or "",
+        "description": row.get("description") or "",
+        "positioning": row.get("positioning") or "",
+        "headquarters": row.get("headquarters") or "",
+        "founded_year": row.get("founded_year"),
+        "aliases": aliases if isinstance(aliases, list) else [],
+        "official_domains": domains if isinstance(domains, list) else [],
+        "tags": tags if isinstance(tags, list) else [],
+        "status": row.get("status") or "active",
+        "source": row.get("source") or "manual",
+        "created_by": row.get("created_by"),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+def _select_brand_management_sql(cols):
+    """Build a SELECT clause with NULL fallbacks for missing columns."""
+    pieces = ["id"]
+    pieces.append("name" if "name" in cols else "('Brand #' || id::text) AS name")
+    for col, default in (
+        ("name_zh", "NULL"),
+        ("name_en", "NULL"),
+        ("industry", "''"),
+        ("target_market", "''"),
+        ("description", "''"),
+        ("positioning", "''"),
+        ("headquarters", "''"),
+        ("founded_year", "NULL::int"),
+        ("aliases", "NULL::jsonb"),
+        ("official_domains", "NULL::jsonb"),
+        ("tags", "NULL::jsonb"),
+        ("status", "'active'"),
+        ("source", "'manual'"),
+        ("created_by", "NULL"),
+        ("created_at", "NULL::timestamp"),
+        ("updated_at", "NULL::timestamp"),
+    ):
+        if col in cols:
+            pieces.append(col)
+        else:
+            pieces.append(f"{default} AS {col}")
+    return ", ".join(pieces)
+
+
+def _brand_management_status_for_error(error):
+    if not isinstance(error, BrandManagementError):
+        return 500
+    if error.code in {"llm_config_missing", "llm_client_unavailable", "llm_call_failed"}:
+        return 503
+    if error.code in {"missing_industry", "missing_brand_name", "invalid_brand_payload"}:
+        return 400
+    return 502
+
+
+def _persist_brand_draft(cur, draft, *, admin_id, brand_id=None):
+    """Insert (when ``brand_id`` is None) or update a brands row from a draft."""
+    cols = _coerce_brand_columns(cur)
+    payload = normalize_brand_draft(draft)
+    fields = []
+    placeholders = []
+    values = []
+
+    def add(col, value):
+        if col not in cols:
+            return
+        fields.append(col)
+        if isinstance(value, (list, dict)):
+            placeholders.append("%s::jsonb")
+            values.append(json.dumps(value, ensure_ascii=False))
+        else:
+            placeholders.append("%s")
+            values.append(value)
+
+    add("name", payload["name"])
+    add("name_zh", payload["name_zh"])
+    add("name_en", payload["name_en"])
+    add("industry", payload["industry"] or None)
+    add("target_market", payload["target_market"] or None)
+    add("description", payload["description"] or None)
+    add("positioning", payload["positioning"] or None)
+    add("headquarters", payload["headquarters"] or None)
+    add("founded_year", payload["founded_year"])
+    add("aliases", payload["aliases"])
+    add("official_domains", payload["official_domains"])
+    add("tags", payload["tags"])
+    add("status", payload["status"])
+    add("source", payload["source"])
+
+    if brand_id is None:
+        if "created_by" in cols:
+            add("created_by", admin_id)
+        sql = (
+            f"INSERT INTO brands ({', '.join(fields)}) "
+            f"VALUES ({', '.join(placeholders)}) RETURNING id"
+        )
+        cur.execute(sql, values)
+        result = cur.fetchone()
+        return int(result["id"] if isinstance(result, dict) else result[0])
+
+    set_pieces = [f"{f} = {p}" for f, p in zip(fields, placeholders)]
+    if "updated_at" in cols:
+        set_pieces.append("updated_at = NOW()")
+    if not set_pieces:
+        return brand_id
+    sql = f"UPDATE brands SET {', '.join(set_pieces)} WHERE id = %s"
+    cur.execute(sql, values + [brand_id])
+    return brand_id
+
+
+def _persist_brand_kg_node(cur, brand_id, draft):
+    """Mirror the brand into kg_brands so it is immediately a KG node."""
+    if not _table_exists(cur, "kg_brands"):
+        return
+    payload = brand_to_kg_payload(draft, brand_id)
+    cur.execute(
+        """
+        INSERT INTO kg_brands
+            (brand_id, primary_name, name_zh, name_en, industry_id,
+             aliases, official_domains, status, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, NOW(), NOW())
+        ON CONFLICT (brand_id) DO UPDATE SET
+            primary_name = EXCLUDED.primary_name,
+            name_zh = EXCLUDED.name_zh,
+            name_en = EXCLUDED.name_en,
+            aliases = EXCLUDED.aliases,
+            official_domains = EXCLUDED.official_domains,
+            status = EXCLUDED.status,
+            updated_at = NOW()
+        """,
+        (
+            payload["brand_id"],
+            payload["primary_name"],
+            payload["name_zh"],
+            payload["name_en"],
+            payload["industry_id"],
+            json.dumps(payload["aliases"], ensure_ascii=False),
+            json.dumps(payload["official_domains"], ensure_ascii=False),
+            payload["status"],
+        ),
+    )
+
+
+def _persist_brand_competitor_relations(cur, brand_id, competitors):
+    """Stage suggested competitor edges into kg_relation_candidates.
+
+    Suggested peers from the LLM may not exist yet, so we record them as
+    brand-name candidates rather than enforcing FK on ``brand_b_id``. They
+    surface in the existing relation review queue.
+    """
+    if not competitors or not _table_exists(cur, "kg_relation_candidates"):
+        return 0
+    inserted = 0
+    for comp in competitors:
+        relation = comp.get("type") or "COMPETES_WITH"
+        if relation not in ALLOWED_RELATION_TYPES:
+            continue
+        peer_name = (comp.get("name") or "").strip()
+        if not peer_name:
+            continue
+        peer_id = None
+        cur.execute(
+            "SELECT id FROM brands WHERE LOWER(name) = LOWER(%s) LIMIT 1",
+            (peer_name,),
+        )
+        row = cur.fetchone()
+        if row:
+            peer_id = int(row["id"] if isinstance(row, dict) else row[0])
+        if peer_id is None or peer_id == brand_id:
+            continue
+        a_id, b_id = sorted([brand_id, peer_id])
+        cur.execute(
+            """
+            INSERT INTO kg_relation_candidates
+                (id, entity_kind, a_id, b_id, type, confidence, evidence, status,
+                 llm_model, created_at)
+            VALUES (%s, 'brand', %s, %s, %s, %s, %s::jsonb, 'pending',
+                    %s, NOW())
+            """,
+            (
+                str(uuid.uuid4()),
+                a_id,
+                b_id,
+                relation,
+                0.6,
+                json.dumps({"note": comp.get("note") or "", "from_brand_management": True}),
+                "brand-management-service",
+            ),
+        )
+        inserted += 1
+    return inserted
+
+
+@app.route('/api/admin/brand-management/industries', methods=['GET'])
+def admin_brand_management_industries_api():
+    """Distinct industries currently present in ``brands``."""
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "brands"):
+                return jsonify({"success": True, "industries": []})
+            cols = _coerce_brand_columns(cur)
+            if "industry" not in cols:
+                return jsonify({"success": True, "industries": []})
+            cur.execute(
+                """
+                SELECT industry, COUNT(*)::int AS brand_count
+                FROM brands
+                WHERE industry IS NOT NULL AND industry <> ''
+                GROUP BY industry
+                ORDER BY brand_count DESC, industry ASC
+                LIMIT 200
+                """
+            )
+            rows = [
+                {"industry": r["industry"], "brand_count": int(r["brand_count"] or 0)}
+                for r in cur.fetchall()
+            ]
+        return jsonify({"success": True, "industries": rows})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management', methods=['GET'])
+def admin_brand_management_list_api():
+    """Paginated brand list with industry / source / status / search filters."""
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    industry = (request.args.get("industry") or "").strip()
+    source = (request.args.get("source") or "").strip().lower()
+    status = (request.args.get("status") or "").strip().lower()
+    q = (request.args.get("q") or "").strip()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        per_page = max(1, min(int(request.args.get("per_page") or 25), 200))
+    except ValueError:
+        per_page = 25
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "brands"):
+                return jsonify(
+                    {
+                        "success": True,
+                        "brands": [],
+                        "pagination": _pagination(page, per_page, 0),
+                    }
+                )
+            cols = _coerce_brand_columns(cur)
+            select_clause = _select_brand_management_sql(cols)
+            where = ["TRUE"]
+            params: list = []
+            if industry and "industry" in cols:
+                where.append("industry = %s")
+                params.append(industry)
+            if source and source in ALLOWED_BRAND_SOURCES and "source" in cols:
+                where.append("source = %s")
+                params.append(source)
+            if status and status in ALLOWED_BRAND_STATUSES and "status" in cols:
+                where.append("status = %s")
+                params.append(status)
+            if q:
+                like_clauses = ["LOWER(name) LIKE %s"]
+                like_args = ["%" + q.lower() + "%"]
+                if "name_zh" in cols:
+                    like_clauses.append("LOWER(COALESCE(name_zh, '')) LIKE %s")
+                    like_args.append("%" + q.lower() + "%")
+                if "name_en" in cols:
+                    like_clauses.append("LOWER(COALESCE(name_en, '')) LIKE %s")
+                    like_args.append("%" + q.lower() + "%")
+                if "description" in cols:
+                    like_clauses.append("LOWER(COALESCE(description, '')) LIKE %s")
+                    like_args.append("%" + q.lower() + "%")
+                where.append("(" + " OR ".join(like_clauses) + ")")
+                params.extend(like_args)
+            where_sql = " AND ".join(where)
+
+            cur.execute(f"SELECT COUNT(*) AS c FROM brands WHERE {where_sql}", params)
+            total = int(cur.fetchone()["c"])
+            order_col = "updated_at" if "updated_at" in cols else "id"
+            cur.execute(
+                f"""
+                SELECT {select_clause}
+                FROM brands
+                WHERE {where_sql}
+                ORDER BY {order_col} DESC NULLS LAST, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [per_page, (page - 1) * per_page],
+            )
+            rows = [_brand_row_to_dict(dict(r)) for r in cur.fetchall()]
+        return jsonify(
+            {
+                "success": True,
+                "brands": rows,
+                "pagination": _pagination(page, per_page, total),
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management/<int:brand_id>', methods=['GET'])
+def admin_brand_management_detail_api(brand_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "brands"):
+                return jsonify({"success": False, "error": "brand_not_found"}), 404
+            cols = _coerce_brand_columns(cur)
+            select_clause = _select_brand_management_sql(cols)
+            cur.execute(
+                f"SELECT {select_clause} FROM brands WHERE id = %s",
+                (brand_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "brand_not_found"}), 404
+        return jsonify({"success": True, "brand": _brand_row_to_dict(dict(row))})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management', methods=['POST'])
+def admin_brand_management_create_api():
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        draft = normalize_brand_draft(payload)
+    except BrandManagementError as error:
+        return jsonify({"success": False, "error": error.code, "message": error.message}), 400
+    draft["source"] = _normalize_brand_source_input(payload.get("source")) or "manual"
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "brands"):
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "brands_table_missing",
+                        "message": "brands table is not available; run migrations first.",
+                    }
+                ), 500
+            try:
+                brand_id = _persist_brand_draft(cur, draft, admin_id=admin["id"])
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                return jsonify({"success": False, "error": "duplicate_brand_name"}), 409
+            _persist_brand_kg_node(cur, brand_id, draft)
+            relation_count = _persist_brand_competitor_relations(
+                cur, brand_id, draft.get("competitors") or []
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="create_brand",
+                target_type="brand",
+                target_id=brand_id,
+                diff={
+                    "name": draft["name"],
+                    "industry": draft["industry"],
+                    "source": draft["source"],
+                    "relation_candidates": relation_count,
+                },
+                reason=payload.get("reason"),
+            )
+            cols = _coerce_brand_columns(cur)
+            select_clause = _select_brand_management_sql(cols)
+            cur.execute(
+                f"SELECT {select_clause} FROM brands WHERE id = %s",
+                (brand_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "brand": _brand_row_to_dict(dict(row)) if row else None,
+                "relation_candidates": relation_count,
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management/<int:brand_id>', methods=['PUT'])
+def admin_brand_management_update_api(brand_id):
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        draft = normalize_brand_draft(payload)
+    except BrandManagementError as error:
+        return jsonify({"success": False, "error": error.code, "message": error.message}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM brands WHERE id = %s", (brand_id,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "error": "brand_not_found"}), 404
+            try:
+                _persist_brand_draft(cur, draft, admin_id=admin["id"], brand_id=brand_id)
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                return jsonify({"success": False, "error": "duplicate_brand_name"}), 409
+            _persist_brand_kg_node(cur, brand_id, draft)
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="update_brand",
+                target_type="brand",
+                target_id=brand_id,
+                diff={"name": draft["name"], "status": draft["status"]},
+                reason=payload.get("reason"),
+            )
+            cols = _coerce_brand_columns(cur)
+            select_clause = _select_brand_management_sql(cols)
+            cur.execute(
+                f"SELECT {select_clause} FROM brands WHERE id = %s",
+                (brand_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return jsonify({"success": True, "brand": _brand_row_to_dict(dict(row)) if row else None})
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management/<int:brand_id>', methods=['DELETE'])
+def admin_brand_management_delete_api(brand_id):
+    """Soft delete: status = archived. Hard delete is not supported here.
+
+    A hard delete would cascade into kg_brands / brand_mentions and other
+    upstream tables; we keep history intact and rely on status filtering.
+    """
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM brands WHERE id = %s", (brand_id,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "error": "brand_not_found"}), 404
+            cols = _coerce_brand_columns(cur)
+            if "status" in cols:
+                cur.execute("UPDATE brands SET status = 'archived' WHERE id = %s", (brand_id,))
+            if _table_exists(cur, "kg_brands"):
+                cur.execute(
+                    "UPDATE kg_brands SET status = 'archived', updated_at = NOW() WHERE brand_id = %s",
+                    (brand_id,),
+                )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="archive_brand",
+                target_type="brand",
+                target_id=brand_id,
+                diff={"status": "archived"},
+                reason=(request.get_json(silent=True) or {}).get("reason"),
+            )
+        conn.commit()
+        return jsonify({"success": True, "status": "archived"})
+    finally:
+        conn.close()
+
+
+def _normalize_brand_source_input(value):
+    text = (str(value or "").strip().lower())
+    return text if text in ALLOWED_BRAND_SOURCES else ""
+
+
+@app.route('/api/admin/brand-management/generate', methods=['POST'])
+def admin_brand_management_generate_api():
+    """Run the LLM and return reviewable brand drafts (no DB writes)."""
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    industry = (payload.get("industry") or "").strip()
+    if not industry:
+        return jsonify({"success": False, "error": "industry_required"}), 400
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            seeds: list[str] = []
+            if _table_exists(cur, "brands"):
+                cols = _coerce_brand_columns(cur)
+                if "industry" in cols:
+                    cur.execute(
+                        "SELECT name FROM brands WHERE industry = %s ORDER BY id LIMIT 200",
+                        (industry,),
+                    )
+                    seeds = [r["name"] for r in cur.fetchall() if r.get("name")]
+        service = BrandManagementService(model=payload.get("llm_model"))
+        try:
+            result = service.generate_brands(
+                industry=industry,
+                count=_clamp_int(payload.get("count"), 8, 1, 30),
+                region=payload.get("region") or "",
+                positioning=payload.get("positioning") or "",
+                seed_brands=payload.get("seed_brands") or seeds,
+                constraints=payload.get("constraints") or "",
+                language=payload.get("language") or "auto",
+            )
+        except BrandManagementError as error:
+            return jsonify(
+                {"success": False, "error": error.code, "message": error.message}
+            ), _brand_management_status_for_error(error)
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO brand_generation_logs
+                    (id, industry, seed_brands, llm_model, prompt_used,
+                     input_params, output_json, brands_generated,
+                     tokens_used, estimated_cost, created_by, created_at)
+                VALUES (%s, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    str(uuid.uuid4()),
+                    industry,
+                    json.dumps(seeds, ensure_ascii=False),
+                    result.model,
+                    result.prompt,
+                    json.dumps(payload, default=_json_default, ensure_ascii=False),
+                    json.dumps(result.items, default=_json_default, ensure_ascii=False),
+                    len(result.items),
+                    int((result.usage or {}).get("total_tokens") or 0),
+                    result.estimated_cost,
+                    admin["id"],
+                ),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="generate_brands",
+                target_type="brand",
+                target_id=None,
+                diff={
+                    "industry": industry,
+                    "count": len(result.items),
+                    "model": result.model,
+                },
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "drafts": result.items,
+                "model": result.model,
+                "usage": result.usage,
+                "industry": industry,
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/brand-management/import', methods=['POST'])
+def admin_brand_management_import_api():
+    """Persist reviewed drafts. Mirrors `/api/segments/import`.
+
+    Expected payload: ``{"drafts": [...], "default_industry": "..."}``.
+    For each draft, upserts into ``brands`` (matching by lowercase name when
+    provided), mirrors into ``kg_brands``, and stages competitors as
+    ``kg_relation_candidates`` so the existing relation review queue picks
+    them up.
+    """
+    admin, error_response = _require_admin()
+    if error_response:
+        return error_response
+    from psycopg2.extras import RealDictCursor
+
+    payload = request.get_json(silent=True) or {}
+    drafts = payload.get("drafts") or payload.get("brands") or []
+    if not isinstance(drafts, list) or not drafts:
+        return jsonify({"success": False, "error": "drafts_required"}), 400
+    default_industry = (payload.get("default_industry") or payload.get("industry") or "").strip()
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _table_exists(cur, "brands"):
+                return jsonify({"success": False, "error": "brands_table_missing"}), 500
+            added = 0
+            updated = 0
+            skipped = 0
+            relation_total = 0
+            results: list[dict] = []
+            for raw in drafts:
+                try:
+                    draft = normalize_brand_draft(raw, default_industry=default_industry)
+                except BrandManagementError as error:
+                    skipped += 1
+                    results.append({"skipped": True, "error": error.code, "message": error.message})
+                    continue
+                cur.execute(
+                    "SELECT id FROM brands WHERE LOWER(name) = LOWER(%s) LIMIT 1",
+                    (draft["name"],),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    brand_id = int(existing["id"])
+                    _persist_brand_draft(cur, draft, admin_id=admin["id"], brand_id=brand_id)
+                    updated += 1
+                    action = "updated"
+                else:
+                    try:
+                        brand_id = _persist_brand_draft(cur, draft, admin_id=admin["id"])
+                    except psycopg2.errors.UniqueViolation:
+                        conn.rollback()
+                        skipped += 1
+                        results.append({"skipped": True, "error": "duplicate_brand_name", "name": draft["name"]})
+                        continue
+                    added += 1
+                    action = "added"
+                _persist_brand_kg_node(cur, brand_id, draft)
+                rel_count = _persist_brand_competitor_relations(
+                    cur, brand_id, draft.get("competitors") or []
+                )
+                relation_total += rel_count
+                results.append(
+                    {
+                        "action": action,
+                        "id": brand_id,
+                        "name": draft["name"],
+                        "relation_candidates": rel_count,
+                    }
+                )
+            cur.execute(
+                """
+                UPDATE brand_generation_logs
+                SET brands_imported = brands_imported + %s
+                WHERE id = (
+                    SELECT id FROM brand_generation_logs
+                    WHERE created_by = %s
+                    ORDER BY created_at DESC NULLS LAST
+                    LIMIT 1
+                )
+                """,
+                (added + updated, admin["id"]),
+            )
+            _insert_admin_audit_log(
+                cur,
+                operator_id=admin["id"],
+                action="import_brands",
+                target_type="brand",
+                target_id=None,
+                diff={
+                    "added": added,
+                    "updated": updated,
+                    "skipped": skipped,
+                    "relation_candidates": relation_total,
+                },
+                reason=payload.get("reason"),
+            )
+        conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "added": added,
+                "updated": updated,
+                "skipped": skipped,
+                "relation_candidates": relation_total,
+                "results": results,
+            }
+        )
+    finally:
+        conn.close()
+
+
 def _run_startup_migrations():
     _ensure_citations_column()
     _ensure_analyzer_tables()
@@ -16186,6 +17028,7 @@ def _run_startup_migrations():
     _ensure_scheduler_and_binding_tables()
     _ensure_products_table()
     _ensure_hot_topics_table()
+    _ensure_brand_management_tables()
     _normalize_query_data()
 
 
