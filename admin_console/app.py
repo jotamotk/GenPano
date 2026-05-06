@@ -3295,8 +3295,22 @@ def _query_pool_summary(
     active_profiles = {row.get("profile_id") for row in profile_pool if _query_pool_weight(row) > 0}
     assembled = len(candidate_rows) if candidates is not None else len(contexts)
     attempted = len(contexts) if contexts else assembled + render_failures + duplicate_review
+    rejected_total = int(render_failures or 0) + int(duplicate_review or 0)
+    by_reason = {}
+    if duplicate_review:
+        by_reason["duplicate_review"] = int(duplicate_review)
+    if render_failures:
+        by_reason["render_failure"] = int(render_failures)
+    if query_repaired:
+        by_reason["query_repaired"] = int(query_repaired)
     meta = dict(llm_meta or {})
     return {
+        "requested": int(raw_estimated or attempted or 0),
+        "accepted": int(assembled),
+        "rejected_total": rejected_total,
+        "by_reason": by_reason,
+        "rejected_sample": [],
+        "quality_blocked": assembled == 0 and rejected_total > 0,
         "candidate_ready": assembled,
         "render_pass_rate": round(assembled / attempted, 4) if attempted else 0,
         "segment_coverage": round(len(represented_segments) / len(active_segments), 4) if active_segments else 0,
@@ -8634,15 +8648,18 @@ def _compute_generation_metrics(*, requested, accepted, skipped, batches,
         seen_reasons[r] = seen_reasons.get(r, 0) + 1
         if len(rejected_sample) >= rejected_sample_size:
             break
+    rejected_total = int(len(skipped or []))
+    accepted_total = int(accepted or 0)
     return {
         "requested": int(requested or 0),
-        "accepted": int(accepted or 0),
-        "rejected_total": int(len(skipped or [])),
+        "accepted": accepted_total,
+        "rejected_total": rejected_total,
         "by_reason": by_reason,
         "batches": int(batches or 0),
         "llm_model": llm_model,
         "llm_returned": int(llm_returned) if llm_returned is not None else None,
         "rejected_sample": rejected_sample,
+        "quality_blocked": accepted_total == 0 and rejected_total > 0,
     }
 
 
@@ -8957,31 +8974,56 @@ def _execute_topic_plan_generation(
                 batches=batches,
                 llm_model=llm_model,
             )
-            cur.execute(
-                """
-                UPDATE topic_plan_runs
-                SET status = 'completed',
-                    llm_model = %s,
-                    llm_usage_json = %s::jsonb,
-                    candidates_generated = %s,
-                    metrics_json = %s::jsonb,
-                    completed_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (
-                    llm_model,
-                    _topic_plan_json(usage),
-                    len(inserted),
-                    json.dumps(metrics, ensure_ascii=False),
-                    run_id,
-                ),
-            )
+            if metrics.get("quality_blocked"):
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'failed',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        llm_error = %s,
+                        candidates_generated = %s,
+                        metrics_json = %s::jsonb,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _topic_plan_json(usage),
+                        "quality_gate_blocked",
+                        len(inserted),
+                        json.dumps(metrics, ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE topic_plan_runs
+                    SET status = 'completed',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        candidates_generated = %s,
+                        metrics_json = %s::jsonb,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _topic_plan_json(usage),
+                        len(inserted),
+                        json.dumps(metrics, ensure_ascii=False),
+                        run_id,
+                    ),
+                )
         conn.commit()
+        action = "generate_topic_plan_quality_blocked" if metrics.get("quality_blocked") else "generate_topic_plan"
         _insert_admin_audit_log_nonfatal(
             conn,
             operator_id=admin_id,
-            action="generate_topic_plan",
+            action=action,
             target_type="topic_plan_run",
             target_id=run_id,
             diff={
@@ -8989,6 +9031,7 @@ def _execute_topic_plan_generation(
                 "candidates_generated": len(inserted),
                 "batches": batches,
                 "skipped": skipped,
+                "quality_blocked": bool(metrics.get("quality_blocked")),
             },
             reason="topic_plan_generate",
         )
@@ -8999,6 +9042,8 @@ def _execute_topic_plan_generation(
             "model": llm_model,
             "batches": batches,
             "coverage": coverage_summary,
+            "metrics": metrics,
+            "quality_blocked": bool(metrics.get("quality_blocked")),
         }
     except Exception as error:
         topic_error = error if isinstance(error, TopicPlanLLMError) else TopicPlanLLMError(
@@ -10471,31 +10516,56 @@ def _execute_prompt_matrix_generation(
                 batches=batches,
                 llm_model=llm_model,
             )
-            cur.execute(
-                """
-                UPDATE prompt_generation_runs
-                SET status = 'completed',
-                    llm_model = %s,
-                    llm_usage_json = %s::jsonb,
-                    llm_error = NULL,
-                    candidates_generated = %s,
-                    metrics_json = %s::jsonb,
-                    completed_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (
-                    llm_model,
-                    _prompt_matrix_json(usage),
-                    len(inserted),
-                    json.dumps(metrics, ensure_ascii=False),
-                    run_id,
-                ),
-            )
+            if metrics.get("quality_blocked"):
+                cur.execute(
+                    """
+                    UPDATE prompt_generation_runs
+                    SET status = 'failed',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        llm_error = %s,
+                        candidates_generated = %s,
+                        metrics_json = %s::jsonb,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _prompt_matrix_json(usage),
+                        "quality_gate_blocked",
+                        len(inserted),
+                        json.dumps(metrics, ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE prompt_generation_runs
+                    SET status = 'completed',
+                        llm_model = %s,
+                        llm_usage_json = %s::jsonb,
+                        llm_error = NULL,
+                        candidates_generated = %s,
+                        metrics_json = %s::jsonb,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        llm_model,
+                        _prompt_matrix_json(usage),
+                        len(inserted),
+                        json.dumps(metrics, ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+            action = "generate_prompt_matrix_quality_blocked" if metrics.get("quality_blocked") else "generate_prompt_matrix"
             _insert_admin_audit_log(
                 cur,
                 operator_id=admin_id,
-                action="generate_prompt_matrix",
+                action=action,
                 target_type="prompt_generation_run",
                 target_id=run_id,
                 diff={
@@ -10504,11 +10574,20 @@ def _execute_prompt_matrix_generation(
                     "candidates_generated": len(inserted),
                     "batches": batches,
                     "skipped": skipped,
+                    "quality_blocked": bool(metrics.get("quality_blocked")),
                 },
                 reason="prompt_matrix_generate",
             )
         conn.commit()
-        return {"inserted": inserted, "skipped": skipped, "usage": usage, "model": llm_model, "batches": batches}
+        return {
+            "inserted": inserted,
+            "skipped": skipped,
+            "usage": usage,
+            "model": llm_model,
+            "batches": batches,
+            "metrics": metrics,
+            "quality_blocked": bool(metrics.get("quality_blocked")),
+        }
     except Exception as error:
         prompt_error = error if isinstance(error, PromptMatrixError) else PromptMatrixError(
             "prompt_matrix_generation_failed",

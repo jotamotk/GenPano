@@ -635,6 +635,11 @@ def test_query_pool_repairs_single_unnatural_llm_query_instead_of_failing():
     assert app_mod.is_natural_user_prompt(candidates[0]["rendered_query"])
     assert summary["candidate_ready"] == 1
     assert summary["query_repaired"] == 1
+    assert summary["requested"] == 1
+    assert summary["accepted"] == 1
+    assert summary["rejected_total"] == 0
+    assert summary["quality_blocked"] is False
+    assert summary["by_reason"]["query_repaired"] == 1
 
 
 def test_query_pool_repairs_when_llm_and_context_are_stilted():
