@@ -6,7 +6,8 @@ Each service function is callable independently from MCP tools + Reports
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from typing import TypedDict
 
 from genpano_models import (
     BrandMention,
@@ -16,6 +17,7 @@ from genpano_models import (
     ProjectTopicPin,
     ResponseAnalysis,
     SentimentDriver,
+    TopicScoreDaily,
 )
 from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,12 +124,11 @@ async def get_topics(
     session: AsyncSession,
     project: Project,
 ) -> TopicsOut:
-    """List project topics + pin state.
+    """List project topics + pin state with real mention/sentiment/position aggregates.
 
-    Phase 2.2 implementation reads `project_topic_pins`. The actual `topics`
-    table is upstream (Tracker domain) and does not have an ORM in
-    `genpano_models`; we synthesize topic_name from topic_id placeholder
-    until Phase A.7 adds full Topic ORM.
+    Pin state still comes from `project_topic_pins`. Mention stats now come from
+    `topic_score_daily` (populated by Aggregator._aggregate_topic_daily) for the
+    project's primary brand over the most recent 30-day window.
     """
     stmt = (
         select(ProjectTopicPin)
@@ -135,18 +136,64 @@ async def get_topics(
         .order_by(ProjectTopicPin.pinned_at.desc())
     )
     pins = list((await session.execute(stmt)).scalars().all())
-    items = [
-        TopicRow(
-            topic_id=p.topic_id,
-            topic_name=f"topic-{p.topic_id}",  # Phase A.7 fills real names
-            state=p.state,
-            mention_count=0,
-            avg_sentiment=None,
-            avg_position_rank=None,
-            last_seen_at=None,
+
+    # Aggregate per topic over the last 30 days for the project's primary brand.
+    class _TopicAgg(TypedDict):
+        mention_count: int
+        avg_sentiment: float | None
+        avg_position_rank: float | None
+        last_seen_at: str | None
+
+    aggregates: dict[int, _TopicAgg] = {}
+    if pins and project.primary_brand_id is not None:
+        topic_ids = [p.topic_id for p in pins]
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=DEFAULT_WINDOW_DAYS)
+        stmt_agg = (
+            select(
+                TopicScoreDaily.topic_id,
+                func.sum(TopicScoreDaily.mention_count).label("mention_count"),
+                func.avg(TopicScoreDaily.avg_sentiment_score).label("avg_sentiment"),
+                func.avg(TopicScoreDaily.avg_position_rank).label("avg_position_rank"),
+                func.max(TopicScoreDaily.date).label("last_seen_at"),
+            )
+            .where(
+                TopicScoreDaily.brand_id == project.primary_brand_id,
+                TopicScoreDaily.topic_id.in_(topic_ids),
+                TopicScoreDaily.date >= cutoff,
+            )
+            .group_by(TopicScoreDaily.topic_id)
         )
-        for p in pins
-    ]
+        for row in (await session.execute(stmt_agg)).all():
+            avg_sent = (
+                float(row.avg_sentiment) if row.avg_sentiment is not None else None
+            )
+            avg_rank = (
+                float(row.avg_position_rank) if row.avg_position_rank is not None else None
+            )
+            last_seen = (
+                row.last_seen_at.isoformat() if row.last_seen_at is not None else None
+            )
+            aggregates[row.topic_id] = _TopicAgg(
+                mention_count=int(row.mention_count or 0),
+                avg_sentiment=avg_sent,
+                avg_position_rank=avg_rank,
+                last_seen_at=last_seen,
+            )
+
+    items = []
+    for p in pins:
+        agg = aggregates.get(p.topic_id)
+        items.append(
+            TopicRow(
+                topic_id=p.topic_id,
+                topic_name=f"topic-{p.topic_id}",  # Phase A.7 fills real names
+                state=p.state,
+                mention_count=agg["mention_count"] if agg else 0,
+                avg_sentiment=agg["avg_sentiment"] if agg else None,
+                avg_position_rank=agg["avg_position_rank"] if agg else None,
+                last_seen_at=agg["last_seen_at"] if agg else None,
+            )
+        )
     return TopicsOut(
         project_id=project.id,
         items=items,

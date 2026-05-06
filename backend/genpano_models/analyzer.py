@@ -217,6 +217,26 @@ class GeoScoreDaily(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
 
+class TopicScoreDaily(Base):
+    """Per-(brand, topic, date) aggregation, populated by Aggregator._aggregate_topic_daily."""
+    __tablename__ = "topic_score_daily"
+    __table_args__ = (UniqueConstraint("brand_id", "topic_id", "date", name="uq_topic_daily"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    brand_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    date: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    mention_count: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    total_responses: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    mention_rate: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    avg_position_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_geo_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+
+
 class IndustryBenchmarkDaily(Base):
     __tablename__ = "industry_benchmark_daily"
     __table_args__ = (UniqueConstraint("industry", "date", "target_llm", name="uq_industry_daily"),)

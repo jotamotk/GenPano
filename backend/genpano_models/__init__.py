@@ -47,6 +47,7 @@ from genpano_models.analyzer import (
     ProductScoreDaily,
     ResponseAnalysis,
     SentimentDriver,
+    TopicScoreDaily,
 )
 from genpano_models.analyzer_phase_a import (
     BrandGroup,
@@ -127,6 +128,7 @@ __all__ = [
     "ReportShareToken",
     "ResponseAnalysis",
     "SentimentDriver",
+    "TopicScoreDaily",
     "User",
     "UserApiKey",
     "UserAuthToken",

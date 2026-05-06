@@ -160,6 +160,21 @@
   .ring-track { stroke: #F2F4F7; }
   .topic-plan-heading h3 + p + p { display: none; }
   .topic-plan-api-select + select { display: none; }
+
+  /* MOCK 数据标记 — 提醒管理员该区域非真实数据 */
+  .mock-banner {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.625rem 0.875rem;
+    border-radius: 0.5rem;
+    background: rgb(253 186 116 / 0.12);
+    border: 1px solid rgb(253 186 116 / 0.5);
+    color: rgb(180 83 9);
+    font-size: 12px; font-weight: 600;
+    line-height: 1.4;
+  }
+  .mock-banner i { width: 14px; height: 14px; flex-shrink: 0; }
+  .mock-page-banner { margin: 0 0 1rem 0; }
+  .mock-block-banner { margin: 0 0 0.75rem 0; }
 </style>
 </head>
 
@@ -376,6 +391,11 @@
       <template x-if="page==='pipeline-dashboard'">
         <div class="space-y-5">
 
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
+
           <!-- P0/P1 Alert strip -->
           <template x-if="true">
             <div class="rounded-card-lg border border-danger/20 bg-danger/5 p-4 flex items-center gap-3">
@@ -501,6 +521,11 @@
       <!-- ============ PAGE: OVERVIEW ============ -->
       <template x-if="page==='overview'">
         <div class="space-y-6">
+
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
 
           <!-- P0 / P1 alert strip -->
           <div class="rounded-card-lg border border-danger/20 bg-danger/5 p-4 flex items-center gap-3">
@@ -856,6 +881,11 @@
       <template x-if="page==='tracker-engines'">
         <div class="space-y-4">
 
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
+
           <div class="grid grid-cols-3 gap-4">
             <template x-for="e in engines" :key="e.name">
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5 card-lift">
@@ -956,6 +986,11 @@
       <template x-if="page==='kg-brand-review'">
         <div class="space-y-4">
 
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
+
           <div class="grid grid-cols-4 gap-4">
             <template x-for="s in kgStats" :key="s.label">
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
@@ -1052,6 +1087,10 @@
       <!-- ============ PAGE: COST DASHBOARD ============ -->
       <template x-if="page==='ops-cost'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <!-- Header KPIs -->
           <div class="grid grid-cols-4 gap-4">
             <div class="rounded-card-lg bg-gradient-accent text-white p-5 shadow-card col-span-1">
@@ -5057,6 +5096,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
 
               <!-- Rotation config -->
               <div>
+                <div class="mock-banner mock-block-banner">
+                  <i data-lucide="alert-triangle"></i>
+                  <span>MOCK · 以下账号轮换/退役配置为占位演示，等待后端落地</span>
+                </div>
                 <h3 class="text-[14px] font-semibold text-ink mb-3">轮换策略配置</h3>
                 <div class="grid grid-cols-3 gap-4">
                   <template x-for="(config, engine) in accountRotationConfig" :key="engine">
@@ -5080,6 +5123,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <!-- ==== 代理池 Tab ==== -->
           <template x-if="resourceTab==='proxy'">
             <div class="space-y-4">
+              <div class="mock-banner mock-block-banner">
+                <i data-lucide="alert-triangle"></i>
+                <span>MOCK · 代理池订阅与区域数据为占位演示，等待后端落地</span>
+              </div>
               <!-- Subscription status card -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
                 <div class="flex items-start justify-between mb-4">
@@ -5458,6 +5505,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <!-- Tab 1: Errors overview -->
           <template x-if="trackerTab==='errors'">
             <div class="space-y-4">
+              <div class="mock-banner mock-block-banner">
+                <i data-lucide="alert-triangle"></i>
+                <span>MOCK · 以下错误码 / 重试规则 / DLQ 区块为占位演示，等待后端落地</span>
+              </div>
               <!-- ① Pipeline status bar (lightweight, 4 layers in one row) -->
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
                 <div class="text-[12px] font-semibold text-ink-muted mb-3">Pipeline 各层状态</div>
@@ -5778,6 +5829,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <!-- Tab 3: Rules & DLQ -->
           <template x-if="trackerTab==='rules-dlq'">
             <div class="space-y-6">
+              <div class="mock-banner mock-block-banner">
+                <i data-lucide="alert-triangle"></i>
+                <span>MOCK · 以下重试规则与 DLQ 队列为占位演示，等待后端落地</span>
+              </div>
               <!-- Auto-retry rules -->
               <div>
                 <div class="flex items-center justify-between mb-3">
@@ -5933,6 +5988,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: PIPELINE PROMPTS ============ -->
       <template x-if="page==='planner-prompts'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="grid grid-cols-3 gap-4">
             <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
               <div class="text-[12px] text-ink-muted font-semibold uppercase tracking-wider mb-1">活跃模板</div>
@@ -6069,196 +6128,384 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         </div>
       </template>
 
-      <!-- ============ PAGE: ANALYZER — QUALITY (Per-Query 分析结果 + 趋势) ============ -->
+      <!-- ============ PAGE: ANALYZER — QUALITY (Real /api/analyzer/* wiring) ============ -->
       <template x-if="page==='analyzer-quality'">
         <div class="space-y-4">
-          <!-- KPI row -->
-          <div class="grid grid-cols-4 gap-4">
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-              <div class="text-[11px] text-ink-muted font-semibold mb-1">解析成功率</div>
-              <div class="text-[24px] font-bold text-success">95.3%</div>
-              <div class="text-[10px] text-success mt-1">↑ +0.7pp vs 昨日</div>
-            </div>
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-              <div class="text-[11px] text-ink-muted font-semibold mb-1">品牌识别 Precision</div>
-              <div class="text-[24px] font-bold text-accent">86.2%</div>
-              <div class="text-[10px] text-accent mt-1">本周 QA 结果</div>
-            </div>
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-              <div class="text-[11px] text-ink-muted font-semibold mb-1">引用覆盖率</div>
-              <div class="text-[24px] font-bold text-info">51.2%</div>
-              <div class="text-[10px] text-info mt-1">有引用的 Response 占比</div>
-            </div>
-            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
-              <div class="text-[11px] text-ink-muted font-semibold mb-1">Avg 品牌/Response</div>
-              <div class="text-[24px] font-bold text-ink">5.8</div>
-              <div class="text-[10px] text-ink-muted mt-1">30 天均值</div>
-            </div>
-          </div>
 
-          <!-- Quality trend charts placeholder -->
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-            <div class="flex items-center justify-between mb-4">
-              <h3 class="text-[14px] font-semibold text-ink">质量趋势 (7 天)</h3>
-              <div class="flex items-center gap-3 text-[11px]">
-                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-success"></span> 解析成功率</span>
-                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-accent"></span> 品牌 Precision</span>
-                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-info"></span> 引用覆盖率</span>
+          <!-- KPI row · /api/analyzer/stats -->
+          <div class="grid grid-cols-5 gap-3">
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+              <div class="text-[11px] text-ink-muted font-semibold mb-1">总 Response</div>
+              <div class="text-[22px] font-bold text-ink tabular-nums" x-text="(analyzerStats?.total ?? 0).toLocaleString()"></div>
+              <div class="text-[10px] text-ink-muted mt-1">llm_responses 表全量</div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+              <div class="text-[11px] text-ink-muted font-semibold mb-1">已分析</div>
+              <div class="text-[22px] font-bold text-success tabular-nums" x-text="(analyzerStats?.done ?? 0).toLocaleString()"></div>
+              <div class="text-[10px] text-success mt-1" x-text="analyzerStats && analyzerStats.total > 0 ? ((analyzerStats.done / analyzerStats.total * 100).toFixed(1) + '%') : '—'"></div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+              <div class="text-[11px] text-ink-muted font-semibold mb-1">待分析 / 运行中</div>
+              <div class="text-[22px] font-bold text-warning tabular-nums" x-text="((analyzerStats?.pending ?? 0) + (analyzerStats?.running ?? 0)).toLocaleString()"></div>
+              <div class="text-[10px] text-ink-muted mt-1">
+                <span x-text="'pending ' + (analyzerStats?.pending ?? 0)"></span> ·
+                <span x-text="'running ' + (analyzerStats?.running ?? 0)"></span>
               </div>
             </div>
-            <div class="h-40 w-full relative"><canvas id="analyzer-quality-trend" class="absolute inset-0"></canvas></div>
-          </div>
-
-          <!-- Engine comparison -->
-          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
-            <h3 class="text-[14px] font-semibold text-ink mb-4">引擎间偏差</h3>
-            <div class="grid grid-cols-3 gap-4">
-              <template x-for="eng in engines" :key="eng.short">
-                <div class="p-4 rounded-card bg-surface-page border border-b-card">
-                  <div class="text-[13px] font-semibold text-ink mb-3" x-text="eng.name"></div>
-                  <div class="space-y-2 text-[11px]">
-                    <div class="flex justify-between"><span class="text-ink-muted">情感正面率</span><span class="font-semibold text-ink" x-text="eng.short === 'GPT' ? '68%' : eng.short === 'DB' ? '52%' : '61%'"></span></div>
-                    <div class="flex justify-between"><span class="text-ink-muted">情感中性率</span><span class="font-semibold text-ink" x-text="eng.short === 'GPT' ? '24%' : eng.short === 'DB' ? '38%' : '32%'"></span></div>
-                    <div class="flex justify-between"><span class="text-ink-muted">情感负面率</span><span class="font-semibold text-ink" x-text="eng.short === 'GPT' ? '8%' : eng.short === 'DB' ? '10%' : '7%'"></span></div>
-                    <div class="flex justify-between border-t border-b-card pt-2 mt-1"><span class="text-ink-muted">解析成功率</span><span class="font-semibold" :class="eng.success >= 90 ? 'text-success' : 'text-warning'" x-text="eng.short === 'GPT' ? '96.8%' : eng.short === 'DB' ? '89.2%' : '97.1%'"></span></div>
-                  </div>
-                </div>
-              </template>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+              <div class="text-[11px] text-ink-muted font-semibold mb-1">平均 GEO Score</div>
+              <div class="text-[22px] font-bold text-accent tabular-nums" x-text="analyzerStats?.avg_geo_score != null ? Number(analyzerStats.avg_geo_score).toFixed(1) : '—'"></div>
+              <div class="text-[10px] text-ink-muted mt-1">来自 response_analyses</div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+              <div class="text-[11px] text-ink-muted font-semibold mb-1">覆盖品牌数</div>
+              <div class="text-[22px] font-bold text-info tabular-nums" x-text="(analyzerStats?.total_brands_tracked ?? 0).toLocaleString()"></div>
+              <div class="text-[10px] text-ink-muted mt-1">brands 表</div>
             </div>
           </div>
 
-          <!-- Per-Query result list -->
+          <!-- Filter bar + trigger buttons -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-4">
+            <div class="flex flex-wrap items-end gap-3">
+              <div>
+                <label class="text-[11px] text-ink-muted font-semibold mb-1 block">品牌</label>
+                <select x-model="analyzerFilter.brand_id" @change="loadAnalyzerResponses(1); loadAnalyzerDaily()"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-white text-[12px] w-44">
+                  <option value="">全部品牌</option>
+                  <template x-for="b in availableBrands" :key="b.id">
+                    <option :value="b.id" x-text="b.name"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] text-ink-muted font-semibold mb-1 block">引擎</label>
+                <select x-model="analyzerFilter.llm" @change="loadAnalyzerResponses(1); loadAnalyzerDaily()"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-white text-[12px] w-36">
+                  <option value="">全部引擎</option>
+                  <template x-for="l in analyzerLlms" :key="l">
+                    <option :value="l" x-text="l"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] text-ink-muted font-semibold mb-1 block">分析状态</label>
+                <select x-model="analyzerFilter.status" @change="loadAnalyzerResponses(1)"
+                        class="h-9 px-3 rounded-btn border border-b-default bg-white text-[12px] w-32">
+                  <option value="">全部</option>
+                  <option value="pending">pending</option>
+                  <option value="running">running</option>
+                  <option value="done">done</option>
+                  <option value="failed">failed</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] text-ink-muted font-semibold mb-1 block">日期 起</label>
+                <input type="date" x-model="analyzerFilter.date_from" @change="loadAnalyzerResponses(1)"
+                       class="h-9 px-2 rounded-btn border border-b-default bg-white text-[12px] w-40" />
+              </div>
+              <div>
+                <label class="text-[11px] text-ink-muted font-semibold mb-1 block">日期 止</label>
+                <input type="date" x-model="analyzerFilter.date_to" @change="loadAnalyzerResponses(1)"
+                       class="h-9 px-2 rounded-btn border border-b-default bg-white text-[12px] w-40" />
+              </div>
+
+              <div class="flex items-end gap-2 ml-auto">
+                <div>
+                  <label class="text-[11px] text-ink-muted font-semibold mb-1 block">触发日期</label>
+                  <input type="date" x-model="analyzerTriggerDate"
+                         class="h-9 px-2 rounded-btn border border-b-default bg-white text-[12px] w-40" />
+                </div>
+                <button @click="triggerAnalyzerRun('analyze')" :disabled="analyzerTriggering || !analyzerTriggerDate"
+                        class="h-9 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn disabled:opacity-50 inline-flex items-center gap-1.5">
+                  <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                  <span x-text="analyzerTriggering ? '触发中...' : '重新分析'"></span>
+                </button>
+                <button @click="triggerAnalyzerRun('aggregate')" :disabled="analyzerTriggering || !analyzerTriggerDate"
+                        class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold disabled:opacity-50 inline-flex items-center gap-1.5">
+                  <i data-lucide="bar-chart-3" class="w-3.5 h-3.5"></i>
+                  <span>重新趋势聚合</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 7-day trend · /api/analyzer/daily -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <h3 class="text-[14px] font-semibold text-ink">7 日趋势 · 每日聚合</h3>
+                <p class="text-[11.5px] text-ink-muted mt-0.5">来自 geo_score_daily（all-NULL 维度行）</p>
+              </div>
+              <div class="flex items-center gap-3 text-[11px]">
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-accent"></span> avg GEO Score</span>
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-success"></span> mention_count</span>
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-pill bg-info"></span> citation_rate</span>
+              </div>
+            </div>
+            <template x-if="analyzerDailyLoading">
+              <div class="h-32 flex items-center justify-center text-[12px] text-ink-muted">加载中...</div>
+            </template>
+            <template x-if="!analyzerDailyLoading && analyzerDaily.length === 0">
+              <div class="h-32 flex items-center justify-center text-[12px] text-ink-muted">该筛选条件下暂无聚合数据</div>
+            </template>
+            <template x-if="!analyzerDailyLoading && analyzerDaily.length > 0">
+              <table class="w-full text-[12px]">
+                <thead>
+                  <tr class="border-b border-b-card text-ink-muted">
+                    <th class="px-2 py-2 text-left font-semibold">日期</th>
+                    <th class="px-2 py-2 text-left font-semibold">品牌</th>
+                    <th class="px-2 py-2 text-right font-semibold">avg GEO</th>
+                    <th class="px-2 py-2 text-right font-semibold">mention_count</th>
+                    <th class="px-2 py-2 text-right font-semibold">mention_rate</th>
+                    <th class="px-2 py-2 text-right font-semibold">avg_position</th>
+                    <th class="px-2 py-2 text-right font-semibold">citation_rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="d in analyzerDaily" :key="(d.brand_id || 'x') + ':' + d.date">
+                    <tr class="border-b border-b-card/50">
+                      <td class="px-2 py-2 text-ink-body font-mono text-[11px]" x-text="d.date"></td>
+                      <td class="px-2 py-2 text-ink-body" x-text="d.brand_name || ('brand:' + d.brand_id)"></td>
+                      <td class="px-2 py-2 text-right font-bold text-accent tabular-nums" x-text="d.avg_geo_score != null ? Number(d.avg_geo_score).toFixed(1) : '—'"></td>
+                      <td class="px-2 py-2 text-right tabular-nums" x-text="d.mention_count ?? 0"></td>
+                      <td class="px-2 py-2 text-right tabular-nums text-success" x-text="d.mention_rate != null ? (Number(d.mention_rate) * 100).toFixed(1) + '%' : '—'"></td>
+                      <td class="px-2 py-2 text-right tabular-nums" x-text="d.avg_position_rank != null ? Number(d.avg_position_rank).toFixed(2) : '—'"></td>
+                      <td class="px-2 py-2 text-right tabular-nums text-info" x-text="d.citation_rate != null ? (Number(d.citation_rate) * 100).toFixed(1) + '%' : '—'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </template>
+          </div>
+
+          <!-- Response list · /api/analyzer/responses -->
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
             <div class="px-6 py-4 border-b border-b-card flex items-center justify-between">
-              <h3 class="text-[14px] font-semibold text-ink">Per-Query 分析结果</h3>
-              <div class="flex items-center gap-2">
-                <input placeholder="搜索 Query / 品牌..." class="h-8 px-3 rounded-btn border border-b-default text-[12px] w-60" />
+              <div>
+                <h3 class="text-[14px] font-semibold text-ink">Per-Response 分析结果</h3>
+                <p class="text-[11.5px] text-ink-muted mt-0.5">点击行查看完整 brand_mentions / citations / features</p>
+              </div>
+              <div class="flex items-center gap-2 text-[11.5px] text-ink-muted">
+                <span x-text="'共 ' + analyzerResponses.length + ' 条'"></span>
+                <button class="h-7 px-2.5 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
+                        @click="loadAnalyzerResponses(1)">刷新</button>
               </div>
             </div>
-            <table class="w-full text-[12px]">
-              <thead>
-                <tr class="border-b border-b-card bg-surface-page">
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">Query ID</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">Prompt 摘要</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">引擎</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">品牌命中</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">情感</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">引用</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">PANO A</th>
-                  <th class="px-4 py-2.5 text-left font-semibold text-ink-muted">解析</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="q in analyzerQueries" :key="q.queryId">
-                  <tr class="border-b border-b-card hover:bg-surface-page transition-colors cursor-pointer"
-                      :class="analyzerSelectedQuery?.queryId === q.queryId ? 'bg-accent/5 border-l-2 border-l-accent' : ''"
-                      @click="analyzerSelectedQuery = (analyzerSelectedQuery?.queryId === q.queryId ? null : q); $nextTick(()=>lucide.createIcons())">
-                    <td class="px-4 py-2.5 font-mono text-[11px] font-semibold text-ink" x-text="q.queryId"></td>
-                    <td class="px-4 py-2.5 text-ink-body max-w-[200px] truncate" x-text="q.prompt"></td>
-                    <td class="px-4 py-2.5 text-ink-body" x-text="q.engine"></td>
-                    <td class="px-4 py-2.5 font-semibold text-ink" x-text="q.brandsDetected + ' brands'"></td>
-                    <td class="px-4 py-2.5">
-                      <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
-                            :class="q.sentiment >= 70 ? 'bg-success/10 text-success' : q.sentiment >= 40 ? 'bg-warning/10 text-warning' : 'bg-danger/10 text-danger'">
-                        <span x-text="q.sentimentLabel + ' ' + q.sentiment + '%'"></span>
-                      </span>
-                    </td>
-                    <td class="px-4 py-2.5 text-ink-body" x-text="q.citations + ' citations'"></td>
-                    <td class="px-4 py-2.5 font-bold text-accent" x-text="q.panoA"></td>
-                    <td class="px-4 py-2.5">
-                      <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
-                            :class="q.parseStatus==='completed' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-                            x-text="q.parseStatus==='completed' ? '✅ 完成' : '⚠ 部分'"></span>
-                    </td>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[12px]">
+                <thead>
+                  <tr class="border-b border-b-card bg-surface-page">
+                    <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Response ID</th>
+                    <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">引擎</th>
+                    <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">品牌</th>
+                    <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">GEO</th>
+                    <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">Sentiment</th>
+                    <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">Citation</th>
+                    <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">Brands</th>
+                    <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
+                    <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">采集时间</th>
+                    <th class="px-3 py-2.5 text-right font-semibold text-ink-muted">操作</th>
                   </tr>
-                </template>
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <template x-if="analyzerResponsesLoading">
+                    <tr><td colspan="10" class="!py-10 text-center text-ink-muted">加载中...</td></tr>
+                  </template>
+                  <template x-if="!analyzerResponsesLoading && analyzerResponses.length === 0">
+                    <tr><td colspan="10" class="!py-10 text-center text-ink-muted">该筛选条件下暂无 Response</td></tr>
+                  </template>
+                  <template x-for="r in analyzerResponses" :key="r.response_id">
+                    <tr class="border-b border-b-card hover:bg-surface-page transition-colors cursor-pointer"
+                        :class="analyzerSelectedResponseId === r.response_id ? 'bg-accent/5 border-l-2 border-l-accent' : ''"
+                        @click="openAnalyzerDetail(r.response_id)">
+                      <td class="px-3 py-2.5 font-mono text-[11px] font-semibold text-ink" x-text="'#' + r.response_id"></td>
+                      <td class="px-3 py-2.5 text-ink-body" x-text="r.target_llm || '—'"></td>
+                      <td class="px-3 py-2.5 text-ink-body" x-text="r.brand_name || '—'"></td>
+                      <td class="px-3 py-2.5 text-right font-bold text-accent tabular-nums" x-text="r.geo_score != null ? Number(r.geo_score).toFixed(1) : '—'"></td>
+                      <td class="px-3 py-2.5 text-right tabular-nums" x-text="r.sentiment_score != null ? Number(r.sentiment_score).toFixed(2) : '—'"></td>
+                      <td class="px-3 py-2.5 text-right tabular-nums" x-text="r.citation_score != null ? Number(r.citation_score).toFixed(2) : '—'"></td>
+                      <td class="px-3 py-2.5 text-right tabular-nums" x-text="r.total_brands_mentioned ?? '—'"></td>
+                      <td class="px-3 py-2.5">
+                        <span class="inline-flex items-center gap-1 px-2 h-5 rounded-badge text-[10px] font-semibold"
+                              :class="r.analysis_status==='done' ? 'bg-success/10 text-success' :
+                                       r.analysis_status==='running' ? 'bg-accent/10 text-accent' :
+                                       r.analysis_status==='failed' ? 'bg-danger/10 text-danger' :
+                                       'bg-ink-muted/10 text-ink-muted'"
+                              x-text="r.analysis_status || '—'"></span>
+                      </td>
+                      <td class="px-3 py-2.5 text-ink-muted text-[11px] font-mono" x-text="r.collected_at ? r.collected_at.replace('T',' ').slice(0,19) : '—'"></td>
+                      <td class="px-3 py-2.5 text-right" @click.stop>
+                        <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
+                                @click="rerunAnalyzerResponse(r.response_id)">重跑</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="px-6 py-3 border-t border-b-card flex items-center justify-between text-[11.5px] text-ink-muted">
+              <span x-text="'第 ' + analyzerResponsesPage + ' 页 · 每页 ' + analyzerResponsesLimit + ' 条'"></span>
+              <div class="flex items-center gap-2">
+                <button class="h-7 px-2.5 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body disabled:opacity-50"
+                        :disabled="analyzerResponsesPage <= 1"
+                        @click="loadAnalyzerResponses(analyzerResponsesPage - 1)">上一页</button>
+                <button class="h-7 px-2.5 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body disabled:opacity-50"
+                        :disabled="analyzerResponses.length < analyzerResponsesLimit"
+                        @click="loadAnalyzerResponses(analyzerResponsesPage + 1)">下一页</button>
+              </div>
+            </div>
           </div>
 
-          <!-- Response detail panel (appears when clicking a row) -->
-          <template x-if="analyzerSelectedQuery">
+          <!-- Response detail panel · /api/analyzer/response/<id> -->
+          <template x-if="analyzerSelectedResponseId">
             <div class="rounded-card-lg bg-surface border border-accent/20 shadow-card p-6 space-y-4">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-[15px] font-bold text-ink" x-text="'Response 详情：' + analyzerSelectedQuery.queryId"></h3>
-                  <div class="text-[12px] text-ink-muted mt-0.5" x-text="analyzerSelectedQuery.engine + ' · ' + analyzerSelectedQuery.prompt"></div>
+                  <h3 class="text-[15px] font-bold text-ink" x-text="'Response 详情：#' + analyzerSelectedResponseId"></h3>
+                  <div class="text-[12px] text-ink-muted mt-0.5"
+                       x-text="analyzerDetail ? ((analyzerDetail.target_llm || '—') + ' · ' + (analyzerDetail.brand_name || '—') + ' · ' + (analyzerDetail.collected_at ? analyzerDetail.collected_at.replace('T',' ').slice(0,19) : '—')) : '加载中...'"></div>
                 </div>
-                <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="analyzerSelectedQuery=null">
-                  <i data-lucide="x" class="w-4 h-4"></i>
-                </button>
+                <div class="flex items-center gap-2">
+                  <button class="h-8 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold"
+                          @click="rerunAnalyzerResponse(analyzerSelectedResponseId)">重新分析此条</button>
+                  <button class="w-7 h-7 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center"
+                          @click="analyzerSelectedResponseId = null; analyzerDetail = null">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                  </button>
+                </div>
               </div>
 
-              <!-- Response text or placeholder -->
-              <template x-if="analyzerSelectedQuery.responseId && aiResponses[analyzerSelectedQuery.responseId]">
-                <div class="space-y-4">
-                  <!-- Full response text -->
-                  <div>
-                    <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">AI 原始回答</div>
-                    <div class="p-4 rounded-card bg-surface-page border border-b-card text-[12px] text-ink leading-relaxed whitespace-pre-line max-h-[300px] overflow-y-auto"
-                         x-text="aiResponses[analyzerSelectedQuery.responseId].fullText"></div>
-                  </div>
-
-                  <!-- Extracted analysis: brands + sentiment + citations side by side -->
-                  <div class="grid grid-cols-3 gap-4">
-                    <!-- Brands detected -->
-                    <div class="rounded-card bg-surface-page border border-b-card p-4">
-                      <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">品牌命中 (<span x-text="aiResponses[analyzerSelectedQuery.responseId].brandsDetected.length"></span>)</div>
-                      <div class="space-y-1.5">
-                        <template x-for="b in aiResponses[analyzerSelectedQuery.responseId].brandsDetected" :key="b">
-                          <div class="flex items-center justify-between text-[12px]">
-                            <span class="font-medium text-ink" x-text="b"></span>
-                            <span class="text-[10px] text-ink-muted" x-text="aiResponses[analyzerSelectedQuery.responseId].position[b] || '—'"></span>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
-
-                    <!-- Sentiment per brand -->
-                    <div class="rounded-card bg-surface-page border border-b-card p-4">
-                      <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">品牌情感</div>
-                      <div class="space-y-2">
-                        <template x-for="(score, brand) in (aiResponses[analyzerSelectedQuery.responseId].sentiment?.perBrand || {})" :key="brand">
-                          <div>
-                            <div class="flex items-center justify-between mb-0.5 text-[11px]">
-                              <span class="text-ink" x-text="brand"></span>
-                              <span class="font-semibold" :class="score >= 80 ? 'text-success' : score >= 60 ? 'text-warning' : 'text-danger'" x-text="score + '%'"></span>
-                            </div>
-                            <div class="h-1.5 bg-white rounded-pill overflow-hidden">
-                              <div class="h-full rounded-pill" :class="score >= 80 ? 'bg-success' : score >= 60 ? 'bg-warning' : 'bg-danger'" :style="'width:' + score + '%'"></div>
-                            </div>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
-
-                    <!-- Citations -->
-                    <div class="rounded-card bg-surface-page border border-b-card p-4">
-                      <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">引用来源 (<span x-text="aiResponses[analyzerSelectedQuery.responseId].citations.length"></span>)</div>
-                      <div class="space-y-2">
-                        <template x-for="c in aiResponses[analyzerSelectedQuery.responseId].citations" :key="c.url">
-                          <div class="text-[11px]">
-                            <div class="flex items-center gap-2">
-                              <span class="inline-flex items-center px-1.5 h-4 rounded-badge text-[9px] font-bold"
-                                    :class="c.tier===1 ? 'bg-success/10 text-success' : c.tier===2 ? 'bg-accent/10 text-accent' : c.tier===3 ? 'bg-warning/10 text-warning' : 'bg-ink-muted/10 text-ink-muted'"
-                                    x-text="'T' + c.tier"></span>
-                              <span class="text-ink font-medium" x-text="c.domain"></span>
-                            </div>
-                            <div class="text-ink-faint mt-0.5 truncate" x-text="c.url"></div>
-                          </div>
-                        </template>
-                        <template x-if="aiResponses[analyzerSelectedQuery.responseId].citations.length === 0">
-                          <div class="text-[11px] text-ink-muted">本回答无引用</div>
-                        </template>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              <template x-if="!analyzerDetail">
+                <div class="p-4 rounded-card bg-surface-page border border-b-card text-[12px] text-ink-muted">加载详情中...</div>
               </template>
 
-              <template x-if="!analyzerSelectedQuery.responseId || !aiResponses[analyzerSelectedQuery.responseId]">
-                <div class="p-4 rounded-card bg-warning/5 border border-warning/15 text-[12px] text-warning">
-                  Response 数据不完整或解析未完成
+              <template x-if="analyzerDetail && analyzerDetail.error">
+                <div class="p-4 rounded-card bg-danger/5 border border-danger/15 text-[12px] text-danger" x-text="analyzerDetail.error"></div>
+              </template>
+
+              <template x-if="analyzerDetail && !analyzerDetail.error">
+                <div class="space-y-4">
+                  <!-- Query + raw response -->
+                  <template x-if="analyzerDetail.query_text">
+                    <div>
+                      <div class="text-[11px] font-semibold text-ink-muted uppercase mb-1.5">原始 Query</div>
+                      <div class="p-3 rounded-card bg-surface-page border border-b-card text-[12px] text-ink-body whitespace-pre-line"
+                           x-text="analyzerDetail.query_text"></div>
+                    </div>
+                  </template>
+                  <template x-if="analyzerDetail.raw_text">
+                    <div>
+                      <div class="text-[11px] font-semibold text-ink-muted uppercase mb-1.5">AI 原始回答（截断 3000 字）</div>
+                      <div class="p-3 rounded-card bg-surface-page border border-b-card text-[12px] text-ink leading-relaxed whitespace-pre-line max-h-[300px] overflow-y-auto"
+                           x-text="analyzerDetail.raw_text"></div>
+                    </div>
+                  </template>
+
+                  <template x-if="analyzerDetail.no_analysis">
+                    <div class="p-3 rounded-card bg-warning/5 border border-warning/15 text-[12px] text-warning">
+                      该 Response 尚未分析（analysis_status: <span x-text="analyzerDetail.analysis_status"></span>）
+                    </div>
+                  </template>
+
+                  <!-- 3-column analysis grid -->
+                  <template x-if="!analyzerDetail.no_analysis">
+                    <div class="grid grid-cols-3 gap-3">
+                      <!-- Brand mentions -->
+                      <div class="rounded-card bg-surface-page border border-b-card p-3">
+                        <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">品牌命中 (<span x-text="(analyzerDetail.mentions || []).length"></span>)</div>
+                        <div class="space-y-1.5 max-h-[260px] overflow-y-auto">
+                          <template x-for="m in (analyzerDetail.mentions || [])" :key="m.id">
+                            <div class="text-[11.5px]">
+                              <div class="flex items-center justify-between">
+                                <span class="font-medium text-ink" x-text="m.brand_name"></span>
+                                <span class="text-[10px]"
+                                      :class="m.is_target ? 'text-accent font-bold' : 'text-ink-muted'"
+                                      x-text="m.is_target ? 'TARGET' : (m.position_type || '—')"></span>
+                              </div>
+                              <div class="text-ink-muted text-[10.5px] mt-0.5">
+                                <span x-text="'rank ' + (m.position_rank || '—')"></span> ·
+                                <span x-text="m.sentiment || '—'"></span> ·
+                                <span x-text="(m.sentiment_score != null ? Number(m.sentiment_score).toFixed(2) : '—')"></span>
+                              </div>
+                              <template x-if="m.context_snippet">
+                                <div class="text-[10.5px] text-ink-faint mt-0.5 line-clamp-2" x-text="m.context_snippet"></div>
+                              </template>
+                            </div>
+                          </template>
+                          <template x-if="(analyzerDetail.mentions || []).length === 0">
+                            <div class="text-[11px] text-ink-muted">未识别到品牌</div>
+                          </template>
+                        </div>
+                      </div>
+
+                      <!-- Citations -->
+                      <div class="rounded-card bg-surface-page border border-b-card p-3">
+                        <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">引用源 (<span x-text="(analyzerDetail.citations || []).length"></span>)</div>
+                        <div class="space-y-1.5 max-h-[260px] overflow-y-auto">
+                          <template x-for="c in (analyzerDetail.citations || [])" :key="c.url">
+                            <div class="text-[11px]">
+                              <div class="flex items-center gap-2">
+                                <span class="inline-flex items-center px-1.5 h-4 rounded-badge text-[9px] font-bold bg-ink-muted/10 text-ink-muted"
+                                      x-text="c.source_type || 'web'"></span>
+                                <span class="text-ink font-medium" x-text="c.domain || '—'"></span>
+                              </div>
+                              <a :href="c.url" target="_blank" rel="noopener" class="text-ink-faint mt-0.5 truncate block hover:text-accent" x-text="c.url"></a>
+                            </div>
+                          </template>
+                          <template x-if="(analyzerDetail.citations || []).length === 0">
+                            <div class="text-[11px] text-ink-muted">本回答无引用</div>
+                          </template>
+                        </div>
+                      </div>
+
+                      <!-- Features -->
+                      <div class="rounded-card bg-surface-page border border-b-card p-3">
+                        <div class="text-[11px] font-semibold text-ink-muted uppercase mb-2">产品特性 (<span x-text="(analyzerDetail.features || []).length"></span>)</div>
+                        <div class="space-y-1.5 max-h-[260px] overflow-y-auto">
+                          <template x-for="(f, idx) in (analyzerDetail.features || [])" :key="idx">
+                            <div class="text-[11.5px]">
+                              <div class="flex items-center justify-between">
+                                <span class="font-medium text-ink" x-text="(f.brand_name || '—') + ' · ' + (f.product_name || '—')"></span>
+                                <span class="text-[10px]"
+                                      :class="f.feature_sentiment === 'positive' ? 'text-success' : f.feature_sentiment === 'negative' ? 'text-danger' : 'text-ink-muted'"
+                                      x-text="f.feature_sentiment || '—'"></span>
+                              </div>
+                              <div class="text-ink-muted text-[10.5px] mt-0.5" x-text="f.feature_name || '—'"></div>
+                            </div>
+                          </template>
+                          <template x-if="(analyzerDetail.features || []).length === 0">
+                            <div class="text-[11px] text-ink-muted">未识别到产品特性</div>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Score row -->
+                  <template x-if="!analyzerDetail.no_analysis">
+                    <div class="grid grid-cols-5 gap-2 pt-3 border-t border-b-card">
+                      <div class="text-center">
+                        <div class="text-[10px] text-ink-muted">visibility</div>
+                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="analyzerDetail.visibility_score != null ? Number(analyzerDetail.visibility_score).toFixed(2) : '—'"></div>
+                      </div>
+                      <div class="text-center">
+                        <div class="text-[10px] text-ink-muted">sentiment</div>
+                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="analyzerDetail.sentiment_score != null ? Number(analyzerDetail.sentiment_score).toFixed(2) : '—'"></div>
+                      </div>
+                      <div class="text-center">
+                        <div class="text-[10px] text-ink-muted">SOV</div>
+                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="analyzerDetail.sov_score != null ? Number(analyzerDetail.sov_score).toFixed(2) : '—'"></div>
+                      </div>
+                      <div class="text-center">
+                        <div class="text-[10px] text-ink-muted">citation</div>
+                        <div class="text-[14px] font-bold text-ink tabular-nums" x-text="analyzerDetail.citation_score != null ? Number(analyzerDetail.citation_score).toFixed(2) : '—'"></div>
+                      </div>
+                      <div class="text-center">
+                        <div class="text-[10px] text-ink-muted">GEO</div>
+                        <div class="text-[14px] font-bold text-accent tabular-nums" x-text="analyzerDetail.geo_score != null ? Number(analyzerDetail.geo_score).toFixed(2) : '—'"></div>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </template>
             </div>
@@ -6270,6 +6517,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: PIPELINE QA ============ -->
       <template x-if="page==='analyzer-qa'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="grid grid-cols-4 gap-4">
             <template x-for="kpi in qaKpis" :key="kpi.label">
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
@@ -6331,6 +6582,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: PIPELINE TRACE ============ -->
       <template x-if="page==='tracker-trace'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
             <div class="flex items-center gap-3">
               <div class="flex-1">
@@ -6400,6 +6655,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: PIPELINE CHANGES ============ -->
       <template x-if="page==='pipeline-changes'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card">
             <div class="px-6 py-4 border-b border-b-card">
               <h3 class="text-[14px] font-semibold text-ink">变更申请队列</h3>
@@ -6534,6 +6793,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: KG ENTITY OPS ============ -->
       <template x-if="page==='kg-entity-ops'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-6">
             <div class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider mb-4">实体生命周期</div>
             <div class="flex items-center justify-center gap-8">
@@ -6639,6 +6902,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: KG DIFF ============ -->
       <template x-if="page==='kg-diff'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
             <div class="flex items-center gap-3 mb-4">
               <span class="text-[12px] font-semibold text-ink-muted">时间范围：</span>
@@ -6719,6 +6986,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- ============ PAGE: KG QUALITY ============ -->
       <template x-if="page==='kg-quality'">
         <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此页面数据为占位演示，未接入真实后端</span>
+          </div>
           <div class="rounded-card-lg bg-gradient-accent text-white shadow-card p-8 text-center">
             <div class="text-[56px] font-black mb-2" x-text="kgQualityScore"></div>
             <div class="text-[16px] font-semibold mb-3">质量评分</div>
@@ -6805,6 +7076,19 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <span x-text="llmBudgetPct() >= 100 ? '已停止' : llmBudgetPct() >= 80 ? '预算告急' : '正常运行'"></span>
             </div>
             <button class="mt-4 h-9 px-4 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-ink-body text-[12px] font-medium">手动刷新质量指标</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- ============ PAGE: 未实现占位 (C 类 nav 项) ============ -->
+      <template x-if="['users-feedback','kg-tree','kg-product-review','kg-aliases','kg-inbox','kg-discovery','ops-alerts','ops-announce','ops-email','ops-leads','ops-mcp'].includes(page)">
+        <div class="space-y-4">
+          <div class="mock-banner mock-page-banner">
+            <i data-lucide="alert-triangle"></i>
+            <span>MOCK · 此功能尚未实现，等待后端落地</span>
+          </div>
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-12 text-center text-ink-muted text-[13px]">
+            <span x-text="currentNav().subtitle"></span>
           </div>
         </div>
       </template>
@@ -10607,6 +10891,143 @@ function adminApp() {
       }
     },
 
+    // ====== Analyzer · 真实数据加载 ======
+
+    async loadAnalyzerStats() {
+      try {
+        const res = await fetch(API_BASE + '/analyzer/stats', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.analyzerStats = await res.json();
+      } catch (e) {
+        this.analyzerStats = null;
+        this.toast('加载分析统计失败: ' + (e.message || e));
+      }
+    },
+
+    async loadAnalyzerLlms() {
+      try {
+        const res = await fetch(API_BASE + '/analyzer/llms', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const list = await res.json();
+        this.analyzerLlms = Array.isArray(list) ? list : [];
+      } catch (e) {
+        this.analyzerLlms = [];
+      }
+    },
+
+    async loadAnalyzerResponses(page = 1) {
+      this.analyzerResponsesLoading = true;
+      try {
+        const limit = this.analyzerResponsesLimit;
+        const offset = Math.max(0, (page - 1) * limit);
+        const qp = new URLSearchParams();
+        qp.set('limit', String(limit));
+        qp.set('offset', String(offset));
+        if (this.analyzerFilter.status)    qp.set('status', this.analyzerFilter.status);
+        if (this.analyzerFilter.brand_id)  qp.set('brand_id', this.analyzerFilter.brand_id);
+        if (this.analyzerFilter.llm)       qp.set('llm', this.analyzerFilter.llm);
+        if (this.analyzerFilter.date_from) qp.set('date_from', this.analyzerFilter.date_from);
+        if (this.analyzerFilter.date_to)   qp.set('date_to', this.analyzerFilter.date_to);
+        const res = await fetch(API_BASE + '/analyzer/responses?' + qp.toString(),
+                                { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const rows = await res.json();
+        this.analyzerResponses = Array.isArray(rows) ? rows : [];
+        this.analyzerResponsesPage = page;
+      } catch (e) {
+        this.analyzerResponses = [];
+        this.toast('加载 Response 列表失败: ' + (e.message || e));
+      } finally {
+        this.analyzerResponsesLoading = false;
+      }
+    },
+
+    async loadAnalyzerDaily() {
+      this.analyzerDailyLoading = true;
+      try {
+        const qp = new URLSearchParams();
+        qp.set('days', '7');
+        if (this.analyzerFilter.brand_id) qp.set('brand_id', this.analyzerFilter.brand_id);
+        if (this.analyzerFilter.llm)      qp.set('llm', this.analyzerFilter.llm);
+        const res = await fetch(API_BASE + '/analyzer/daily?' + qp.toString(),
+                                { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const rows = await res.json();
+        this.analyzerDaily = Array.isArray(rows) ? rows : [];
+      } catch (e) {
+        this.analyzerDaily = [];
+      } finally {
+        this.analyzerDailyLoading = false;
+      }
+    },
+
+    async openAnalyzerDetail(responseId) {
+      // Toggle: clicking same row closes the panel
+      if (this.analyzerSelectedResponseId === responseId) {
+        this.analyzerSelectedResponseId = null;
+        this.analyzerDetail = null;
+        return;
+      }
+      this.analyzerSelectedResponseId = responseId;
+      this.analyzerDetail = null;
+      try {
+        const res = await fetch(API_BASE + '/analyzer/response/' + encodeURIComponent(responseId),
+                                { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.analyzerDetail = await res.json();
+        this.$nextTick(() => lucide.createIcons());
+      } catch (e) {
+        this.analyzerDetail = { error: '加载详情失败: ' + (e.message || e) };
+      }
+    },
+
+    async triggerAnalyzerRun(action) {
+      if (!this.analyzerTriggerDate) {
+        this.toast('请选择触发日期');
+        return;
+      }
+      this.analyzerTriggering = true;
+      try {
+        const body = { action, date: this.analyzerTriggerDate };
+        if (this.analyzerFilter.brand_id) body.brand_id = Number(this.analyzerFilter.brand_id);
+        const res = await fetch(API_BASE + '/analyzer/trigger', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+          throw new Error(data.error || ('HTTP ' + res.status));
+        }
+        this.toast(data.message || (action === 'aggregate' ? '聚合任务已排队' : '分析任务已排队'));
+        // Refresh stats so pending/running counts reflect the new task
+        setTimeout(() => this.loadAnalyzerStats(), 1000);
+      } catch (e) {
+        this.toast('触发失败: ' + (e.message || e));
+      } finally {
+        this.analyzerTriggering = false;
+      }
+    },
+
+    async rerunAnalyzerResponse(responseId) {
+      try {
+        const res = await fetch(API_BASE + '/analyzer/rerun/' + encodeURIComponent(responseId), {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+        this.toast('已排队重新分析 #' + responseId);
+        // Optimistically mark row pending; reload stats + table after a delay
+        const row = this.analyzerResponses.find(r => r.response_id === responseId);
+        if (row) row.analysis_status = 'pending';
+        setTimeout(() => { this.loadAnalyzerStats(); this.loadAnalyzerResponses(this.analyzerResponsesPage); }, 1500);
+      } catch (e) {
+        this.toast('重跑失败: ' + (e.message || e));
+      }
+    },
+
     async loadTopics() {
       // Topic dropdown cascades from brand selection — skip the fetch when no
       // brand is chosen (would otherwise return the whole cross-brand list).
@@ -10769,6 +11190,21 @@ function adminApp() {
       brandPrecision: [81.2, 82.5, 83.1, 84.0, 83.8, 84.5, 86.2],
       citationCoverage: [42.1, 44.8, 46.2, 45.5, 48.1, 49.3, 51.2],
     },
+
+    // ====== Analyzer · 真实 /api/analyzer/* 接入 ======
+    analyzerStats: null,
+    analyzerLlms: [],
+    analyzerResponses: [],
+    analyzerResponsesLoading: false,
+    analyzerResponsesPage: 1,
+    analyzerResponsesLimit: 30,
+    analyzerDaily: [],
+    analyzerDailyLoading: false,
+    analyzerFilter: { brand_id:'', llm:'', status:'', date_from:'', date_to:'' },
+    analyzerSelectedResponseId: null,
+    analyzerDetail: null,
+    analyzerTriggering: false,
+    analyzerTriggerDate: new Date().toISOString().slice(0, 10),
 
     // ====== B5 Proxy Pool (Ninja Clash) ======
     proxySubscription: {
@@ -11206,6 +11642,13 @@ function adminApp() {
       if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
       if (key === 'planner-query-pool') this.loadQueryPoolPrompts();
       if (key === 'planner-query-pool') this.loadQueryPoolCandidates();
+      if (key === 'analyzer-quality') {
+        this.loadAnalyzerStats();
+        this.loadAnalyzerLlms();
+        this.loadBrands();
+        this.loadAnalyzerResponses(1);
+        this.loadAnalyzerDaily();
+      }
     },
 
     currentNav(){
