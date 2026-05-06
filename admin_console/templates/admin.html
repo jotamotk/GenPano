@@ -2619,15 +2619,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       </div>
                       <span class="inline-flex items-center px-2 h-5 rounded-badge bg-success/10 text-success text-[10px] font-semibold">已就绪</span>
                     </div>
-                    <div class="mt-3 grid grid-cols-3 gap-2">
-                      <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted">每 Prompt Profile</span>
-                        <select x-model="queryPoolConfig.profilesPerPrompt" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option value="2">2</option>
-                          <option value="3">3</option>
-                          <option value="5">5</option>
-                        </select>
-                      </label>
+                    <div class="mt-3 grid grid-cols-2 gap-2">
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">行业</span>
                         <select x-model="topicPlanConfig.industryId" @change="onTopicPlanScopeChanged()" class="topic-plan-api-select w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
@@ -2646,7 +2638,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           </template>
                         </select>
                       </label>
-                      <div class="space-y-2 col-span-4">
+                      <div class="space-y-2 col-span-2">
                         <div class="flex items-center justify-between gap-2">
                           <span class="text-[10px] font-semibold text-ink-muted uppercase">品牌</span>
                           <span class="text-[10px] font-semibold text-accent tabular-nums" x-text="'已选 ' + selectedTopicPlanBrands().length"></span>
@@ -2675,7 +2667,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           </template>
                         </div>
                       </div>
-                      <div class="col-span-4 grid grid-cols-4 gap-2">
+                      <div class="col-span-2 grid grid-cols-4 gap-2">
                         <div class="rounded-card bg-white border border-b-card p-3">
                           <div class="text-[10px] font-semibold text-ink-muted uppercase">品牌范围</div>
                           <div class="text-[16px] font-bold text-ink mt-1" x-text="selectedTopicPlanBrands().length"></div>
@@ -2693,7 +2685,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <div class="text-[16px] font-bold text-ink mt-1" x-text="estimatedTopicCount()"></div>
                         </div>
                       </div>
-                      <div class="col-span-4 rounded-card bg-white border border-b-card p-3">
+                      <div class="col-span-2 rounded-card bg-white border border-b-card p-3">
                         <div class="flex items-center justify-between gap-3">
                           <div>
                             <div class="text-[12.5px] font-bold text-ink">生成数量</div>
@@ -8585,6 +8577,7 @@ function adminApp() {
     topicPlanCandidateQuery: '',
     topicPlanCandidateStatus: 'pending',
     topicPlanCandidateBrandId: '',
+    topicPlanCandidateRunId: '',
     topicPlanSelectedCandidateIds: {},
     topicPlanTopicsLoading: false,
     topicPlanTopicsError: '',
@@ -8632,6 +8625,8 @@ function adminApp() {
     topicPlanRunStatus: '',
     topicPlanRunPollTimer: null,
     topicPlanRunPollDelay: 3000,
+    topicPlanRunPollFailures: 0,
+    topicPlanRunPollMaxFailures: 3,
     topicPlanCoverageRows: [],
     topicPlanCoverageGaps: [],
     topicPlanGenerateSteps: [
@@ -10279,7 +10274,8 @@ function adminApp() {
         this.syncTopicPlanCandidateFilters();
         const qp = new URLSearchParams({ status:this.topicPlanCandidateStatus || 'pending', limit:'500' });
         const brandIds = this.topicPlanCandidateBrandIdsParam();
-        if (brandIds) qp.set('brand_ids', brandIds);
+        if (this.topicPlanCandidateRunId) qp.set('run_id', this.topicPlanCandidateRunId);
+        else if (brandIds) qp.set('brand_ids', brandIds);
         if (this.topicPlanCandidateQuery.trim()) qp.set('q', this.topicPlanCandidateQuery.trim());
         const res = await fetch(API_BASE + '/admin/topic-plan/candidates?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
@@ -10323,6 +10319,7 @@ function adminApp() {
     },
 
     onTopicPlanCandidateFilterChanged(){
+      this.topicPlanCandidateRunId = '';
       this.topicPlanSelectedCandidateIds = {};
       this.loadTopicPlanCandidates();
     },
@@ -10331,6 +10328,7 @@ function adminApp() {
       this.topicPlanCandidateQuery = '';
       this.topicPlanCandidateStatus = 'pending';
       this.topicPlanCandidateBrandId = '';
+      this.topicPlanCandidateRunId = '';
       this.topicPlanSelectedCandidateIds = {};
       this.loadTopicPlanCandidates();
     },
@@ -10575,6 +10573,7 @@ function adminApp() {
       this.selectedTopic = null;
       this.topicPlanSelectedTopicIds = {};
       this.topicPlanSelectedCandidateIds = {};
+      this.topicPlanCandidateRunId = '';
       this.syncTopicPlanTopicFilters();
       this.syncTopicPlanCandidateFilters();
       this.loadTopicPlanCoverage();
@@ -10589,6 +10588,7 @@ function adminApp() {
       this.topicPlanTopicIndustry = '';
       this.topicPlanTopicBrandId = '';
       this.topicPlanCandidateBrandId = '';
+      this.topicPlanCandidateRunId = '';
       this.loadTopicPlanCoverage();
       this.loadTopicPlanCandidates();
       this.loadTopicPlanTopics();
@@ -10652,25 +10652,37 @@ function adminApp() {
         let keepPolling = false;
         try {
           const run = await this.loadTopicPlanRun(runId);
+          this.topicPlanRunPollFailures = 0;
           this.topicPlanApplyRunProgress(run);
           this.topicPlanCandidateStatus = 'pending';
           await this.loadTopicPlanCandidates();
           if (run.status === 'completed') {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
+            this.topicPlanRunPollFailures = 0;
             await this.loadTopicPlanCoverage();
             await this.loadTopicPlanTopics();
             this.toast('Topic 生成完成，已分批进入待审核列表');
           } else if (run.status === 'failed') {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
+            this.topicPlanRunPollFailures = 0;
             this.toast('Topic 生成失败: ' + (run.llm_error || 'unknown_error'));
           } else {
             keepPolling = true;
           }
         } catch (e) {
+          this.topicPlanRunPollFailures += 1;
           this.topicPlanGenerateError = e.message || 'Run polling failed';
-          keepPolling = true;
+          if (this.topicPlanRunPollFailures >= Number(this.topicPlanRunPollMaxFailures || 3)) {
+            this.topicPlanGenerateLoading = false;
+            this.topicPlanActiveRunId = '';
+            this.topicPlanRunStatus = 'polling_failed';
+            this.clearTopicPlanRunPolling();
+            this.toast('Topic 生成状态查询失败: ' + this.topicPlanGenerateError);
+          } else {
+            keepPolling = true;
+          }
         } finally {
           if (keepPolling) {
             this.topicPlanRunPollTimer = setTimeout(poll, Number(this.topicPlanRunPollDelay || 3000));
@@ -10690,6 +10702,7 @@ function adminApp() {
         return;
       }
       this.clearTopicPlanRunPolling();
+      this.topicPlanRunPollFailures = 0;
       this.topicPlanGenerateStarted = true;
       this.topicPlanGenerateLoading = true;
       this.topicPlanGenerateError = '';
@@ -10721,6 +10734,7 @@ function adminApp() {
         const estimated = (body.summary && (body.summary.estimated || body.summary.max_topics)) || estimatedBeforeRun;
         const generated = (body.summary && body.summary.generated) || 0;
         this.topicPlanActiveRunId = body.run_id || '';
+        this.topicPlanCandidateRunId = body.run_id || '';
         this.topicPlanRunStatus = body.status || 'running';
         this.topicPlanGenerateSteps = this.topicPlanGenerateSteps.map((step, index) => {
           if (index === 2) return { ...step, status: body.status === 'completed' ? 'done' : 'running', label: body.status === 'completed' ? '完成' : '运行中', value:generated + ' / ' + estimated };
