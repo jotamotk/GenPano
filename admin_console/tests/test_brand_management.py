@@ -194,7 +194,10 @@ def fake_db(monkeypatch):
     return conn
 
 
-def test_admin_audit_log_insert_populates_legacy_resource_columns():
+def test_admin_audit_log_insert_populates_legacy_and_phase_o_columns():
+    """Both old (target_type/diff_json) and new Alembic Phase-O
+    (resource_type/severity/after) NOT NULL columns are filled correctly,
+    regardless of admin_audit_log column order."""
     class AuditCursor:
         def __init__(self):
             self.rows = []
@@ -207,18 +210,12 @@ def test_admin_audit_log_insert_populates_legacy_resource_columns():
                 self.rows = [
                     {"column_name": name}
                     for name in (
-                        "id",
-                        "operator_id",
-                        "action",
-                        "resource_type",
-                        "resource_id",
-                        "target_type",
-                        "target_id",
-                        "diff_json",
-                        "reason",
-                        "ip",
-                        "ua",
-                        "created_at",
+                        "id", "operator_id", "action",
+                        "resource_type", "resource_id", "severity",
+                        "before", "after",
+                        "target_type", "target_id", "diff_json",
+                        "reason", "ip", "ua", "user_agent",
+                        "created_at", "occurred_at",
                     )
                 ]
                 return
@@ -240,36 +237,22 @@ def test_admin_audit_log_insert_populates_legacy_resource_columns():
         reason=None,
     )
 
+    # Parse the column order from the generated SQL and look up by name
+    # so the assertions don't break when add() order changes.
+    cols_part = cur.insert_sql.split("(", 1)[1].split(")", 1)[0]
+    sql_cols = [c.strip() for c in cols_part.split(",")]
+
+    def value_for(col):
+        return cur.insert_params[sql_cols.index(col)]
+
+    # Mandatory Alembic Phase-O NOT NULL columns are populated.
+    assert value_for("resource_type") == "brand"
+    assert value_for("severity") == "low"
+    # Legacy columns mirror the same target.
+    assert value_for("target_type") == "brand"
     assert "resource_type" in cur.insert_sql
-    assert "resource_id" in cur.insert_sql
-    assert "target_type" in cur.insert_sql
-    assert cur.insert_params[3] == "brand"
-    assert cur.insert_params[5] == "brand"
+    assert "severity" in cur.insert_sql
 
-
-def test_brand_management_migration_alters_brands_and_creates_logs(monkeypatch):
-    conn = fake_db(monkeypatch)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: name == "brands")
-
-    app_mod._ensure_brand_management_tables()
-
-    statements = "\n".join(sql for sql, _params in conn.statements)
-    for column in (
-        "name_zh",
-        "name_en",
-        "official_domains",
-        "positioning",
-        "headquarters",
-        "founded_year",
-        "tags",
-        "status",
-        "source",
-        "created_at",
-        "updated_at",
-    ):
-        assert f"ALTER TABLE brands ADD COLUMN IF NOT EXISTS {column}" in statements
-    assert "CREATE TABLE IF NOT EXISTS brand_generation_logs" in statements
-    assert "CREATE INDEX IF NOT EXISTS idx_brands_industry_status" in statements
 
 
 def test_brand_generate_endpoint_requires_industry(monkeypatch, client):

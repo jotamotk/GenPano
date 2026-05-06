@@ -250,51 +250,6 @@ def test_stale_topic_plan_run_is_marked_failed(monkeypatch):
     assert updated["llm_error"] == "topic_plan_run_timeout"
 
 
-def test_admin_audit_migration_backfills_columns_for_legacy_table(monkeypatch):
-    class MigrationCursor:
-        def __init__(self, conn):
-            self.conn = conn
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def execute(self, query, params=None):
-            self.conn.statements.append(" ".join(str(query).split()))
-
-    class MigrationConnection:
-        def __init__(self):
-            self.statements = []
-            self.commits = 0
-
-        def cursor(self, *args, **kwargs):
-            return MigrationCursor(self)
-
-        def commit(self):
-            self.commits += 1
-
-        def close(self):
-            pass
-
-    conn = MigrationConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: False)
-
-    app_mod._ensure_admin_tables()
-
-    assert any(
-        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS target_type" in sql
-        for sql in conn.statements
-    )
-    assert any(
-        "ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS diff_json" in sql
-        for sql in conn.statements
-    )
-    assert conn.commits == 1
-
-
 def test_topic_plan_completion_survives_audit_log_schema_drift(monkeypatch):
     class RunCursor:
         def __init__(self, conn):

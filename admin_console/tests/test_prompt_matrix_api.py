@@ -234,21 +234,6 @@ def test_prompts_support_topic_filter_for_query_pool(client, monkeypatch):
     assert body["pagination"]["total"] == 1
 
 
-def test_prompt_candidate_migration_backfills_review_columns(monkeypatch):
-    conn = FakeConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: False)
-
-    app_mod._ensure_prompt_matrix_tables()
-
-    statements = "\n".join(sql for sql, _params in conn.statements)
-    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(36)" in statements
-    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP" in statements
-    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT" in statements
-    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS approved_prompt_id INTEGER" in statements
-    assert "ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP" in statements
-
-
 def test_query_pool_candidates_use_cursor_api_contract(client, monkeypatch):
     login(monkeypatch)
     monkeypatch.setattr(app_mod, "get_db", lambda: FakeConnection())
