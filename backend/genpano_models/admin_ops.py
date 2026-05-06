@@ -144,11 +144,11 @@ class AdminAuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    operator_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id"),
-        nullable=False,
-    )
+    # No FK: operator_id may reference either users.id (modern backend admin
+    # routes) or admin_users.id (legacy admin_console writes via the cookie
+    # bridge). Phase 2 hotfix `20260506_drop_audit_operator_fk` drops the
+    # original FK to users(id). Readers must consult both identity tables.
+    operator_id: Mapped[str] = mapped_column(String(36), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(32), nullable=False)
     resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
