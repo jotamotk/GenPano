@@ -3237,6 +3237,8 @@ def _query_pool_candidates_from_llm_queries(
     candidates = []
     duplicate_review = 0
     query_repaired = 0
+    rejected_by_reason = {}
+    rejected_sample = []
     seen = seen_hashes if seen_hashes is not None else set()
     llm_meta = llm_meta or {}
     llm_model = llm_meta.get("model")
@@ -3248,9 +3250,22 @@ def _query_pool_candidates_from_llm_queries(
         rendered_query = _query_pool_normalize_query_text(llm_queries.get(candidate_key))
         try:
             rendered_query = _query_pool_clean_query_text(rendered_query, candidate_key)
-        except TopicPlanLLMError:
-            rendered_query = _query_pool_repair_query_text(rendered_query, context, candidate_key)
-            query_repaired += 1
+        except TopicPlanLLMError as clean_error:
+            try:
+                rendered_query = _query_pool_repair_query_text(rendered_query, context, candidate_key)
+                query_repaired += 1
+            except TopicPlanLLMError as repair_error:
+                reason = repair_error.code or clean_error.code or "query_not_natural"
+                rejected_by_reason[reason] = int(rejected_by_reason.get(reason) or 0) + 1
+                if len(rejected_sample) < 20:
+                    rejected_sample.append(
+                        {
+                            "candidate_key": candidate_key,
+                            "reason": reason,
+                            "text": rendered_query,
+                        }
+                    )
+                continue
         render_hash = hashlib.sha256(normalize_prompt_text(rendered_query).encode("utf-8")).hexdigest()
         if render_hash in seen:
             duplicate_review += 1
@@ -3271,7 +3286,14 @@ def _query_pool_candidates_from_llm_queries(
                 "llm_usage": llm_usage,
             }
         )
-    return candidates, {"duplicate_review": duplicate_review, "query_repaired": query_repaired}
+    rejected_total = sum(int(count or 0) for count in rejected_by_reason.values())
+    return candidates, {
+        "duplicate_review": duplicate_review,
+        "query_repaired": query_repaired,
+        "rejected_total": rejected_total,
+        "by_reason": rejected_by_reason,
+        "rejected_sample": rejected_sample,
+    }
 
 
 def _query_pool_summary(
@@ -3284,6 +3306,8 @@ def _query_pool_summary(
     render_failures=0,
     duplicate_review=0,
     query_repaired=0,
+    rejected_by_reason=None,
+    rejected_sample=None,
     generation_method="llm",
     llm_meta=None,
 ):
@@ -3295,12 +3319,17 @@ def _query_pool_summary(
     active_profiles = {row.get("profile_id") for row in profile_pool if _query_pool_weight(row) > 0}
     assembled = len(candidate_rows) if candidates is not None else len(contexts)
     attempted = len(contexts) if contexts else assembled + render_failures + duplicate_review
-    rejected_total = int(render_failures or 0) + int(duplicate_review or 0)
+    rejected_by_reason = rejected_by_reason or {}
+    quality_rejected = sum(int(count or 0) for count in rejected_by_reason.values())
+    rejected_total = int(render_failures or 0) + int(duplicate_review or 0) + quality_rejected
     by_reason = {}
     if duplicate_review:
         by_reason["duplicate_review"] = int(duplicate_review)
     if render_failures:
         by_reason["render_failure"] = int(render_failures)
+    for reason, count in rejected_by_reason.items():
+        if count:
+            by_reason[reason] = int(count)
     if query_repaired:
         by_reason["query_repaired"] = int(query_repaired)
     meta = dict(llm_meta or {})
@@ -3309,7 +3338,7 @@ def _query_pool_summary(
         "accepted": int(assembled),
         "rejected_total": rejected_total,
         "by_reason": by_reason,
-        "rejected_sample": [],
+        "rejected_sample": list(rejected_sample or [])[:20],
         "quality_blocked": assembled == 0 and rejected_total > 0,
         "candidate_ready": assembled,
         "render_pass_rate": round(assembled / attempted, 4) if attempted else 0,
@@ -3501,6 +3530,8 @@ def _build_query_pool_candidates(prompt_rows, profile_pool, config, query_genera
         candidates=candidates,
         duplicate_review=stats["duplicate_review"],
         query_repaired=stats["query_repaired"],
+        rejected_by_reason=stats.get("by_reason"),
+        rejected_sample=stats.get("rejected_sample"),
         generation_method="llm",
         llm_meta=llm_meta,
     )
@@ -3726,8 +3757,35 @@ def _complete_query_pool_run(cur, *, run_id, candidates, preflight_summary):
     _finalize_query_pool_run(cur, run_id=run_id, candidates=candidates, preflight_summary=preflight_summary)
 
 
-def _mark_query_pool_run_failed(cur, *, run_id, error_code, error_message):
+def _mark_query_pool_run_failed(cur, *, run_id, error_code, error_message, preflight_summary=None):
     detail = f"{error_code}: {error_message}".strip()
+    if preflight_summary is not None:
+        cur.execute(
+            """
+            UPDATE query_generation_runs
+            SET status = 'failed',
+                candidates_estimated = %s,
+                candidates_assembled = %s,
+                preflight_summary = %s::jsonb,
+                llm_model = %s,
+                llm_usage_json = %s::jsonb,
+                llm_error = %s,
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = %s
+              AND status <> 'cancelled'
+            """,
+            (
+                int(preflight_summary.get("raw_candidates_estimated") or 0),
+                int(preflight_summary.get("candidate_ready") or 0),
+                _topic_plan_json(preflight_summary),
+                preflight_summary.get("llm_model"),
+                _topic_plan_json(preflight_summary.get("llm_usage") or {}),
+                detail,
+                run_id,
+            ),
+        )
+        return
     cur.execute(
         """
         UPDATE query_generation_runs
@@ -3852,6 +3910,8 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
             seen_hashes = set()
             duplicate_review = 0
             query_repaired = 0
+            rejected_by_reason = {}
+            rejected_sample = []
             llm_meta = {"model": None, "usage": {}, "batches": 0}
             batch_size = _query_pool_llm_batch_size()
             cancelled = False
@@ -3874,6 +3934,10 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                 )
                 duplicate_review += int(batch_stats.get("duplicate_review") or 0)
                 query_repaired += int(batch_stats.get("query_repaired") or 0)
+                for reason, count in (batch_stats.get("by_reason") or {}).items():
+                    rejected_by_reason[reason] = int(rejected_by_reason.get(reason) or 0) + int(count or 0)
+                rejected_sample.extend(batch_stats.get("rejected_sample") or [])
+                rejected_sample = rejected_sample[:20]
                 if _is_generation_run_cancelled(conn, "query_generation_runs", run_id):
                     cancelled = True
                     break
@@ -3888,6 +3952,8 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                     candidates=candidates,
                     duplicate_review=duplicate_review,
                     query_repaired=query_repaired,
+                    rejected_by_reason=rejected_by_reason,
+                    rejected_sample=rejected_sample,
                     generation_method="llm",
                     llm_meta=llm_meta,
                 )
@@ -3908,6 +3974,8 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                     candidates=candidates,
                     duplicate_review=duplicate_review,
                     query_repaired=query_repaired,
+                    rejected_by_reason=rejected_by_reason,
+                    rejected_sample=rejected_sample,
                     generation_method="llm",
                     llm_meta=llm_meta,
                 )
@@ -3933,8 +4001,6 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                 )
                 conn.commit()
                 return
-            if not candidates:
-                raise ValueError("query_pool_no_candidates")
             preflight_summary = _query_pool_summary(
                 contexts=contexts,
                 profile_pool=profile_pool,
@@ -3943,9 +4009,31 @@ def _execute_query_pool_assembly_run(run_id, admin_id, payload):
                 candidates=candidates,
                 duplicate_review=duplicate_review,
                 query_repaired=query_repaired,
+                rejected_by_reason=rejected_by_reason,
+                rejected_sample=rejected_sample,
                 generation_method="llm",
                 llm_meta=llm_meta,
             )
+            if preflight_summary.get("quality_blocked"):
+                preflight_summary["scheduler_intake"] = "blocked"
+                _mark_query_pool_run_failed(
+                    cur,
+                    run_id=run_id,
+                    error_code="quality_gate_blocked",
+                    error_message="quality_gate_blocked",
+                    preflight_summary=preflight_summary,
+                )
+                _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="query_pool_assemble_quality_blocked",
+                    target_type="query_generation_run",
+                    target_id=run_id,
+                    diff={"selection": selection, "config": config, "candidates_assembled": 0},
+                    reason="query_pool_assemble",
+                )
+                conn.commit()
+                return
             _finalize_query_pool_run(
                 cur,
                 run_id=run_id,

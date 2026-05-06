@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import admin_console.app as app_mod
@@ -249,6 +251,67 @@ def test_query_pool_async_run_streams_candidates_batch_by_batch(monkeypatch):
     assert len(conn.inserted_candidates) == 3
     assert conn.commits >= 4
     assert any("status = 'completed'" in sql for sql, _params in conn.run_updates)
+
+
+def test_query_pool_async_run_marks_quality_blocked_with_summary(monkeypatch):
+    monkeypatch.setenv("QUERY_POOL_LLM_BATCH_SIZE", "1")
+    monkeypatch.setattr(app_mod, "_query_pool_prompt_ids_from_selection", lambda cur, selection, max_prompts: ["101"])
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_prompt_rows",
+        lambda cur, prompt_ids: [{"id": "101", "text": "预算内怎么选大牌香水？", "topic_text": "大牌香水送礼"}],
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_fetch_query_pool_profile_pool",
+        lambda cur, segment_ids=None: [
+            {
+                "segment_id": "SEG-1",
+                "segment_weight": 1,
+                "profile_id": "P-1",
+                "profile_weight": 1,
+                "profile_need": "送礼不踩雷，价格别太夸张",
+            }
+        ],
+    )
+    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app_mod,
+        "_generate_query_pool_llm_queries",
+        lambda contexts: (
+            {contexts[0]["candidate_key"]: "CRM私域会员运营策略分析"},
+            {"model": "fake-query-llm", "usage": {"total_tokens": 8}},
+        ),
+    )
+
+    def fail_repair(value, context, candidate_key):
+        raise app_mod.TopicPlanLLMError(
+            "query_not_natural",
+            f"LLM query for {candidate_key} must sound like a real consumer question",
+        )
+
+    monkeypatch.setattr(app_mod, "_query_pool_repair_query_text", fail_repair)
+    conn = StreamingConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+
+    app_mod._execute_query_pool_assembly_run(
+        "run-quality",
+        "admin-1",
+        {
+            "selection": {"mode": "explicit", "prompt_ids": ["101"]},
+            "config": {"profiles_per_prompt": 1, "max_candidates": 10},
+        },
+    )
+
+    failed_updates = [(sql, params) for sql, params in conn.run_updates if "status = 'failed'" in sql]
+    assert failed_updates
+    params = failed_updates[-1][1]
+    summary = json.loads(params[2])
+    assert params[5] == "quality_gate_blocked: quality_gate_blocked"
+    assert summary["quality_blocked"] is True
+    assert summary["by_reason"]["query_not_natural"] == 1
+    assert summary["rejected_sample"][0]["reason"] == "query_not_natural"
+    assert conn.inserted_candidates == []
 
 
 def test_query_pool_preflight_is_dry_run(client, monkeypatch):
@@ -576,6 +639,63 @@ def test_query_pool_llm_prompt_uses_profile_context_without_internal_terms():
     assert "query_not_natural" in joined
     assert "query_repaired" in joined
     assert '"candidate_key": "c-1"' in joined
+
+
+def test_query_pool_unrepairable_query_rejections_are_summarized(monkeypatch):
+    contexts = [
+        {
+            "candidate_key": "c-1",
+            "prompt_id": "101",
+            "prompt_text": "预算内怎么选大牌香水？",
+            "topic_id": "T-1",
+            "topic_text": "大牌香水送礼怎么选",
+            "segment_id": "SEG-1",
+            "segment_name": "价格敏感型",
+            "profile_id": "P-1",
+            "profile_name": "刚入职白领",
+            "profile_demographic": "25 岁，上海，预算有限",
+            "profile_need": "送礼不踩雷，价格别太夸张",
+        }
+    ]
+
+    def fail_repair(value, context, candidate_key):
+        raise app_mod.TopicPlanLLMError(
+            "query_not_natural",
+            f"LLM query for {candidate_key} must sound like a real consumer question",
+        )
+
+    monkeypatch.setattr(app_mod, "_query_pool_repair_query_text", fail_repair)
+
+    candidates, stats = app_mod._query_pool_candidates_from_llm_queries(
+        contexts,
+        {"c-1": "CRM私域会员运营策略分析"},
+        {"model": "fake-query-llm", "usage": {}},
+    )
+    summary = app_mod._query_pool_summary(
+        contexts=contexts,
+        profile_pool=[
+            {
+                "segment_id": "SEG-1",
+                "segment_weight": 1,
+                "profile_id": "P-1",
+                "profile_weight": 1,
+            }
+        ],
+        config={"profiles_per_prompt": 1, "max_candidates": 10},
+        raw_estimated=1,
+        candidates=candidates,
+        rejected_by_reason=stats["by_reason"],
+        rejected_sample=stats["rejected_sample"],
+        generation_method="llm",
+    )
+
+    assert candidates == []
+    assert stats["rejected_total"] == 1
+    assert stats["by_reason"]["query_not_natural"] == 1
+    assert stats["rejected_sample"][0]["reason"] == "query_not_natural"
+    assert summary["quality_blocked"] is True
+    assert summary["rejected_total"] == 1
+    assert summary["by_reason"]["query_not_natural"] == 1
 
 
 def test_query_pool_llm_parser_requires_all_candidate_keys():
