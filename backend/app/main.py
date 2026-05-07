@@ -72,6 +72,36 @@ _session_secret = (
     or os.environ.get("USER_JWT_SECRET")
     or "dev-session-secret-change-in-production-32-bytes-minimum"
 )
+
+
+def _admin_cookie_secure() -> bool:
+    """Whether the admin session cookie should carry the ``Secure`` flag.
+
+    Reads ``ADMIN_COOKIE_SECURE`` first (explicit, accepts ``1/0/true/false``).
+    If unset, falls back to ``GENPANO_ENVIRONMENT == "production"`` for
+    backwards compatibility with the original Phase 2 wiring.
+
+    Why this lives in its own function: the original code gated ``Secure``
+    purely on ``GENPANO_ENVIRONMENT="production"``. On a HTTP-only deploy
+    that still flagged itself ``production`` (e.g. an internal IP behind
+    nginx without TLS), every Set-Cookie carried ``Secure`` and the browser
+    silently dropped it — so login appeared to succeed but the cookie was
+    never stored, every subsequent admin request 401-ed with
+    ``admin_session_required``, and previous hotfixes (#347 / #353 / #355)
+    looked at the wrong layer of the stack. Splitting the flag out lets a
+    HTTP deploy set ``ADMIN_COOKIE_SECURE=0`` without touching
+    ``GENPANO_ENVIRONMENT`` (which other code paths may key off), and lets
+    a HTTPS deploy that *doesn't* set ``GENPANO_ENVIRONMENT=production``
+    still mark the cookie ``Secure`` via ``ADMIN_COOKIE_SECURE=1``.
+    """
+    explicit = os.environ.get("ADMIN_COOKIE_SECURE")
+    if explicit is not None:
+        return explicit.strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("GENPANO_ENVIRONMENT") == "production"
+
+
+_ADMIN_COOKIE_SECURE = _admin_cookie_secure()
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
@@ -81,7 +111,7 @@ app.add_middleware(
     # endpoints sit behind the same nginx origin, so Strict does not block
     # the cross-service cookie bridge.
     same_site="strict",
-    https_only=os.environ.get("GENPANO_ENVIRONMENT") == "production",
+    https_only=_ADMIN_COOKIE_SECURE,
     max_age=60 * 60 * 24 * 7,  # 7 days
 )
 
@@ -146,7 +176,10 @@ async def _admin_session_clear_on_bad_cookie(request: Request, exc: HTTPExceptio
             path="/",
             samesite="strict",
             httponly=True,
-            secure=os.environ.get("GENPANO_ENVIRONMENT") == "production",
+            # Must match the SessionMiddleware ``Secure`` flag — otherwise
+            # browsers will refuse to clear a Secure cookie via a non-Secure
+            # Set-Cookie response, leaving the un-decryptable cookie in place.
+            secure=_ADMIN_COOKIE_SECURE,
         )
     return response
 
