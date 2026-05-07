@@ -112,6 +112,17 @@ app.include_router(reports_public_router, prefix="/reports/public")
 app.include_router(admin_router, prefix="/api/admin")
 app.include_router(admin_auth_router, prefix="/api/admin/auth")
 
+# Legacy alias for the Query Pool sub-router. admin_console served the
+# same Query Pool endpoints both at /api/admin/query-pool/* and at the
+# longer /admin/api/v1/pipeline/query-pool/* path; the SPA still calls
+# the latter from a few places (cursor lists, etc.). Mount the same
+# FastAPI router at the alias prefix so we don't break those callers
+# during the Phase 5 migration. The alias goes away in Phase X when
+# admin.html JS is fully cleaned up.
+from app.api.admin.query_pool import router as _query_pool_router  # noqa: E402
+
+app.include_router(_query_pool_router, prefix="/admin/api/v1/pipeline/query-pool")
+
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
