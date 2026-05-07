@@ -1813,12 +1813,26 @@
                 <div class="grid grid-cols-2 gap-4 text-[12px]">
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">品牌</span>
-                    <select x-model="llmForm.brand" @change="syncSelectedBrand('profile')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
-                      <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
-                      <template x-for="brand in brandOptions" :key="brand.id">
-                        <option :value="brand.name" x-text="brandLabel(brand)"></option>
-                      </template>
-                    </select>
+                    <input type="hidden" x-model="llmForm.brandId">
+                    <div class="space-y-2">
+                      <div class="relative">
+                        <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                        <input x-model="llmForm.brandQuery"
+                               @input.debounce.150ms="clearLlmBrandSelection('profile')"
+                               class="w-full h-10 rounded-btn border border-b-default bg-surface pl-8 pr-3 outline-none focus:ring-2 focus:ring-accent/20"
+                               :placeholder="brandOptionsLoading ? 'Loading brands...' : 'Search brand'">
+                      </div>
+                      <div class="max-h-32 overflow-y-auto rounded-btn border border-b-card bg-surface divide-y divide-b-card">
+                        <template x-for="brand in brandSearchCandidates('profile')" :key="brand.id">
+                          <button type="button"
+                                  @click="selectLlmBrand('profile', brand)"
+                                  class="w-full px-3 py-2 text-left text-[11px] hover:bg-accent/5"
+                                  :class="String(llmForm.brandId) === String(brand.id) ? 'bg-accent/10 text-accent font-semibold' : 'text-ink'"
+                                  x-text="brandDisambiguationLabel(brand)"></button>
+                        </template>
+                        <div x-show="!brandOptionsLoading && brandSearchCandidates('profile').length === 0" class="px-3 py-2 text-[11px] text-ink-muted">No matching brands</div>
+                      </div>
+                    </div>
                   </label>
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">数量</span>
@@ -1833,7 +1847,7 @@
                     <textarea x-model="llmForm.notes" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="col-span-2 flex justify-end gap-2">
-                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !llmForm.brand" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !canGenerateWithBrand('profile')" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="profileLlmLoading ? '生成中...' : '生成 Profile'"></span>
                     </button>
@@ -2186,12 +2200,26 @@
                   <div class="grid grid-cols-2 gap-4">
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">品牌</span>
-                      <select x-model="segmentLlmForm.brand" @change="syncSelectedBrand('segment')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
-                        <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
-                        <template x-for="brand in brandOptions" :key="brand.id">
-                          <option :value="brand.name" x-text="brandLabel(brand)"></option>
-                        </template>
-                      </select>
+                      <input type="hidden" x-model="segmentLlmForm.brandId">
+                      <div class="space-y-2">
+                        <div class="relative">
+                          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
+                          <input x-model="segmentLlmForm.brandQuery"
+                                 @input.debounce.150ms="clearLlmBrandSelection('segment')"
+                                 class="w-full h-10 rounded-btn border border-b-default bg-surface pl-8 pr-3 outline-none focus:ring-2 focus:ring-accent/20"
+                                 :placeholder="brandOptionsLoading ? 'Loading brands...' : 'Search brand'">
+                        </div>
+                        <div class="max-h-32 overflow-y-auto rounded-btn border border-b-card bg-surface divide-y divide-b-card">
+                          <template x-for="brand in brandSearchCandidates('segment')" :key="brand.id">
+                            <button type="button"
+                                    @click="selectLlmBrand('segment', brand)"
+                                    class="w-full px-3 py-2 text-left text-[11px] hover:bg-accent/5"
+                                    :class="String(segmentLlmForm.brandId) === String(brand.id) ? 'bg-accent/10 text-accent font-semibold' : 'text-ink'"
+                                    x-text="brandDisambiguationLabel(brand)"></button>
+                          </template>
+                          <div x-show="!brandOptionsLoading && brandSearchCandidates('segment').length === 0" class="px-3 py-2 text-[11px] text-ink-muted">No matching brands</div>
+                        </div>
+                      </div>
                     </label>
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">行业</span>
@@ -2222,7 +2250,7 @@
                     <textarea x-model="segmentLlmForm.constraints" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="flex items-center justify-end gap-2">
-                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !segmentLlmForm.brand" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !canGenerateWithBrand('segment')" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="segmentLlmLoading ? '生成中...' : '生成 Segment 草稿'"></span>
                     </button>
@@ -3826,6 +3854,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <option value="">全部语言</option>
                       <option value="zh-CN">zh-CN</option><option value="en-US">en-US</option>
                     </select>
+                    <input x-model="promptMatrixPromptTopic" @input.debounce.350ms="loadPromptMatrixPrompts()" placeholder="Topic ID"
+                           class="h-8 w-24 px-2 rounded-btn border border-b-default text-[12px] bg-white outline-none focus:ring-2 focus:ring-accent/20" />
                   </div>
                 </div>
                 <div class="divide-y divide-b-card">
@@ -3928,6 +3958,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <option value="zh-CN">zh-CN</option>
                           <option value="en-US">en-US</option>
                         </select>
+                        <input x-model="queryPoolPromptTopic" @input.debounce.350ms="onQueryPoolPromptFilterChanged()" placeholder="Topic ID"
+                               class="h-8 w-24 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink outline-none focus:shadow-focus-accent" />
                         <select x-model.number="queryPoolPromptPerPage" @change="onQueryPoolPromptPageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                           <option :value="100">100 / 页</option>
                           <option :value="50">50 / 页</option>
@@ -7748,7 +7780,9 @@ function segmentCrudPanel() {
     brandOptionsError: '',
     segmentForm: { id: '', brandId: '', brandName: '', name: '', industry: '', status: 'active', weight: 0.25, ageRange: '', income: '', regions: '', samplingRate: '', note: '' },
     segmentLlmForm: {
+      brandId: '',
       brand: '',
+      brandQuery: '',
       industry: 'Beauty',
       count: 6,
       status: 'active',
@@ -7758,7 +7792,9 @@ function segmentCrudPanel() {
     },
     profileForm: { id: '', name: '', demographic: '', need: '', weight: '1.0', status: 'active', persona_json: {} },
     llmForm: {
+      brandId: '',
       brand: '',
+      brandQuery: '',
       count: 6,
       goal: 'Generate reviewable Profile drafts for the current Segment.',
       notes: 'Cover price, proof, scenario, channel, and competitor-comparison needs without duplicates.',
@@ -7831,14 +7867,20 @@ function segmentCrudPanel() {
             industry: String(row.industry || row.industry_name || '').trim(),
             targetMarket: String(row.target_market || row.targetMarket || '').trim(),
             description: String(row.description || '').trim(),
+            aliases: Array.isArray(row.aliases) ? row.aliases.map(value => String(value || '').trim()).filter(Boolean) : [],
+            topicCount: Number(row.topic_count || row.topicCount || 0),
           }))
           .filter(row => row.id && row.name);
         this.ensureSelectedBrandIsValid('segment');
         this.ensureSelectedBrandIsValid('profile');
       } catch (error) {
         this.brandOptions = [];
+        this.segmentLlmForm.brandId = '';
         this.segmentLlmForm.brand = '';
+        this.segmentLlmForm.brandQuery = '';
+        this.llmForm.brandId = '';
         this.llmForm.brand = '';
+        this.llmForm.brandQuery = '';
         this.brandOptionsError = error.message || 'Brand options load failed';
       } finally {
         this.brandOptionsLoading = false;
@@ -7848,6 +7890,104 @@ function segmentCrudPanel() {
 
     brandLabel(brand) {
       return brand?.industry ? (brand.name + ' · ' + brand.industry) : brand?.name || '';
+    },
+
+    brandDisambiguationLabel(brand) {
+      if (!brand) return '';
+      const parts = [brand.name || 'Brand #' + brand.id];
+      if (brand.industry) parts.push(brand.industry);
+      if (brand.targetMarket) parts.push(brand.targetMarket);
+      if (brand.id) parts.push('#' + brand.id);
+      return parts.join(' / ');
+    },
+
+    llmBrandForm(scope) {
+      return scope === 'profile' ? this.llmForm : this.segmentLlmForm;
+    },
+
+    brandSearchTerms(scope) {
+      const form = this.llmBrandForm(scope);
+      const segment = this.currentSegment();
+      const values = scope === 'profile'
+        ? [form.brandQuery, form.goal, form.notes, segment?.name, segment?.industry, segment?.brandName]
+        : [form.brandQuery, form.industry, form.positioning, form.goal, form.constraints];
+      const terms = values
+        .flatMap(value => String(value || '').toLowerCase().split(/[^0-9a-z\u4e00-\u9fff]+/))
+        .map(term => term.trim())
+        .filter(term => term.length >= 2);
+      return [...new Set(terms)];
+    },
+
+    brandSearchHaystack(brand) {
+      const aliases = Array.isArray(brand?.aliases) ? brand.aliases : [];
+      return [brand?.name, brand?.industry, brand?.targetMarket, brand?.description, ...aliases]
+        .map(value => String(value || '').toLowerCase())
+        .join(' ');
+    },
+
+    brandCandidateScore(scope, brand) {
+      const terms = this.brandSearchTerms(scope);
+      if (!terms.length) return 1;
+      const haystack = this.brandSearchHaystack(brand);
+      return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+    },
+
+    brandSearchCandidates(scope) {
+      const terms = this.brandSearchTerms(scope);
+      return this.brandOptions
+        .map(brand => ({ brand, score: this.brandCandidateScore(scope, brand) }))
+        .filter(item => !terms.length || item.score > 0)
+        .sort((a, b) => (b.score - a.score) || String(a.brand.name || '').localeCompare(String(b.brand.name || '')))
+        .slice(0, 8)
+        .map(item => item.brand);
+    },
+
+    applyBrandOptionToForm(scope, brand) {
+      if (!brand) return;
+      const form = this.llmBrandForm(scope);
+      form.brandId = String(brand.id || '');
+      form.brand = brand.name || form.brand;
+      form.brandQuery = this.brandDisambiguationLabel(brand);
+      if (scope === 'segment' && brand.industry) {
+        this.segmentLlmForm.industry = brand.industry;
+      }
+      const defaultPositioning = 'Premium skincare, fragrance, and cosmetics.';
+      if (
+        scope === 'segment'
+        && brand.description
+        && (!String(this.segmentLlmForm.positioning || '').trim() || this.segmentLlmForm.positioning === defaultPositioning)
+      ) {
+        this.segmentLlmForm.positioning = brand.description;
+      }
+    },
+
+    selectLlmBrand(scope, brand) {
+      this.applyBrandOptionToForm(scope, brand);
+    },
+
+    clearLlmBrandSelection(scope) {
+      const form = this.llmBrandForm(scope);
+      const selected = this.selectedBrandOptionById(form.brandId);
+      if (selected && form.brandQuery === this.brandDisambiguationLabel(selected)) return;
+      form.brandId = '';
+      form.brand = '';
+    },
+
+    resolveSelectedLlmBrand(scope) {
+      const form = this.llmBrandForm(scope);
+      const selected = this.selectedBrandOptionById(form.brandId);
+      if (selected) return selected;
+      const candidates = this.brandSearchCandidates(scope);
+      if (candidates.length === 1) {
+        this.selectLlmBrand(scope, candidates[0]);
+        return candidates[0];
+      }
+      return null;
+    },
+
+    canGenerateWithBrand(scope) {
+      const form = this.llmBrandForm(scope);
+      return Boolean(this.selectedBrandOptionById(form.brandId)) || this.brandSearchCandidates(scope).length === 1;
     },
 
     statusToneClass(tone) {
@@ -7861,9 +8001,16 @@ function segmentCrudPanel() {
       return this.brandOptions.find(brand => String(brand.id) === value) || null;
     },
 
+    selectedBrandOptionById(id) {
+      return this.brandById(id);
+    },
+
     selectedBrandOption(name) {
       const value = String(name || '').trim();
-      return this.brandOptions.find(brand => brand.name === value) || null;
+      const byId = this.selectedBrandOptionById(value);
+      if (byId) return byId;
+      const matches = this.brandOptions.filter(brand => brand.name === value);
+      return matches.length === 1 ? matches[0] : null;
     },
 
     segmentBrandLabel(segment) {
@@ -7885,20 +8032,24 @@ function segmentCrudPanel() {
     ensureSelectedBrandIsValid(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
       if (!this.brandOptions.length) {
+        form.brandId = '';
         form.brand = '';
         return;
       }
-      if (form.brand && this.selectedBrandOption(form.brand)) return;
+      const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
+      if (brand) {
+        this.applyBrandOptionToForm(scope, brand);
+        return;
+      }
+      form.brandId = '';
       form.brand = '';
     },
 
     syncSelectedBrand(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
-      const brand = this.selectedBrandOption(form.brand);
+      const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
       if (!brand) return;
-      if (scope === 'segment' && brand.industry) {
-        this.segmentLlmForm.industry = brand.industry;
-      }
+      this.applyBrandOptionToForm(scope, brand);
     },
 
     fromSegment(segment) {
@@ -8122,12 +8273,14 @@ function segmentCrudPanel() {
       this.segmentLlmApplyTone = 'info';
     },
     async generateBrandSegments() {
-      const brand = String(this.segmentLlmForm.brand || '').trim();
+      const brandOption = this.resolveSelectedLlmBrand('segment');
+      const brand = String(brandOption?.name || '').trim();
       if (!brand) {
-        this.segmentLlmError = 'Brand is required';
+        this.segmentLlmError = 'Select one brand from the candidates';
         return;
       }
-      const brandOption = this.selectedBrandOption(brand);
+      this.segmentLlmForm.brandId = String(brandOption?.id || this.segmentLlmForm.brandId || '');
+      this.segmentLlmForm.brand = brand;
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
       this.segmentLlmApplyMessage = '';
@@ -8351,7 +8504,13 @@ function segmentCrudPanel() {
       this.profileLlmDraftSegmentId = segment.id;
       const segmentBrand = this.brandById(segment.brandId || segment.brand_id);
       if (segmentBrand || segment.brandName || segment.brand_name) {
+        this.llmForm.brandId = String(segmentBrand?.id || segment.brandId || segment.brand_id || '');
         this.llmForm.brand = segmentBrand?.name || segment.brandName || segment.brand_name;
+        this.llmForm.brandQuery = segmentBrand ? this.brandDisambiguationLabel(segmentBrand) : this.llmForm.brand;
+      } else {
+        this.llmForm.brandId = '';
+        this.llmForm.brand = '';
+        this.llmForm.brandQuery = '';
       }
       this.profileLlmError = '';
       this.llmPanelOpen = true;
@@ -8393,11 +8552,14 @@ function segmentCrudPanel() {
     async generateSegmentLlm() {
       const segment = this.currentSegment();
       if (!segment) return;
-      if (!String(this.llmForm.brand || '').trim()) {
-        this.profileLlmError = 'Brand is required';
+      const brandOption = this.resolveSelectedLlmBrand('profile');
+      const brand = String(brandOption?.name || '').trim();
+      if (!brand) {
+        this.profileLlmError = 'Select one brand from the candidates';
         return;
       }
-      const brandOption = this.selectedBrandOption(this.llmForm.brand);
+      this.llmForm.brandId = String(brandOption?.id || this.llmForm.brandId || '');
+      this.llmForm.brand = brand;
       this.profileLlmLoading = true;
       this.profileLlmError = '';
       this.profileLlmApplyMessage = '';
@@ -8411,7 +8573,7 @@ function segmentCrudPanel() {
           method: 'POST',
           body: JSON.stringify({
             brand_id: brandOption?.id || null,
-            brand_name: this.llmForm.brand,
+            brand_name: brand,
             count: this.llmForm.count,
             goal: this.llmForm.goal,
             constraints: this.llmForm.notes,
@@ -8700,9 +8862,11 @@ function adminApp() {
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
     promptMatrixPromptLanguage: '',
+    promptMatrixPromptTopic: '',
     queryPoolPromptQuery: '',
     queryPoolPromptIntent: '',
     queryPoolPromptLanguage: '',
+    queryPoolPromptTopic: '',
     queryPoolPromptPage: 1,
     queryPoolPromptPerPage: 100,
     queryPoolPromptTotal: 0,
@@ -11327,6 +11491,7 @@ function adminApp() {
         const qp = new URLSearchParams({ page:'1', per_page:'60' });
         if (this.promptMatrixPromptIntent) qp.set('intent', this.promptMatrixPromptIntent);
         if (this.promptMatrixPromptLanguage) qp.set('language', this.promptMatrixPromptLanguage);
+        if (this.promptMatrixPromptTopic) qp.set('topic_id', this.promptMatrixPromptTopic);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
@@ -11580,6 +11745,8 @@ function adminApp() {
       if (q) payload.q = q;
       if (this.queryPoolPromptIntent) payload.intent = this.queryPoolPromptIntent;
       if (this.queryPoolPromptLanguage) payload.language = this.queryPoolPromptLanguage;
+      const topicId = String(this.queryPoolPromptTopic || '').trim().replace(/^T-/i, '');
+      if (topicId) payload.topic_id = topicId;
       return payload;
     },
 
@@ -11737,6 +11904,7 @@ function adminApp() {
         if (filters.q) qp.set('q', filters.q);
         if (filters.intent) qp.set('intent', filters.intent);
         if (filters.language) qp.set('language', filters.language);
+        if (filters.topic_id) qp.set('topic_id', filters.topic_id);
         const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');

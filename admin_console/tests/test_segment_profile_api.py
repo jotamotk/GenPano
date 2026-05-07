@@ -402,6 +402,108 @@ def test_llm_segment_generation_service_boundary(client, monkeypatch):
     assert any("generate_segments" in str(params) for _sql, params in conn.statements)
 
 
+def test_llm_segment_generation_returns_brand_choices_when_name_is_ambiguous(client, monkeypatch):
+    login(monkeypatch)
+
+    class BrandCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM brands" in compact and "LOWER" in compact:
+                self.rows = [
+                    {"id": 42, "name": "CHANEL", "industry": "beauty", "target_market": "CN"},
+                    {"id": 84, "name": "CHANEL", "industry": "luxury", "target_market": "US"},
+                ]
+
+    class BrandConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return BrandCursor(self)
+
+    conn = BrandConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table == "brands")
+    monkeypatch.setattr(app_mod, "_table_columns", lambda cur, table: {"id", "name", "industry", "target_market"})
+
+    class UnexpectedService:
+        def __init__(self, model=None):
+            raise AssertionError("service should not run before brand ambiguity is resolved")
+
+    monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", UnexpectedService)
+
+    response = client.post("/api/segments/generate", json={"brand_name": "CHANEL", "count": 1})
+    body = response.get_json()
+
+    assert response.status_code == 409
+    assert body["error"] == "ambiguous_brand"
+    assert [brand["id"] for brand in body["brands"]] == [42, 84]
+
+
+def test_llm_segment_generation_uses_context_fields_to_resolve_duplicate_brand_name(client, monkeypatch):
+    login(monkeypatch)
+    calls = []
+
+    class BrandCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM brands" in compact and "LOWER" in compact:
+                self.rows = [
+                    {
+                        "id": 42,
+                        "name": "CHANEL",
+                        "industry": "beauty",
+                        "target_market": "CN",
+                        "description": "Premium skincare and fragrance.",
+                    },
+                    {
+                        "id": 84,
+                        "name": "CHANEL",
+                        "industry": "luxury",
+                        "target_market": "US",
+                        "description": "Watches and fine jewelry.",
+                    },
+                ]
+
+    class BrandConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return BrandCursor(self)
+
+    class FakeService:
+        def __init__(self, model=None):
+            self.model = model
+
+        def generate_segments(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                items=[{"id": "SEG-DRAFT-001", "name": "Draft", "status": "draft", "weight": 0.2}],
+                model=self.model or "fake-model",
+                prompt="structured json prompt",
+                usage={"total_tokens": 12},
+                estimated_cost=0.01,
+            )
+
+    conn = BrandConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table == "brands")
+    monkeypatch.setattr(
+        app_mod,
+        "_table_columns",
+        lambda cur, table: {"id", "name", "industry", "target_market", "description"},
+    )
+    monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", FakeService)
+
+    response = client.post(
+        "/api/segments/generate",
+        json={"brand_name": "CHANEL", "industry": "beauty", "target_market": "CN", "count": 1},
+    )
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["drafts"][0]["brand_id"] == "42"
+    assert body["drafts"][0]["brand_name"] == "CHANEL"
+    assert calls[0]["brand_name"] == "CHANEL"
+
+
 def test_profile_list_under_segment(client, monkeypatch):
     login(monkeypatch)
     fake_db(monkeypatch)
@@ -553,8 +655,98 @@ def test_llm_profile_generation_service_boundary(client, monkeypatch):
     assert any("INSERT INTO profile_generation_logs" in sql for sql, _ in conn.statements)
 
 
+def test_llm_profile_generation_returns_brand_choices_when_name_is_ambiguous(client, monkeypatch):
+    login(monkeypatch)
+
+    class BrandCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM brands" in compact and "LOWER" in compact:
+                self.rows = [
+                    {"id": 42, "name": "CHANEL", "industry": "beauty", "target_market": "CN"},
+                    {"id": 84, "name": "CHANEL", "industry": "luxury", "target_market": "US"},
+                ]
+
+    class BrandConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return BrandCursor(self)
+
+    class UnexpectedService:
+        def __init__(self, model=None):
+            raise AssertionError("service should not run before brand ambiguity is resolved")
+
+    conn = BrandConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_get_segment", lambda cur, segment_id: {"id": segment_id, "name": "Segment"})
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table == "brands")
+    monkeypatch.setattr(app_mod, "_table_columns", lambda cur, table: {"id", "name", "industry", "target_market"})
+    monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", UnexpectedService)
+
+    response = client.post("/api/segments/SEG-001/profiles/generate", json={"brand_name": "CHANEL", "count": 1})
+    body = response.get_json()
+
+    assert response.status_code == 409
+    assert body["error"] == "ambiguous_brand"
+    assert [brand["id"] for brand in body["brands"]] == [42, 84]
+
+
+def test_llm_profile_generation_uses_context_fields_to_resolve_duplicate_brand_name(client, monkeypatch):
+    login(monkeypatch)
+    calls = []
+
+    class BrandCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM brands" in compact and "LOWER" in compact:
+                self.rows = [
+                    {"id": 42, "name": "CHANEL", "industry": "beauty", "target_market": "CN"},
+                    {"id": 84, "name": "CHANEL", "industry": "luxury", "target_market": "US"},
+                ]
+
+    class BrandConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return BrandCursor(self)
+
+    class FakeService:
+        def __init__(self, model=None):
+            self.model = model
+
+        def generate_profiles(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                items=[{"id": "P-DRAFT-01", "name": "Draft profile", "status": "draft", "weight": 1.0}],
+                model=self.model or "fake-model",
+                prompt="structured json prompt",
+                usage={"total_tokens": 10},
+                estimated_cost=0.01,
+            )
+
+    conn = BrandConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(app_mod, "_get_segment", lambda cur, segment_id: {"id": segment_id, "name": "Segment"})
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: table == "brands")
+    monkeypatch.setattr(app_mod, "_table_columns", lambda cur, table: {"id", "name", "industry", "target_market"})
+    monkeypatch.setattr(app_mod, "SegmentProfileGenerationService", FakeService)
+
+    response = client.post(
+        "/api/segments/SEG-001/profiles/generate",
+        json={"brand_name": "CHANEL", "industry": "beauty", "target_market": "CN", "count": 1},
+    )
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["drafts"][0]["brand_id"] == "42"
+    assert body["drafts"][0]["brand_name"] == "CHANEL"
+    assert calls[0]["brand_name"] == "CHANEL"
+
+
 def test_async_profile_generation_returns_job(client, monkeypatch):
     login(monkeypatch)
+    fake_db(monkeypatch)
+    monkeypatch.setattr(app_mod, "_get_segment", lambda cur, segment_id: {"id": segment_id, "name": "Segment"})
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, table: False)
     with app_mod._profile_generation_jobs_lock:
         app_mod._profile_generation_jobs.clear()
     started = {}
@@ -613,6 +805,47 @@ def test_profile_generation_job_poll_returns_completed(client, monkeypatch):
 
     with app_mod._profile_generation_jobs_lock:
         app_mod._profile_generation_jobs.clear()
+
+
+def test_profile_generation_job_poll_reads_persisted_job_when_memory_is_empty(client, monkeypatch):
+    login(monkeypatch)
+    with app_mod._profile_generation_jobs_lock:
+        app_mod._profile_generation_jobs.clear()
+
+    class PersistedJobCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            compact = self.conn.statements[-1][0]
+            if "FROM profile_generation_jobs" in compact:
+                self.rows = [
+                    {
+                        "job_id": "job-db",
+                        "id": "job-db",
+                        "segment_id": "SEG-001",
+                        "status": "completed",
+                        "message": "Profile generation completed",
+                        "drafts_json": [{"id": "P-DB-1", "name": "Persisted draft"}],
+                        "model": "fake-model",
+                        "usage_json": {"total_tokens": 42},
+                        "http_status": 200,
+                    }
+                ]
+
+    class PersistedJobConnection(FakeConnection):
+        def cursor(self, *args, **kwargs):
+            return PersistedJobCursor(self)
+
+    conn = PersistedJobConnection()
+    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
+
+    response = client.get("/api/segments/SEG-001/profiles/generate/job-db")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["pending"] is False
+    assert body["status"] == "completed"
+    assert body["drafts"][0]["id"] == "P-DB-1"
+    assert any("FROM profile_generation_jobs" in sql for sql, _params in conn.statements)
 
 
 def test_segment_generation_service_uses_openai_compatible_llm(monkeypatch):

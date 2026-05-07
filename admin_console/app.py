@@ -1022,6 +1022,7 @@ def _ensure_prompt_matrix_tables():
                     )
                     """
                 )
+                cur.execute("ALTER TABLE prompt_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP")
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_prompt_candidates_status_created
@@ -1236,12 +1237,17 @@ def _fetch_topic_plan_brands(cur):
             )
             topic_counts = {row["brand_id"]: row["topic_count"] for row in cur.fetchall()}
             if "category" in topic_cols:
+                category_order = (
+                    "created_at DESC NULLS LAST, id DESC"
+                    if "created_at" in topic_cols
+                    else "id DESC"
+                )
                 cur.execute(
-                    """
+                    f"""
                     SELECT DISTINCT ON (brand_id) brand_id, category
                     FROM topics
                     WHERE category IS NOT NULL AND category <> ''
-                    ORDER BY brand_id, created_at DESC NULLS LAST, id DESC
+                    ORDER BY brand_id, {category_order}
                     """
                 )
                 primary_categories = {row["brand_id"]: row["category"] for row in cur.fetchall()}
@@ -1323,12 +1329,15 @@ def _topic_plan_no_prompt_count(cur, brand_ids):
     return int(cur.fetchone()["cnt"] or 0)
 
 
-def _topic_plan_pending_summary(cur, brand_ids):
+def _topic_plan_pending_summary(cur, brand_ids=None, run_id=None):
     if not _table_exists(cur, "topic_candidates"):
         return {"pending": 0, "low_confidence": 0}
     params = []
     where = ["status = 'pending'"]
-    if brand_ids:
+    if run_id:
+        where.append("run_id = %s")
+        params.append(run_id)
+    elif brand_ids:
         where.append("brand_id = ANY(%s)")
         params.append(brand_ids)
     cur.execute(
@@ -2561,6 +2570,10 @@ def _query_pool_prompt_ids_from_selection(cur, selection, max_prompts):
     intent = (filters.get("intent") or "").strip().lower()
     language = (filters.get("language") or filters.get("lang") or "").strip()
     query = (filters.get("q") or filters.get("query") or "").strip()
+    try:
+        topic_ids = _parse_int_list(filters.get("topic_ids") or filters.get("topic_id"))
+    except ValueError:
+        topic_ids = []
     excluded = set(selection.get("excluded_prompt_ids") or [])
     if not _table_exists(cur, "prompts"):
         return []
@@ -2575,6 +2588,9 @@ def _query_pool_prompt_ids_from_selection(cur, selection, max_prompts):
     if language and "language" in prompt_cols:
         where.append("p.language = %s")
         params.append(language)
+    if topic_ids and "topic_id" in prompt_cols:
+        where.append("p.topic_id = ANY(%s)")
+        params.append(topic_ids)
     if query:
         like = f"%{query}%"
         where.append("(p.text ILIKE %s OR CAST(p.id AS TEXT) ILIKE %s)")
@@ -3207,7 +3223,15 @@ def _prompt_matrix_gaps_for_topics(cur, topic_ids=None, filters=None, config=Non
     return gaps[:limit]
 
 
-def _fetch_prompt_matrix_prompts(cur, intent=None, language=None, query=None, page=1, per_page=50):
+def _fetch_prompt_matrix_prompts(
+    cur,
+    intent=None,
+    language=None,
+    query=None,
+    page=1,
+    per_page=50,
+    topic_ids=None,
+):
     if not _table_exists(cur, "prompts"):
         return [], 0
     prompt_cols = _table_columns(cur, "prompts")
@@ -3235,6 +3259,10 @@ def _fetch_prompt_matrix_prompts(cur, intent=None, language=None, query=None, pa
     if language and "language" in prompt_cols:
         where.append("p.language = %s")
         params.append(language)
+    topic_ids = [int(item) for item in (topic_ids or [])]
+    if topic_ids:
+        where.append("p.topic_id = ANY(%s)")
+        params.append(topic_ids)
     query = (query or "").strip()
     if query:
         like_query = f"%{query}%"
@@ -6185,6 +6213,7 @@ def admin_topic_plan_candidates_api():
         return jsonify({"success": False, "error": "invalid_brand_ids"}), 400
     query = (request.args.get("q") or "").strip() or None
     run_id = (request.args.get("run_id") or "").strip() or None
+    candidate_brand_ids = None if run_id else brand_ids
 
     conn = get_db()
     try:
@@ -6192,12 +6221,12 @@ def admin_topic_plan_candidates_api():
             rows = _fetch_topic_plan_candidates(
                 cur,
                 status=status,
-                brand_ids=brand_ids,
+                brand_ids=candidate_brand_ids,
                 query=query,
                 limit=limit,
                 run_id=run_id,
             )
-            pending = _topic_plan_pending_summary(cur, brand_ids)
+            pending = _topic_plan_pending_summary(cur, candidate_brand_ids, run_id=run_id)
         return jsonify(
             {
                 "success": True,
@@ -6376,16 +6405,79 @@ def _topic_plan_run_row(row):
     }
 
 
+def _topic_plan_run_timeout_seconds(row):
+    item = dict(row or {})
+    request_config = _prompt_matrix_json_value(item.get("request_config"), {}) or {}
+    estimated = _clamp_int(request_config.get("max_topics"), 180, 1, 2000)
+    default_timeout = max(600, min(3600, estimated * 10))
+    return _clamp_int(os.getenv("TOPIC_PLAN_RUN_TIMEOUT_SECONDS"), default_timeout, 120, 7200)
+
+
+def _topic_plan_run_timestamp(value):
+    if value is None or not hasattr(value, "tzinfo"):
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _mark_stale_topic_plan_run(cur, row, now=None):
+    item = dict(row or {})
+    if item.get("status") != "running":
+        return row, False
+    now = now or datetime.now(timezone.utc)
+    last_progress = _topic_plan_run_timestamp(
+        item.get("updated_at") or item.get("started_at") or item.get("created_at")
+    )
+    if not last_progress:
+        return row, False
+    elapsed = (now - last_progress).total_seconds()
+    if elapsed <= _topic_plan_run_timeout_seconds(item):
+        return row, False
+    cur.execute(
+        """
+        UPDATE topic_plan_runs
+        SET status = 'failed',
+            llm_error = 'topic_plan_run_timeout',
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = %s AND status = 'running'
+        RETURNING *,
+               EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at, NOW()))) AS elapsed_seconds
+        """,
+        (item.get("id"),),
+    )
+    return cur.fetchone() or row, True
+
+
 def _topic_plan_brand_batches(brands, gaps, *, max_topics, max_per_brand):
     batch_size = _clamp_int(os.getenv("TOPIC_PLAN_LLM_BRANDS_PER_REQUEST"), 1, 1, 5)
-    for index in range(0, len(brands), batch_size):
-        batch_brands = brands[index : index + batch_size]
+    gaps_by_brand = {}
+    for gap in gaps or []:
+        raw_brand_id = gap.get("brand_id")
+        try:
+            brand_id = int(raw_brand_id)
+        except (TypeError, ValueError):
+            continue
+        gaps_by_brand.setdefault(brand_id, []).append(gap)
+    if not gaps_by_brand:
+        return
+
+    gap_brands = [
+        brand
+        for brand in brands
+        if int(brand["id"]) in gaps_by_brand
+    ]
+    for index in range(0, len(gap_brands), batch_size):
+        batch_brands = gap_brands[index : index + batch_size]
         batch_brand_ids = {int(brand["id"]) for brand in batch_brands}
         batch_gaps = [
             gap for gap in gaps
-            if str(gap.get("brand_id") or "").isdigit() and int(gap.get("brand_id")) in batch_brand_ids
+            if str(gap.get("brand_id") or "").isdigit()
+            and int(gap.get("brand_id")) in batch_brand_ids
         ]
-        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1))
+        gap_count = sum(_clamp_int(gap.get("count"), 1, 1, max_per_brand) for gap in batch_gaps)
+        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1), max(gap_count, 1))
         yield batch_brands, batch_gaps, batch_cap
 
 
@@ -6671,6 +6763,9 @@ def admin_topic_plan_run_api(run_id):
             row = cur.fetchone()
             if not row:
                 return jsonify({"success": False, "error": "run_not_found"}), 404
+            row, stale_changed = _mark_stale_topic_plan_run(cur, row)
+            if stale_changed:
+                conn.commit()
             return jsonify({"success": True, "run": _topic_plan_run_row(row)})
     finally:
         conn.close()
@@ -7112,6 +7207,11 @@ def admin_prompt_matrix_prompts_api():
     if language and language not in ALLOWED_LANGUAGES:
         return jsonify({"success": False, "error": "invalid_language"}), 400
     query = (request.args.get("q") or "").strip() or None
+    topic_id_arg = request.args.get("topic_ids") or request.args.get("topic_id")
+    try:
+        topic_ids = _parse_int_list(topic_id_arg) if topic_id_arg is not None else None
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_topic_ids"}), 400
     page = _clamp_int(request.args.get("page"), 1, 1, 100000)
     per_page = _clamp_int(request.args.get("per_page"), 50, 1, 100)
 
@@ -7125,6 +7225,7 @@ def admin_prompt_matrix_prompts_api():
                 query=query,
                 page=page,
                 per_page=per_page,
+                topic_ids=topic_ids,
             )
             stats = _prompt_matrix_stats(cur)
         return jsonify(
@@ -9339,6 +9440,43 @@ def _ensure_segment_profile_tables():
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS profile_generation_jobs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        segment_id VARCHAR(64) NOT NULL,
+                        status VARCHAR(16) NOT NULL DEFAULT 'queued',
+                        error TEXT,
+                        message TEXT,
+                        drafts_json JSONB,
+                        model TEXT,
+                        usage_json JSONB,
+                        input_params JSONB,
+                        http_status INTEGER,
+                        created_by VARCHAR(36),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS segment_id VARCHAR(64)")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'queued'")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS error TEXT")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS message TEXT")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS drafts_json JSONB")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS model TEXT")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS usage_json JSONB")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS input_params JSONB")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS http_status INTEGER")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute("ALTER TABLE profile_generation_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW()")
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_profile_generation_jobs_segment_updated
+                    ON profile_generation_jobs (segment_id, updated_at DESC)
+                    """
+                )
             conn.commit()
             print("DB migration: Segment/Profile Admin tables ensured")
         finally:
@@ -9399,6 +9537,154 @@ def _brand_name_value(data):
         or ""
     )
     return str(value).strip()
+
+
+class BrandSelectionAmbiguous(ValueError):
+    def __init__(self, candidates):
+        super().__init__("ambiguous_brand")
+        self.candidates = candidates
+
+
+def _brand_option_from_row(row):
+    item = dict(row or {})
+    raw_id = item.get("id")
+    try:
+        brand_id = int(raw_id)
+    except (TypeError, ValueError):
+        brand_id = str(raw_id or "").strip()
+    aliases = item.get("aliases") or []
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    if not isinstance(aliases, list):
+        aliases = []
+    return {
+        "id": brand_id,
+        "name": str(item.get("name") or "").strip(),
+        "industry": str(item.get("industry") or item.get("industry_name") or "").strip(),
+        "target_market": str(item.get("target_market") or item.get("targetMarket") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
+        "aliases": [str(value).strip() for value in aliases if str(value or "").strip()],
+    }
+
+
+def _normalize_brand_search_text(value):
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _brand_context_terms(payload):
+    terms = []
+    for key in (
+        "industry",
+        "industry_name",
+        "target_market",
+        "targetMarket",
+        "description",
+        "positioning",
+        "goal",
+        "constraints",
+        "notes",
+    ):
+        term = _normalize_brand_search_text((payload or {}).get(key))
+        if len(term) >= 2 and term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _brand_option_search_text(option):
+    aliases = option.get("aliases") or []
+    fields = [
+        option.get("name"),
+        option.get("industry"),
+        option.get("target_market"),
+        option.get("description"),
+        *aliases,
+    ]
+    return _normalize_brand_search_text(" ".join(str(value or "") for value in fields))
+
+
+def _brand_context_term_matches(term, haystack):
+    if term in haystack:
+        return True
+    words = [word for word in re.split(r"[^0-9a-z]+", term) if len(word) >= 2]
+    return bool(words) and all(word in haystack for word in words[:8])
+
+
+def _narrow_brand_matches_by_context(matches, payload):
+    terms = _brand_context_terms(payload)
+    if len(matches) <= 1 or not terms:
+        return matches
+
+    scored = []
+    for option in matches:
+        haystack = _brand_option_search_text(option)
+        score = sum(1 for term in terms if _brand_context_term_matches(term, haystack))
+        if score:
+            scored.append((score, option))
+    if not scored:
+        return matches
+
+    best_score = max(score for score, _option in scored)
+    narrowed = [option for score, option in scored if score == best_score]
+    return narrowed or matches
+
+
+def _resolve_admin_brand_selection(cur, payload):
+    brand_id = _brand_id_value(payload)
+    brand_name = _brand_name_value(payload)
+    if brand_id and brand_name:
+        return {"brand_id": brand_id, "brand_name": brand_name}
+    if not _table_exists(cur, "brands"):
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    cols = _table_columns(cur, "brands")
+    if not {"id", "name"}.issubset(cols):
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    industry_select = "industry" if "industry" in cols else "NULL::text AS industry"
+    target_market_select = "target_market" if "target_market" in cols else "NULL::text AS target_market"
+    description_select = "description" if "description" in cols else "NULL::text AS description"
+    aliases_select = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
+    if brand_id:
+        cur.execute(
+            f"""
+            SELECT id, name, {industry_select}, {target_market_select}, {description_select}, {aliases_select}
+            FROM brands
+            WHERE CAST(id AS TEXT) = %s
+            LIMIT 1
+            """,
+            (str(brand_id),),
+        )
+        row = cur.fetchone()
+        if row:
+            option = _brand_option_from_row(row)
+            return {"brand_id": str(option["id"]), "brand_name": option["name"] or brand_name}
+        return {"brand_id": brand_id, "brand_name": brand_name}
+
+    if not brand_name:
+        return {"brand_id": None, "brand_name": ""}
+
+    cur.execute(
+        f"""
+        SELECT id, name, {industry_select}, {target_market_select}, {description_select}, {aliases_select}
+        FROM brands
+        WHERE LOWER(name) = LOWER(%s)
+        ORDER BY id
+        LIMIT 20
+        """,
+        (brand_name,),
+    )
+    matches = [_brand_option_from_row(row) for row in cur.fetchall()]
+    matches = [item for item in matches if item.get("id") and item.get("name")]
+    matches = _narrow_brand_matches_by_context(matches, payload)
+    if len(matches) > 1:
+        raise BrandSelectionAmbiguous(matches)
+    if len(matches) == 1:
+        option = matches[0]
+        return {"brand_id": str(option["id"]), "brand_name": option["name"]}
+    return {"brand_id": None, "brand_name": brand_name}
 
 
 def _profile_sequence_row_value(row, key, index=0):
@@ -10178,7 +10464,104 @@ def _profile_generation_job_snapshot(job):
     }
 
 
-def _set_profile_generation_job(job_id, **updates):
+def _profile_generation_job_from_row(row):
+    item = dict(row or {})
+    return _profile_generation_job_snapshot(
+        {
+            "job_id": item.get("job_id") or item.get("id"),
+            "segment_id": item.get("segment_id"),
+            "status": item.get("status") or "queued",
+            "error": item.get("error"),
+            "message": item.get("message"),
+            "drafts": _admin_json(item.get("drafts_json"), []) or [],
+            "model": item.get("model"),
+            "usage": _admin_json(item.get("usage_json"), {}) or {},
+            "created_at": _isoformat(item.get("created_at")),
+            "updated_at": _isoformat(item.get("updated_at")),
+            "http_status": item.get("http_status"),
+        }
+    )
+
+
+def _persist_profile_generation_job(job_id, **updates):
+    from psycopg2.extras import RealDictCursor
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO profile_generation_jobs
+                    (id, segment_id, status, error, message, drafts_json, model, usage_json,
+                     input_params, http_status, created_by, updated_at)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb, %s, %s, NOW())
+                ON CONFLICT (id) DO UPDATE
+                SET segment_id = COALESCE(EXCLUDED.segment_id, profile_generation_jobs.segment_id),
+                    status = COALESCE(EXCLUDED.status, profile_generation_jobs.status),
+                    error = COALESCE(EXCLUDED.error, profile_generation_jobs.error),
+                    message = COALESCE(EXCLUDED.message, profile_generation_jobs.message),
+                    drafts_json = COALESCE(EXCLUDED.drafts_json, profile_generation_jobs.drafts_json),
+                    model = COALESCE(EXCLUDED.model, profile_generation_jobs.model),
+                    usage_json = COALESCE(EXCLUDED.usage_json, profile_generation_jobs.usage_json),
+                    input_params = COALESCE(EXCLUDED.input_params, profile_generation_jobs.input_params),
+                    http_status = COALESCE(EXCLUDED.http_status, profile_generation_jobs.http_status),
+                    created_by = COALESCE(profile_generation_jobs.created_by, EXCLUDED.created_by),
+                    updated_at = NOW()
+                """,
+                (
+                    job_id,
+                    updates.get("segment_id"),
+                    updates.get("status"),
+                    updates.get("error"),
+                    updates.get("message"),
+                    json.dumps(updates["drafts"], default=_json_default) if "drafts" in updates else None,
+                    updates.get("model"),
+                    json.dumps(updates["usage"], default=_json_default) if "usage" in updates else None,
+                    json.dumps(updates["input_params"], default=_json_default) if "input_params" in updates else None,
+                    updates.get("http_status"),
+                    updates.get("created_by"),
+                ),
+            )
+        conn.commit()
+        return True
+    except Exception as error:
+        if conn:
+            conn.rollback()
+        app.logger.warning("Unable to persist Profile generation job %s: %s", job_id, error)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def _get_persisted_profile_generation_job(job_id):
+    from psycopg2.extras import RealDictCursor
+
+    conn = None
+    try:
+        conn = get_db()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id AS job_id, segment_id, status, error, message, drafts_json, model,
+                       usage_json, http_status, created_at, updated_at
+                FROM profile_generation_jobs
+                WHERE id = %s
+                """,
+                (job_id,),
+            )
+            return _profile_generation_job_from_row(cur.fetchone())
+    except Exception as error:
+        app.logger.warning("Unable to read Profile generation job %s: %s", job_id, error)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def _set_profile_generation_job(job_id, persist=False, **updates):
     now = datetime.now(timezone.utc).isoformat()
     with _profile_generation_jobs_lock:
         job = _profile_generation_jobs.setdefault(
@@ -10194,12 +10577,18 @@ def _set_profile_generation_job(job_id, **updates):
             )[: len(_profile_generation_jobs) - _PROFILE_GENERATION_JOB_LIMIT]
             for stale in oldest:
                 _profile_generation_jobs.pop(stale["job_id"], None)
-        return _profile_generation_job_snapshot(job)
+        snapshot = _profile_generation_job_snapshot(job)
+    if persist:
+        _persist_profile_generation_job(job_id, **updates)
+    return snapshot
 
 
 def _get_profile_generation_job(job_id):
     with _profile_generation_jobs_lock:
-        return _profile_generation_job_snapshot(_profile_generation_jobs.get(job_id))
+        job = _profile_generation_job_snapshot(_profile_generation_jobs.get(job_id))
+    if job:
+        return job
+    return _get_persisted_profile_generation_job(job_id)
 
 
 def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
@@ -10208,7 +10597,7 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
     payload = dict(payload or {})
     brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
     conn = None
-    _set_profile_generation_job(job_id, status="running", message="LLM generation started")
+    _set_profile_generation_job(job_id, persist=True, status="running", message="LLM generation started")
     try:
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -10217,6 +10606,7 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
                 conn.rollback()
                 _set_profile_generation_job(
                     job_id,
+                    persist=True,
                     status="failed",
                     error="segment_not_found",
                     message="Segment not found",
@@ -10246,6 +10636,7 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
         conn.commit()
         _set_profile_generation_job(
             job_id,
+            persist=True,
             status="completed",
             message="Profile generation completed",
             drafts=_drafts_with_brand_context(
@@ -10263,6 +10654,7 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
             conn.rollback()
         _set_profile_generation_job(
             job_id,
+            persist=True,
             status="failed",
             error=error.code,
             message=error.message,
@@ -10274,6 +10666,7 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
         app.logger.exception("Async Profile generation failed: %s", error)
         _set_profile_generation_job(
             job_id,
+            persist=True,
             status="failed",
             error="profile_generation_failed",
             message=str(error) or "Profile generation failed",
@@ -10390,8 +10783,18 @@ def admin_segments_generate_api():
     from psycopg2.extras import RealDictCursor
 
     payload = request.get_json(silent=True) or {}
-    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
-    brand_id = _brand_id_value(payload)
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                brand_selection = _resolve_admin_brand_selection(cur, payload)
+            except BrandSelectionAmbiguous as error:
+                return jsonify({"success": False, "error": "ambiguous_brand", "brands": error.candidates}), 409
+    finally:
+        conn.close()
+    brand_name = brand_selection.get("brand_name") or ""
+    brand_id = brand_selection.get("brand_id")
+    payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
     service = SegmentProfileGenerationService(model=payload.get("llm_model"))
@@ -10672,16 +11075,39 @@ def admin_segment_profiles_generate_api(segment_id):
     from psycopg2.extras import RealDictCursor
 
     payload = request.get_json(silent=True) or {}
-    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            brand_payload = dict(payload)
+            if not _brand_id_value(brand_payload) and segment.get("brand_id"):
+                brand_payload["brand_id"] = segment.get("brand_id")
+            if not _brand_name_value(brand_payload) and segment.get("brand_name"):
+                brand_payload["brand_name"] = segment.get("brand_name")
+            try:
+                brand_selection = _resolve_admin_brand_selection(cur, brand_payload)
+            except BrandSelectionAmbiguous as error:
+                return jsonify({"success": False, "error": "ambiguous_brand", "brands": error.candidates}), 409
+    finally:
+        conn.close()
+
+    brand_name = brand_selection.get("brand_name") or ""
+    brand_id = brand_selection.get("brand_id")
+    payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
     if payload.get("async_generation") or payload.get("async"):
         job_id = str(uuid.uuid4())
         _set_profile_generation_job(
             job_id,
+            persist=True,
             status="queued",
             segment_id=str(segment_id).strip().upper(),
             message="Profile generation queued",
+            input_params=payload,
+            created_by=admin["id"],
         )
         thread = threading.Thread(
             target=_run_profile_generation_job,
@@ -10702,26 +11128,22 @@ def admin_segment_profiles_generate_api(segment_id):
                 "job_id": job_id,
             }
         ), 202
+
+    service = SegmentProfileGenerationService(model=payload.get("llm_model"))
+    try:
+        result = service.generate_profiles(
+            segment=segment,
+            brand_name=brand_name,
+            count=_clamp_int(payload.get("count"), 6, 1, 50),
+            goal=payload.get("goal") or "",
+            constraints=payload.get("constraints") or payload.get("notes") or "",
+        )
+    except SegmentProfileGenerationError as error:
+        return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
+
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            segment = _get_segment(cur, segment_id)
-            if not segment:
-                return jsonify({"success": False, "error": "segment_not_found"}), 404
-            brand_id = segment.get("brand_id") or _brand_id_value(payload)
-            draft_brand_name = segment.get("brand_name") or brand_name
-            service = SegmentProfileGenerationService(model=payload.get("llm_model"))
-            try:
-                result = service.generate_profiles(
-                    segment=segment,
-                    brand_name=brand_name,
-                    count=_clamp_int(payload.get("count"), 6, 1, 50),
-                    goal=payload.get("goal") or "",
-                    constraints=payload.get("constraints") or payload.get("notes") or "",
-                )
-            except SegmentProfileGenerationError as error:
-                conn.rollback()
-                return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
             _write_profile_generation_log(cur, admin["id"], segment_id, payload, result)
             _insert_admin_audit_log(
                 cur,
@@ -10738,7 +11160,7 @@ def admin_segment_profiles_generate_api(segment_id):
     drafts = _drafts_with_brand_context(
         result.items,
         brand_id=brand_id,
-        brand_name=draft_brand_name,
+        brand_name=segment.get("brand_name") or brand_name,
         segment_id=segment_id,
     )
     return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
