@@ -106,6 +106,15 @@ jobs:
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
             GENPANO_ENVIRONMENT=production
+            # Admin cookie Secure flag — explicit. Default 0 because the
+            # current deployment serves the admin SPA over plain HTTP
+            # (http://<SERVER_HOST>); browsers silently drop Secure cookies
+            # over HTTP, which manifested as every /api/admin/* request
+            # 401-ing with admin_session_required even after a successful
+            # login (see PR #358). Flip to 1 once the server is fronted by
+            # TLS, by setting either the ADMIN_COOKIE_SECURE secret or
+            # variable in this repo's GitHub settings.
+            ADMIN_COOKIE_SECURE=${{ secrets.ADMIN_COOKIE_SECURE || vars.ADMIN_COOKIE_SECURE || '0' }}
             ADMIN_SESSION_SECRET=${{ secrets.ADMIN_SESSION_SECRET || secrets.JWT_SECRET }}
             ADMIN_BASE_URL=${{ secrets.ADMIN_BASE_URL }}
             ADMIN_EMAIL_FROM=${{ secrets.ADMIN_EMAIL_FROM }}
