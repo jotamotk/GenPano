@@ -585,6 +585,133 @@ class SegmentProfileGenerationService:
             estimated_cost=0.0,
         )
 
+    async def generate_profiles(
+        self,
+        *,
+        segment: dict[str, Any],
+        brand_name: str,
+        count: int,
+        goal: str,
+        constraints: str,
+    ) -> GenerationResult:
+        """Generate Profile drafts for one Segment (LLM single-shot).
+
+        Mirrors admin_console.SegmentProfileGenerationService.generate_profiles
+        line-for-line; the only difference is ``_call_llm_json`` is async
+        + httpx instead of sync OpenAI SDK.
+        """
+        count = _bounded_count(count, 6, 1, 50)
+        payload = {
+            "segment": segment,
+            "brand_name": brand_name,
+            "count": count,
+            "goal": goal,
+            "constraints": constraints,
+        }
+        prompt = _json_prompt(
+            "generate_profiles",
+            payload,
+            {
+                "profiles": [
+                    {
+                        "id": "P-CODE",
+                        "name": "string",
+                        "demographic": "string",
+                        "need": "string",
+                        "weight": 1.0,
+                        "status": "draft|active|paused",
+                        "persona_json": {},
+                    }
+                ]
+            },
+        )
+        try:
+            raw_items, model, usage = await self._call_llm_json(
+                prompt=prompt, root_key="profiles", max_count=count
+            )
+            return GenerationResult(
+                items=validate_profile_candidates(raw_items, count),
+                model=model,
+                prompt=prompt,
+                usage=usage,
+                estimated_cost=None,
+            )
+        except SegmentProfileGenerationError:
+            if not self.allow_fallback:
+                raise
+        return self._fallback_profiles(
+            segment=segment, brand_name=brand_name, count=count, prompt=prompt
+        )
+
+    def _fallback_profiles(
+        self,
+        *,
+        segment: dict[str, Any],
+        brand_name: str,
+        count: int,
+        prompt: str,
+    ) -> GenerationResult:
+        """Deterministic fallback used only when ``allow_fallback`` is set."""
+        segment_id = str(segment.get("id") or segment.get("code") or "SEG").upper()
+        suffix = re.sub(r"[^A-Z0-9]+", "-", segment_id).strip("-")[-18:] or "SEG"
+        brand = (brand_name or "Brand").strip() or "Brand"
+        base_demo = " / ".join(
+            value
+            for value in [
+                str(segment.get("age_range") or segment.get("ageRange") or "").strip(),
+                str(segment.get("income") or "").strip(),
+                str(segment.get("regions") or "").strip(),
+            ]
+            if value
+        ) or str(segment.get("name") or "Segment")
+        archetypes = [
+            ("Evidence seeker", "Needs proof, comparisons, expert backing, and real reviews."),
+            (
+                "Promotion optimizer",
+                "Compares bundles, official channels, discounts, and final price.",
+            ),
+            (
+                "Scenario buyer",
+                "Frames the question around a concrete occasion and risk of mismatch.",
+            ),
+            (
+                "Competitor comparer",
+                "Needs a direct standard for comparing substitutes and trade-offs.",
+            ),
+            ("Repeat buyer", "Cares about long-term experience, availability, and upgrade value."),
+            ("First-time buyer", "Needs a simple buying path and beginner-friendly explanation."),
+            ("Risk checker", "Looks for downsides, after-sales risk, and negative feedback."),
+            (
+                "Channel verifier",
+                "Needs trusted source, authenticity, and purchase-channel guidance.",
+            ),
+        ]
+        items: list[dict[str, Any]] = []
+        for index in range(count):
+            title, need = archetypes[index % len(archetypes)]
+            items.append(
+                {
+                    "id": f"P-{suffix}-{index + 1:02d}",
+                    "name": title,
+                    "demographic": base_demo,
+                    "need": f"{brand}: {need}",
+                    "weight": min(1.0, round(0.8 + (index % 5) * 0.05, 2)),
+                    "status": "draft",
+                    "persona_json": {
+                        "segment_id": segment_id,
+                        "brand": brand,
+                        "archetype": title,
+                    },
+                }
+            )
+        return GenerationResult(
+            items=validate_profile_candidates(items, count),
+            model="fallback-segment-profile-v1",
+            prompt=prompt,
+            usage={"total_tokens": 0, "source": "deterministic_fallback"},
+            estimated_cost=0.0,
+        )
+
 
 def segment_profile_generation_status(error: SegmentProfileGenerationError) -> int:
     """Map LLM error code → HTTP status. 503 for upstream / config issues
