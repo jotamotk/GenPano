@@ -335,9 +335,7 @@ async def list_users(
         sort_key = sort_key[:-4]
     elif sort_key.endswith("_desc"):
         sort_key = sort_key[:-5]
-    sort_field: Any = (
-        User.last_login_at if sort_key == "last_login_at" else User.created_at
-    )
+    sort_field: Any = User.last_login_at if sort_key == "last_login_at" else User.created_at
     base_stmt = base_stmt.order_by(
         desc(sort_field) if direction_desc else sort_field, User.id.asc()
     )
