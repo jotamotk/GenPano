@@ -12982,6 +12982,7 @@ function adminApp() {
       try {
         const res = await fetch('/api/admin/topic-plan/config', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic Plan config failed');
         this.topicPlanIndustries = body.industries || [];
         this.topicPlanCategories = body.categories || [];
@@ -14356,6 +14357,7 @@ function adminApp() {
       try {
         const res = await fetch('/api/admin/prompt-matrix/config', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt Matrix config failed');
         const defaults = body.defaults || {};
         this.promptMatrixConfig = {

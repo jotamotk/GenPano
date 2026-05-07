@@ -75,9 +75,28 @@ async def current_admin(
     still active. Suspended accounts are rejected with 401 (rather than
     silently letting them through) so frozen operators get logged out
     on next request.
+
+    Self-heal on bad cookies: if the request carried a
+    ``genpano_admin_session`` cookie but the signed payload couldn't be
+    decoded (most commonly because ``ADMIN_SESSION_SECRET`` rotated since
+    the cookie was issued), Starlette's SessionMiddleware silently empties
+    ``request.session`` and treats it as anonymous — but doesn't clear the
+    bad cookie on the response. The browser keeps sending it forever and
+    every admin request keeps 401-ing. We detect that case via
+    ``cookie_present and not admin_user_id`` and explicitly set
+    ``Set-Cookie: genpano_admin_session=; Max-Age=0`` on the response so
+    the browser drops the bad cookie; the next page load is anonymous and
+    the SPA forces a re-login.
     """
     admin_user_id = request.session.get("admin_user_id")
     if not admin_user_id:
+        if "genpano_admin_session" in request.cookies:
+            # Tag the request so the exception handler in app/main.py
+            # can clear the un-decryptable cookie on the 401 response.
+            # Setting it on response.headers directly here doesn't survive
+            # FastAPI's HTTPException wrapping — the handler builds a
+            # fresh JSONResponse — so we route via request.state instead.
+            request.state.clear_admin_session_cookie = True
         raise _problem(401, "admin_session_required", "请先登录")
 
     admin = (
