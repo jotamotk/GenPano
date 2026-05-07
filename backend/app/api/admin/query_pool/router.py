@@ -819,3 +819,99 @@ async def preflight(
             "preflight_summary": preflight_summary,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 slice 3b-iii — POST /assemble (creates 'running' run + spawns worker)
+# ---------------------------------------------------------------------------
+
+
+from app.admin.query_pool.generation import schedule_assembly_worker  # noqa: E402
+from app.db.session import AsyncSessionLocal  # noqa: E402
+
+_ASSEMBLE_VALUE_ERRORS = _PREFLIGHT_VALUE_ERRORS
+
+
+@router.post("/assemble", response_model=None)
+async def assemble(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Validate config, insert 'running' run row, spawn LLM worker, 202.
+
+    Synchronous prefix matches /preflight: same validation surface, same
+    ValueError → 422 mapping. After the run row exists the LLM worker is
+    scheduled as a background task; the request returns immediately so the
+    SPA can switch into "watching" mode against ``GET /runs/{id}``. Audit
+    rows are emitted by the worker on terminal state — see
+    generation.execute_generation (emit_audit; ADR-014 satisfied).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    try:
+        config = query_pool_config(payload)
+        selection = query_pool_selection_payload(payload)
+        max_prompt_count = max(1, config["max_candidates"])
+        prompt_ids = await qp_db.fetch_prompt_ids_from_selection(
+            session, selection, max_prompt_count
+        )
+        if not prompt_ids:
+            raise ValueError("prompt_selection_required")
+        prompt_rows = await qp_db.fetch_query_pool_prompt_rows(session, prompt_ids)
+        if not prompt_rows:
+            raise ValueError("prompt_selection_empty")
+        seg_raw = (
+            payload.get("segment_ids") or (payload.get("config") or {}).get("segment_ids") or []
+        )
+        segment_ids = [str(s).strip() for s in seg_raw if str(s).strip()]
+        profile_pool = await qp_db.fetch_query_pool_profile_pool(session, segment_ids=segment_ids)
+        if not profile_pool:
+            raise ValueError("query_pool_profile_pool_empty")
+        contexts, raw_estimated = query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+        if not contexts:
+            raise ValueError("query_pool_no_candidates")
+        preflight_summary = query_pool_summary(
+            contexts=contexts,
+            profile_pool=profile_pool,
+            config=config,
+            raw_estimated=raw_estimated,
+            generation_method="llm_estimate",
+        )
+        run = await qp_db.start_query_pool_assembly_run(
+            session,
+            admin_id=operator.id,
+            config=config,
+            selection=selection,
+            prompt_ids=[str(p.get("id")) for p in prompt_rows],
+            contexts=contexts,
+            preflight_summary=preflight_summary,
+        )
+    except ValueError as exc:
+        code = str(exc) if str(exc) in _ASSEMBLE_VALUE_ERRORS else "query_pool_assemble_failed"
+        raise validation_error("config", code) from exc
+
+    schedule_assembly_worker(
+        AsyncSessionLocal,
+        run_id=run["id"],
+        operator_id=operator.id,
+        contexts=contexts,
+        profile_pool=profile_pool,
+        config=config,
+        selection=selection,
+        raw_estimated=raw_estimated,
+    )
+    # 202 Accepted — worker terminates asynchronously; SPA polls
+    # GET /runs/{run_id} for progress.
+    from fastapi import status as http_status
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(  # type: ignore[return-value]
+        status_code=http_status.HTTP_202_ACCEPTED,
+        content={"success": True, "run": run},
+    )
