@@ -382,3 +382,275 @@ async def generate_segments_route(
             "usage": result.usage,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 slice 6b — profiles within-segment list + CRUD + import + export
+# ---------------------------------------------------------------------------
+
+
+from app.admin.segments.db import (  # noqa: E402
+    create_profile as _create_profile_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    fetch_profiles as _fetch_profiles_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    get_profile as _get_profile_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    get_segment as _get_segment_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    import_profiles_bulk as _import_profiles_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    soft_delete_profile as _soft_delete_profile_db,
+)
+from app.admin.segments.db import (  # noqa: E402
+    update_profile as _update_profile_db,
+)
+
+_PROFILE_PAYLOAD_ERRORS = {
+    "profile_name_required",
+    "invalid_profile_status",
+    "segment_not_found",
+    "profile_id_exists",
+}
+
+
+@router.get("/{segment_id}/profiles", response_model=None)
+async def list_profiles(
+    segment_id: str,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    page: int = Query(1, ge=1, le=100_000),
+    per_page: int = Query(100, ge=1, le=100_000),
+    q: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+) -> dict[str, Any]:
+    """Paged profiles for one segment (404 when segment is missing)."""
+    seg = await _get_segment_db(session, segment_id)
+    if seg is None:
+        raise not_found("segment_not_found")
+    rows, total = await _fetch_profiles_db(
+        session,
+        segment_id,
+        page=page,
+        per_page=per_page,
+        q=q,
+        status=status_filter,
+    )
+    total_pages = (total + per_page - 1) // per_page if per_page else 1
+    return {
+        "success": True,
+        "rows": rows,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+@router.post("/{segment_id}/profiles", response_model=None)
+async def create_profile(
+    segment_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Create one profile under ``segment_id``. emit_audit (med,
+    action=create_profile)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        row = await _create_profile_db(session, segment_id, payload, operator.id)
+    except ValueError as exc:
+        if str(exc) == "segment_not_found":
+            raise not_found("segment_not_found") from exc
+        code = str(exc) if str(exc) in _PROFILE_PAYLOAD_ERRORS else "profile_create_failed"
+        raise validation_error("payload", code) from exc
+    await emit_audit(
+        session,
+        operator=operator,
+        action="create_profile",
+        severity="med",
+        resource_type="profile",
+        resource_id=str(row.get("id") or ""),
+        after=row,
+        reason=str(payload.get("reason") or "create_profile"),
+        request=request,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={"success": True, "profile": row},
+    )
+
+
+@router.put("/{segment_id}/profiles/{profile_id}", response_model=None)
+async def update_profile(
+    segment_id: str,
+    profile_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Update profile + emit_audit (med, action=update_profile)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    before = await _get_profile_db(session, segment_id, profile_id)
+    if before is None:
+        raise not_found("profile_not_found")
+    try:
+        row = await _update_profile_db(session, segment_id, profile_id, payload, operator.id)
+    except ValueError as exc:
+        if str(exc) == "segment_not_found":
+            raise not_found("segment_not_found") from exc
+        code = str(exc) if str(exc) in _PROFILE_PAYLOAD_ERRORS else "profile_update_failed"
+        raise validation_error("payload", code) from exc
+    if row is None:
+        raise not_found("profile_not_found")
+    await emit_audit(
+        session,
+        operator=operator,
+        action="update_profile",
+        severity="med",
+        resource_type="profile",
+        resource_id=str(row.get("id") or ""),
+        before=before,
+        after=row,
+        reason=str(payload.get("reason") or "update_profile"),
+        request=request,
+    )
+    return {"success": True, "profile": row}
+
+
+@router.delete("/{segment_id}/profiles/{profile_id}", response_model=None)
+async def delete_profile(
+    segment_id: str,
+    profile_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Soft-delete a profile. emit_audit (high, action=delete_profile)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    before = await _soft_delete_profile_db(session, segment_id, profile_id, operator.id)
+    if before is None:
+        raise not_found("profile_not_found")
+    await emit_audit(
+        session,
+        operator=operator,
+        action="delete_profile",
+        severity="high",
+        resource_type="profile",
+        resource_id=str(before.get("id") or ""),
+        before=before,
+        after={"status": "deleted", "is_deleted": True},
+        reason=str(payload.get("reason") or "delete_profile"),
+        request=request,
+    )
+    return {"success": True, "profile": before}
+
+
+@router.post("/{segment_id}/profiles/import", response_model=None)
+async def import_profiles(
+    segment_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Bulk-upsert profiles for one segment. Single import_profiles
+    audit row covers the whole batch."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    rows_raw = payload.get("rows") or payload.get("profiles") or []
+    if not isinstance(rows_raw, list):
+        raise validation_error("rows", "rows_must_be_array")
+    rows = [r for r in rows_raw if isinstance(r, dict)]
+    try:
+        result = await _import_profiles_db(session, segment_id, rows, operator.id)
+    except ValueError as exc:
+        if str(exc) == "segment_not_found":
+            raise not_found("segment_not_found") from exc
+        raise validation_error("payload", str(exc)) from exc
+    await emit_audit(
+        session,
+        operator=operator,
+        action="import_profiles",
+        severity="med",
+        resource_type="profile",
+        resource_id=str(segment_id).strip().upper(),
+        after={
+            "added": result["added"],
+            "updated": result["updated"],
+            "skipped": result["skipped"],
+        },
+        reason=str(payload.get("reason") or "import_profiles"),
+        request=request,
+    )
+    return {"success": True, **result}
+
+
+@router.get("/{segment_id}/profiles/export", response_model=None)
+async def export_profiles(
+    segment_id: str,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> Any:
+    """Return profiles for ``segment_id`` as a CSV download.
+
+    Matches admin_console's wire shape — ``Content-Type: text/csv`` +
+    ``Content-Disposition: attachment; filename=<seg>-profiles.csv`` —
+    so the SPA's ``window.location.href = url`` keeps producing the
+    same downloaded file.
+    """
+    import csv
+    import io
+
+    from fastapi.responses import Response
+
+    seg = await _get_segment_db(session, segment_id)
+    if seg is None:
+        raise not_found("segment_not_found")
+    rows, _total = await _fetch_profiles_db(session, segment_id, page=1, per_page=100_000)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "segment_id", "name", "demographic", "need", "weight", "status"])
+    for profile in rows:
+        writer.writerow(
+            [
+                profile["id"],
+                seg["id"],
+                profile["name"],
+                profile["demographic"],
+                profile["need"],
+                profile["weight"],
+                profile["status"],
+            ]
+        )
+    filename = f"{seg['id']}-profiles.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

@@ -609,3 +609,310 @@ async def write_segment_generation_log(
         except Exception:
             pass
         logger.warning("segment_generation_logs INSERT failed (table missing?): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Profile CRUD (Phase 6 slice 6b)
+# ---------------------------------------------------------------------------
+
+
+from app.admin.segments.lib import profile_payload, profile_row  # noqa: E402
+
+
+async def fetch_profiles(
+    session: AsyncSession,
+    segment_id: str,
+    *,
+    page: int = 1,
+    per_page: int = 100,
+    q: str | None = None,
+    status: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Page + filter profiles for a single segment.
+
+    Wire shape: ``(rows, total)`` — paginated rows are wire-shape via
+    ``profile_row``; ``total`` is the unpaged count under the same
+    filters. Joins ``segments s`` so blank-on-profile brand_*
+    inherits from the parent.
+    """
+    page = max(int(page or 1), 1)
+    per_page = max(1, min(int(per_page or 100), 100000))
+    offset = (page - 1) * per_page
+    sid = str(segment_id).strip().upper()
+    where: list[str] = [
+        "p.segment_id = :sid",
+        "COALESCE(p.is_deleted, FALSE) = FALSE",
+        "COALESCE(p.status, 'draft') <> 'deleted'",
+    ]
+    params: dict[str, Any] = {"sid": sid}
+    qq = (q or "").strip()
+    if qq:
+        params["like"] = f"%{qq}%"
+        where.append(
+            "(COALESCE(p.code, '') ILIKE :like OR CAST(p.id AS TEXT) ILIKE :like "
+            "OR p.name ILIKE :like OR COALESCE(p.brand_name, '') ILIKE :like "
+            "OR COALESCE(p.demographic, '') ILIKE :like "
+            "OR COALESCE(p.need, '') ILIKE :like "
+            "OR COALESCE(p.status, '') ILIKE :like)"
+        )
+    p_status = (status or "").strip().lower()
+    if p_status and p_status != "all":
+        where.append("p.status = :status")
+        params["status"] = p_status
+    where_clause = " AND ".join(where)
+    total_row = (
+        (
+            await session.execute(
+                text(f"SELECT COUNT(*) AS cnt FROM profiles p WHERE {where_clause}"),
+                params,
+            )
+        )
+        .mappings()
+        .first()
+    )
+    total = int((dict(total_row) if total_row else {}).get("cnt") or 0)
+
+    page_params = dict(params)
+    page_params["limit"] = per_page
+    page_params["offset"] = offset
+    list_sql = text(
+        f"""
+        SELECT p.*,
+               COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id,
+               COALESCE(NULLIF(p.brand_id, ''), s.brand_id) AS brand_id,
+               COALESCE(NULLIF(p.brand_name, ''), s.brand_name, '') AS brand_name
+        FROM profiles p
+        LEFT JOIN segments s ON s.id = p.segment_id
+        WHERE {where_clause}
+        ORDER BY p.updated_at DESC NULLS LAST,
+                 p.created_at DESC NULLS LAST,
+                 p.id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    raw = (await session.execute(list_sql, page_params)).mappings().all()
+    return [profile_row(dict(r)) for r in raw], total
+
+
+async def get_profile(
+    session: AsyncSession, segment_id: str, profile_id: str
+) -> dict[str, Any] | None:
+    """Detail row by (segment_id, code-or-id). None when missing /
+    soft-deleted."""
+    sid = str(segment_id).strip().upper()
+    pid_upper = str(profile_id).strip().upper()
+    pid_raw = str(profile_id).strip()
+    sql = text(
+        """
+        SELECT p.*,
+               COALESCE(p.code, CAST(p.id AS TEXT)) AS api_id,
+               COALESCE(NULLIF(p.brand_id, ''), s.brand_id) AS brand_id,
+               COALESCE(NULLIF(p.brand_name, ''), s.brand_name, '') AS brand_name
+        FROM profiles p
+        LEFT JOIN segments s ON s.id = p.segment_id
+        WHERE p.segment_id = :sid
+          AND (p.code = :pid_upper OR CAST(p.id AS TEXT) = :pid_raw)
+          AND COALESCE(p.is_deleted, FALSE) = FALSE
+          AND COALESCE(p.status, 'draft') <> 'deleted'
+        """
+    )
+    row = (
+        (await session.execute(sql, {"sid": sid, "pid_upper": pid_upper, "pid_raw": pid_raw}))
+        .mappings()
+        .first()
+    )
+    return profile_row(dict(row)) if row else None
+
+
+async def create_profile(
+    session: AsyncSession,
+    segment_id: str,
+    payload: dict[str, Any],
+    admin_id: str,
+) -> dict[str, Any]:
+    """Insert a new profile under ``segment_id``.
+
+    Raises ``segment_not_found`` if parent missing,
+    ``profile_id_exists`` on collision with a non-deleted row.
+    """
+    seg = await get_segment(session, segment_id)
+    if not seg:
+        raise ValueError("segment_not_found")
+    data = profile_payload(payload, segment_id, segment=seg)
+    existing = (
+        await session.execute(
+            text(
+                """
+                SELECT 1 FROM profiles
+                WHERE segment_id = :sid
+                  AND (code = :code OR CAST(id AS TEXT) = :pid)
+                  AND COALESCE(is_deleted, FALSE) = FALSE
+                """
+            ),
+            {"sid": data["segment_id"], "code": data["code"], "pid": data["id"]},
+        )
+    ).first()
+    if existing:
+        raise ValueError("profile_id_exists")
+    prof = Profile(
+        id=data["id"],
+        code=data["code"],
+        segment_id=data["segment_id"],
+        brand_id=data["brand_id"],
+        brand_name=data["brand_name"],
+        name=data["name"],
+        demographic=data["demographic"],
+        need=data["need"],
+        weight=data["weight"],
+        status=data["status"],
+        persona_json=data["persona_json"],
+        is_deleted=False,
+        created_by=admin_id,
+        updated_by=admin_id,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    session.add(prof)
+    await session.commit()
+    out = await get_profile(session, data["segment_id"], data["code"])
+    if out is None:
+        raise RuntimeError("profile vanished post-insert")
+    return out
+
+
+async def update_profile(
+    session: AsyncSession,
+    segment_id: str,
+    profile_id: str,
+    payload: dict[str, Any],
+    admin_id: str,
+) -> dict[str, Any] | None:
+    """Update a profile. Returns None if missing; raises ``ValueError``
+    on payload validation."""
+    seg = await get_segment(session, segment_id)
+    if not seg:
+        raise ValueError("segment_not_found")
+    existing = await get_profile(session, segment_id, profile_id)
+    if not existing:
+        return None
+    data = profile_payload(payload, segment_id, existing_id=profile_id, segment=seg)
+    sid = data["segment_id"]
+    pid_upper = str(profile_id).strip().upper()
+    pid_raw = str(profile_id).strip()
+    prof = (
+        await session.execute(
+            select(Profile).where(
+                Profile.segment_id == sid,
+                Profile.is_deleted.is_(False),
+                (Profile.code == pid_upper) | (Profile.id == pid_raw),
+            )
+        )
+    ).scalar_one_or_none()
+    if prof is None:
+        return None
+    prof.code = data["code"]
+    prof.brand_id = data["brand_id"]
+    prof.brand_name = data["brand_name"]
+    prof.name = data["name"]
+    prof.demographic = data["demographic"]
+    prof.need = data["need"]
+    prof.weight = data["weight"]
+    prof.status = data["status"]
+    prof.persona_json = data["persona_json"]
+    prof.updated_by = admin_id
+    prof.updated_at = _now()
+    await session.commit()
+    return await get_profile(session, segment_id, data["code"])
+
+
+async def soft_delete_profile(
+    session: AsyncSession,
+    segment_id: str,
+    profile_id: str,
+    admin_id: str,
+) -> dict[str, Any] | None:
+    """Soft-delete a profile. Returns the pre-delete row or None."""
+    before = await get_profile(session, segment_id, profile_id)
+    if not before:
+        return None
+    sid = str(segment_id).strip().upper()
+    pid_upper = str(profile_id).strip().upper()
+    pid_raw = str(profile_id).strip()
+    prof = (
+        await session.execute(
+            select(Profile).where(
+                Profile.segment_id == sid,
+                Profile.is_deleted.is_(False),
+                (Profile.code == pid_upper) | (Profile.id == pid_raw),
+            )
+        )
+    ).scalar_one_or_none()
+    if prof is None:
+        return None
+    prof.status = "deleted"
+    prof.is_deleted = True
+    prof.deleted_at = _now()
+    prof.updated_by = admin_id
+    prof.updated_at = _now()
+    await session.commit()
+    return before
+
+
+async def import_profiles_bulk(
+    session: AsyncSession,
+    segment_id: str,
+    rows: list[Any] | None,
+    admin_id: str,
+) -> dict[str, Any]:
+    """Bulk-upsert profiles for one segment.
+
+    Per-row failures (validation errors) counted as ``skipped`` with
+    a structured ``skipped_rows`` list, matching admin_console.
+    """
+    seg = await get_segment(session, segment_id)
+    if not seg:
+        raise ValueError("segment_not_found")
+    added = 0
+    updated = 0
+    skipped = 0
+    output: list[dict[str, Any]] = []
+    skipped_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            skipped += 1
+            skipped_rows.append(
+                {"index": index, "error": "profile_row_must_be_object", "id": None, "name": None}
+            )
+            continue
+        try:
+            existing = await get_profile(
+                session, segment_id, row.get("id") or row.get("code") or ""
+            )
+            if existing:
+                updated_row = await update_profile(
+                    session, segment_id, existing["id"], row, admin_id
+                )
+                if updated_row is None:
+                    raise ValueError("profile_update_failed")
+                output.append(updated_row)
+                updated += 1
+            else:
+                output.append(await create_profile(session, segment_id, row, admin_id))
+                added += 1
+        except ValueError as error:
+            skipped += 1
+            skipped_rows.append(
+                {
+                    "index": index,
+                    "error": str(error) or error.__class__.__name__,
+                    "id": row.get("id"),
+                    "name": row.get("name"),
+                }
+            )
+    return {
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "rows": output,
+        "skipped_rows": skipped_rows,
+    }
