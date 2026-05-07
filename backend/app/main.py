@@ -123,6 +123,34 @@ from app.api.admin.query_pool import router as _query_pool_router  # noqa: E402
 
 app.include_router(_query_pool_router, prefix="/admin/api/v1/pipeline/query-pool")
 
+
+# Self-heal handler for un-decryptable admin session cookies.
+# See current_admin in app/api/admin/auth/router.py for the producer side.
+# Why this isn't done by SessionMiddleware: Starlette's middleware silently
+# swallows BadSignature into an empty session and treats it as anonymous,
+# but never emits Set-Cookie to clear the bad cookie. So after
+# ADMIN_SESSION_SECRET rotates (e.g. the env_file: .env hotfix in #347)
+# every browser holding an old cookie 401s forever. This handler turns
+# that ratchet off by emitting Max-Age=0 on the 401 response when
+# current_admin tagged the request.
+from fastapi import HTTPException, Request  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+
+@app.exception_handler(HTTPException)
+async def _admin_session_clear_on_bad_cookie(request: Request, exc: HTTPException) -> JSONResponse:
+    response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if getattr(request.state, "clear_admin_session_cookie", False):
+        response.delete_cookie(
+            "genpano_admin_session",
+            path="/",
+            samesite="strict",
+            httponly=True,
+            secure=os.environ.get("GENPANO_ENVIRONMENT") == "production",
+        )
+    return response
+
+
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
