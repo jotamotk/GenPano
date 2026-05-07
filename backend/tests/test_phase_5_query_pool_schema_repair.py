@@ -45,7 +45,7 @@ def test_admin_consolidation_repairs_existing_query_pool_tables_before_indexes()
 def test_query_pool_schema_repair_migration_patches_already_stamped_databases():
     text = REPAIR.read_text(encoding="utf-8")
     compact = " ".join(text.split())
-    assert 'revision: str = "20260507_query_pool_schema_repair"' in compact
+    assert 'revision: str = "20260507_qpool_repair"' in compact
     assert (
         'down_revision: str | Sequence[str] | None = "20260506_drop_audit_operator_fk"' in compact
     )
@@ -60,3 +60,10 @@ def test_query_pool_schema_repair_migration_patches_already_stamped_databases():
     _assert_add_column(text, "query_generation_candidates", "llm_model VARCHAR(128)")
     _assert_add_column(text, "query_generation_candidates", "llm_usage_json JSONB NOT NULL DEFAULT")
     assert "CREATE INDEX IF NOT EXISTS idx_query_candidates_generation_method" in compact
+
+
+def test_query_pool_repair_revision_fits_alembic_version_column():
+    text = REPAIR.read_text(encoding="utf-8")
+    revision_line = next(line for line in text.splitlines() if line.startswith("revision:"))
+    revision = revision_line.split("=", 1)[1].strip().strip('"')
+    assert len(revision) <= 32
