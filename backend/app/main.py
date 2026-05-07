@@ -162,6 +162,16 @@ from app.api.admin.segments import router as _segments_router  # noqa: E402
 
 app.include_router(_segments_router, prefix="/api/segments")
 
+# Legacy alias for the Accounts router (Phase 7 slice 7b — HIGHEST
+# sensitivity). admin_console served these at /api/accounts/* WITHOUT
+# admin auth; the FastAPI port keeps the same path AND adds
+# Depends(current_admin) on every handler. The cookie bridge gives us
+# the operator session, so admin.html keeps working unchanged while
+# direct curl calls now correctly 401.
+from app.api.admin.accounts import router as _accounts_router  # noqa: E402
+
+app.include_router(_accounts_router, prefix="/api/accounts")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
