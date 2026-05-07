@@ -17,6 +17,7 @@ Public:
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import uuid as _uuid
 from datetime import UTC, datetime
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _dialect_name(session: AsyncSession) -> str | None:
+    try:
+        bind = getattr(session, "bind", None) or session.get_bind()
+        return getattr(getattr(bind, "dialect", None), "name", None)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -312,25 +321,22 @@ async def soft_delete_segment(
     seg.deleted_at = _now()
     seg.updated_by = admin_id
     seg.updated_at = _now()
-    # Cascade-soft-delete child profiles (same as admin_console).
-    children = list(
-        (
-            await session.execute(
-                select(Profile).where(
-                    Profile.segment_id == sid,
-                    Profile.is_deleted.is_(False),
-                )
-            )
-        )
-        .scalars()
-        .all()
+    now = _now()
+    await session.execute(
+        text(
+            """
+            UPDATE profiles
+            SET status = 'deleted',
+                is_deleted = TRUE,
+                deleted_at = :now,
+                updated_by = :admin_id,
+                updated_at = :now
+            WHERE segment_id = :sid
+              AND COALESCE(is_deleted, FALSE) = FALSE
+            """
+        ),
+        {"sid": sid, "admin_id": admin_id, "now": now},
     )
-    for prof in children:
-        prof.status = "deleted"
-        prof.is_deleted = True
-        prof.deleted_at = _now()
-        prof.updated_by = admin_id
-        prof.updated_at = _now()
     await session.commit()
     return before
 
@@ -371,25 +377,28 @@ async def upsert_segment(
         existing.deleted_at = None
         existing.updated_by = admin_id
         existing.updated_at = _now()
-        # Refresh brand info on associated profiles too — admin_console does
-        # this so a brand rename via the import sheet propagates immediately.
-        children = list(
-            (
-                await session.execute(
-                    select(Profile).where(
-                        Profile.segment_id == data["id"],
-                        Profile.is_deleted.is_(False),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        # Refresh brand info on associated profiles too, using raw SQL so
+        # legacy integer profile ids don't flow through the string ORM model.
+        await session.execute(
+            text(
+                """
+                UPDATE profiles
+                SET brand_id = :brand_id,
+                    brand_name = :brand_name,
+                    updated_by = :admin_id,
+                    updated_at = :now
+                WHERE segment_id = :sid
+                  AND COALESCE(is_deleted, FALSE) = FALSE
+                """
+            ),
+            {
+                "sid": data["id"],
+                "brand_id": data["brand_id"],
+                "brand_name": data["brand_name"],
+                "admin_id": admin_id,
+                "now": _now(),
+            },
         )
-        for prof in children:
-            prof.brand_id = data["brand_id"]
-            prof.brand_name = data["brand_name"]
-            prof.updated_by = admin_id
-            prof.updated_at = _now()
         await session.commit()
         out = await get_segment(session, data["id"])
         if out is None:
@@ -619,6 +628,73 @@ async def write_segment_generation_log(
 from app.admin.segments.lib import profile_payload, profile_row  # noqa: E402
 
 
+async def _profiles_use_integer_id(session: AsyncSession) -> bool:
+    if _dialect_name(session) not in {None, "postgresql"}:
+        return False
+    try:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT data_type, udt_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'profiles'
+                          AND column_name = 'id'
+                        LIMIT 1
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .first()
+        )
+    except Exception as exc:
+        logger.warning("profiles.id schema probe failed: %s", exc)
+        return False
+    info = dict(row or {})
+    return info.get("data_type") in {"integer", "bigint", "smallint"} or info.get("udt_name") in {
+        "int4",
+        "int8",
+        "int2",
+    }
+
+
+async def _sync_profiles_id_sequence(session: AsyncSession) -> bool:
+    try:
+        seq_row = (
+            (
+                await session.execute(
+                    text("SELECT pg_get_serial_sequence('profiles', 'id') AS sequence_name")
+                )
+            )
+            .mappings()
+            .first()
+        )
+        sequence_name = (dict(seq_row or {}).get("sequence_name") or "").strip()
+        if not sequence_name:
+            return False
+        max_row = (
+            (await session.execute(text("SELECT COALESCE(MAX(id), 0) AS max_id FROM profiles")))
+            .mappings()
+            .first()
+        )
+        max_id = int(dict(max_row or {}).get("max_id") or 0)
+        await session.execute(
+            text("SELECT setval(to_regclass(:sequence_name), :next_value, :is_called)"),
+            {
+                "sequence_name": sequence_name,
+                "next_value": max(max_id, 1),
+                "is_called": max_id > 0,
+            },
+        )
+        return True
+    except Exception as exc:
+        logger.warning("profiles.id sequence sync failed: %s", exc)
+        return False
+
+
 async def fetch_profiles(
     session: AsyncSession,
     segment_id: str,
@@ -754,6 +830,50 @@ async def create_profile(
     ).first()
     if existing:
         raise ValueError("profile_id_exists")
+    if await _profiles_use_integer_id(session):
+        await _sync_profiles_id_sequence(session)
+        now = _now()
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO profiles (
+                    code, segment_id, brand_id, brand_name, name, demographic,
+                    need, weight, status, persona_json, is_deleted,
+                    created_by, updated_by, created_at, updated_at
+                )
+                VALUES (
+                    :code, :segment_id, :brand_id, :brand_name, :name, :demographic,
+                    :need, :weight, :status, CAST(:persona_json AS jsonb), FALSE,
+                    :created_by, :updated_by, :created_at, :updated_at
+                )
+                RETURNING *, COALESCE(code, CAST(id AS TEXT)) AS api_id
+                """
+            ),
+            {
+                "code": data["code"],
+                "segment_id": data["segment_id"],
+                "brand_id": data["brand_id"],
+                "brand_name": data["brand_name"],
+                "name": data["name"],
+                "demographic": data["demographic"],
+                "need": data["need"],
+                "weight": data["weight"],
+                "status": data["status"],
+                "persona_json": _json.dumps(data["persona_json"], default=str),
+                "created_by": admin_id,
+                "updated_by": admin_id,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        inserted = result.mappings().first()
+        await session.commit()
+        if inserted:
+            return profile_row(dict(inserted))
+        out = await get_profile(session, data["segment_id"], data["code"])
+        if out is None:
+            raise RuntimeError("profile vanished post-insert")
+        return out
     prof = Profile(
         id=data["id"],
         code=data["code"],
@@ -799,6 +919,46 @@ async def update_profile(
     sid = data["segment_id"]
     pid_upper = str(profile_id).strip().upper()
     pid_raw = str(profile_id).strip()
+    if await _profiles_use_integer_id(session):
+        await session.execute(
+            text(
+                """
+                UPDATE profiles
+                SET code = :code,
+                    brand_id = :brand_id,
+                    brand_name = :brand_name,
+                    name = :name,
+                    demographic = :demographic,
+                    need = :need,
+                    weight = :weight,
+                    status = :status,
+                    persona_json = CAST(:persona_json AS jsonb),
+                    updated_by = :admin_id,
+                    updated_at = :updated_at
+                WHERE segment_id = :sid
+                  AND (code = :pid_upper OR CAST(id AS TEXT) = :pid_raw)
+                  AND COALESCE(is_deleted, FALSE) = FALSE
+                """
+            ),
+            {
+                "sid": sid,
+                "pid_upper": pid_upper,
+                "pid_raw": pid_raw,
+                "code": data["code"],
+                "brand_id": data["brand_id"],
+                "brand_name": data["brand_name"],
+                "name": data["name"],
+                "demographic": data["demographic"],
+                "need": data["need"],
+                "weight": data["weight"],
+                "status": data["status"],
+                "persona_json": _json.dumps(data["persona_json"], default=str),
+                "admin_id": admin_id,
+                "updated_at": _now(),
+            },
+        )
+        await session.commit()
+        return await get_profile(session, segment_id, data["code"])
     prof = (
         await session.execute(
             select(Profile).where(
@@ -838,6 +998,32 @@ async def soft_delete_profile(
     sid = str(segment_id).strip().upper()
     pid_upper = str(profile_id).strip().upper()
     pid_raw = str(profile_id).strip()
+    if await _profiles_use_integer_id(session):
+        now = _now()
+        await session.execute(
+            text(
+                """
+                UPDATE profiles
+                SET status = 'deleted',
+                    is_deleted = TRUE,
+                    deleted_at = :now,
+                    updated_by = :admin_id,
+                    updated_at = :now
+                WHERE segment_id = :sid
+                  AND (code = :pid_upper OR CAST(id AS TEXT) = :pid_raw)
+                  AND COALESCE(is_deleted, FALSE) = FALSE
+                """
+            ),
+            {
+                "sid": sid,
+                "pid_upper": pid_upper,
+                "pid_raw": pid_raw,
+                "admin_id": admin_id,
+                "now": now,
+            },
+        )
+        await session.commit()
+        return before
     prof = (
         await session.execute(
             select(Profile).where(
