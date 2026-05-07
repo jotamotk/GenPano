@@ -213,7 +213,7 @@ async def fetch_topics(
     sql = text(
         f"""
         SELECT t.id, t.brand_id, t.text, t.category,
-               t.created_at, COALESCE(t.updated_at, t.created_at) AS updated_at,
+               t.created_at, t.created_at AS updated_at,
                b.name AS brand_name,
                COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry,
                COALESCE(pm.prompt_count, 0)::int AS prompt_count,

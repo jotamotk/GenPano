@@ -63,6 +63,24 @@ def _patch(monkeypatch, **overrides):
         monkeypatch.setattr(pm_db, name, value)
 
 
+class _EmptyMappingsResult:
+    def all(self):
+        return []
+
+
+class _EmptyResult:
+    def mappings(self):
+        return _EmptyMappingsResult()
+
+
+class _PromptMatrixTopicSqlProbe:
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        assert "t.updated_at" not in sql
+        assert "t.created_at AS updated_at" in sql
+        return _EmptyResult()
+
+
 # ── /config ───────────────────────────────────────────────────
 
 
@@ -161,6 +179,23 @@ async def test_topics_returns_paged_rows(client, admin_operator, monkeypatch):
     assert body["success"] is True
     assert body["rows"][0]["id"] == "T-1"
     assert body["pagination"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_topics_does_not_select_nonexistent_topics_updated_at():
+    from app.admin.prompt_matrix.db import fetch_topics
+
+    rows, total, summary = await fetch_topics(_PromptMatrixTopicSqlProbe())
+
+    assert rows == []
+    assert total == 0
+    assert summary == {
+        "topicsTotal": 0,
+        "matchingTopics": 0,
+        "topicsNoPrompt": 0,
+        "topicsPartialIntent": 0,
+        "topicsRisk": 0,
+    }
 
 
 @pytest.mark.asyncio
