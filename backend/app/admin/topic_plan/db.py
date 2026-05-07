@@ -857,3 +857,165 @@ async def finalize_run(
 def topic_plan_run_failed_status_code(error_code: str | None) -> int:
     """Map a TopicPlanLLMError code to an HTTP status (mirrors admin_console)."""
     return 503 if str(error_code or "").startswith("llm_") else 502
+
+
+# ---------------------------------------------------------------------------
+# topic delete (Phase 3 B.3)
+# ---------------------------------------------------------------------------
+
+
+def parse_topic_id(value: Any) -> int:
+    """Accept ``42``, ``"42"`` or ``"T-42"``; raise ValueError on garbage."""
+    text_v = str(value or "").strip()
+    if text_v.upper().startswith("T-"):
+        text_v = text_v[2:]
+    if not text_v.isdigit():
+        raise ValueError("invalid_topic_id")
+    return int(text_v)
+
+
+def parse_topic_ids(value: Any) -> list[int]:
+    """Validate + dedupe a list of topic ids."""
+    if not isinstance(value, list):
+        raise ValueError("topic_ids_required")
+    out: list[int] = []
+    for item in value:
+        topic_id = parse_topic_id(item)
+        if topic_id not in out:
+            out.append(topic_id)
+    return out
+
+
+async def topic_dependency_counts(
+    session: AsyncSession, topic_ids: list[int]
+) -> dict[int, dict[str, int]]:
+    """For each topic id, return {prompt_count, query_count}.
+
+    Joined raw SQL against the ``prompts`` / ``queries`` upstream stubs;
+    a topic is considered "blocked" iff prompt_count > 0 OR query_count > 0.
+    """
+    counts = {int(t): {"prompt_count": 0, "query_count": 0} for t in topic_ids}
+    if not topic_ids:
+        return counts
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT p.topic_id,
+                           COUNT(DISTINCT p.id)::int AS prompt_count,
+                           COUNT(q.id)::int AS query_count
+                    FROM prompts p
+                    LEFT JOIN queries q ON q.prompt_id = p.id
+                    WHERE p.topic_id = ANY(:ids)
+                    GROUP BY p.topic_id
+                    """
+                ),
+                {"ids": topic_ids},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in rows:
+        topic_id = int(row["topic_id"])
+        counts[topic_id] = {
+            "prompt_count": int(row.get("prompt_count") or 0),
+            "query_count": int(row.get("query_count") or 0),
+        }
+    return counts
+
+
+async def delete_topic_plan_topics(
+    session: AsyncSession, topic_ids: list[int]
+) -> dict[str, list[Any]]:
+    """Delete topics by id with FK-aware blocking.
+
+    Returns ``{deleted: [...], blocked: [...], missing: [...]}``:
+    - ``deleted``: topics that had no prompts/queries and were removed
+    - ``blocked``: topics with downstream dependencies — kept, with counts
+    - ``missing``: ids that didn't exist in the topics table
+
+    Side-effect: clears ``topic_candidates.approved_topic_id`` on the
+    deleted ids so review history doesn't reference gone rows.
+    """
+    if not topic_ids:
+        return {"deleted": [], "blocked": [], "missing": []}
+
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT t.id, t.brand_id, t.text, t.category,
+                           COALESCE(t.status, 'active') AS status,
+                           b.name AS brand_name,
+                           COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry
+                    FROM topics t
+                    LEFT JOIN brands b ON b.id = t.brand_id
+                    WHERE t.id = ANY(:ids)
+                    ORDER BY t.id
+                    """
+                ),
+                {"ids": topic_ids},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    found_ids = {int(row["id"]) for row in rows}
+    missing = [t for t in topic_ids if t not in found_ids]
+    deps = await topic_dependency_counts(session, list(found_ids))
+
+    blocked: list[dict[str, Any]] = []
+    deletable_ids: list[int] = []
+    for row in rows:
+        topic_id = int(row["id"])
+        dep = deps.get(topic_id, {"prompt_count": 0, "query_count": 0})
+        if dep["prompt_count"] > 0 or dep["query_count"] > 0:
+            blocked.append(
+                {
+                    "id": f"T-{topic_id}",
+                    "raw_id": topic_id,
+                    "title": row.get("text"),
+                    "brand": row.get("brand_name"),
+                    "prompt_count": dep["prompt_count"],
+                    "query_count": dep["query_count"],
+                    "reason": "has_downstream_dependencies",
+                }
+            )
+        else:
+            deletable_ids.append(topic_id)
+
+    deleted: list[dict[str, Any]] = []
+    if deletable_ids:
+        await session.execute(
+            text(
+                """
+                UPDATE topic_candidates
+                SET approved_topic_id = NULL,
+                    updated_at = NOW()
+                WHERE approved_topic_id = ANY(:ids)
+                """
+            ),
+            {"ids": deletable_ids},
+        )
+        result = await session.execute(
+            text("DELETE FROM topics WHERE id = ANY(:ids) RETURNING id"),
+            {"ids": deletable_ids},
+        )
+        deleted_ids = {int(r[0]) for r in result.fetchall()}
+        deleted = [
+            {
+                "id": f"T-{int(row['id'])}",
+                "raw_id": int(row["id"]),
+                "title": row.get("text"),
+                "brand": row.get("brand_name"),
+                "industry": row.get("industry"),
+            }
+            for row in rows
+            if int(row["id"]) in deleted_ids
+        ]
+        await session.commit()
+
+    return {"deleted": deleted, "blocked": blocked, "missing": missing}

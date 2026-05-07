@@ -13290,7 +13290,7 @@ function adminApp() {
       if (!window.confirm('确定删除这个 Topic？此操作不可撤销。')) return;
       this.topicPlanDeleting = true;
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/topics/' + encodeURIComponent(id), {
+        const res = await fetch('/api/admin/topic-plan/topics/' + encodeURIComponent(id), {
           method:'DELETE',
           credentials:'same-origin',
         });
@@ -13321,7 +13321,7 @@ function adminApp() {
       if (!window.confirm('确定删除选中的 ' + ids.length + ' 个 Topic？此操作不可撤销。')) return;
       this.topicPlanDeleting = true;
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/topics/bulk-delete', {
+        const res = await fetch('/api/admin/topic-plan/topics/bulk-delete', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
