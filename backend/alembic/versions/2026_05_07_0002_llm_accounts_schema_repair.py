@@ -1,12 +1,12 @@
 """repair legacy llm_accounts schema drift
 
-Revision ID: 20260507_llm_accounts_schema_repair
-Revises: 20260507_query_pool_schema_repair
+Revision ID: 20260507_llm_accts_repair
+Revises: 20260507_qpool_repair
 Create Date: 2026-05-07
 
-Companion to ``20260507_query_pool_schema_repair`` — same bug class, different
-table. Existing operator databases already have ``llm_accounts`` (it predates
-the FastAPI port and is NOT in genpano_models). Phase 7 slice 7b moves cookie
+Companion to ``20260507_qpool_repair`` — same bug class, different table.
+Existing operator databases already have ``llm_accounts`` (it predates the
+FastAPI port and is NOT in genpano_models). Phase 7 slice 7b moves cookie
 import / status / reset / delete / auto_login into FastAPI; the new code
 SELECTs and UPDATEs the same column set admin_console used, but if any of
 those columns are missing on a legacy DB the SPA gets a 500.
@@ -14,14 +14,18 @@ those columns are missing on a legacy DB the SPA gets a 500.
 This migration is a defense-in-depth safety net: ``ALTER TABLE … ADD COLUMN
 IF NOT EXISTS`` for every column the ``app.admin.accounts`` package touches.
 Idempotent on healthy DBs, repairs broken ones, no-op on sqlite tests.
+
+Note on revision IDs: the alembic ``alembic_version`` column is VARCHAR(32),
+so revision strings must fit ≤32 chars (PR #370 made the same fix to the
+query_pool repair migration).
 """
 
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "20260507_llm_accounts_schema_repair"
-down_revision: str | Sequence[str] | None = "20260507_query_pool_schema_repair"
+revision: str = "20260507_llm_accts_repair"
+down_revision: str | Sequence[str] | None = "20260507_qpool_repair"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

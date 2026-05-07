@@ -762,6 +762,27 @@ def test_alembic_migration_present():
         "created_at",
     ):
         assert col in body, f"migration missing ALTER for column: {col}"
+    # Chained on top of PR #370's renamed query_pool repair.
+    assert 'down_revision: str | Sequence[str] | None = "20260507_qpool_repair"' in body
+    assert 'revision: str = "20260507_llm_accts_repair"' in body
+
+
+def test_llm_accounts_repair_revision_fits_alembic_version_column():
+    """Same constraint PR #370 enforced for the query_pool repair: the
+    alembic ``alembic_version`` column is VARCHAR(32). Revision IDs over
+    32 chars cause CD migrations to fail with a length-overflow error."""
+    import pathlib
+
+    target = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "2026_05_07_0002_llm_accounts_schema_repair.py"
+    )
+    body = target.read_text(encoding="utf-8")
+    revision_line = next(line for line in body.splitlines() if line.startswith("revision:"))
+    revision = revision_line.split("=", 1)[1].strip().strip('"')
+    assert len(revision) <= 32, f"revision id too long: {revision!r} ({len(revision)} chars)"
 
 
 # ── audit gate ───────────────────────────────────────────────
