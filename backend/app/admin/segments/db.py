@@ -916,3 +916,64 @@ async def import_profiles_bulk(
         "rows": output,
         "skipped_rows": skipped_rows,
     }
+
+
+async def write_profile_generation_log(
+    session: AsyncSession,
+    *,
+    admin_id: str,
+    segment_id: str,
+    payload: dict[str, Any],
+    model: str,
+    prompt: str,
+    items: list[dict[str, Any]],
+    usage: dict[str, Any],
+    estimated_cost: float | None,
+) -> None:
+    """Best-effort INSERT into ``profile_generation_logs``.
+
+    Uses a SAVEPOINT (begin_nested) so a failed INSERT doesn't poison
+    the calling session — important for the async worker where the
+    same session also writes the audit row right after this call.
+    On sqlite tests / fresh deployments where the table doesn't exist,
+    the savepoint releases cleanly and the warning is logged.
+    """
+    import json as _json
+
+    nested = await session.begin_nested()
+    try:
+        await session.execute(
+            text(
+                """
+                INSERT INTO profile_generation_logs
+                    (id, segment_id, llm_model, prompt_used, input_params, output_json,
+                     profiles_generated, profiles_skipped, tokens_used, estimated_cost,
+                     created_by, created_at)
+                VALUES
+                    (:id, :segment_id, :llm_model, :prompt_used,
+                     CAST(:input_params AS jsonb), CAST(:output_json AS jsonb),
+                     :profiles_generated, :profiles_skipped, :tokens_used,
+                     :estimated_cost, :created_by, NOW())
+                """
+            ),
+            {
+                "id": str(_uuid.uuid4()),
+                "segment_id": str(segment_id).strip().upper(),
+                "llm_model": model,
+                "prompt_used": prompt,
+                "input_params": _json.dumps(payload, default=str),
+                "output_json": _json.dumps(items, default=str),
+                "profiles_generated": len(items),
+                "profiles_skipped": 0,
+                "tokens_used": int((usage or {}).get("total_tokens") or 0),
+                "estimated_cost": estimated_cost,
+                "created_by": admin_id,
+            },
+        )
+        await nested.commit()
+    except Exception as exc:
+        try:
+            await nested.rollback()
+        except Exception:
+            pass
+        logger.warning("profile_generation_logs INSERT failed (table missing?): %s", exc)

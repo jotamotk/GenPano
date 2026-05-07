@@ -654,3 +654,141 @@ async def export_profiles(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 slice 6b-bis — profiles within-segment LLM generate + job-status
+# ---------------------------------------------------------------------------
+
+
+from app.admin.segments.profile_generation import (  # noqa: E402
+    execute_profile_generation_sync,
+    get_profile_generation_job,
+    schedule_profile_generation_job,
+)
+from app.db.session import AsyncSessionLocal  # noqa: E402
+
+
+@router.post("/{segment_id}/profiles/generate", response_model=None)
+async def generate_profiles_route(
+    segment_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Generate Profile drafts via LLM.
+
+    Two modes:
+    - ``async_generation: true`` → 202 with ``{job_id}``; SPA polls
+      ``GET /generate/{job_id}`` for completion. Worker emits the
+      ``generate_profiles`` audit row on terminal state.
+    - default (sync) → 200 with ``drafts``; emit_audit fires inline.
+
+    400 / 404 / 502 / 503 mirror admin_console's contract.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
+    if not brand_name:
+        raise validation_error("brand_name", "brand_name_required")
+
+    if payload.get("async_generation") or payload.get("async"):
+        job_id = await schedule_profile_generation_job(
+            AsyncSessionLocal,
+            operator_id=operator.id,
+            segment_id=segment_id,
+            payload=payload,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "success": True,
+                "pending": True,
+                "status": "queued",
+                "job_id": job_id,
+            },
+        )
+
+    # Sync path. emit_audit fires inside execute_profile_generation_sync.
+    try:
+        result, brand_id, draft_brand_name, seg_canonical = await execute_profile_generation_sync(
+            session,
+            operator=operator,
+            segment_id=segment_id,
+            payload=payload,
+            request=request,
+        )
+    except ValueError as exc:
+        if str(exc) == "segment_not_found":
+            raise not_found("segment_not_found") from exc
+        raise validation_error("payload", str(exc)) from exc
+    except SegmentProfileGenerationError as error:
+        return JSONResponse(
+            status_code=segment_profile_generation_status(error),
+            content={
+                "success": False,
+                "error": error.code,
+                "message": error.message,
+            },
+        )
+
+    drafts = drafts_with_brand_context(
+        result.items,
+        brand_id=brand_id,
+        brand_name=draft_brand_name,
+        segment_id=seg_canonical,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "success": True,
+            "drafts": drafts,
+            "model": result.model,
+            "usage": result.usage,
+        },
+    )
+
+
+@router.get("/{segment_id}/profiles/generate/{job_id}", response_model=None)
+async def get_profile_generation_job_route(
+    segment_id: str,
+    job_id: str,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Poll the async ``generate_profiles`` job. Returns the snapshot
+    or 404 if the job_id never existed (or was evicted past the cap).
+    """
+    job = await get_profile_generation_job(job_id)
+    seg_canonical = str(segment_id).strip().upper()
+    if not job or job.get("segment_id") != seg_canonical:
+        raise not_found("generation_job_not_found")
+    if job.get("status") == "failed":
+        return JSONResponse(
+            status_code=int(job.get("http_status") or 500),
+            content={
+                "success": False,
+                "pending": False,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "error": job.get("error") or "profile_generation_failed",
+                "message": job.get("message") or "Profile generation failed",
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "success": True,
+            "pending": job.get("pending"),
+            "job_id": job_id,
+            "status": job.get("status"),
+            "message": job.get("message"),
+            "drafts": job.get("drafts") or [],
+            "model": job.get("model"),
+            "usage": job.get("usage") or {},
+        },
+    )
