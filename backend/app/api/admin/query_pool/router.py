@@ -397,7 +397,7 @@ async def _delete_candidates(
         # ORM cascades configured on QueryGenerationCandidate).
         from sqlalchemy import delete as sa_delete
 
-        result = await session.execute(
+        await session.execute(
             sa_delete(QueryGenerationCandidate).where(
                 QueryGenerationCandidate.id.in_(list(existing_set))
             )
