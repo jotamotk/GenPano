@@ -7488,42 +7488,9 @@ def _start_topic_plan_generation_thread(**kwargs):
 # See backend/app/api/admin/query_pool/router.py:preflight.
 
 
-@app.route('/api/admin/query-pool/assemble', methods=['POST'])
-@app.route('/admin/api/v1/pipeline/query-pool/assemble', methods=['POST'])
-def admin_query_pool_assemble_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            run = _start_query_pool_assembly_run(cur, admin["id"], payload)
-        conn.commit()
-        _spawn_query_pool_assembly_worker(run["id"], admin["id"], payload)
-        return jsonify({"success": True, "run": run}), 202
-    except ValueError as exc:
-        if conn is not None:
-            conn.rollback()
-        return jsonify({"success": False, "error": str(exc), "message": str(exc)}), 400
-    except Exception as exc:
-        if conn is not None:
-            conn.rollback()
-        app.logger.exception("Query Pool assemble failed: %s", exc)
-        return jsonify(
-            {
-                "success": False,
-                "error": "query_pool_assemble_failed",
-                "message": "Query 组装失败，请检查 Prompt 与 Segment/Profile 配置",
-            }
-        ), 503
-    finally:
-        if conn is not None:
-            conn.close()
+# POST /api/admin/query-pool/assemble migrated to FastAPI in Phase 5 slice 3b-iii.
+# See backend/app/api/admin/query_pool/router.py:assemble +
+# backend/app/admin/query_pool/generation.py for the LLM background worker.
 
 
 

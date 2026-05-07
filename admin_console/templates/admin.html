@@ -15799,6 +15799,10 @@ function adminApp() {
           headers:{ 'Content-Type':'application/json' },
           body: JSON.stringify(requestBody),
         });
+        if (res.status === 401) {
+          this.isLoggedIn = false;
+          throw new Error('请先登录');
+        }
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 组装失败');
         const run = body.run || {};

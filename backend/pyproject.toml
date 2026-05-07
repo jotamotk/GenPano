@@ -60,6 +60,13 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF"]
 "app/admin/topic_plan/**" = ["RUF001", "RUF002", "RUF003", "E501"]
 # Same exception for prompt_matrix — Chinese regex / Doubao prompt text.
 "app/admin/prompt_matrix/**" = ["RUF001", "RUF002", "RUF003", "E501"]
+# Query Pool helpers also contain Chinese regex / Doubao prompt text + the
+# fallback query templates ZH/EN. Same exception set as topic_plan.
+"app/admin/query_pool/**" = ["RUF001", "RUF002", "RUF003", "E501"]
+# Test fixtures use the same fullwidth-punctuation Chinese strings as the
+# real LLM responses they simulate; match the source-file exception so
+# tests don't fail purely on transliteration grounds.
+"tests/test_phase_5_slice3b_iii_*" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
