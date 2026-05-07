@@ -14022,7 +14022,7 @@ function adminApp() {
       ];
       try {
         this.toast('Topic 生成任务已提交，候选会分批进入待审核列表');
-        const res = await fetch(API_BASE + '/admin/topic-plan/generate', {
+        const res = await fetch('/api/admin/topic-plan/generate', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },

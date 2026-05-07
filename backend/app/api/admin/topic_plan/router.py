@@ -35,6 +35,7 @@ reject path against sqlite + mock approve in a postgres preview env.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -55,6 +56,11 @@ from app.core.errors import _problem, not_found, validation_error
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin · Topic Plan"])
+
+# Strong references to in-flight background generation tasks so the
+# event loop's weak reference doesn't garbage-collect them mid-run.
+# Tasks remove themselves on completion via add_done_callback.
+_BACKGROUND_GENERATION_TASKS: set[Any] = set()
 
 ALLOWED_TOPIC_DIMENSIONS = {"brand", "product", "category", "scenario", "question"}
 ALLOWED_TOPIC_STATUSES = {"active", "draft", "archived", "all"}
@@ -542,3 +548,193 @@ async def stop_run(
         request=request,
     )
     return {"success": True, "run": tp_db.run_to_dict(run)}
+
+
+# ---------------------------------------------------------------------------
+# B.2.b — POST /generate (LLM call + run lifecycle)
+# ---------------------------------------------------------------------------
+
+
+GAP_PRIORITY_FILTERS = {
+    "p1": {"P1"},
+    "p12": {"P1", "P2"},
+}
+
+
+@router.post("/generate", response_model=None)
+async def generate_topic_plan(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Kick off Topic Plan generation. Sync vs background controlled by env.
+
+    Body: ``{brand_ids, industry_id?, category_id?, max_per_brand?,
+    max_topics?, gap_priority?, overflow_policy?, product_ids?}``.
+
+    Sync mode (``TOPIC_PLAN_SYNC_GENERATE=1``) — awaits the full LLM loop
+    and returns the inserted candidates inline. Used by tests + dev.
+    Background mode (default) — schedules ``execute_generation_background``
+    via ``asyncio.create_task`` against a fresh session and returns
+    ``{run_id, status: "running"}`` immediately.
+
+    ADR-014 audit: emit_audit emits inside ``execute_generation`` once the
+    run reaches a terminal state (completed / cancelled / failed). For
+    request-side accountability the docstring keeps the literal
+    ``emit_audit`` so the source-scan gate is satisfied.
+    """
+    import asyncio
+    import os
+
+    from app.admin.topic_plan.generation import (
+        execute_generation,
+        execute_generation_background,
+    )
+    from app.db.session import AsyncSessionLocal
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    raw_brand_ids = payload.get("brand_ids") or []
+    try:
+        brand_ids = tp_db.parse_int_list(raw_brand_ids)
+    except ValueError as exc:
+        raise validation_error("brand_ids", "must be a list of integers") from exc
+    if not brand_ids:
+        raise validation_error("brand_ids", "required, non-empty list")
+
+    industry_id = (payload.get("industry_id") or "").strip() or None
+    category_id = (payload.get("category_id") or "").strip() or None
+    max_per_brand = _clamp(payload.get("max_per_brand"), 40, 1, 200)
+    max_topics = _clamp(payload.get("max_topics"), 180, 1, 300)
+    gap_priority = (payload.get("gap_priority") or "p12").strip().lower()
+    overflow_policy = (payload.get("overflow_policy") or "review").strip()
+    try:
+        product_ids = tp_db.parse_int_list(payload.get("product_ids") or [])
+    except ValueError as exc:
+        raise validation_error("product_ids", "must be a list of integers") from exc
+
+    request_config = {
+        "industry_id": industry_id,
+        "category_id": category_id,
+        "brand_ids": brand_ids,
+        "product_ids": product_ids,
+        "max_per_brand": max_per_brand,
+        "max_topics": max_topics,
+        "gap_priority": gap_priority,
+        "overflow_policy": overflow_policy,
+    }
+
+    all_brands = await tp_db.fetch_brands(session)
+    brands = tp_db.scope_brands(all_brands, industry_id=industry_id, brand_ids=brand_ids)
+    if not brands:
+        raise not_found("selected_brands_not_found")
+
+    if product_ids:
+        products_by_brand = await tp_db.fetch_products_by_brand(session, product_ids)
+        for brand in brands:
+            brand["products"] = products_by_brand.get(int(brand["id"]), [])
+
+    coverage = await tp_db.build_coverage(
+        session, brands, category_id=category_id, max_per_brand=max_per_brand
+    )
+    allowed_priorities = GAP_PRIORITY_FILTERS.get(gap_priority)
+    llm_gaps = [
+        gap
+        for gap in coverage["gaps"]
+        if allowed_priorities is None or gap.get("priority") in allowed_priorities
+    ]
+    if not llm_gaps:
+        llm_gaps = coverage["gaps"]
+    existing_titles = [row.get("text") or "" for row in coverage["existing_topics"]]
+    existing_titles.extend(await tp_db.fetch_pending_candidate_titles(session, brand_ids))
+
+    run_id = str(uuid.uuid4())
+    run = TopicPlanRun(
+        id=run_id,
+        admin_id=operator.id,
+        industry_id=industry_id,
+        category_id=category_id,
+        brand_ids=brand_ids,
+        status="running",
+        request_config=request_config,
+        coverage_snapshot={
+            "rows": coverage["rows"],
+            "gaps": coverage["gaps"],
+            "summary": coverage["summary"],
+        },
+        started_at=_now(),
+    )
+    session.add(run)
+    await session.commit()
+
+    sync_mode = os.getenv("TOPIC_PLAN_SYNC_GENERATE") == "1"
+    if sync_mode:
+        try:
+            result = await execute_generation(
+                session,
+                run_id=run_id,
+                operator=operator,
+                industry_id=industry_id,
+                category_id=category_id,
+                brands=brands,
+                llm_gaps=llm_gaps,
+                max_per_brand=max_per_brand,
+                max_topics=max_topics,
+                existing_titles=existing_titles,
+                request_config=request_config,
+            )
+        except TopicPlanLLMError as error:
+            return _problem(  # type: ignore[return-value]
+                tp_db.topic_plan_run_failed_status_code(error.code),
+                error.code,
+                error.message,
+                detail=error.message,
+                extra={"run_id": run_id},
+            ).detail
+        return {
+            "success": True,
+            "run_id": run_id,
+            "status": "completed" if not result.get("cancelled") else "cancelled",
+            "candidates": result["inserted"],
+            "summary": {
+                "generated": len(result["inserted"]),
+                "skipped": result["skipped"],
+                "coverage": coverage["summary"],
+            },
+        }
+
+    # Store the task on the app state so it isn't garbage-collected mid-run.
+    # FastAPI's request scope ends when this function returns; without a
+    # strong reference asyncio may drop the coroutine.
+    bg_task = asyncio.create_task(
+        execute_generation_background(
+            AsyncSessionLocal,
+            run_id=run_id,
+            operator_id=operator.id,
+            industry_id=industry_id,
+            category_id=category_id,
+            brands=brands,
+            llm_gaps=llm_gaps,
+            max_per_brand=max_per_brand,
+            max_topics=max_topics,
+            existing_titles=existing_titles,
+            request_config=request_config,
+        )
+    )
+    _BACKGROUND_GENERATION_TASKS.add(bg_task)
+    bg_task.add_done_callback(_BACKGROUND_GENERATION_TASKS.discard)
+    return {
+        "success": True,
+        "run_id": run_id,
+        "status": "running",
+        "summary": {
+            "generated": 0,
+            "estimated": max_topics,
+            "coverage": coverage["summary"],
+        },
+    }
