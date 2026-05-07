@@ -216,3 +216,313 @@ async def fetch_query_pool_profile_pool(
         """
     )
     return [dict(r) for r in (await session.execute(sql, params)).mappings().all()]
+
+
+# ---------------------------------------------------------------------------
+# Writer helpers (Phase 5 slice 3b-ii) — callers: assemble route, worker.
+# Routes don't land yet; slice 3b-iii wires them up. ORM ops are used here
+# instead of raw text() so the writes work against the test sqlite fixture
+# (which has both query_generation_runs and query_generation_candidates
+# registered with Base.metadata).
+# ---------------------------------------------------------------------------
+
+
+import uuid as _uuid  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+from genpano_models import QueryGenerationCandidate, QueryGenerationRun  # noqa: E402
+
+from app.admin.query_pool.lib import query_pool_summary  # noqa: E402
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def insert_query_pool_candidates(
+    session: AsyncSession,
+    run_id: str,
+    candidates: list[dict[str, Any]],
+) -> None:
+    """Bulk-insert assembled candidates onto an existing run.
+
+    Pre-populated dicts (id / candidate_seq / render_hash / etc) are
+    written verbatim; ``llm_usage`` defaults to ``{}`` and
+    ``generation_method`` defaults to ``llm`` so legacy callers that
+    omitted them still match admin_console behaviour.
+    """
+    for c in candidates:
+        session.add(
+            QueryGenerationCandidate(
+                id=c["id"],
+                run_id=run_id,
+                candidate_seq=c["candidate_seq"],
+                prompt_id=c["prompt_id"],
+                segment_id=c.get("segment_id"),
+                profile_id=c.get("profile_id"),
+                rendered_query=c["rendered_query"],
+                render_hash=c["render_hash"],
+                generation_method=c.get("generation_method") or "llm",
+                llm_model=c.get("llm_model"),
+                llm_usage_json=c.get("llm_usage") or {},
+                candidate_status=c["candidate_status"],
+                created_at=_now(),
+            )
+        )
+    await session.commit()
+
+
+async def update_query_pool_run_progress(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    candidates: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> None:
+    """Worker progress UPDATE — never touches terminal runs.
+
+    Mirrors admin_console: the WHERE clause excludes both ``cancelled``
+    and ``failed`` so a parallel ``stop_run`` / fatal-LLM-error doesn't
+    get clobbered by streaming progress writes.
+    """
+    run = await session.get(QueryGenerationRun, run_id)
+    if run is None or run.status in {"cancelled", "failed"}:
+        return
+    run.candidates_estimated = int(
+        preflight_summary.get("raw_candidates_estimated") or len(candidates)
+    )
+    run.candidates_assembled = len(candidates)
+    run.preflight_summary = preflight_summary
+    run.llm_model = preflight_summary.get("llm_model")
+    run.llm_usage_json = preflight_summary.get("llm_usage") or {}
+    run.updated_at = _now()
+    await session.commit()
+
+
+async def insert_query_pool_run_completed(
+    session: AsyncSession,
+    *,
+    admin_id: str,
+    selection: dict[str, Any],
+    config: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> str:
+    """Single-shot path: create a finished run + insert all candidates.
+
+    Used when the assemble flow runs synchronously (e.g. tests, small
+    pools where the worker stage finishes inside the request). Status
+    is ``completed`` immediately.
+    """
+    run_id = str(_uuid.uuid4())
+    prompt_ids = [c["prompt_id"] for c in candidates]
+    segment_ids = sorted({c["segment_id"] for c in candidates if c.get("segment_id")})
+    run = QueryGenerationRun(
+        id=run_id,
+        admin_id=admin_id,
+        status="completed",
+        request_config={"selection": selection, "config": config},
+        prompt_ids=prompt_ids,
+        segment_ids_selected=segment_ids,
+        profiles_per_prompt=config["profiles_per_prompt"],
+        desired_engine_policy=config["desired_engine_policy"],
+        engine_panel_id=config.get("engine_panel_id"),
+        max_candidates=config["max_candidates"],
+        overflow_policy=config["overflow_policy"],
+        candidates_estimated=int(
+            preflight_summary.get("raw_candidates_estimated") or len(candidates)
+        ),
+        candidates_assembled=len(candidates),
+        preflight_summary=preflight_summary,
+        llm_model=preflight_summary.get("llm_model"),
+        llm_usage_json=preflight_summary.get("llm_usage") or {},
+        started_at=_now(),
+        completed_at=_now(),
+    )
+    session.add(run)
+    await session.commit()
+    await insert_query_pool_candidates(session, run_id, candidates)
+    return run_id
+
+
+async def start_query_pool_assembly_run(
+    session: AsyncSession,
+    *,
+    admin_id: str,
+    config: dict[str, Any],
+    selection: dict[str, Any],
+    prompt_ids: list[str],
+    contexts: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a 'running' run row that the worker will progressively
+    update.
+
+    Mutates ``preflight_summary`` to reset the assembled-side fields
+    (``candidate_ready=0``, ``render_pass_rate=0``,
+    ``scheduler_intake='running'``) so the SPA can show "0 / N" while
+    the worker streams.
+    """
+    preflight_summary["candidate_ready"] = 0
+    preflight_summary["render_pass_rate"] = 0
+    preflight_summary["scheduler_intake"] = "running"
+    run_id = str(_uuid.uuid4())
+    run_prompt_ids = list(prompt_ids)
+    run_segment_ids = sorted({c["segment_id"] for c in contexts if c.get("segment_id")})
+    raw_estimated = int(preflight_summary.get("raw_candidates_estimated") or len(contexts))
+    run = QueryGenerationRun(
+        id=run_id,
+        admin_id=admin_id,
+        status="running",
+        request_config={"selection": selection, "config": config},
+        prompt_ids=run_prompt_ids,
+        segment_ids_selected=run_segment_ids,
+        profiles_per_prompt=config["profiles_per_prompt"],
+        desired_engine_policy=config["desired_engine_policy"],
+        engine_panel_id=config.get("engine_panel_id"),
+        max_candidates=config["max_candidates"],
+        overflow_policy=config["overflow_policy"],
+        candidates_estimated=raw_estimated,
+        candidates_assembled=0,
+        preflight_summary=preflight_summary,
+        started_at=_now(),
+    )
+    session.add(run)
+    await session.commit()
+    return {
+        "id": run_id,
+        "status": "running",
+        "candidates_estimated": raw_estimated,
+        "candidates_assembled": 0,
+        "preflight_summary": preflight_summary,
+    }
+
+
+async def finalize_query_pool_run(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    candidates: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> None:
+    """Worker happy-path terminator: 'running' → 'completed'.
+
+    No-op on cancelled runs (matches admin_console's
+    ``status <> 'cancelled'`` guard) so a concurrent stop_run sticks.
+    """
+    run = await session.get(QueryGenerationRun, run_id)
+    if run is None or run.status == "cancelled":
+        return
+    run.status = "completed"
+    run.candidates_estimated = int(
+        preflight_summary.get("raw_candidates_estimated") or len(candidates)
+    )
+    run.candidates_assembled = len(candidates)
+    run.preflight_summary = preflight_summary
+    run.llm_model = preflight_summary.get("llm_model")
+    run.llm_usage_json = preflight_summary.get("llm_usage") or {}
+    run.llm_error = None
+    run.completed_at = _now()
+    run.updated_at = _now()
+    await session.commit()
+
+
+async def complete_query_pool_run(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    candidates: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> None:
+    """Insert candidates + flip status to 'completed'."""
+    await insert_query_pool_candidates(session, run_id, candidates)
+    await finalize_query_pool_run(
+        session,
+        run_id=run_id,
+        candidates=candidates,
+        preflight_summary=preflight_summary,
+    )
+
+
+async def mark_query_pool_run_failed(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    error_code: str,
+    error_message: str,
+    preflight_summary: dict[str, Any] | None = None,
+) -> None:
+    """Worker error terminator: 'running' → 'failed' + recorded reason.
+
+    ``preflight_summary`` is optional: if the failure happens before any
+    LLM batch returned anything (e.g., LLM auth error on the first
+    request), the worker will pass None and we just stamp ``llm_error``;
+    otherwise we persist the partial summary so the SPA can show "got
+    M/N before failing".
+    """
+    run = await session.get(QueryGenerationRun, run_id)
+    if run is None or run.status == "cancelled":
+        return
+    detail = f"{error_code}: {error_message}".strip()
+    run.status = "failed"
+    run.llm_error = detail
+    run.completed_at = _now()
+    run.updated_at = _now()
+    if preflight_summary is not None:
+        run.candidates_estimated = int(preflight_summary.get("raw_candidates_estimated") or 0)
+        run.candidates_assembled = int(preflight_summary.get("candidate_ready") or 0)
+        run.preflight_summary = preflight_summary
+        run.llm_model = preflight_summary.get("llm_model")
+        run.llm_usage_json = preflight_summary.get("llm_usage") or {}
+    await session.commit()
+
+
+async def mark_query_pool_run_cancelled(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    candidates: list[dict[str, Any]],
+    preflight_summary: dict[str, Any],
+) -> None:
+    """Worker-side cancel ack — preserves any prior completed_at.
+
+    ``stop_run`` (slice 1) flips status to 'cancelled' and stamps
+    completed_at. If the worker observes the cancel mid-stream and
+    calls this helper to record the partial progress, we keep the
+    earlier completed_at via COALESCE — matches admin_console.
+    """
+    run = await session.get(QueryGenerationRun, run_id)
+    if run is None:
+        return
+    run.status = "cancelled"
+    run.candidates_estimated = int(
+        preflight_summary.get("raw_candidates_estimated") or len(candidates)
+    )
+    run.candidates_assembled = len(candidates)
+    run.preflight_summary = preflight_summary
+    run.llm_model = preflight_summary.get("llm_model")
+    run.llm_usage_json = preflight_summary.get("llm_usage") or {}
+    if run.completed_at is None:
+        run.completed_at = _now()
+    run.updated_at = _now()
+    await session.commit()
+
+
+# Re-export so callers can import everything from app.admin.query_pool.db.
+# query_pool_summary lives in lib.py but is the universal preflight builder
+# so re-export here keeps `from app.admin.query_pool import db; db.summary()`
+# pattern symmetrical with the rest of the writer surface.
+__all__ = [
+    "complete_query_pool_run",
+    "fetch_prompt_ids_from_selection",
+    "fetch_query_pool_profile_pool",
+    "fetch_query_pool_prompt_rows",
+    "finalize_query_pool_run",
+    "insert_query_pool_candidates",
+    "insert_query_pool_run_completed",
+    "mark_query_pool_run_cancelled",
+    "mark_query_pool_run_failed",
+    "query_pool_summary",
+    "start_query_pool_assembly_run",
+    "update_query_pool_run_progress",
+]
