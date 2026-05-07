@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -621,3 +622,238 @@ async def mark_stale_run(session: AsyncSession, run: TopicPlanRun) -> bool:
     await session.commit()
     await session.refresh(run)
     return True
+
+
+# ---------------------------------------------------------------------------
+# generation orchestration helpers (used by Phase 3 B.2.b POST /generate)
+# ---------------------------------------------------------------------------
+
+
+def merge_usage(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Sum numeric ``usage`` fields across LLM calls; preserve other keys."""
+    merged = dict(left or {})
+    for key, value in (right or {}).items():
+        if isinstance(value, int | float) and isinstance(merged.get(key), int | float):
+            merged[key] += value
+        elif key not in merged:
+            merged[key] = value
+    return merged
+
+
+def compute_generation_metrics(
+    *,
+    requested: int,
+    accepted: int,
+    skipped: list[dict[str, Any]],
+    batches: int,
+    llm_model: str | None,
+    llm_returned: int | None = None,
+    rejected_sample_size: int = 20,
+) -> dict[str, Any]:
+    """Aggregate per-reason rejection counts + a small rejected-item sample.
+
+    Sample is capped (default 20 × ~200B = ~4 KB) so the JSONB column
+    stays compact. ``quality_blocked`` flips True iff every LLM-returned
+    candidate was rejected.
+    """
+    by_reason: dict[str, int] = {}
+    for s in skipped or []:
+        r = s.get("reason") or "unknown"
+        by_reason[r] = by_reason.get(r, 0) + 1
+    rejected_sample: list[dict[str, str]] = []
+    seen_reasons: dict[str, int] = {}
+    per_reason_cap = max(1, rejected_sample_size // max(len(by_reason), 1))
+    for s in skipped or []:
+        r = s.get("reason") or "unknown"
+        if seen_reasons.get(r, 0) >= per_reason_cap:
+            continue
+        rejected_sample.append({"text": s.get("title") or s.get("text") or "", "reason": r})
+        seen_reasons[r] = seen_reasons.get(r, 0) + 1
+        if len(rejected_sample) >= rejected_sample_size:
+            break
+    rejected_total = len(skipped or [])
+    accepted_total = int(accepted or 0)
+    return {
+        "requested": int(requested or 0),
+        "accepted": accepted_total,
+        "rejected_total": rejected_total,
+        "by_reason": by_reason,
+        "batches": int(batches or 0),
+        "llm_model": llm_model,
+        "llm_returned": int(llm_returned) if llm_returned is not None else None,
+        "rejected_sample": rejected_sample,
+        "quality_blocked": accepted_total == 0 and rejected_total > 0,
+    }
+
+
+def topic_plan_brand_batches(
+    brands: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    *,
+    max_topics: int,
+    max_per_brand: int,
+) -> Iterator[tuple[list[dict[str, Any]], list[dict[str, Any]], int]]:
+    """Yield (batch_brands, batch_gaps, batch_cap) — one slice per LLM call.
+
+    Brands without gaps are skipped entirely (no LLM call). Batch size is
+    controlled by ``TOPIC_PLAN_LLM_BRANDS_PER_REQUEST`` (default 1, max 5).
+    """
+    batch_size = bounded_int(os.getenv("TOPIC_PLAN_LLM_BRANDS_PER_REQUEST"), 1, 1, 5)
+    gaps_by_brand: dict[int, list[dict[str, Any]]] = {}
+    for gap in gaps or []:
+        try:
+            brand_id = int(gap.get("brand_id"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        gaps_by_brand.setdefault(brand_id, []).append(gap)
+    if not gaps_by_brand:
+        return
+
+    gap_brands = [b for b in brands if int(b["id"]) in gaps_by_brand]
+    for index in range(0, len(gap_brands), batch_size):
+        batch_brands = gap_brands[index : index + batch_size]
+        batch_brand_ids = {int(b["id"]) for b in batch_brands}
+        batch_gaps = [
+            g
+            for g in gaps
+            if str(g.get("brand_id") or "").isdigit() and int(g.get("brand_id")) in batch_brand_ids  # type: ignore[arg-type]
+        ]
+        gap_count = sum(bounded_int(g.get("count"), 1, 1, max_per_brand) for g in batch_gaps)
+        batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1), max(gap_count, 1))
+        yield batch_brands, batch_gaps, batch_cap
+
+
+async def is_run_cancelled(session: AsyncSession, run_id: str) -> bool:
+    """Return True iff topic_plan_runs.status == 'cancelled' for ``run_id``."""
+    if not run_id:
+        return False
+    try:
+        row = (
+            await session.execute(
+                text("SELECT status FROM topic_plan_runs WHERE id = :run_id"),
+                {"run_id": run_id},
+            )
+        ).first()
+    except Exception:
+        return False
+    if row is None:
+        return False
+    return str(row[0] or "").lower() == "cancelled"
+
+
+async def fetch_products_by_brand(
+    session: AsyncSession, product_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """Group active rows from ``products`` (upstream stub) by brand_id."""
+    if not product_ids:
+        return {}
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT id, brand_id, name, sku, category, description, aliases
+                FROM products
+                WHERE id = ANY(:ids) AND status = 'active'
+                """
+                ),
+                {"ids": product_ids},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    out: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(int(r["brand_id"]), []).append(
+            {
+                "id": int(r["id"]),
+                "name": r["name"],
+                "sku": r["sku"],
+                "category": r["category"],
+                "description": r["description"],
+                "aliases": r["aliases"] or [],
+            }
+        )
+    return out
+
+
+async def fetch_pending_candidate_titles(session: AsyncSession, brand_ids: list[int]) -> list[str]:
+    """Pending TopicCandidate titles for the given brand_ids (real ORM table)."""
+    if not brand_ids:
+        return []
+    from genpano_models import TopicCandidate
+    from sqlalchemy import select
+
+    stmt = select(TopicCandidate.title).where(
+        TopicCandidate.brand_id.in_(brand_ids),
+        TopicCandidate.status == "pending",
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [t for t in rows if t]
+
+
+async def update_run_progress(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    llm_model: str | None,
+    usage: dict[str, Any],
+    candidates_generated: int,
+) -> None:
+    """Write LLM model / usage / candidates_generated to a still-active run."""
+    from genpano_models import TopicPlanRun
+    from sqlalchemy import select
+
+    run = (
+        await session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None or run.status in {"cancelled", "failed"}:
+        return
+    run.llm_model = llm_model
+    run.llm_usage_json = dict(usage)
+    run.candidates_generated = candidates_generated
+    run.updated_at = _now()
+    await session.commit()
+
+
+async def finalize_run(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    status: str,
+    llm_model: str | None,
+    usage: dict[str, Any],
+    candidates_generated: int,
+    metrics: dict[str, Any] | None = None,
+    llm_error: str | None = None,
+) -> None:
+    """Mark a run terminal (status ∈ {completed, failed, cancelled})."""
+    from genpano_models import TopicPlanRun
+    from sqlalchemy import select
+
+    run = (
+        await session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        return
+    # Don't override cancelled with failed if a stop landed mid-batch.
+    if run.status == "cancelled" and status == "failed":
+        return
+    run.status = status
+    run.llm_model = llm_model
+    if usage:
+        run.llm_usage_json = dict(usage)
+    run.candidates_generated = candidates_generated
+    if metrics is not None:
+        run.metrics_json = dict(metrics)
+    if llm_error is not None:
+        run.llm_error = llm_error
+    run.completed_at = _now()
+    run.updated_at = _now()
+    await session.commit()
+
+
+def topic_plan_run_failed_status_code(error_code: str | None) -> int:
+    """Map a TopicPlanLLMError code to an HTTP status (mirrors admin_console)."""
+    return 503 if str(error_code or "").startswith("llm_") else 502
