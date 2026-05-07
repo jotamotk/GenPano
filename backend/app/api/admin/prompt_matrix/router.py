@@ -24,12 +24,13 @@ import os
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from genpano_models import AdminUser, PromptCandidate, PromptGenerationRun
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
+from app.admin.prompt_matrix import db as pm_db
 from app.admin.prompt_matrix.lib import (
     PromptMatrixError,
     clamp_int,
@@ -351,3 +352,272 @@ async def stop_run(
         request=request,
     )
     return {"success": True, "run": _run_to_dict(run)}
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 slice 2 — read paths (config / topics / gaps / prompts / candidates)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/config", response_model=None)
+async def get_config(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Top-level Prompt Matrix tab config — populates the SPA dropdowns +
+    coverage / quality stats. Heavy: stat aggregation crosses topics +
+    prompts + brand-leak detection."""
+    from app.admin.prompt_matrix.lib import PromptMatrixError
+    from app.admin.topic_plan.lib import TopicPlanLLMError
+
+    brands = await pm_db.fetch_brand_rows(session)
+    industries = [
+        {"id": value, "name": value}
+        for value in sorted({b.get("industry_id") or "Uncategorized" for b in brands})
+    ]
+    stats = await pm_db.compute_stats(session)
+    pending_count = 0
+    duplicate_count = 0
+    counts = await pm_db.candidate_status_counts(session)
+    pending_count = counts.get("pending", 0)
+    # duplicate_of is set on prompt_candidates that flagged near-dup of an
+    # existing candidate; surface separately so the dashboard chip is
+    # accurate even when SPA hasn't yet refreshed.
+    dup_count_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT COUNT(*)::int AS cnt FROM prompt_candidates "
+                    "WHERE status = 'pending' AND duplicate_of IS NOT NULL"
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    duplicate_count = int(dup_count_row["cnt"] or 0)
+    try:
+        from app.admin.topic_plan.lib import load_doubao_config
+
+        load_doubao_config()
+        llm_configured = True
+    except (PromptMatrixError, TopicPlanLLMError):
+        llm_configured = False
+
+    return {
+        "success": True,
+        "brands": brands,
+        "industries": industries,
+        "defaults": {
+            "intentCount": 4,
+            "languageCount": 2,
+            "topicPriority": "gap_first",
+            "templateStrategy": "latest",
+            "promptStyle": "natural",
+            "audienceMode": "general",
+            "maxPerTopic": 4,
+            "maxPrompts": 8000,
+            "overflowPolicy": "split",
+        },
+        "summary": {
+            "pending_candidates": pending_count,
+            "duplicate_candidates": duplicate_count,
+            "llm_configured": llm_configured,
+        },
+        "stats": stats,
+        "qualityGates": pm_db.quality_gates(stats, pending_count, duplicate_count),
+    }
+
+
+@router.get("/topics", response_model=None)
+async def get_topics(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    q: str | None = Query(None),
+    brand_id: int | None = Query(None),
+    industry_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    coverage: str = Query("all"),
+    intent_count: int = Query(4, ge=1),
+    language_count: int = Query(2, ge=1),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    try:
+        filters = pm_db.filter_payload_from_query(
+            {
+                "q": q,
+                "brand_id": brand_id,
+                "industry_id": industry_id,
+                "dimension": dimension,
+                "coverage": coverage,
+                "intent_count": intent_count,
+                "language_count": language_count,
+            }
+        )
+    except ValueError as exc:
+        raise validation_error("filters", str(exc)) from exc
+    rows, total, summary = await pm_db.fetch_topics(
+        session, filters=filters, page=page, per_page=per_page
+    )
+    return {
+        "success": True,
+        "rows": rows,
+        "summary": summary,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        },
+    }
+
+
+@router.get("/gaps", response_model=None)
+async def get_gaps(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    q: str | None = Query(None),
+    brand_id: int | None = Query(None),
+    industry_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    coverage: str = Query("all"),
+    topic_ids: str | None = Query(None),
+    intent_count: int = Query(4, ge=1),
+    language_count: int = Query(2, ge=1),
+    max_per_topic: int = Query(4, ge=1, le=20),
+    max_prompts: int = Query(8000, ge=1),
+    template_strategy: str = Query("latest"),
+    prompt_style: str = Query("natural"),
+    audience_mode: str = Query("general"),
+    overflow_policy: str = Query("split"),
+    limit: int = Query(200, ge=1, le=500),
+) -> dict[str, Any]:
+    try:
+        filters = pm_db.filter_payload_from_query(
+            {
+                "q": q,
+                "brand_id": brand_id,
+                "industry_id": industry_id,
+                "dimension": dimension,
+                "coverage": coverage,
+                "intent_count": intent_count,
+                "language_count": language_count,
+            }
+        )
+        parsed_topic_ids = pm_db.parse_topic_ids(topic_ids) if topic_ids else None
+    except ValueError as exc:
+        raise validation_error("filters", str(exc)) from exc
+
+    config = {
+        "intent_count": intent_count,
+        "language_count": language_count,
+        "max_per_topic": max_per_topic,
+        "max_prompts": max_prompts,
+        "template_strategy": template_strategy,
+        "prompt_style": prompt_style,
+        "audience_mode": audience_mode,
+        "overflow_policy": overflow_policy,
+    }
+    gaps = await pm_db.gaps_for_topics(
+        session,
+        topic_ids=parsed_topic_ids,
+        filters=filters,
+        config=config,
+        limit=limit,
+    )
+    return {
+        "success": True,
+        "rows": gaps,
+        "summary": {
+            "gap_count": len(gaps),
+            "estimated_prompts": sum(int(g.get("estimate") or 0) for g in gaps),
+        },
+    }
+
+
+@router.get("/prompts", response_model=None)
+async def get_prompts(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    intent: str | None = Query(None),
+    language: str | None = Query(None),
+    q: str | None = Query(None),
+    topic_ids: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
+) -> dict[str, Any]:
+    from app.admin.prompt_matrix.lib import ALLOWED_INTENTS, ALLOWED_LANGUAGES
+
+    intent_norm = intent.strip().lower() if intent else None
+    if intent_norm and intent_norm not in ALLOWED_INTENTS:
+        raise validation_error("intent", f"must be one of {sorted(ALLOWED_INTENTS)}")
+    if language and language not in ALLOWED_LANGUAGES:
+        raise validation_error("language", f"must be one of {sorted(ALLOWED_LANGUAGES)}")
+    try:
+        parsed_topic_ids = pm_db.parse_int_list(topic_ids) if topic_ids else None
+    except ValueError as exc:
+        raise validation_error("topic_ids", str(exc)) from exc
+
+    rows, total = await pm_db.fetch_prompts(
+        session,
+        intent=intent_norm,
+        language=language,
+        query=q,
+        page=page,
+        per_page=per_page,
+        topic_ids=parsed_topic_ids,
+    )
+    stats = await pm_db.compute_stats(session)
+    return {
+        "success": True,
+        "rows": rows,
+        "stats": stats,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        },
+    }
+
+
+@router.get("/candidates", response_model=None)
+async def get_candidates(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    status: str = Query("pending"),
+    q: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    status_norm = status.strip().lower()
+    if status_norm not in {"pending", "approved", "rejected", "all"}:
+        raise validation_error("status", "must be one of pending / approved / rejected / all")
+    offset = (page - 1) * per_page
+    rows, total = await pm_db.fetch_candidates(
+        session,
+        status=status_norm,
+        query=q,
+        limit=per_page,
+        offset=offset,
+    )
+    counts = await pm_db.candidate_status_counts(session, query=q)
+    return {
+        "success": True,
+        "rows": rows,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        },
+        "summary": {
+            "pending_candidates": counts.get("pending", 0),
+            "approved_candidates": counts.get("approved", 0),
+            "rejected_candidates": counts.get("rejected", 0),
+            "all_candidates": counts.get("all", 0),
+            "duplicate_candidates": sum(1 for r in rows if r.get("duplicate_of")),
+            "status_counts": counts,
+        },
+    }

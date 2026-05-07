@@ -14354,7 +14354,7 @@ function adminApp() {
       this.promptMatrixLoading = true;
       this.promptMatrixError = '';
       try {
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/config', { credentials:'same-origin' });
+        const res = await fetch('/api/admin/prompt-matrix/config', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt Matrix config failed');
         const defaults = body.defaults || {};
@@ -14395,7 +14395,7 @@ function adminApp() {
         });
         qp.set('page', this.promptMatrixTopicPage || 1);
         qp.set('per_page', this.promptMatrixTopicPerPage || 20);
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/topics?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/prompt-matrix/topics?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic load failed');
         this.promptMatrixTopics = (body.rows || []).map(topic => ({ ...topic, selected: this.isPromptMatrixTopicSelected(topic) }));
@@ -14427,7 +14427,7 @@ function adminApp() {
         });
         qp.set('max_per_topic', this.promptMatrixConfig.maxPerTopic || 4);
         qp.set('max_prompts', this.promptMatrixConfig.maxPrompts || 8000);
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/gaps?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/prompt-matrix/gaps?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Gap load failed');
         this.promptMatrixGapItems = body.rows || [];
@@ -14604,7 +14604,7 @@ function adminApp() {
         if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);
+        const res = await fetch('/api/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
         this.promptMatrixPendingItems = body.rows || [];
@@ -14642,7 +14642,7 @@ function adminApp() {
         if (this.promptMatrixPromptIntent) qp.set('intent', this.promptMatrixPromptIntent);
         if (this.promptMatrixPromptLanguage) qp.set('language', this.promptMatrixPromptLanguage);
         if (this.promptMatrixPromptTopic) qp.set('topic_id', this.promptMatrixPromptTopic);
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
         this.promptDetailList = body.rows || [];
@@ -15134,7 +15134,7 @@ function adminApp() {
         if (filters.intent) qp.set('intent', filters.intent);
         if (filters.language) qp.set('language', filters.language);
         if (filters.topic_id) qp.set('topic_id', filters.topic_id);
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/prompt-matrix/prompts?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt 加载失败');
         this.queryPoolPrompts = (body.rows || []).map(prompt => ({
