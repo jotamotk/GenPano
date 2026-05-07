@@ -14049,7 +14049,7 @@ function adminApp() {
       if (this.topicPlanCandidateReviewing) return;
       this.topicPlanCandidateReviewing = true;
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/candidates/' + encodeURIComponent(item.id) + '/review', {
+        const res = await fetch('/api/admin/topic-plan/candidates/' + encodeURIComponent(item.id) + '/review', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
@@ -14080,7 +14080,7 @@ function adminApp() {
       if (!window.confirm('确认批量' + label + '选中的 ' + ids.length + ' 个候选 Topic？')) return;
       this.topicPlanCandidateReviewing = true;
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/candidates/bulk-review', {
+        const res = await fetch('/api/admin/topic-plan/candidates/bulk-review', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
