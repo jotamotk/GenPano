@@ -456,6 +456,55 @@ def test_enrich_brand_returns_canonicalized_draft(monkeypatch):
     assert types_by_name["L'Oréal Paris"] == "SAME_GROUP"
 
 
+def test_enrich_brand_uses_filled_fields_as_disambiguating_context(monkeypatch):
+    service = brand_management.BrandManagementService(allow_fallback=False)
+    captured = {}
+
+    def fake_call(**kwargs):
+        captured.update(kwargs)
+        return (
+            [
+                {
+                    "name": "Acme",
+                    "industry": "Outdoor Gear",
+                    "target_market": "US",
+                    "description": "Outdoor equipment brand.",
+                },
+                {
+                    "name": "Acme",
+                    "industry": "Industrial Tools",
+                    "target_market": "global",
+                    "description": "Industrial toolmaker.",
+                },
+            ],
+            "fake-model",
+            {"total_tokens": 42},
+        )
+
+    monkeypatch.setattr(service, "_call_llm_json", fake_call)
+
+    result = service.enrich_brand_by_name(
+        name="Acme",
+        context={
+            "industry": "Outdoor Gear",
+            "target_market": "US",
+            "description": "Makes backpacks and camping products.",
+            "positioning": "Premium outdoor equipment",
+            "aliases": ["Acme Outdoors"],
+            "official_domains": ["acme.example"],
+        },
+    )
+
+    assert len(result.items) == 2
+    assert captured["root_key"] == "brands"
+    assert captured["max_count"] == 5
+    prompt = captured["prompt"]
+    assert "Outdoor Gear" in prompt
+    assert "Acme Outdoors" in prompt
+    assert "acme.example" in prompt
+    assert "return 1-5 candidate brands" in prompt
+
+
 def test_enrich_brand_uses_timeout_override(monkeypatch):
     captured = {}
 
@@ -567,7 +616,7 @@ def test_brand_enrich_endpoint_uses_long_timeout_without_fallback(monkeypatch, c
         def __init__(self, *args, **kwargs):
             captured.update(kwargs)
 
-        def enrich_brand_by_name(self, *, name):
+        def enrich_brand_by_name(self, *, name, context=None):
             return brand_management.BrandGenerationResult(
                 items=[brand_management.normalize_brand_draft({"name": name, "status": "draft"})],
                 model="fallback-brand-management-v1",
@@ -596,7 +645,7 @@ def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
         def __init__(self, *args, **kwargs):
             pass
 
-        def enrich_brand_by_name(self, *, name):
+        def enrich_brand_by_name(self, *, name, context=None):
             assert name == "Lancôme"
             return brand_management.BrandGenerationResult(
                 items=[
@@ -630,6 +679,60 @@ def test_brand_enrich_endpoint_returns_draft_and_audits(monkeypatch, client):
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "INSERT INTO admin_audit_log" in statements
     assert conn.commits == 1
+
+
+def test_brand_enrich_endpoint_passes_filled_fields_as_context(monkeypatch, client):
+    login(monkeypatch)
+    fake_db(monkeypatch)
+    captured = {}
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def enrich_brand_by_name(self, *, name, context=None):
+            captured["name"] = name
+            captured["context"] = context
+            return brand_management.BrandGenerationResult(
+                items=[
+                    brand_management.normalize_brand_draft(
+                        {
+                            "name": name,
+                            "industry": "New Outdoor Tech",
+                            "target_market": "US",
+                        }
+                    )
+                ],
+                model="fake-model",
+                prompt="enrich-prompt",
+                usage={"total_tokens": 7},
+            )
+
+    monkeypatch.setattr(app_mod, "BrandManagementService", FakeService)
+
+    response = client.post(
+        "/api/admin/brand-management/enrich",
+        data=json.dumps(
+            {
+                "name": "Acme",
+                "industry": "New Outdoor Tech",
+                "target_market": "US",
+                "description": "Backpacks and camping products",
+                "positioning": "Premium outdoor equipment",
+                "aliases": ["Acme Outdoors"],
+                "official_domains": ["acme.example"],
+            }
+        ),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert captured["name"] == "Acme"
+    assert captured["context"]["industry"] == "New Outdoor Tech"
+    assert captured["context"]["target_market"] == "US"
+    assert captured["context"]["description"] == "Backpacks and camping products"
+    assert captured["context"]["aliases"] == ["Acme Outdoors"]
+    assert captured["context"]["official_domains"] == ["acme.example"]
 
 
 def test_brand_enrich_endpoint_returns_async_job(monkeypatch, client):
@@ -719,14 +822,16 @@ def test_brand_enrich_background_job_completes_and_audits(monkeypatch, client):
     conn = fake_db(monkeypatch)
     with app_mod._brand_enrich_jobs_lock:
         app_mod._brand_enrich_jobs.clear()
+    captured = {}
 
     class FakeService:
         def __init__(self, *args, **kwargs):
             pass
 
-        def enrich_brand_by_name(self, *, name):
+        def enrich_brand_by_name(self, *, name, context=None):
+            captured["context"] = context
             return brand_management.BrandGenerationResult(
-                items=[brand_management.normalize_brand_draft({"name": name, "industry": "Beauty"})],
+                items=[brand_management.normalize_brand_draft({"name": name, "industry": context["industry"]})],
                 model="fake-model",
                 prompt="enrich-prompt",
                 usage={"total_tokens": 7},
@@ -738,7 +843,7 @@ def test_brand_enrich_background_job_completes_and_audits(monkeypatch, client):
         "job-complete",
         admin_id="admin-1",
         name="Lancome",
-        payload={},
+        payload={"industry": "New Beauty Tech", "target_market": "EU"},
     )
 
     response = client.get("/api/admin/brand-management/enrich/job-complete")
@@ -748,7 +853,10 @@ def test_brand_enrich_background_job_completes_and_audits(monkeypatch, client):
     assert body["success"] is True
     assert body["pending"] is False
     assert body["draft"]["name"] == "Lancome"
+    assert body["draft"]["industry"] == "New Beauty Tech"
     assert body["model"] == "fake-model"
+    assert captured["context"]["industry"] == "New Beauty Tech"
+    assert captured["context"]["target_market"] == "EU"
     assert conn.commits == 1
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "INSERT INTO admin_audit_log" in statements

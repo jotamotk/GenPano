@@ -120,16 +120,14 @@ def test_segment_llm_brand_selects_use_brand_ids_for_disambiguation():
     assert "selectedBrandOptionById" in html
 
 
-def test_segment_llm_brand_picker_filters_candidates_from_entered_fields():
+def test_brand_management_enrich_uses_filled_fields_and_disambiguates_choices():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
-    assert 'x-model="segmentLlmForm.brandQuery"' in html
-    assert 'x-model="llmForm.brandQuery"' in html
-    assert "brandSearchCandidates('segment')" in html
-    assert "brandSearchCandidates('profile')" in html
-    assert "selectLlmBrand('segment', brand)" in html
-    assert "selectLlmBrand('profile', brand)" in html
-    assert "resolveSelectedLlmBrand('segment')" in html
-    assert "resolveSelectedLlmBrand('profile')" in html
+    assert "enrichContextPayload()" in html
+    assert "JSON.stringify({ ...this.enrichContextPayload(), async: true })" in html
+    assert "choice.description" in html
+    assert "choice.industry" in html
+    assert 'x-model="form.industry" list="brand-mgmt-industry-options-form"' in html
+    assert '<select x-model="form.industry"' not in html
 
 
 def test_query_pool_assembly_panel_only_exposes_actionable_controls():

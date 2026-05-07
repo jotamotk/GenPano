@@ -10428,83 +10428,12 @@ def _brand_option_from_row(row):
         brand_id = int(raw_id)
     except (TypeError, ValueError):
         brand_id = str(raw_id or "").strip()
-    aliases = item.get("aliases") or []
-    if isinstance(aliases, str):
-        try:
-            aliases = json.loads(aliases)
-        except Exception:
-            aliases = [aliases]
-    if not isinstance(aliases, list):
-        aliases = []
     return {
         "id": brand_id,
         "name": str(item.get("name") or "").strip(),
         "industry": str(item.get("industry") or item.get("industry_name") or "").strip(),
         "target_market": str(item.get("target_market") or item.get("targetMarket") or "").strip(),
-        "description": str(item.get("description") or "").strip(),
-        "aliases": [str(value).strip() for value in aliases if str(value or "").strip()],
     }
-
-
-def _normalize_brand_search_text(value):
-    return re.sub(r"\s+", " ", str(value or "").strip().lower())
-
-
-def _brand_context_terms(payload):
-    terms = []
-    for key in (
-        "industry",
-        "industry_name",
-        "target_market",
-        "targetMarket",
-        "description",
-        "positioning",
-        "goal",
-        "constraints",
-        "notes",
-    ):
-        term = _normalize_brand_search_text((payload or {}).get(key))
-        if len(term) >= 2 and term not in terms:
-            terms.append(term)
-    return terms
-
-
-def _brand_option_search_text(option):
-    aliases = option.get("aliases") or []
-    fields = [
-        option.get("name"),
-        option.get("industry"),
-        option.get("target_market"),
-        option.get("description"),
-        *aliases,
-    ]
-    return _normalize_brand_search_text(" ".join(str(value or "") for value in fields))
-
-
-def _brand_context_term_matches(term, haystack):
-    if term in haystack:
-        return True
-    words = [word for word in re.split(r"[^0-9a-z]+", term) if len(word) >= 2]
-    return bool(words) and all(word in haystack for word in words[:8])
-
-
-def _narrow_brand_matches_by_context(matches, payload):
-    terms = _brand_context_terms(payload)
-    if len(matches) <= 1 or not terms:
-        return matches
-
-    scored = []
-    for option in matches:
-        haystack = _brand_option_search_text(option)
-        score = sum(1 for term in terms if _brand_context_term_matches(term, haystack))
-        if score:
-            scored.append((score, option))
-    if not scored:
-        return matches
-
-    best_score = max(score for score, _option in scored)
-    narrowed = [option for score, option in scored if score == best_score]
-    return narrowed or matches
 
 
 def _resolve_admin_brand_selection(cur, payload):
@@ -10521,12 +10450,10 @@ def _resolve_admin_brand_selection(cur, payload):
 
     industry_select = "industry" if "industry" in cols else "NULL::text AS industry"
     target_market_select = "target_market" if "target_market" in cols else "NULL::text AS target_market"
-    description_select = "description" if "description" in cols else "NULL::text AS description"
-    aliases_select = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
     if brand_id:
         cur.execute(
             f"""
-            SELECT id, name, {industry_select}, {target_market_select}, {description_select}, {aliases_select}
+            SELECT id, name, {industry_select}, {target_market_select}
             FROM brands
             WHERE CAST(id AS TEXT) = %s
             LIMIT 1
@@ -10544,7 +10471,7 @@ def _resolve_admin_brand_selection(cur, payload):
 
     cur.execute(
         f"""
-        SELECT id, name, {industry_select}, {target_market_select}, {description_select}, {aliases_select}
+        SELECT id, name, {industry_select}, {target_market_select}
         FROM brands
         WHERE LOWER(name) = LOWER(%s)
         ORDER BY id
@@ -10554,7 +10481,6 @@ def _resolve_admin_brand_selection(cur, payload):
     )
     matches = [_brand_option_from_row(row) for row in cur.fetchall()]
     matches = [item for item in matches if item.get("id") and item.get("name")]
-    matches = _narrow_brand_matches_by_context(matches, payload)
     if len(matches) > 1:
         raise BrandSelectionAmbiguous(matches)
     if len(matches) == 1:
@@ -11855,27 +11781,7 @@ def admin_segment_profiles_generate_api(segment_id):
     from psycopg2.extras import RealDictCursor
 
     payload = request.get_json(silent=True) or {}
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            segment = _get_segment(cur, segment_id)
-            if not segment:
-                return jsonify({"success": False, "error": "segment_not_found"}), 404
-            brand_payload = dict(payload)
-            if not _brand_id_value(brand_payload) and segment.get("brand_id"):
-                brand_payload["brand_id"] = segment.get("brand_id")
-            if not _brand_name_value(brand_payload) and segment.get("brand_name"):
-                brand_payload["brand_name"] = segment.get("brand_name")
-            try:
-                brand_selection = _resolve_admin_brand_selection(cur, brand_payload)
-            except BrandSelectionAmbiguous as error:
-                return jsonify({"success": False, "error": "ambiguous_brand", "brands": error.candidates}), 409
-    finally:
-        conn.close()
-
-    brand_name = brand_selection.get("brand_name") or ""
-    brand_id = brand_selection.get("brand_id")
-    payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
+    brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
     if not brand_name:
         return jsonify({"success": False, "error": "brand_name_required"}), 400
     if payload.get("async_generation") or payload.get("async"):
@@ -11905,25 +11811,29 @@ def admin_segment_profiles_generate_api(segment_id):
                 "job_id": job_id,
             }
         ), 202
-
-    service = SegmentProfileGenerationService(
-        model=payload.get("llm_model"),
-        allow_fallback=False,
-    )
-    try:
-        result = service.generate_profiles(
-            segment=segment,
-            brand_name=brand_name,
-            count=_clamp_int(payload.get("count"), 6, 1, 50),
-            goal=payload.get("goal") or "",
-            constraints=payload.get("constraints") or payload.get("notes") or "",
-        )
-    except SegmentProfileGenerationError as error:
-        return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
-
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            segment = _get_segment(cur, segment_id)
+            if not segment:
+                return jsonify({"success": False, "error": "segment_not_found"}), 404
+            brand_id = segment.get("brand_id") or _brand_id_value(payload)
+            draft_brand_name = segment.get("brand_name") or brand_name
+            service = SegmentProfileGenerationService(
+                model=payload.get("llm_model"),
+                allow_fallback=False,
+            )
+            try:
+                result = service.generate_profiles(
+                    segment=segment,
+                    brand_name=brand_name,
+                    count=_clamp_int(payload.get("count"), 6, 1, 50),
+                    goal=payload.get("goal") or "",
+                    constraints=payload.get("constraints") or payload.get("notes") or "",
+                )
+            except SegmentProfileGenerationError as error:
+                conn.rollback()
+                return jsonify({"success": False, "error": error.code, "message": error.message}), _segment_profile_generation_status(error)
             _write_profile_generation_log(cur, admin["id"], segment_id, payload, result)
             _insert_admin_audit_log(
                 cur,
@@ -11940,7 +11850,7 @@ def admin_segment_profiles_generate_api(segment_id):
     drafts = _drafts_with_brand_context(
         result.items,
         brand_id=brand_id,
-        brand_name=segment.get("brand_name") or brand_name,
+        brand_name=draft_brand_name,
         segment_id=segment_id,
     )
     return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
@@ -14613,6 +14523,39 @@ def _brand_management_enrich_timeout_seconds():
     return max(30, min(value, 240))
 
 
+_BRAND_ENRICH_CONTEXT_KEYS = (
+    "name_zh",
+    "name_en",
+    "industry",
+    "target_market",
+    "description",
+    "positioning",
+    "headquarters",
+    "founded_year",
+    "aliases",
+    "aliasesText",
+    "official_domains",
+    "domains",
+    "domainsText",
+    "competitors",
+    "competitorsText",
+)
+
+
+def _brand_enrich_context_from_payload(payload):
+    payload = dict(payload or {})
+    nested = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context = dict(nested or {})
+    for key in _BRAND_ENRICH_CONTEXT_KEYS:
+        if key in payload:
+            context[key] = payload.get(key)
+    return {
+        key: value
+        for key, value in context.items()
+        if value not in (None, "", [], {})
+    }
+
+
 _brand_enrich_jobs = {}
 _brand_enrich_jobs_lock = threading.Lock()
 _BRAND_ENRICH_JOB_LIMIT = 100
@@ -14702,12 +14645,13 @@ def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
     _set_brand_enrich_job(job_id, status="running", message="Brand enrichment started")
     conn = None
     try:
+        context = _brand_enrich_context_from_payload(payload)
         service = BrandManagementService(
             model=payload.get("llm_model"),
             allow_fallback=False,
             timeout_seconds=_brand_management_enrich_timeout_seconds(),
         )
-        result = service.enrich_brand_by_name(name=name)
+        result = service.enrich_brand_by_name(name=name, context=context)
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             _insert_admin_audit_log(
@@ -14716,7 +14660,11 @@ def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
                 action="enrich_brand",
                 target_type="brand",
                 target_id=None,
-                diff={"name": name, "model": result.model},
+                diff={
+                    "name": name,
+                    "model": result.model,
+                    "context_fields": sorted(context.keys()),
+                },
                 reason=payload.get("reason"),
             )
         conn.commit()
@@ -15308,6 +15256,7 @@ def admin_brand_management_enrich_api():
     name = (payload.get("name") or payload.get("brand_name") or "").strip()
     if not name:
         return jsonify({"success": False, "error": "name_required"}), 400
+    context = _brand_enrich_context_from_payload(payload)
     if payload.get("async_generation") or payload.get("async"):
         job_id = str(uuid.uuid4())
         _set_brand_enrich_job(
@@ -15341,7 +15290,7 @@ def admin_brand_management_enrich_api():
         timeout_seconds=_brand_management_enrich_timeout_seconds(),
     )
     try:
-        result = service.enrich_brand_by_name(name=name)
+        result = service.enrich_brand_by_name(name=name, context=context)
     except BrandManagementError as error:
         return jsonify(
             {"success": False, "error": error.code, "message": error.message}
@@ -15356,7 +15305,11 @@ def admin_brand_management_enrich_api():
                 action="enrich_brand",
                 target_type="brand",
                 target_id=None,
-                diff={"name": name, "model": result.model},
+                diff={
+                    "name": name,
+                    "model": result.model,
+                    "context_fields": sorted(context.keys()),
+                },
                 reason=payload.get("reason"),
             )
         conn.commit()
