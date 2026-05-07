@@ -15424,6 +15424,10 @@ function adminApp() {
         if (status) qp.set('status', status);
         if (this.queryPoolCurrentRunId) qp.set('run_id', this.queryPoolCurrentRunId);
         const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials:'same-origin' });
+        if (res.status === 401) {
+          this.isLoggedIn = false;
+          throw new Error('请先登录');
+        }
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || '候选加载失败');
         const rows = (body.rows || []).map(row => ({

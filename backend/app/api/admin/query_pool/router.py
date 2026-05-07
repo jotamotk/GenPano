@@ -486,3 +486,247 @@ async def bulk_delete_candidates(
         request=request,
     )
     return {"success": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 slice 3a — cursor-based GET /candidates
+# ---------------------------------------------------------------------------
+
+
+import base64  # noqa: E402
+import json  # noqa: E402
+
+from sqlalchemy import text  # noqa: E402
+
+QUERY_POOL_DIRECTIONS = {"next", "prev"}
+QUERY_POOL_LIST_STATUSES = {"candidate", "review", "ready", "all"}
+
+
+def _encode_cursor(candidate_seq: int | None) -> str | None:
+    if candidate_seq is None:
+        return None
+    payload = json.dumps(
+        {"candidate_seq": int(candidate_seq)}, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str | None) -> int | None:
+    if not cursor:
+        return None
+    try:
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        return int(payload["candidate_seq"])
+    except Exception as exc:
+        raise ValueError("invalid_cursor") from exc
+
+
+async def _latest_run_id(session: AsyncSession) -> str | None:
+    row = (
+        await session.execute(
+            text("SELECT id FROM query_generation_runs ORDER BY created_at DESC LIMIT 1")
+        )
+    ).first()
+    return str(row[0]) if row else None
+
+
+def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Wire-shape that matches admin_console's _query_pool_candidate_row.
+
+    Includes joined prompt / topic / segment / profile metadata so the SPA
+    table can render context columns inline. ``""`` defaults (not None) on
+    nullable text columns so the SPA's `||` chains keep working.
+    """
+    candidate_seq = row.get("candidate_seq")
+    return {
+        "id": str(row.get("id") or ""),
+        "run_id": str(row.get("run_id") or ""),
+        "candidate_seq": int(candidate_seq or 0),
+        "prompt_id": str(row.get("prompt_id") or ""),
+        "prompt_text": row.get("prompt_text") or "",
+        "topic_id": str(row.get("topic_id") or ""),
+        "topic_text": row.get("topic_text") or "",
+        "segment_id": str(row.get("segment_id") or ""),
+        "profile_id": str(row.get("profile_id") or ""),
+        "segment_name": row.get("segment_name") or "",
+        "profile_name": row.get("profile_name") or "",
+        "profile_demographic": row.get("profile_demographic") or "",
+        "profile_need": row.get("profile_need") or "",
+        "rendered_query": row.get("rendered_query") or "",
+        "generation_method": row.get("generation_method") or "llm",
+        "llm_model": row.get("llm_model"),
+        "llm_usage": row.get("llm_usage_json") or {},
+        "candidate_status": row.get("candidate_status") or "candidate",
+        "scheduler_intake_batch_id": row.get("scheduler_intake_batch_id"),
+        "reviewed_by": row.get("reviewed_by"),
+        "reviewed_at": _isoformat(row.get("reviewed_at")),
+        "review_reason": row.get("review_reason") or "",
+        "created_at": _isoformat(row.get("created_at")),
+    }
+
+
+async def _fetch_candidates_paged(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    status: str | None,
+    segment_id: str | None,
+    profile_id: str | None,
+    query: str | None,
+    limit: int,
+    cursor_seq: int | None,
+    direction: str,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Paged candidate query with prompt + topic + segment + profile JOINs."""
+    where: list[str] = ["q.run_id = :run_id"]
+    params: dict[str, Any] = {"run_id": run_id}
+    if status and status != "all":
+        where.append("q.candidate_status = :status")
+        params["status"] = status
+    if segment_id:
+        where.append("q.segment_id = :segment_id")
+        params["segment_id"] = segment_id
+    if profile_id:
+        where.append("q.profile_id = :profile_id")
+        params["profile_id"] = profile_id
+    if query:
+        where.append(
+            "(q.rendered_query ILIKE :like OR q.prompt_id ILIKE :like "
+            "OR COALESCE(q.segment_id, '') ILIKE :like "
+            "OR COALESCE(q.profile_id, '') ILIKE :like "
+            "OR EXISTS (SELECT 1 FROM prompts pr_search "
+            "WHERE CAST(pr_search.id AS TEXT) = q.prompt_id "
+            "AND COALESCE(pr_search.text, '') ILIKE :like))"
+        )
+        params["like"] = f"%{query}%"
+
+    # approx_total ignores cursor
+    where_clause = " AND ".join(where)
+    count_sql = text(
+        f"SELECT COUNT(*)::int AS cnt FROM query_generation_candidates q WHERE {where_clause}"
+    )
+    approx_total = int((await session.execute(count_sql, params)).scalar() or 0)
+
+    page_where = list(where)
+    page_params = dict(params)
+    if cursor_seq is not None:
+        cmp = "<" if direction == "prev" else ">"
+        page_where.append(f"q.candidate_seq {cmp} :cursor_seq")
+        page_params["cursor_seq"] = cursor_seq
+    order = "DESC" if direction == "prev" else "ASC"
+    page_params["limit"] = limit + 1
+    sql = text(
+        f"""
+        SELECT q.id, q.run_id, q.candidate_seq, q.prompt_id, q.segment_id, q.profile_id,
+               q.rendered_query, q.generation_method, q.llm_model, q.llm_usage_json,
+               q.candidate_status, q.scheduler_intake_batch_id,
+               q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
+               pr.text AS prompt_text,
+               pr.topic_id AS topic_id,
+               t.text AS topic_text,
+               s.name AS segment_name,
+               p.name AS profile_name,
+               p.demographic AS profile_demographic,
+               p.need AS profile_need
+        FROM query_generation_candidates q
+        LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
+        LEFT JOIN topics t ON t.id = pr.topic_id
+        LEFT JOIN segments s ON s.id = q.segment_id
+        LEFT JOIN profiles p ON p.segment_id = q.segment_id
+          AND (COALESCE(p.code, '') = q.profile_id OR CAST(p.id AS TEXT) = q.profile_id)
+        WHERE {" AND ".join(page_where)}
+        ORDER BY q.candidate_seq {order}
+        LIMIT :limit
+        """
+    )
+    raw_rows = [dict(r) for r in (await session.execute(sql, page_params)).mappings().all()]
+    has_more = len(raw_rows) > limit
+    raw_rows = raw_rows[:limit]
+    if direction == "prev":
+        raw_rows = list(reversed(raw_rows))
+    return raw_rows, approx_total, has_more
+
+
+@router.get("/candidates", response_model=None)
+async def list_candidates(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    run_id: str | None = Query(None),
+    status: str | None = Query(None),
+    segment_id: str | None = Query(None, alias="segment_id"),
+    segment_alias: str | None = Query(None, alias="segment"),
+    profile_id: str | None = Query(None, alias="profile_id"),
+    profile_alias: str | None = Query(None, alias="profile"),
+    q: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=200),
+    cursor: str | None = Query(None),
+    direction: str = Query("next"),
+) -> dict[str, Any]:
+    """Cursor-paged candidate list with prompt+topic+segment+profile JOINs.
+
+    Mirrors admin_console's contract: returns ``{rows, next_cursor,
+    prev_cursor, approx_total}``. Defaults to the most recent
+    ``query_generation_runs`` if no ``run_id`` is given.
+    """
+    status_norm = (status or "").strip().lower()
+    if status_norm and status_norm not in QUERY_POOL_LIST_STATUSES:
+        raise validation_error("status", f"must be one of {sorted(QUERY_POOL_LIST_STATUSES)}")
+    if direction not in QUERY_POOL_DIRECTIONS:
+        raise validation_error("direction", f"must be one of {sorted(QUERY_POOL_DIRECTIONS)}")
+    seg = (segment_id or segment_alias or "").strip() or None
+    prof = (profile_id or profile_alias or "").strip() or None
+    qq = (q or "").strip() or None
+    rid = (run_id or "").strip() or None
+
+    try:
+        cursor_seq = _decode_cursor(cursor)
+    except ValueError as exc:
+        raise validation_error("cursor", "invalid_cursor") from exc
+
+    if not rid:
+        rid = await _latest_run_id(session)
+    if not rid:
+        return {
+            "success": True,
+            "rows": [],
+            "next_cursor": None,
+            "prev_cursor": None,
+            "approx_total": 0,
+        }
+
+    raw_rows, approx_total, has_more = await _fetch_candidates_paged(
+        session,
+        run_id=rid,
+        status=status_norm or None,
+        segment_id=seg,
+        profile_id=prof,
+        query=qq,
+        limit=limit,
+        cursor_seq=cursor_seq,
+        direction=direction,
+    )
+    rows = [_list_candidate_row(r) for r in raw_rows]
+    if not rows:
+        return {
+            "success": True,
+            "rows": [],
+            "next_cursor": None,
+            "prev_cursor": None,
+            "approx_total": approx_total,
+        }
+    first_seq = rows[0]["candidate_seq"]
+    last_seq = rows[-1]["candidate_seq"]
+    if direction == "prev":
+        prev_cursor = _encode_cursor(first_seq) if has_more else None
+        next_cursor = _encode_cursor(last_seq)
+    else:
+        prev_cursor = _encode_cursor(first_seq) if cursor_seq is not None else None
+        next_cursor = _encode_cursor(last_seq) if has_more else None
+    return {
+        "success": True,
+        "rows": rows,
+        "next_cursor": next_cursor,
+        "prev_cursor": prev_cursor,
+        "approx_total": approx_total,
+    }
