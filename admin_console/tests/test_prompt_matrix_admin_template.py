@@ -298,7 +298,7 @@ def test_query_pool_candidate_delete_controls_are_wired():
     assert "setQueryPoolCandidatePageSelection($event.target.checked)" in candidate_section
     assert "deleteQueryPoolCandidate(q)" in candidate_section
     assert "deleteSelectedQueryPoolCandidates()" in candidate_section
-    assert "API_BASE + '/admin/query-pool/candidates/bulk-delete'" in html
+    assert "'/api/admin/query-pool/candidates/bulk-delete'" in html
     assert "DELETE" in html
 
 

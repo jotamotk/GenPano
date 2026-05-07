@@ -15502,8 +15502,8 @@ function adminApp() {
       this.queryPoolCandidateDeleting = true;
       try {
         const url = ids.length === 1
-          ? API_BASE + '/admin/query-pool/candidates/' + encodeURIComponent(ids[0])
-          : API_BASE + '/admin/query-pool/candidates/bulk-delete';
+          ? '/api/admin/query-pool/candidates/' + encodeURIComponent(ids[0])
+          : '/api/admin/query-pool/candidates/bulk-delete';
         const res = await fetch(url, {
           method: ids.length === 1 ? 'DELETE' : 'POST',
           credentials:'same-origin',

@@ -7746,106 +7746,10 @@ def admin_query_pool_assemble_api():
             conn.close()
 
 
-@app.route('/api/admin/query-pool/runs')
-@app.route('/admin/api/v1/pipeline/query-pool/runs')
-def admin_query_pool_runs_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    limit = _clamp_int(request.args.get("limit"), 20, 1, 100)
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            rows = _list_query_pool_runs(cur, limit=limit)
-        return jsonify({"success": True, "rows": rows})
-    finally:
-        conn.close()
 
 
 
 
-
-
-
-@app.route('/api/admin/query-pool/candidates/<candidate_id>', methods=['DELETE'])
-@app.route('/admin/api/v1/pipeline/query-pool/candidates/<candidate_id>', methods=['DELETE'])
-def admin_query_pool_candidate_delete_api(candidate_id):
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    reason = str(payload.get("reason") or "").strip() or None
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            result = _delete_query_pool_candidates(cur, [candidate_id], admin["id"], reason=reason)
-        if not result["deleted"]:
-            conn.rollback()
-            return jsonify({"success": False, "error": "query_pool_candidate_not_found"}), 404
-        conn.commit()
-        return jsonify({"success": True, **result})
-    except Exception as exc:
-        if conn is not None:
-            conn.rollback()
-        app.logger.exception("Query Pool candidate delete failed: %s", exc)
-        return jsonify(
-            {
-                "success": False,
-                "error": "query_pool_candidate_delete_failed",
-                "message": "Query 候选删除失败",
-            }
-        ), 503
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-
-@app.route('/api/admin/query-pool/candidates/bulk-delete', methods=['POST'])
-@app.route('/admin/api/v1/pipeline/query-pool/candidates/bulk-delete', methods=['POST'])
-def admin_query_pool_candidate_bulk_delete_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    candidate_ids = [str(item).strip() for item in (payload.get("candidate_ids") or []) if str(item).strip()]
-    candidate_ids = list(dict.fromkeys(candidate_ids))
-    if not candidate_ids:
-        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
-    if len(candidate_ids) > 1000:
-        return jsonify({"success": False, "error": "candidate_ids_too_many"}), 400
-    reason = str(payload.get("reason") or "").strip() or None
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            result = _delete_query_pool_candidates(cur, candidate_ids, admin["id"], reason=reason)
-        conn.commit()
-        return jsonify({"success": True, **result})
-    except Exception as exc:
-        if conn is not None:
-            conn.rollback()
-        app.logger.exception("Query Pool candidate bulk delete failed: %s", exc)
-        return jsonify(
-            {
-                "success": False,
-                "error": "query_pool_candidate_bulk_delete_failed",
-                "message": "Query 候选批量删除失败",
-            }
-        ), 503
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def _prompt_matrix_run_row(row):

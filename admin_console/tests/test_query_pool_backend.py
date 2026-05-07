@@ -500,63 +500,6 @@ def test_query_pool_candidate_row_exposes_prompt_context():
     assert row["topic_text"] == "粉底选购"
 
 
-def test_query_pool_candidate_delete_api(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-
-    def fake_delete(cur, candidate_ids, admin_id, reason=None):
-        assert candidate_ids == ["qc-1"]
-        assert admin_id == "admin-1"
-        assert reason == "bad query"
-        return {"deleted": ["qc-1"], "missing": []}
-
-    monkeypatch.setattr(app_mod, "_delete_query_pool_candidates", fake_delete, raising=False)
-
-    response = client.delete("/api/admin/query-pool/candidates/qc-1", json={"reason": "bad query"})
-    body = response.get_json()
-
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert body["deleted"] == ["qc-1"]
-    assert conn.commits == 1
-
-
-def test_query_pool_candidate_bulk_delete_api_requires_ids(client, monkeypatch):
-    login(monkeypatch)
-
-    response = client.post("/api/admin/query-pool/candidates/bulk-delete", json={"candidate_ids": []})
-    body = response.get_json()
-
-    assert response.status_code == 400
-    assert body["error"] == "candidate_ids_required"
-
-
-def test_query_pool_candidate_bulk_delete_api(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-
-    def fake_delete(cur, candidate_ids, admin_id, reason=None):
-        assert candidate_ids == ["qc-1", "qc-2"]
-        assert admin_id == "admin-1"
-        assert reason == "cleanup"
-        return {"deleted": ["qc-1", "qc-2"], "missing": []}
-
-    monkeypatch.setattr(app_mod, "_delete_query_pool_candidates", fake_delete, raising=False)
-
-    response = client.post(
-        "/api/admin/query-pool/candidates/bulk-delete",
-        json={"candidate_ids": ["qc-1", "qc-2"], "reason": "cleanup"},
-    )
-    body = response.get_json()
-
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert body["deleted"] == ["qc-1", "qc-2"]
-    assert conn.commits == 1
-
-
 def test_query_pool_llm_prompt_uses_profile_context_without_internal_terms():
     messages = app_mod._build_query_pool_llm_messages(
         [

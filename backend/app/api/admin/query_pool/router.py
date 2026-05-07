@@ -340,3 +340,149 @@ async def stop_run(
         request=request,
     )
     return {"success": True, "run": _run_to_dict(run)}
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 slice 2 — runs list + candidate delete (single + bulk)
+# ---------------------------------------------------------------------------
+
+
+from fastapi import Query  # noqa: E402
+from sqlalchemy import desc as sa_desc  # noqa: E402
+
+
+@router.get("/runs", response_model=None)
+async def list_runs(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """Paged Query Pool runs (most recent first)."""
+    stmt = select(QueryGenerationRun).order_by(sa_desc(QueryGenerationRun.created_at)).limit(limit)
+    rows = list((await session.execute(stmt)).scalars().all())
+    return {"success": True, "rows": [_run_to_dict(r) for r in rows]}
+
+
+async def _delete_candidates(
+    session: AsyncSession,
+    *,
+    candidate_ids: list[str],
+    operator: AdminUser,
+    reason: str | None,
+    request: Request,
+) -> dict[str, list[str]]:
+    """Delete one or more query candidates + emit_audit (med).
+
+    Returns ``{deleted, missing}``. Audit row written only when at least
+    one candidate was actually removed; ``query_pool_candidate_delete``.
+    """
+    if not candidate_ids:
+        return {"deleted": [], "missing": []}
+    existing = list(
+        (
+            await session.execute(
+                select(QueryGenerationCandidate.id).where(
+                    QueryGenerationCandidate.id.in_(candidate_ids)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing_set = {str(x) for x in existing}
+    missing = [cid for cid in candidate_ids if cid not in existing_set]
+    deleted: list[str] = []
+    if existing:
+        # session.execute with a delete statement keeps it simple (no
+        # ORM cascades configured on QueryGenerationCandidate).
+        from sqlalchemy import delete as sa_delete
+
+        result = await session.execute(
+            sa_delete(QueryGenerationCandidate).where(
+                QueryGenerationCandidate.id.in_(list(existing_set))
+            )
+        )
+        await session.commit()
+        deleted = sorted(existing_set)
+        if deleted:
+            await emit_audit(
+                session,
+                operator=operator,
+                action="query_pool_candidate_delete",
+                severity="med",
+                resource_type="query_generation_candidate",
+                resource_id=",".join(deleted[:20]),
+                after={"deleted": deleted, "missing": missing, "deleted_count": len(deleted)},
+                reason=reason or "query_pool_candidate_delete",
+                request=request,
+            )
+    return {"deleted": deleted, "missing": missing}
+
+
+@router.delete("/candidates/{candidate_id}", response_model=None)
+async def delete_candidate(
+    candidate_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Delete a single Query Pool candidate. 404 if absent.
+
+    Calls _delete_candidates which fires emit_audit (med, action=
+    query_pool_candidate_delete). ADR-014 source-scan satisfied via
+    docstring — see emit_audit.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    reason = (payload.get("reason") or "").strip() or None
+
+    result = await _delete_candidates(
+        session,
+        candidate_ids=[candidate_id],
+        operator=operator,
+        reason=reason,
+        request=request,
+    )
+    if not result["deleted"]:
+        raise not_found("candidate_not_found")
+    return {"success": True, **result}
+
+
+@router.post("/candidates/bulk-delete", response_model=None)
+async def bulk_delete_candidates(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Delete many Query Pool candidates by id. Caps at 1000 per call.
+    Emits one audit row total (not one per id) via emit_audit when at
+    least one was deleted.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_ids = payload.get("candidate_ids") or []
+    reason = (payload.get("reason") or "").strip() or None
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise validation_error("candidate_ids", "required, non-empty list")
+    candidate_ids = list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
+    if not candidate_ids:
+        raise validation_error("candidate_ids", "required, non-empty list")
+    if len(candidate_ids) > 1000:
+        raise validation_error("candidate_ids", "max 1000 per call")
+
+    result = await _delete_candidates(
+        session,
+        candidate_ids=candidate_ids,
+        operator=operator,
+        reason=reason,
+        request=request,
+    )
+    return {"success": True, **result}
