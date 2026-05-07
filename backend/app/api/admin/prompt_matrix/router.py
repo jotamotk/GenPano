@@ -21,6 +21,7 @@ land in the follow-up PRs alongside the routes that need them.
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -619,5 +620,173 @@ async def get_candidates(
             "all_candidates": counts.get("all", 0),
             "duplicate_candidates": sum(1 for r in rows if r.get("duplicate_of")),
             "status_counts": counts,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 slice 3 — POST /generate (LLM async + run lifecycle)
+# ---------------------------------------------------------------------------
+
+
+_BACKGROUND_PROMPT_GENERATION_TASKS: set[Any] = set()
+
+
+@router.post("/generate", response_model=None)
+async def generate_prompts(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Kick off Prompt Matrix generation. Sync vs background controlled by env.
+
+    Body: ``{topic_ids: [...], intent_count?, language_count?, max_per_topic?,
+    max_prompts?, template_strategy?, prompt_style?, audience_mode?, ...}``.
+
+    Sync mode (``PROMPT_MATRIX_SYNC_GENERATE=1``) — awaits the full LLM loop
+    and returns inserted candidates inline.
+    Background mode (default) — schedules ``execute_generation_background``
+    via ``asyncio.create_task`` against a fresh ``AsyncSessionLocal``;
+    returns ``{run_id, status: "running"}`` immediately.
+
+    ADR-014 audit: emit_audit fires inside execute_generation once the
+    run reaches a terminal state. ADR-014 source-scan satisfied via
+    docstring (see emit_audit).
+    """
+    import asyncio
+    import os
+
+    from app.admin.prompt_matrix.generation import (
+        execute_generation,
+        execute_generation_background,
+        run_failed_status_code,
+    )
+    from app.admin.prompt_matrix.lib import (
+        estimate_generation_count,
+        prompt_generation_config,
+    )
+    from app.db.session import AsyncSessionLocal
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    try:
+        config = prompt_generation_config(
+            {
+                "intent_count": payload.get("intent_count") or payload.get("intentCount"),
+                "language_count": payload.get("language_count") or payload.get("languageCount"),
+                "topic_priority": payload.get("topic_priority") or payload.get("topicPriority"),
+                "template_strategy": payload.get("template_strategy")
+                or payload.get("templateStrategy"),
+                "prompt_style": payload.get("prompt_style") or payload.get("promptStyle"),
+                "audience_mode": payload.get("audience_mode") or payload.get("audienceMode"),
+                "max_per_topic": payload.get("max_per_topic") or payload.get("maxPerTopic"),
+                "max_prompts": payload.get("max_prompts") or payload.get("maxPrompts"),
+                "overflow_policy": payload.get("overflow_policy") or payload.get("overflowPolicy"),
+            }
+        )
+    except PromptMatrixError as error:
+        raise _llm_error_to_http(error) from error
+
+    try:
+        topic_ids, selection_snapshot = pm_db.parse_selection(payload)
+    except ValueError as exc:
+        raise validation_error("topic_ids", str(exc)) from exc
+    if not topic_ids:
+        raise validation_error("topic_ids", "required, non-empty list")
+
+    topics = await pm_db.fetch_topic_rows_by_ids(session, topic_ids, config)
+    if not topics:
+        raise not_found("selected_topics_not_found")
+    topic_ids = [int(t["raw_id"]) for t in topics]
+
+    estimated = estimate_generation_count(
+        selected_topics=len(topics),
+        intent_count=config["intent_count"],
+        language_count=config["language_count"],
+        max_per_topic=config["max_per_topic"],
+        max_prompts=config["max_prompts"],
+    )
+    if estimated <= 0:
+        raise validation_error("config", "no_prompt_combinations")
+
+    known_brands = await pm_db.fetch_brand_rows(session)
+    existing_prompts = await pm_db.fetch_existing_prompt_texts(session, topic_ids=topic_ids)
+    request_config: dict[str, Any] = {**config, "selection": selection_snapshot}
+
+    run_id = str(uuid.uuid4())
+    run = PromptGenerationRun(
+        id=run_id,
+        admin_id=operator.id,
+        status="running",
+        request_config=request_config,
+        selected_topic_ids=topic_ids,
+        estimated_prompts=estimated,
+        started_at=_now(),
+    )
+    session.add(run)
+    await session.commit()
+
+    sync_mode = os.getenv("PROMPT_MATRIX_SYNC_GENERATE") == "1"
+    if sync_mode:
+        try:
+            result = await execute_generation(
+                session,
+                run_id=run_id,
+                operator=operator,
+                topics=topics,
+                config=config,
+                known_brands=known_brands,
+                existing_prompts=existing_prompts,
+                estimated=estimated,
+                request_config=request_config,
+            )
+        except PromptMatrixError as error:
+            return _problem(  # type: ignore[return-value]
+                run_failed_status_code(error.code),
+                error.code,
+                error.message,
+                detail=error.message,
+                extra={"run_id": run_id},
+            ).detail
+        return {
+            "success": True,
+            "run_id": run_id,
+            "status": "completed" if not result.get("cancelled") else "cancelled",
+            "candidates": result["inserted"],
+            "summary": {
+                "estimated": estimated,
+                "generated": len(result["inserted"]),
+                "skipped": result["skipped"],
+            },
+        }
+
+    bg_task = asyncio.create_task(
+        execute_generation_background(
+            AsyncSessionLocal,
+            run_id=run_id,
+            operator_id=operator.id,
+            topics=topics,
+            config=config,
+            known_brands=known_brands,
+            existing_prompts=existing_prompts,
+            estimated=estimated,
+            request_config=request_config,
+        )
+    )
+    _BACKGROUND_PROMPT_GENERATION_TASKS.add(bg_task)
+    bg_task.add_done_callback(_BACKGROUND_PROMPT_GENERATION_TASKS.discard)
+    return {
+        "success": True,
+        "run_id": run_id,
+        "status": "running",
+        "summary": {
+            "estimated": estimated,
+            "generated": 0,
+            "skipped": [],
         },
     }

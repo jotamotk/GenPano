@@ -14844,7 +14844,7 @@ function adminApp() {
       try {
         this.toast('Prompt 生成任务已启动，候选会分批进入待审核列表，待审核列表已刷新');
         await new Promise(resolve => setTimeout(resolve, 50));
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/generate', {
+        const res = await fetch('/api/admin/prompt-matrix/generate', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
