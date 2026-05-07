@@ -15927,7 +15927,7 @@ function adminApp() {
         if (this.userFilters[key]) qp.set(key, this.userFilters[key]);
       }
       try {
-        const res = await fetch(API_BASE + '/users?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/users/?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
         if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
@@ -15948,7 +15948,7 @@ function adminApp() {
       if (!userId) return;
       this.userDetailLoading = true;
       try {
-        const res = await fetch(API_BASE + '/users/' + encodeURIComponent(userId), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/users/' + encodeURIComponent(userId), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
         this.userDrawer = {
@@ -15983,7 +15983,7 @@ function adminApp() {
     async moderateUser(action, reason) {
       if (!this.userDrawer) return;
       try {
-        const res = await fetch(API_BASE + '/users/' + encodeURIComponent(this.userDrawer.id) + '/' + action, {
+        const res = await fetch('/api/admin/users/' + encodeURIComponent(this.userDrawer.id) + '/' + action, {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
@@ -16005,7 +16005,7 @@ function adminApp() {
       this.loginAuditLoading = true;
       this.loginAuditError = null;
       try {
-        const res = await fetch(API_BASE + '/users/login-audit?limit=50', { credentials:'same-origin' });
+        const res = await fetch('/api/admin/users/login-audit?limit=50', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
         if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
@@ -16023,7 +16023,7 @@ function adminApp() {
       this.userAuditLoading = true;
       this.userAuditError = null;
       try {
-        const res = await fetch(API_BASE + '/users/actions?limit=50', { credentials:'same-origin' });
+        const res = await fetch('/api/admin/users/actions?limit=50', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) { this.isLoggedIn = false; throw new Error('Admin session 已失效，请重新登录'); }
         if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));

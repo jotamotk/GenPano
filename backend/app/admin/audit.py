@@ -11,7 +11,7 @@ Usage:
     async def freeze_user(
         user_id: int,
         request: Request,
-        operator: User = Depends(current_admin_operator),
+        operator: AdminUser = Depends(current_admin),
         session: AsyncSession = _DependsDb,
     ) -> dict:
         ... do the freeze ...
@@ -34,7 +34,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Request
-from genpano_models import AdminAuditLog, User
+from genpano_models import AdminAuditLog, AdminUser, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 Severity = Literal["low", "med", "high"]
@@ -51,7 +51,7 @@ def _now() -> datetime:
 async def emit_audit(
     session: AsyncSession,
     *,
-    operator: User,
+    operator: User | AdminUser,
     action: str,
     severity: Severity = "med",
     resource_type: str | None = None,
