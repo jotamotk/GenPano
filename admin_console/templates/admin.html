@@ -2755,26 +2755,12 @@
                 <div class="grid grid-cols-2 gap-4 text-[12px]">
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">品牌</span>
-                    <input type="hidden" x-model="llmForm.brandId">
-                    <div class="space-y-2">
-                      <div class="relative">
-                        <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
-                        <input x-model="llmForm.brandQuery"
-                               @input.debounce.150ms="clearLlmBrandSelection('profile')"
-                               class="w-full h-10 rounded-btn border border-b-default bg-surface pl-8 pr-3 outline-none focus:ring-2 focus:ring-accent/20"
-                               :placeholder="brandOptionsLoading ? 'Loading brands...' : 'Search brand'">
-                      </div>
-                      <div class="max-h-32 overflow-y-auto rounded-btn border border-b-card bg-surface divide-y divide-b-card">
-                        <template x-for="brand in brandSearchCandidates('profile')" :key="brand.id">
-                          <button type="button"
-                                  @click="selectLlmBrand('profile', brand)"
-                                  class="w-full px-3 py-2 text-left text-[11px] hover:bg-accent/5"
-                                  :class="String(llmForm.brandId) === String(brand.id) ? 'bg-accent/10 text-accent font-semibold' : 'text-ink'"
-                                  x-text="brandDisambiguationLabel(brand)"></button>
-                        </template>
-                        <div x-show="!brandOptionsLoading && brandSearchCandidates('profile').length === 0" class="px-3 py-2 text-[11px] text-ink-muted">No matching brands</div>
-                      </div>
-                    </div>
+                    <select x-model="llmForm.brandId" @change="syncSelectedBrand('profile')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                      <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
+                      <template x-for="brand in brandOptions" :key="brand.id">
+                        <option :value="brand.id" x-text="brandDisambiguationLabel(brand)"></option>
+                      </template>
+                    </select>
                   </label>
                   <label class="space-y-1.5">
                     <span class="font-semibold text-ink-muted">数量</span>
@@ -2789,7 +2775,7 @@
                     <textarea x-model="llmForm.notes" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="col-span-2 flex justify-end gap-2">
-                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !canGenerateWithBrand('profile')" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !(llmForm.brandId || llmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="profileLlmLoading ? '生成中...' : '生成 Profile'"></span>
                     </button>
@@ -3142,26 +3128,12 @@
                   <div class="grid grid-cols-2 gap-4">
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">品牌</span>
-                      <input type="hidden" x-model="segmentLlmForm.brandId">
-                      <div class="space-y-2">
-                        <div class="relative">
-                          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"></i>
-                          <input x-model="segmentLlmForm.brandQuery"
-                                 @input.debounce.150ms="clearLlmBrandSelection('segment')"
-                                 class="w-full h-10 rounded-btn border border-b-default bg-surface pl-8 pr-3 outline-none focus:ring-2 focus:ring-accent/20"
-                                 :placeholder="brandOptionsLoading ? 'Loading brands...' : 'Search brand'">
-                        </div>
-                        <div class="max-h-32 overflow-y-auto rounded-btn border border-b-card bg-surface divide-y divide-b-card">
-                          <template x-for="brand in brandSearchCandidates('segment')" :key="brand.id">
-                            <button type="button"
-                                    @click="selectLlmBrand('segment', brand)"
-                                    class="w-full px-3 py-2 text-left text-[11px] hover:bg-accent/5"
-                                    :class="String(segmentLlmForm.brandId) === String(brand.id) ? 'bg-accent/10 text-accent font-semibold' : 'text-ink'"
-                                    x-text="brandDisambiguationLabel(brand)"></button>
-                          </template>
-                          <div x-show="!brandOptionsLoading && brandSearchCandidates('segment').length === 0" class="px-3 py-2 text-[11px] text-ink-muted">No matching brands</div>
-                        </div>
-                      </div>
+                      <select x-model="segmentLlmForm.brandId" @change="syncSelectedBrand('segment')" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                        <option value="" x-text="brandOptionsLoading ? '加载品牌中...' : '选择品牌'"></option>
+                        <template x-for="brand in brandOptions" :key="brand.id">
+                          <option :value="brand.id" x-text="brandDisambiguationLabel(brand)"></option>
+                        </template>
+                      </select>
                     </label>
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">行业</span>
@@ -3192,7 +3164,7 @@
                     <textarea x-model="segmentLlmForm.constraints" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="flex items-center justify-end gap-2">
-                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !canGenerateWithBrand('segment')" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !(segmentLlmForm.brandId || segmentLlmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
                       <span x-text="segmentLlmLoading ? '生成中...' : '生成 Segment 草稿'"></span>
                     </button>
@@ -9732,7 +9704,6 @@ function segmentCrudPanel() {
     segmentLlmForm: {
       brandId: '',
       brand: '',
-      brandQuery: '',
       industry: 'Beauty',
       count: 6,
       status: 'active',
@@ -9744,7 +9715,6 @@ function segmentCrudPanel() {
     llmForm: {
       brandId: '',
       brand: '',
-      brandQuery: '',
       count: 6,
       goal: 'Generate reviewable Profile drafts for the current Segment.',
       notes: 'Cover price, proof, scenario, channel, and competitor-comparison needs without duplicates.',
@@ -9817,7 +9787,6 @@ function segmentCrudPanel() {
             industry: String(row.industry || row.industry_name || '').trim(),
             targetMarket: String(row.target_market || row.targetMarket || '').trim(),
             description: String(row.description || '').trim(),
-            aliases: Array.isArray(row.aliases) ? row.aliases.map(value => String(value || '').trim()).filter(Boolean) : [],
             topicCount: Number(row.topic_count || row.topicCount || 0),
           }))
           .filter(row => row.id && row.name);
@@ -9827,10 +9796,8 @@ function segmentCrudPanel() {
         this.brandOptions = [];
         this.segmentLlmForm.brandId = '';
         this.segmentLlmForm.brand = '';
-        this.segmentLlmForm.brandQuery = '';
         this.llmForm.brandId = '';
         this.llmForm.brand = '';
-        this.llmForm.brandQuery = '';
         this.brandOptionsError = error.message || 'Brand options load failed';
       } finally {
         this.brandOptionsLoading = false;
@@ -9851,95 +9818,6 @@ function segmentCrudPanel() {
       return parts.join(' / ');
     },
 
-    llmBrandForm(scope) {
-      return scope === 'profile' ? this.llmForm : this.segmentLlmForm;
-    },
-
-    brandSearchTerms(scope) {
-      const form = this.llmBrandForm(scope);
-      const segment = this.currentSegment();
-      const values = scope === 'profile'
-        ? [form.brandQuery, form.goal, form.notes, segment?.name, segment?.industry, segment?.brandName]
-        : [form.brandQuery, form.industry, form.positioning, form.goal, form.constraints];
-      const terms = values
-        .flatMap(value => String(value || '').toLowerCase().split(/[^0-9a-z\u4e00-\u9fff]+/))
-        .map(term => term.trim())
-        .filter(term => term.length >= 2);
-      return [...new Set(terms)];
-    },
-
-    brandSearchHaystack(brand) {
-      const aliases = Array.isArray(brand?.aliases) ? brand.aliases : [];
-      return [brand?.name, brand?.industry, brand?.targetMarket, brand?.description, ...aliases]
-        .map(value => String(value || '').toLowerCase())
-        .join(' ');
-    },
-
-    brandCandidateScore(scope, brand) {
-      const terms = this.brandSearchTerms(scope);
-      if (!terms.length) return 1;
-      const haystack = this.brandSearchHaystack(brand);
-      return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
-    },
-
-    brandSearchCandidates(scope) {
-      const terms = this.brandSearchTerms(scope);
-      return this.brandOptions
-        .map(brand => ({ brand, score: this.brandCandidateScore(scope, brand) }))
-        .filter(item => !terms.length || item.score > 0)
-        .sort((a, b) => (b.score - a.score) || String(a.brand.name || '').localeCompare(String(b.brand.name || '')))
-        .slice(0, 8)
-        .map(item => item.brand);
-    },
-
-    applyBrandOptionToForm(scope, brand) {
-      if (!brand) return;
-      const form = this.llmBrandForm(scope);
-      form.brandId = String(brand.id || '');
-      form.brand = brand.name || form.brand;
-      form.brandQuery = this.brandDisambiguationLabel(brand);
-      if (scope === 'segment' && brand.industry) {
-        this.segmentLlmForm.industry = brand.industry;
-      }
-      const defaultPositioning = 'Premium skincare, fragrance, and cosmetics.';
-      if (
-        scope === 'segment'
-        && brand.description
-        && (!String(this.segmentLlmForm.positioning || '').trim() || this.segmentLlmForm.positioning === defaultPositioning)
-      ) {
-        this.segmentLlmForm.positioning = brand.description;
-      }
-    },
-
-    selectLlmBrand(scope, brand) {
-      this.applyBrandOptionToForm(scope, brand);
-    },
-
-    clearLlmBrandSelection(scope) {
-      const form = this.llmBrandForm(scope);
-      const selected = this.selectedBrandOptionById(form.brandId);
-      if (selected && form.brandQuery === this.brandDisambiguationLabel(selected)) return;
-      form.brandId = '';
-      form.brand = '';
-    },
-
-    resolveSelectedLlmBrand(scope) {
-      const form = this.llmBrandForm(scope);
-      const selected = this.selectedBrandOptionById(form.brandId);
-      if (selected) return selected;
-      const candidates = this.brandSearchCandidates(scope);
-      if (candidates.length === 1) {
-        this.selectLlmBrand(scope, candidates[0]);
-        return candidates[0];
-      }
-      return null;
-    },
-
-    canGenerateWithBrand(scope) {
-      const form = this.llmBrandForm(scope);
-      return Boolean(this.selectedBrandOptionById(form.brandId)) || this.brandSearchCandidates(scope).length === 1;
-    },
-
     statusToneClass(tone) {
       if (tone === 'success') return 'border-success/20 bg-success/10 text-success';
       if (tone === 'error') return 'border-danger/20 bg-danger/10 text-danger';
@@ -9957,10 +9835,7 @@ function segmentCrudPanel() {
 
     selectedBrandOption(name) {
       const value = String(name || '').trim();
-      const byId = this.selectedBrandOptionById(value);
-      if (byId) return byId;
-      const matches = this.brandOptions.filter(brand => brand.name === value);
-      return matches.length === 1 ? matches[0] : null;
+      return this.selectedBrandOptionById(value) || this.brandOptions.find(brand => brand.name === value) || null;
     },
 
     segmentBrandLabel(segment) {
@@ -9988,7 +9863,8 @@ function segmentCrudPanel() {
       }
       const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
       if (brand) {
-        this.applyBrandOptionToForm(scope, brand);
+        form.brandId = String(brand.id || '');
+        form.brand = brand.name || form.brand;
         return;
       }
       form.brandId = '';
@@ -9999,7 +9875,11 @@ function segmentCrudPanel() {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
       const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
       if (!brand) return;
-      this.applyBrandOptionToForm(scope, brand);
+      form.brandId = String(brand.id || '');
+      form.brand = brand.name || form.brand;
+      if (scope === 'segment' && brand.industry) {
+        this.segmentLlmForm.industry = brand.industry;
+      }
     },
 
     fromSegment(segment) {
@@ -10223,10 +10103,10 @@ function segmentCrudPanel() {
       this.segmentLlmApplyTone = 'info';
     },
     async generateBrandSegments() {
-      const brandOption = this.resolveSelectedLlmBrand('segment');
-      const brand = String(brandOption?.name || '').trim();
+      const brandOption = this.selectedBrandOptionById(this.segmentLlmForm.brandId) || this.selectedBrandOption(this.segmentLlmForm.brand);
+      const brand = String(brandOption?.name || this.segmentLlmForm.brand || '').trim();
       if (!brand) {
-        this.segmentLlmError = 'Select one brand from the candidates';
+        this.segmentLlmError = 'Brand is required';
         return;
       }
       this.segmentLlmForm.brandId = String(brandOption?.id || this.segmentLlmForm.brandId || '');
@@ -10456,11 +10336,9 @@ function segmentCrudPanel() {
       if (segmentBrand || segment.brandName || segment.brand_name) {
         this.llmForm.brandId = String(segmentBrand?.id || segment.brandId || segment.brand_id || '');
         this.llmForm.brand = segmentBrand?.name || segment.brandName || segment.brand_name;
-        this.llmForm.brandQuery = segmentBrand ? this.brandDisambiguationLabel(segmentBrand) : this.llmForm.brand;
       } else {
         this.llmForm.brandId = '';
         this.llmForm.brand = '';
-        this.llmForm.brandQuery = '';
       }
       this.profileLlmError = '';
       this.llmPanelOpen = true;
@@ -10502,10 +10380,10 @@ function segmentCrudPanel() {
     async generateSegmentLlm() {
       const segment = this.currentSegment();
       if (!segment) return;
-      const brandOption = this.resolveSelectedLlmBrand('profile');
-      const brand = String(brandOption?.name || '').trim();
+      const brandOption = this.selectedBrandOptionById(this.llmForm.brandId) || this.selectedBrandOption(this.llmForm.brand);
+      const brand = String(brandOption?.name || this.llmForm.brand || '').trim();
       if (!brand) {
-        this.profileLlmError = 'Select one brand from the candidates';
+        this.profileLlmError = 'Brand is required';
         return;
       }
       this.llmForm.brandId = String(brandOption?.id || this.llmForm.brandId || '');
