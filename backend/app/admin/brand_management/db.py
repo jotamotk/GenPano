@@ -416,3 +416,165 @@ async def brand_name_exists(
     sql += " LIMIT 1"
     row = (await session.execute(text(sql), params)).first()
     return row is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 slice 7a-bis — generate / enrich / import support
+# ---------------------------------------------------------------------------
+
+
+import uuid as _uuid  # noqa: E402
+
+
+async def fetch_industry_seeds(
+    session: AsyncSession, industry: str, *, limit: int = 200
+) -> list[str]:
+    """Existing brand names in ``industry`` — used as ``exclude_brands``
+    when calling the LLM so generate doesn't re-suggest known players.
+    """
+    if not await _table_exists(session, "brands"):
+        return []
+    cols = await coerce_brand_columns(session)
+    if "industry" not in cols or "name" not in cols:
+        return []
+    sql = text("SELECT name FROM brands WHERE industry = :industry ORDER BY id LIMIT :limit")
+    rows = (await session.execute(sql, {"industry": industry, "limit": limit})).mappings().all()
+    return [str(r["name"]) for r in rows if r.get("name")]
+
+
+async def write_brand_generation_log(
+    session: AsyncSession,
+    *,
+    admin_id: str,
+    industry: str,
+    seeds: list[str],
+    model: str,
+    prompt: str,
+    payload: dict[str, Any],
+    items: list[dict[str, Any]],
+    usage: dict[str, Any],
+    estimated_cost: float | None,
+) -> None:
+    """Best-effort INSERT into ``brand_generation_logs``.
+
+    Uses ``begin_nested`` so a missing-table failure on sqlite tests
+    doesn't poison the worker's session for the subsequent emit_audit.
+    """
+    nested = await session.begin_nested()
+    try:
+        await session.execute(
+            text(
+                """
+                INSERT INTO brand_generation_logs
+                    (id, industry, seed_brands, llm_model, prompt_used,
+                     input_params, output_json, brands_generated,
+                     tokens_used, estimated_cost, created_by, created_at)
+                VALUES
+                    (:id, :industry, CAST(:seed_brands AS jsonb), :llm_model,
+                     :prompt_used, CAST(:input_params AS jsonb),
+                     CAST(:output_json AS jsonb), :brands_generated,
+                     :tokens_used, :estimated_cost, :created_by, NOW())
+                """
+            ),
+            {
+                "id": str(_uuid.uuid4()),
+                "industry": industry,
+                "seed_brands": _json.dumps(seeds, ensure_ascii=False),
+                "llm_model": model,
+                "prompt_used": prompt,
+                "input_params": _json.dumps(payload, default=str, ensure_ascii=False),
+                "output_json": _json.dumps(items, default=str, ensure_ascii=False),
+                "brands_generated": len(items),
+                "tokens_used": int((usage or {}).get("total_tokens") or 0),
+                "estimated_cost": estimated_cost,
+                "created_by": admin_id,
+            },
+        )
+        await nested.commit()
+    except Exception as exc:
+        try:
+            await nested.rollback()
+        except Exception:
+            pass
+        logger.warning("brand_generation_logs INSERT failed (table missing?): %s", exc)
+
+
+async def import_brands_bulk(
+    session: AsyncSession,
+    drafts: list[Any] | None,
+    *,
+    admin_id: str,
+    default_industry: str = "",
+) -> dict[str, Any]:
+    """Bulk-upsert reviewed brand drafts.
+
+    Per-row: normalize via ``normalize_brand_draft`` (skipped on error),
+    then UPSERT keyed on ``LOWER(name)`` if the name already exists,
+    else INSERT. The optional ``kg_brands`` mirror admin_console wrote
+    on each row is intentionally NOT done here — Phase 7a-bis stays
+    surgical; ``kg_discovery`` repopulates kg_brands periodically.
+    Returns ``{added, updated, skipped, results}``.
+    """
+    from app.admin.brand_management.lib import (
+        BrandManagementError,
+        normalize_brand_draft,
+    )
+
+    if not await _table_exists(session, "brands"):
+        raise BrandManagementError("brands_table_missing", "brands table is not available")
+    cols = await coerce_brand_columns(session)
+    if "name" not in cols:
+        raise BrandManagementError("brands_table_missing", "brands.name column required")
+
+    added = 0
+    updated = 0
+    skipped = 0
+    results: list[dict[str, Any]] = []
+
+    for raw in drafts or []:
+        try:
+            draft = normalize_brand_draft(raw, default_industry=default_industry)
+        except BrandManagementError as error:
+            skipped += 1
+            results.append(
+                {
+                    "skipped": True,
+                    "error": error.code,
+                    "message": error.message,
+                }
+            )
+            continue
+        # match-by-name → update; else → insert.
+        existing = (
+            await session.execute(
+                text("SELECT id FROM brands WHERE LOWER(name) = LOWER(:name) LIMIT 1"),
+                {"name": draft["name"]},
+            )
+        ).first()
+        try:
+            if existing:
+                brand_id = int(existing[0])
+                await persist_brand_draft(session, draft, admin_id=admin_id, brand_id=brand_id)
+                updated += 1
+                results.append({"brand_id": brand_id, "name": draft["name"], "outcome": "updated"})
+            else:
+                brand_id = await persist_brand_draft(session, draft, admin_id=admin_id)
+                added += 1
+                results.append({"brand_id": brand_id, "name": draft["name"], "outcome": "added"})
+        except Exception as exc:
+            skipped += 1
+            results.append(
+                {
+                    "skipped": True,
+                    "name": draft.get("name"),
+                    "error": "brand_persist_failed",
+                    "message": str(exc)[:300],
+                }
+            )
+
+    return {
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "results": results,
+    }
