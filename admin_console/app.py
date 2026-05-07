@@ -9952,61 +9952,10 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
             conn.close()
 
 
-@app.route('/api/segments')
-def admin_segments_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-    from psycopg2.extras import RealDictCursor
-
-    page = _clamp_int(request.args.get("page"), 1, 1, 100000)
-    per_page = _clamp_int(request.args.get("per_page"), 50, 1, 200)
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            rows, total, summary = _fetch_segments(
-                cur,
-                page=page,
-                per_page=per_page,
-                q=request.args.get("q"),
-                status=request.args.get("status"),
-                industry_id=request.args.get("industry_id"),
-                brand_id=request.args.get("brand_id"),
-            )
-        return jsonify({"success": True, "rows": rows, "pagination": _pagination(page, per_page, total), "summary": summary})
-    finally:
-        conn.close()
-
-
-@app.route('/api/segments', methods=['POST'])
-def admin_segment_create_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            try:
-                row = _create_segment(cur, payload, admin["id"])
-            except ValueError as error:
-                conn.rollback()
-                return jsonify({"success": False, "error": str(error)}), 400
-            _insert_admin_audit_log(
-                cur,
-                operator_id=admin["id"],
-                action="create_segment",
-                target_type="segment",
-                target_id=row["id"],
-                diff={"after": row},
-                reason=payload.get("reason"),
-            )
-        conn.commit()
-        return jsonify({"success": True, "segment": row}), 201
-    finally:
-        conn.close()
+# GET /api/segments and POST /api/segments migrated to FastAPI in
+# Phase 6 slice 6a. See backend/app/api/admin/segments/router.py.
+# main.py mounts the canonical handler at /api/admin/segments AND
+# re-mounts it at /api/segments so admin.html keeps working unchanged.
 
 
 @app.route('/api/segments/import', methods=['POST'])
@@ -10108,87 +10057,8 @@ def admin_segments_generate_api():
     return jsonify({"success": True, "drafts": drafts, "model": result.model, "usage": result.usage})
 
 
-@app.route('/api/segments/<segment_id>')
-def admin_segment_detail_api(segment_id):
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-    from psycopg2.extras import RealDictCursor
-
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            row = _get_segment(cur, segment_id)
-        if not row:
-            return jsonify({"success": False, "error": "segment_not_found"}), 404
-        return jsonify({"success": True, "segment": row})
-    finally:
-        conn.close()
-
-
-@app.route('/api/segments/<segment_id>', methods=['PUT'])
-def admin_segment_update_api(segment_id):
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            before = _get_segment(cur, segment_id)
-            if not before:
-                conn.rollback()
-                return jsonify({"success": False, "error": "segment_not_found"}), 404
-            try:
-                row = _update_segment(cur, segment_id, payload, admin["id"])
-            except ValueError as error:
-                conn.rollback()
-                return jsonify({"success": False, "error": str(error)}), 400
-            _insert_admin_audit_log(
-                cur,
-                operator_id=admin["id"],
-                action="update_segment",
-                target_type="segment",
-                target_id=segment_id,
-                diff={"before": before, "after": row},
-                reason=payload.get("reason"),
-            )
-        conn.commit()
-        return jsonify({"success": True, "segment": row})
-    finally:
-        conn.close()
-
-
-@app.route('/api/segments/<segment_id>', methods=['DELETE'])
-def admin_segment_delete_api(segment_id):
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            before = _soft_delete_segment(cur, segment_id, admin["id"])
-            if not before:
-                conn.rollback()
-                return jsonify({"success": False, "error": "segment_not_found"}), 404
-            _insert_admin_audit_log(
-                cur,
-                operator_id=admin["id"],
-                action="delete_segment",
-                target_type="segment",
-                target_id=segment_id,
-                diff={"before": before, "after": {"is_deleted": True, "status": "deleted"}},
-                reason=payload.get("reason"),
-            )
-        conn.commit()
-        return jsonify({"success": True})
-    finally:
-        conn.close()
+# GET / PUT / DELETE /api/segments/<id> migrated to FastAPI in
+# Phase 6 slice 6a. See backend/app/api/admin/segments/router.py.
 
 
 @app.route('/api/segments/<segment_id>/profiles')

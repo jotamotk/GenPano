@@ -153,6 +153,15 @@ from app.api.admin.query_pool import router as _query_pool_router  # noqa: E402
 
 app.include_router(_query_pool_router, prefix="/admin/api/v1/pipeline/query-pool")
 
+# Legacy alias for the Segments router. admin_console served Segments at
+# the un-prefixed /api/segments/* path; admin.html still calls the same.
+# Phase 6 slice 6a mounts the canonical FastAPI router at /api/admin/segments
+# and re-mounts it at /api/segments to keep the SPA working until the JS
+# is updated and admin_console is fully retired (Phase X).
+from app.api.admin.segments import router as _segments_router  # noqa: E402
+
+app.include_router(_segments_router, prefix="/api/segments")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
