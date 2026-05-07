@@ -21,6 +21,15 @@ Audit pattern:
   only counts + platform / label / status. This is on purpose.
 - ``import_cookies`` is severity HIGH; ``delete`` is HIGH; ``status``
   flips to banned/cooldown are HIGH; ``reset`` + ``auto_login`` med.
+
+Schema-drift safety (defense-in-depth, after PR #367 hit Query Pool):
+- ``20260507_llm_accounts_schema_repair`` Alembic migration ALTERs every
+  column we touch via ``ADD COLUMN IF NOT EXISTS``. Idempotent on healthy
+  DBs, repairs legacy operator DBs.
+- ``accounts_db.assert_llm_accounts_schema`` is a runtime guard: if the
+  table is missing a required column we surface ``503
+  llm_accounts_schema_outdated`` with the missing column list, instead of
+  letting psycopg raise ``UndefinedColumn`` mid-query (which would 500).
 """
 
 from __future__ import annotations
@@ -48,6 +57,45 @@ from app.core.security import _DependsDb
 router = APIRouter(tags=["Admin · Accounts"])
 
 
+def _maybe_schema_error_response(error: RuntimeError) -> JSONResponse | None:
+    """Map known ``llm_accounts`` schema errors to a 503 JSON response.
+
+    Stable error codes:
+    - ``llm_accounts_table_missing`` — the table doesn't exist (sqlite
+      tests / fresh DB without legacy seed). Returned by every db helper.
+    - ``llm_accounts_schema_outdated:<csv>`` — the table exists but is
+      missing one or more columns slice 7b depends on. Defense-in-depth
+      against the schema-drift bug class PR #367 hit on Query Pool.
+
+    Returns ``None`` for any other ``RuntimeError`` so callers re-raise.
+    """
+    code = str(error)
+    if code == "llm_accounts_table_missing":
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "llm_accounts_unavailable",
+                "message": "llm_accounts table is not available; run migrations first.",
+            },
+        )
+    if code.startswith("llm_accounts_schema_outdated:"):
+        missing = code.split(":", 1)[1]
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "llm_accounts_schema_outdated",
+                "missing_columns": missing.split(",") if missing else [],
+                "message": (
+                    "llm_accounts is missing columns the Admin Accounts API "
+                    f"requires: {missing}. Run the latest Alembic migrations."
+                ),
+            },
+        )
+    return None
+
+
 @router.get("", response_model=None)
 async def list_accounts(
     operator: Annotated[AdminUser, Depends(current_admin)],
@@ -55,7 +103,13 @@ async def list_accounts(
 ) -> Any:
     """List llm_accounts. Wire shape matches admin_console (cookies
     blob is never returned; only the cookie_count derived in SQL)."""
-    rows = await accounts_db.fetch_accounts(session)
+    try:
+        rows = await accounts_db.fetch_accounts(session)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
     return rows
 
 
@@ -99,15 +153,9 @@ async def import_cookies(
             email=safe_email_for_label(label, platform),
         )
     except RuntimeError as error:
-        if str(error) == "llm_accounts_table_missing":
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "success": False,
-                    "error": "llm_accounts_unavailable",
-                    "message": "llm_accounts table is not available; run migrations first.",
-                },
-            )
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
         raise
 
     verb = "Created new" if outcome == "added" else "Updated"
@@ -165,11 +213,19 @@ async def update_status(
             },
         )
 
-    before = await accounts_db.get_account(session, account_id=account_id)
-    if before is None:
-        raise not_found("account_not_found")
+    try:
+        before = await accounts_db.get_account(session, account_id=account_id)
+        if before is None:
+            raise not_found("account_not_found")
 
-    ok = await accounts_db.update_account_status(session, account_id=account_id, status=new_status)
+        ok = await accounts_db.update_account_status(
+            session, account_id=account_id, status=new_status
+        )
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
     if not ok:
         raise not_found("account_not_found")
 
@@ -206,11 +262,17 @@ async def reset_fails(
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    before = await accounts_db.get_account(session, account_id=account_id)
-    if before is None:
-        raise not_found("account_not_found")
+    try:
+        before = await accounts_db.get_account(session, account_id=account_id)
+        if before is None:
+            raise not_found("account_not_found")
 
-    ok = await accounts_db.reset_account_fails(session, account_id=account_id)
+        ok = await accounts_db.reset_account_fails(session, account_id=account_id)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
     if not ok:
         raise not_found("account_not_found")
 
@@ -249,11 +311,17 @@ async def delete_account(
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    before = await accounts_db.get_account(session, account_id=account_id)
-    if before is None:
-        raise not_found("account_not_found")
+    try:
+        before = await accounts_db.get_account(session, account_id=account_id)
+        if before is None:
+            raise not_found("account_not_found")
 
-    ok = await accounts_db.delete_account(session, account_id=account_id)
+        ok = await accounts_db.delete_account(session, account_id=account_id)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
     if not ok:
         raise not_found("account_not_found")
 

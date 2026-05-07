@@ -30,6 +30,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 
+# Columns ``app.admin.accounts`` reads or writes. Kept in sync with the
+# Alembic repair migration ``20260507_llm_accounts_schema_repair`` so a
+# legacy DB that hasn't been migrated yet gets a clean 503 rather than a
+# raw psycopg ``UndefinedColumn`` 500. Same defensive pattern PR #367
+# introduced for query_pool.
+_REQUIRED_LLM_ACCOUNT_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "llm_name",
+        "phone_number",
+        "email",
+        "password_encrypted",
+        "cookies_json",
+        "cookies_updated_at",
+        "status",
+        "consecutive_fails",
+        "query_count_today",
+        "daily_limit",
+        "cooldown_until",
+        "created_at",
+    }
+)
+
+
 async def _table_exists(session: AsyncSession, name: str) -> bool:
     try:
         row = (
@@ -44,6 +68,49 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     except Exception:
         return False
     return row is not None
+
+
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    """Column set for ``public.<name>``. Empty on sqlite / probe failure."""
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :n"
+            ),
+            {"n": name},
+        )
+    except Exception:
+        return set()
+    return {row[0] for row in result.all()}
+
+
+async def assert_llm_accounts_schema(session: AsyncSession) -> None:
+    """Raise ``RuntimeError`` with a stable code when the production
+    ``llm_accounts`` schema is missing columns slice 7b depends on.
+
+    Defense-in-depth against the schema-drift bug class PR #367 fixed for
+    Query Pool: if an operator DB predates the repair migrations, the
+    SPA gets a clean 503 ``llm_accounts_schema_outdated`` with the
+    missing column list, instead of a raw psycopg crash buried in
+    ``cookies_json::text`` evaluation.
+
+    Skipped on sqlite (``_table_columns`` returns ``set()``); skipped
+    when the table doesn't exist (caller already handles that path).
+    """
+    if not await _table_exists(session, "llm_accounts"):
+        return
+    cols = await _table_columns(session, "llm_accounts")
+    if not cols:
+        # information_schema probe failed (sqlite or permissions issue);
+        # don't block the request — the table_exists check passed so we
+        # at least know the table is reachable.
+        return
+    missing = _REQUIRED_LLM_ACCOUNT_COLUMNS - cols
+    if missing:
+        # Sorted for deterministic error output (tests + log aggregation).
+        missing_csv = ",".join(sorted(missing))
+        raise RuntimeError(f"llm_accounts_schema_outdated:{missing_csv}")
 
 
 async def _isoformat_or_none(value: Any) -> str | None:
@@ -66,6 +133,7 @@ async def fetch_accounts(session: AsyncSession) -> list[dict[str, Any]]:
     """
     if not await _table_exists(session, "llm_accounts"):
         return []
+    await assert_llm_accounts_schema(session)
     sql = text(
         """
         SELECT id,
@@ -122,6 +190,7 @@ async def upsert_account_from_cookies(
     """
     if not await _table_exists(session, "llm_accounts"):
         raise RuntimeError("llm_accounts_table_missing")
+    await assert_llm_accounts_schema(session)
 
     existing = (
         await session.execute(
@@ -183,6 +252,7 @@ async def update_account_status(session: AsyncSession, *, account_id: int, statu
     exist."""
     if not await _table_exists(session, "llm_accounts"):
         return False
+    await assert_llm_accounts_schema(session)
     if status == "active":
         result = await session.execute(
             text(
@@ -207,6 +277,7 @@ async def reset_account_fails(session: AsyncSession, *, account_id: int) -> bool
     the account is missing."""
     if not await _table_exists(session, "llm_accounts"):
         return False
+    await assert_llm_accounts_schema(session)
     result = await session.execute(
         text(
             """
@@ -246,6 +317,7 @@ async def get_account(session: AsyncSession, *, account_id: int) -> dict[str, An
     """Detail row (without cookies_json blob) for audit before/after."""
     if not await _table_exists(session, "llm_accounts"):
         return None
+    await assert_llm_accounts_schema(session)
     sql = text(
         """
         SELECT id, llm_name, phone_number, status,

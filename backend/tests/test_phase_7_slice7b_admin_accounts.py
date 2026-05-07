@@ -371,6 +371,28 @@ async def test_import_cookies_returns_503_when_table_missing(client, admin_opera
 
 
 @pytest.mark.asyncio
+async def test_import_cookies_returns_503_when_schema_outdated(client, admin_operator, monkeypatch):
+    """Defense-in-depth (PR #367 lesson): if a legacy DB is missing
+    columns we depend on, surface 503 with a stable code instead of
+    letting psycopg's UndefinedColumn become a 500."""
+    _patch_db(
+        monkeypatch,
+        upsert_raises=RuntimeError("llm_accounts_schema_outdated:cookies_json,cooldown_until"),
+    )
+    resp = await client.post(
+        "/api/admin/accounts/import_cookies",
+        json={
+            "platform": "doubao",
+            "cookies_json": json.dumps([{"name": "k", "value": "v"}]),
+        },
+    )
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "llm_accounts_schema_outdated"
+    assert body["missing_columns"] == ["cookies_json", "cooldown_until"]
+
+
+@pytest.mark.asyncio
 async def test_import_cookies_audit_row_omits_blob(
     client, admin_operator, monkeypatch, db_session: AsyncSession
 ):
@@ -538,6 +560,208 @@ async def test_auto_login_celery_unavailable_503(client, admin_operator, monkeyp
     resp = await client.post("/api/admin/accounts/1/auto_login")
     assert resp.status_code == 503
     assert resp.json()["error"] == "celery_unavailable"
+
+
+# ── schema-drift safety (defense-in-depth, after PR #367) ────
+
+
+@pytest.mark.asyncio
+async def test_list_returns_503_when_schema_outdated(client, admin_operator, monkeypatch):
+    """If the legacy DB is missing columns, GET surfaces a clean 503
+    instead of a 500 from a downstream psycopg UndefinedColumn."""
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_accounts",
+        AsyncMock(side_effect=RuntimeError("llm_accounts_schema_outdated:created_at")),
+    )
+    resp = await client.get("/api/admin/accounts")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "llm_accounts_schema_outdated"
+    assert body["missing_columns"] == ["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_status_returns_503_when_schema_outdated(client, admin_operator, monkeypatch):
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "get_account",
+        AsyncMock(side_effect=RuntimeError("llm_accounts_schema_outdated:status")),
+    )
+    monkeypatch.setattr(a.accounts_db, "update_account_status", AsyncMock(return_value=True))
+    resp = await client.post("/api/admin/accounts/1/status", json={"status": "active"})
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "llm_accounts_schema_outdated"
+
+
+@pytest.mark.asyncio
+async def test_reset_returns_503_when_schema_outdated(client, admin_operator, monkeypatch):
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "get_account",
+        AsyncMock(return_value=_account_row(1)),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "reset_account_fails",
+        AsyncMock(side_effect=RuntimeError("llm_accounts_schema_outdated:cooldown_until")),
+    )
+    resp = await client.post("/api/admin/accounts/1/reset")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "llm_accounts_schema_outdated"
+    assert "cooldown_until" in body["missing_columns"]
+
+
+@pytest.mark.asyncio
+async def test_delete_returns_503_when_schema_outdated(client, admin_operator, monkeypatch):
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "get_account",
+        AsyncMock(side_effect=RuntimeError("llm_accounts_schema_outdated:id")),
+    )
+    monkeypatch.setattr(a.accounts_db, "delete_account", AsyncMock(return_value=True))
+    resp = await client.delete("/api/admin/accounts/1")
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "llm_accounts_schema_outdated"
+
+
+def test_maybe_schema_error_response_table_missing():
+    """Helper unit test: legacy code path returns the documented 503."""
+    a = _accounts_router_module()
+    response = a._maybe_schema_error_response(RuntimeError("llm_accounts_table_missing"))
+    assert response is not None
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body["error"] == "llm_accounts_unavailable"
+
+
+def test_maybe_schema_error_response_schema_outdated():
+    """Helper unit test: drift code path surfaces the missing column list."""
+    a = _accounts_router_module()
+    response = a._maybe_schema_error_response(
+        RuntimeError("llm_accounts_schema_outdated:cookies_json,status")
+    )
+    assert response is not None
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body["error"] == "llm_accounts_schema_outdated"
+    assert body["missing_columns"] == ["cookies_json", "status"]
+
+
+def test_maybe_schema_error_response_unrelated_runtime_error_returns_none():
+    """Helper must let unrelated RuntimeErrors propagate (so callers
+    can re-raise into FastAPI's normal 500 path)."""
+    a = _accounts_router_module()
+    response = a._maybe_schema_error_response(RuntimeError("something_else"))
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_assert_llm_accounts_schema_raises_on_missing_columns(
+    db_session: AsyncSession, monkeypatch
+):
+    """Direct unit test of the runtime guard. Patch the probes so we
+    don't need a real Postgres."""
+    from app.admin.accounts import db as accounts_db
+
+    async def _table_exists(session, name):
+        return name == "llm_accounts"
+
+    async def _table_columns(session, name):
+        # Pretend production DB is missing two slice-7b columns.
+        return {
+            "id",
+            "llm_name",
+            "phone_number",
+            "email",
+            "password_encrypted",
+            "cookies_json",
+            "cookies_updated_at",
+            "status",
+            "consecutive_fails",
+            "query_count_today",
+            "daily_limit",
+            "created_at",
+            # cooldown_until is intentionally missing
+        }
+
+    monkeypatch.setattr(accounts_db, "_table_exists", _table_exists)
+    monkeypatch.setattr(accounts_db, "_table_columns", _table_columns)
+
+    with pytest.raises(RuntimeError) as exc:
+        await accounts_db.assert_llm_accounts_schema(db_session)
+    assert str(exc.value).startswith("llm_accounts_schema_outdated:")
+    assert "cooldown_until" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_assert_llm_accounts_schema_noop_when_table_missing(
+    db_session: AsyncSession, monkeypatch
+):
+    """Sqlite test path: no llm_accounts table → guard is a no-op."""
+    from app.admin.accounts import db as accounts_db
+
+    async def _table_exists(session, name):
+        return False
+
+    monkeypatch.setattr(accounts_db, "_table_exists", _table_exists)
+    # Should not raise.
+    await accounts_db.assert_llm_accounts_schema(db_session)
+
+
+@pytest.mark.asyncio
+async def test_assert_llm_accounts_schema_passes_when_columns_complete(
+    db_session: AsyncSession, monkeypatch
+):
+    """Healthy DB: all required columns present → guard is a no-op."""
+    from app.admin.accounts import db as accounts_db
+
+    async def _table_exists(session, name):
+        return True
+
+    async def _table_columns(session, name):
+        # Superset of required columns (production may have extras like
+        # ``profile_id`` for the legacy account_profile_map binding).
+        return accounts_db._REQUIRED_LLM_ACCOUNT_COLUMNS | {"profile_id", "extra_legacy_col"}
+
+    monkeypatch.setattr(accounts_db, "_table_exists", _table_exists)
+    monkeypatch.setattr(accounts_db, "_table_columns", _table_columns)
+
+    # Should not raise.
+    await accounts_db.assert_llm_accounts_schema(db_session)
+
+
+def test_alembic_migration_present():
+    """Make sure the schema-repair migration is shipped with this slice
+    (the equivalent of PR #367's query_pool repair, applied to
+    llm_accounts). Failing this means a future rebase dropped the file."""
+    import pathlib
+
+    versions_dir = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    target = versions_dir / "2026_05_07_0002_llm_accounts_schema_repair.py"
+    assert target.exists(), f"missing Alembic repair migration: {target}"
+    body = target.read_text()
+    # Verify the migration touches every column slice 7b depends on.
+    for col in (
+        "llm_name",
+        "phone_number",
+        "email",
+        "password_encrypted",
+        "cookies_json",
+        "cookies_updated_at",
+        "status",
+        "consecutive_fails",
+        "query_count_today",
+        "daily_limit",
+        "cooldown_until",
+        "created_at",
+    ):
+        assert col in body, f"migration missing ALTER for column: {col}"
 
 
 # ── audit gate ───────────────────────────────────────────────
