@@ -394,6 +394,60 @@ def test_brand_create_endpoint_persists_and_logs(monkeypatch, client):
     assert conn.commits == 1
 
 
+def test_brand_create_endpoint_survives_optional_kg_side_effect_failure(monkeypatch, client):
+    login(monkeypatch)
+    conn = fake_db(monkeypatch)
+    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: name == "brands")
+    monkeypatch.setattr(
+        app_mod,
+        "_table_columns",
+        lambda cur, name: [
+            "id",
+            "name",
+            "industry",
+            "aliases",
+            "official_domains",
+            "status",
+            "source",
+            "created_by",
+        ],
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_persist_brand_kg_node",
+        lambda cur, brand_id, draft: (_ for _ in ()).throw(RuntimeError("kg schema drift")),
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_persist_brand_competitor_relations",
+        lambda cur, brand_id, competitors: (_ for _ in ()).throw(RuntimeError("candidate schema drift")),
+    )
+
+    conn.script("INSERT INTO brands", [{"id": 999}])
+    conn.script("FROM brands WHERE id =", [{"id": 999, "name": "Future Beauty", "industry": "Beauty"}])
+
+    response = client.post(
+        "/api/admin/brand-management",
+        data=json.dumps(
+            {
+                "name": "Future Beauty",
+                "industry": "Beauty",
+                "competitors": [{"name": "Peer Beauty", "type": "COMPETES_WITH"}],
+            }
+        ),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["brand"]["id"] == 999
+    assert body["relation_candidates"] == 0
+    statements = "\n".join(sql for sql, _params in conn.statements)
+    assert "SAVEPOINT admin_optional_side_effect" in statements
+    assert conn.commits == 1
+
+
 def test_enrich_brand_uses_fallback_when_llm_unavailable(monkeypatch):
     service = brand_management.BrandManagementService(allow_fallback=True)
 
@@ -860,6 +914,41 @@ def test_brand_enrich_background_job_completes_and_audits(monkeypatch, client):
     assert conn.commits == 1
     statements = "\n".join(sql for sql, _params in conn.statements)
     assert "INSERT INTO admin_audit_log" in statements
+
+
+def test_brand_enrich_background_job_keeps_result_when_audit_fails(monkeypatch, client):
+    login(monkeypatch)
+    fake_db(monkeypatch)
+    with app_mod._brand_enrich_jobs_lock:
+        app_mod._brand_enrich_jobs.clear()
+
+    class FakeService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def enrich_brand_by_name(self, *, name, context=None):
+            return brand_management.BrandGenerationResult(
+                items=[brand_management.normalize_brand_draft({"name": name, "industry": "Beauty"})],
+                model="fake-model",
+                prompt="enrich-prompt",
+                usage={"total_tokens": 7},
+            )
+
+    monkeypatch.setattr(app_mod, "BrandManagementService", FakeService)
+    monkeypatch.setattr(
+        app_mod,
+        "_insert_admin_audit_log",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+
+    app_mod._run_brand_enrich_job("job-audit-fails", admin_id="admin-1", name="Lancome", payload={})
+
+    response = client.get("/api/admin/brand-management/enrich/job-audit-fails")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["draft"]["name"] == "Lancome"
 
 
 def test_brand_delete_endpoint_archives_brand(monkeypatch, client):

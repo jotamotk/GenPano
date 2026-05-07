@@ -14271,6 +14271,34 @@ def _brand_enrich_context_from_payload(payload):
     }
 
 
+def _run_optional_brand_side_effect(cur, label, callback, default=None):
+    """Run a non-critical Brand Management DB side effect without aborting the main save.
+
+    Brand creation/update is the primary operation. KG mirroring, relation
+    staging, and audit logging are useful but should not turn a valid brand save
+    or enrich result into a 500 when a secondary table drifts.
+    """
+    savepoint = "admin_optional_side_effect"
+    try:
+        cur.execute(f"SAVEPOINT {savepoint}")
+        result = callback()
+        cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return result
+    except Exception as error:
+        app.logger.warning("Optional brand side effect failed (%s): %s", label, error, exc_info=True)
+        try:
+            cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception as rollback_error:
+            app.logger.warning(
+                "Optional brand side effect rollback failed (%s): %s",
+                label,
+                rollback_error,
+                exc_info=True,
+            )
+        return default
+
+
 _brand_enrich_jobs = {}
 _brand_enrich_jobs_lock = threading.Lock()
 _BRAND_ENRICH_JOB_LIMIT = 100
@@ -14369,18 +14397,22 @@ def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
         result = service.enrich_brand_by_name(name=name, context=context)
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            _insert_admin_audit_log(
+            _run_optional_brand_side_effect(
                 cur,
-                operator_id=admin_id,
-                action="enrich_brand",
-                target_type="brand",
-                target_id=None,
-                diff={
-                    "name": name,
-                    "model": result.model,
-                    "context_fields": sorted(context.keys()),
-                },
-                reason=payload.get("reason"),
+                "enrich_brand_audit",
+                lambda: _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin_id,
+                    action="enrich_brand",
+                    target_type="brand",
+                    target_id=None,
+                    diff={
+                        "name": name,
+                        "model": result.model,
+                        "context_fields": sorted(context.keys()),
+                    },
+                    reason=payload.get("reason"),
+                ),
             )
         conn.commit()
         drafts = list(result.items or [])
@@ -14735,23 +14767,36 @@ def admin_brand_management_create_api():
             except psycopg2.errors.UniqueViolation:
                 conn.rollback()
                 return jsonify({"success": False, "error": "duplicate_brand_name"}), 409
-            _persist_brand_kg_node(cur, brand_id, draft)
-            relation_count = _persist_brand_competitor_relations(
-                cur, brand_id, draft.get("competitors") or []
-            )
-            _insert_admin_audit_log(
+            _run_optional_brand_side_effect(
                 cur,
-                operator_id=admin["id"],
-                action="create_brand",
-                target_type="brand",
-                target_id=brand_id,
-                diff={
-                    "name": draft["name"],
-                    "industry": draft["industry"],
-                    "source": draft["source"],
-                    "relation_candidates": relation_count,
-                },
-                reason=payload.get("reason"),
+                "create_brand_kg_node",
+                lambda: _persist_brand_kg_node(cur, brand_id, draft),
+            )
+            relation_count = _run_optional_brand_side_effect(
+                cur,
+                "create_brand_relation_candidates",
+                lambda: _persist_brand_competitor_relations(
+                    cur, brand_id, draft.get("competitors") or []
+                ),
+                default=0,
+            )
+            _run_optional_brand_side_effect(
+                cur,
+                "create_brand_audit",
+                lambda: _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="create_brand",
+                    target_type="brand",
+                    target_id=brand_id,
+                    diff={
+                        "name": draft["name"],
+                        "industry": draft["industry"],
+                        "source": draft["source"],
+                        "relation_candidates": relation_count,
+                    },
+                    reason=payload.get("reason"),
+                ),
             )
             cols = _coerce_brand_columns(cur)
             select_clause = _select_brand_management_sql(cols)
@@ -14796,15 +14841,23 @@ def admin_brand_management_update_api(brand_id):
             except psycopg2.errors.UniqueViolation:
                 conn.rollback()
                 return jsonify({"success": False, "error": "duplicate_brand_name"}), 409
-            _persist_brand_kg_node(cur, brand_id, draft)
-            _insert_admin_audit_log(
+            _run_optional_brand_side_effect(
                 cur,
-                operator_id=admin["id"],
-                action="update_brand",
-                target_type="brand",
-                target_id=brand_id,
-                diff={"name": draft["name"], "status": draft["status"]},
-                reason=payload.get("reason"),
+                "update_brand_kg_node",
+                lambda: _persist_brand_kg_node(cur, brand_id, draft),
+            )
+            _run_optional_brand_side_effect(
+                cur,
+                "update_brand_audit",
+                lambda: _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="update_brand",
+                    target_type="brand",
+                    target_id=brand_id,
+                    diff={"name": draft["name"], "status": draft["status"]},
+                    reason=payload.get("reason"),
+                ),
             )
             cols = _coerce_brand_columns(cur)
             select_clause = _select_brand_management_sql(cols)
@@ -15014,18 +15067,22 @@ def admin_brand_management_enrich_api():
     conn = get_db()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            _insert_admin_audit_log(
+            _run_optional_brand_side_effect(
                 cur,
-                operator_id=admin["id"],
-                action="enrich_brand",
-                target_type="brand",
-                target_id=None,
-                diff={
-                    "name": name,
-                    "model": result.model,
-                    "context_fields": sorted(context.keys()),
-                },
-                reason=payload.get("reason"),
+                "enrich_brand_audit",
+                lambda: _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="enrich_brand",
+                    target_type="brand",
+                    target_id=None,
+                    diff={
+                        "name": name,
+                        "model": result.model,
+                        "context_fields": sorted(context.keys()),
+                    },
+                    reason=payload.get("reason"),
+                ),
             )
         conn.commit()
     finally:
@@ -15161,9 +15218,18 @@ def admin_brand_management_import_api():
                         continue
                     added += 1
                     action = "added"
-                _persist_brand_kg_node(cur, brand_id, draft)
-                rel_count = _persist_brand_competitor_relations(
-                    cur, brand_id, draft.get("competitors") or []
+                _run_optional_brand_side_effect(
+                    cur,
+                    "import_brand_kg_node",
+                    lambda: _persist_brand_kg_node(cur, brand_id, draft),
+                )
+                rel_count = _run_optional_brand_side_effect(
+                    cur,
+                    "import_brand_relation_candidates",
+                    lambda: _persist_brand_competitor_relations(
+                        cur, brand_id, draft.get("competitors") or []
+                    ),
+                    default=0,
                 )
                 relation_total += rel_count
                 results.append(
@@ -15187,19 +15253,23 @@ def admin_brand_management_import_api():
                 """,
                 (added + updated, admin["id"]),
             )
-            _insert_admin_audit_log(
+            _run_optional_brand_side_effect(
                 cur,
-                operator_id=admin["id"],
-                action="import_brands",
-                target_type="brand",
-                target_id=None,
-                diff={
-                    "added": added,
-                    "updated": updated,
-                    "skipped": skipped,
-                    "relation_candidates": relation_total,
-                },
-                reason=payload.get("reason"),
+                "import_brand_audit",
+                lambda: _insert_admin_audit_log(
+                    cur,
+                    operator_id=admin["id"],
+                    action="import_brands",
+                    target_type="brand",
+                    target_id=None,
+                    diff={
+                        "added": added,
+                        "updated": updated,
+                        "skipped": skipped,
+                        "relation_candidates": relation_total,
+                    },
+                    reason=payload.get("reason"),
+                ),
             )
         conn.commit()
         return jsonify(
