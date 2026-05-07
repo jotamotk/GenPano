@@ -7484,36 +7484,8 @@ def _start_topic_plan_generation_thread(**kwargs):
 # See backend/app/api/admin/query_pool/router.py:list_candidates.
 
 
-@app.route('/api/admin/query-pool/preflight', methods=['POST'])
-@app.route('/admin/api/v1/pipeline/query-pool/preflight', methods=['POST'])
-def admin_query_pool_preflight_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            run = _assemble_query_pool_run(cur, admin["id"], payload, dry_run=True)
-        return jsonify({"success": True, "run": run})
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc), "message": str(exc)}), 400
-    except Exception as exc:
-        app.logger.exception("Query Pool preflight failed: %s", exc)
-        return jsonify(
-            {
-                "success": False,
-                "error": "query_pool_preflight_failed",
-                "message": "Query Pool 预检失败，请检查 Prompt 与 Segment/Profile 配置",
-            }
-        ), 503
-    finally:
-        if conn is not None:
-            conn.close()
+# POST /api/admin/query-pool/preflight migrated to FastAPI in Phase 5 slice 3b-i.
+# See backend/app/api/admin/query_pool/router.py:preflight.
 
 
 @app.route('/api/admin/query-pool/assemble', methods=['POST'])

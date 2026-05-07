@@ -35,6 +35,11 @@ EXEMPT_PATHS: dict[str, str] = {
     # existing audit-log dashboard already surfaces login_attempts.
     "/api/admin/auth/login": "writes admin_login_attempts directly (login probe)",
     "/api/admin/auth/logout": "session clear has no security-relevant state to log",
+    # Query Pool preflight is dry-run: no DB writes, no LLM calls, no state
+    # change. It is POST-shaped only because the SPA wants to send the same
+    # config block as /assemble. The matching admin_console route also
+    # didn't write to admin_audit_log.
+    "/api/admin/query-pool/preflight": "dry-run estimate, no DB writes / LLM calls",
 }
 
 

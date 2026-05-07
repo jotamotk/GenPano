@@ -730,3 +730,92 @@ async def list_candidates(
         "prev_cursor": prev_cursor,
         "approx_total": approx_total,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 slice 3b-i — POST /preflight (dry-run, no DB writes)
+# ---------------------------------------------------------------------------
+
+
+from app.admin.query_pool import db as qp_db  # noqa: E402
+from app.admin.query_pool.lib import (  # noqa: E402
+    query_pool_candidate_contexts,
+    query_pool_config,
+    query_pool_selection_payload,
+    query_pool_summary,
+)
+
+_PREFLIGHT_VALUE_ERRORS = {
+    "invalid_desired_engine_policy",
+    "invalid_profile_strategy",
+    "invalid_overflow_policy",
+    "prompt_selection_required",
+    "prompt_selection_empty",
+    "query_pool_profile_pool_empty",
+    "query_pool_no_candidates",
+    "query_pool_candidate_cap_exceeded",
+}
+
+
+@router.post("/preflight", response_model=None)
+async def preflight(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Dry-run an assemble: estimate candidate count + return preflight_summary.
+
+    No DB writes. No LLM calls. ADR-014 audit gate exempts this route
+    (registered in EXEMPT_PATHS) since it is read-only — operators can
+    poke the estimator without leaving an audit trail row each time.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    try:
+        config = query_pool_config(payload)
+        selection = query_pool_selection_payload(payload)
+        max_prompt_count = max(1, config["max_candidates"])
+        prompt_ids = await qp_db.fetch_prompt_ids_from_selection(
+            session, selection, max_prompt_count
+        )
+        if not prompt_ids:
+            raise ValueError("prompt_selection_required")
+        prompt_rows = await qp_db.fetch_query_pool_prompt_rows(session, prompt_ids)
+        if not prompt_rows:
+            raise ValueError("prompt_selection_empty")
+        seg_raw = (
+            payload.get("segment_ids") or (payload.get("config") or {}).get("segment_ids") or []
+        )
+        segment_ids = [str(s).strip() for s in seg_raw if str(s).strip()]
+        profile_pool = await qp_db.fetch_query_pool_profile_pool(session, segment_ids=segment_ids)
+        if not profile_pool:
+            raise ValueError("query_pool_profile_pool_empty")
+        contexts, raw_estimated = query_pool_candidate_contexts(prompt_rows, profile_pool, config)
+        if not contexts:
+            raise ValueError("query_pool_no_candidates")
+        preflight_summary = query_pool_summary(
+            contexts=contexts,
+            profile_pool=profile_pool,
+            config=config,
+            raw_estimated=raw_estimated,
+            generation_method="llm_estimate",
+        )
+    except ValueError as exc:
+        code = str(exc) if str(exc) in _PREFLIGHT_VALUE_ERRORS else "query_pool_preflight_failed"
+        raise validation_error("config", code) from exc
+
+    return {
+        "success": True,
+        "run": {
+            "id": None,
+            "status": "preview",
+            "candidates_estimated": int(preflight_summary.get("raw_candidates_estimated") or 0),
+            "candidates_assembled": 0,
+            "preflight_summary": preflight_summary,
+        },
+    }
