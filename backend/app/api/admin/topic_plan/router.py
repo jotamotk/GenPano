@@ -1,17 +1,30 @@
-"""Admin Topic Plan candidate review router (Phase 3 B.1).
+"""Admin Topic Plan router (Phase 3 B.1 + B.2.a).
 
 Mounted at ``/api/admin/topic-plan`` (cookie-based ``current_admin``).
 
-Endpoints in this PR (the easy half — pure ORM, no LLM, no upstream stub
-table queries):
+Endpoints (B.1 — candidate review):
 - POST /candidates/{candidate_id}/review   approve | reject one candidate
 - POST /candidates/bulk-review             apply same decision to many
 
-Phase 3 B.2 will add: GET /config, GET /coverage, GET /topics, GET /candidates,
-GET /runs/{id}, POST /runs/{id}/stop, POST /generate (LLM via httpx async).
+Endpoints (B.2.a — read paths + run lifecycle):
+- GET  /config                             industries / categories / brands /
+                                            defaults / pending summary
+- GET  /coverage                           per-brand coverage rows + gaps
+- GET  /candidates                         paged list of topic_candidates
+- GET  /topics                             paged list of topics with prompt /
+                                            query counts
+- GET  /runs/{run_id}                      single run row
+- POST /runs/{run_id}/stop                 cancel a running generation
+
+Phase 3 B.2.b will add: POST /generate (LLM call via httpx async).
 Phase 3 B.3 will add: POST /topics/bulk-delete, DELETE /topics/{id}.
-The pure-Python helpers + async LLM client this PR vendors live in
-``app/admin/topic_plan/`` and are reused unchanged across B.2/B.3.
+
+Read paths against ``brands`` / ``topics`` / ``prompts`` / ``queries``
+(upstream stubs per ADR-002 — only ``id`` modeled in backend's ORM)
+go through ``app/admin/topic_plan/db.py`` which uses
+``session.execute(text(...))`` directly. Production schema (postgres) is
+assumed; sqlite test harnesses mock those helpers. ``topic_plan_runs`` /
+``topic_candidates`` are real ORM models.
 
 Approve flow inserts a row into the legacy ``topics`` table (upstream stub
 in backend's ORM — only ``id`` modeled). The insert uses raw SQL via
@@ -25,14 +38,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
-from genpano_models import AdminUser, TopicCandidate
+from fastapi import APIRouter, Depends, Query, Request
+from genpano_models import AdminUser, TopicCandidate, TopicPlanRun
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
+from app.admin.topic_plan import db as tp_db
 from app.admin.topic_plan.lib import (
     TopicPlanLLMError,
+    load_doubao_config,
     transition_candidate_status,
 )
 from app.api.admin.auth.router import current_admin
@@ -40,6 +55,10 @@ from app.core.errors import _problem, not_found, validation_error
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin · Topic Plan"])
+
+ALLOWED_TOPIC_DIMENSIONS = {"brand", "product", "category", "scenario", "question"}
+ALLOWED_TOPIC_STATUSES = {"active", "draft", "archived", "all"}
+ALLOWED_CANDIDATE_STATUSES = {"pending", "approved", "rejected", "all"}
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -293,3 +312,233 @@ async def bulk_review_candidates(
 
         return JSONResponse(status_code=409, content=body)  # type: ignore[return-value]
     return body
+
+
+# ---------------------------------------------------------------------------
+# B.2.a — config / coverage / candidates / topics / runs
+# ---------------------------------------------------------------------------
+
+
+def _parse_int_list_query(value: str | None) -> list[int]:
+    if value is None:
+        return []
+    try:
+        return tp_db.parse_int_list(value)
+    except ValueError as exc:
+        raise validation_error("brand_ids", "must be a comma-separated integer list") from exc
+
+
+def _clamp(value: int | None, default: int, lo: int, hi: int) -> int:
+    if value is None:
+        return default
+    return max(lo, min(int(value), hi))
+
+
+@router.get("/config", response_model=None)
+async def get_config(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    industry_id: str | None = Query(None),
+    category_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """Top-level Topic Plan tab config — populates the SPA dropdowns."""
+    brands = await tp_db.fetch_brands(session)
+    industries = [
+        {"id": value, "name": value}
+        for value in sorted({b.get("industry_id") or "Uncategorized" for b in brands})
+    ]
+    categories = await tp_db.fetch_categories(session)
+    default_industry = industry_id or (industries[0]["id"] if industries else "")
+    default_category = category_id or ""
+    scoped = tp_db.scope_brands(brands, industry_id=default_industry)
+    selected_ids = {
+        int(b["id"])
+        for b in sorted(scoped, key=lambda item: item.get("topic_count", 0), reverse=True)[:4]
+    }
+    for brand in brands:
+        brand["selected"] = int(brand["id"]) in selected_ids
+
+    pending = await tp_db.pending_summary(session, brand_ids=list(selected_ids))
+    try:
+        load_doubao_config()
+        llm_configured = True
+    except TopicPlanLLMError:
+        llm_configured = False
+
+    return {
+        "success": True,
+        "industries": industries,
+        "categories": categories,
+        "brands": brands,
+        "defaults": {
+            "industryId": default_industry,
+            "categoryId": default_category,
+            "maxPerBrand": 40,
+            "maxTopics": 180,
+            "gapPriority": "p12",
+            "overflowPolicy": "review",
+        },
+        "summary": {
+            "pending_candidates": pending["pending"],
+            "low_confidence": pending["low_confidence"],
+            "llm_configured": llm_configured,
+        },
+    }
+
+
+@router.get("/coverage", response_model=None)
+async def get_coverage(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    industry_id: str | None = Query(None),
+    category_id: str | None = Query(None),
+    brand_ids: str | None = Query(None),
+    max_per_brand: int = Query(40, ge=1, le=200),
+) -> dict[str, Any]:
+    parsed_brand_ids = _parse_int_list_query(brand_ids)
+    all_brands = await tp_db.fetch_brands(session)
+    brands = tp_db.scope_brands(all_brands, industry_id=industry_id, brand_ids=parsed_brand_ids)
+    coverage = await tp_db.build_coverage(
+        session,
+        brands,
+        category_id=category_id,
+        max_per_brand=max_per_brand,
+    )
+    return {
+        "success": True,
+        "rows": coverage["rows"],
+        "gaps": coverage["gaps"],
+        "summary": coverage["summary"],
+    }
+
+
+@router.get("/candidates", response_model=None)
+async def get_candidates(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    status: str = Query("pending"),
+    brand_ids: str | None = Query(None),
+    q: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    run_id: str | None = Query(None),
+) -> dict[str, Any]:
+    status_norm = status.strip().lower()
+    if status_norm not in ALLOWED_CANDIDATE_STATUSES:
+        raise validation_error("status", f"must be one of {sorted(ALLOWED_CANDIDATE_STATUSES)}")
+    parsed_brand_ids = _parse_int_list_query(brand_ids)
+    candidate_brand_ids = None if run_id else (parsed_brand_ids or None)
+
+    rows = await tp_db.fetch_candidates(
+        session,
+        status=status_norm,
+        brand_ids=candidate_brand_ids,
+        query=q,
+        limit=limit,
+        run_id=run_id,
+    )
+    pending = await tp_db.pending_summary(session, brand_ids=candidate_brand_ids, run_id=run_id)
+    return {
+        "success": True,
+        "rows": rows,
+        "summary": {
+            "pending_candidates": pending["pending"],
+            "low_confidence": pending["low_confidence"],
+        },
+    }
+
+
+@router.get("/topics", response_model=None)
+async def get_topics(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    industry_id: str | None = Query(None),
+    category_id: str | None = Query(None),
+    brand_ids: str | None = Query(None),
+    dimension: str | None = Query(None),
+    status: str = Query("all"),
+    q: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+) -> dict[str, Any]:
+    parsed_brand_ids = _parse_int_list_query(brand_ids)
+    dim_norm = (dimension or "").strip().lower() or None
+    if dim_norm and dim_norm not in ALLOWED_TOPIC_DIMENSIONS:
+        raise validation_error("dimension", f"must be one of {sorted(ALLOWED_TOPIC_DIMENSIONS)}")
+    status_norm = (status or "all").strip().lower()
+    if status_norm not in ALLOWED_TOPIC_STATUSES:
+        raise validation_error("status", f"must be one of {sorted(ALLOWED_TOPIC_STATUSES)}")
+
+    rows, summary = await tp_db.fetch_topics(
+        session,
+        industry_id=industry_id,
+        category_id=category_id,
+        brand_ids=parsed_brand_ids or None,
+        dimension=dim_norm,
+        status=status_norm,
+        query=q,
+        limit=limit,
+    )
+    return {"success": True, "rows": rows, "summary": summary}
+
+
+@router.get("/runs/{run_id}", response_model=None)
+async def get_run(
+    run_id: str,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    run = (
+        await session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise not_found("run_not_found")
+    await tp_db.mark_stale_run(session, run)
+    return {"success": True, "run": tp_db.run_to_dict(run)}
+
+
+@router.post("/runs/{run_id}/stop", response_model=None)
+async def stop_run(
+    run_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Cancel a running Topic Plan generation. Idempotent on terminal runs.
+
+    Audit emit (severity=med, action=topic_plan_run_cancelled). Already-
+    finalized runs return success with ``already_finalized: true`` and the
+    same run row — no audit row in that case.
+    """
+    run = (
+        await session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise not_found("run_not_found")
+
+    if run.status in {"completed", "failed", "cancelled"}:
+        return {
+            "success": True,
+            "already_finalized": True,
+            "run": tp_db.run_to_dict(run),
+        }
+
+    before_status = run.status
+    run.status = "cancelled"
+    if run.completed_at is None:
+        run.completed_at = _now()
+    run.updated_at = _now()
+    await session.commit()
+    await session.refresh(run)
+
+    await emit_audit(
+        session,
+        operator=operator,
+        action="topic_plan_run_cancelled",
+        severity="med",
+        resource_type="topic_plan_run",
+        resource_id=run.id,
+        before={"status": before_status},
+        after={"status": "cancelled"},
+        reason="topic_plan_stop",
+        request=request,
+    )
+    return {"success": True, "run": tp_db.run_to_dict(run)}
