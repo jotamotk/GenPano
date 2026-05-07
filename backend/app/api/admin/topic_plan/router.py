@@ -738,3 +738,121 @@ async def generate_topic_plan(
             "coverage": coverage["summary"],
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# B.3 — topic delete (FK-aware)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/topics/bulk-delete", response_model=None)
+async def bulk_delete_topics(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Bulk delete topics by id (or T-prefixed string).
+
+    Body: ``{"topic_ids": [1, "T-2", ...]}``.
+
+    Topics with downstream prompts/queries are returned in ``blocked``
+    (kept). Successfully removed ones are in ``deleted``. Missing ids in
+    ``missing``. Returns 200 if any topic was deleted; 409 if every
+    target was blocked. Audit emit (med, action=delete_topic_plan_topics)
+    fires only when at least one row was actually removed — see emit_audit.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    raw = payload.get("topic_ids")
+    try:
+        topic_ids = tp_db.parse_topic_ids(raw)
+    except ValueError as exc:
+        raise validation_error("topic_ids", str(exc)) from exc
+    if not topic_ids:
+        raise validation_error("topic_ids", "required, non-empty list")
+
+    result = await tp_db.delete_topic_plan_topics(session, topic_ids)
+    if result["deleted"]:
+        await emit_audit(
+            session,
+            operator=operator,
+            action="delete_topic_plan_topics",
+            severity="med",
+            resource_type="topic",
+            resource_id="bulk",
+            after={
+                "deleted": result["deleted"],
+                "blocked": result["blocked"],
+                "missing": result["missing"],
+            },
+            reason="topic_plan_delete",
+            request=request,
+        )
+
+    success = bool(result["deleted"]) or not result["blocked"]
+    body = {
+        "success": success,
+        "deleted": result["deleted"],
+        "blocked": result["blocked"],
+        "missing": result["missing"],
+        "summary": {
+            "deleted_count": len(result["deleted"]),
+            "blocked_count": len(result["blocked"]),
+            "missing_count": len(result["missing"]),
+        },
+    }
+    if not success:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=409, content=body)  # type: ignore[return-value]
+    return body
+
+
+@router.delete("/topics/{topic_id}", response_model=None)
+async def delete_topic(
+    topic_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Delete a single topic. Returns 404 if absent, 409 if blocked.
+
+    Wrapper around the same delete_topic_plan_topics helper used by
+    bulk-delete, with the response shape narrowed to one row. Audit
+    emit fires per delete — emit_audit (med, action=delete_topic_plan_topic).
+    """
+    try:
+        parsed_id = tp_db.parse_topic_id(topic_id)
+    except ValueError as exc:
+        raise validation_error("topic_id", "must be int or T-prefixed int") from exc
+
+    result = await tp_db.delete_topic_plan_topics(session, [parsed_id])
+    if result["missing"]:
+        raise not_found("topic_not_found")
+    if result["blocked"]:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(  # type: ignore[return-value]
+            status_code=409,
+            content={
+                "success": False,
+                "error": "topic_has_downstream_dependencies",
+                "blocked": result["blocked"],
+            },
+        )
+    await emit_audit(
+        session,
+        operator=operator,
+        action="delete_topic_plan_topic",
+        severity="med",
+        resource_type="topic",
+        resource_id=str(parsed_id),
+        after={"deleted": result["deleted"]},
+        reason="topic_plan_delete",
+        request=request,
+    )
+    return {"success": True, "deleted": result["deleted"]}
