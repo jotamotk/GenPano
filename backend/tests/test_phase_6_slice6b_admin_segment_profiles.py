@@ -11,12 +11,15 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from genpano_models import AdminAuditLog, AdminUser, Profile, Segment
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.admin.segments import db as segments_db
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 
@@ -97,6 +100,95 @@ def _profile(
 
 
 # ── auth ─────────────────────────────────────────────────────
+
+
+class _FakeScalarResult:
+    def __init__(self, rows=None, scalar=None):
+        self._rows = list(rows or [])
+        self._scalar = scalar
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def mappings(self):
+        return self
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+
+class _FakeProfileSession:
+    def __init__(self):
+        self.executed = []
+        self.added = []
+        self.commits = 0
+
+    async def execute(self, statement, params=None):
+        self.executed.append((str(statement), dict(params or {})))
+        return _FakeScalarResult()
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_create_profile_uses_code_not_orm_id_for_integer_profile_schema(monkeypatch):
+    session = _FakeProfileSession()
+    monkeypatch.setattr(segments_db, "_profiles_use_integer_id", AsyncMock(return_value=True))
+    monkeypatch.setattr(segments_db, "_sync_profiles_id_sequence", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        segments_db,
+        "get_segment",
+        AsyncMock(return_value={"id": "SEG-C", "brand_id": "brand-1", "brand_name": "Brand One"}),
+    )
+    monkeypatch.setattr(
+        segments_db,
+        "get_profile",
+        AsyncMock(return_value={"id": "P-C-NEW", "name": "Bob"}),
+    )
+
+    row = await segments_db.create_profile(
+        session,
+        "SEG-C",
+        {"id": "P-C-NEW", "name": "Bob", "status": "active"},
+        "admin-1",
+    )
+
+    insert_sql = " ".join(sql for sql, _params in session.executed if "INSERT INTO profiles" in sql)
+    assert row["id"] == "P-C-NEW"
+    assert session.added == []
+    assert "code, segment_id" in insert_sql
+    assert "(id, code" not in insert_sql
+
+
+@pytest.mark.asyncio
+async def test_update_profile_uses_raw_code_match_for_integer_profile_schema(monkeypatch):
+    session = _FakeProfileSession()
+    existing = {"id": "P-U-001", "name": "Anna"}
+    updated = {"id": "P-U-001", "name": "Renamed"}
+    monkeypatch.setattr(segments_db, "_profiles_use_integer_id", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        segments_db,
+        "get_segment",
+        AsyncMock(return_value={"id": "SEG-U", "brand_id": "brand-1", "brand_name": "Brand One"}),
+    )
+    monkeypatch.setattr(segments_db, "get_profile", AsyncMock(side_effect=[existing, updated]))
+
+    row = await segments_db.update_profile(
+        session,
+        "SEG-U",
+        "P-U-001",
+        {"name": "Renamed", "status": "active"},
+        "admin-1",
+    )
+
+    update_sql = " ".join(sql for sql, _params in session.executed if "UPDATE profiles" in sql)
+    assert row == updated
+    assert session.added == []
+    assert "code = :pid_upper OR CAST(id AS TEXT) = :pid_raw" in update_sql
 
 
 @pytest.mark.asyncio

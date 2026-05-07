@@ -292,6 +292,12 @@ def upgrade() -> None:  # noqa: PLR0915
             updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
     """)
+    op.execute("ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128);")
+    op.execute(
+        "ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS "
+        "llm_usage_json JSONB NOT NULL DEFAULT '{}'::jsonb;"
+    )
+    op.execute("ALTER TABLE query_generation_runs ADD COLUMN IF NOT EXISTS llm_error TEXT;")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_query_generation_runs_created "
         "ON query_generation_runs (created_at DESC);"
@@ -320,6 +326,18 @@ def upgrade() -> None:  # noqa: PLR0915
             CONSTRAINT uq_query_candidates_run_seq UNIQUE (run_id, candidate_seq)
         );
     """)
+    op.execute(
+        "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS "
+        "generation_method VARCHAR(32) NOT NULL DEFAULT 'llm';"
+    )
+    op.execute(
+        "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS "
+        "llm_model VARCHAR(128);"
+    )
+    op.execute(
+        "ALTER TABLE query_generation_candidates ADD COLUMN IF NOT EXISTS "
+        "llm_usage_json JSONB NOT NULL DEFAULT '{}'::jsonb;"
+    )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_query_candidates_run_seq "
         "ON query_generation_candidates (run_id, candidate_seq);"
