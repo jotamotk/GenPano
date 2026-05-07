@@ -14719,7 +14719,7 @@ function adminApp() {
       if (!runId || this.promptMatrixStopLoading) return;
       this.promptMatrixStopLoading = true;
       try {
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/runs/' + encodeURIComponent(runId) + '/stop', {
+        const res = await fetch('/api/admin/prompt-matrix/runs/' + encodeURIComponent(runId) + '/stop', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
@@ -14744,7 +14744,7 @@ function adminApp() {
     },
 
     async loadPromptMatrixRun(runId){
-      const res = await fetch(API_BASE + '/admin/prompt-matrix/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const res = await fetch('/api/admin/prompt-matrix/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Run load failed');
       return body.run || {};
@@ -14902,7 +14902,7 @@ function adminApp() {
       if (this.promptMatrixCandidateReviewing) return;
       this.promptMatrixCandidateReviewing = true;
       try {
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates/' + encodeURIComponent(item.id) + '/review', {
+        const res = await fetch('/api/admin/prompt-matrix/candidates/' + encodeURIComponent(item.id) + '/review', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
@@ -14932,7 +14932,7 @@ function adminApp() {
       if (!window.confirm('确认批量' + label + '选中的 ' + ids.length + ' 条候选 Prompt？')) return;
       this.promptMatrixCandidateReviewing = true;
       try {
-        const res = await fetch(API_BASE + '/admin/prompt-matrix/candidates/bulk-review', {
+        const res = await fetch('/api/admin/prompt-matrix/candidates/bulk-review', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },

@@ -58,6 +58,8 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF"]
 # one line so the LLM-facing system prompt reads naturally. Same set of
 # exceptions admin_console.topic_plan was running under historically.
 "app/admin/topic_plan/**" = ["RUF001", "RUF002", "RUF003", "E501"]
+# Same exception for prompt_matrix — Chinese regex / Doubao prompt text.
+"app/admin/prompt_matrix/**" = ["RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

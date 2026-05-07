@@ -103,35 +103,6 @@ def login(monkeypatch):
 
 
 
-def test_prompt_matrix_stop_marks_run_cancelled(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection(runs={"pm-1": {"id": "pm-1", "status": "running"}})
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: True)
-    monkeypatch.setattr(app_mod, "_prompt_matrix_run_row", lambda row: dict(row) if row else None)
-    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *a, **kw: None)
-
-    response = client.post("/api/admin/prompt-matrix/runs/pm-1/stop")
-    body = response.get_json()
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert conn.runs["pm-1"]["status"] == "cancelled"
-
-
-def test_prompt_matrix_stop_already_finalized(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection(runs={"pm-2": {"id": "pm-2", "status": "failed"}})
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: True)
-    monkeypatch.setattr(app_mod, "_prompt_matrix_run_row", lambda row: dict(row) if row else None)
-
-    response = client.post("/api/admin/prompt-matrix/runs/pm-2/stop")
-    body = response.get_json()
-    assert response.status_code == 200
-    assert body.get("already_finalized") is True
-    assert conn.runs["pm-2"]["status"] == "failed"
-
-
 def test_query_pool_stop_marks_run_cancelled(client, monkeypatch):
     login(monkeypatch)
     conn = FakeConnection(runs={"qp-1": {"id": "qp-1", "status": "running"}})
