@@ -1,6 +1,6 @@
 """repair legacy Query Pool schema drift
 
-Revision ID: 20260507_query_pool_schema_repair
+Revision ID: 20260507_qpool_repair
 Revises: 20260506_drop_audit_operator_fk
 Create Date: 2026-05-07
 
@@ -15,7 +15,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "20260507_query_pool_schema_repair"
+revision: str = "20260507_qpool_repair"
 down_revision: str | Sequence[str] | None = "20260506_drop_audit_operator_fk"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
