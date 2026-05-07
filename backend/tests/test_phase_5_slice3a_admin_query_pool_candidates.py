@@ -1,0 +1,306 @@
+"""Phase 5 slice 3a — GET /api/admin/query-pool/candidates (cursor list).
+
+The handler issues raw SQL with LEFT JOINs against `prompts`, `topics`,
+`segments`, `profiles`. Tests mock ``_fetch_candidates_paged`` so we avoid
+schema dependencies that don't exist in the sqlite fixture (``topics`` is
+not registered with Base.metadata).
+
+Coverage:
+- 401 unauth
+- 422 on invalid status / direction / cursor
+- empty result when DB has no run yet
+- happy-path wire shape (mock fetcher) — defaults to most-recent run_id
+- next/prev cursor encoding
+- legacy alias /admin/api/v1/pipeline/query-pool/candidates
+- _encode_cursor / _decode_cursor round-trip + invalid cursor raises ValueError
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
+import pytest
+import pytest_asyncio
+from genpano_models import AdminUser, QueryGenerationRun
+from sqlalchemy.ext.asyncio import AsyncSession
+
+os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+@pytest_asyncio.fixture
+async def admin_operator(
+    db_session: AsyncSession,
+) -> AsyncGenerator[AdminUser, None]:
+    from app.api.admin.auth.router import current_admin
+    from app.main import app
+
+    a = AdminUser(
+        id=_new_id(),
+        email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        password_hash="$2b$04$dummyhashfortestsdummyhashfortestsdummyhashfortest",
+        role="super_admin",
+        status="active",
+    )
+    db_session.add(a)
+    await db_session.commit()
+
+    async def _override_current_admin() -> AdminUser:
+        return a
+
+    app.dependency_overrides[current_admin] = _override_current_admin
+    try:
+        yield a
+    finally:
+        app.dependency_overrides.pop(current_admin, None)
+
+
+@pytest_asyncio.fixture
+async def run(db_session: AsyncSession, admin_operator: AdminUser) -> QueryGenerationRun:
+    r = QueryGenerationRun(
+        id=_new_id(),
+        admin_id=admin_operator.id,
+        status="completed",
+        request_config={},
+        prompt_ids=["p1"],
+        segment_ids_selected=["s1"],
+        profiles_per_prompt=2,
+        candidates_estimated=50,
+        candidates_assembled=10,
+        started_at=_now() - timedelta(seconds=15),
+        completed_at=_now(),
+    )
+    db_session.add(r)
+    await db_session.commit()
+    return r
+
+
+# ── auth + validation ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_unauth_401(client):
+    resp = await client.get("/api/admin/query-pool/candidates")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_invalid_status_422(client, admin_operator):
+    resp = await client.get("/api/admin/query-pool/candidates?status=bogus")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_invalid_direction_422(client, admin_operator):
+    resp = await client.get("/api/admin/query-pool/candidates?direction=sideways")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_invalid_cursor_422(client, admin_operator):
+    resp = await client.get("/api/admin/query-pool/candidates?cursor=not-base64-json!!")
+    assert resp.status_code == 422
+
+
+# ── empty path ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_no_runs_returns_empty(client, admin_operator):
+    """No runs in DB → 200 with empty rows + no cursors."""
+    resp = await client.get("/api/admin/query-pool/candidates")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["rows"] == []
+    assert body["next_cursor"] is None
+    assert body["prev_cursor"] is None
+    assert body["approx_total"] == 0
+
+
+# ── happy path with mocked fetcher ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run, monkeypatch):
+    """When run_id is omitted, falls back to most-recent run."""
+    import sys
+
+    import app.api.admin.query_pool.router  # noqa: F401  — ensure module loaded
+
+    qp_router = sys.modules["app.api.admin.query_pool.router"]
+
+    captured: dict[str, object] = {}
+
+    async def fake_fetch(
+        session, *, run_id, status, segment_id, profile_id, query, limit, cursor_seq, direction
+    ):
+        captured["run_id"] = run_id
+        captured["direction"] = direction
+        return (
+            [
+                {
+                    "id": "cand-1",
+                    "run_id": run_id,
+                    "candidate_seq": 1,
+                    "prompt_id": "p1",
+                    "prompt_text": "How safe is X?",
+                    "topic_id": "t1",
+                    "topic_text": "safety",
+                    "segment_id": "s1",
+                    "segment_name": "young-pros",
+                    "profile_id": "prof1",
+                    "profile_name": "Anna",
+                    "profile_demographic": "30F",
+                    "profile_need": "trust",
+                    "rendered_query": "Is X safe?",
+                    "generation_method": "llm",
+                    "llm_model": "gpt-4",
+                    "llm_usage_json": {"tokens": 12},
+                    "candidate_status": "candidate",
+                    "scheduler_intake_batch_id": None,
+                    "reviewed_by": None,
+                    "reviewed_at": None,
+                    "review_reason": None,
+                    "created_at": _now(),
+                }
+            ],
+            7,
+            False,
+        )
+
+    monkeypatch.setattr(qp_router, "_fetch_candidates_paged", fake_fetch)
+    resp = await client.get("/api/admin/query-pool/candidates")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["approx_total"] == 7
+    assert len(body["rows"]) == 1
+    row = body["rows"][0]
+    assert row["id"] == "cand-1"
+    assert row["candidate_seq"] == 1
+    assert row["prompt_text"] == "How safe is X?"
+    assert row["topic_text"] == "safety"
+    assert row["segment_name"] == "young-pros"
+    assert row["profile_name"] == "Anna"
+    assert row["llm_usage"] == {"tokens": 12}
+    # No cursor pagination state when no cursor was given and !has_more
+    assert body["next_cursor"] is None
+    assert body["prev_cursor"] is None
+    # Captured fallback to latest run
+    assert captured["run_id"] == run.id
+    assert captured["direction"] == "next"
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_next_cursor_when_has_more(client, admin_operator, run, monkeypatch):
+    """has_more=True + next direction → next_cursor encodes last seq."""
+    import sys
+
+    import app.api.admin.query_pool.router  # noqa: F401  — ensure module loaded
+
+    qp_router = sys.modules["app.api.admin.query_pool.router"]
+
+    async def fake_fetch(session, *, run_id, **_):
+        return (
+            [
+                {
+                    "id": f"c-{i}",
+                    "run_id": run_id,
+                    "candidate_seq": i,
+                    "prompt_id": "p1",
+                    "rendered_query": f"q{i}",
+                    "generation_method": "llm",
+                    "candidate_status": "candidate",
+                    "created_at": _now(),
+                    "llm_usage_json": {},
+                }
+                for i in (1, 2, 3)
+            ],
+            10,
+            True,
+        )
+
+    monkeypatch.setattr(qp_router, "_fetch_candidates_paged", fake_fetch)
+    resp = await client.get("/api/admin/query-pool/candidates?limit=3")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["next_cursor"] is not None
+    # decode it back — should be candidate_seq 3 (the last row)
+    from app.api.admin.query_pool.router import _decode_cursor
+
+    assert _decode_cursor(body["next_cursor"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_via_legacy_alias(client, admin_operator, run, monkeypatch):
+    """The /admin/api/v1/pipeline/query-pool/candidates legacy alias works."""
+    import sys
+
+    import app.api.admin.query_pool.router  # noqa: F401  — ensure module loaded
+
+    qp_router = sys.modules["app.api.admin.query_pool.router"]
+
+    monkeypatch.setattr(
+        qp_router,
+        "_fetch_candidates_paged",
+        AsyncMock(return_value=([], 0, False)),
+    )
+    resp = await client.get("/admin/api/v1/pipeline/query-pool/candidates")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+
+# ── helpers: cursor encode / decode ───────────────────────────
+
+
+def test_encode_decode_cursor_round_trip():
+    from app.api.admin.query_pool.router import _decode_cursor, _encode_cursor
+
+    encoded = _encode_cursor(42)
+    assert encoded is not None
+    assert "=" not in encoded  # urlsafe + stripped padding
+    assert _decode_cursor(encoded) == 42
+
+
+def test_encode_cursor_none_passthrough():
+    from app.api.admin.query_pool.router import _encode_cursor
+
+    assert _encode_cursor(None) is None
+
+
+def test_decode_cursor_empty_returns_none():
+    from app.api.admin.query_pool.router import _decode_cursor
+
+    assert _decode_cursor(None) is None
+    assert _decode_cursor("") is None
+
+
+def test_decode_cursor_invalid_raises_value_error():
+    import pytest as _pt
+
+    from app.api.admin.query_pool.router import _decode_cursor
+
+    with _pt.raises(ValueError, match="invalid_cursor"):
+        _decode_cursor("not-base64-json!!")
+
+
+# ── audit gate ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_audit_coverage_gate_after_slice3a():
+    from tests.test_audit_emit_coverage import test_admin_write_routes_call_emit_audit
+
+    test_admin_write_routes_call_emit_audit()
