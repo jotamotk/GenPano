@@ -230,22 +230,33 @@ async def session_current(
     """Return the current operator (if any) without raising on anonymous probes.
 
     The legacy admin SPA polls this on page load — it expects 200 with
-    ``{"admin": null}`` for anonymous, not 401.
+    ``{"authenticated": false, "admin": null}`` for anonymous, not 401.
+
+    The ``authenticated`` boolean preserves the legacy admin_console Flask
+    contract (``GET /api/admin/session`` previously returned
+    ``{"authenticated": true|false, "admin": ...}``). Phase 2 of the
+    backend migration silently dropped that field, which made the SPA's
+    ``checkAdminSession`` always read ``isLoggedIn = !!body.authenticated
+    = false`` — so even with a valid session cookie the SPA showed the
+    login form on every page reload, and after re-login the next 401
+    from any tab loader bounced the user straight back to the login
+    screen. Restoring the field re-establishes the SPA's session probe.
     """
     admin_user_id = request.session.get("admin_user_id")
     if not admin_user_id:
-        return {"admin": None}
+        return {"authenticated": False, "admin": None}
     admin = (
         await db.execute(select(AdminUser).where(AdminUser.id == admin_user_id))
     ).scalar_one_or_none()
     if admin is None or admin.status != "active":
         request.session.pop("admin_user_id", None)
-        return {"admin": None}
+        return {"authenticated": False, "admin": None}
     return {
+        "authenticated": True,
         "admin": {
             "id": admin.id,
             "email": admin.email,
             "role": admin.role,
             "status": admin.status,
-        }
+        },
     }
