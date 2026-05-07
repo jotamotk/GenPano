@@ -8183,108 +8183,11 @@ def admin_topic_plan_generate_api():
         conn.close()
 
 
-@app.route('/api/admin/topic-plan/candidates/<candidate_id>/review', methods=['POST'])
-def admin_topic_plan_candidate_review_api(candidate_id):
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    requested_status = (payload.get("status") or "").strip().lower()
-    reason = (payload.get("reason") or "").strip() or None
-
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            try:
-                updated = _review_topic_plan_candidate(
-                    cur,
-                    candidate_id,
-                    requested_status,
-                    admin["id"],
-                    reason=reason,
-                )
-            except TopicPlanLLMError as error:
-                return _topic_plan_error_response(error, 400)
-            if not updated:
-                return jsonify({"success": False, "error": "candidate_not_found"}), 404
-        conn.commit()
-        return jsonify({"success": True, "candidate": updated})
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-@app.route('/api/admin/topic-plan/candidates/bulk-review', methods=['POST'])
-def admin_topic_plan_candidates_bulk_review_api():
-    admin, error_response = _require_admin()
-    if error_response:
-        return error_response
-
-    from psycopg2.extras import RealDictCursor
-
-    payload = request.get_json(silent=True) or {}
-    requested_status = (payload.get("status") or "").strip().lower()
-    reason = (payload.get("reason") or "").strip() or None
-    candidate_ids = payload.get("candidate_ids") or []
-    if not isinstance(candidate_ids, list) or not candidate_ids:
-        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
-    candidate_ids = [str(item).strip() for item in candidate_ids if str(item).strip()]
-    if not candidate_ids:
-        return jsonify({"success": False, "error": "candidate_ids_required"}), 400
-    if len(candidate_ids) > 200:
-        return jsonify({"success": False, "error": "too_many_candidates"}), 400
-
-    conn = get_db()
-    updated = []
-    missing = []
-    failed = []
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            for candidate_id in candidate_ids:
-                try:
-                    row = _review_topic_plan_candidate(
-                        cur,
-                        candidate_id,
-                        requested_status,
-                        admin["id"],
-                        reason=reason,
-                    )
-                    if row:
-                        updated.append(row)
-                    else:
-                        missing.append(candidate_id)
-                except TopicPlanLLMError as error:
-                    failed.append(
-                        {
-                            "id": candidate_id,
-                            "error": error.code,
-                            "message": error.message,
-                        }
-                    )
-        conn.commit()
-        return jsonify(
-            {
-                "success": len(failed) == 0,
-                "rows": updated,
-                "summary": {
-                    "updated_count": len(updated),
-                    "missing_count": len(missing),
-                    "failed_count": len(failed),
-                },
-                "missing": missing,
-                "failed": failed,
-            }
-        ), 200 if not failed else 409
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+# /api/admin/topic-plan/candidates/{id}/review and bulk-review migrated to
+# FastAPI in Phase 3 B.1 — see backend/app/api/admin/topic_plan/router.py.
+# admin.html now calls /api/admin/topic-plan/candidates/{id}/review and
+# /api/admin/topic-plan/candidates/bulk-review directly (bypassing this
+# Flask service).
 
 
 @app.route('/api/admin/prompt-matrix/config')

@@ -34,6 +34,7 @@ from app.api.admin.projects import router as projects_router
 from app.api.admin.proxy_pool import router as proxy_pool_router
 from app.api.admin.session import router as session_router
 from app.api.admin.stats import router as stats_router
+from app.api.admin.topic_plan import router as topic_plan_router
 from app.api.admin.users import router as users_router
 from app.core.security import _DependsDb
 
@@ -52,6 +53,7 @@ router.include_router(projects_router, prefix="/projects")
 router.include_router(proxy_pool_router, prefix="/proxy-pool")
 router.include_router(session_router, prefix="/session")
 router.include_router(stats_router, prefix="/stats")
+router.include_router(topic_plan_router, prefix="/topic-plan")
 router.include_router(users_router, prefix="/users")
 
 
