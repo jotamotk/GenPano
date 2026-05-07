@@ -766,3 +766,89 @@ def filter_payload_from_query(source: dict[str, Any]) -> dict[str, Any]:
         "intent_count": _clamp(source.get("intent_count"), 4, 1, len(ALLOWED_INTENTS)),
         "language_count": _clamp(source.get("language_count"), 2, 1, len(ALLOWED_LANGUAGES)),
     }
+
+
+# ---------------------------------------------------------------------------
+# generate-route helpers (Phase 4 slice 3)
+# ---------------------------------------------------------------------------
+
+
+async def fetch_topic_rows_by_ids(
+    session: AsyncSession, topic_ids: list[int], config: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Fetch enriched topic rows by id (preserves order requested)."""
+    if not topic_ids:
+        return []
+    config = config or {
+        "intent_count": len(ALLOWED_INTENTS),
+        "language_count": len(ALLOWED_LANGUAGES),
+    }
+    rows, _total, _summary = await fetch_topics(
+        session,
+        filters={
+            "intent_count": config["intent_count"],
+            "language_count": config["language_count"],
+        },
+        page=1,
+        per_page=len(topic_ids) + 50,
+        topic_ids=topic_ids,
+    )
+    by_id = {int(r["raw_id"]): r for r in rows}
+    return [by_id[i] for i in topic_ids if i in by_id]
+
+
+async def fetch_existing_prompt_texts(session: AsyncSession, *, topic_ids: list[int]) -> list[str]:
+    """Active prompt + pending candidate texts for de-dupe seed."""
+    if not topic_ids:
+        return []
+    prompt_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT text FROM prompts
+                WHERE topic_id = ANY(:ids)
+                  AND COALESCE(status, 'active') = 'active'
+                  AND text IS NOT NULL AND text <> ''
+                """
+            ),
+            {"ids": topic_ids},
+        )
+    ).all()
+    candidate_rows = (
+        await session.execute(
+            select(PromptCandidate.text).where(
+                PromptCandidate.topic_id.in_(topic_ids),
+                PromptCandidate.status == "pending",
+            )
+        )
+    ).all()
+    return [r[0] for r in prompt_rows if r[0]] + [r[0] for r in candidate_rows if r[0]]
+
+
+def parse_selection(payload: dict[str, Any]) -> tuple[list[int], dict[str, Any]]:
+    """Pull topic_ids out of an operator's /generate POST body.
+
+    Two shapes accepted (matching admin_console):
+    - explicit ``{"topic_ids": [1, "T-2", ...]}``
+    - implicit selection ``{"selection": {"topic_ids": [...]}}``
+
+    Returns ``(topic_ids, snapshot)``. snapshot is preserved into
+    ``request_config`` for audit trail.
+    """
+    explicit = payload.get("topic_ids")
+    if explicit is not None:
+        try:
+            ids = [parse_topic_id(x) for x in (explicit if isinstance(explicit, list) else [])]
+        except ValueError as exc:
+            raise ValueError("invalid_topic_ids") from exc
+        return list(dict.fromkeys(ids)), {"topic_ids": list(dict.fromkeys(ids))}
+
+    selection = payload.get("selection")
+    if isinstance(selection, dict) and isinstance(selection.get("topic_ids"), list):
+        try:
+            ids = [parse_topic_id(x) for x in selection["topic_ids"]]
+        except ValueError as exc:
+            raise ValueError("invalid_topic_ids") from exc
+        return list(dict.fromkeys(ids)), dict(selection)
+
+    return [], {}
