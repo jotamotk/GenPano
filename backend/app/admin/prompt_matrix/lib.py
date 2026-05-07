@@ -223,13 +223,13 @@ def normalize_prompt_text(value: str) -> str:
 
 
 def consumer_aliases_for_brand_name(name: str, aliases: Any = None) -> list[str]:
-    raw_terms = [name]
+    raw_terms: list[Any] = [name]
     if isinstance(aliases, str):
         try:
             aliases = json.loads(aliases)
         except Exception:
             aliases = [aliases]
-    if isinstance(aliases, (list, tuple)):
+    if isinstance(aliases, list | tuple):
         raw_terms.extend(aliases)
 
     result: list[str] = []
@@ -317,7 +317,7 @@ def dedupe_prompt_candidates(
       - ``looks_like_query``     layer violation: this carries personal anchors
       - ``over_limit``           accepted enough already, this is the tail
     """
-    from ._layer_classifier import reject_reason as _reject_reason
+    from app.admin.topic_plan.layer_classifier import reject_reason as _reject_reason
 
     db_normalized = {normalize_prompt_text(text) for text in existing_texts if text}
     db_normalized.discard("")
@@ -369,7 +369,7 @@ def over_request_count(target: int, *, multiplier: float = 1.4, min_buffer: int 
     """
     import math
 
-    return max(int(math.ceil(target * multiplier)), target + min_buffer)
+    return max(math.ceil(target * multiplier), target + min_buffer)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -697,7 +697,8 @@ def parse_llm_prompt_candidates(
                 "llm_schema_invalid",
                 f"Prompt item #{index + 1} confidence must be a number",
             ) from error
-        raw_tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+        raw_tags_value = item.get("tags")
+        raw_tags: dict[str, Any] = raw_tags_value if isinstance(raw_tags_value, dict) else {}
         tags = {key: value for key, value in raw_tags.items() if key != "engines"}
 
         if intent not in ALLOWED_INTENTS:
@@ -805,8 +806,9 @@ def build_prompt_matrix_messages(
 ) -> list[dict[str, str]]:
     topic_payload = []
     for topic in topics:
+        topic_id_raw = topic.get("raw_id") or topic.get("id") or 0
         entry: dict[str, Any] = {
-            "topic_id": int(topic.get("raw_id") or topic.get("id")),
+            "topic_id": int(topic_id_raw),
             "title": topic.get("title") or topic.get("text") or "",
             "brand": topic.get("brand") or topic.get("brand_name") or "",
             "consumer_aliases": consumer_aliases_for_topic(topic, known_brands),
@@ -870,7 +872,7 @@ def build_prompt_matrix_messages(
     # Module 0.5: prepend the layer-boundary header so the LLM knows it must
     # produce *Prompts* (complete user inputs, no personal anchors), not Topics
     # (noun-phrase subjects) and not Queries (Profile-personalized text).
-    from ._layer_classifier import LAYER_BOUNDARY_PROMPT
+    from app.admin.topic_plan.layer_classifier import LAYER_BOUNDARY_PROMPT
 
     system = (
         LAYER_BOUNDARY_PROMPT.replace("{LAYER}", "prompt")
@@ -936,7 +938,8 @@ def usage_to_dict(usage_obj: Any) -> dict[str, Any]:
     if usage_obj is None:
         return {}
     if hasattr(usage_obj, "model_dump"):
-        return usage_obj.model_dump()
+        result: dict[str, Any] = usage_obj.model_dump()
+        return result
     if isinstance(usage_obj, dict):
         return dict(usage_obj)
     return {

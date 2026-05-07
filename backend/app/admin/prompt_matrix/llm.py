@@ -164,11 +164,12 @@ class PromptMatrixClient:
         if not choices:
             raise PromptMatrixError("llm_call_failed", "Prompt Matrix returned no choices")
         content = (choices[0].get("message") or {}).get("content") or "{}"
-        topics_by_id = {
-            int(topic.get("raw_id") or topic.get("id")): topic
-            for topic in topics
-            if str(topic.get("raw_id") or topic.get("id") or "").isdigit()
-        }
+        topics_by_id: dict[int, dict[str, Any]] = {}
+        for topic in topics:
+            raw = topic.get("raw_id") or topic.get("id")
+            if raw is None or not str(raw).isdigit():
+                continue
+            topics_by_id[int(raw)] = topic
         prompts = parse_llm_prompt_candidates(
             content,
             topics_by_id=topics_by_id,
