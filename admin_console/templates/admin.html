@@ -15880,8 +15880,17 @@ function adminApp() {
       try {
         const res = await fetch('/api/admin/auth/session', { credentials:'same-origin' });
         const body = await res.json();
-        this.isLoggedIn = !!body.authenticated;
-        this.adminUser = body.admin || null;
+        // Phase 2 backend (FastAPI) returns { authenticated, admin }; legacy
+        // admin_console Flask returned the same shape. A short window
+        // between Phase 2 and this fix returned only { admin }, which read
+        // as `body.authenticated === undefined` and silently flipped every
+        // logged-in user to the login screen on each reload. Treat the
+        // presence of `body.admin` as authenticated even when the boolean
+        // field is missing, so old-frontend / new-backend skew can't lock
+        // anyone out again.
+        const admin = (body && body.admin) ? body.admin : null;
+        this.adminUser = admin;
+        this.isLoggedIn = !!(body && (body.authenticated === true || admin));
         if (this.isLoggedIn) {
           this.$nextTick(()=>{ lucide.createIcons(); this.renderForPage(); });
           this.runPageLoaders(this.page);
