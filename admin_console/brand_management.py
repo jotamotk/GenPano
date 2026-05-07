@@ -289,25 +289,75 @@ def normalize_brand_draft(raw: dict[str, Any], *, default_industry: str = "") ->
     }
 
 
-def validate_brand_candidates(items: Iterable[Any], max_count: int) -> list[dict[str, Any]]:
+def validate_brand_candidates(
+    items: Iterable[Any], max_count: int, *, dedupe_names: bool = True
+) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         raise BrandManagementError("invalid_llm_output", "Brand output must be a list")
-    seen_names: set[str] = set()
+    seen: set[str] = set()
     drafts: list[dict[str, Any]] = []
     for raw in items[:max_count]:
         try:
             draft = normalize_brand_draft(raw)
         except BrandManagementError:
             continue
-        key = (draft["name"] or "").casefold()
-        if not key or key in seen_names:
+        if dedupe_names:
+            key = (draft["name"] or "").casefold()
+        else:
+            key = "|".join(
+                [
+                    str(draft.get("name") or ""),
+                    str(draft.get("industry") or ""),
+                    str(draft.get("target_market") or ""),
+                    ",".join(draft.get("official_domains") or []),
+                ]
+            ).casefold()
+        if not key or key in seen:
             continue
-        seen_names.add(key)
+        seen.add(key)
         draft["source"] = "llm"
         drafts.append(draft)
     if not drafts:
         raise BrandManagementError("missing_llm_field", "No usable brand drafts were returned")
     return drafts
+
+
+def _brand_enrich_context(context: Any) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in (
+        "name_zh",
+        "name_en",
+        "industry",
+        "target_market",
+        "description",
+        "positioning",
+        "headquarters",
+    ):
+        value = str(context.get(key) or "").strip()
+        if value:
+            out[key] = value
+    founded_year = context.get("founded_year")
+    if founded_year not in (None, ""):
+        try:
+            out["founded_year"] = int(founded_year)
+        except (TypeError, ValueError):
+            pass
+    aliases = _coerce_str_list(context.get("aliases") or context.get("aliasesText"))
+    if aliases:
+        out["aliases"] = aliases
+    official_domains = _coerce_str_list(
+        context.get("official_domains") or context.get("domains") or context.get("domainsText"),
+        max_items=8,
+        max_len=255,
+    )
+    if official_domains:
+        out["official_domains"] = official_domains
+    competitors = _normalize_competitors(context.get("competitors") or context.get("competitorsText"))
+    if competitors:
+        out["competitors"] = competitors
+    return out
 
 
 def _json_prompt(task: str, payload: dict[str, Any], schema_hint: dict[str, Any]) -> str:
@@ -512,25 +562,34 @@ class BrandManagementService:
             prompt=prompt,
         )
 
-    def enrich_brand_by_name(self, *, name: str) -> BrandGenerationResult:
-        """Return a single enriched brand draft from just a brand name.
+    def enrich_brand_by_name(
+        self, *, name: str, context: dict[str, Any] | None = None
+    ) -> BrandGenerationResult:
+        """Return enriched brand draft candidates from a brand name and context.
 
         Used by the manual-create UI's "AI 补全" button: the operator types a
         brand name and the LLM fills the remaining form fields (中英文 / 行业 /
         市场 / 简介 / 定位 / 总部 / 成立年份 / 别名 / 官方域名 / 竞品 / 标签).
-        Returns a single-element ``items`` list to stay shape-compatible with
-        the existing draft pipeline.
+        If the brand name is ambiguous, multiple candidates are returned so the
+        operator can pick the intended one.
         """
         name = (name or "").strip()
         if not name:
             raise BrandManagementError("missing_brand_name", "Brand name is required")
-        payload = {"brand_name": name}
+        filled_fields = _brand_enrich_context(context)
+        payload = {"brand_name": name, "filled_fields": filled_fields}
         prompt = (
             "You are enriching ONE Brand entry for the GENPANO knowledge graph.\n"
             "Return only strict JSON. Do not include markdown, comments, prose, or code fences.\n"
-            "The output `brands` array must contain EXACTLY ONE element whose `name` is the "
-            "given brand. Use real, publicly known facts about that brand. Do NOT invent. "
-            "If a field is genuinely unknown, return null or an empty array.\n"
+            "Use `filled_fields` as disambiguating context. More filled fields should narrow "
+            "the result more precisely, similar to search filters. If `brand_name` is ambiguous, "
+            "return 1-5 candidate brands instead of guessing; the Admin operator will choose one. "
+            "If the filled fields identify a single brand, return one candidate. Use real, publicly "
+            "known facts about each brand. Do NOT invent. If a field is genuinely unknown, return "
+            "null or an empty array. Do not restrict industry to an existing list; if the brand "
+            "belongs to a new industry, return that new industry string.\n"
+            "The output `brands` array must contain 1-5 candidate brands whose names match or "
+            "clearly correspond to the requested brand name.\n"
             "Suggested competitors (1-4 well-known peers) become COMPETES_WITH edges "
             "in the knowledge graph; SAME_GROUP only when truly part of the same parent.\n"
             "Task: enrich_brand\n"
@@ -541,7 +600,7 @@ class BrandManagementService:
             raw_items, model, usage = self._call_llm_json(
                 prompt=prompt, root_key="brands", max_count=5
             )
-            drafts = validate_brand_candidates(raw_items, max_count=5)
+            drafts = validate_brand_candidates(raw_items, max_count=5, dedupe_names=False)
             if drafts and not drafts[0].get("name"):
                 drafts[0]["name"] = name
             return BrandGenerationResult(

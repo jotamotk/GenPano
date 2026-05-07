@@ -120,6 +120,16 @@ def test_segment_llm_brand_selects_use_brand_ids_for_disambiguation():
     assert "selectedBrandOptionById" in html
 
 
+def test_brand_management_enrich_uses_filled_fields_and_disambiguates_choices():
+    html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
+    assert "enrichContextPayload()" in html
+    assert "JSON.stringify({ ...this.enrichContextPayload(), async: true })" in html
+    assert "choice.description" in html
+    assert "choice.industry" in html
+    assert 'x-model="form.industry" list="brand-mgmt-industry-options-form"' in html
+    assert '<select x-model="form.industry"' not in html
+
+
 def test_query_pool_assembly_panel_only_exposes_actionable_controls():
     html = ADMIN_TEMPLATE.read_text(encoding="utf-8")
     query_pool_section = html[

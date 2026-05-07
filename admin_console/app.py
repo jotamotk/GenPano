@@ -14818,6 +14818,39 @@ def _brand_management_enrich_timeout_seconds():
     return max(30, min(value, 240))
 
 
+_BRAND_ENRICH_CONTEXT_KEYS = (
+    "name_zh",
+    "name_en",
+    "industry",
+    "target_market",
+    "description",
+    "positioning",
+    "headquarters",
+    "founded_year",
+    "aliases",
+    "aliasesText",
+    "official_domains",
+    "domains",
+    "domainsText",
+    "competitors",
+    "competitorsText",
+)
+
+
+def _brand_enrich_context_from_payload(payload):
+    payload = dict(payload or {})
+    nested = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context = dict(nested or {})
+    for key in _BRAND_ENRICH_CONTEXT_KEYS:
+        if key in payload:
+            context[key] = payload.get(key)
+    return {
+        key: value
+        for key, value in context.items()
+        if value not in (None, "", [], {})
+    }
+
+
 _brand_enrich_jobs = {}
 _brand_enrich_jobs_lock = threading.Lock()
 _BRAND_ENRICH_JOB_LIMIT = 100
@@ -14907,12 +14940,13 @@ def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
     _set_brand_enrich_job(job_id, status="running", message="Brand enrichment started")
     conn = None
     try:
+        context = _brand_enrich_context_from_payload(payload)
         service = BrandManagementService(
             model=payload.get("llm_model"),
             allow_fallback=False,
             timeout_seconds=_brand_management_enrich_timeout_seconds(),
         )
-        result = service.enrich_brand_by_name(name=name)
+        result = service.enrich_brand_by_name(name=name, context=context)
         conn = get_db()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             _insert_admin_audit_log(
@@ -14921,7 +14955,11 @@ def _run_brand_enrich_job(job_id, *, admin_id, name, payload):
                 action="enrich_brand",
                 target_type="brand",
                 target_id=None,
-                diff={"name": name, "model": result.model},
+                diff={
+                    "name": name,
+                    "model": result.model,
+                    "context_fields": sorted(context.keys()),
+                },
                 reason=payload.get("reason"),
             )
         conn.commit()
@@ -15513,6 +15551,7 @@ def admin_brand_management_enrich_api():
     name = (payload.get("name") or payload.get("brand_name") or "").strip()
     if not name:
         return jsonify({"success": False, "error": "name_required"}), 400
+    context = _brand_enrich_context_from_payload(payload)
     if payload.get("async_generation") or payload.get("async"):
         job_id = str(uuid.uuid4())
         _set_brand_enrich_job(
@@ -15546,7 +15585,7 @@ def admin_brand_management_enrich_api():
         timeout_seconds=_brand_management_enrich_timeout_seconds(),
     )
     try:
-        result = service.enrich_brand_by_name(name=name)
+        result = service.enrich_brand_by_name(name=name, context=context)
     except BrandManagementError as error:
         return jsonify(
             {"success": False, "error": error.code, "message": error.message}
@@ -15561,7 +15600,11 @@ def admin_brand_management_enrich_api():
                 action="enrich_brand",
                 target_type="brand",
                 target_id=None,
-                diff={"name": name, "model": result.model},
+                diff={
+                    "name": name,
+                    "model": result.model,
+                    "context_fields": sorted(context.keys()),
+                },
                 reason=payload.get("reason"),
             )
         conn.commit()

@@ -1299,12 +1299,20 @@
                     <div x-show="enrichNotice" x-cloak class="mt-1 text-[11px]"
                          :class="enrichNoticeTone === 'error' ? 'text-danger' : 'text-success'"
                          x-text="enrichNotice"></div>
-                    <div x-show="enrichChoices.length" x-cloak class="mt-2 flex flex-wrap gap-1.5">
-                      <template x-for="choice in enrichChoices" :key="choice.name">
+                    <div x-show="enrichChoices.length" x-cloak class="mt-2 space-y-1.5">
+                      <template x-for="choice in enrichChoices" :key="[choice.name, choice.industry, choice.target_market, (choice.official_domains || []).join(',')].join('|')">
                         <button type="button" @click="applyEnrichChoice(choice)"
-                                class="inline-flex items-center gap-1 h-7 px-2 rounded-btn border border-accent/25 bg-accent/5 text-accent text-[11px] font-semibold hover:bg-accent/10">
-                          <i data-lucide="check" class="w-3 h-3"></i>
-                          <span x-text="choice.name"></span>
+                                class="w-full text-left rounded-btn border border-accent/25 bg-accent/5 px-2.5 py-2 text-[11px] hover:bg-accent/10">
+                          <div class="flex items-center justify-between gap-2">
+                            <span class="font-semibold text-accent truncate" x-text="choice.name"></span>
+                            <i data-lucide="check" class="w-3 h-3 text-accent shrink-0"></i>
+                          </div>
+                          <div class="mt-0.5 text-ink-muted truncate">
+                            <span x-text="choice.industry || 'Unspecified industry'"></span>
+                            <span x-show="choice.target_market" x-text="' · ' + choice.target_market"></span>
+                            <span x-show="choice.official_domains && choice.official_domains.length" x-text="' · ' + choice.official_domains[0]"></span>
+                          </div>
+                          <div x-show="choice.description" class="mt-1 text-ink-body line-clamp-2" x-text="choice.description"></div>
                         </button>
                       </template>
                     </div>
@@ -10836,27 +10844,52 @@ function brandManagementPanel() {
       return new Promise(resolve => window.setTimeout(resolve, ms));
     },
 
-    applyEnrichedDraft(draft, model) {
+    enrichContextPayload() {
+      return {
+        name: (this.form.name || '').trim(),
+        name_zh: this.form.name_zh || '',
+        name_en: this.form.name_en || '',
+        industry: this.form.industry || '',
+        target_market: this.form.target_market || '',
+        description: this.form.description || '',
+        positioning: this.form.positioning || '',
+        headquarters: this.form.headquarters || '',
+        founded_year: this.form.founded_year || null,
+        aliases: this.parseList(this.form.aliasesText),
+        official_domains: this.parseList(this.form.domainsText),
+        competitors: this.parseList(this.form.competitorsText).map(name => ({ name, type: 'COMPETES_WITH' })),
+      };
+    },
+
+    applyEnrichedDraft(draft, model, options = {}) {
       const d = draft || {};
+      const overwrite = Boolean(options.overwrite);
+      const setField = (key, value) => {
+        if (value === undefined || value === null || value === '') return;
+        if (overwrite || !(this.form[key] || '').toString().trim()) this.form[key] = value;
+      };
       if (d.name) this.form.name = d.name;
-      this.form.name_zh = d.name_zh || '';
-      this.form.name_en = d.name_en || '';
-      this.form.industry = d.industry || this.form.industry || '';
-      this.form.target_market = d.target_market || '';
-      this.form.description = d.description || '';
-      this.form.positioning = d.positioning || '';
-      this.form.headquarters = d.headquarters || '';
-      this.form.founded_year = d.founded_year || null;
-      this.form.aliasesText = (d.aliases || []).join(', ');
-      this.form.domainsText = (d.official_domains || []).join(', ');
-      this.form.competitorsText = (d.competitors || []).map(c => c.name).filter(Boolean).join(', ');
+      setField('name_zh', d.name_zh);
+      setField('name_en', d.name_en);
+      setField('industry', d.industry);
+      setField('target_market', d.target_market);
+      setField('description', d.description);
+      setField('positioning', d.positioning);
+      setField('headquarters', d.headquarters);
+      if (d.founded_year && (overwrite || !this.form.founded_year)) this.form.founded_year = d.founded_year;
+      const aliasesText = (d.aliases || []).join(', ');
+      if (aliasesText && (overwrite || !(this.form.aliasesText || '').trim())) this.form.aliasesText = aliasesText;
+      const domainsText = (d.official_domains || []).join(', ');
+      if (domainsText && (overwrite || !(this.form.domainsText || '').trim())) this.form.domainsText = domainsText;
+      const competitorsText = (d.competitors || []).map(c => c.name).filter(Boolean).join(', ');
+      if (competitorsText && (overwrite || !(this.form.competitorsText || '').trim())) this.form.competitorsText = competitorsText;
       this.enrichChoices = [];
       this.enrichNotice = '已用 ' + (model || 'LLM') + ' 补全表单，可继续修改后保存';
       this.enrichNoticeTone = 'success';
     },
 
     applyEnrichChoice(choice) {
-      this.applyEnrichedDraft(choice, 'LLM');
+      this.applyEnrichedDraft(choice, 'LLM', { overwrite: true });
       this.refreshIcons();
     },
 
@@ -10908,9 +10941,6 @@ function brandManagementPanel() {
         this.enrichNoticeTone = 'error';
         return;
       }
-      if (this.formHasOtherContent() && !window.confirm('已填写的字段会被 AI 结果覆盖，继续？')) {
-        return;
-      }
       this.enrichLoading = true;
       this.enrichNotice = '';
       this.enrichChoices = [];
@@ -10919,7 +10949,7 @@ function brandManagementPanel() {
       try {
         const body = await this.apiJson(API_BASE + '/admin/brand-management/enrich', {
           method: 'POST',
-          body: JSON.stringify({ name, async: true }),
+          body: JSON.stringify({ ...this.enrichContextPayload(), async: true }),
         });
         if (body.pending && body.job_id) {
           this.enrichNotice = 'AI 补全已提交，正在生成...';
