@@ -745,7 +745,7 @@ def test_alembic_migration_present():
     versions_dir = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
     target = versions_dir / "2026_05_07_0002_llm_accounts_schema_repair.py"
     assert target.exists(), f"missing Alembic repair migration: {target}"
-    body = target.read_text()
+    body = target.read_text(encoding="utf-8")
     # Verify the migration touches every column slice 7b depends on.
     for col in (
         "llm_name",
