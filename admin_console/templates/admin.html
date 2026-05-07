@@ -15572,7 +15572,7 @@ function adminApp() {
     },
 
     async loadQueryPoolRun(runId){
-      const res = await fetch(API_BASE + '/admin/query-pool/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const res = await fetch('/api/admin/query-pool/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.success === false) {
         const message = body.message || body.error || ('Query run 加载失败' + (res.status ? '（' + res.status + '）' : ''));
@@ -15640,7 +15640,7 @@ function adminApp() {
       if (!runId || this.queryPoolStopLoading) return;
       this.queryPoolStopLoading = true;
       try {
-        const res = await fetch(API_BASE + '/admin/query-pool/runs/' + encodeURIComponent(runId) + '/stop', {
+        const res = await fetch('/api/admin/query-pool/runs/' + encodeURIComponent(runId) + '/stop', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },

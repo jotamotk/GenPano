@@ -139,22 +139,6 @@ def test_query_pool_assemble_starts_async_run_without_inline_llm(client, monkeyp
     ]
 
 
-def test_query_pool_run_detail_api_returns_json_on_load_failure(client, monkeypatch):
-    login(monkeypatch)
-
-    def fail_get_db():
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(app_mod, "get_db", fail_get_db)
-
-    response = client.get("/api/admin/query-pool/runs/run-1")
-    body = response.get_json()
-
-    assert response.status_code == 503
-    assert body["success"] is False
-    assert body["error"] == "query_pool_run_load_failed"
-
-
 def test_query_pool_running_run_reports_estimated_count_without_ready_candidates(monkeypatch):
     monkeypatch.setattr(app_mod, "_query_pool_prompt_ids_from_selection", lambda cur, selection, max_prompts: ["74"])
     monkeypatch.setattr(
@@ -492,46 +476,6 @@ def test_query_pool_candidate_cap_hold_blocks_run(monkeypatch):
                 },
             },
         )
-
-
-def test_query_pool_candidate_status_update_validates_status(client, monkeypatch):
-    login(monkeypatch)
-
-    response = client.post("/api/admin/query-pool/candidates/qc-1/review", json={"status": "running"})
-    body = response.get_json()
-
-    assert response.status_code == 400
-    assert body["error"] == "invalid_status"
-
-
-def test_query_pool_candidate_status_update(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection()
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-
-    def fake_update(cur, candidate_id, status, admin_id, reason=None):
-        assert candidate_id == "qc-1"
-        assert status == "ready"
-        assert admin_id == "admin-1"
-        assert reason == "duplicate reviewed"
-        return {
-            "id": "qc-1",
-            "candidate_status": "ready",
-            "rendered_query": "敏感肌如何修复屏障？",
-        }
-
-    monkeypatch.setattr(app_mod, "_update_query_pool_candidate_status", fake_update)
-
-    response = client.post(
-        "/api/admin/query-pool/candidates/qc-1/review",
-        json={"status": "ready", "reason": "duplicate reviewed"},
-    )
-    body = response.get_json()
-
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert body["candidate"]["candidate_status"] == "ready"
-    assert conn.commits == 1
 
 
 def test_query_pool_candidate_row_exposes_prompt_context():

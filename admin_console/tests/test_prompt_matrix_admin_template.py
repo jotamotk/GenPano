@@ -341,7 +341,7 @@ def test_query_pool_assemble_uses_run_polling_and_persistent_error():
     assert "startQueryPoolRunPolling" in html
     assert "loadQueryPoolRun" in html
     assert "Query 组装失败" in query_pool_section
-    assert "API_BASE + '/admin/query-pool/runs/'" in html
+    assert "'/api/admin/query-pool/runs/'" in html
 
 
 def test_query_pool_polling_refreshes_candidates_while_run_is_running():
