@@ -57,9 +57,7 @@ async def test_session_anonymous_returns_authenticated_false(client):
 
 
 @pytest.mark.asyncio
-async def test_session_logged_in_returns_authenticated_true(
-    client, db_session: AsyncSession
-):
+async def test_session_logged_in_returns_authenticated_true(client, db_session: AsyncSession):
     """Valid signed-cookie session → 200 with authenticated=True
     AND a populated admin object.
 
