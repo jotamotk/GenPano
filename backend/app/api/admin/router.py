@@ -57,6 +57,36 @@ router.include_router(topic_plan_router, prefix="/topic-plan")
 router.include_router(users_router, prefix="/users")
 
 
+@router.get("/_meta/whoami")
+async def admin_meta_whoami(request: Request) -> dict[str, object]:
+    """Diagnostic: report what backend sees about the caller's session.
+
+    No auth required — that's the point. Use this when 401s land on
+    other admin routes to figure out which side of the cookie bridge
+    is broken (cookie not received vs. cookie received but session
+    decode produced an empty payload).
+
+    Returns:
+    - ``cookie_present``: was ``genpano_admin_session`` in Cookie header
+    - ``session_keys``: list of keys in ``request.session`` (decrypted)
+    - ``admin_user_id``: value of ``request.session['admin_user_id']``
+      if present (else ``None``)
+    - ``forwarded_proto``: X-Forwarded-Proto header (helps spot HTTP
+      vs HTTPS proxy mismatch causing Secure-cookie drop)
+    - ``host``: X-Forwarded-Host or Host
+    """
+    cookie_present = "genpano_admin_session" in request.cookies
+    session_keys = sorted(request.session.keys())
+    admin_user_id = request.session.get("admin_user_id")
+    return {
+        "cookie_present": cookie_present,
+        "session_keys": session_keys,
+        "admin_user_id": admin_user_id,
+        "forwarded_proto": request.headers.get("x-forwarded-proto"),
+        "host": request.headers.get("x-forwarded-host") or request.headers.get("host"),
+    }
+
+
 @router.get("/_meta/routes")
 async def admin_meta_routes(
     request: Request,

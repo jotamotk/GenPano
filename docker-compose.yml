@@ -123,6 +123,15 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
+    # env_file MUST come before `environment:` so `.env` populates the
+    # baseline (ADMIN_SESSION_SECRET / USER_JWT_SECRET) and per-service
+    # overrides win for the explicit ones below. Without this, the cookie
+    # bridge in admin_console/_read_backend_session_admin_id falls back to
+    # the dev-only secret and can NEVER decode the cookie set by backend's
+    # /api/admin/auth/login → every legacy admin_console route 401s after
+    # Phase 3's partial migration (the SPA hits both backend and Flask
+    # endpoints).
+    env_file: .env
     environment:
       - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
       - SCREENSHOT_DIR=/data/screenshots
