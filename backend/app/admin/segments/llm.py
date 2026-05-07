@@ -258,9 +258,7 @@ def validate_segment_candidates(
     return rows
 
 
-def validate_profile_candidates(
-    items: list[Any], max_count: int
-) -> list[dict[str, Any]]:
+def validate_profile_candidates(items: list[Any], max_count: int) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         raise SegmentProfileGenerationError("invalid_llm_output", "Profile output must be a list")
     seen_names: set[str] = set()
