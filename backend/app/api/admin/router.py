@@ -31,6 +31,7 @@ from app.api.admin.kg_discovery import router as kg_discovery_router
 from app.api.admin.leads import router as leads_router
 from app.api.admin.mcp_ops import router as mcp_ops_router
 from app.api.admin.projects import router as projects_router
+from app.api.admin.prompt_matrix import router as prompt_matrix_router
 from app.api.admin.proxy_pool import router as proxy_pool_router
 from app.api.admin.session import router as session_router
 from app.api.admin.stats import router as stats_router
@@ -51,6 +52,7 @@ router.include_router(leads_router, prefix="/leads")
 router.include_router(mcp_ops_router, prefix="/mcp-ops")
 router.include_router(projects_router, prefix="/projects")
 router.include_router(proxy_pool_router, prefix="/proxy-pool")
+router.include_router(prompt_matrix_router, prefix="/prompt-matrix")
 router.include_router(session_router, prefix="/session")
 router.include_router(stats_router, prefix="/stats")
 router.include_router(topic_plan_router, prefix="/topic-plan")
