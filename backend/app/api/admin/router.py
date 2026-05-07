@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.audit import emit_audit
 from app.admin.security import current_admin_operator
 from app.api.admin.alerts import router as alerts_router
+from app.api.admin.brand_management import router as brand_management_router
 from app.api.admin.brand_submissions import router as brand_submissions_router
 from app.api.admin.comms import router as comms_router
 from app.api.admin.cost import router as cost_router
@@ -43,6 +44,7 @@ from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin"])
 router.include_router(alerts_router, prefix="/alerts")
+router.include_router(brand_management_router, prefix="/brand-management")
 router.include_router(brand_submissions_router, prefix="/brand-submissions")
 router.include_router(comms_router, prefix="/comms")
 router.include_router(cost_router, prefix="/cost")
