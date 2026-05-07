@@ -12950,7 +12950,7 @@ function adminApp() {
       this.topicPlanLoading = true;
       this.topicPlanError = '';
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/config', { credentials:'same-origin' });
+        const res = await fetch('/api/admin/topic-plan/config', { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic Plan config failed');
         this.topicPlanIndustries = body.industries || [];
@@ -12999,7 +12999,7 @@ function adminApp() {
         if (this.topicPlanConfig.categoryId) qp.set('category_id', this.topicPlanConfig.categoryId);
         if (brandIds) qp.set('brand_ids', brandIds);
         qp.set('max_per_brand', this.topicPlanConfig.maxPerBrand || 40);
-        const res = await fetch(API_BASE + '/admin/topic-plan/coverage?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/topic-plan/coverage?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Coverage check failed');
         this.topicPlanCoverageRows = body.rows || [];
@@ -13026,7 +13026,7 @@ function adminApp() {
         if (this.topicPlanCandidateRunId) qp.set('run_id', this.topicPlanCandidateRunId);
         else if (brandIds) qp.set('brand_ids', brandIds);
         if (this.topicPlanCandidateQuery.trim()) qp.set('q', this.topicPlanCandidateQuery.trim());
-        const res = await fetch(API_BASE + '/admin/topic-plan/candidates?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/topic-plan/candidates?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
         this.topicPlanPendingItems = body.rows || [];
@@ -13175,7 +13175,7 @@ function adminApp() {
         if (this.topicPlanTopicDimension) qp.set('dimension', this.topicPlanTopicDimension);
         qp.set('status', this.topicPlanTopicStatus || 'all');
         if (this.topicPlanTopicQuery.trim()) qp.set('q', this.topicPlanTopicQuery.trim());
-        const res = await fetch(API_BASE + '/admin/topic-plan/topics?' + qp.toString(), { credentials:'same-origin' });
+        const res = await fetch('/api/admin/topic-plan/topics?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Topic load failed');
         this.topicsList = body.rows || [];
@@ -13878,7 +13878,7 @@ function adminApp() {
       if (!runId || this.topicPlanStopLoading) return;
       this.topicPlanStopLoading = true;
       try {
-        const res = await fetch(API_BASE + '/admin/topic-plan/runs/' + encodeURIComponent(runId) + '/stop', {
+        const res = await fetch('/api/admin/topic-plan/runs/' + encodeURIComponent(runId) + '/stop', {
           method:'POST',
           credentials:'same-origin',
           headers:{ 'Content-Type':'application/json' },
@@ -13903,7 +13903,7 @@ function adminApp() {
     },
 
     async loadTopicPlanRun(runId){
-      const res = await fetch(API_BASE + '/admin/topic-plan/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const res = await fetch('/api/admin/topic-plan/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Run load failed');
       return body.run || {};

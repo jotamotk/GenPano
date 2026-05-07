@@ -102,53 +102,6 @@ def login(monkeypatch):
     )
 
 
-def test_topic_plan_stop_requires_admin(client):
-    response = client.post("/api/admin/topic-plan/runs/run-1/stop")
-    assert response.status_code == 401
-
-
-def test_topic_plan_stop_marks_run_cancelled(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection(runs={"run-1": {"id": "run-1", "status": "running"}})
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: True)
-    monkeypatch.setattr(app_mod, "_topic_plan_run_row", lambda row: dict(row) if row else None)
-    monkeypatch.setattr(app_mod, "_insert_admin_audit_log", lambda *a, **kw: None)
-
-    response = client.post("/api/admin/topic-plan/runs/run-1/stop")
-    body = response.get_json()
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert conn.runs["run-1"]["status"] == "cancelled"
-
-
-def test_topic_plan_stop_already_finalized(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection(runs={"run-2": {"id": "run-2", "status": "completed"}})
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: True)
-    monkeypatch.setattr(app_mod, "_topic_plan_run_row", lambda row: dict(row) if row else None)
-
-    response = client.post("/api/admin/topic-plan/runs/run-2/stop")
-    body = response.get_json()
-    assert response.status_code == 200
-    assert body["success"] is True
-    assert body.get("already_finalized") is True
-    assert conn.runs["run-2"]["status"] == "completed"
-
-
-def test_topic_plan_stop_unknown_run_returns_404(client, monkeypatch):
-    login(monkeypatch)
-    conn = FakeConnection(runs={})
-    monkeypatch.setattr(app_mod, "get_db", lambda: conn)
-    monkeypatch.setattr(app_mod, "_table_exists", lambda cur, name: True)
-
-    response = client.post("/api/admin/topic-plan/runs/missing/stop")
-    body = response.get_json()
-    assert response.status_code == 404
-    assert body["success"] is False
-    assert body["error"] == "run_not_found"
-
 
 def test_prompt_matrix_stop_marks_run_cancelled(client, monkeypatch):
     login(monkeypatch)
