@@ -68,7 +68,7 @@ HTTP and always run.
 After setting the env, verify:
 
 ```bash
-docker compose exec admin_console python -m geo_tracker.hotspots.pipeline \
+docker compose exec backend python -m geo_tracker.hotspots.pipeline \
   --sources weibo,baidu --industry 母婴个护
 ```
 
@@ -84,8 +84,9 @@ not an error, just nothing collected.
 `geo_tracker/hotspots/llm_search.py` currently emits a placeholder. To make it
 return real data:
 
-1. Pick the doubao tools=web_search API (see `admin_console/topic_plan.py
-   :DoubaoTopicPlanClient` for the existing OpenAI-compatible call pattern).
+1. Pick the doubao tools=web_search API (see
+   `backend/app/services/topic_plan.py :DoubaoTopicPlanClient` for the
+   existing OpenAI-compatible call pattern).
 2. Replace the placeholder block in `LLMSearchCollector.collect()` with the
    actual call. The prompt should be something like:
 

@@ -1,5 +1,13 @@
 # GenPano App 端后端补齐计划
 
+> 2026-05-08 update (PR #386): Phase R.4 (admin_console → FastAPI) is complete.
+> The Flask `admin_console/` package has been deleted; Admin APIs now live
+> under `backend/app/api/admin/*`, the SPA shell at `backend/static/admin.html`,
+> and the four shared modules (`topic_plan.py`, `prompt_matrix.py`,
+> `segment_profiles.py`, `_layer_classifier.py`) under `backend/app/services/`.
+> References below describing `admin_console/*` are historical context for
+> the plan; the migration tasks themselves are done.
+
 ## Context
 
 GenPano App 端 = 用户侧产品 web app（与橙色 `/admin` 运营控制台对立）。

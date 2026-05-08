@@ -10,9 +10,9 @@ const isDockerDev = Boolean(process.env.VITE_ADMIN_BACKEND_URL)
 const apiProxyTarget =
   process.env.VITE_API_BACKEND_URL ||
   (isDockerDev ? 'http://host.docker.internal:8000' : 'http://localhost:4000')
-const adminConsoleProxyTarget =
-  process.env.VITE_ADMIN_CONSOLE_URL ||
-  (isDockerDev ? 'http://host.docker.internal:5000' : 'http://localhost:5000')
+// Admin moved into the FastAPI backend in PR #386 — same target as /api.
+const adminProxyTarget =
+  process.env.VITE_ADMIN_BACKEND_URL || apiProxyTarget
 
 export default defineConfig({
   base: basePath,
@@ -21,23 +21,22 @@ export default defineConfig({
     port: 3000,
     open: true,
     // /api/*        - main FastAPI backend on :4000
-    // /admin*       - existing complete Admin system on :5000.
+    // /admin*       - Admin SPA + APIs on the same FastAPI backend (:4000).
     proxy: {
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
       },
       '/admin/api': {
-        target: adminConsoleProxyTarget,
+        target: adminProxyTarget,
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/admin\/api/, '/api'),
       },
       '/admin': {
-        target: adminConsoleProxyTarget,
+        target: adminProxyTarget,
         changeOrigin: true,
         secure: false,
-        rewrite: () => '/admin',
       },
     },
   },

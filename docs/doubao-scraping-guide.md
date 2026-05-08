@@ -168,7 +168,7 @@ Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
 | `geo_tracker/pool/account_pool.py` | 账号轮换调度，失败处理，cookie 持久化 |
 | `geo_tracker/tasks/celery_tasks.py` | Celery 任务定义，cookie 保活，每日重置 |
 | `geo_tracker/db/models.py` | LLMAccount 模型定义 |
-| `admin_console/app.py` | Web UI，Accounts 管理，cookie 上传 API |
+| `backend/static/admin.html` + `backend/app/api/admin/accounts/` | Web UI，Accounts 管理，cookie 上传 API |
 
 ## 六、Celery Beat 定时任务
 

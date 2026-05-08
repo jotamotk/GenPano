@@ -1,14 +1,21 @@
 # GENPANO Codex 可执行 PRD
-> 2026-05-02 override: the orange `admin_console` Admin is the only Admin system.
-> The legacy FastAPI Admin auth/API package has been removed. Historical
-> references in this file to a separate FastAPI Admin backend are superseded.
-> Do not restore a second Admin frontend or backend.
+> 2026-05-08 override (PR #386): the Flask `admin_console/` package has been
+> deleted and Admin is now served by FastAPI. Admin SPA shell lives at
+> `backend/static/admin.html`; Admin APIs live under `backend/app/api/admin/*`
+> (mounted at `/admin/api/*` via nginx). All references below to
+> `admin_console/app.py`, `admin_console/templates/admin.html`, port `5000`,
+> or "Flask Admin" should be read as historical context describing the
+> pre-migration layout. Do not restore the Flask service.
+>
+> 2026-05-02 override (superseded by 2026-05-08): the orange `admin_console`
+> Admin is the only Admin system. Do not restore a second Admin frontend or
+> backend.
 
 > 日期：2026-04-30
 > 目标读者：Codex / 后续研发 Session
 > 原型来源：
 > - 产品主 App：`http://localhost:3000/`
-> - Admin 原型：`http://localhost:5000/admin`
+> - Admin 原型：FastAPI on `http://localhost:4000/admin` (was `:5000` pre-PR #386)
 > 相关文档：
 > - `docs/PRD.md`
 > - `docs/ADMIN_PRD.md`

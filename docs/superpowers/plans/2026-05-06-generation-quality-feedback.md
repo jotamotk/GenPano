@@ -1,5 +1,15 @@
 # Generation Quality Feedback Implementation Plan
 
+> **2026-05-08 update (PR #386):** This plan was written before the Flask
+> `admin_console/` migration. The Flask service has been deleted; references
+> below to `admin_console/app.py`, `admin_console/topic_plan.py`,
+> `admin_console/prompt_matrix.py`, `admin_console/templates/admin.html`, and
+> `admin_console/tests/*` should be re-mapped to:
+> - `backend/app/api/admin/topic_plan/`, `backend/app/api/admin/prompt_matrix/`
+> - `backend/app/services/topic_plan.py`, `backend/app/services/prompt_matrix.py`
+> - `backend/static/admin.html`
+> - `backend/tests/`
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Topic Plan, Prompt Matrix, and Query Pool generation stop cleanly and explain quality-gate rejections instead of appearing stuck or empty.
