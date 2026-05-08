@@ -181,6 +181,14 @@ from app.api.admin.scheduler import router as _scheduler_router  # noqa: E402
 
 app.include_router(_scheduler_router, prefix="/api")
 
+# Topics + Prompts read-only pickers (Phase 8 slice 8d). admin_console
+# served /api/topics and /api/prompts without auth; the FastAPI port adds
+# Depends(current_admin) (security hardening). admin.html's attempt
+# tracker dropdowns hit these directly.
+from app.api.picker import router as _picker_router  # noqa: E402
+
+app.include_router(_picker_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.

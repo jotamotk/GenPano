@@ -9247,60 +9247,6 @@ def analyzer_brands():
         conn.close()
 
 
-@app.route('/api/topics')
-def list_topics():
-    """Topics filtered by brand_id (optional). Used by the attempt-tracker
-    filter dropdown, which cascades from the brand selector."""
-    brand_id = request.args.get('brand_id')
-    conn = get_db()
-    try:
-        from psycopg2.extras import RealDictCursor
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if brand_id:
-                cur.execute(
-                    "SELECT id, brand_id, text, category FROM topics "
-                    "WHERE brand_id = %s ORDER BY id",
-                    (int(brand_id),),
-                )
-            else:
-                cur.execute(
-                    "SELECT id, brand_id, text, category FROM topics ORDER BY brand_id, id"
-                )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
-
-
-@app.route('/api/prompts')
-def list_prompts():
-    """Prompts filtered by brand_id and/or topic_id. Used by the attempt
-    tracker's searchable prompt picker — client filters in-memory by text."""
-    brand_id = request.args.get('brand_id')
-    topic_id = request.args.get('topic_id')
-    conn = get_db()
-    try:
-        from psycopg2.extras import RealDictCursor
-        where = []
-        params = []
-        if brand_id:
-            where.append("t.brand_id = %s")
-            params.append(int(brand_id))
-        if topic_id:
-            where.append("pr.topic_id = %s")
-            params.append(int(topic_id))
-        where_clause = " AND ".join(where) if where else "1=1"
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                f"""SELECT pr.id, pr.topic_id, pr.text, t.text AS topic_text
-                    FROM prompts pr
-                    LEFT JOIN topics t ON pr.topic_id = t.id
-                    WHERE {where_clause}
-                    ORDER BY pr.topic_id, pr.id""",
-                params,
-            )
-            return jsonify(cur.fetchall())
-    finally:
-        conn.close()
 
 
 @app.route('/api/analyzer/llms')
