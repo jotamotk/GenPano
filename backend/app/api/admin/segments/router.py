@@ -320,8 +320,14 @@ async def generate_segments_route(
             count=int(payload.get("count") or 6),
             status=str(payload.get("status") or "draft").strip().lower(),
             positioning=str(payload.get("positioning") or ""),
-            goal=str(payload.get("goal") or ""),
-            constraints=str(payload.get("constraints") or ""),
+            product_id=payload.get("product_id") or payload.get("productId"),
+            product_name=str(payload.get("product_name") or payload.get("productName") or ""),
+            product_category=str(
+                payload.get("product_category") or payload.get("productCategory") or ""
+            ),
+            product_description=str(
+                payload.get("product_description") or payload.get("productDescription") or ""
+            ),
         )
     except SegmentProfileGenerationError as error:
         # Audit the LLM-side failure so an outage shows up in audit-log
@@ -369,6 +375,8 @@ async def generate_segments_route(
             "model": result.model,
             "brand_id": brand_id,
             "brand_name": brand_name,
+            "product_id": payload.get("product_id") or payload.get("productId"),
+            "product_name": payload.get("product_name") or payload.get("productName"),
         },
         reason=str(payload.get("reason") or "generate_segments"),
         request=request,
