@@ -216,9 +216,7 @@ def _coerce_persona_json(value: Any, *, demographic: str, need: str) -> dict[str
     return {"demographic": demographic, "need": need}
 
 
-def validate_segment_candidates(
-    items: list[dict[str, Any]], max_count: int
-) -> list[dict[str, Any]]:
+def validate_segment_candidates(items: list[Any], max_count: int) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         raise SegmentProfileGenerationError("invalid_llm_output", "Segment output must be a list")
     seen_names: set[str] = set()
