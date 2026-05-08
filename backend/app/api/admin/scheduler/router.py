@@ -1,12 +1,11 @@
-"""Admin Scheduler router — Phase 8 slice 8c.
+"""Admin Scheduler router — Phase 8 slice 8c (+ 8c-bis manual_trigger).
 
 Mounted under /api/admin (no segment prefix) so paths register at
 ``/api/admin/scheduler/...``. Also re-mounted at the legacy
 ``/api/scheduler/...`` paths in app/main.py — admin.html still hits
 those. Both mounts gate every handler with ``Depends(current_admin)``.
 
-Routes shipped in this slice (10 of 11; manual_trigger deferred to
-slice 8c-bis):
+Routes:
 - GET    /scheduler/config                          read + capacity
 - PUT    /scheduler/config                          update + emit_audit (med/high)
 - GET    /scheduler/runs                            list (paginated or bare)
@@ -18,11 +17,7 @@ slice 8c-bis):
 - PUT    /scheduler/schedules/{id}                  update + emit_audit (med)
 - DELETE /scheduler/schedules/{id}                  delete + emit_audit (high)
 - GET    /scheduler/upcoming                        N-day projection
-
-NOT migrated yet:
-- POST /scheduler/manual_trigger — ports the 350-line _run_manual_dispatch
-  function. Deferred to slice 8c-bis to keep this slice reviewable; until
-  then the route stays in admin_console (operators rarely use it).
+- POST   /scheduler/manual_trigger                  inline dispatch + emit_audit (high)
 """
 
 from __future__ import annotations
@@ -41,6 +36,7 @@ from app.admin.scheduler.lib import (
     parse_config_payload,
     parse_schedule_payload,
 )
+from app.admin.scheduler.manual_dispatch import run_manual_dispatch
 from app.api.admin.auth.router import current_admin
 from app.core.errors import not_found
 from app.core.security import _DependsDb
@@ -405,6 +401,89 @@ async def scheduler_upcoming(
 ) -> Any:
     by_date = await scheduler_db.upcoming_schedule_fires(session, days=days)
     return {"days": days, "by_date": by_date}
+
+
+# ── /scheduler/manual_trigger (slice 8c-bis) ──────────────────
+
+
+@router.post("/scheduler/manual_trigger", response_model=None)
+async def scheduler_manual_trigger(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Run the daily dispatch inline — schedules only, no random fill.
+
+    Body (optional): ``{"cap": 100, "note": "manual via UI"}``. ``cap``
+    overrides ``scheduler_config.temp_global_cap`` for this dispatch.
+
+    audit severity HIGH: this is a destructive bulk write to the
+    ``queries`` table — operators have used it incorrectly in the past
+    (94k pending queries from repeated clicks per a previous user
+    report).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    cap_raw = payload.get("cap")
+    cap_int: int | None
+    if cap_raw is None or cap_raw == "":
+        cap_int = None
+    else:
+        try:
+            cap_int = int(cap_raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "cap must be an integer or null"},
+            )
+    note = str(payload.get("note") or "manual via UI").strip()
+
+    try:
+        result = await run_manual_dispatch(session, cap_override=cap_int, note=note)
+    except RuntimeError as error:
+        if str(error) == "scheduler_tables_unavailable":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "error": "scheduler_tables_unavailable",
+                    "message": (
+                        "scheduler_config / llm_accounts / queries / query_schedules "
+                        "are not all available; run migrations first."
+                    ),
+                },
+            )
+        raise
+    except Exception as error:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(error)[:300]},
+        )
+
+    await emit_audit(
+        session,
+        operator=operator,
+        action="scheduler_manual_trigger",
+        severity="high",
+        resource_type="scheduler_run",
+        resource_id=str(result.get("run_id") or ""),
+        after={
+            "queries_created": int(result.get("queries_created") or 0),
+            "target_total": int(result.get("target_total") or 0),
+            "schedules_dispatchable": int(result.get("schedules_dispatchable") or 0),
+            "cap_override": cap_int,
+            "reason": result.get("reason"),
+            "schedule_failures_count": len(result.get("schedule_failures") or []),
+        },
+        reason=note,
+        request=request,
+    )
+    return JSONResponse(status_code=200, content={"success": True, **result})
 
 
 __all__ = ["router"]
