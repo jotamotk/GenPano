@@ -9,9 +9,8 @@ shared platform dataset.
 
 ```text
 frontend/                 React + Vite product UI; proxies the current Admin
-backend/                  FastAPI control plane for product APIs and user auth
+backend/                  FastAPI control plane for product APIs, user auth, and Admin (`/admin`)
 geo_tracker/              Celery workers for engine collection and analysis
-admin_console/            Internal Admin console and query execution operations
 docs/                     PRD, Admin PRD, data model, adapter contract
 migrations/               Legacy/raw SQL migrations for tracker/analyzer work
 prototypes/node-auth-backend/
@@ -59,9 +58,10 @@ Health endpoints:
 - `GET /healthz`
 - `GET /healthz/db`
 
-The active Admin is the orange Admin service in `admin_console/`. The old FastAPI
-Admin auth/API package has been removed; do not restore it as a second Admin
-backend.
+The active Admin is served by FastAPI under `backend/`. The SPA shell lives at
+`backend/static/admin.html` and is mounted at `/admin`; all admin APIs live
+under `/admin/api/*`. The legacy Flask `admin_console/` package has been
+removed — do not restore it as a second Admin backend.
 
 ### Frontend
 
@@ -72,10 +72,10 @@ npm run dev
 ```
 
 The Vite dev server defaults to port `3000` and proxies `/api/*` to the FastAPI
-backend on port `4000`. Local `/admin` is proxied to the orange Admin service on
-port `5000`. Do not create a second Admin frontend under `frontend/src/admin`,
-`frontend/src/pages/admin`, `frontend-admin`, or Next.js `app/admin`; see
-`docs/ACTIVE_SURFACES.md`.
+backend on port `4000`. `/admin` and `/admin/api/*` are also served by the
+FastAPI backend on `4000`. Do not create a second Admin frontend under
+`frontend/src/admin`, `frontend/src/pages/admin`, `frontend-admin`, or Next.js
+`app/admin`; see `docs/ACTIVE_SURFACES.md`.
 
 ### Worker Stack
 
@@ -110,10 +110,9 @@ Minimum backend runtime variables:
 - `frontend` from `frontend/`
 - `backend` from `backend/` using FastAPI
 - `worker` from `geo_tracker/`
-- `admin-console` from `admin_console/`
 
-`frontend/nginx.conf` routes product `/api` and `/health` to FastAPI on port
-`4000`, and routes `/admin` plus `/admin/api` to `admin-console` on port `5000`.
+`frontend/nginx.conf` routes product `/api`, `/health`, `/admin`, and
+`/admin/api` to FastAPI on port `4000`.
 
 ## Prototype Notice
 
@@ -123,8 +122,9 @@ the production backend path. Migrate any still-needed public auth behavior into
 FastAPI before relying on it in production.
 
 For Admin work, check `AGENTS.md` and `docs/ACTIVE_SURFACES.md` first. The
-orange `/admin` console is the only Admin UI; old React/Next/frontend-admin
-Admin surfaces must not be restored.
+FastAPI-served `/admin` console (SPA shell at `backend/static/admin.html`) is
+the only Admin UI; old React/Next/frontend-admin Admin surfaces must not be
+restored.
 
 ## Current Implementation Boundary
 

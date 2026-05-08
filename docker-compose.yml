@@ -35,6 +35,9 @@ services:
     env_file: .env
     volumes:
       - email_previews_data:/data/email-previews
+      - screenshots_data:/data/screenshots
+    environment:
+      - SCREENSHOT_DIR=/data/screenshots
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,33 +119,6 @@ services:
       - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - backend
-      - admin-console
-
-  admin-console:
-    image: ${ACR_REGISTRY}/genpano:admin-console-${IMAGE_TAG:-latest}
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    # env_file MUST come before `environment:` so `.env` populates the
-    # baseline (ADMIN_SESSION_SECRET / USER_JWT_SECRET) and per-service
-    # overrides win for the explicit ones below. Without this, the cookie
-    # bridge in admin_console/_read_backend_session_admin_id falls back to
-    # the dev-only secret and can NEVER decode the cookie set by backend's
-    # /api/admin/auth/login → every legacy admin_console route 401s after
-    # Phase 3's partial migration (the SPA hits both backend and Flask
-    # endpoints).
-    env_file: .env
-    environment:
-      - DATABASE_URL=postgresql://genpano:${POSTGRES_PASSWORD}@postgres:5432/genpano
-      - SCREENSHOT_DIR=/data/screenshots
-      - ARK_API_KEY=${ARK_API_KEY}
-      - ARK_BASE_URL=${ARK_BASE_URL}
-      - ARK_MODEL=${ARK_MODEL}
-    volumes:
-      - screenshots_data:/data/screenshots
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
   postgres_data:

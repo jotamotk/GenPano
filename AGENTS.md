@@ -19,15 +19,16 @@ Decision recorded on 2026-05-02:
 
 ## Current Admin Boundary
 
-- In local development, `http://127.0.0.1:5173/admin` may be served through the
-  Vite proxy from the orange Admin service on port `5000`.
+- In local development, `http://127.0.0.1:5173/admin` is served through the
+  Vite proxy from FastAPI on port `4000`.
 - Do not infer ownership from the URL alone. Before changing any Admin UI, verify
   which file is rendering the browser page and state the exact file path.
-- The live orange Admin source now lives under `admin_console/`. Do not create
-  a second Admin surface elsewhere unless the user explicitly asks for that
-  architecture.
-- The legacy FastAPI Admin auth/API package has been removed. Do not recreate a
-  second Admin backend; add Admin auth/API work inside the orange Admin service
+- The Admin SPA shell now lives at `backend/static/admin.html` and is served by
+  FastAPI. All Admin APIs live under `/admin/api/*` inside the FastAPI backend.
+  Do not create a second Admin surface elsewhere unless the user explicitly asks
+  for that architecture.
+- The legacy Flask `admin_console/` package has been removed. Do not recreate a
+  second Admin backend; add Admin auth/API work inside the FastAPI backend
   unless the user explicitly approves a new architecture.
 
 ## Admin Frontend Workflow

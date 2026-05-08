@@ -263,3 +263,30 @@ async def healthz_db(response: Response, session: DbSession) -> dict[str, str]:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "degraded", "db": exc.__class__.__name__}
     return {"status": "ok", "db": "ok"}
+
+
+# ─── Admin SPA shell (Phase X-2) ─────────────────────────────────────
+# Phase X-2 deletes the admin_console Flask service. The 17k-line admin.html
+# now lives at backend/static/admin.html and is served directly by FastAPI.
+# nginx routes /admin and /admin/<path> here.
+import pathlib  # noqa: E402
+
+from fastapi.responses import FileResponse  # noqa: E402
+
+_ADMIN_HTML_PATH = pathlib.Path(__file__).resolve().parent.parent / "static" / "admin.html"
+
+
+@app.get("/admin", include_in_schema=False)
+@app.get("/admin/", include_in_schema=False)
+async def serve_admin_root() -> FileResponse:
+    """Serve the admin SPA shell. admin.html is a single-page app — its
+    own client-side router handles every sub-path under /admin."""
+    return FileResponse(_ADMIN_HTML_PATH, media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin/{path:path}", include_in_schema=False)
+async def serve_admin_subpath(path: str) -> FileResponse:
+    """Same SPA shell for any /admin/<path>. Real admin SPA routing is
+    client-side via JavaScript — the server just returns the same HTML
+    for every URL under the prefix."""
+    return FileResponse(_ADMIN_HTML_PATH, media_type="text/html; charset=utf-8")
