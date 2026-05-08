@@ -57,11 +57,6 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
-      - name: Build & push admin-console
-        run: |
-          docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-${{ env.IMAGE_TAG }} ./admin_console
-          docker push ${{ secrets.ACR_REGISTRY }}/genpano:admin-console-${{ env.IMAGE_TAG }}
-
   deploy:
     name: Deploy to Server
     runs-on: ubuntu-latest
@@ -192,9 +187,9 @@ jobs:
             printf '%s' "$ACR_PASSWORD" | docker login "$login_registry" -u "$ACR_USERNAME" --password-stdin
 
             echo "Pre-deploy relief: stop old app containers before pulling images"
-            timeout 90s docker compose stop -t 10 worker worker-analysis beat backend frontend admin-console || true
-            timeout 60s docker compose kill worker worker-analysis beat backend frontend admin-console || true
-            timeout 60s docker compose rm -f worker worker-analysis beat backend frontend admin-console || true
+            timeout 90s docker compose stop -t 10 worker worker-analysis beat backend frontend || true
+            timeout 60s docker compose kill worker worker-analysis beat backend frontend || true
+            timeout 60s docker compose rm -f worker worker-analysis beat backend frontend || true
             for proc_name in camoufox camoufox-bin firefox firefox-bin firefox-esr chrome chromium chromium-browser chrome_crashpad_handler "Web Content" WebExtensions; do pkill -9 -x "$proc_name" || true; done
             free -h || true
             ps -eo pid,ppid,pcpu,pmem,rss,comm,args --sort=-pcpu | head -30 || true
@@ -222,8 +217,6 @@ jobs:
             timeout 1200s docker pull "$pull_registry/genpano:worker-$image_tag"
             echo "Pulling frontend image"
             timeout 900s docker pull "$pull_registry/genpano:frontend-$image_tag"
-            echo "Pulling admin-console image"
-            timeout 900s docker pull "$pull_registry/genpano:admin-console-$image_tag"
             docker compose up -d postgres redis
             cat > /tmp/genpano_detect_existing_revision.py <<'PY'
             import sys
@@ -276,7 +269,7 @@ jobs:
 
               echo "FAILED: ${label} (${url})" >&2
               docker compose ps >&2
-              docker compose logs --tail=80 nginx backend admin-console >&2
+              docker compose logs --tail=80 nginx backend >&2
               return 1
             }
 

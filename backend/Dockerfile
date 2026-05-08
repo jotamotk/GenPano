@@ -19,6 +19,7 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 COPY scripts ./scripts
+COPY static ./static
 # genpano_models is the shared ORM package (ADR-004). It lives next to
 # `app/` and is imported as `from genpano_models.x`. Without this COPY
 # runtime alembic + uvicorn fail with ModuleNotFoundError on deploy.

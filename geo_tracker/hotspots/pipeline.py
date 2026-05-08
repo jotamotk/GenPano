@@ -7,10 +7,21 @@ from __future__ import annotations
 
 import os
 
+import psycopg2
+
 from .base import HotspotCandidate
 from .baidu import BaiduHotsCollector
 from .zhihu import ZhihuHotsCollector
 from .llm_search import LLMSearchCollector
+
+
+def _connect():
+    url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL is not configured")
+    # psycopg2 wants 'postgresql://' not 'postgresql+asyncpg://'
+    url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return psycopg2.connect(url)
 
 COLLECTOR_REGISTRY: dict[str, type] = {
     "baidu": BaiduHotsCollector,
@@ -96,16 +107,15 @@ def run_collection_cycle(*,
     inserted = 0
     if candidates:
         try:
-            from admin_console.app import get_db
+            conn = _connect()
         except Exception as e:
-            errors["__persist__"] = f"admin_console.app.get_db unavailable: {e}"
+            errors["__persist__"] = f"db connect failed: {e}"
             return {
                 "collected": len(candidates),
                 "inserted": 0,
                 "by_source": by_source,
                 "errors": errors,
             }
-        conn = get_db()
         linked_brand_id = brand_id or (brand_context or {}).get("id")
         try:
             existing = _existing_titles(conn)
@@ -145,10 +155,9 @@ def run_collection_cycle(*,
 def archive_expired_hotspots() -> int:
     """Module D-5 daily task. Returns the count of newly-expired rows."""
     try:
-        from admin_console.app import get_db
+        conn = _connect()
     except Exception:
         return 0
-    conn = get_db()
     try:
         with conn.cursor() as cur:
             cur.execute(
