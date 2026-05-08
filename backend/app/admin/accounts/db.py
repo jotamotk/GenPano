@@ -335,3 +335,300 @@ async def get_account(session: AsyncSession, *, account_id: int) -> dict[str, An
     item["updated_at"] = await _isoformat_or_none(item.get("updated_at"))
     item["cookies_updated_at"] = await _isoformat_or_none(item.get("cookies_updated_at"))
     return item
+
+
+# ─── Profile-binding helpers (account_profile_map) ────────────────────────
+#
+# admin_console exposed /api/accounts/{id}/profiles{,_counts,auto_assign}
+# WITHOUT auth. The FastAPI port (Phase 7b follow-up) keeps the same wire
+# shape but adds Depends(current_admin) at the router layer. The
+# account_profile_map table is production-only (legacy admin_console
+# bootstrap), so every helper degrades gracefully when the table is
+# missing — sqlite test fixtures get an empty list / empty dict instead
+# of a 500.
+
+LLM_DEFAULT_GEO: dict[str, str] = {
+    "doubao": "CN",
+    "deepseek": "CN",
+    "chatgpt": "US",
+    "gemini": "US",
+}
+
+
+def account_engine_geo(llm_name: Any) -> str | None:
+    """Mirror of admin_console's _account_engine_geo: returns the
+    expected country code for an engine, or None when unknown."""
+    if not llm_name:
+        return None
+    return LLM_DEFAULT_GEO.get(str(llm_name).lower())
+
+
+def _coerce_persona(value: Any) -> dict[str, Any]:
+    """``persona_json`` is JSONB in production but may come back as a
+    str/None depending on driver/sqlite fallback. Normalise to a dict."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            import json as _json
+
+            parsed = _json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+async def fetch_account_basics(session: AsyncSession, *, account_id: int) -> dict[str, Any] | None:
+    """Slim row used by GET /accounts/{id}/profiles. Returns None when
+    the account doesn't exist."""
+    if not await _table_exists(session, "llm_accounts"):
+        return None
+    await assert_llm_accounts_schema(session)
+    sql = text(
+        """
+        SELECT id, llm_name, phone_number, daily_limit,
+               query_count_today, status
+        FROM llm_accounts
+        WHERE id = :id
+        """
+    )
+    row = (await session.execute(sql, {"id": account_id})).mappings().first()
+    return dict(row) if row else None
+
+
+async def fetch_account_profile_bindings(
+    session: AsyncSession, *, account_id: int, q: str | None = None
+) -> list[dict[str, Any]]:
+    """Return raw ``account_profile_map`` rows joined to ``profiles``.
+    Conflict computation happens in the router so the DB layer stays
+    schema-aware but presentation-free.
+    """
+    if not await _table_exists(session, "account_profile_map"):
+        return []
+    params: dict[str, Any] = {"id": account_id}
+    search_pred = ""
+    if q:
+        like = f"%{q}%"
+        search_pred = (
+            " AND (CAST(p.id AS TEXT) ILIKE :like_id "
+            "OR COALESCE(p.code, '') ILIKE :like "
+            "OR COALESCE(p.name, '') ILIKE :like)"
+        )
+        params["like"] = like
+        params["like_id"] = like
+    sql = text(
+        f"""
+        SELECT
+            apm.id                        AS binding_id,
+            apm.profile_id                AS profile_id,
+            apm.daily_quota               AS daily_quota,
+            apm.conflict_acknowledged     AS conflict_acknowledged,
+            p.code                        AS profile_code,
+            p.name                        AS profile_name,
+            p.persona_json                AS persona_json
+        FROM account_profile_map apm
+        LEFT JOIN profiles p ON CAST(p.id AS TEXT) = apm.profile_id
+        WHERE apm.account_id = :id
+          {search_pred}
+        ORDER BY p.code NULLS LAST, apm.profile_id
+        """
+    )
+    rows = (await session.execute(sql, params)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def fetch_account_quota_total(session: AsyncSession, *, account_id: int) -> int:
+    """Σ daily_quota across all bindings — used to render the drawer
+    quota counter."""
+    if not await _table_exists(session, "account_profile_map"):
+        return 0
+    row = (
+        await session.execute(
+            text(
+                "SELECT COALESCE(SUM(daily_quota), 0) AS s "
+                "FROM account_profile_map WHERE account_id = :id"
+            ),
+            {"id": account_id},
+        )
+    ).first()
+    return int(row[0] or 0) if row else 0
+
+
+async def upsert_account_profile_bindings(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    bindings: list[dict[str, Any]],
+    remove_profile_ids: list[str],
+) -> tuple[int, int]:
+    """Upsert provided bindings + delete the ``remove_profile_ids``.
+    Returns ``(upserted_count, removed_count)``. Raises
+    ``RuntimeError("account_profile_map_table_missing")`` so the router
+    can return a clean 503 on sqlite test fixtures.
+    """
+    if not await _table_exists(session, "account_profile_map"):
+        raise RuntimeError("account_profile_map_table_missing")
+
+    upserted = 0
+    for b in bindings:
+        pid = str(b.get("profile_id") or "").strip()
+        if not pid:
+            continue
+        try:
+            quota = int(b.get("daily_quota") or 0)
+        except (TypeError, ValueError):
+            quota = 0
+        ack = bool(b.get("conflict_acknowledged"))
+        await session.execute(
+            text(
+                """
+                INSERT INTO account_profile_map
+                    (account_id, profile_id, daily_quota, conflict_acknowledged)
+                VALUES (:account_id, :profile_id, :daily_quota, :ack)
+                ON CONFLICT (account_id, profile_id) DO UPDATE
+                    SET daily_quota = EXCLUDED.daily_quota,
+                        conflict_acknowledged = EXCLUDED.conflict_acknowledged
+                """
+            ),
+            {
+                "account_id": account_id,
+                "profile_id": pid,
+                "daily_quota": quota,
+                "ack": ack,
+            },
+        )
+        upserted += 1
+
+    removed = 0
+    for pid in remove_profile_ids:
+        result = await session.execute(
+            text(
+                "DELETE FROM account_profile_map "
+                "WHERE account_id = :account_id AND profile_id = :profile_id"
+            ),
+            {"account_id": account_id, "profile_id": str(pid)},
+        )
+        removed += int(getattr(result, "rowcount", 0) or 0)
+
+    await session.commit()
+    return upserted, removed
+
+
+async def fetch_profile_counts(
+    session: AsyncSession,
+) -> dict[int, dict[str, int]]:
+    """Aggregate per-account binding counts so the account pool table
+    can render the 绑定Profiles column without N+1 fetches.
+    """
+    if not await _table_exists(session, "account_profile_map"):
+        return {}
+    sql = text(
+        """
+        SELECT account_id,
+               COUNT(*) AS bindings,
+               SUM(CASE WHEN conflict_acknowledged THEN 0 ELSE 1 END)
+                   AS unacknowledged
+        FROM account_profile_map
+        GROUP BY account_id
+        """
+    )
+    rows = (await session.execute(sql)).mappings().all()
+    return {
+        int(r["account_id"]): {
+            "bindings": int(r["bindings"] or 0),
+            "unacknowledged": int(r["unacknowledged"] or 0),
+        }
+        for r in rows
+    }
+
+
+async def fetch_active_accounts_with_bound_count(
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """List accounts eligible for auto-assignment. Mirrors the Flask
+    SELECT used in admin_console's auto_assign_profiles handler.
+    """
+    if not await _table_exists(session, "llm_accounts"):
+        return []
+    await assert_llm_accounts_schema(session)
+    sql = text(
+        """
+        SELECT a.id, a.llm_name, a.phone_number, a.daily_limit,
+               (SELECT COUNT(*) FROM account_profile_map apm
+                  WHERE apm.account_id = a.id) AS bound_count
+        FROM llm_accounts a
+        WHERE a.status = 'active'
+          AND a.cookies_json IS NOT NULL AND a.cookies_json::text <> ''
+        ORDER BY a.id
+        """
+    )
+    rows = (await session.execute(sql)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def fetch_assignable_profiles(
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """Return Profile rows usable for round-robin / LLM assignment.
+    Probes the columns at runtime because some envs lack
+    ``code``/``persona_json``/``is_deleted`` (legacy admin_console DBs).
+    """
+    if not await _table_exists(session, "profiles"):
+        return []
+    cols = await _table_columns(session, "profiles")
+    select_parts = ["CAST(p.id AS TEXT) AS id"]
+    select_parts.append("p.code AS code" if "code" in cols else "'' AS code")
+    select_parts.append("p.name AS name" if "name" in cols else "NULL AS name")
+    select_parts.append(
+        "p.persona_json AS persona_json" if "persona_json" in cols else "NULL AS persona_json"
+    )
+    where_clause = "COALESCE(p.is_deleted, FALSE) = FALSE" if "is_deleted" in cols else "TRUE"
+    sql = text(
+        f"""
+        SELECT {", ".join(select_parts)}
+        FROM profiles p
+        WHERE {where_clause}
+        ORDER BY CAST(p.id AS TEXT)
+        """
+    )
+    rows = (await session.execute(sql)).mappings().all()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        item["persona_json"] = _coerce_persona(item.get("persona_json"))
+        out.append(item)
+    return out
+
+
+async def insert_auto_assigned_bindings(
+    session: AsyncSession,
+    *,
+    account_id: int,
+    profile_ids: list[str],
+    daily_quota: int = 1,
+) -> int:
+    """Bulk INSERT bindings (ON CONFLICT DO NOTHING). Returns the count
+    of rows actually inserted (sum of ``rowcount``)."""
+    if not await _table_exists(session, "account_profile_map"):
+        raise RuntimeError("account_profile_map_table_missing")
+    inserted = 0
+    for pid in profile_ids:
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO account_profile_map
+                    (account_id, profile_id, daily_quota, conflict_acknowledged)
+                VALUES (:account_id, :profile_id, :daily_quota, FALSE)
+                ON CONFLICT (account_id, profile_id) DO NOTHING
+                """
+            ),
+            {
+                "account_id": account_id,
+                "profile_id": str(pid),
+                "daily_quota": daily_quota,
+            },
+        )
+        inserted += int(getattr(result, "rowcount", 0) or 0)
+    return inserted

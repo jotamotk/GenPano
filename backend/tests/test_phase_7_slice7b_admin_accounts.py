@@ -785,6 +785,416 @@ def test_llm_accounts_repair_revision_fits_alembic_version_column():
     assert len(revision) <= 32, f"revision id too long: {revision!r} ({len(revision)} chars)"
 
 
+# ── /api/accounts/{id}/profiles (GET + PUT, port from admin_console) ──
+#
+# These four endpoints (profile_counts / auto_assign_profiles /
+# {id}/profiles GET + PUT) were left on Flask after slice 7b shipped.
+# admin.html still calls them under /admin/api/accounts/* — those
+# requests routed through nginx to admin_console's Flask app, which
+# silently 404'd after the basic CRUD migration deleted the
+# /api/accounts catchalls. Porting closes the 404 hole and lets nginx
+# route every /admin/api/accounts/* request to the FastAPI backend.
+
+
+def _patch_profile_db(
+    monkeypatch,
+    *,
+    account=None,
+    bindings=None,
+    quota_total=0,
+    upsert_returns=(0, 0),
+    upsert_raises=None,
+    counts=None,
+    accounts_for_assign=None,
+    profiles_for_assign=None,
+    insert_count=1,
+    insert_raises=None,
+):
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_account_basics",
+        AsyncMock(return_value=account),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_account_profile_bindings",
+        AsyncMock(return_value=list(bindings or [])),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_account_quota_total",
+        AsyncMock(return_value=quota_total),
+    )
+    if upsert_raises is not None:
+        monkeypatch.setattr(
+            a.accounts_db,
+            "upsert_account_profile_bindings",
+            AsyncMock(side_effect=upsert_raises),
+        )
+    else:
+        monkeypatch.setattr(
+            a.accounts_db,
+            "upsert_account_profile_bindings",
+            AsyncMock(return_value=upsert_returns),
+        )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_profile_counts",
+        AsyncMock(return_value=dict(counts or {})),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_active_accounts_with_bound_count",
+        AsyncMock(return_value=list(accounts_for_assign or [])),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_assignable_profiles",
+        AsyncMock(return_value=list(profiles_for_assign or [])),
+    )
+    if insert_raises is not None:
+        monkeypatch.setattr(
+            a.accounts_db,
+            "insert_auto_assigned_bindings",
+            AsyncMock(side_effect=insert_raises),
+        )
+    else:
+        monkeypatch.setattr(
+            a.accounts_db,
+            "insert_auto_assigned_bindings",
+            AsyncMock(return_value=insert_count),
+        )
+
+
+@pytest.mark.asyncio
+async def test_profiles_unauth_401(client):
+    resp = await client.get("/api/accounts/1/profiles")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_profile_counts_unauth_401(client):
+    resp = await client.get("/api/accounts/profile_counts")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_profiles_unauth_401(client):
+    resp = await client.post("/api/accounts/auto_assign_profiles", json={})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_profiles_account_missing_404(client, admin_operator, monkeypatch):
+    _patch_profile_db(monkeypatch, account=None)
+    resp = await client.get("/api/admin/accounts/999/profiles")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_profiles_returns_bindings_and_quota(client, admin_operator, monkeypatch):
+    """Wire shape mirrors admin_console: account block + bindings list +
+    total + quota_total."""
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "label-1",
+            "daily_limit": 20,
+            "query_count_today": 3,
+            "status": "active",
+        },
+        bindings=[
+            {
+                "binding_id": 10,
+                "profile_id": "pf_1",
+                "daily_quota": 1,
+                "conflict_acknowledged": False,
+                "profile_code": "P-1",
+                "profile_name": "Alpha",
+                "persona_json": {
+                    "country_code": "us",
+                    "device_type": "Desktop",
+                    "language": "en",
+                    "timezone": "UTC",
+                },
+            },
+        ],
+        quota_total=4,
+    )
+    resp = await client.get("/api/admin/accounts/1/profiles")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["account"]["expected_geo"] == "CN"  # doubao
+    assert body["quota_total"] == 4
+    assert body["total"] == 1
+    binding = body["bindings"][0]
+    assert binding["profile_id"] == "pf_1"
+    assert binding["country_code"] == "US"  # uppercased
+    assert binding["device_type"] == "desktop"  # lowercased
+    assert binding["language"] == "en"
+    assert binding["conflicts"][0]["field"] == "geo"
+    assert binding["conflicts"][0]["expected"] == "CN"
+    assert binding["conflicts"][0]["actual"] == "US"
+
+
+@pytest.mark.asyncio
+async def test_get_profiles_only_conflicts_filters_unacknowledged(
+    client, admin_operator, monkeypatch
+):
+    """only=conflicts hides bindings whose conflict was already
+    acknowledged so the drawer surfaces actionable rows only."""
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "x",
+            "daily_limit": 20,
+            "query_count_today": 0,
+            "status": "active",
+        },
+        bindings=[
+            {
+                "binding_id": 1,
+                "profile_id": "pf_1",
+                "daily_quota": 1,
+                "conflict_acknowledged": True,  # acknowledged → filtered out
+                "profile_code": "P-1",
+                "profile_name": "A",
+                "persona_json": {"country_code": "us"},
+            },
+            {
+                "binding_id": 2,
+                "profile_id": "pf_2",
+                "daily_quota": 1,
+                "conflict_acknowledged": False,
+                "profile_code": "P-2",
+                "profile_name": "B",
+                "persona_json": {"country_code": "us"},
+            },
+        ],
+    )
+    resp = await client.get("/api/admin/accounts/1/profiles?only=conflicts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["bindings"][0]["profile_id"] == "pf_2"
+
+
+@pytest.mark.asyncio
+async def test_put_profiles_persists_and_audits(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "x",
+            "daily_limit": 20,
+            "query_count_today": 0,
+            "status": "active",
+        },
+        upsert_returns=(2, 1),
+    )
+    resp = await client.put(
+        "/api/admin/accounts/1/profiles",
+        json={
+            "bindings": [
+                {"profile_id": "pf_a", "daily_quota": 1},
+                {"profile_id": "pf_b", "daily_quota": 2},
+            ],
+            "remove_profile_ids": ["pf_old"],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"success": True, "upserted": 2, "removed": 1}
+
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "update_account_profiles")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audit) == 1
+    assert audit[0].severity == "med"
+    assert audit[0].after == {"upserted": 2, "removed": 1}
+
+
+@pytest.mark.asyncio
+async def test_put_profiles_account_missing_404(client, admin_operator, monkeypatch):
+    _patch_profile_db(monkeypatch, account=None)
+    resp = await client.put(
+        "/api/admin/accounts/999/profiles",
+        json={"bindings": [], "remove_profile_ids": []},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_put_profiles_returns_503_when_table_missing(client, admin_operator, monkeypatch):
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "x",
+            "daily_limit": 20,
+            "query_count_today": 0,
+            "status": "active",
+        },
+        upsert_raises=RuntimeError("account_profile_map_table_missing"),
+    )
+    resp = await client.put(
+        "/api/admin/accounts/1/profiles",
+        json={"bindings": [{"profile_id": "p", "daily_quota": 1}]},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "account_profile_map_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_profile_counts_returns_dict(client, admin_operator, monkeypatch):
+    _patch_profile_db(
+        monkeypatch,
+        counts={1: {"bindings": 4, "unacknowledged": 1}, 2: {"bindings": 0, "unacknowledged": 0}},
+    )
+    resp = await client.get("/api/admin/accounts/profile_counts")
+    assert resp.status_code == 200
+    body = resp.json()
+    # JSON keys are strings, but the values must round-trip cleanly.
+    assert body["1"] == {"bindings": 4, "unacknowledged": 1}
+    assert body["2"]["bindings"] == 0
+
+
+@pytest.mark.asyncio
+async def test_profile_counts_503_when_table_missing(client, admin_operator, monkeypatch):
+    a = _accounts_router_module()
+    monkeypatch.setattr(
+        a.accounts_db,
+        "fetch_profile_counts",
+        AsyncMock(side_effect=RuntimeError("account_profile_map_table_missing")),
+    )
+    resp = await client.get("/api/admin/accounts/profile_counts")
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "account_profile_map_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_profiles_invalid_per_account_400(client, admin_operator, monkeypatch):
+    _patch_profile_db(monkeypatch)
+    resp = await client.post(
+        "/api/admin/accounts/auto_assign_profiles",
+        json={"per_account": "abc"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_per_account"
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_profiles_round_robin_distributes_picks(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    """RR path: each account receives ``per_account`` picks pulled from
+    the geo bucket matching its engine, falling back to '*' when empty."""
+    a = _accounts_router_module()
+    inserted_calls: list[dict] = []
+
+    async def fake_insert(session, *, account_id, profile_ids, daily_quota=1):
+        inserted_calls.append({"account_id": account_id, "profile_ids": list(profile_ids)})
+        return len(profile_ids)
+
+    _patch_profile_db(
+        monkeypatch,
+        accounts_for_assign=[
+            {
+                "id": 1,
+                "llm_name": "doubao",
+                "phone_number": "a",
+                "daily_limit": 20,
+                "bound_count": 0,
+            },
+            {
+                "id": 2,
+                "llm_name": "chatgpt",
+                "phone_number": "b",
+                "daily_limit": 20,
+                "bound_count": 5,
+            },
+        ],
+        profiles_for_assign=[
+            {"id": "cn1", "code": "C1", "name": "Alpha", "persona_json": {"country_code": "CN"}},
+            {"id": "cn2", "code": "C2", "name": "Beta", "persona_json": {"country_code": "CN"}},
+            {"id": "us1", "code": "U1", "name": "Gamma", "persona_json": {"country_code": "US"}},
+        ],
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "insert_auto_assigned_bindings",
+        fake_insert,
+    )
+    resp = await client.post(
+        "/api/admin/accounts/auto_assign_profiles",
+        json={"per_account": 2, "skip_already_bound": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["accounts_skipped"] == 1  # the chatgpt account already has 5
+    assert body["accounts_processed"] == 1
+    assert body["bindings_inserted"] == 2
+    assert body["method"] == "rr"
+    # The doubao account gets 2 picks from the CN bucket.
+    assert len(inserted_calls) == 1
+    assert inserted_calls[0]["account_id"] == 1
+    assert sorted(inserted_calls[0]["profile_ids"]) == ["cn1", "cn2"]
+
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "auto_assign_profiles")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audit) == 1
+    assert audit[0].severity == "med"
+
+
+@pytest.mark.asyncio
+async def test_auto_assign_profiles_503_when_table_missing(client, admin_operator, monkeypatch):
+    _patch_profile_db(
+        monkeypatch,
+        accounts_for_assign=[
+            {
+                "id": 1,
+                "llm_name": "doubao",
+                "phone_number": "a",
+                "daily_limit": 20,
+                "bound_count": 0,
+            }
+        ],
+        profiles_for_assign=[
+            {"id": "p1", "code": "C", "name": "A", "persona_json": {"country_code": "CN"}}
+        ],
+        insert_raises=RuntimeError("account_profile_map_table_missing"),
+    )
+    resp = await client.post(
+        "/api/admin/accounts/auto_assign_profiles",
+        json={"per_account": 1},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "account_profile_map_unavailable"
+
+
 # ── audit gate ───────────────────────────────────────────────
 
 

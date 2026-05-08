@@ -66,6 +66,9 @@ def _maybe_schema_error_response(error: RuntimeError) -> JSONResponse | None:
     - ``llm_accounts_schema_outdated:<csv>`` — the table exists but is
       missing one or more columns slice 7b depends on. Defense-in-depth
       against the schema-drift bug class PR #367 hit on Query Pool.
+    - ``account_profile_map_table_missing`` — the production-only
+      profile-binding table isn't available (sqlite test fixture); the
+      profile drawer / counts / auto-assign endpoints surface it as 503.
 
     Returns ``None`` for any other ``RuntimeError`` so callers re-raise.
     """
@@ -77,6 +80,15 @@ def _maybe_schema_error_response(error: RuntimeError) -> JSONResponse | None:
                 "success": False,
                 "error": "llm_accounts_unavailable",
                 "message": "llm_accounts table is not available; run migrations first.",
+            },
+        )
+    if code == "account_profile_map_table_missing":
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "account_profile_map_unavailable",
+                "message": "account_profile_map table is not available; run migrations first.",
             },
         )
     if code.startswith("llm_accounts_schema_outdated:"):
@@ -403,6 +415,317 @@ async def trigger_auto_login(
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content={"success": True, "task_id": getattr(result, "id", None)},
+    )
+
+
+@router.get("/profile_counts", response_model=None)
+async def profile_counts(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> Any:
+    """Return ``{account_id: {bindings, unacknowledged}}`` so the
+    account pool table can render the 绑定Profiles column without N+1
+    fetches. Empty dict when ``account_profile_map`` doesn't exist
+    (sqlite tests / fresh DB)."""
+    try:
+        return await accounts_db.fetch_profile_counts(session)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
+
+
+@router.post("/auto_assign_profiles", response_model=None)
+async def auto_assign_profiles(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Bulk-assign profiles to active accounts (round-robin per
+    geo bucket).
+
+    Body (all optional):
+      - ``per_account`` (int 1..50, default 5): how many profiles per
+        account.
+      - ``skip_already_bound`` (bool, default true): skip accounts that
+        already have ≥ ``per_account`` bindings. Re-run is idempotent.
+
+    LLM-driven ranking from the Flask original is intentionally not
+    ported — admin_console always fell back to round-robin in
+    production (no API key provisioned in the backend container) and
+    the parity tests run against the RR path. Operators who need
+    LLM-driven assignment can keep using admin_console for now.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    try:
+        per_account = max(1, min(int(payload.get("per_account", 5)), 50))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "invalid_per_account",
+                "message": "per_account must be 1..50",
+            },
+        )
+    skip_bound = bool(payload.get("skip_already_bound", True))
+
+    try:
+        accounts = await accounts_db.fetch_active_accounts_with_bound_count(session)
+        all_profiles = await accounts_db.fetch_assignable_profiles(session)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
+
+    summary: dict[str, Any] = {
+        "accounts_processed": 0,
+        "accounts_skipped": 0,
+        "bindings_inserted": 0,
+        "method": "rr",
+        "errors": [],
+    }
+
+    by_geo: dict[str, list[dict[str, Any]]] = {"CN": [], "US": [], "*": []}
+    for profile in all_profiles:
+        persona = profile.get("persona_json") or {}
+        country: str | None = None
+        for key in ("country_code", "country", "geo"):
+            value = persona.get(key) or ""
+            if isinstance(value, str) and value:
+                country = value.upper()
+                break
+        if country == "CN":
+            by_geo["CN"].append(profile)
+        elif country in ("US", "NA", "GB"):
+            by_geo["US"].append(profile)
+        else:
+            by_geo["*"].append(profile)
+
+    rr_idx: dict[str, int] = {"CN": 0, "US": 0, "*": 0}
+    inserted_total = 0
+    bindings_changed = False
+    try:
+        for account in accounts:
+            bound_count = int(account.get("bound_count") or 0)
+            if skip_bound and bound_count >= per_account:
+                summary["accounts_skipped"] += 1
+                continue
+            expected = accounts_db.account_engine_geo(account.get("llm_name"))
+            bucket_key = expected if expected in by_geo else "*"
+            pool = by_geo.get(bucket_key, []) + by_geo["*"]
+            if not pool:
+                continue
+            start = rr_idx.get(bucket_key, 0)
+            picks = [pool[(start + k) % len(pool)]["id"] for k in range(per_account)]
+            rr_idx[bucket_key] = (start + per_account) % len(pool)
+
+            try:
+                inserted = await accounts_db.insert_auto_assigned_bindings(
+                    session,
+                    account_id=int(account["id"]),
+                    profile_ids=picks,
+                )
+            except RuntimeError as error:
+                response = _maybe_schema_error_response(error)
+                if response is not None:
+                    return response
+                raise
+            inserted_total += inserted
+            summary["accounts_processed"] += 1
+            bindings_changed = bindings_changed or inserted > 0
+        if bindings_changed:
+            await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+    summary["bindings_inserted"] = inserted_total
+
+    await emit_audit(
+        session,
+        operator=operator,
+        action="auto_assign_profiles",
+        severity="med",
+        resource_type="llm_account",
+        resource_id="*",
+        after={
+            "per_account": per_account,
+            "accounts_processed": summary["accounts_processed"],
+            "accounts_skipped": summary["accounts_skipped"],
+            "bindings_inserted": inserted_total,
+            "method": summary["method"],
+        },
+        reason=str(payload.get("reason") or "auto_assign_profiles"),
+        request=request,
+    )
+
+    return JSONResponse(
+        status_code=200,
+        content={"success": True, **summary},
+    )
+
+
+@router.get("/{account_id}/profiles", response_model=None)
+async def list_account_profiles(
+    account_id: int,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> Any:
+    """Return paginated Profile bindings for an account with soft-conflict
+    flags computed against the engine's expected geo.
+
+    Query params:
+    - ``q``: search across profile id/code/name.
+    - ``only``: ``conflicts`` to filter to unacknowledged conflict
+      bindings; anything else returns all.
+    - ``limit`` (default 50, max 200), ``offset`` (default 0).
+    """
+    q = (request.query_params.get("q") or "").strip() or None
+    only = (request.query_params.get("only") or "all").strip().lower()
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", 50)), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = max(0, int(request.query_params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
+    try:
+        account = await accounts_db.fetch_account_basics(session, account_id=account_id)
+        if not account:
+            raise not_found("account_not_found")
+        rows = await accounts_db.fetch_account_profile_bindings(session, account_id=account_id, q=q)
+        quota_total = await accounts_db.fetch_account_quota_total(session, account_id=account_id)
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
+
+    expected_geo = accounts_db.account_engine_geo(account.get("llm_name"))
+    bindings: list[dict[str, Any]] = []
+    for row in rows:
+        persona_raw = row.get("persona_json") or {}
+        persona = persona_raw if isinstance(persona_raw, dict) else {}
+        country = persona.get("country_code") or ""
+        country = country.upper() if isinstance(country, str) and country else None
+        device = persona.get("device_type") or ""
+        device = device.lower() if isinstance(device, str) and device else None
+        language = persona.get("language") or ""
+        language = language.lower() if isinstance(language, str) and language else None
+        timezone_value = persona.get("timezone") or None
+        conflicts: list[dict[str, Any]] = []
+        if expected_geo and country and country != expected_geo:
+            conflicts.append({"field": "geo", "expected": expected_geo, "actual": country})
+        bindings.append(
+            {
+                "binding_id": row.get("binding_id"),
+                "profile_id": row.get("profile_id"),
+                "profile_code": row.get("profile_code"),
+                "profile_name": row.get("profile_name"),
+                "daily_quota": int(row.get("daily_quota") or 0),
+                "country_code": country,
+                "device_type": device,
+                "language": language,
+                "timezone": timezone_value,
+                "conflicts": conflicts,
+                "conflict_acknowledged": bool(row.get("conflict_acknowledged")),
+            }
+        )
+
+    if only == "conflicts":
+        bindings = [b for b in bindings if b["conflicts"] and not b["conflict_acknowledged"]]
+
+    total = len(bindings)
+    page = bindings[offset : offset + limit]
+
+    return {
+        "account": {
+            "id": account.get("id"),
+            "llm_name": account.get("llm_name"),
+            "phone_number": account.get("phone_number"),
+            "daily_limit": int(account.get("daily_limit") or 0),
+            "query_count_today": int(account.get("query_count_today") or 0),
+            "status": account.get("status"),
+            "expected_geo": expected_geo,
+        },
+        "bindings": page,
+        "total": total,
+        "quota_total": quota_total,
+    }
+
+
+@router.put("/{account_id}/profiles", response_model=None)
+async def upsert_account_profiles(
+    account_id: int,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    """Upsert (and optionally remove) profile bindings for an account.
+
+    Body shape:
+        {
+          "bindings": [{"profile_id": "pf_…", "daily_quota": 1,
+                        "conflict_acknowledged": false}, …],
+          "remove_profile_ids": ["pf_…", …]
+        }
+    emit_audit (med, action=update_account_profiles).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    bindings_in = payload.get("bindings") or []
+    remove_ids_in = payload.get("remove_profile_ids") or []
+    if not isinstance(bindings_in, list):
+        bindings_in = []
+    if not isinstance(remove_ids_in, list):
+        remove_ids_in = []
+
+    try:
+        account = await accounts_db.fetch_account_basics(session, account_id=account_id)
+        if not account:
+            raise not_found("account_not_found")
+        upserted, removed = await accounts_db.upsert_account_profile_bindings(
+            session,
+            account_id=account_id,
+            bindings=[b for b in bindings_in if isinstance(b, dict)],
+            remove_profile_ids=[str(p) for p in remove_ids_in if p],
+        )
+    except RuntimeError as error:
+        response = _maybe_schema_error_response(error)
+        if response is not None:
+            return response
+        raise
+
+    await emit_audit(
+        session,
+        operator=operator,
+        action="update_account_profiles",
+        severity="med",
+        resource_type="llm_account",
+        resource_id=str(account_id),
+        after={"upserted": upserted, "removed": removed},
+        reason=str(payload.get("reason") or "update_account_profiles"),
+        request=request,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={"success": True, "upserted": upserted, "removed": removed},
     )
 
 
