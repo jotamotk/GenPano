@@ -22,6 +22,7 @@ from geo_tracker.agent.browser_lifecycle import (
     install_resource_blocker,
 )
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
+from geo_tracker.agent.response_validation import invalid_response_reason
 from geo_tracker.agent.sms_login.registration_lock import (
     should_enqueue_new_account,
     should_enqueue_relogin,
@@ -38,6 +39,7 @@ from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
+from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +198,7 @@ def execute_query(self, query_id: int) -> dict:
                 return {"skipped": True, "reason": "already_done"}
 
             # 更新状态为 RUNNING
-            query.status = QueryStatus.RUNNING.value
+            started_at = mark_query_started(query)
             await db.commit()
 
             llm_config = GUEST_LLM_CONFIG.get(query.target_llm, {})
@@ -221,7 +223,12 @@ def execute_query(self, query_id: int) -> dict:
                 )
             elif requires_login:
                 # 必须登录但无可用账号 → 标记 FAILED（不再设回 pending 避免无限循环）
-                query.status = QueryStatus.FAILED.value
+                mark_query_finished(
+                    query,
+                    status=QueryStatus.FAILED.value,
+                    started_at=started_at,
+                    reason="no_account_available",
+                )
                 await db.commit()
                 logger.warning(
                     f"Query {query_id}: {query.target_llm} requires login "
@@ -275,17 +282,22 @@ def execute_query(self, query_id: int) -> dict:
                     return None
 
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
-                    invalid_marker = _is_invalid_response(response.raw_text)
-                    if invalid_marker:
+                    invalid_reason = invalid_response_reason(query.target_llm, response.raw_text)
+                    if invalid_reason:
                         # 响应内容是登录页/过期页，不是 AI 回答
-                        query.status = QueryStatus.FAILED.value
-                        failure_reason = "cookies_expired"
+                        failure_reason = invalid_reason
+                        mark_query_finished(
+                            query,
+                            status=QueryStatus.FAILED.value,
+                            started_at=started_at,
+                            reason=failure_reason,
+                        )
                         if account_id and pool:
                             await pool.report_failure(account_id, reason=failure_reason)
                         await db.commit()
                         logger.warning(
-                            f"Query {query_id} failed: response contains '{invalid_marker}', "
-                            f"cookie expired for account {account_id}"
+                            f"Query {query_id} failed: invalid response ({invalid_reason}), "
+                            f"account {account_id}"
                         )
                         return {"query_id": query_id, "status": "failed", "reason": failure_reason}
 
@@ -293,7 +305,12 @@ def execute_query(self, query_id: int) -> dict:
                     # citations/analyses/feature_mentions），避免 FK 违约
                     await _cleanup_previous_response(db, query_id)
                     db.add(response)
-                    query.status = QueryStatus.DONE.value
+                    mark_query_finished(
+                        query,
+                        status=QueryStatus.DONE.value,
+                        started_at=started_at,
+                        reason=None,
+                    )
                     if account_id and pool:
                         await pool.report_success(account_id)
                     await db.commit()
@@ -301,9 +318,14 @@ def execute_query(self, query_id: int) -> dict:
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
                 else:
                     resp_len = len(response.raw_text) if response else 0
-                    query.status = QueryStatus.FAILED.value
-                    # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
                     failure_reason = "cookies_expired" if response is None else "response_too_short"
+                    mark_query_finished(
+                        query,
+                        status=QueryStatus.FAILED.value,
+                        started_at=started_at,
+                        reason=failure_reason,
+                    )
+                    # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
                     if account_id and pool:
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
@@ -331,7 +353,12 @@ def execute_query(self, query_id: int) -> dict:
                     )
                     q_obj = refetched.scalar_one_or_none()
                     if q_obj is not None:
-                        q_obj.status = QueryStatus.FAILED.value
+                        mark_query_finished(
+                            q_obj,
+                            status=QueryStatus.FAILED.value,
+                            started_at=started_at,
+                            reason="exception",
+                        )
                     await db.commit()
                 except Exception as commit_err:
                     logger.error(

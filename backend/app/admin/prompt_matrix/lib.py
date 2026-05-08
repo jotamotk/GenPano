@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 ALLOWED_INTENTS = ("informational", "commercial", "transactional", "navigational")
 ALLOWED_LANGUAGES = ("zh-CN", "en-US")
+ALLOWED_PROMPT_SCOPES = ("non_branded", "branded", "competitor")
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
 
 INTENT_LABELS = {
@@ -144,6 +145,24 @@ class PromptMatrixError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def normalize_prompt_scope(value: Any) -> str:
+    """Normalize the Prompt-layer scope taxonomy.
+
+    Missing scope defaults to non_branded for backward compatibility with
+    existing Prompt rows; invalid explicit values are schema errors so LLM
+    mistakes are visible instead of silently drifting into Query Pool.
+    """
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if not raw:
+        return "non_branded"
+    if raw not in ALLOWED_PROMPT_SCOPES:
+        raise PromptMatrixError(
+            "llm_schema_invalid",
+            "prompt_scope must be one of " + ", ".join(ALLOWED_PROMPT_SCOPES),
+        )
+    return raw
 
 
 @dataclass(frozen=True)
@@ -700,6 +719,13 @@ def parse_llm_prompt_candidates(
         raw_tags_value = item.get("tags")
         raw_tags: dict[str, Any] = raw_tags_value if isinstance(raw_tags_value, dict) else {}
         tags = {key: value for key, value in raw_tags.items() if key != "engines"}
+        prompt_scope = normalize_prompt_scope(
+            item.get("prompt_scope")
+            or item.get("promptScope")
+            or tags.get("prompt_scope")
+            or tags.get("promptScope")
+        )
+        tags.pop("promptScope", None)
 
         if intent not in ALLOWED_INTENTS:
             raise PromptMatrixError(
@@ -726,13 +752,18 @@ def parse_llm_prompt_candidates(
                 "prompt_language_mismatch",
                 f"Prompt item #{index + 1} language does not match its text",
             )
-        if has_category_brand_leak(
-            text, topic_dimension=_topic_dimension(topic), known_brands=known_brands
-        ):
-            raise PromptMatrixError(
-                "category_brand_leak",
-                f"Prompt item #{index + 1} leaks a brand name in a category topic",
-            )
+        if prompt_scope == "non_branded":
+            leaked_terms = detect_brand_leaks(text, known_brands)
+            if leaked_terms:
+                code = (
+                    "category_brand_leak"
+                    if _topic_dimension(topic) == "category"
+                    else "prompt_scope_mismatch"
+                )
+                raise PromptMatrixError(
+                    code,
+                    f"Prompt item #{index + 1} leaks a brand name in non_branded scope",
+                )
         if not is_prompt_relevant_to_topic(text, topic, known_brands, language=language):
             raise PromptMatrixError(
                 "prompt_topic_mismatch",
@@ -751,6 +782,7 @@ def parse_llm_prompt_candidates(
                 reason=reason or INTENT_LABELS[intent],
                 tags={
                     **tags,
+                    "prompt_scope": prompt_scope,
                     "source": tags.get("source") or "prompt_matrix",
                     "routing": tags.get("routing") or "deferred_to_query_pool",
                 },
@@ -833,12 +865,17 @@ def build_prompt_matrix_messages(
                 "topic_id": 123,
                 "intent": "informational|commercial|transactional|navigational",
                 "language": "zh-CN|en-US",
+                "prompt_scope": "non_branded|branded|competitor",
                 "template_strategy": config.get("template_strategy", "latest"),
                 "template_version": "v1",
                 "text": "A natural consumer question",
                 "confidence": 0.0,
                 "reason": "Why this prompt covers the gap",
-                "tags": {"source": "prompt_matrix", "routing": "deferred_to_query_pool"},
+                "tags": {
+                    "source": "prompt_matrix",
+                    "routing": "deferred_to_query_pool",
+                    "prompt_scope": "copy prompt_scope",
+                },
             }
         ]
     }
@@ -853,6 +890,7 @@ def build_prompt_matrix_messages(
         "prompt_style": config.get("prompt_style"),
         "audience_mode": config.get("audience_mode"),
         "known_brand_terms": brand_terms_from_brands(known_brands),
+        "allowed_prompt_scopes": list(ALLOWED_PROMPT_SCOPES),
         "existing_prompts": existing_prompts[:300],
         "output_schema": schema,
     }
@@ -884,8 +922,23 @@ def build_prompt_matrix_messages(
     user = (
         "请根据 payload 生成 Prompt Matrix 候选。\n"
         "核心任务：对每个 topic / intent / language 组合，生成 1 条自然、有场景、像真人会问的问题。\n\n"
-        "质检会拒绝 prompt_not_natural、looks_like_topic、looks_like_query、prompt_language_mismatch、category_brand_leak。"
-        "每条必须是完整的自然用户问题；不要输出 SEO 标题、Topic 名词短语、关键词堆砌、后台任务或 Query 个性化执行文本。\n\n"
+        "Layer definitions:\n"
+        "Topic layer = high-level, reusable, brand-neutral consumer demand subject. Do not turn Topic titles back into brand slogans.\n"
+        "Prompt layer = complete natural user input. Prompt owns prompt_scope: non_branded, branded, competitor.\n"
+        "Query layer = Prompt + Segment/Profile personal context. Do not add age, city, exact budget, persona, or first-person anchors here; Query Pool will do that.\n\n"
+        "prompt_scope 规则：\n"
+        "S1. 每条 output.prompts[i] 必须写 prompt_scope，且只能是 non_branded / branded / competitor；同时复制到 tags.prompt_scope。\n"
+        "S2. non_branded：围绕 topic.title 的品类、功能、场景或问题提问，禁止出现 known_brand_terms、selected brand alias 或竞品名。\n"
+        "S3. branded：可以自然包含 topic.brand 或 consumer_aliases，用来问该品牌/该产品相关问题，但不要写成品牌营销标题。\n"
+        "S4. competitor：做替代、对比、平替、同类品牌选择等角度；如果 payload 没给明确竞品，不要杜撰具体竞品名，可写“同类品牌/平替/竞品”。\n"
+        "S5. Topic 层不存品牌词，品牌/竞品词只在 Prompt 的 branded 或 competitor scope 出现；Query 层只继承 scope 并加入 Profile。\n\n"
+        "前置质检规则，生成时必须主动满足，不要依赖后端丢弃：\n"
+        "A. 避免 prompt_not_natural：每条必须是完整的自然用户问题，有真实消费者意图。\n"
+        "B. 避免 looks_like_topic：不要输出 SEO 标题、Topic 名词短语、关键词堆砌或导购栏目标题。\n"
+        "C. 避免 looks_like_query：不要加入具体 Profile 的年龄、城市、预算、人设或第一人称执行细节；这些留给 Query Pool。\n"
+        "D. 避免 prompt_language_mismatch：严格按 language 字段输出。\n"
+        "E. 避免 category_brand_leak：category dimension 和 non_branded scope 的 prompt 禁止出现 known_brand_terms 里的品牌名或 alias。\n"
+        "如果某个组合写不出自然问法，换一个更贴近 topic 的消费者角度，不要硬编内部词。\n\n"
         "真人问法规则，优先级最高：\n"
         "1. 尽量短，像搜索框或聊天里打出来的一句话；中文通常 12-32 个汉字，英文通常 7-18 个词。\n"
         "2. 可以有口语感：会不会、值不值、哪款、怎么选、送人合不合适、日常用够不够、容易踩雷吗。\n"

@@ -34,6 +34,7 @@ from app.admin.topic_plan.lib import (
     TopicPlanLLMError,
     dedupe_topic_candidates,
     is_natural_consumer_topic,
+    is_title_brand_named,
     normalize_topic_title,
     over_request_count,
     sample_existing_for_context,
@@ -113,6 +114,13 @@ async def _insert_candidate_batch(
         brand = _resolve_brand_for_topic(item, brands)
         if brand is None:
             skipped.append({"title": item.title, "reason": "brand_not_selected"})
+            continue
+        leaking_brand = next(
+            (candidate_brand for candidate_brand in brands if is_title_brand_named(item.title, candidate_brand)),
+            None,
+        )
+        if leaking_brand is not None:
+            skipped.append({"title": item.title, "reason": "topic_brand_leak"})
             continue
         product_id, product_name = _resolve_product_id(item, brand)
         row = TopicCandidate(
@@ -332,7 +340,7 @@ async def execute_generation(
                 llm_model=llm_model,
                 usage=usage,
                 candidates_generated=len(inserted),
-                llm_error=topic_error.code,
+                llm_error=f"{topic_error.code}: {topic_error.message}"[:500],
             )
             await emit_audit(
                 session,

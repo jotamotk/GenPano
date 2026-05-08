@@ -26,6 +26,7 @@ from app.admin.prompt_matrix.lib import (
     has_prompt_language_mismatch,
     is_natural_user_prompt,
     merge_usage,
+    normalize_prompt_scope,
     sample_existing_for_context,
 )
 from app.admin.prompt_matrix.llm import PromptMatrixClient
@@ -93,17 +94,36 @@ async def _insert_candidate_batch(
         if has_prompt_language_mismatch(text_v, language):
             skipped.append({"text": text_v, "reason": "prompt_language_mismatch"})
             continue
-        if topic.get("dimension_key") == "category":
-            leaked = detect_brand_leaks(text_v, known_brands)
-            if leaked:
-                skipped.append(
-                    {"text": text_v, "reason": "category_brand_leak", "leaks": leaked[:5]}
-                )
-                continue
         raw_tags_value = item.get("tags")
         raw_tags: dict[str, Any] = raw_tags_value if isinstance(raw_tags_value, dict) else {}
         tags = {k: v for k, v in raw_tags.items() if k != "engines"}
-        tags = {**tags, "source": "prompt_matrix", "routing": "deferred_to_query_pool"}
+        try:
+            prompt_scope = normalize_prompt_scope(
+                item.get("prompt_scope")
+                or item.get("promptScope")
+                or tags.get("prompt_scope")
+                or tags.get("promptScope")
+            )
+        except PromptMatrixError as error:
+            skipped.append({"text": text_v, "reason": error.code, "message": error.message})
+            continue
+        if prompt_scope == "non_branded":
+            leaked = detect_brand_leaks(text_v, known_brands)
+            if leaked:
+                reason = (
+                    "category_brand_leak"
+                    if topic.get("dimension_key") == "category"
+                    else "prompt_scope_mismatch"
+                )
+                skipped.append({"text": text_v, "reason": reason, "leaks": leaked[:5]})
+                continue
+        tags.pop("promptScope", None)
+        tags = {
+            **tags,
+            "prompt_scope": prompt_scope,
+            "source": "prompt_matrix",
+            "routing": "deferred_to_query_pool",
+        }
 
         row = PromptCandidate(
             id=str(uuid.uuid4()),

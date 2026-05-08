@@ -32,6 +32,7 @@ from geo_tracker.agent.clash_api import (
     switch_to_next_node,
     CLASH_API_URL,
 )
+from geo_tracker.agent.response_validation import invalid_response_reason
 from geo_tracker.db.models import LLMResponse, Query, QueryStatus
 
 logger = logging.getLogger(__name__)
@@ -1386,6 +1387,17 @@ class GuestQueryExecutor:
                     await _save_html(page, -1, f"{llm_name}_homepage_content")
                     resp_text = ""
                     resp_html = ""
+
+            # Reject known app/login/error pages before saving a response.
+            invalid_reason = invalid_response_reason(llm_name, resp_text)
+            if invalid_reason:
+                logger.warning(
+                    "[%s] extracted invalid response content (%s), discarding",
+                    llm_name,
+                    invalid_reason,
+                )
+                await _save_html(page, -1, f"{llm_name}_{invalid_reason}")
+                return "", "", []
 
             # 豆包引用面板可能在响应完成后异步加载，额外等待
             if llm_name == "doubao":

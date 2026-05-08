@@ -43,6 +43,16 @@ def test_build_messages_returns_system_and_user():
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"
     assert "k1" in msgs[1]["content"]
+    assert "前置质检规则" in msgs[1]["content"]
+    assert "产品漂移" in msgs[1]["content"]
+    assert "不要依赖后端修复或丢弃" in msgs[1]["content"]
+    assert "Topic layer" in msgs[1]["content"]
+    assert "Prompt layer" in msgs[1]["content"]
+    assert "Query layer" in msgs[1]["content"]
+    assert "prompt_scope" in msgs[1]["content"]
+    assert "non_branded" in msgs[1]["content"]
+    assert "branded" in msgs[1]["content"]
+    assert "competitor" in msgs[1]["content"]
 
 
 @pytest.mark.asyncio

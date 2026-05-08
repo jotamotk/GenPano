@@ -186,6 +186,25 @@ def test_contexts_pairs_each_prompt_with_sampled_profiles():
     assert all(c["prompt_id"] in {"a", "b"} for c in contexts)
 
 
+def test_contexts_carry_prompt_scope_from_prompt_tags():
+    prompts = [{**_prompt("a"), "tags": {"prompt_scope": "competitor"}}]
+    pool = [_row("s1", 5, "p1", 5)]
+    cfg = query_pool_config({"profiles_per_prompt": 1})
+    contexts, raw = query_pool_candidate_contexts(prompts, pool, cfg)
+
+    assert raw == 1
+    assert contexts[0]["prompt_scope"] == "competitor"
+
+
+def test_contexts_parse_prompt_scope_from_json_string_tags():
+    prompts = [{**_prompt("a"), "tags": '{"prompt_scope": "branded"}'}]
+    pool = [_row("s1", 5, "p1", 5)]
+    cfg = query_pool_config({"profiles_per_prompt": 1})
+    contexts, _raw = query_pool_candidate_contexts(prompts, pool, cfg)
+
+    assert contexts[0]["prompt_scope"] == "branded"
+
+
 def test_contexts_caps_at_max_candidates():
     prompts = [_prompt(str(i)) for i in range(10)]
     pool = [_row("s1", 5, "p1", 5)]

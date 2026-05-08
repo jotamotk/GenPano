@@ -17,6 +17,7 @@ from app.admin.topic_plan.lib import (
     consumer_aliases_for_brand,
     dedupe_topic_candidates,
     is_natural_consumer_topic,
+    is_title_brand_named,
     is_near_duplicate_title,
     normalize_topic_title,
     over_request_count,
@@ -210,6 +211,13 @@ def test_consumer_aliases_for_brand_lvmh_override():
     assert "Dior" in aliases
 
 
+def test_is_title_brand_named_uses_brand_name_and_aliases_only():
+    brand = {"name": "NIKE", "aliases": ["耐克"]}
+    assert is_title_brand_named("NIKE跑鞋适合新手慢跑吗", brand)
+    assert is_title_brand_named("耐克儿童运动鞋尺码选择指南", brand)
+    assert not is_title_brand_named("新手慢跑鞋怎么选不容易伤膝盖", brand)
+
+
 def test_repair_single_brand_placeholders_repairs_question_marks():
     topics = [
         LLMTopic(
@@ -257,3 +265,8 @@ def test_build_topic_plan_messages_emits_system_and_user():
     assert msgs[1]["role"] == "user"
     # NIKE must appear in the user payload
     assert "NIKE" in msgs[1]["content"]
+    assert "brand-neutral" in msgs[1]["content"]
+    assert "category/scenario/question" in msgs[1]["content"]
+    assert "Topic layer" in msgs[1]["content"]
+    assert "Prompt layer" in msgs[1]["content"]
+    assert "Query layer" in msgs[1]["content"]

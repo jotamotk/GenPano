@@ -156,10 +156,13 @@ async def fetch_query_pool_prompt_rows(
         topic_join = "LEFT JOIN topics t ON t.id = p.topic_id"
         topic_select = "t.text AS topic_text"
     topic_id_select = "p.topic_id" if "topic_id" in prompt_cols else "NULL::text AS topic_id"
+    tags_select = (
+        "COALESCE(p.tags, '{}'::jsonb) AS tags" if "tags" in prompt_cols else "'{}'::jsonb AS tags"
+    )
     status_where = "AND COALESCE(p.status, 'active') = 'active'" if "status" in prompt_cols else ""
     sql = text(
         f"""
-        SELECT CAST(p.id AS TEXT) AS id, {topic_id_select}, p.text, {topic_select}
+        SELECT CAST(p.id AS TEXT) AS id, {topic_id_select}, p.text, {topic_select}, {tags_select}
         FROM prompts p
         {topic_join}
         WHERE CAST(p.id AS TEXT) = ANY(:prompt_ids)
