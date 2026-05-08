@@ -25,30 +25,31 @@ block) so a single broken source never aborts a multi-source cycle. Errors
 are surfaced to the API caller via the ``errors`` map in
 ``run_collection_cycle``'s return value.
 """
+
+# Chinese prompt strings use FULLWIDTH PUNCTUATION on purpose; suppress
+# ruff's ambiguous-character warnings for the whole module.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
-try:
-    from .topic_plan import TopicPlanLLMError, load_doubao_config, strip_markdown_fence
-except ImportError:  # pragma: no cover - flat-layout fallback (Docker image)
-    from topic_plan import TopicPlanLLMError, load_doubao_config, strip_markdown_fence
-
+from app.admin.topic_plan.lib import (
+    TopicPlanLLMError,
+    load_doubao_config,
+    strip_markdown_fence,
+)
 
 # ─── Endpoint constants ──────────────────────────────────────────────────
 
 BAIDU_API_URL = "https://top.baidu.com/api/board?platform=pc&tab=realtime"
-ZHIHU_API_URL = (
-    "https://api.zhihu.com/topstory/hot-list?"
-    "limit=50&reverse_order=0&desktop=true"
-)
+ZHIHU_API_URL = "https://api.zhihu.com/topstory/hot-list?limit=50&reverse_order=0&desktop=true"
 WEIBO_API_URL = "https://weibo.com/ajax/side/hotSearch"
-TOUTIAO_API_URL = (
-    "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
-)
+TOUTIAO_API_URL = "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
 
 DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -73,6 +74,7 @@ class HotspotCandidate:
 
 # ─── HTTP helpers ────────────────────────────────────────────────────────
 
+
 def _http_get_json(url: str, *, timeout: int = 15, headers: dict | None = None) -> Any:
     import urllib.request
 
@@ -84,12 +86,13 @@ def _http_get_json(url: str, *, timeout: int = 15, headers: dict | None = None) 
     if headers:
         base_headers.update(headers)
     req = urllib.request.Request(url, headers=base_headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - admin only
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     return json.loads(raw)
 
 
 # ─── Baidu 热搜 (PC) ─────────────────────────────────────────────────────
+
 
 def collect_baidu(*, limit: int = 30) -> list[HotspotCandidate]:
     """Pull 百度热搜 (实时榜) via the PC endpoint.
@@ -115,8 +118,12 @@ def collect_baidu(*, limit: int = 30) -> list[HotspotCandidate]:
     inner = cards[0].get("content") or []
     # Defensive: the wise/mobile shape (one wrapper dict whose own ``content``
     # holds the items) shows up occasionally on PC too, so handle both.
-    if inner and isinstance(inner[0], dict) and "word" not in inner[0] \
-            and isinstance(inner[0].get("content"), list):
+    if (
+        inner
+        and isinstance(inner[0], dict)
+        and "word" not in inner[0]
+        and isinstance(inner[0].get("content"), list)
+    ):
         inner = inner[0]["content"]
 
     out: list[HotspotCandidate] = []
@@ -142,6 +149,7 @@ def collect_baidu(*, limit: int = 30) -> list[HotspotCandidate]:
 
 
 # ─── 知乎热榜 ────────────────────────────────────────────────────────────
+
 
 def _zhihu_web_url(api_url: str | None, item_id: Any) -> str | None:
     """Convert the API ``api.zhihu.com/questions/{id}`` URL into a user-facing
@@ -191,6 +199,7 @@ def collect_zhihu(*, limit: int = 30) -> list[HotspotCandidate]:
 
 # ─── 微博热搜 (PC sidebar) ──────────────────────────────────────────────
 
+
 def collect_weibo(*, limit: int = 30) -> list[HotspotCandidate]:
     """Public PC sidebar endpoint. Returns 50 items — ranked, with hot value
     and a ``label_name`` flag (热 / 新 / 沸 / 爆). No login or visitor cookie
@@ -221,9 +230,8 @@ def collect_weibo(*, limit: int = 30) -> list[HotspotCandidate]:
         try:
             from urllib.parse import quote as _quote
 
-            search_url = (
-                "https://s.weibo.com/weibo?q="
-                + _quote("#" + (scheme or title_clean) + "#")
+            search_url = "https://s.weibo.com/weibo?q=" + _quote(
+                "#" + (scheme or title_clean) + "#"
             )
         except Exception:  # pragma: no cover - defensive
             search_url = None
@@ -338,7 +346,10 @@ def collect_toutiao(*, limit: int = 30) -> list[HotspotCandidate]:
 
 # ─── LLM search (Doubao) ────────────────────────────────────────────────
 
-def _build_llm_search_messages(industry: str | None, limit: int, brand_context: dict[str, Any] | None = None) -> list[dict]:
+
+def _build_llm_search_messages(
+    industry: str | None, limit: int, brand_context: dict[str, Any] | None = None
+) -> list[dict]:
     industry_label = (industry or "").strip()
     brand_context = brand_context or {}
     brand_name = str(brand_context.get("name") or "").strip()
@@ -348,17 +359,14 @@ def _build_llm_search_messages(industry: str | None, limit: int, brand_context: 
         else "行业：通用消费 / 大众生活 / 数码 / 社会 (覆盖面尽量广)"
     )
     if brand_name:
-        scope_text += (
-            "\n"
-            + json.dumps(
-                {
-                    "brand": brand_name,
-                    "brand_aliases": brand_context.get("aliases") or [],
-                    "target_market": brand_context.get("target_market") or "",
-                    "brand_description": brand_context.get("description") or "",
-                },
-                ensure_ascii=False,
-            )
+        scope_text += "\n" + json.dumps(
+            {
+                "brand": brand_name,
+                "brand_aliases": brand_context.get("aliases") or [],
+                "target_market": brand_context.get("target_market") or "",
+                "brand_description": brand_context.get("description") or "",
+            },
+            ensure_ascii=False,
         )
     schema = {
         "hotspots": [
@@ -381,11 +389,11 @@ def _build_llm_search_messages(industry: str | None, limit: int, brand_context: 
     )
     user = (
         f"{scope_text}\n"
-        f"请按热度从高到低输出最多 {limit} 条热点，每条都要写明 title / summary / category / industry。\n"
+        f"请按热度从高到低输出最多 {limit} 条热点，每条都要写明 "
+        "title / summary / category / industry。\n"
         "不要重复、不要拼装多个话题、不要把品牌名作为 title，不要写营销/CRM/私域口吻。\n"
         "title 应像普通用户在搜索框里会输入或在朋友圈讨论的样子。\n"
-        "JSON Schema 示例:\n"
-        + json.dumps(schema, ensure_ascii=False)
+        "JSON Schema 示例:\n" + json.dumps(schema, ensure_ascii=False)
     )
     return [
         {"role": "system", "content": system},
@@ -589,7 +597,11 @@ def run_collection_cycle(
         try:
             if name == "llm_search":
                 if brand_context is not None:
-                    items = fn(industry=industry_filter, brand_context=brand_context, limit=per_source_limit)
+                    items = fn(
+                        industry=industry_filter,
+                        brand_context=brand_context,
+                        limit=per_source_limit,
+                    )
                 else:
                     items = fn(industry=industry_filter, limit=per_source_limit)
             else:

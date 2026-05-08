@@ -578,3 +578,124 @@ async def import_brands_bulk(
         "skipped": skipped,
         "results": results,
     }
+
+
+async def fetch_brand_options_with_topic_count(
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """Schema-aware brand list for the topic-plan brand picker. Mirrors
+    admin_console's ``_fetch_topic_plan_brands`` (line 602). Returns
+    ``[]`` when ``brands`` is missing.
+
+    Per-brand fields the SPA expects:
+    - id (int), name, industry, target_market, description, aliases (list)
+    - industry_id, industry_name (mirror industry — the SPA uses both)
+    - category_id, category_name (most-recently-created topic category)
+    - topic_count, selected (always False — flipped client-side)
+    """
+    if not await _table_exists(session, "brands"):
+        return []
+    cols = await _table_columns(session, "brands")
+    name_expr = "name" if "name" in cols else "('Brand #' || id::text)"
+    industry_expr = (
+        "COALESCE(NULLIF(industry, ''), 'Uncategorized')"
+        if "industry" in cols
+        else "'Uncategorized'"
+    )
+    target_market_expr = (
+        "COALESCE(NULLIF(target_market, ''), '')" if "target_market" in cols else "''"
+    )
+    description_expr = "COALESCE(description, '')" if "description" in cols else "''"
+    aliases_expr = "aliases" if "aliases" in cols else "NULL::jsonb AS aliases"
+    sql = text(
+        f"""
+        SELECT id, {name_expr} AS name, {industry_expr} AS industry,
+               {target_market_expr} AS target_market,
+               {description_expr} AS description,
+               {aliases_expr}
+        FROM brands
+        ORDER BY id
+        """
+    )
+    rows = (await session.execute(sql)).mappings().all()
+    brands = [dict(r) for r in rows]
+
+    topic_counts: dict[Any, int] = {}
+    primary_categories: dict[Any, str] = {}
+    if await _table_exists(session, "topics"):
+        topic_cols = await _table_columns(session, "topics")
+        if "brand_id" in topic_cols:
+            count_rows = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT brand_id, COUNT(*) AS topic_count FROM topics GROUP BY brand_id"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            topic_counts = {r["brand_id"]: int(r["topic_count"] or 0) for r in count_rows}
+            if "category" in topic_cols:
+                category_order = (
+                    "created_at DESC NULLS LAST, id DESC"
+                    if "created_at" in topic_cols
+                    else "id DESC"
+                )
+                cat_rows = (
+                    (
+                        await session.execute(
+                            text(
+                                f"""
+                            SELECT DISTINCT ON (brand_id) brand_id, category
+                            FROM topics
+                            WHERE category IS NOT NULL AND category <> ''
+                            ORDER BY brand_id, {category_order}
+                            """
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                primary_categories = {r["brand_id"]: str(r.get("category") or "") for r in cat_rows}
+
+    enriched: list[dict[str, Any]] = []
+    for row in brands:
+        industry = row.get("industry") or "Uncategorized"
+        category = primary_categories.get(row.get("id")) or ""
+        raw_id = row.get("id")
+        brand_id_int: Any
+        try:
+            brand_id_int = int(raw_id) if raw_id is not None else None
+        except (TypeError, ValueError):
+            brand_id_int = raw_id
+        aliases_raw = row.get("aliases") or []
+        if isinstance(aliases_raw, str):
+            try:
+                parsed_aliases = _json.loads(aliases_raw)
+                aliases_list = parsed_aliases if isinstance(parsed_aliases, list) else []
+            except Exception:
+                aliases_list = []
+        elif isinstance(aliases_raw, list):
+            aliases_list = aliases_raw
+        else:
+            aliases_list = []
+        enriched.append(
+            {
+                "id": brand_id_int,
+                "name": row.get("name"),
+                "industry": industry,
+                "target_market": row.get("target_market") or "",
+                "description": row.get("description") or "",
+                "aliases": aliases_list,
+                "industry_id": industry,
+                "industry_name": industry,
+                "category_id": category,
+                "category_name": category,
+                "topic_count": int(topic_counts.get(row.get("id"), 0) or 0),
+                "selected": False,
+            }
+        )
+    return enriched

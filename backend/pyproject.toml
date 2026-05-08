@@ -90,6 +90,23 @@ ignore_missing_imports = true
 module = ["json_repair"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Vendored from admin_console (Phase X). Keep the original duck-typed
+# style — these are best-effort web scrapers where explicit annotations
+# obscure the schema-drift defensiveness. Future cleanup can tighten
+# this when we rewrite the LLM prompt + collector layer.
+module = ["app.admin.hot_topics.collectors"]
+disallow_untyped_defs = false
+warn_unreachable = false
+warn_unused_ignores = false
+disable_error_code = [
+    "call-arg",
+    "type-arg",
+    "no-any-return",
+    "no-untyped-def",
+    "unreachable",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

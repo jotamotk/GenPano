@@ -540,17 +540,23 @@ async def test_batch_delete_high(client, admin_operator, monkeypatch, db_session
 
 
 @pytest.mark.asyncio
-async def test_collect_returns_503_when_collectors_missing(client, admin_operator, monkeypatch):
-    """In-process collectors live in admin_console.hotspot_collectors;
-    sqlite test environment doesn't import that module → 503 with stable
-    code so the SPA can show a clean error."""
+async def test_collect_returns_502_when_collector_raises(client, admin_operator, monkeypatch):
+    """Phase X moved the collectors into backend (app.admin.hot_topics.
+    collectors). They can still fail at runtime (network errors, schema
+    drift, anti-bot block) — surface 502 collection_failed cleanly."""
     _patch_db(monkeypatch)
     a = _hot_topics_router_module()
     monkeypatch.setattr(a, "fetch_brand_context", AsyncMock(return_value=None))
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("network died")
+
+    import app.admin.hot_topics.collectors as collectors_mod
+
+    monkeypatch.setattr(collectors_mod, "run_collection_cycle", _boom)
     resp = await client.post("/api/admin/hot-topics/collect", json={"sources": ["baidu"]})
-    # Backend's tests run without admin_console on the path → 503.
-    assert resp.status_code == 503
-    assert resp.json()["error"] == "collectors_unavailable"
+    assert resp.status_code == 502
+    assert resp.json()["error"] == "collection_failed"
 
 
 @pytest.mark.asyncio

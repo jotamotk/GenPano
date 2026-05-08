@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
+from app.admin.brand_management import db as brand_management_db
 from app.admin.security import current_admin_operator
 from app.api.admin.accounts import router as accounts_router
 from app.api.admin.alerts import router as alerts_router
@@ -71,6 +72,19 @@ router.include_router(session_router, prefix="/session")
 router.include_router(stats_router, prefix="/stats")
 router.include_router(topic_plan_router, prefix="/topic-plan")
 router.include_router(users_router, prefix="/users")
+
+
+@router.get("/brands", response_model=None)
+async def admin_brand_options(
+    operator: Annotated[User, Depends(current_admin_operator)],
+    session: AsyncSession = _DependsDb,
+) -> Any:
+    """Topic-plan brand picker. Returns ``{success, brands}`` with each
+    brand enriched with topic_count + primary category. Mirrors
+    admin_console line 5886 — final route from Flask, ported in Phase X.
+    """
+    brands = await brand_management_db.fetch_brand_options_with_topic_count(session)
+    return {"success": True, "brands": brands}
 
 
 @router.get("/_meta/whoami")
