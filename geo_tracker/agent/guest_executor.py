@@ -939,7 +939,8 @@ class GuestQueryExecutor:
                 pass
 
     async def _browser_query(
-        self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None
+        self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None,
+        _retry_count: int = 0,
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
         Returns: (response_text, response_html, citations_list)"""
@@ -1397,6 +1398,46 @@ class GuestQueryExecutor:
                     invalid_reason,
                 )
                 await _save_html(page, -1, f"{llm_name}_{invalid_reason}")
+
+                # ChatGPT's SPA occasionally crashes mid-render and surfaces a
+                # JS stack trace where the answer should be. A single page
+                # reload + resubmit usually clears it; switching proxy nodes
+                # (the upstream retry path) does not, since the bug is
+                # client-side. Retry once and only once.
+                if invalid_reason == "chatgpt_application_error" and _retry_count == 0:
+                    logger.info(
+                        "[%s] reloading page and retrying once after application error",
+                        llm_name,
+                    )
+                    try:
+                        await page.reload(wait_until="domcontentloaded", timeout=30000)
+                        await page.wait_for_timeout(2000)
+                        new_input = None
+                        for sel in [
+                            s.strip() for s in cfg.get("input_selector", "").split(",")
+                        ]:
+                            if not sel:
+                                continue
+                            try:
+                                new_input = await page.wait_for_selector(
+                                    sel, timeout=8000, state="attached"
+                                )
+                                if new_input:
+                                    break
+                            except Exception:
+                                continue
+                        if new_input:
+                            return await self._browser_query(
+                                page, cfg, query_text, llm_name, new_input,
+                                _retry_count=1,
+                            )
+                        logger.warning(
+                            "[%s] retry aborted: no input element after reload",
+                            llm_name,
+                        )
+                    except Exception as e:
+                        logger.warning("[%s] reload+retry failed: %s", llm_name, e)
+
                 return "", "", []
 
             # 豆包引用面板可能在响应完成后异步加载，额外等待
