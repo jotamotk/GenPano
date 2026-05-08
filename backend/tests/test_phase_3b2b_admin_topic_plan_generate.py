@@ -295,9 +295,7 @@ async def test_generate_sync_rejects_brand_named_topic_titles(
     monkeypatch.setenv("TOPIC_PLAN_SYNC_GENERATE", "1")
     _patch_tp_db(
         monkeypatch,
-        fetch_brands=AsyncMock(
-            return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear"}]
-        ),
+        fetch_brands=AsyncMock(return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear"}]),
         build_coverage=AsyncMock(return_value=_coverage_with_one_gap()),
         fetch_pending_candidate_titles=AsyncMock(return_value=[]),
         fetch_products_by_brand=AsyncMock(return_value={}),
