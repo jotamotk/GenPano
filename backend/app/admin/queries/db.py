@@ -230,4 +230,249 @@ async def list_queries(
     return out, total, by_status
 
 
-__all__ = ["fetch_status_stats", "list_queries"]
+# ── write paths (slice 9b) ──────────────────────────────────
+
+
+async def create_query(
+    session: AsyncSession,
+    *,
+    target_llm: str,
+    query_text: str,
+    brand_id: int | None,
+) -> int | None:
+    """INSERT a new pending query. Returns the new id; ``None`` when the
+    queries table is missing (sqlite test path)."""
+    if not await _table_exists(session, "queries"):
+        return None
+    row = (
+        (
+            await session.execute(
+                text(
+                    """
+                INSERT INTO queries
+                    (target_llm, query_text, brand_id, status, created_at, queued_at)
+                VALUES (:target_llm, :query_text, :brand_id, 'pending', NOW(), NOW())
+                RETURNING id
+                """
+                ),
+                {
+                    "target_llm": target_llm,
+                    "query_text": query_text,
+                    "brand_id": brand_id,
+                },
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not row:
+        return None
+    await session.commit()
+    return int(dict(row)["id"])
+
+
+async def retry_query(
+    session: AsyncSession,
+    *,
+    query_id: int,
+    retry_reason: str | None,
+) -> dict[str, Any] | None:
+    """Reset a single query to pending + bump retry_count + clear timing
+    fields. Returns the (pre-update) target_llm so the caller can
+    dispatch the new attempt to celery; ``None`` when the row is missing.
+    """
+    if not await _table_exists(session, "queries"):
+        return None
+    detail_row = (
+        (
+            await session.execute(
+                text("SELECT id, target_llm, query_text, brand_id FROM queries WHERE id = :id"),
+                {"id": query_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not detail_row:
+        return None
+    await session.execute(
+        text(
+            """
+            UPDATE queries
+            SET status = 'pending',
+                retry_count = COALESCE(retry_count, 0) + 1,
+                queued_at = NOW(),
+                started_at = NULL,
+                finished_at = NULL,
+                latency_ms = NULL,
+                retry_reason = :retry_reason
+            WHERE id = :id
+            """
+        ),
+        {"retry_reason": retry_reason, "id": query_id},
+    )
+    await session.commit()
+    return dict(detail_row)
+
+
+async def batch_trigger_queries(
+    session: AsyncSession,
+    *,
+    payload: dict[str, Any],
+) -> tuple[int, list[int], bool]:
+    """Bulk reset matching queries to pending and return their ids for
+    celery dispatch. Returns ``(matched_total, dispatched_ids, refused)``
+    where ``refused`` is True when the matched count exceeds the
+    operator-specified ``max`` cap (caller surfaces 400)."""
+    if not await _table_exists(session, "queries"):
+        return 0, [], False
+
+    where: list[str] = []
+    params: dict[str, Any] = {}
+    if payload.get("ids"):
+        where.append("id = ANY(:ids)")
+        params["ids"] = payload["ids"]
+    else:
+        if "query_id" in payload:
+            where.append("id = :query_id")
+            params["query_id"] = payload["query_id"]
+        if "llm" in payload:
+            where.append("target_llm = :llm")
+            params["llm"] = payload["llm"]
+        if "status" in payload:
+            where.append("UPPER(status) = UPPER(:status)")
+            params["status"] = payload["status"]
+        else:
+            where.append("LOWER(status) IN ('pending','failed')")
+        if "brand_id" in payload:
+            where.append("brand_id = :brand_id")
+            params["brand_id"] = payload["brand_id"]
+        if "topic_id" in payload:
+            where.append("prompt_id IN (SELECT id FROM prompts WHERE topic_id = :topic_id)")
+            params["topic_id"] = payload["topic_id"]
+        if "prompt_id" in payload:
+            where.append("prompt_id = :prompt_id")
+            params["prompt_id"] = payload["prompt_id"]
+        if "prompt_q" in payload:
+            where.append("query_text ILIKE :prompt_q")
+            params["prompt_q"] = f"%{payload['prompt_q']}%"
+    where_clause = " AND ".join(where) if where else "1=1"
+
+    cnt_row = (
+        (
+            await session.execute(
+                text(f"SELECT COUNT(*) AS n FROM queries WHERE {where_clause}"),
+                params,
+            )
+        )
+        .mappings()
+        .first()
+    )
+    total = int((dict(cnt_row) if cnt_row else {}).get("n") or 0)
+
+    if payload.get("dry_run"):
+        return total, [], False
+    if total == 0:
+        return 0, [], False
+    max_count = int(payload.get("max_count") or 2000)
+    if total > max_count:
+        return total, [], True
+
+    update_params = {"reason": payload.get("reason") or "batch_trigger", **params}
+    rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                UPDATE queries
+                SET status = 'pending',
+                    retry_count = COALESCE(retry_count, 0) + 1,
+                    queued_at = NOW(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    latency_ms = NULL,
+                    retry_reason = :reason
+                WHERE {where_clause}
+                RETURNING id
+                """
+                ),
+                update_params,
+            )
+        )
+        .mappings()
+        .all()
+    )
+    ids = [int(r["id"]) for r in rows]
+    await session.commit()
+    return total, ids, False
+
+
+async def cleanup_queries(
+    session: AsyncSession,
+    *,
+    cleanup_type: str,
+    days: int = 30,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """Delete orphan queries by type. Returns ``(matched, deleted)``;
+    when ``dry_run`` is True ``deleted`` is 0."""
+    if not await _table_exists(session, "queries"):
+        return 0, 0
+    if cleanup_type == "unqueued":
+        where_clause = "LOWER(status) = 'pending' AND queued_at IS NULL"
+        params: dict[str, Any] = {}
+    elif cleanup_type == "all_pending":
+        where_clause = "LOWER(status) = 'pending'"
+        params = {}
+    elif cleanup_type == "failed_old":
+        where_clause = (
+            "LOWER(status) = 'failed' AND "
+            "created_at < NOW() - (CAST(:days AS text) || ' days')::interval"
+        )
+        params = {"days": int(days)}
+    else:
+        return 0, 0
+
+    cnt_row = (
+        (
+            await session.execute(
+                text(f"SELECT COUNT(*) AS n FROM queries WHERE {where_clause}"), params
+            )
+        )
+        .mappings()
+        .first()
+    )
+    matched = int((dict(cnt_row) if cnt_row else {}).get("n") or 0)
+    if dry_run:
+        return matched, 0
+    result = await session.execute(text(f"DELETE FROM queries WHERE {where_clause}"), params)
+    deleted = int(getattr(result, "rowcount", 0) or 0)
+    await session.commit()
+    return matched, deleted
+
+
+async def mark_query_failed(session: AsyncSession, query_id: int) -> bool:
+    """Flip a done query to failed (used for retroactive QA flagging).
+    Only changes rows currently in ``done`` status — admin_console parity."""
+    if not await _table_exists(session, "queries"):
+        return False
+    result = await session.execute(
+        text("UPDATE queries SET status = 'failed' WHERE id = :id AND status = 'done'"),
+        {"id": query_id},
+    )
+    if (getattr(result, "rowcount", 0) or 0) == 0:
+        await session.rollback()
+        return False
+    await session.commit()
+    return True
+
+
+__all__ = [
+    "batch_trigger_queries",
+    "cleanup_queries",
+    "create_query",
+    "fetch_status_stats",
+    "list_queries",
+    "mark_query_failed",
+    "retry_query",
+]
