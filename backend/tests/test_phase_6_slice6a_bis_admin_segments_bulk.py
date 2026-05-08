@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.segments.llm import (
     GenerationResult,
     SegmentProfileGenerationError,
+    SegmentProfileGenerationService,
     validate_profile_candidates,
     validate_segment_candidates,
 )
@@ -143,6 +144,113 @@ def test_validate_segment_candidates_accepts_common_llm_aliases_and_defaults():
     assert rows[0]["regions"] == "tier 1 cities"
     assert rows[0]["sampling_rate"] == "18%"
     assert rows[0]["note"] == "Researches ingredients, efficacy proof, and expert reviews."
+
+
+@pytest.mark.asyncio
+async def test_segment_generation_prompt_anchors_brand_industry(monkeypatch):
+    """Segment prompts should force the model to follow the selected brand context."""
+
+    captured: dict[str, str] = {}
+
+    async def fake_call_llm_json(self, prompt: str, root_key: str, max_count: int):
+        captured["prompt"] = prompt
+        return [_valid_segment_draft()], "gpt-test", {"prompt_tokens": 1}
+
+    monkeypatch.setattr(
+        SegmentProfileGenerationService,
+        "_call_llm_json",
+        fake_call_llm_json,
+    )
+
+    service = SegmentProfileGenerationService(config={"default_model": "gpt-test"})
+    await service.generate_segments(
+        brand_name="bestCoffer",
+        industry="数据安全",
+        count=1,
+        status="active",
+        positioning="面向企业的数据安全与合规产品线",
+        goal="覆盖数据保护、合规审计和竞品替换场景",
+        constraints="禁止生成与数据安全无关的人群",
+    )
+
+    prompt = captured["prompt"]
+    assert "bestCoffer" in prompt
+    assert "数据安全" in prompt
+    assert "必须围绕" in prompt
+    assert "不要套用" in prompt
+    assert "默认使用中文" in prompt
+
+
+@pytest.mark.asyncio
+async def test_segment_generation_prompt_includes_product_context(monkeypatch):
+    """Brand-level Segment generation should vary by the chosen product."""
+
+    captured: dict[str, str] = {}
+
+    async def fake_call_llm_json(self, prompt: str, root_key: str, max_count: int):
+        captured["prompt"] = prompt
+        return [_valid_segment_draft()], "gpt-test", {"prompt_tokens": 1}
+
+    monkeypatch.setattr(
+        SegmentProfileGenerationService,
+        "_call_llm_json",
+        fake_call_llm_json,
+    )
+
+    service = SegmentProfileGenerationService(config={"default_model": "gpt-test"})
+    await service.generate_segments(
+        brand_name="bestCoffer",
+        industry="数据安全",
+        count=1,
+        status="active",
+        positioning="面向企业的数据安全与合规产品线",
+        product_id="42",
+        product_name="bestCoffer DLP",
+        product_category="数据防泄漏",
+        product_description="识别敏感数据流转并阻断外发风险",
+    )
+
+    prompt = captured["prompt"]
+    assert "bestCoffer DLP" in prompt
+    assert "数据防泄漏" in prompt
+    assert "识别敏感数据流转" in prompt
+    assert "不同产品" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_route_passes_product_context_to_service(
+    client, admin_operator, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return GenerationResult(
+            items=[_valid_segment_draft(1)],
+            model="stub-doubao",
+            prompt="stub-prompt",
+            usage={"total_tokens": 5},
+            estimated_cost=None,
+        )
+
+    _patch_llm_service(monkeypatch, generate=_capture)
+    resp = await client.post(
+        "/api/admin/segments/generate",
+        json={
+            "brand_name": "TestBrand",
+            "industry": "数据安全",
+            "product_id": "42",
+            "product_name": "DLP",
+            "product_category": "数据防泄漏",
+            "product_description": "阻断敏感数据外发",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["product_id"] == "42"
+    assert captured["product_name"] == "DLP"
+    assert captured["product_category"] == "数据防泄漏"
+    assert captured["product_description"] == "阻断敏感数据外发"
 
 
 def test_validate_profile_candidates_skips_silent_invalid():

@@ -3144,8 +3144,18 @@
                       </select>
                     </label>
                     <label class="space-y-1.5">
+                      <span class="font-semibold text-ink-muted">产品线</span>
+                      <select x-model="segmentLlmForm.productId" @change="syncSelectedProduct()" :disabled="!segmentLlmForm.brandId || segmentLlmProductsLoading" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60">
+                        <option value="" x-text="segmentLlmProductsLoading ? '加载产品中...' : (segmentLlmProductOptions.length ? '品牌整体 / 不限定产品' : '品牌整体（暂无产品）')"></option>
+                        <template x-for="product in segmentLlmProductOptions" :key="product.id">
+                          <option :value="product.id" x-text="segmentLlmProductLabel(product)"></option>
+                        </template>
+                      </select>
+                      <div x-show="segmentLlmProductError" class="text-[11px] text-danger" x-text="segmentLlmProductError"></div>
+                    </label>
+                    <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">行业</span>
-                      <input x-model="segmentLlmForm.industry" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
+                      <input x-model="segmentLlmForm.industry" @change="resetSegmentLlmPromptDefaults(false)" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
                     </label>
                     <label class="space-y-1.5">
                       <span class="font-semibold text-ink-muted">生成数量</span>
@@ -3160,16 +3170,8 @@
                     </label>
                   </div>
                   <label class="space-y-1.5 block">
-                    <span class="font-semibold text-ink-muted">品牌定位 / 产品线</span>
+                    <span class="font-semibold text-ink-muted">品牌定位</span>
                     <textarea x-model="segmentLlmForm.positioning" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
-                  </label>
-                  <label class="space-y-1.5 block">
-                    <span class="font-semibold text-ink-muted">覆盖目标</span>
-                    <textarea x-model="segmentLlmForm.goal" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
-                  </label>
-                  <label class="space-y-1.5 block">
-                    <span class="font-semibold text-ink-muted">约束</span>
-                    <textarea x-model="segmentLlmForm.constraints" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
                   <div class="flex items-center justify-end gap-2">
                     <button type="button" @click="generateBrandSegments()" :disabled="segmentLlmLoading || !(segmentLlmForm.brandId || segmentLlmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
@@ -9760,16 +9762,22 @@ function segmentCrudPanel() {
     brandOptions: [],
     brandOptionsLoading: false,
     brandOptionsError: '',
+    segmentLlmProductOptions: [],
+    segmentLlmProductsLoading: false,
+    segmentLlmProductError: '',
     segmentForm: { id: '', brandId: '', brandName: '', name: '', industry: '', status: 'active', weight: 0.25, ageRange: '', income: '', regions: '', samplingRate: '', note: '' },
+    segmentLlmAppliedPromptDefaults: null,
     segmentLlmForm: {
       brandId: '',
       brand: '',
-      industry: 'Beauty',
+      productId: '',
+      productName: '',
+      productCategory: '',
+      productDescription: '',
+      industry: '',
       count: 6,
       status: 'active',
-      positioning: 'Premium skincare, fragrance, and cosmetics.',
-      goal: 'Cover core buyers, price/channel comparers, competitor switchers, gift buyers, and new category entrants.',
-      constraints: 'Each Segment must have a clear sampling boundary and avoid duplicate names.',
+      positioning: '请概括所选品牌在「所选行业」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把产品线写在这里；产品线请用上方产品下拉选择。',
     },
     profileForm: { id: '', name: '', demographic: '', need: '', weight: '1.0', status: 'active', persona_json: {} },
     llmForm: {
@@ -9782,6 +9790,7 @@ function segmentCrudPanel() {
 
     init() {
       this.applyUrlState();
+      this.resetSegmentLlmPromptDefaults(false);
       this.loadBrandOptions();
       this.loadSegments(this.segmentPagination.page).then(() => {
         if (this.segmentView === 'profiles' && this.selectedSegmentId) {
@@ -9917,21 +9926,122 @@ function segmentCrudPanel() {
       if (brand?.industry) this.segmentForm.industry = brand.industry;
     },
 
+    segmentLlmPromptDefaults(industry) {
+      const industryLabel = String(industry || this.segmentLlmForm.industry || '').trim() || '所选行业';
+      const brandLabel = String(this.segmentLlmForm.brand || '').trim() || '所选品牌';
+      return {
+        positioning: `请概括「${brandLabel}」在「${industryLabel}」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把产品线写在这里；产品线请用上方产品下拉选择。`,
+      };
+    },
+
+    isAutoSegmentLlmPromptField(field, value) {
+      const current = String(value || '').trim();
+      if (!current) return true;
+      const applied = this.segmentLlmAppliedPromptDefaults || {};
+      if (current === String(applied[field] || '').trim()) return true;
+      const legacyDefaults = {
+        positioning: ['Premium skincare' + ', fragrance, and cosmetics.'],
+      };
+      return (legacyDefaults[field] || []).includes(current);
+    },
+
+    resetSegmentLlmPromptDefaults(force = false) {
+      const defaults = this.segmentLlmPromptDefaults(this.segmentLlmForm.industry);
+      ['positioning'].forEach(field => {
+        if (force || this.isAutoSegmentLlmPromptField(field, this.segmentLlmForm[field])) {
+          this.segmentLlmForm[field] = defaults[field];
+        }
+      });
+      this.segmentLlmAppliedPromptDefaults = defaults;
+    },
+
+    segmentLlmProductLabel(product) {
+      if (!product) return '';
+      const parts = [product.name || 'Product #' + product.id];
+      if (product.category) parts.push(product.category);
+      if (product.sku) parts.push(product.sku);
+      return parts.join(' / ');
+    },
+
+    clearSegmentLlmProductSelection() {
+      this.segmentLlmForm.productId = '';
+      this.segmentLlmForm.productName = '';
+      this.segmentLlmForm.productCategory = '';
+      this.segmentLlmForm.productDescription = '';
+    },
+
+    syncSelectedProduct() {
+      const id = String(this.segmentLlmForm.productId || '').trim();
+      if (!id) {
+        this.clearSegmentLlmProductSelection();
+        return;
+      }
+      const product = this.segmentLlmProductOptions.find(item => String(item.id) === id);
+      if (!product) {
+        this.clearSegmentLlmProductSelection();
+        return;
+      }
+      this.segmentLlmForm.productId = String(product.id || '');
+      this.segmentLlmForm.productName = product.name || '';
+      this.segmentLlmForm.productCategory = product.category || '';
+      this.segmentLlmForm.productDescription = product.description || '';
+    },
+
+    async loadSegmentLlmProducts() {
+      const brandId = String(this.segmentLlmForm.brandId || '').trim();
+      this.segmentLlmProductOptions = [];
+      this.segmentLlmProductError = '';
+      this.clearSegmentLlmProductSelection();
+      if (!brandId) return;
+      this.segmentLlmProductsLoading = true;
+      try {
+        const params = new URLSearchParams({ brand_id: brandId, status: 'active', limit: '200' });
+        const body = await this.apiJson(API_BASE + '/admin/products?' + params.toString());
+        this.segmentLlmProductOptions = (body.products || []).map(product => ({
+          id: String(product.id || '').trim(),
+          name: String(product.name || '').trim(),
+          sku: String(product.sku || '').trim(),
+          category: String(product.category || '').trim(),
+          description: String(product.description || '').trim(),
+          status: String(product.status || 'active').trim(),
+        })).filter(product => product.id && product.name);
+      } catch (error) {
+        this.segmentLlmProductOptions = [];
+        this.segmentLlmProductError = error.message || '产品加载失败';
+      } finally {
+        this.segmentLlmProductsLoading = false;
+        this.refreshIcons();
+      }
+    },
+
     ensureSelectedBrandIsValid(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
       if (!this.brandOptions.length) {
         form.brandId = '';
         form.brand = '';
+        if (scope === 'segment') {
+          this.segmentLlmProductOptions = [];
+          this.clearSegmentLlmProductSelection();
+        }
         return;
       }
       const brand = this.selectedBrandOptionById(form.brandId) || this.selectedBrandOption(form.brand);
       if (brand) {
         form.brandId = String(brand.id || '');
         form.brand = brand.name || form.brand;
+        if (scope === 'segment') {
+          if (brand.industry) this.segmentLlmForm.industry = brand.industry;
+          this.resetSegmentLlmPromptDefaults(false);
+          this.loadSegmentLlmProducts();
+        }
         return;
       }
       form.brandId = '';
       form.brand = '';
+      if (scope === 'segment') {
+        this.segmentLlmProductOptions = [];
+        this.clearSegmentLlmProductSelection();
+      }
     },
 
     syncSelectedBrand(scope) {
@@ -9940,8 +10050,10 @@ function segmentCrudPanel() {
       if (!brand) return;
       form.brandId = String(brand.id || '');
       form.brand = brand.name || form.brand;
-      if (scope === 'segment' && brand.industry) {
-        this.segmentLlmForm.industry = brand.industry;
+      if (scope === 'segment') {
+        if (brand.industry) this.segmentLlmForm.industry = brand.industry;
+        this.resetSegmentLlmPromptDefaults(false);
+        this.loadSegmentLlmProducts();
       }
     },
 
@@ -10262,6 +10374,8 @@ function segmentCrudPanel() {
       this.segmentLlmError = '';
       this.segmentLlmApplyMessage = '';
       this.segmentLlmApplyTone = 'info';
+      this.resetSegmentLlmPromptDefaults(false);
+      if (this.segmentLlmForm.brandId && !this.segmentLlmProductOptions.length) this.loadSegmentLlmProducts();
       this.segmentLlmModalOpen = true;
       this.refreshIcons();
     },
@@ -10277,11 +10391,13 @@ function segmentCrudPanel() {
       const brandOption = this.selectedBrandOptionById(this.segmentLlmForm.brandId) || this.selectedBrandOption(this.segmentLlmForm.brand);
       const brand = String(brandOption?.name || this.segmentLlmForm.brand || '').trim();
       if (!brand) {
-        this.segmentLlmError = 'Brand is required';
+        this.segmentLlmError = '请选择品牌';
         return;
       }
       this.segmentLlmForm.brandId = String(brandOption?.id || this.segmentLlmForm.brandId || '');
       this.segmentLlmForm.brand = brand;
+      this.syncSelectedProduct();
+      this.resetSegmentLlmPromptDefaults(false);
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
       this.segmentLlmApplyMessage = '';
@@ -10298,8 +10414,10 @@ function segmentCrudPanel() {
             count: this.segmentLlmForm.count,
             status: targetStatus,
             positioning: this.segmentLlmForm.positioning,
-            goal: this.segmentLlmForm.goal,
-            constraints: this.segmentLlmForm.constraints,
+            "product_id": this.segmentLlmForm.productId || null,
+            "product_name": this.segmentLlmForm.productName || '',
+            "product_category": this.segmentLlmForm.productCategory || '',
+            "product_description": this.segmentLlmForm.productDescription || '',
           }),
         });
         this.segmentLlmDrafts = (body.drafts || []).map(row => this.fromSegment({

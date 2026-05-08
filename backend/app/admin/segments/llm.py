@@ -67,12 +67,19 @@ def _slug(value: str, fallback: str = "segment") -> str:
 
 def _json_prompt(task: str, payload: dict[str, Any], schema_hint: dict[str, Any]) -> str:
     return (
-        "You are generating Admin-reviewed Segment/Profile drafts for GENPANO.\n"
-        "Return only strict JSON. Do not include markdown, comments, prose, or "
-        "code fences.\n"
-        "Validate all required fields, keep requested count or fewer, avoid "
-        "duplicate names, and keep weights numeric, non-negative, and <= 1.\n"
-        "The generated drafts are for human review before database insertion.\n"
+        "你正在为 GENPANO Admin 生成供运营审核的 Segment/Profile 草稿。\n"
+        "只返回严格 JSON，不要输出 markdown、注释、解释文字或代码块。\n"
+        "必须围绕 Input 中的 brand_name、industry、positioning、product、generation_goal、generation_constraints 生成；"
+        "如果这些字段互相冲突，以 brand_name 和 industry 为最高优先级。\n"
+        "不要套用无关行业的样例，不要把美妆、护肤、香氛、礼赠等场景迁移到非相关品牌。\n"
+        "默认使用中文撰写 name、note、regions、income 等可读字段；品牌名和专有名词保持原文；"
+        "只有 Input 明确要求英文时才使用英文。\n"
+        "Segment 必须是可进入 Query Pool 采样的业务/需求/决策场景分层，"
+        "Profile 必须从所属 Segment 的真实边界继续细分。\n"
+        "校验必填字段，数量不超过请求值，避免重复名称，weights 必须是 0 到 1 的数字。\n"
+        "生成内容会先由人工审核，再写入数据库。\n"
+        "不同品牌、不同产品必须生成不同 Segment；如果 Input.product 非空，必须优先围绕该产品的品类、"
+        "描述和使用场景生成，而不是只生成品牌整体人群。\n"
         f"Task: {task}\n"
         f"Input: {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
         f"Output schema: {json.dumps(schema_hint, ensure_ascii=False, sort_keys=True)}"
@@ -462,19 +469,38 @@ class SegmentProfileGenerationService:
         count: int,
         status: str,
         positioning: str,
-        goal: str,
-        constraints: str,
+        product_id: str | int | None = None,
+        product_name: str = "",
+        product_category: str = "",
+        product_description: str = "",
+        goal: str = "",
+        constraints: str = "",
     ) -> GenerationResult:
         count = _bounded_count(count, 6, 1, 20)
         status = status if status in {"active", "draft", "paused"} else "draft"
+        product_context = {
+            "product_id": str(product_id or "").strip(),
+            "product_name": str(product_name or "").strip(),
+            "product_category": str(product_category or "").strip(),
+            "product_description": str(product_description or "").strip(),
+        }
+        product_context = {key: value for key, value in product_context.items() if value}
         payload = {
             "brand_name": brand_name,
             "industry": industry,
             "count": count,
             "status": status,
             "positioning": positioning,
-            "goal": goal,
-            "constraints": constraints,
+            "product": product_context,
+            "generation_goal": (
+                "生成可进入 Query Pool 采样的客户/用户/采购决策 Segment，覆盖核心高意向客户、"
+                "预算/采购决策者、技术/安全评估者、竞品替换者、风险/合规关注者和新客教育人群。"
+            ),
+            "generation_constraints": (
+                "每个 Segment 必须与所选品牌、行业和产品上下文强相关，写清采样边界、触发场景、"
+                "决策关注点和排除口径；Segment 名称不得空泛，不得重复；禁止生成与行业或产品无关的"
+                "美妆、护肤、香氛、礼赠等内容。"
+            ),
         }
         prompt = _json_prompt(
             "generate_segments",
@@ -513,6 +539,7 @@ class SegmentProfileGenerationService:
         return self._fallback_segments(
             brand_name=brand_name,
             industry=industry,
+            product_name=product_context.get("product_name", ""),
             count=count,
             status=status,
             prompt=prompt,
@@ -526,76 +553,79 @@ class SegmentProfileGenerationService:
         count: int,
         status: str,
         prompt: str,
+        product_name: str = "",
     ) -> GenerationResult:
         """Deterministic fallback used only when ``allow_fallback`` is set
         — admin_console has the same opt-in path for ops dry-runs."""
         brand = (brand_name or "Brand").strip() or "Brand"
         industry_name = (industry or "General").strip() or "General"
-        brand_slug = _slug(brand, "brand").upper()
+        product_label = (product_name or "").strip()
+        subject = f"{brand} {product_label}".strip() if product_label else brand
+        brand_slug = _slug(f"{brand}-{product_label}" if product_label else brand, "brand").upper()
         archetypes = [
             (
-                "Core high-intent buyers",
-                "24-38",
-                "mid-high",
-                "tier 1 and new tier 1",
+                "核心高意向评估者",
+                "企业决策团队",
+                "中高预算",
+                "一线/新一线及重点行业城市",
                 "32%",
-                "Evaluates category value and needs a clear reason to prefer the brand.",
+                f"正在评估 {industry_name} 方案，并需要判断 {subject} 是否匹配当前业务问题。",
             ),
             (
-                "Evidence comparison buyers",
-                "22-35",
-                "mid-high",
-                "tier 1 and new tier 1",
+                "技术验证与集成评估者",
+                "技术/安全团队",
+                "中高预算",
+                "重点行业客户",
                 "24%",
-                "Compares proof, ingredients, authority, reviews, and alternatives.",
+                f"关注 {subject} 在 {industry_name} 场景下的能力边界、集成成本和验证证据。",
             ),
             (
-                "Price and channel sensitive buyers",
-                "24-42",
-                "middle",
-                "new tier 1 and tier 2",
+                "预算与采购决策者",
+                "采购/财务负责人",
+                "中等预算",
+                "全国企业客户",
                 "18%",
-                "Compares official channels, discounts, bundles, and final price.",
+                f"比较 {subject} 的采购成本、合同条件、服务范围和落地风险。",
             ),
             (
-                "Gift scenario decision makers",
-                "26-45",
-                "mid-high",
-                "tier 1 and new tier 1",
+                "风险与合规关注者",
+                "法务/合规/风控团队",
+                "中高预算",
+                "监管敏感行业",
                 "16%",
-                "Cares about packaging, recipient fit, budget, and purchase risk.",
+                f"重点确认 {subject} 是否满足 {industry_name} 相关合规、审计和风险控制要求。",
             ),
             (
-                "Competitor switchers",
-                "24-40",
-                "mid-high",
-                "key cities",
+                "竞品替换评估者",
+                "存量系统负责人",
+                "中高预算",
+                "重点城市/重点行业",
                 "14%",
-                "Is choosing between this brand and substitute brands.",
+                f"已有替代方案或竞品系统，正在判断切换到 {subject} 的收益、成本和迁移风险。",
             ),
             (
-                "New category entrants",
-                "20-32",
-                "middle",
-                "tier 1 and tier 2",
+                "新场景教育人群",
+                "业务/数字化团队",
+                "中等预算",
+                "一线至二线城市",
                 "12%",
-                "Needs simple entry paths and low-friction first purchase advice.",
+                f"刚开始理解 {industry_name} 需求，需要低门槛材料解释 {subject} 的使用场景和价值。",
             ),
             (
-                "Repeat and upgrade users",
-                "28-46",
-                "high",
-                "tier 1 and new tier 1",
+                "存量扩容升级用户",
+                "现有客户团队",
+                "高预算",
+                "存量客户区域",
                 "10%",
-                "Cares about upgrade value, long-term experience, and repurchase stability.",
+                f"已使用 {subject} 或同类能力，关注扩容、升级、续约和长期服务稳定性。",
             ),
             (
-                "Risk-averse reviewers",
-                "24-44",
-                "mid-high",
-                "key cities",
+                "谨慎验证型评审者",
+                "跨部门评审团队",
+                "中高预算",
+                "重点行业城市",
                 "8%",
-                "Looks for negative feedback, mismatch risk, and after-sales concerns.",
+                f"会系统排查 {subject} 在 {industry_name} 场景下的负面反馈、适配风险和服务承诺。",
             ),
         ]
         items: list[dict[str, Any]] = []
@@ -604,7 +634,7 @@ class SegmentProfileGenerationService:
             items.append(
                 {
                     "id": f"SEG-{brand_slug}-{index + 1:03d}",
-                    "name": f"{brand} - {title}",
+                    "name": f"{subject} - {title}",
                     "industry": industry_name,
                     "status": status,
                     "weight": max(0.05, round(0.30 - index * 0.02, 2)),
