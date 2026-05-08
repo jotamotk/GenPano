@@ -209,6 +209,12 @@ from app.api.profiles_legacy import router as _profiles_legacy_router  # noqa: E
 
 app.include_router(_profiles_legacy_router, prefix="/api")
 
+# Misc legacy routes (Phase 9 slice 9f) — sms_register / task_status /
+# html_files / html / screenshot / backfill_citations / queries/by-day.
+from app.api.misc import router as _misc_router  # noqa: E402
+
+app.include_router(_misc_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.

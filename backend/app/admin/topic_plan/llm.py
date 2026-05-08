@@ -49,8 +49,9 @@ def _response_text_snippet(response: httpx.Response, *, limit: int = 800) -> str
 
 
 def _responses_output_text(data: dict[str, Any]) -> str:
-    if isinstance(data.get("output_text"), str):
-        return data["output_text"].strip()
+    direct = data.get("output_text")
+    if isinstance(direct, str):
+        return direct.strip()
     chunks: list[str] = []
     for item in data.get("output") or []:
         if not isinstance(item, dict):

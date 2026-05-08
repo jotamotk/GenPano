@@ -116,7 +116,11 @@ async def _insert_candidate_batch(
             skipped.append({"title": item.title, "reason": "brand_not_selected"})
             continue
         leaking_brand = next(
-            (candidate_brand for candidate_brand in brands if is_title_brand_named(item.title, candidate_brand)),
+            (
+                candidate_brand
+                for candidate_brand in brands
+                if is_title_brand_named(item.title, candidate_brand)
+            ),
             None,
         )
         if leaking_brand is not None:
