@@ -28,6 +28,7 @@ from app.api.admin.comms import router as comms_router
 from app.api.admin.cost import router as cost_router
 from app.api.admin.diagnostics import router as diagnostics_router
 from app.api.admin.engine_health import router as engine_health_router
+from app.api.admin.hot_topics import router as hot_topics_router
 from app.api.admin.kg_candidates import router as kg_candidates_router
 from app.api.admin.kg_discovery import router as kg_discovery_router
 from app.api.admin.leads import router as leads_router
@@ -53,6 +54,7 @@ router.include_router(comms_router, prefix="/comms")
 router.include_router(cost_router, prefix="/cost")
 router.include_router(diagnostics_router, prefix="/diagnostics")
 router.include_router(engine_health_router, prefix="/engine-health")
+router.include_router(hot_topics_router, prefix="")
 router.include_router(kg_candidates_router, prefix="/kg-candidates")
 router.include_router(kg_discovery_router, prefix="/kg-discovery")
 router.include_router(leads_router, prefix="/leads")
