@@ -9020,123 +9020,17 @@ def _run_profile_generation_job(job_id, *, admin_id, segment_id, payload):
 
 
 # ─── Segments API ─────────────────────────────────────────────────────────────
-
-@app.route('/api/segments')
-def list_segments():
-    """列出所有 Segment 定义（优先从 Python 代码，失败则从 DB profiles 提取）"""
-    # 尝试从 Python 定义导入
-    try:
-        from geo_tracker.generation.segments.definitions import SEGMENTS
-        result = []
-        for seg in SEGMENTS:
-            result.append({
-                'id': seg.id,
-                'name': seg.name,
-                'description': seg.description,
-                'language': seg.language,
-                'target_llms': seg.target_llms,
-                'tone_pool': list(seg.tone_pool),
-                'verbosity_pool': list(seg.verbosity_pool),
-                'search_style_pool': list(seg.search_style_pool),
-                'add_role_context_rate': seg.add_role_context_rate,
-                'device_mobile_rate': seg.device_mobile_rate,
-                'city_tiers': seg.city_tiers,
-                'age_ranges': [
-                    {'label': a.label, 'min_age': a.min_age, 'max_age': a.max_age}
-                    for a in seg.age_ranges
-                ],
-                'role_variants': [
-                    {
-                        'label': rv.label,
-                        'profession': rv.profession,
-                        'company_size': rv.company_size,
-                        'income_level': rv.income_level,
-                        'pain_points': rv.pain_points,
-                        'use_buzzwords': rv.use_buzzwords,
-                    }
-                    for rv in seg.role_variants
-                ],
-            })
-        return jsonify(result)
-    except ImportError:
-        pass  # Fall through to DB extraction
-
-    # 从数据库 profiles 的 persona_traits 中提取 segment 信息
-    try:
-        from psycopg2.extras import RealDictCursor
-        conn = get_db()
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT DISTINCT
-                        persona_traits->>'segment_id' AS id,
-                        persona_traits->>'segment_name' AS name,
-                        persona_traits->'target_llms' AS target_llms
-                    FROM profiles
-                    WHERE persona_traits->>'segment_id' IS NOT NULL
-                    ORDER BY persona_traits->>'segment_id'
-                """)
-                seg_rows = cur.fetchall()
-
-                if not seg_rows:
-                    return jsonify([])
-
-                # 对每个 segment 聚合 profile 信息
-                segments = []
-                for seg_row in seg_rows:
-                    seg_id = seg_row['id']
-                    cur.execute("""
-                        SELECT
-                            COUNT(*) AS profile_count,
-                            array_agg(DISTINCT profession) AS professions,
-                            array_agg(DISTINCT age_range) AS age_ranges,
-                            array_agg(DISTINCT location) AS locations,
-                            array_agg(DISTINCT country_code) AS countries,
-                            array_agg(DISTINCT language) AS languages,
-                            array_agg(DISTINCT device_type) AS device_types,
-                            array_agg(DISTINCT persona_traits->>'tone') AS tones,
-                            array_agg(DISTINCT persona_traits->>'verbosity') AS verbosities,
-                            array_agg(DISTINCT persona_traits->>'search_style') AS search_styles
-                        FROM profiles
-                        WHERE persona_traits->>'segment_id' = %s
-                    """, (seg_id,))
-                    agg = cur.fetchone()
-
-                    import json as json_mod
-                    target_llms = seg_row['target_llms']
-                    if isinstance(target_llms, str):
-                        target_llms = json_mod.loads(target_llms)
-
-                    segments.append({
-                        'id': seg_id,
-                        'name': seg_row['name'] or seg_id,
-                        'description': f"从数据库提取 - {agg['profile_count']} 个 profiles",
-                        'language': (agg['languages'] or ['zh'])[0] if agg['languages'] else 'zh',
-                        'target_llms': target_llms or [],
-                        'tone_pool': [t for t in (agg['tones'] or []) if t],
-                        'verbosity_pool': [v for v in (agg['verbosities'] or []) if v],
-                        'search_style_pool': [s for s in (agg['search_styles'] or []) if s],
-                        'add_role_context_rate': 0,
-                        'device_mobile_rate': 0,
-                        'city_tiers': [],
-                        'age_ranges': [
-                            {'label': ar, 'min_age': int(ar.split('-')[0]) if '-' in ar else 0,
-                             'max_age': int(ar.split('-')[1]) if '-' in ar else 0}
-                            for ar in (agg['age_ranges'] or []) if ar and '-' in ar
-                        ],
-                        'role_variants': [
-                            {'label': p, 'profession': p, 'company_size': '', 'income_level': '',
-                             'pain_points': [], 'use_buzzwords': False}
-                            for p in (agg['professions'] or []) if p
-                        ],
-                        'profile_count': agg['profile_count'],
-                    })
-
-                return jsonify(segments)
-        finally:
-            conn.close()
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+#
+# /api/segments was migrated to FastAPI in Phase 6 slice 6a + 6b. The
+# canonical handler lives at backend/app/api/admin/segments/router.py
+# and is also re-mounted at /api/segments as a legacy alias for the
+# Admin SPA. The previous Flask shim attempted to import
+# geo_tracker.generation.segments.definitions and fell back to a
+# persona_traits scan that doesn't exist in the current schema — every
+# call either ImportError'd or 500'd. Routing now flows through nginx
+# (~ ^/admin/api/(accounts|segments) → backend:4000), so this handler
+# was unreachable in production; removing it prevents future direct
+# hits on admin-console:5000 from returning the broken response.
 
 
 # ─── Profiles API ────────────────────────────────────────────────────────────
