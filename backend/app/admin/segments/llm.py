@@ -214,12 +214,9 @@ def validate_segment_candidates(
     seen_names: set[str] = set()
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(items[:max_count], start=1):
-        _require_any(raw, "Segment id/code", "id", "code")
-        for field in ("name", "industry", "status", "weight", "income", "regions", "note"):
-            _require_any(raw, f"Segment {field}", field)
-        _require_any(raw, "Segment age_range", "age_range", "ageRange")
-        _require_any(raw, "Segment sampling_rate", "sampling_rate", "samplingRate")
-        name = str(raw.get("name") or "").strip()
+        if not isinstance(raw, dict):
+            continue
+        name = str(_first_non_empty(raw, "name", "segment_name", "segmentName", "title") or "").strip()
         if not name:
             raise SegmentProfileGenerationError("invalid_llm_output", "Segment name is required")
         normalized = name.lower()
@@ -233,26 +230,67 @@ def validate_segment_candidates(
             raise SegmentProfileGenerationError(
                 "invalid_segment_status", f"Invalid Segment status: {status}"
             )
-        weight = _normalize_weight(raw.get("weight"), 0.15, "Segment weight")
+        weight = _normalize_weight(
+            _first_non_empty(
+                raw,
+                "weight",
+                "share",
+                "audience_share",
+                "audienceShare",
+                "sampling_weight",
+                "samplingWeight",
+            ),
+            0.15,
+            "Segment weight",
+        )
+        segment_id = (
+            str(_first_non_empty(raw, "id", "code") or f"SEG-DRAFT-{index:03d}")
+            .strip()
+            .upper()
+        )
+        sampling_rate = str(
+            _first_non_empty(
+                raw,
+                "sampling_rate",
+                "samplingRate",
+                "sample_rate",
+                "sampleRate",
+                "sample_ratio",
+                "sampleRatio",
+                "audience_share",
+                "audienceShare",
+                "share",
+            )
+            or f"{round(weight * 100)}%"
+        ).strip()
         rows.append(
             {
-                "id": str(raw.get("id") or raw.get("code") or f"SEG-DRAFT-{index:03d}")
-                .strip()
-                .upper(),
-                "code": str(raw.get("code") or raw.get("id") or f"SEG-DRAFT-{index:03d}")
-                .strip()
-                .upper(),
+                "id": segment_id,
+                "code": str(_first_non_empty(raw, "code", "id") or segment_id).strip().upper(),
                 "name": name,
-                "industry": str(raw.get("industry") or "").strip(),
+                "industry": str(
+                    _first_non_empty(raw, "industry", "industry_name", "industryName", "category", "vertical")
+                    or ""
+                ).strip(),
                 "status": status,
                 "weight": weight,
-                "age_range": str(raw.get("age_range") or raw.get("ageRange") or "").strip(),
-                "income": str(raw.get("income") or "").strip(),
-                "regions": str(raw.get("regions") or "").strip(),
-                "sampling_rate": str(
-                    raw.get("sampling_rate") or raw.get("samplingRate") or ""
+                "age_range": str(
+                    _first_non_empty(raw, "age_range", "ageRange", "age_group", "ageGroup", "age", "ages")
+                    or ""
                 ).strip(),
-                "note": str(raw.get("note") or "").strip(),
+                "income": str(
+                    _first_non_empty(raw, "income", "income_level", "incomeLevel", "income_range", "incomeRange")
+                    or ""
+                ).strip(),
+                "regions": str(
+                    _first_non_empty(raw, "regions", "region", "location", "locations", "geo", "market")
+                    or ""
+                ).strip(),
+                "sampling_rate": sampling_rate,
+                "note": str(
+                    _first_non_empty(raw, "note", "description", "summary", "reason", "rationale", "insight")
+                    or ""
+                ).strip(),
             }
         )
     return rows

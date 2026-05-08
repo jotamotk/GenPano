@@ -119,6 +119,32 @@ def test_validate_segment_candidates_clamps_to_max_count():
     assert len(rows) == 3
 
 
+def test_validate_segment_candidates_accepts_common_llm_aliases_and_defaults():
+    rows = validate_segment_candidates(
+        [
+            {
+                "name": "Ingredient proof seekers",
+                "description": "Researches ingredients, efficacy proof, and expert reviews.",
+                "audience_share": "18%",
+                "ageGroup": "25-34",
+                "incomeLevel": "mid-high",
+                "region": "tier 1 cities",
+                "sampleRatio": "18%",
+            }
+        ],
+        3,
+    )
+
+    assert rows[0]["id"] == "SEG-DRAFT-001"
+    assert rows[0]["status"] == "draft"
+    assert rows[0]["weight"] == 0.18
+    assert rows[0]["age_range"] == "25-34"
+    assert rows[0]["income"] == "mid-high"
+    assert rows[0]["regions"] == "tier 1 cities"
+    assert rows[0]["sampling_rate"] == "18%"
+    assert rows[0]["note"] == "Researches ingredients, efficacy proof, and expert reviews."
+
+
 def test_validate_profile_candidates_skips_silent_invalid():
     """admin_console silently skips profile drafts missing demographic /
     need / name (rather than raising) — preserve that contract."""
