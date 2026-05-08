@@ -322,7 +322,9 @@ async def generate_segments_route(
             positioning=str(payload.get("positioning") or ""),
             product_id=payload.get("product_id") or payload.get("productId"),
             product_name=str(payload.get("product_name") or payload.get("productName") or ""),
-            product_category=str(payload.get("product_category") or payload.get("productCategory") or ""),
+            product_category=str(
+                payload.get("product_category") or payload.get("productCategory") or ""
+            ),
             product_description=str(
                 payload.get("product_description") or payload.get("productDescription") or ""
             ),

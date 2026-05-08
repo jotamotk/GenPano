@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """Async Segment/Profile generation LLM service.
 
 Port of admin_console/segment_profiles.py from sync OpenAI SDK to async
@@ -69,7 +70,8 @@ def _json_prompt(task: str, payload: dict[str, Any], schema_hint: dict[str, Any]
     return (
         "你正在为 GENPANO Admin 生成供运营审核的 Segment/Profile 草稿。\n"
         "只返回严格 JSON，不要输出 markdown、注释、解释文字或代码块。\n"
-        "必须围绕 Input 中的 brand_name、industry、positioning、product、generation_goal、generation_constraints 生成；"
+        "必须围绕 Input 中的 brand_name、industry、positioning、product、"
+        "generation_goal、generation_constraints 生成；"
         "如果这些字段互相冲突，以 brand_name 和 industry 为最高优先级。\n"
         "不要套用无关行业的样例，不要把美妆、护肤、香氛、礼赠等场景迁移到非相关品牌。\n"
         "默认使用中文撰写 name、note、regions、income 等可读字段；品牌名和专有名词保持原文；"
@@ -78,7 +80,8 @@ def _json_prompt(task: str, payload: dict[str, Any], schema_hint: dict[str, Any]
         "Profile 必须从所属 Segment 的真实边界继续细分。\n"
         "校验必填字段，数量不超过请求值，避免重复名称，weights 必须是 0 到 1 的数字。\n"
         "生成内容会先由人工审核，再写入数据库。\n"
-        "不同品牌、不同产品必须生成不同 Segment；如果 Input.product 非空，必须优先围绕该产品的品类、"
+        "不同品牌、不同产品必须生成不同 Segment；如果 Input.product 非空，"
+        "必须优先围绕该产品的品类、"
         "描述和使用场景生成，而不是只生成品牌整体人群。\n"
         f"Task: {task}\n"
         f"Input: {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
@@ -223,7 +226,9 @@ def validate_segment_candidates(
     for index, raw in enumerate(items[:max_count], start=1):
         if not isinstance(raw, dict):
             continue
-        name = str(_first_non_empty(raw, "name", "segment_name", "segmentName", "title") or "").strip()
+        name = str(
+            _first_non_empty(raw, "name", "segment_name", "segmentName", "title") or ""
+        ).strip()
         if not name:
             raise SegmentProfileGenerationError("invalid_llm_output", "Segment name is required")
         normalized = name.lower()
@@ -276,26 +281,64 @@ def validate_segment_candidates(
                 "code": str(_first_non_empty(raw, "code", "id") or segment_id).strip().upper(),
                 "name": name,
                 "industry": str(
-                    _first_non_empty(raw, "industry", "industry_name", "industryName", "category", "vertical")
+                    _first_non_empty(
+                        raw,
+                        "industry",
+                        "industry_name",
+                        "industryName",
+                        "category",
+                        "vertical",
+                    )
                     or ""
                 ).strip(),
                 "status": status,
                 "weight": weight,
                 "age_range": str(
-                    _first_non_empty(raw, "age_range", "ageRange", "age_group", "ageGroup", "age", "ages")
+                    _first_non_empty(
+                        raw,
+                        "age_range",
+                        "ageRange",
+                        "age_group",
+                        "ageGroup",
+                        "age",
+                        "ages",
+                    )
                     or ""
                 ).strip(),
                 "income": str(
-                    _first_non_empty(raw, "income", "income_level", "incomeLevel", "income_range", "incomeRange")
+                    _first_non_empty(
+                        raw,
+                        "income",
+                        "income_level",
+                        "incomeLevel",
+                        "income_range",
+                        "incomeRange",
+                    )
                     or ""
                 ).strip(),
                 "regions": str(
-                    _first_non_empty(raw, "regions", "region", "location", "locations", "geo", "market")
+                    _first_non_empty(
+                        raw,
+                        "regions",
+                        "region",
+                        "location",
+                        "locations",
+                        "geo",
+                        "market",
+                    )
                     or ""
                 ).strip(),
                 "sampling_rate": sampling_rate,
                 "note": str(
-                    _first_non_empty(raw, "note", "description", "summary", "reason", "rationale", "insight")
+                    _first_non_empty(
+                        raw,
+                        "note",
+                        "description",
+                        "summary",
+                        "reason",
+                        "rationale",
+                        "insight",
+                    )
                     or ""
                 ).strip(),
             }
