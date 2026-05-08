@@ -24,6 +24,7 @@ Helpers:
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 QUERY_POOL_ENGINE_POLICIES = {
@@ -38,6 +39,7 @@ QUERY_POOL_ENGINE_POLICIES = {
 }
 QUERY_POOL_PROFILE_STRATEGIES = {"balanced", "core", "full"}
 QUERY_POOL_OVERFLOW_POLICIES = {"split", "hold"}
+QUERY_POOL_PROMPT_SCOPES = {"non_branded", "branded", "competitor"}
 
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
@@ -53,6 +55,26 @@ def _admin_float(value: Any, default: float) -> float:
         return float(value) if value is not None and value != "" else float(default)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _prompt_scope_from_prompt(prompt: dict[str, Any]) -> str:
+    tags_value = prompt.get("tags")
+    tags: dict[str, Any] = tags_value if isinstance(tags_value, dict) else {}
+    if isinstance(tags_value, str):
+        try:
+            parsed_tags = json.loads(tags_value)
+        except Exception:
+            parsed_tags = {}
+        tags = parsed_tags if isinstance(parsed_tags, dict) else {}
+    raw = (
+        prompt.get("prompt_scope")
+        or prompt.get("promptScope")
+        or tags.get("prompt_scope")
+        or tags.get("promptScope")
+        or "non_branded"
+    )
+    scope = str(raw or "").strip().lower().replace("-", "_")
+    return scope if scope in QUERY_POOL_PROMPT_SCOPES else "non_branded"
 
 
 def query_pool_config(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -232,6 +254,7 @@ def query_pool_candidate_contexts(
 
     contexts: list[dict[str, Any]] = []
     for prompt in prompt_rows:
+        prompt_scope = _prompt_scope_from_prompt(prompt)
         sampled_profiles = sample_query_pool_profiles(
             profile_pool,
             profiles_per_prompt,
@@ -249,6 +272,7 @@ def query_pool_candidate_contexts(
                     "candidate_key": (f"{prompt_id}|{segment_id}|{profile_id}|{len(contexts) + 1}"),
                     "prompt_id": prompt_id,
                     "prompt_text": (prompt.get("templateText") or prompt.get("text") or "").strip(),
+                    "prompt_scope": prompt_scope,
                     "topic_id": str(prompt.get("topic_id") or ""),
                     "topic_text": str(prompt.get("topic_text") or "").strip(),
                     "segment_id": segment_id,

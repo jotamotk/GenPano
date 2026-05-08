@@ -85,6 +85,139 @@ def _candidate(
     )
 
 
+def test_build_prompt_matrix_messages_frontloads_quality_rules():
+    from app.admin.prompt_matrix.lib import build_prompt_matrix_messages
+
+    messages = build_prompt_matrix_messages(
+        topics=[
+            {
+                "raw_id": 1,
+                "title": "新手慢跑鞋怎么选不容易伤膝盖",
+                "brand": "NIKE",
+                "brand_id": 1,
+                "dimension_key": "category",
+            }
+        ],
+        config={"intent_count": 1, "language_count": 1, "max_per_topic": 1, "max_prompts": 1},
+        known_brands=[{"name": "NIKE", "aliases": ["耐克"]}],
+        existing_prompts=[],
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "前置质检规则" in combined
+    assert "不要依赖后端丢弃" in combined
+    assert "prompt_not_natural" in combined
+    assert "category_brand_leak" in combined
+    assert "Topic layer" in combined
+    assert "Prompt layer" in combined
+    assert "Query layer" in combined
+    assert "prompt_scope" in combined
+    assert "non_branded" in combined
+    assert "branded" in combined
+    assert "competitor" in combined
+
+
+def test_parse_llm_prompt_candidates_persists_prompt_scope():
+    from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
+
+    parsed = parse_llm_prompt_candidates(
+        {
+            "prompts": [
+                {
+                    "topic_id": 1,
+                    "intent": "informational",
+                    "language": "en-US",
+                    "text": "How should I choose running shoes for knee pain?",
+                    "confidence": 0.8,
+                    "tags": {"prompt_scope": "branded"},
+                },
+                {
+                    "topic_id": 1,
+                    "intent": "commercial",
+                    "language": "en-US",
+                    "text": "Which running shoes are best for knee pain?",
+                    "confidence": 0.75,
+                    "tags": {},
+                },
+            ]
+        },
+        topics_by_id={
+            1: {
+                "id": 1,
+                "title": "running shoes for knee pain",
+                "dimension": "product",
+                "brand": "NIKE",
+            }
+        },
+        known_brands=[{"name": "NIKE", "aliases": []}],
+    )
+
+    assert parsed[0].tags["prompt_scope"] == "branded"
+    assert parsed[1].tags["prompt_scope"] == "non_branded"
+
+
+def test_parse_llm_prompt_candidates_allows_branded_scope_for_category_topic():
+    from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
+
+    parsed = parse_llm_prompt_candidates(
+        {
+            "prompts": [
+                {
+                    "topic_id": 1,
+                    "intent": "commercial",
+                    "language": "en-US",
+                    "text": "Is NIKE good for beginner running shoes?",
+                    "confidence": 0.8,
+                    "prompt_scope": "branded",
+                }
+            ]
+        },
+        topics_by_id={
+            1: {
+                "id": 1,
+                "title": "beginner running shoes",
+                "dimension": "category",
+                "brand": "NIKE",
+            }
+        },
+        known_brands=[{"name": "NIKE", "aliases": []}],
+    )
+
+    assert parsed[0].tags["prompt_scope"] == "branded"
+
+
+def test_parse_llm_prompt_candidates_rejects_invalid_prompt_scope():
+    from app.admin.prompt_matrix.lib import PromptMatrixError, parse_llm_prompt_candidates
+
+    with pytest.raises(PromptMatrixError) as exc_info:
+        parse_llm_prompt_candidates(
+            {
+                "prompts": [
+                    {
+                        "topic_id": 1,
+                        "intent": "informational",
+                        "language": "en-US",
+                        "text": "How should I choose running shoes for knee pain?",
+                        "confidence": 0.8,
+                        "prompt_scope": "mixed",
+                    }
+                ]
+            },
+            topics_by_id={
+                1: {
+                    "id": 1,
+                    "title": "running shoes for knee pain",
+                    "dimension": "product",
+                    "brand": "NIKE",
+                }
+            },
+            known_brands=[{"name": "NIKE", "aliases": []}],
+        )
+
+    assert exc_info.value.code == "llm_schema_invalid"
+    assert "prompt_scope" in exc_info.value.message
+
+
 # ── single review ─────────────────────────────────────────────
 
 

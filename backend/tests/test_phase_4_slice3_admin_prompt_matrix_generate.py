@@ -82,7 +82,12 @@ def _patch_client(monkeypatch, generate_batches_returns):
     monkeypatch.setattr(gen_mod, "PromptMatrixClient", FakeClient)
 
 
-def _llm_prompt(text: str, topic_id: int = 1, intent: str = "informational") -> Any:
+def _llm_prompt(
+    text: str,
+    topic_id: int = 1,
+    intent: str = "informational",
+    prompt_scope: str = "branded",
+) -> Any:
     from app.admin.prompt_matrix.lib import LLMPromptCandidate
 
     return LLMPromptCandidate(
@@ -94,7 +99,7 @@ def _llm_prompt(text: str, topic_id: int = 1, intent: str = "informational") -> 
         reason="r",
         template_strategy="latest",
         template_version="v1",
-        tags={},
+        tags={"prompt_scope": prompt_scope},
     )
 
 
@@ -211,6 +216,7 @@ async def test_generate_sync_inserts_candidates_and_completes(
         .all()
     )
     assert len(cands) == 2
+    assert {c.tags["prompt_scope"] for c in cands} == {"branded"}
 
     # Audit emit
     audit = list(

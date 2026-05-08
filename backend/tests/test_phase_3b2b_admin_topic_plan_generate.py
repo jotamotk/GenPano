@@ -108,16 +108,16 @@ def _coverage_with_one_gap(brand_name: str = "NIKE", brand_id: int = 1) -> dict[
     }
 
 
-def _llm_topic(title: str, brand: str = "NIKE") -> Any:
+def _llm_topic(title: str, brand: str = "NIKE", dimension: str = "product") -> Any:
     from app.admin.topic_plan.lib import LLMTopic
 
     return LLMTopic(
         title=title,
         brand=brand,
-        dimension="product",
+        dimension=dimension,
         reason="consumer demand",
         confidence=0.85,
-        coverage_gap=f"{brand}:product",
+        coverage_gap=f"{brand}:{dimension}",
     )
 
 
@@ -176,8 +176,8 @@ async def test_generate_sync_inserts_candidates_and_completes_run(
         monkeypatch,
         (
             [
-                _llm_topic("NIKE跑鞋选购指南"),
-                _llm_topic("NIKE篮球鞋抓地力测评"),
+                _llm_topic("新手慢跑鞋选购指南"),
+                _llm_topic("篮球鞋抓地力测评方法"),
             ],
             {"model": "doubao-test", "usage": {"prompt_tokens": 30, "total_tokens": 60}},
         ),
@@ -211,7 +211,7 @@ async def test_generate_sync_inserts_candidates_and_completes_run(
         .all()
     )
     assert len(cands) == 2
-    assert {c.title for c in cands} == {"NIKE跑鞋选购指南", "NIKE篮球鞋抓地力测评"}
+    assert {c.title for c in cands} == {"新手慢跑鞋选购指南", "篮球鞋抓地力测评方法"}
 
     # Audit emit (terminal state)
     audit = list(
@@ -286,6 +286,50 @@ async def test_generate_sync_quality_blocked_marks_failed(
 
 
 @pytest.mark.asyncio
+async def test_generate_sync_rejects_brand_named_topic_titles(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    """Topics belong to the selected brand row, but the visible title stays
+    brand-neutral. Branded/non-branded/competitor expansion happens at Prompt.
+    """
+    monkeypatch.setenv("TOPIC_PLAN_SYNC_GENERATE", "1")
+    _patch_tp_db(
+        monkeypatch,
+        fetch_brands=AsyncMock(
+            return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear"}]
+        ),
+        build_coverage=AsyncMock(return_value=_coverage_with_one_gap()),
+        fetch_pending_candidate_titles=AsyncMock(return_value=[]),
+        fetch_products_by_brand=AsyncMock(return_value={}),
+    )
+    _patch_doubao(
+        monkeypatch,
+        (
+            [
+                _llm_topic("NIKE跑鞋怎么选不容易伤膝盖", dimension="product"),
+                _llm_topic("新手慢跑鞋怎么选不容易伤膝盖", dimension="category"),
+            ],
+            {"model": "doubao-test", "usage": {"total_tokens": 60}},
+        ),
+    )
+
+    resp = await client.post(
+        "/api/admin/topic-plan/generate",
+        json={"brand_ids": [1], "max_topics": 10},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert [c["title"] for c in body["candidates"]] == ["新手慢跑鞋怎么选不容易伤膝盖"]
+    assert {item["reason"] for item in body["summary"]["skipped"]} >= {"topic_brand_leak"}
+
+    run = (
+        await db_session.execute(select(TopicPlanRun).where(TopicPlanRun.id == body["run_id"]))
+    ).scalar_one()
+    assert run.metrics_json["by_reason"]["topic_brand_leak"] == 1
+
+
+@pytest.mark.asyncio
 async def test_generate_sync_llm_error_marks_failed(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):
@@ -334,6 +378,7 @@ async def test_generate_sync_llm_error_marks_failed(
             await db_session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
         ).scalar_one_or_none()
         assert run is None or run.status == "failed"
+        assert run is None or run.llm_error == "llm_call_failed: boom"
 
 
 # ── background mode ───────────────────────────────────────────

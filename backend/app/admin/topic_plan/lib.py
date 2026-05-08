@@ -306,6 +306,46 @@ def consumer_aliases_for_brand(brand: dict[str, Any]) -> list[str]:
     return result[:10]
 
 
+def brand_title_terms(brand: dict[str, Any]) -> list[str]:
+    """Terms that count as the selected brand being visible in a title.
+
+    This intentionally uses only the brand's own names and configured aliases.
+    ``consumer_aliases_for_brand`` may include generic substitutes such as
+    "大牌香水" for holding companies, and those should remain valid
+    brand-neutral topic wording.
+    """
+    raw_terms = [brand.get("name"), brand.get("name_en"), brand.get("name_zh")]
+    aliases = brand.get("aliases")
+    if isinstance(aliases, str):
+        try:
+            aliases = json.loads(aliases)
+        except Exception:
+            aliases = [aliases]
+    if isinstance(aliases, list | tuple):
+        raw_terms.extend(aliases)
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_terms:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        normalized = normalize_topic_title(text)
+        if len(normalized) < 2 or normalized in seen:
+            continue
+        terms.append(text)
+        seen.add(normalized)
+    return terms
+
+
+def is_title_brand_named(title: str, brand: dict[str, Any]) -> bool:
+    """Return True when a topic title visibly contains the brand name/alias."""
+    title_norm = normalize_topic_title(title)
+    if not title_norm:
+        return False
+    return any(normalize_topic_title(term) in title_norm for term in brand_title_terms(brand))
+
+
 def is_natural_consumer_topic(title: str) -> bool:
     raw = (title or "").strip()
     if len(raw) < 4 or len(raw) > 80:
@@ -347,6 +387,8 @@ def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     cleaned = strip_markdown_fence(raw)
+    if not cleaned.lstrip().startswith(("{", "[")):
+        raise TopicPlanLLMError("llm_json_invalid", "LLM returned invalid JSON")
     try:
         parsed = json.loads(cleaned)
     except Exception as first_error:
@@ -562,6 +604,7 @@ def build_topic_plan_messages(
     coverage_gaps: list[dict[str, Any]],
     max_topics: int,
     existing_topics: list[str],
+    brand_research: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     allowed_brand_names = [str(brand.get("name") or "").strip() for brand in brands]
     allowed_brand_names = [name for name in allowed_brand_names if name]
@@ -639,16 +682,16 @@ def build_topic_plan_messages(
         "趋势分析",
     ]
     consumer_title_examples = [
-        "香奈儿口红热门色号怎么选",
-        "NIKE跑鞋适合新手慢跑吗",
-        "NIKE品牌真伪辨别方法",
-        "NIKE篮球鞋抓地力性能测评",
-        "NIKE儿童运动鞋尺码选择指南",
+        "口红热门色号怎么选",
+        "新手慢跑鞋适合厚底跑鞋吗",
+        "运动鞋真伪辨别方法",
+        "篮球鞋抓地力性能测评",
+        "儿童运动鞋尺码选择指南",
         "可口可乐无糖和普通版口感区别",
         "宝马新能源车日常通勤体验怎么样",
         "预算一万左右送女生大牌包怎么选",
         "想买大牌香水送人哪种味道不容易踩雷",
-        "LV入门款包包买哪只更实用",
+        "入门款大牌包包买哪只更实用",
     ]
     payload = {
         "industry": industry,
@@ -662,6 +705,7 @@ def build_topic_plan_messages(
         "generation_perspective": "consumer_search_and_shopping_intent",
         "banned_title_terms": banned_title_terms,
         "consumer_title_examples": consumer_title_examples,
+        "brand_research": brand_research or [],
         "output_schema": schema,
     }
     system = (
@@ -674,21 +718,29 @@ def build_topic_plan_messages(
     )
     user = (
         "Generate consumer-facing Topic Plan candidates.\n"
+        "Layer definitions:\n"
+        "Topic layer = the high-level consumer demand subject. Topic titles must be brand-neutral: no selected brand names, aliases, competitor names, or legal holding-company names in topics[].title. The topics[].brand field is attribution only.\n"
+        "Prompt layer = the natural user question generated later from a Topic. Prompt owns prompt_scope: non_branded, branded, competitor. Brand or competitor names may appear there only when the scope requires it.\n"
+        "Query layer = a Prompt instantiated with one Segment/Profile. Query adds personal context and must preserve the Prompt scope instead of inventing new brands.\n\n"
         "Hard rules:\n"
         f"1. The only allowed brand values are: {payload['allowed_brand_names_text']}.\n"
         "2. topics[].brand must copy exactly one allowed brand value. Do not use brand id, numbers, aliases, or any other brand.\n"
-        "3. topics[].title must be Chinese and sound like a real consumer search subject.\n"
+        "3. topics[].title must be Chinese, sound like a real consumer search subject, and be brand-neutral.\n"
         "4. Do not write topics for brand operators, CRM teams, retail teams, private-domain operations.\n"
-        "5. Never include banned_title_terms in topics[].title.\n"
+        "5. Never include banned_title_terms, selected brand names, selected brand aliases, or competitors in topics[].title.\n"
         "6. topics[].reason must be Chinese for an admin reviewer; explain consumer intent and coverage gap.\n"
-        "7. Each title must be about the selected brand, industry, category, and coverage_gaps.\n"
+        "7. Each Topic must be useful for the selected brand, industry, category, and coverage_gaps, but the visible title should describe the reusable consumer need rather than naming the brand.\n"
         "8. If a selected brand is a holding company, do not force the legal/group name into the title.\n"
         "9. Never write phrases like 旗下, 集团, 产品线, 品类线, 品牌档次, 知名品牌, 爆款新款, 市场表现, 趋势分析, 用户画像, 转化路径.\n"
         "10. Avoid duplicates or near-duplicates with existing_topics.\n"
         "11. dimension must be one of brand, product, category, scenario, question.\n"
         "12. Return at most max_topics items and match output_schema exactly.\n"
-        "13. If selected_brands[].products is non-empty, AT LEAST 60% of generated topics MUST mention or be specifically about one of those product names.\n"
-        "14. When a topic is specifically about a product, set topics[].dimension='product' and topics[].product_name to the exact product name.\n"
+        "13. If selected_brands[].products is non-empty, AT LEAST 60% of generated topics MUST be specifically about one of those products via topics[].product_name, while keeping topics[].title brand-neutral.\n"
+        "14. When a topic is specifically about a product, set topics[].dimension='product' and topics[].product_name to the exact product name; if the product name contains the brand, do not copy that brand into topics[].title.\n"
+        "15. Use brand_research when present to expand beyond the brand name: infer the real industry, category terms, product lines, signature features, target audiences, shopping scenarios, and common consumer questions.\n"
+        "16. All dimensions, including brand/product/category/scenario/question, must keep topics[].title brand-neutral and use consumer category, feature, scenario, or problem language instead.\n"
+        "17. For category/scenario/question topics, prefer titles like 新手慢跑鞋怎么选不容易伤膝盖 / 夏天通勤运动鞋怎么选更透气 / 预算内送礼香水哪类不容易踩雷. Keep topics[].brand as the selected brand for attribution, but do not force that brand into the visible title.\n"
+        "18. Balance the batch: include reusable non-brand topics that downstream Prompt can later expand into non_branded, branded, and competitor prompts.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

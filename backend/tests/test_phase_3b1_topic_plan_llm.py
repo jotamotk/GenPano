@@ -72,9 +72,79 @@ async def test_generate_topics_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_topics_uses_web_research_context(monkeypatch):
+    posted = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        posted.append({"url": url, "body": json})
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": (
+                                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                                        '"category_terms":["慢跑鞋","通勤运动鞋"],'
+                                        '"signature_features":["缓震","透气"],'
+                                        '"shopping_scenarios":["新手慢跑","夏天通勤"],'
+                                        '"consumer_questions":["新手慢跑鞋怎么选"]}]}'
+                                    ),
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        assert "brand_research" in json["messages"][1]["content"]
+        assert "新手慢跑" in json["messages"][1]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"topics":[{"title":"新手慢跑鞋怎么选不容易伤膝盖",'
+                                '"brand":"NIKE","dimension":"category","reason":"r",'
+                                '"confidence":0.9,"coverage_gap":"NIKE:category"}]}'
+                            )
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 46},
+            },
+        )
+
+    monkeypatch.setenv("TOPIC_PLAN_ENABLE_WEB_RESEARCH", "1")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    client = DoubaoTopicPlanClient(config=_config())
+    topics, _meta = await client.generate_topics(
+        industry="footwear",
+        category="running",
+        brands=[{"name": "NIKE"}],
+        coverage_gaps=[{"brand": "NIKE", "type": "category", "count": 1, "priority": "P1"}],
+        max_topics=5,
+        existing_topics=[],
+    )
+
+    assert len(topics) == 1
+    assert posted[0]["url"] == "https://example.invalid/v3/responses"
+    assert posted[0]["body"]["tools"] == [{"type": "web_search"}]
+    assert posted[1]["url"] == "https://example.invalid/v3/chat/completions"
+
+
+@pytest.mark.asyncio
 async def test_generate_topics_http_error_raises(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
-        return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(
+            400,
+            json={"error": {"code": "InvalidModel", "message": "model endpoint not found"}},
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
@@ -89,6 +159,9 @@ async def test_generate_topics_http_error_raises(monkeypatch):
             existing_topics=[],
         )
     assert exc.value.code == "llm_call_failed"
+    assert "HTTP 400" in exc.value.message
+    assert "InvalidModel" in exc.value.message
+    assert "model endpoint not found" in exc.value.message
 
 
 @pytest.mark.asyncio
