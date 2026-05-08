@@ -1,8 +1,15 @@
 # Query Admin 实施计划
-> 2026-05-02 override: the orange `admin_console` Admin is the only Admin system.
-> The legacy FastAPI Admin auth/API package has been removed. Historical
-> references in this file to a separate FastAPI Admin backend are superseded.
-> Do not restore a second Admin frontend or backend.
+> 2026-05-08 override (PR #386): the Flask `admin_console/` package has been
+> deleted and Admin is now served by FastAPI. Admin SPA shell lives at
+> `backend/static/admin.html`; Admin APIs live under `backend/app/api/admin/*`
+> (mounted at `/admin/api/*` via nginx). All references below to
+> `admin_console/app.py`, `admin_console/templates/admin.html`, port `5000`,
+> or "Flask Admin" should be read as historical context describing the
+> pre-migration layout. Do not restore the Flask service.
+>
+> 2026-05-02 override (superseded by 2026-05-08): the orange `admin_console`
+> Admin is the only Admin system. Do not restore a second Admin frontend or
+> backend.
 
 > 日期：2026-04-30
 > 范围：以 `admin_console` 为唯一 Admin 的 GENPANO 内部运营控制台

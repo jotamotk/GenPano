@@ -3,6 +3,13 @@
 > 日期：2026-04-30
 > 依据：`docs/PRD_CODEX_READY.md`
 > 目标：让 Codex 可以按计划从当前原型和已跑通业务代码出发，完整研发出产品。
+>
+> 2026-05-08 update (PR #386): the Flask `admin_console/` package has been
+> ported to FastAPI under `backend/app/api/admin/*` and the Admin SPA shell
+> moved to `backend/static/admin.html`. All references below to
+> `admin_console/app.py`, `admin_console/templates/admin.html`, or
+> `http://localhost:5000/admin` describe the pre-migration layout — Admin is
+> now reachable at `http://localhost:4000/admin` (FastAPI).
 
 ## 1. 总体策略
 

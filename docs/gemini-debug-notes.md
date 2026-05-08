@@ -137,7 +137,7 @@ When extraction fails, save the full page HTML for offline debugging:
 await _save_html(page, -1, f"{llm_name}_extract_fail")
 ```
 
-This saves to `/data/screenshots/{llm_name}_extract_fail_{timestamp}.html`. The `admin_console` web UI has an HTML viewer to browse these files without needing to access the server directly.
+This saves to `/data/screenshots/{llm_name}_extract_fail_{timestamp}.html`. The Admin web UI (`backend/static/admin.html`, served by FastAPI) has an HTML viewer to browse these files without needing to access the server directly.
 
 ---
 

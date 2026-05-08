@@ -2,6 +2,15 @@
 
 Use this prompt for a focused Codex session to implement Segment & Profile beyond the frontend prototype.
 
+> 2026-05-08 update (PR #386): the Flask `admin_console/` package has been
+> ported to FastAPI under `backend/app/api/admin/*`; the Admin SPA shell now
+> lives at `backend/static/admin.html`. References in the prompt below to
+> `admin_console/app.py`, `admin_console/templates/admin.html`, or
+> `admin_console/tests` describe the pre-migration layout — translate them to
+> the current locations (`backend/app/api/admin/segments`,
+> `backend/app/api/admin/profiles`, `backend/static/admin.html`,
+> `backend/tests/`) before running.
+
 ```text
 你在 C:\Users\frank.wang\genpano 工作。先阅读 AGENTS.md，严格遵守当前 Admin 边界：
 
