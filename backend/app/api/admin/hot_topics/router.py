@@ -409,14 +409,12 @@ async def collect_hot_topics(
             )
 
     if normalized["browser_sources"]:
-        celery_app = None
+        celery_app: Any = None
         try:
-            from celery import Celery  # noqa: F401
-            from geo_tracker.celery_app import (
-                celery_app as _celery,  # type: ignore[import-not-found]
-            )
+            import importlib
 
-            celery_app = _celery
+            importlib.import_module("celery")  # availability probe
+            celery_app = importlib.import_module("geo_tracker.celery_app").celery_app
         except Exception:
             celery_app = None
 
