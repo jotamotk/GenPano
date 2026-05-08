@@ -350,16 +350,14 @@ async def collect_hot_topics(
         if not industry_filter:
             industry_filter = (str(brand_context.get("industry") or "")).strip() or None
 
-    # In-process lightweight collectors. admin_console keeps the actual
-    # collector module (admin_console.hotspot_collectors). Phase X moves
-    # that module into the backend image.
+    # Lightweight in-process collectors moved into backend in Phase X
+    # (was admin_console.hotspot_collectors before that migration). Direct
+    # import — no importlib shim needed now that the module lives here.
     run_collection_cycle: Any = None
     try:
-        import importlib
+        from app.admin.hot_topics.collectors import run_collection_cycle as _rcc
 
-        run_collection_cycle = importlib.import_module(
-            "admin_console.hotspot_collectors"
-        ).run_collection_cycle
+        run_collection_cycle = _rcc
     except Exception:
         run_collection_cycle = None
 
@@ -375,9 +373,8 @@ async def collect_hot_topics(
                     "success": False,
                     "error": "collectors_unavailable",
                     "message": (
-                        "admin_console.hotspot_collectors is not on the backend Python path; "
-                        "deploy admin_console alongside the FastAPI service or wait for "
-                        "Phase X cleanup which moves collectors into backend."
+                        "app.admin.hot_topics.collectors is unavailable; "
+                        "the collectors module failed to import."
                     ),
                 },
             )
