@@ -189,6 +189,13 @@ from app.api.picker import router as _picker_router  # noqa: E402
 
 app.include_router(_picker_router, prefix="/api")
 
+# Queries + stats read-only routes (Phase 9 slice 9a). admin_console
+# served /api/stats and /api/queries without auth; FastAPI port adds
+# Depends(current_admin). Write paths come in slice 9b.
+from app.api.queries import router as _queries_router  # noqa: E402
+
+app.include_router(_queries_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
