@@ -202,6 +202,13 @@ from app.api.analyzer import router as _analyzer_router  # noqa: E402
 
 app.include_router(_analyzer_router, prefix="/api")
 
+# Legacy profile routes (Phase 9 slice 9d). geo_tracker-flavor profiles
+# table CRUD + lite picker + similar suggestions. admin_console served
+# without auth; FastAPI port adds Depends(current_admin).
+from app.api.profiles_legacy import router as _profiles_legacy_router  # noqa: E402
+
+app.include_router(_profiles_legacy_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
