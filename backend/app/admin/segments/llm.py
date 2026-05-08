@@ -256,9 +256,7 @@ def validate_segment_candidates(
             "Segment weight",
         )
         segment_id = (
-            str(_first_non_empty(raw, "id", "code") or f"SEG-DRAFT-{index:03d}")
-            .strip()
-            .upper()
+            str(_first_non_empty(raw, "id", "code") or f"SEG-DRAFT-{index:03d}").strip().upper()
         )
         sampling_rate = str(
             _first_non_empty(
