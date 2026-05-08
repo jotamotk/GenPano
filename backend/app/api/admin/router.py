@@ -38,6 +38,7 @@ from app.api.admin.projects import router as projects_router
 from app.api.admin.prompt_matrix import router as prompt_matrix_router
 from app.api.admin.proxy_pool import router as proxy_pool_router
 from app.api.admin.query_pool import router as query_pool_router
+from app.api.admin.scheduler import router as scheduler_router
 from app.api.admin.segments import router as segments_router
 from app.api.admin.session import router as session_router
 from app.api.admin.stats import router as stats_router
@@ -64,6 +65,7 @@ router.include_router(proxy_pool_router, prefix="/proxy-pool")
 router.include_router(prompt_matrix_router, prefix="/prompt-matrix")
 router.include_router(query_pool_router, prefix="/query-pool")
 router.include_router(products_router, prefix="")
+router.include_router(scheduler_router, prefix="")
 router.include_router(segments_router, prefix="/segments")
 router.include_router(session_router, prefix="/session")
 router.include_router(stats_router, prefix="/stats")

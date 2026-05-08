@@ -172,6 +172,15 @@ from app.api.admin.accounts import router as _accounts_router  # noqa: E402
 
 app.include_router(_accounts_router, prefix="/api/accounts")
 
+# Legacy alias for the Scheduler routes (Phase 8 slice 8c). admin.html
+# uses ``/api/scheduler/*`` directly. The router file's paths are
+# ``/scheduler/...`` so mounting at the empty prefix here gives us the
+# legacy paths; the same router is also included under
+# ``/api/admin`` (via app/api/admin/router.py) for the canonical mount.
+from app.api.admin.scheduler import router as _scheduler_router  # noqa: E402
+
+app.include_router(_scheduler_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
