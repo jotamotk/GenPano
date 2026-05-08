@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from genpano_models import AdminAuditLog, User
+from genpano_models import AdminAuditLog, AdminUser, User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.admin.brand_management import db as brand_management_db
 from app.admin.security import current_admin_operator
 from app.api.admin.accounts import router as accounts_router
 from app.api.admin.alerts import router as alerts_router
+from app.api.admin.auth.router import current_admin
 from app.api.admin.brand_management import router as brand_management_router
 from app.api.admin.brand_submissions import router as brand_submissions_router
 from app.api.admin.comms import router as comms_router
@@ -76,12 +77,17 @@ router.include_router(users_router, prefix="/users")
 
 @router.get("/brands", response_model=None)
 async def admin_brand_options(
-    operator: Annotated[User, Depends(current_admin_operator)],
+    operator: Annotated[AdminUser, Depends(current_admin)],
     session: AsyncSession = _DependsDb,
 ) -> Any:
     """Topic-plan brand picker. Returns ``{success, brands}`` with each
     brand enriched with topic_count + primary category. Mirrors
     admin_console line 5886 — final route from Flask, ported in Phase X.
+
+    Auth: cookie-based ``current_admin`` (same as every other admin SPA
+    route). ``current_admin_operator`` requires a Bearer JWT and would
+    silently 401 the SPA, leaving every brand picker (segments, products,
+    LLM auto-add product, LLM 生成 Brand Segment, etc.) empty.
     """
     brands = await brand_management_db.fetch_brand_options_with_topic_count(session)
     return {"success": True, "brands": brands}
