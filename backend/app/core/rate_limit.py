@@ -207,15 +207,27 @@ def setup_rate_limit(app: FastAPI) -> None:
         else:
             allowed, retry_after = _limiter.check(bucket_key, capacity=capacity, window_seconds=60)
         if not allowed:
+            from app.core.request_id import REQUEST_ID_HEADER, current_request_id
+
+            rid = current_request_id() or ""
             return JSONResponse(
                 status_code=429,
                 content={
                     "detail": {
-                        "code": "rate_limited",
-                        "message": "Too Many Requests",
+                        "type": "about:blank",
+                        "title": "Rate limit exceeded",
+                        "status": 429,
+                        "code": "rate_limit_exceeded",
+                        "detail": "Try again later",
+                        "retry_after": retry_after,
                         "retry_after_seconds": retry_after,
+                        "request_id": rid,
+                        "instance": path,
                     }
                 },
-                headers={"Retry-After": str(retry_after)},
+                headers={
+                    "Retry-After": str(retry_after),
+                    REQUEST_ID_HEADER: rid,
+                },
             )
         return await call_next(request)

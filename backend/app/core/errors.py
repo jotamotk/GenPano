@@ -17,6 +17,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.core.request_id import current_request_id
+
 
 def _problem(
     status_code: int,
@@ -36,6 +38,9 @@ def _problem(
         body["detail"] = detail
     if extra:
         body.update(extra)
+    rid = current_request_id()
+    if rid:
+        body["request_id"] = rid
     return HTTPException(status_code=status_code, detail=body)
 
 

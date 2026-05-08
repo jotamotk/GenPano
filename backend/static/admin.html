@@ -8063,7 +8063,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
             <div class="text-warning" x-text="'告警: ' + (autoAssignResult?.errors || []).join('; ')"></div>
           </template>
         </div>
-        <div x-show="!autoAssignResult?.success" class="text-danger" x-text="autoAssignResult?.error || autoAssignResult"></div>
+        <div x-show="!autoAssignResult?.success" class="mt-2 flex items-start gap-2">
+          <div class="flex-1 text-danger text-[12px] break-words whitespace-pre-wrap"
+               x-text="formatAutoAssignError(autoAssignResult)"></div>
+          <button type="button"
+                  class="text-[11px] px-2 py-1 rounded border border-b-default text-ink-body hover:bg-surface-page flex-shrink-0"
+                  @click="copyAutoAssignError()">复制</button>
+        </div>
       </div>
     </div>
     <div class="px-6 py-4 border-t border-b-card flex items-center gap-2 justify-end">
@@ -8745,6 +8751,52 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
   <div class="bg-ink text-white px-4 h-10 rounded-btn-lg shadow-elevated flex items-center gap-2 text-[13px]">
     <i data-lucide="check-circle-2" class="w-4 h-4 text-success"></i>
     <span x-text="toastMsg"></span>
+  </div>
+</div>
+
+<!-- ============ ERROR PANEL (sticky, copyable) ============ -->
+<!--
+  Replaces the auto-dismiss toast for failures. The panel:
+   • does not auto-dismiss (user must close);
+   • shows code + title + detail + request_id together;
+   • exposes a Copy button that pastes the full diagnostic block
+     into the clipboard so support can correlate with backend logs;
+   • queues additional errors and shows a `× N` counter.
+-->
+<div x-show="errorPanel" x-cloak x-transition.opacity class="fixed bottom-6 right-6 z-[85]" style="max-width: 420px; width: calc(100% - 3rem);">
+  <div class="bg-surface border border-danger rounded-card-lg shadow-elevated p-3 text-[13px]" role="alert" aria-live="assertive">
+    <div class="flex items-start gap-2">
+      <div class="w-1 self-stretch rounded bg-danger flex-shrink-0"></div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-danger/10 text-danger" x-text="errorPanel?.code || 'error'"></span>
+          <span class="font-semibold text-ink break-words" x-text="errorPanel?.title || ''"></span>
+          <template x-if="errorQueue && errorQueue.length > 0">
+            <span class="text-[11px] text-ink-muted" x-text="'+' + errorQueue.length + ' 条'"></span>
+          </template>
+        </div>
+        <div x-show="errorPanel?.detail" class="mt-1 text-[12px] text-ink-muted break-words whitespace-pre-wrap" x-text="errorPanel?.detail || ''"></div>
+        <div x-show="errorPanel?.requestId" class="mt-1.5 text-[11px] font-mono text-ink-muted break-all">
+          <span>request_id: </span><span x-text="errorPanel?.requestId || '-'"></span>
+        </div>
+        <div class="mt-2 flex items-center gap-2 flex-wrap">
+          <button type="button"
+                  class="text-[12px] px-2 py-1 rounded border border-b-default hover:bg-surface-page"
+                  @click="copyErrorPanel()"
+                  x-text="errorPanelCopied ? '已复制' : '复制详情'"></button>
+          <button type="button"
+                  class="text-[12px] px-2 py-1 rounded text-ink-muted"
+                  @click="errorPanelExpanded = !errorPanelExpanded"
+                  x-text="errorPanelExpanded ? '收起完整诊断' : '显示完整诊断'"></button>
+          <button type="button"
+                  class="text-[12px] px-2 py-1 rounded text-ink-muted ml-auto"
+                  @click="dismissErrorPanel()">关闭</button>
+        </div>
+        <pre x-show="errorPanelExpanded"
+             class="mt-2 text-[11px] font-mono whitespace-pre-wrap break-words p-2 rounded bg-surface-page text-ink-muted max-h-48 overflow-auto select-all"
+             x-text="errorPanel?.copyText || ''"></pre>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -9774,10 +9826,13 @@ function segmentCrudPanel() {
         ...options,
       });
       const body = await res.json().catch(() => ({}));
+      const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
       if (!res.ok || body.success === false) {
-        const error = new Error(body.message || body.error || ('HTTP ' + res.status));
+        const error = new Error(body.title || body.message || body.error || ('HTTP ' + res.status));
         error.body = body;
         error.status = res.status;
+        error.requestId = requestId;
+        error.path = url;
         throw error;
       }
       return body;
@@ -10063,6 +10118,114 @@ function segmentCrudPanel() {
       window.clearTimeout(this.noticeTimer);
       this.noticeTimer = window.setTimeout(() => { this.notice = ''; }, 3200);
     },
+
+    /* ── Sticky error panel (replaces auto-dismiss toast for failures) ─────
+     * Pattern:
+     *   try { ... }
+     *   catch (e) { this.showErrorFrom(e); }
+     * The panel surfaces request_id + a copy-to-clipboard block so users
+     * can attach the diagnostic to a support ticket without screenshots. */
+    showErrorFrom(err) {
+      const body = (err && err.body) || {};
+      const code = body.code || body.error || (err && err.code) || 'unknown_error';
+      const title = body.title || body.message || (err && err.message) || '请求失败';
+      const detail = body.detail || '';
+      const status = (err && err.status) || body.status || 0;
+      const requestId = (err && err.requestId) || body.request_id || '';
+      const path = (err && err.path) || body.instance || '';
+      const timestamp = new Date().toISOString();
+      const payload = { code, title, detail, status, requestId, path, timestamp };
+      payload.copyText = this.formatErrorCopy(payload);
+      if (this.errorPanel) {
+        this.errorQueue.push(payload);
+      } else {
+        this.errorPanel = payload;
+        this.errorPanelExpanded = false;
+        this.errorPanelCopied = false;
+      }
+    },
+    formatErrorCopy(e) {
+      const lines = [
+        '[' + (e.code || 'error') + '] ' + (e.title || ''),
+        'status: ' + (e.status || 0),
+        'request_id: ' + (e.requestId || '-'),
+        'time: ' + (e.timestamp || ''),
+        'path: ' + (e.path || '-'),
+      ];
+      if (e.detail) lines.push('detail: ' + e.detail);
+      return lines.join('\n');
+    },
+    async copyErrorPanel() {
+      if (!this.errorPanel) return;
+      const text = this.errorPanel.copyText || '';
+      let ok = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) { /* fall through */ }
+      if (!ok) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          ok = !!(document.execCommand && document.execCommand('copy'));
+          document.body.removeChild(ta);
+        } catch (_) { /* ignore */ }
+      }
+      if (ok) {
+        this.errorPanelCopied = true;
+        setTimeout(() => { this.errorPanelCopied = false; }, 1500);
+      }
+    },
+    dismissErrorPanel() {
+      this.errorPanel = null;
+      this.errorPanelCopied = false;
+      this.errorPanelExpanded = false;
+      if (this.errorQueue.length > 0) {
+        const next = this.errorQueue.shift();
+        this.errorPanel = next;
+      }
+    },
+    /* Auto-assign result was previously rendered with `x-text="result"`,
+     * which produced `[object Object]` for structured error payloads.
+     * Walk the result and extract the most useful field. */
+    formatAutoAssignError(result) {
+      if (!result) return '';
+      if (typeof result === 'string') return result;
+      const err = result.error;
+      if (typeof err === 'string') return err;
+      if (err && typeof err === 'object') {
+        return err.title || err.message || err.detail || err.code || JSON.stringify(err);
+      }
+      return result.message || result.title || JSON.stringify(result);
+    },
+    async copyAutoAssignError() {
+      const text = this.formatAutoAssignError(this.autoAssignResult);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          this.toast('已复制错误详情');
+          return;
+        }
+      } catch (_) { /* fall through */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand && document.execCommand('copy');
+        document.body.removeChild(ta);
+        this.toast('已复制错误详情');
+      } catch (_) { /* ignore */ }
+    },
+
     selectSegment(id) {
       this.openSegmentProfiles(id);
     },
@@ -10663,10 +10826,13 @@ function brandManagementPanel() {
         ...options,
       });
       const body = await res.json().catch(() => ({}));
+      const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
       if (!res.ok || body.success === false) {
-        const error = new Error(body.message || body.error || ('HTTP ' + res.status));
+        const error = new Error(body.title || body.message || body.error || ('HTTP ' + res.status));
         error.body = body;
         error.status = res.status;
+        error.requestId = requestId;
+        error.path = url;
         throw error;
       }
       return body;
@@ -11053,6 +11219,10 @@ function adminApp() {
     loginEmail: '',
     loginPassword: '',
     loginError: '',
+    errorPanel: null,
+    errorPanelCopied: false,
+    errorPanelExpanded: false,
+    errorQueue: [],
     env: 'prod',
     page: 'overview',
     range: '7d',
@@ -12402,11 +12572,26 @@ function adminApp() {
             this.accountBusy = false;
           } else if (state === 'FAILURE') {
             clearInterval(timer);
-            this.accountTaskStatus = '任务失败: ' + (body.traceback || body.error || '未知错误');
+            // Status string stays short and screenshot-friendly.
+            // Full traceback / structured payload is offered via the
+            // sticky error panel where it can be copied wholesale.
+            this.accountTaskStatus = '任务失败: ' + (body.error || body.code || '未知错误');
+            this.showErrorFrom({
+              body: {
+                code: body.code || body.error || 'task_failed',
+                title: body.title || body.error || '账号任务失败',
+                detail: body.traceback || body.detail || body.message || '',
+                request_id: body.request_id || '',
+              },
+              status: 0,
+              requestId: body.request_id || '',
+              path: 'task:' + (body.task_id || ''),
+            });
             this.accountBusy = false;
           }
         } catch (e) {
-          this.accountTaskStatus = '状态查询失败: ' + (e.message || e);
+          this.accountTaskStatus = '状态查询失败';
+          this.showErrorFrom(e);
         }
       }, 3000);
     },

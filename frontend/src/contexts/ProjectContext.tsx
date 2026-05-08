@@ -29,6 +29,7 @@ import { PROJECTS as SEED_PROJECTS, BRANDS, INDUSTRIES } from '../data/mock';
 import { useLocale } from './LocaleContext';
 import { useProjects, PROJECTS_QUERY_KEY, type ProjectOut } from '../hooks/useProjects';
 import { projectsApi } from '../api/projects';
+import { registerToastPusher } from '../lib/showApiError';
 
 /** Convert backend ProjectOut to the legacy mock shape (str ids, camelCase). */
 function toMockShape(p: ProjectOut): {
@@ -124,6 +125,13 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
       }, dur);
     }
   }, []);
+  // Make pushToast reachable from non-React callers (e.g. TanStack Query
+  // global error handlers). showApiError() uses this registry to render
+  // the sticky error panel.
+  useEffect(() => {
+    registerToastPusher(pushToast);
+    return () => registerToastPusher(null);
+  }, [pushToast]);
   const dismissToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);

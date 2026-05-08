@@ -6,6 +6,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useEmailValidation } from '../hooks/useEmailValidation'
 import { authApi } from '../api/auth'
 import { showToast } from '../components/Toast'
+import { ApiError } from '../lib/apiClient'
+import { showApiError } from '../lib/showApiError'
 
 export default function LoginPage() {
   const { t } = useLanguage()
@@ -75,17 +77,16 @@ export default function LoginPage() {
       showToast(t.login.loginSuccess, 'success')
       navigate('/dashboard')
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : ''
+      // Bad-credentials → keep inline form error (no red toast). Anything
+      // else (network down, 500, rate limited, ...) goes through the
+      // sticky error panel so the user can copy a request_id for support.
       if (
-        msg.toLowerCase().includes('invalid') ||
-        msg.toLowerCase().includes('credentials') ||
-        msg.toLowerCase().includes('incorrect') ||
-        msg.toLowerCase().includes('wrong') ||
-        msg.toLowerCase().includes('密码')
+        err instanceof ApiError &&
+        (err.is('invalid_credentials') || err.is('unauthorized') || err.status === 401)
       ) {
         setCredentialsError(t.login.invalidCredentials)
       } else {
-        setCredentialsError(t.login.invalidCredentials)
+        showApiError(err, { fallback: t.errors.serverError })
       }
     } finally {
       setIsLoading(false)

@@ -49,9 +49,10 @@ async def test_anon_rate_limit_kicks_in(live_client: AsyncClient) -> None:
         resp = await live_client.get("/api/v1/projects")
         last_status = resp.status_code
         if last_status == 429:
-            assert resp.json()["detail"]["code"] == "rate_limited"
+            assert resp.json()["detail"]["code"] == "rate_limit_exceeded"
             assert "retry_after_seconds" in resp.json()["detail"]
             assert "Retry-After" in resp.headers
+            assert "X-Request-ID" in resp.headers
             return
     pytest.fail(f"rate limit never tripped — last status {last_status}")
 

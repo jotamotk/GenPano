@@ -28,24 +28,59 @@ export interface ProblemDetails {
   status: number
   detail?: string
   code: string
+  request_id?: string
+  instance?: string
   [key: string]: unknown
 }
 
+/**
+ * Errors thrown by the API client. Carries the full RFC 7807 body plus the
+ * request metadata users need to copy when reporting an issue: request_id
+ * (from `X-Request-ID` header), the call path, and the time the error fired.
+ */
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
   readonly problem: ProblemDetails
+  readonly requestId: string
+  readonly path: string
+  readonly timestamp: string
 
-  constructor(problem: ProblemDetails) {
+  constructor(
+    problem: ProblemDetails,
+    meta: { requestId?: string; path?: string } = {},
+  ) {
     super(`${problem.code}: ${problem.title}${problem.detail ? ` (${problem.detail})` : ''}`)
     this.status = problem.status
     this.code = problem.code
     this.problem = problem
+    this.requestId = meta.requestId || (typeof problem.request_id === 'string' ? problem.request_id : '') || ''
+    this.path = meta.path || (typeof problem.instance === 'string' ? problem.instance : '') || ''
+    this.timestamp = new Date().toISOString()
   }
 
   /** Check if this is a specific error code (FE i18n lookup helper). */
   is(code: string): boolean {
     return this.code === code
+  }
+
+  /**
+   * Build a multi-line block users can paste into a bug report. Includes the
+   * code, title, status, request_id, time, path, and any structured detail —
+   * everything support needs to correlate with backend logs.
+   */
+  toCopyText(): string {
+    const lines = [
+      `[${this.code}] ${this.problem.title}`,
+      `status: ${this.status}`,
+      `request_id: ${this.requestId || '-'}`,
+      `time: ${this.timestamp}`,
+      `path: ${this.path || '-'}`,
+    ]
+    if (this.problem.detail) lines.push(`detail: ${this.problem.detail}`)
+    if (typeof this.problem.field === 'string') lines.push(`field: ${this.problem.field}`)
+    if (typeof this.problem.reason === 'string') lines.push(`reason: ${this.problem.reason}`)
+    return lines.join('\n')
   }
 }
 
@@ -87,14 +122,18 @@ async function parseProblem(res: Response): Promise<ProblemDetails> {
     if (data && typeof data === 'object' && 'code' in data) {
       return data as ProblemDetails
     }
-    // Backward-compat: legacy auth router returns {detail: {...}}
-    const detail = (data as { detail?: { code?: string; message?: string } })?.detail
+    // Backward-compat: FastAPI default + legacy auth router return {detail: {...}}.
+    // Preserve every field so callers can surface request_id, instance, retry_after, etc.
+    const detail = (data as { detail?: Record<string, unknown> })?.detail
     if (detail && typeof detail === 'object' && 'code' in detail) {
       return {
-        type: 'about:blank',
-        title: detail.message || res.statusText,
-        status: res.status,
-        code: detail.code || 'unknown_error',
+        type: typeof detail.type === 'string' ? detail.type : 'about:blank',
+        title: typeof detail.title === 'string'
+          ? detail.title
+          : (typeof detail.message === 'string' ? detail.message : res.statusText) || 'Error',
+        status: typeof detail.status === 'number' ? detail.status : res.status,
+        code: typeof detail.code === 'string' ? detail.code : 'unknown_error',
+        ...detail,
       }
     }
     return {
@@ -112,6 +151,11 @@ async function parseProblem(res: Response): Promise<ProblemDetails> {
       code: 'unknown_error',
     }
   }
+}
+
+function buildApiError(res: Response, problem: ProblemDetails, url: string): ApiError {
+  const requestId = res.headers.get('X-Request-ID') || ''
+  return new ApiError(problem, { requestId, path: url })
 }
 
 function handleUnauthorized(): void {
@@ -142,21 +186,24 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   try {
     res = await fetch(url, { ...options, headers })
   } catch (err) {
-    throw new ApiError({
-      type: 'about:blank',
-      title: 'Network error',
-      status: 0,
-      code: 'network_error',
-      detail: err instanceof Error ? err.message : String(err),
-    })
+    throw new ApiError(
+      {
+        type: 'about:blank',
+        title: 'Network error',
+        status: 0,
+        code: 'network_error',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      { path: url },
+    )
   }
 
   if (res.status === 401 && !options.skipAuth) {
     handleUnauthorized()
-    throw new ApiError(await parseProblem(res))
+    throw buildApiError(res, await parseProblem(res), url)
   }
   if (!res.ok) {
-    throw new ApiError(await parseProblem(res))
+    throw buildApiError(res, await parseProblem(res), url)
   }
   if (res.status === 204) {
     return undefined as T

@@ -128,5 +128,28 @@ export const en: Translations = {
     networkError: 'Network error, please try again',
     serverError: 'Server error, please contact support',
     unknown: 'Unknown error, please try again',
+    copy: 'Copy details',
+    copied: 'Copied',
+    showMore: 'Show full details',
+    requestId: 'Request ID',
+    // Code → user-facing message. The code itself is always shown in the
+    // panel header so support can search for it even when no translation
+    // exists.
+    codes: {
+      unauthorized: 'You are signed out. Please log in again.',
+      forbidden: 'You do not have access to this resource.',
+      not_found: 'Resource not found.',
+      gone: 'This resource is no longer available.',
+      validation_error: 'Invalid input.',
+      conflict: 'This action conflicts with the current state.',
+      rate_limit_exceeded: 'You are sending requests too quickly. Try again shortly.',
+      internal_error: 'Server error. Please try again or contact support.',
+      service_degraded: 'Service is currently degraded. Please try again later.',
+      network_error: 'Network error. Please check your connection.',
+      invalid_credentials: 'Invalid email or password.',
+      MCP_AUTH_REQUIRED: 'MCP API key required.',
+      project_name_taken: 'A project with this name already exists.',
+      competitor_capacity_full: 'Competitor list is at capacity.',
+    } as Record<string, string>,
   },
 }
