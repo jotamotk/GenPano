@@ -196,6 +196,12 @@ from app.api.queries import router as _queries_router  # noqa: E402
 
 app.include_router(_queries_router, prefix="/api")
 
+# Analyzer routes (Phase 9 slice 9c). admin_console served
+# /api/analyzer/* without auth; FastAPI port adds Depends(current_admin).
+from app.api.analyzer import router as _analyzer_router  # noqa: E402
+
+app.include_router(_analyzer_router, prefix="/api")
+
 
 # Self-heal handler for un-decryptable admin session cookies.
 # See current_admin in app/api/admin/auth/router.py for the producer side.
