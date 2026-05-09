@@ -77,6 +77,8 @@ def _patch_client(monkeypatch, generate_batches_returns):
 
         async def generate_prompt_batches(self, **kwargs):
             for batch in generate_batches_returns:
+                if isinstance(batch, Exception):
+                    raise batch
                 yield batch
 
     monkeypatch.setattr(gen_mod, "PromptMatrixClient", FakeClient)
@@ -87,19 +89,24 @@ def _llm_prompt(
     topic_id: int = 1,
     intent: str = "informational",
     prompt_scope: str = "branded",
+    language: str = "zh-CN",
+    competitive_type: str | None = None,
 ) -> Any:
     from app.admin.prompt_matrix.lib import LLMPromptCandidate
 
     return LLMPromptCandidate(
         topic_id=topic_id,
         intent=intent,
-        language="zh-CN",
+        language=language,
         text=text,
         confidence=0.85,
         reason="r",
         template_strategy="latest",
         template_version="v1",
-        tags={"prompt_scope": prompt_scope},
+        tags={
+            "prompt_scope": prompt_scope,
+            **({"competitive_type": competitive_type} if competitive_type else {}),
+        },
     )
 
 
@@ -320,6 +327,56 @@ async def test_generate_sync_quality_blocked_marks_failed(
         .all()
     )
     assert len(audit) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_keeps_partial_results_and_error_detail(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    from app.admin.prompt_matrix.lib import PromptMatrixError
+
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[_topic()]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear", "aliases": []}]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [_llm_prompt("Is NIKE good for beginner running shoes?", language="en-US")],
+                {"model": "doubao-test", "usage": {"prompt_tokens": 30}},
+            ),
+            PromptMatrixError(
+                "llm_call_failed",
+                "Prompt Matrix generation failed: HTTP 429: quota exhausted",
+            ),
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 10},
+    )
+
+    body = resp.json()
+    assert body["code"] == "llm_call_failed"
+    assert "HTTP 429" in body["detail"]
+    run_id = body["run_id"]
+    run = (
+        await db_session.execute(
+            select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
+        )
+    ).scalar_one()
+    assert run.status == "failed"
+    assert run.candidates_generated == 1
+    assert "HTTP 429" in run.llm_error
+    assert run.metrics_json["partial_failure"] is True
+    assert "HTTP 429" in run.metrics_json["batch_error_message"]
 
 
 # ── background mode ───────────────────────────────────────────
