@@ -235,6 +235,46 @@ async def test_generate_sync_passes_product_contexts_to_service(
 
 
 @pytest.mark.asyncio
+async def test_generate_sync_uses_backend_chinese_goal_and_constraints(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    db_session.add(_segment("SEG-CN"))
+    await db_session.commit()
+    captured: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return GenerationResult(
+            items=[_valid_profile_draft()],
+            model="stub-doubao",
+            prompt="stub-prompt",
+            usage={"total_tokens": 5},
+            estimated_cost=None,
+        )
+
+    _patch_llm_service(monkeypatch, generate=_capture)
+    resp = await client.post(
+        "/api/admin/segments/SEG-CN/profiles/generate",
+        json={
+            "brand_name": "bestCoffer",
+            "count": 3,
+            "goal": "Generate reviewable Profile drafts for the current Segment.",
+            "constraints": (
+                "Cover price, proof, scenario, channel, and competitor-comparison needs."
+            ),
+        },
+    )
+
+    assert resp.status_code == 200
+    goal = str(captured["goal"])
+    constraints = str(captured["constraints"])
+    assert "生成可进入 Query Pool 采样的 Profile 草稿" in goal
+    assert "不要生成与品牌、Segment 或所选产品无关" in constraints
+    assert "Generate reviewable Profile drafts" not in goal
+    assert "Cover price, proof" not in constraints
+
+
+@pytest.mark.asyncio
 async def test_generate_sync_llm_call_failed_503(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):

@@ -47,6 +47,18 @@ def test_profile_llm_uses_same_product_scope_picker() -> None:
     assert '"products": this.llmForm.products' in html
 
 
+def test_profile_llm_removes_operator_goal_fields_and_english_defaults() -> None:
+    html = _admin_html()
+
+    assert 'x-model="llmForm.goal"' not in html
+    assert 'x-model="llmForm.notes"' not in html
+    assert 'goal: "Generate reviewable Profile drafts' not in html
+    assert "Generate reviewable Profile drafts for the current Segment." not in html
+    assert "Cover price, proof, scenario, channel" not in html
+    assert '"goal": this.llmForm.goal' not in html
+    assert '"constraints": this.llmForm.notes' not in html
+
+
 def test_segment_llm_apply_selects_persisted_segment_before_profile_generation() -> None:
     html = _admin_html()
 

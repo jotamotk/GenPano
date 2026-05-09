@@ -157,6 +157,8 @@ test('Admin LLM Segment import keeps the persisted Segment id for the Profile fl
       profileGenerateBodies.push(body);
       expect(body.brand_id).toBe(brand.id);
       expect(body.product_ids).toEqual(['prod-vault']);
+      expect(body).not.toHaveProperty('goal');
+      expect(body).not.toHaveProperty('constraints');
       await fulfillJson(route, {
         drafts: [{
           id: 'P-001',
@@ -209,6 +211,8 @@ test('Admin LLM Segment import keeps the persisted Segment id for the Profile fl
   await page.locator('button[\\@click="openLlmPanel()"]').click();
   const profilePanel = page.locator('section[x-show="llmPanelOpen"]');
   await expect(profilePanel).toBeVisible();
+  await expect(profilePanel.locator('textarea[x-model="llmForm.goal"]')).toHaveCount(0);
+  await expect(profilePanel.locator('textarea[x-model="llmForm.notes"]')).toHaveCount(0);
   await expect(profilePanel.locator('select[x-model="llmForm.productIds"] option[value="prod-vault"]')).toBeVisible();
   await profilePanel.locator('select[x-model="llmForm.productIds"]').selectOption(['prod-vault']);
   await profilePanel.locator('button[\\@click="generateSegmentLlm()"]').click();
