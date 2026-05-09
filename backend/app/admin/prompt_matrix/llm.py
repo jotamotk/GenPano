@@ -23,6 +23,7 @@ from app.admin.prompt_matrix.lib import (
     clamp_int,
     estimate_generation_count,
     llm_error_detail,
+    llm_response_error_detail,
     merge_usage,
     over_request_count,
     parse_llm_prompt_candidates,
@@ -161,7 +162,7 @@ class PromptMatrixClient:
         if response.status_code != 200:
             raise PromptMatrixError(
                 "llm_call_failed",
-                f"Prompt Matrix generation failed: HTTP {response.status_code}",
+                "Prompt Matrix generation failed: " + llm_response_error_detail(response),
             )
         data = response.json()
         choices = data.get("choices") or []

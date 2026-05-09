@@ -379,6 +379,7 @@ async def fetch_candidates(
     *,
     status: str = "pending",
     query: str | None = None,
+    brand_id: int | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -387,6 +388,9 @@ async def fetch_candidates(
     if status and status != "all":
         base = base.where(PromptCandidate.status == status)
         count_stmt = count_stmt.where(PromptCandidate.status == status)
+    if brand_id is not None:
+        base = base.where(PromptCandidate.brand_id == brand_id)
+        count_stmt = count_stmt.where(PromptCandidate.brand_id == brand_id)
     if query:
         like = f"%{query}%"
         cond = or_(
@@ -404,11 +408,13 @@ async def fetch_candidates(
 
 
 async def candidate_status_counts(
-    session: AsyncSession, *, query: str | None = None
+    session: AsyncSession, *, query: str | None = None, brand_id: int | None = None
 ) -> dict[str, int]:
     base = select(PromptCandidate.status, func.count(PromptCandidate.id)).group_by(
         PromptCandidate.status
     )
+    if brand_id is not None:
+        base = base.where(PromptCandidate.brand_id == brand_id)
     if query:
         like = f"%{query}%"
         base = base.where(
