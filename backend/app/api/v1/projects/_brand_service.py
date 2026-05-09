@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from genpano_models import (
     BrandMention,
@@ -99,8 +100,11 @@ async def get_products(
         .order_by(desc("mentions"))
         .limit(50)
     )
+    # Tuple of (name, category, mentions, mention_rate, rank, geo, sent, sov,
+    # category_rank, win) — None for fields the legacy fallback can't fill.
+    product_rows: list[tuple[Any, ...]] = []
     try:
-        product_rows = (await session.execute(stmt)).all()
+        product_rows = [tuple(r) for r in (await session.execute(stmt)).all()]
     except Exception:
         product_rows = []
 
@@ -135,9 +139,7 @@ async def get_products(
         if not product_name:
             continue
 
-        synth_id = int(
-            hashlib.sha256(f"{primary_id}|{product_name}".encode()).hexdigest()[:8], 16
-        )
+        synth_id = int(hashlib.sha256(f"{primary_id}|{product_name}".encode()).hexdigest()[:8], 16)
 
         # 30d sparkline and trend (last7 vs first7).
         spark_stmt = (

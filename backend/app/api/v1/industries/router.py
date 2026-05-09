@@ -226,9 +226,7 @@ async def industry_groups(
     name: str | None = Query(None),
     limit: int = Query(8, ge=1, le=30),
 ) -> IndustryGroupsOut:
-    return await get_industry_groups(
-        session, industry_id, industry_name=name, limit=limit
-    )
+    return await get_industry_groups(session, industry_id, industry_name=name, limit=limit)
 
 
 @router.get("/{industry_id}/top-domains", response_model=IndustryTopDomainsOut)
@@ -259,9 +257,7 @@ async def industry_segments(
     name: str | None = Query(None),
     limit: int = Query(5, ge=1, le=20),
 ) -> IndustrySegmentsOut:
-    return await get_industry_segments(
-        session, industry_id, industry_name=name, limit=limit
-    )
+    return await get_industry_segments(session, industry_id, industry_name=name, limit=limit)
 
 
 @router.get(

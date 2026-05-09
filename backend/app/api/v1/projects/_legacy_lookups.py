@@ -29,9 +29,7 @@ async def resolve_brand_name(session: AsyncSession, brand_id: int) -> str | None
         return None
 
 
-async def resolve_brand_names(
-    session: AsyncSession, brand_ids: list[int]
-) -> dict[int, str]:
+async def resolve_brand_names(session: AsyncSession, brand_ids: list[int]) -> dict[int, str]:
     """Bulk lookup; returns {brand_id: display_name}. Missing rows omitted."""
     if not brand_ids:
         return {}
@@ -61,9 +59,7 @@ async def resolve_brand_names(
             return {}
 
 
-async def resolve_brand_industry(
-    session: AsyncSession, brand_id: int
-) -> str | None:
+async def resolve_brand_industry(session: AsyncSession, brand_id: int) -> str | None:
     """Return the legacy `brands.industry` text for filtering benchmarks."""
     try:
         row = await session.execute(
@@ -87,9 +83,7 @@ async def resolve_topic_name(session: AsyncSession, topic_id: int) -> str | None
         return None
 
 
-async def resolve_topic_names(
-    session: AsyncSession, topic_ids: list[int]
-) -> dict[int, str]:
+async def resolve_topic_names(session: AsyncSession, topic_ids: list[int]) -> dict[int, str]:
     """Bulk lookup of topic display names."""
     if not topic_ids:
         return {}

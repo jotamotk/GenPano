@@ -212,8 +212,7 @@ async def get_industry_overview(
                             IndustryTopicDaily.industry_id == industry_id,
                             IndustryTopicDaily.date
                             >= datetime.combine(from_d, datetime.min.time()),
-                            IndustryTopicDaily.date
-                            <= datetime.combine(to_d, datetime.max.time()),
+                            IndustryTopicDaily.date <= datetime.combine(to_d, datetime.max.time()),
                         )
                     )
                 )
@@ -870,14 +869,12 @@ async def get_industry_movers(
     f_prev = datetime.combine(from_d, datetime.min.time())
     t_prev = datetime.combine(mid - timedelta(days=1), datetime.max.time())
 
-    industry_filter = (
-        GeoScoreDaily.industry == industry_name if industry_name else None
-    )
+    industry_filter = GeoScoreDaily.industry == industry_name if industry_name else None
 
     async def _avg(brand_filter: Any, frm: datetime, to: datetime) -> dict[int, float]:
-        stmt = select(
-            GeoScoreDaily.brand_id, func.avg(GeoScoreDaily.avg_geo_score)
-        ).where(GeoScoreDaily.date >= frm, GeoScoreDaily.date <= to)
+        stmt = select(GeoScoreDaily.brand_id, func.avg(GeoScoreDaily.avg_geo_score)).where(
+            GeoScoreDaily.date >= frm, GeoScoreDaily.date <= to
+        )
         if brand_filter is not None:
             stmt = stmt.where(brand_filter)
         stmt = stmt.group_by(GeoScoreDaily.brand_id)
@@ -987,11 +984,7 @@ async def get_industry_groups(
         return IndustryGroupsOut(industry_id=industry_id, items=[], state="empty")
 
     groups = list(
-        (
-            await session.execute(
-                select(BrandGroup).where(BrandGroup.id.in_(list(by_group.keys())))
-            )
-        )
+        (await session.execute(select(BrandGroup).where(BrandGroup.id.in_(list(by_group.keys())))))
         .scalars()
         .all()
     )
@@ -1153,9 +1146,7 @@ async def get_industry_segments(
         return IndustrySegmentsOut(industry_id=industry_id, items=[], state="empty")
 
     bids = [int(r[0]) for r in brand_rows]
-    pos_stmt = select(KgBrand.brand_id, KgBrand.positioning).where(
-        KgBrand.brand_id.in_(bids)
-    )
+    pos_stmt = select(KgBrand.brand_id, KgBrand.positioning).where(KgBrand.brand_id.in_(bids))
     try:
         pos_map = {int(r[0]): r[1] for r in (await session.execute(pos_stmt)).all()}
     except Exception:
@@ -1338,9 +1329,7 @@ async def get_industry_topic_intent_matrix(
     topic_rows = (await session.execute(topic_stmt)).all()
     topic_ids = [int(r[0]) for r in topic_rows]
     if not topic_ids:
-        return TopicIntentMatrixOut(
-            industry_id=industry_id, intents=[], rows=[], state="empty"
-        )
+        return TopicIntentMatrixOut(industry_id=industry_id, intents=[], rows=[], state="empty")
     name_map = await resolve_topic_names(session, topic_ids)
 
     # Get intent distribution per topic from llm_responses.

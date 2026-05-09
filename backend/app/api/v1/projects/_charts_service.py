@@ -166,13 +166,17 @@ async def get_position_distribution(
             state="empty",
         )
     f, t = _dt_range(from_d, to_d)
-    stmt = select(BrandMention.position_rank, func.count()).where(
-        and_(
-            BrandMention.brand_id == project.primary_brand_id,
-            BrandMention.created_at >= f,
-            BrandMention.created_at <= t,
+    stmt = (
+        select(BrandMention.position_rank, func.count())
+        .where(
+            and_(
+                BrandMention.brand_id == project.primary_brand_id,
+                BrandMention.created_at >= f,
+                BrandMention.created_at <= t,
+            )
         )
-    ).group_by(BrandMention.position_rank)
+        .group_by(BrandMention.position_rank)
+    )
     rows = (await session.execute(stmt)).all()
     buckets: OrderedDict[str, int] = OrderedDict(
         [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
@@ -195,9 +199,7 @@ async def get_position_distribution(
         else:
             buckets["11+"] += cnt
     items = [
-        PositionBucketRow(
-            bucket=k, count=v, pct=round((v / total * 100) if total else 0.0, 2)
-        )
+        PositionBucketRow(bucket=k, count=v, pct=round((v / total * 100) if total else 0.0, 2))
         for k, v in buckets.items()
     ]
     return PositionDistributionOut(
@@ -412,9 +414,7 @@ async def get_sentiment_trend_by_engine(
     for d, eng, v in rows:
         d_iso = d.date().isoformat() if isinstance(d, datetime) else str(d)[:10]
         engines_seen.add(eng or "unknown")
-        by_date.setdefault(d_iso, {})[eng or "unknown"] = (
-            float(v) if v is not None else None
-        )
+        by_date.setdefault(d_iso, {})[eng or "unknown"] = float(v) if v is not None else None
 
     engines = sorted(engines_seen)
     items = [
@@ -483,9 +483,7 @@ async def get_topic_attribution(
                 sample_snippet=None,
             )
         )
-    return TopicAttributionOut(
-        project_id=project.id, items=items, state="ok" if items else "empty"
-    )
+    return TopicAttributionOut(project_id=project.id, items=items, state="ok" if items else "empty")
 
 
 # ── /mention-samples ────────────────────────────────────────────────
@@ -560,9 +558,7 @@ async def get_mention_samples(
         )
         for m in rows
     ]
-    return MentionSamplesOut(
-        project_id=project.id, items=items, state="ok" if items else "empty"
-    )
+    return MentionSamplesOut(project_id=project.id, items=items, state="ok" if items else "empty")
 
 
 # ── /citations/authority-trend ──────────────────────────────────────
@@ -740,19 +736,14 @@ async def get_content_gap(
     # citation_rate per topic from geo_score_daily (no per-topic citation table,
     # so we approximate with a brand-level citation_rate scalar attenuated by
     # mention_rate share of the topic).
-    cite_stmt = (
-        select(func.avg(GeoScoreDaily.citation_rate))
-        .where(
-            and_(
-                GeoScoreDaily.brand_id == primary,
-                GeoScoreDaily.date >= f,
-                GeoScoreDaily.date <= t,
-            )
+    cite_stmt = select(func.avg(GeoScoreDaily.citation_rate)).where(
+        and_(
+            GeoScoreDaily.brand_id == primary,
+            GeoScoreDaily.date >= f,
+            GeoScoreDaily.date <= t,
         )
     )
-    brand_citation_rate = float(
-        (await session.execute(cite_stmt)).scalar_one_or_none() or 0
-    )
+    brand_citation_rate = float((await session.execute(cite_stmt)).scalar_one_or_none() or 0)
 
     topics: list[ContentGapTopicRow] = []
     for r in topic_rows:
@@ -833,9 +824,7 @@ async def get_pr_targets(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(
-                    ProjectCompetitor.project_id == project.id
-                )
+                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
             )
         ).all()
     ][:3]
@@ -1100,9 +1089,7 @@ async def get_authority_radar(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(
-                    ProjectCompetitor.project_id == project.id
-                )
+                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
             )
         ).all()
     ]
@@ -1148,9 +1135,7 @@ async def get_authority_radar(
     if industry_name:
         try:
             ind_brand_stmt = await session.execute(
-                text(
-                    "SELECT id FROM brands WHERE industry = :ind"
-                ),
+                text("SELECT id FROM brands WHERE industry = :ind"),
                 {"ind": industry_name},
             )
             ind_brand_ids = [int(r[0]) for r in ind_brand_stmt.all()]
@@ -1176,6 +1161,7 @@ async def get_authority_radar(
         session, [primary] + ([top_comp_id] if top_comp_id else [])
     )
     tier_labels = ["Tier1", "Tier2", "Tier3", "Tier4", "总覆盖"]
+
     def _industry_median(i: int) -> float:
         if i < len(industry_median_counts):
             return round(float(industry_median_counts[i]), 1)
@@ -1248,9 +1234,7 @@ async def get_group_shared_domains(
         r[0]
         for r in (
             await session.execute(
-                select(BrandGroupMember.brand_id).where(
-                    BrandGroupMember.group_id == membership
-                )
+                select(BrandGroupMember.brand_id).where(BrandGroupMember.group_id == membership)
             )
         ).all()
     ]
@@ -1333,10 +1317,7 @@ async def get_product_relations(
 
     # Resolve other-side names.
     other_ids = list(
-        {
-            r.product_b_id if r.product_a_id in own_ids else r.product_a_id
-            for r in rels
-        }
+        {r.product_b_id if r.product_a_id in own_ids else r.product_a_id for r in rels}
         - set(own_ids)
     )
     other_name_map: dict[int, str] = {}

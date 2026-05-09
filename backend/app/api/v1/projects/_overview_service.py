@@ -332,9 +332,7 @@ async def _same_group_shared_domains(
     """Resolve shared domains for the brand's corporate group (Phase A.6)."""
     membership = (
         await session.execute(
-            select(BrandGroupMember.group_id).where(
-                BrandGroupMember.brand_id == brand_id
-            )
+            select(BrandGroupMember.group_id).where(BrandGroupMember.brand_id == brand_id)
         )
     ).scalar_one_or_none()
     if membership is None:
