@@ -1,4 +1,11 @@
-import { expect, test, type Route } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+
+import {
+  fulfillJson,
+  installAdminDocumentRoute,
+  installAdminErrorGuards,
+  normalizeAdminApiPath,
+} from './admin-fixtures';
 
 const competitiveCandidate = {
   id: 'pm-competitive-varonis-001',
@@ -40,23 +47,18 @@ const competitiveCandidate = {
   reviewed_at: null,
 };
 
-const fulfillJson = async (route: Route, body: unknown, status = 200) => {
-  await route.fulfill({
-    status,
-    contentType: 'application/json',
-    body: JSON.stringify(body),
-  });
-};
-
 test('Prompt Matrix shows a competitive prompt with a named competitor', async ({ page }) => {
   let generated = false;
+  await installAdminDocumentRoute(page);
+  const errors = installAdminErrorGuards(page);
 
-  await page.route('**/api/admin/**', async route => {
+  await page.route(/.*\/(?:api\/admin|admin\/api)\/.*/, async route => {
     const request = route.request();
     const url = new URL(request.url());
+    const path = normalizeAdminApiPath(url);
     const method = request.method();
 
-    if (method === 'GET' && url.pathname.endsWith('/auth/session')) {
+    if (method === 'GET' && path.endsWith('/auth/session')) {
       await fulfillJson(route, {
         authenticated: true,
         admin: {
@@ -69,12 +71,12 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (!url.pathname.includes('/prompt-matrix/')) {
+    if (!path.includes('/prompt-matrix/')) {
       await fulfillJson(route, { success: true, rows: [], brands: [], products: [] });
       return;
     }
 
-    if (method === 'GET' && url.pathname.endsWith('/config')) {
+    if (method === 'GET' && path.endsWith('/config')) {
       await fulfillJson(route, {
         success: true,
         defaults: {
@@ -101,7 +103,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'GET' && url.pathname.endsWith('/topics')) {
+    if (method === 'GET' && path.endsWith('/topics')) {
       await fulfillJson(route, {
         success: true,
         rows: [
@@ -122,7 +124,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'GET' && url.pathname.endsWith('/gaps')) {
+    if (method === 'GET' && path.endsWith('/gaps')) {
       await fulfillJson(route, {
         success: true,
         rows: [
@@ -139,7 +141,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'GET' && url.pathname.endsWith('/prompts')) {
+    if (method === 'GET' && path.endsWith('/prompts')) {
       await fulfillJson(route, {
         success: true,
         rows: [],
@@ -149,7 +151,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'POST' && url.pathname.endsWith('/generate')) {
+    if (method === 'POST' && path.endsWith('/generate')) {
       generated = true;
       await fulfillJson(route, {
         success: true,
@@ -165,7 +167,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'GET' && url.pathname.includes('/runs/run-competitive-001')) {
+    if (method === 'GET' && path.includes('/runs/run-competitive-001')) {
       await fulfillJson(route, {
         success: true,
         run: {
@@ -179,7 +181,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    if (method === 'GET' && url.pathname.endsWith('/candidates')) {
+    if (method === 'GET' && path.endsWith('/candidates')) {
       const rows = generated ? [competitiveCandidate] : [];
       await fulfillJson(route, {
         success: true,
@@ -204,7 +206,7 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
       return;
     }
 
-    throw new Error(`Unhandled Prompt Matrix API request: ${method} ${url.pathname}${url.search}`);
+    throw new Error(`Unhandled Prompt Matrix API request: ${method} ${path}${url.search}`);
   });
 
   await page.goto('/admin/planner-prompt-matrix', { waitUntil: 'domcontentloaded' });
@@ -225,4 +227,5 @@ test('Prompt Matrix shows a competitive prompt with a named competitor', async (
   expect(visibleText).toContain('bestCoffer');
   expect(visibleText).toContain('Varonis');
   expect(visibleText).not.toMatch(/similar products|同类品牌|其他工具|类似产品/);
+  await errors.assertClean();
 });

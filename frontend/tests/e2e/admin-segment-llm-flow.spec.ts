@@ -1,5 +1,7 @@
 import { expect, test, type Route } from '@playwright/test';
 
+import { installAdminDocumentRoute, installAdminErrorGuards } from './admin-fixtures';
+
 const brand = {
   id: 'brand-bestcoffer-security',
   name: 'bestCoffer',
@@ -50,6 +52,8 @@ test('Admin LLM Segment import keeps the persisted Segment id for the Profile fl
   const segmentGenerateBodies: unknown[] = [];
   const profileGenerateBodies: unknown[] = [];
   const badSegmentUrls: string[] = [];
+  await installAdminDocumentRoute(page);
+  const errors = installAdminErrorGuards(page);
 
   const fulfillJson = async (route: Route, body: unknown, status = 200) => {
     await route.fulfill({
@@ -224,4 +228,5 @@ test('Admin LLM Segment import keeps the persisted Segment id for the Profile fl
   expect(segmentGenerateBodies).toHaveLength(1);
   expect(profileGenerateBodies).toHaveLength(1);
   expect(badSegmentUrls).toEqual([]);
+  await errors.assertClean();
 });
