@@ -45,3 +45,18 @@ def test_profile_llm_uses_same_product_scope_picker() -> None:
     assert "syncProfileLlmProducts" in html
     assert '"product_ids": this.llmForm.productIds' in html
     assert '"products": this.llmForm.products' in html
+
+
+def test_segment_llm_apply_selects_persisted_segment_before_profile_generation() -> None:
+    html = _admin_html()
+
+    assert "const importedSegments = (body.rows || []).map(row => this.fromSegment(row));" in html
+    assert "const persistedSegment = importedSegments[0]" in html
+    assert "this.selectedSegmentId = persistedSegment.id;" in html
+    assert "this.selectedSegment = persistedSegment;" in html
+
+
+def test_current_segment_ignores_stale_detail_after_selection_changes() -> None:
+    html = _admin_html()
+
+    assert "this.selectedSegment && this.selectedSegment.id === this.selectedSegmentId" in html

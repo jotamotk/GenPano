@@ -10292,6 +10292,7 @@ function segmentCrudPanel() {
         if (this.selectedSegmentId) {
           const listed = this.segments.find(segment => segment.id === this.selectedSegmentId);
           if (listed) this.selectedSegment = listed;
+          else if (this.selectedSegment?.id !== this.selectedSegmentId) this.selectedSegment = null;
         }
         this.syncUrlState();
       } catch (error) {
@@ -10347,7 +10348,10 @@ function segmentCrudPanel() {
       return this.segments;
     },
     currentSegment() {
-      return this.selectedSegment || this.segments.find(segment => segment.id === this.selectedSegmentId) || null;
+      const selectedDetail = this.selectedSegment && this.selectedSegment.id === this.selectedSegmentId
+        ? this.selectedSegment
+        : null;
+      return selectedDetail || this.segments.find(segment => segment.id === this.selectedSegmentId) || null;
     },
     segmentProfiles(segmentId) {
       return this.profiles[segmentId || this.selectedSegmentId] || [];
@@ -10585,19 +10589,24 @@ function segmentCrudPanel() {
       this.segmentLlmApplyMessage = '正在加入 Segment 列表...';
       const targetStatus = this.segmentLlmForm.status || 'active';
       const rows = this.segmentLlmDrafts.map(row => this.toApiSegment({ ...row, status: targetStatus }));
-      const firstDraft = this.fromSegment({ ...this.segmentLlmDrafts[0], status: targetStatus });
       try {
         const body = await this.apiJson(API_BASE + '/segments/import', {
           method: 'POST',
           body: JSON.stringify({ rows, reason: 'confirm_llm_segment_drafts' }),
         });
-        this.selectedSegmentId = firstDraft.id;
-        this.selectedSegment = firstDraft;
+        const importedSegments = (body.rows || []).map(row => this.fromSegment(row));
+        const persistedSegment = importedSegments[0] || null;
+        if (!persistedSegment) {
+          throw new Error((body.skipped || 0) ? 'Segment drafts were skipped during import' : 'No Segment was imported');
+        }
+        this.selectedSegmentId = persistedSegment.id;
+        this.selectedSegment = persistedSegment;
         this.segmentLlmDrafts = [];
         await this.loadSegments(1);
         try {
           await this.loadSegmentDetail(this.selectedSegmentId);
         } catch (detailError) {
+          this.selectedSegment = persistedSegment;
           this.setNotice(detailError.message || 'Segment detail refresh failed');
         }
         this.segmentLlmApplyTone = 'success';
