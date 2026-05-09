@@ -81,6 +81,132 @@ class BrandContextSnapshot(Base):
     )
 
 
+class LLMEntityCandidate(Base):
+    __tablename__ = "llm_entity_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('brand','product','competitor','segment','profile','scenario')",
+            name="llm_entity_candidates_type_check",
+        ),
+        CheckConstraint(
+            "status IN ('pending','approved','rejected')",
+            name="llm_entity_candidates_status_check",
+        ),
+        UniqueConstraint("candidate_key", name="uq_llm_entity_candidates_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    brand_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    brand_context_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    parent_brand_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parent_brand_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    domain: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    candidate_key: Mapped[str] = mapped_column(String(768), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, server_default="llm_search")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attributes_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    evidence_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    source_notes_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mapped_entity_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    mapped_entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class LLMAttributeCandidate(Base):
+    __tablename__ = "llm_attribute_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_kind IN ('brand','product','competitor','segment','profile','scenario')",
+            name="llm_attribute_candidates_kind_check",
+        ),
+        CheckConstraint(
+            "status IN ('pending','approved','rejected')",
+            name="llm_attribute_candidates_status_check",
+        ),
+        UniqueConstraint("candidate_key", name="uq_llm_attribute_candidates_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    brand_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    brand_context_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    attribute_value: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_value: Mapped[str] = mapped_column(String(512), nullable=False)
+    candidate_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, server_default="llm_search")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    source_notes_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mapped_attribute_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class LLMClaimCandidate(Base):
+    __tablename__ = "llm_claim_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_kind IN ('brand','product','competitor','segment','profile','scenario')",
+            name="llm_claim_candidates_kind_check",
+        ),
+        CheckConstraint(
+            "status IN ('pending','approved','rejected')",
+            name="llm_claim_candidates_status_check",
+        ),
+        UniqueConstraint("candidate_key", name="uq_llm_claim_candidates_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    brand_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    brand_context_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    claim_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(String(700), nullable=False)
+    scenario: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    candidate_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, server_default="llm_search")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    source_notes_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mapped_claim_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Admin operator auth
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.brand_context import (
     assemble_brand_context_pack,
+    enrich_context_pack_with_approved_extractions,
     persist_brand_context_snapshot,
     topic_context_refs,
 )
@@ -119,6 +120,11 @@ async def attach_brand_context_to_topics(
 
     for topic in topics:
         if topic.get("brand_context_version") and isinstance(topic.get("brand_context_pack"), dict):
+            topic["brand_context_pack"] = await enrich_context_pack_with_approved_extractions(
+                session,
+                brand_id=int(topic["brand_id"]),
+                payload=topic["brand_context_pack"],
+            )
             versions[str(topic["brand_id"])] = str(topic["brand_context_version"])
             continue
         brand_id = int(topic["brand_id"])
@@ -126,7 +132,12 @@ async def attach_brand_context_to_topics(
             brand_id
         )
         if snapshot is not None:
-            _attach_topic_context(topic, snapshot.version, snapshot.payload_json or {})
+            payload = await enrich_context_pack_with_approved_extractions(
+                session,
+                brand_id=brand_id,
+                payload=snapshot.payload_json or {},
+            )
+            _attach_topic_context(topic, snapshot.version, payload)
             versions[str(brand_id)] = snapshot.version
 
     missing_brand_ids = {
@@ -172,6 +183,11 @@ async def attach_brand_context_to_topics(
         payload = assemble_brand_context_pack(
             brand=brand,
             search_context=search_by_name.get(str(brand.get("name") or "")),
+        )
+        payload = await enrich_context_pack_with_approved_extractions(
+            session,
+            brand_id=brand_id,
+            payload=payload,
         )
         version = await persist_brand_context_snapshot(
             session,

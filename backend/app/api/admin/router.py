@@ -34,6 +34,7 @@ from app.api.admin.hot_topics import router as hot_topics_router
 from app.api.admin.kg_candidates import router as kg_candidates_router
 from app.api.admin.kg_discovery import router as kg_discovery_router
 from app.api.admin.leads import router as leads_router
+from app.api.admin.llm_extraction import router as llm_extraction_router
 from app.api.admin.mcp_ops import router as mcp_ops_router
 from app.api.admin.products import router as products_router
 from app.api.admin.projects import router as projects_router
@@ -61,6 +62,7 @@ router.include_router(hot_topics_router, prefix="")
 router.include_router(kg_candidates_router, prefix="/kg-candidates")
 router.include_router(kg_discovery_router, prefix="/kg-discovery")
 router.include_router(leads_router, prefix="/leads")
+router.include_router(llm_extraction_router, prefix="/llm-extraction")
 router.include_router(mcp_ops_router, prefix="/mcp-ops")
 router.include_router(projects_router, prefix="/projects")
 router.include_router(proxy_pool_router, prefix="/proxy-pool")
@@ -354,6 +356,7 @@ SUB_ROUTERS: list[str] = [
     "engine_health",
     "kg_discovery",
     "leads",
+    "llm_extraction",
     "mcp_ops",
     "proxy_pool",
 ]
