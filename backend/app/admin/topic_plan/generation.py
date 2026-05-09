@@ -28,6 +28,10 @@ from genpano_models import AdminUser, TopicCandidate
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.admin.audit import emit_audit
+from app.admin.brand_context import (
+    persist_brand_context_snapshots,
+    topic_context_refs,
+)
 from app.admin.topic_plan import db as tp_db
 from app.admin.topic_plan.lib import (
     LLMTopic,
@@ -98,6 +102,8 @@ async def _insert_candidate_batch(
     existing_titles: list[str],
     remaining: int,
     skipped: list[dict[str, Any]],
+    brand_context_versions: dict[int, str] | None = None,
+    brand_context_packs: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Dedup + filter + insert candidate rows for one LLM batch."""
     if remaining <= 0:
@@ -127,10 +133,17 @@ async def _insert_candidate_batch(
             skipped.append({"title": item.title, "reason": "topic_brand_leak"})
             continue
         product_id, product_name = _resolve_product_id(item, brand)
+        brand_id = int(brand["id"])
+        context_pack = (brand_context_packs or {}).get(brand_id)
+        topic_axis, context_refs = topic_context_refs(
+            topic_dimension=item.dimension,
+            product_name=product_name or item.product_name,
+            context_pack=context_pack,
+        )
         row = TopicCandidate(
             id=str(uuid.uuid4()),
             run_id=run_id,
-            brand_id=int(brand["id"]),
+            brand_id=brand_id,
             brand_name=brand["name"],
             title=item.title,
             dimension=item.dimension,
@@ -140,6 +153,9 @@ async def _insert_candidate_batch(
             normalized_title=normalize_topic_title(item.title),
             product_id=product_id,
             product_name=product_name,
+            brand_context_version=(brand_context_versions or {}).get(brand_id),
+            context_refs_json=context_refs or None,
+            topic_axis=topic_axis,
             status="pending",
         )
         session.add(row)
@@ -158,6 +174,9 @@ async def _insert_candidate_batch(
                 "status": row.status,
                 "review_reason": row.review_reason,
                 "approved_topic_id": row.approved_topic_id,
+                "brand_context_version": row.brand_context_version,
+                "context_refs": row.context_refs_json,
+                "topic_axis": row.topic_axis,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
             }
@@ -226,6 +245,30 @@ async def execute_generation(
             batches += 1
             llm_model = (llm_meta or {}).get("model") or llm_model
             usage = tp_db.merge_usage(usage, (llm_meta or {}).get("usage") or {})
+            context_versions: dict[int, str] = {}
+            context_packs_by_brand_id: dict[int, dict[str, Any]] = {}
+            raw_context_packs = (llm_meta or {}).get("brand_context_packs")
+            if isinstance(raw_context_packs, dict) and raw_context_packs:
+                context_versions, context_packs_by_brand_id = await persist_brand_context_snapshots(
+                    session,
+                    brands=batch_brands,
+                    context_packs_by_name={
+                        str(name): pack
+                        for name, pack in raw_context_packs.items()
+                        if isinstance(pack, dict)
+                    },
+                    created_from_run_id=run_id,
+                )
+                if context_versions:
+                    await tp_db.merge_run_request_config(
+                        session,
+                        run_id=run_id,
+                        patch={
+                            "brand_context_versions": {
+                                str(k): v for k, v in context_versions.items()
+                            }
+                        },
+                    )
             if await tp_db.is_run_cancelled(session, run_id):
                 cancelled = True
                 break
@@ -237,6 +280,8 @@ async def execute_generation(
                 existing_titles=existing_titles,
                 remaining=remaining,
                 skipped=skipped,
+                brand_context_versions=context_versions,
+                brand_context_packs=context_packs_by_brand_id,
             )
             inserted.extend(batch_inserted)
             existing_titles.extend([row["title"] for row in batch_inserted if row.get("title")])

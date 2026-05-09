@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from app.admin.brand_context import assemble_brand_context_pack
 from app.admin.topic_plan.lib import (
     DoubaoConfig,
     LLMTopic,
@@ -93,18 +94,31 @@ def _parse_brand_research(raw: str, allowed_names: list[str]) -> list[dict[str, 
         out: dict[str, Any] = {"name": name}
         for key in (
             "industry",
+            "positioning",
+            "description",
             "category_terms",
             "product_lines",
             "signature_features",
             "target_audiences",
             "shopping_scenarios",
             "consumer_questions",
+            "products",
+            "scenarios",
+            "competitors",
+            "audience_hypotheses",
+            "claims",
+            "official_domains",
         ):
             value = item.get(key)
             if isinstance(value, str):
                 out[key] = value[:400]
             elif isinstance(value, list):
-                out[key] = [str(v).strip()[:120] for v in value if str(v).strip()][:10]
+                if key in {"products", "scenarios", "competitors", "audience_hypotheses"}:
+                    out[key] = [v for v in value if isinstance(v, dict)][:12]
+                else:
+                    out[key] = [str(v).strip()[:120] for v in value if str(v).strip()][:10]
+            elif isinstance(value, dict) and key == "claims":
+                out[key] = value
         source_notes = item.get("source_notes")
         if isinstance(source_notes, list):
             out["source_notes"] = [
@@ -132,13 +146,13 @@ class DoubaoTopicPlanClient:
         category: str,
         brands: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Best-effort web-search enrichment for brand/category context.
-
-        The search call must never block Topic Plan generation. If Ark's
-        Responses/web_search capability is unavailable for the configured
-        model, generation falls back to the DB-provided brand payload.
-        """
+        """Search-backed enrichment for brand/category context."""
         if not _env_bool("TOPIC_PLAN_ENABLE_WEB_RESEARCH", True):
+            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+                raise TopicPlanLLMError(
+                    "brand_context_search_failed",
+                    "Topic Plan requires web research; TOPIC_PLAN_ENABLE_WEB_RESEARCH is off.",
+                )
             return []
         allowed_names = [str(b.get("name") or "").strip() for b in brands]
         allowed_names = [name for name in allowed_names if name]
@@ -176,11 +190,51 @@ class DoubaoTopicPlanClient:
                 {
                     "name": "copy selected brand name exactly",
                     "industry": "concise industry/category summary",
-                    "category_terms": ["consumer category terms"],
-                    "product_lines": ["major product lines or SKU families"],
-                    "signature_features": ["consumer-visible traits"],
-                    "target_audiences": ["consumer segments"],
-                    "shopping_scenarios": ["shopping/use/gifting scenarios"],
+                    "positioning": "concise market positioning",
+                    "official_domains": ["official domains"],
+                    "products": [
+                        {
+                            "name": "product or product line name",
+                            "category": "category",
+                            "key_features": ["features"],
+                            "use_cases": ["use cases"],
+                            "target_users": ["target users"],
+                            "price_positioning": "pricing tier if known",
+                        }
+                    ],
+                    "scenarios": [
+                        {
+                            "name": "scenario",
+                            "pain_points": ["pain points"],
+                            "decision_criteria": ["decision criteria"],
+                            "buying_stage": "awareness|comparison|shortlist|purchase",
+                        }
+                    ],
+                    "competitors": [
+                        {
+                            "name": "competitor brand",
+                            "competitor_type": "direct|adjacent",
+                            "overlap_category": "overlap category",
+                            "comparison_axes": ["comparison axes"],
+                            "relation_reason": "why comparable",
+                        }
+                    ],
+                    "audience_hypotheses": [
+                        {
+                            "segment_name": "audience segment",
+                            "needs": ["needs"],
+                            "regions": ["regions"],
+                            "buying_stage": "stage",
+                        }
+                    ],
+                    "claims": {
+                        "pros": ["advantages"],
+                        "cons": ["limitations"],
+                        "best_for": ["best-fit scenarios"],
+                        "not_fit_for": ["poor-fit scenarios"],
+                        "risks": ["risks"],
+                        "price_perception": ["price perceptions"],
+                    },
                     "consumer_questions": ["natural consumer topic angles"],
                     "source_notes": [{"title": "source title", "url": "source url"}],
                 }
@@ -215,20 +269,49 @@ class DoubaoTopicPlanClient:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(url, json=body, headers=headers)
         except httpx.RequestError as error:
+            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+                raise TopicPlanLLMError(
+                    "brand_context_search_failed",
+                    "Topic Plan brand context search failed: " + str(error),
+                ) from error
             logger.warning("topic_plan web research request failed: %s", error)
             return []
         if response.status_code != 200:
-            logger.warning(
-                "topic_plan web research returned HTTP %s: %s",
-                response.status_code,
-                _response_text_snippet(response, limit=400),
+            detail = (
+                f"Topic Plan brand context search returned HTTP {response.status_code}: "
+                + _response_text_snippet(response, limit=400)
             )
+            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+                raise TopicPlanLLMError("brand_context_search_failed", detail)
+            logger.warning(detail)
             return []
         try:
             data = response.json()
-        except Exception:
+        except Exception as error:
+            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+                raise TopicPlanLLMError(
+                    "brand_context_search_failed",
+                    "Topic Plan brand context search returned invalid JSON",
+                ) from error
             return []
-        return _parse_brand_research(_responses_output_text(data), allowed_names)
+        result = _parse_brand_research(_responses_output_text(data), allowed_names)
+        if not result and _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+            raise TopicPlanLLMError(
+                "brand_context_search_failed",
+                "Topic Plan brand context search returned no usable brand context",
+            )
+        if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+            returned_names = {str(item.get("name") or "").strip().casefold() for item in result}
+            missing_names = [
+                name for name in allowed_names if name.strip().casefold() not in returned_names
+            ]
+            if missing_names:
+                raise TopicPlanLLMError(
+                    "brand_context_search_failed",
+                    "Topic Plan brand context search missed selected brands: "
+                    + ", ".join(missing_names[:5]),
+                )
+        return result
 
     async def generate_topics(
         self,
@@ -245,6 +328,15 @@ class DoubaoTopicPlanClient:
             category=category,
             brands=brands,
         )
+        search_by_name = {str(item.get("name") or ""): item for item in brand_research}
+        brand_context_packs = {
+            str(brand.get("name") or ""): assemble_brand_context_pack(
+                brand=brand,
+                search_context=search_by_name.get(str(brand.get("name") or "")),
+            )
+            for brand in brands
+            if str(brand.get("name") or "")
+        }
         messages = build_topic_plan_messages(
             industry=industry,
             category=category,
@@ -253,6 +345,7 @@ class DoubaoTopicPlanClient:
             max_topics=max_topics,
             existing_topics=existing_topics,
             brand_research=brand_research,
+            brand_context_packs=brand_context_packs,
         )
         timeout_seconds = bounded_int(
             os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 90, 90, 30, 240
@@ -288,4 +381,8 @@ class DoubaoTopicPlanClient:
         content = (choices[0].get("message") or {}).get("content") or "{}"
         topics = repair_single_brand_placeholders(parse_llm_topics(content), brands)
         usage = data.get("usage") or {}
-        return topics, {"model": self.config.model, "usage": dict(usage)}
+        return topics, {
+            "model": self.config.model,
+            "usage": dict(usage),
+            "brand_context_packs": brand_context_packs,
+        }

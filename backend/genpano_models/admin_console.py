@@ -54,6 +54,33 @@ def _jsonb() -> Any:
     return JSONB().with_variant(JSON(), "sqlite")
 
 
+class BrandContextSnapshot(Base):
+    __tablename__ = "brand_context_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','expired','archived')",
+            name="brand_context_snapshots_status_check",
+        ),
+        UniqueConstraint("version", name="uq_brand_context_snapshots_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    brand_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    source_notes_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="[]")
+    search_as_of: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    created_from_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Admin operator auth
 # ---------------------------------------------------------------------------
@@ -183,6 +210,9 @@ class TopicCandidate(Base):
     approved_topic_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     product_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     product_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    brand_context_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    context_refs_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    topic_axis: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

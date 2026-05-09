@@ -625,6 +625,7 @@ def build_topic_plan_messages(
     max_topics: int,
     existing_topics: list[str],
     brand_research: list[dict[str, Any]] | None = None,
+    brand_context_packs: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     allowed_brand_names = [str(brand.get("name") or "").strip() for brand in brands]
     allowed_brand_names = [name for name in allowed_brand_names if name]
@@ -726,6 +727,7 @@ def build_topic_plan_messages(
         "banned_title_terms": banned_title_terms,
         "consumer_title_examples": consumer_title_examples,
         "brand_research": brand_research or [],
+        "brand_context_packs": brand_context_packs or {},
         "output_schema": schema,
     }
     system = (
@@ -757,7 +759,7 @@ def build_topic_plan_messages(
         "12. Return at most max_topics items and match output_schema exactly.\n"
         "13. If selected_brands[].products is non-empty, AT LEAST 60% of generated topics MUST be specifically about one of those products via topics[].product_name, while keeping topics[].title brand-neutral.\n"
         "14. When a topic is specifically about a product, set topics[].dimension='product' and topics[].product_name to the exact product name; if the product name contains the brand, do not copy that brand into topics[].title.\n"
-        "15. Use brand_research when present to expand beyond the brand name: infer the real industry, category terms, product lines, signature features, target audiences, shopping scenarios, and common consumer questions.\n"
+        "15. Use brand_context_packs and brand_research to expand beyond the brand name: infer the real industry, category terms, product lines, signature features, target audiences, shopping scenarios, competitors, claims, and common consumer questions.\n"
         "16. All dimensions, including brand/product/category/scenario/question, must keep topics[].title brand-neutral and use consumer category, feature, scenario, or problem language instead.\n"
         "17. For category/scenario/question topics, prefer titles like 新手慢跑鞋怎么选不容易伤膝盖 / 夏天通勤运动鞋怎么选更透气 / 预算内送礼香水哪类不容易踩雷. Keep topics[].brand as the selected brand for attribution, but do not force that brand into the visible title.\n"
         "18. Balance the batch: include reusable non-brand topics that downstream Prompt can later expand into non_branded, branded, and competitor prompts.\n"

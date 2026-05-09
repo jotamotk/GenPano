@@ -93,8 +93,10 @@ async def test_authed_rate_limit_higher_capacity(
 
 
 @pytest.mark.asyncio
-async def test_cors_preflight_allows_known_origin() -> None:
+async def test_cors_preflight_allows_known_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     """OPTIONS request from configured origin returns Access-Control-* headers."""
+    monkeypatch.setenv("GENPANO_RATE_LIMIT_DISABLED", "1")
+    reset_for_tests()
     from app.main import app
 
     # Use the default dev origins
@@ -114,8 +116,10 @@ async def test_cors_preflight_allows_known_origin() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cors_preflight_blocks_unknown_origin() -> None:
+async def test_cors_preflight_blocks_unknown_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     """Origin not in allowlist gets no Access-Control-Allow-Origin."""
+    monkeypatch.setenv("GENPANO_RATE_LIMIT_DISABLED", "1")
+    reset_for_tests()
     from app.main import app
 
     transport = ASGITransport(app=app)
