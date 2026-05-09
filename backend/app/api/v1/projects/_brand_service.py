@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from genpano_models import (
     BrandMention,
     GeoScoreDaily,
     ProductFeatureMention,
+    ProductScoreDaily,
     Project,
     ProjectCompetitor,
 )
@@ -35,6 +37,7 @@ from app.api.v1.projects._brand_dto import (
     ProductScenarioRow,
     ProductsOut,
 )
+from app.api.v1.projects._legacy_lookups import resolve_brand_names
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -60,88 +63,114 @@ async def get_products(
 ) -> ProductsOut:
     """Return SKU-level product list with feature + scenario rollups.
 
-    Reads `product_feature_mentions` aggregated by `(brand_name, product_name)`.
-    Until Phase A.7 wires the real `products` ORM, returns synthesized
-    product_ids (hash of name) so FE can navigate.
+    Reads `product_score_daily` (per-brand, per-product, per-day metrics) and
+    augments with `product_feature_mentions` for top features / scenarios.
     """
     from_d, to_d = _resolve_window(from_date, to_date)
 
     if project.primary_brand_id is None:
         return ProductsOut(project_id=project.id, items=[], total=0, state="empty")
 
-    # Aggregate features by (brand_name, product_name) over the window
+    primary_id = project.primary_brand_id
+    from_dt = datetime.combine(from_d, datetime.min.time())
+    to_dt = datetime.combine(to_d, datetime.max.time())
+
+    # Aggregate by product_name over the window from product_score_daily.
     stmt = (
         select(
-            ProductFeatureMention.brand_name,
-            ProductFeatureMention.product_name,
-            func.count().label("cnt"),
-            func.sum(func.iif(ProductFeatureMention.feature_sentiment == "positive", 1, 0)).label(
-                "pos"
-            ),
+            ProductScoreDaily.product_name,
+            ProductScoreDaily.category,
+            func.sum(ProductScoreDaily.mention_count).label("mentions"),
+            func.avg(ProductScoreDaily.mention_rate).label("mention_rate"),
+            func.avg(ProductScoreDaily.avg_position_rank).label("rank"),
+            func.avg(ProductScoreDaily.avg_geo_score).label("geo"),
+            func.avg(ProductScoreDaily.avg_sentiment_score).label("sent"),
+            func.avg(ProductScoreDaily.category_sov_pct).label("sov"),
+            func.avg(ProductScoreDaily.category_rank).label("category_rank"),
+            func.avg(ProductScoreDaily.win_rate).label("win"),
         )
         .where(
             and_(
-                ProductFeatureMention.created_at >= datetime.combine(from_d, datetime.min.time()),
-                ProductFeatureMention.created_at <= datetime.combine(to_d, datetime.max.time()),
+                ProductScoreDaily.brand_id == primary_id,
+                ProductScoreDaily.date >= from_dt,
+                ProductScoreDaily.date <= to_dt,
             )
         )
-        .group_by(
-            ProductFeatureMention.brand_name,
-            ProductFeatureMention.product_name,
-        )
-        .order_by(desc("cnt"))
+        .group_by(ProductScoreDaily.product_name, ProductScoreDaily.category)
+        .order_by(desc("mentions"))
         .limit(50)
     )
+    # Tuple of (name, category, mentions, mention_rate, rank, geo, sent, sov,
+    # category_rank, win) — None for fields the legacy fallback can't fill.
+    product_rows: list[tuple[Any, ...]] = []
     try:
-        product_rows = (await session.execute(stmt)).all()
+        product_rows = [tuple(r) for r in (await session.execute(stmt)).all()]
     except Exception:
-        # SQLite may not support func.iif via this path; retry without
         product_rows = []
-        stmt2 = (
+
+    # Fallback path: when no product_score_daily rows exist (e.g. fresh DB or
+    # legacy fixtures), aggregate ProductFeatureMention so the endpoint still
+    # returns names + counts. Sparkline / trend / sov / sentiment stay null in
+    # this mode — they require the daily rollup.
+    if not product_rows:
+        legacy_stmt = (
             select(
-                ProductFeatureMention.brand_name,
                 ProductFeatureMention.product_name,
-                func.count().label("cnt"),
+                func.count().label("mentions"),
             )
-            .where(
-                and_(
-                    ProductFeatureMention.created_at
-                    >= datetime.combine(from_d, datetime.min.time()),
-                    ProductFeatureMention.created_at <= datetime.combine(to_d, datetime.max.time()),
-                )
-            )
-            .group_by(
-                ProductFeatureMention.brand_name,
-                ProductFeatureMention.product_name,
-            )
-            .order_by(desc("cnt"))
+            .where(ProductFeatureMention.product_name.isnot(None))
+            .group_by(ProductFeatureMention.product_name)
+            .order_by(desc("mentions"))
             .limit(50)
         )
-        product_rows = (await session.execute(stmt2)).all()
+        try:
+            legacy_rows = (await session.execute(legacy_stmt)).all()
+        except Exception:
+            legacy_rows = []
+        product_rows = [
+            (r[0], None, int(r[1] or 0), None, None, None, None, None, None, None)
+            for r in legacy_rows
+        ]
 
     items: list[ProductRow] = []
     for row in product_rows:
-        brand_name = row[0]
-        product_name = row[1]
-        cnt = int(row[2] or 0)
+        product_name = row[0]
+        category = row[1]
         if not product_name:
             continue
-        # Synthetic product_id = first 8 hex chars of hash
-        synth_id = int(hashlib.sha256(f"{brand_name}|{product_name}".encode()).hexdigest()[:8], 16)
 
-        # Top features for this product
+        synth_id = int(hashlib.sha256(f"{primary_id}|{product_name}".encode()).hexdigest()[:8], 16)
+
+        # 30d sparkline and trend (last7 vs first7).
+        spark_stmt = (
+            select(ProductScoreDaily.date, func.avg(ProductScoreDaily.mention_rate))
+            .where(
+                and_(
+                    ProductScoreDaily.brand_id == primary_id,
+                    ProductScoreDaily.product_name == product_name,
+                    ProductScoreDaily.date >= from_dt,
+                    ProductScoreDaily.date <= to_dt,
+                )
+            )
+            .group_by(ProductScoreDaily.date)
+            .order_by(ProductScoreDaily.date)
+        )
+        spark_rows = (await session.execute(spark_stmt)).all()
+        sparkline = [round(float(p[1] or 0), 4) for p in spark_rows]
+        trend_30d: float | None = None
+        if len(sparkline) >= 14:
+            first = sum(sparkline[:7]) / 7 or 1e-6
+            last = sum(sparkline[-7:]) / 7
+            trend_30d = round((last - first) / first, 4)
+
+        # Top features (from product_feature_mentions).
         feat_stmt = (
             select(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
                 func.count().label("cnt"),
             )
-            .where(
-                and_(
-                    ProductFeatureMention.brand_name == brand_name,
-                    ProductFeatureMention.product_name == product_name,
-                )
-            )
+            .where(ProductFeatureMention.product_name == product_name)
             .group_by(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
@@ -149,7 +178,10 @@ async def get_products(
             .order_by(desc("cnt"))
             .limit(5)
         )
-        feat_rows = (await session.execute(feat_stmt)).all()
+        try:
+            feat_rows = (await session.execute(feat_stmt)).all()
+        except Exception:
+            feat_rows = []
         features = [
             ProductFeatureRow(
                 feature_name=fr[0] or "(unspecified)",
@@ -159,15 +191,10 @@ async def get_products(
             for fr in feat_rows
         ]
 
-        # Scenarios
         sc_stmt = (
-            select(
-                ProductFeatureMention.scenario,
-                func.count().label("cnt"),
-            )
+            select(ProductFeatureMention.scenario, func.count().label("cnt"))
             .where(
                 and_(
-                    ProductFeatureMention.brand_name == brand_name,
                     ProductFeatureMention.product_name == product_name,
                     ProductFeatureMention.scenario.isnot(None),
                 )
@@ -176,7 +203,10 @@ async def get_products(
             .order_by(desc("cnt"))
             .limit(5)
         )
-        sc_rows = (await session.execute(sc_stmt)).all()
+        try:
+            sc_rows = (await session.execute(sc_stmt)).all()
+        except Exception:
+            sc_rows = []
         scenarios = [
             ProductScenarioRow(scenario=sr[0], mention_count=int(sr[1] or 0)) for sr in sc_rows
         ]
@@ -185,8 +215,18 @@ async def get_products(
             ProductRow(
                 product_id=synth_id,
                 product_name=product_name,
-                brand_id=project.primary_brand_id,
-                mention_count=cnt,
+                brand_id=primary_id,
+                category=category,
+                mention_count=int(row[2] or 0),
+                mention_rate=round(float(row[3]), 4) if row[3] is not None else None,
+                avg_position_rank=round(float(row[4]), 2) if row[4] is not None else None,
+                avg_geo_score=round(float(row[5]), 2) if row[5] is not None else None,
+                avg_sentiment=round(float(row[6]), 3) if row[6] is not None else None,
+                sov=round(float(row[7]), 2) if row[7] is not None else None,
+                ranking=int(row[8]) if row[8] is not None else None,
+                win_rate=round(float(row[9]), 3) if row[9] is not None else None,
+                trend_30d=trend_30d,
+                sparkline=sparkline,
                 top_features=features,
                 top_scenarios=scenarios,
             )
@@ -267,7 +307,7 @@ async def get_competitor_metrics(
 
         return CompetitorBrandRow(
             brand_id=brand_id,
-            brand_name=None,  # Phase A.7 JOIN brands.name
+            brand_name=None,  # filled in below via bulk name lookup
             avg_geo_score=round(r[0], 2) if r and r[0] else None,
             avg_mention_rate=round(r[1], 4) if r and r[1] else None,
             avg_sov=round(r[2], 4) if r and r[2] else None,
@@ -280,6 +320,17 @@ async def get_competitor_metrics(
         await _row_for(project.primary_brand_id) if project.primary_brand_id is not None else None
     )
     comp_rows = [await _row_for(bid) for bid in competitor_ids]
+
+    # Bulk brand-name lookup
+    all_ids: list[int] = []
+    if project.primary_brand_id is not None:
+        all_ids.append(project.primary_brand_id)
+    all_ids.extend(competitor_ids)
+    name_map = await resolve_brand_names(session, all_ids)
+    if primary_row is not None:
+        primary_row.brand_name = name_map.get(primary_row.brand_id)
+    for c in comp_rows:
+        c.brand_name = name_map.get(c.brand_id)
 
     state = "ok" if (primary_row or comp_rows) else "empty"
     return CompetitorMetricsOut(
@@ -501,10 +552,11 @@ async def get_competitor_trends(
             )
         )
 
+    name_map = await resolve_brand_names(session, brand_ids)
     output_series = [
         CompetitorTrendSeries(
             brand_id=bid,
-            brand_name=None,  # Phase A.7 will JOIN brands.name
+            brand_name=name_map.get(bid),
             is_primary=(bid == primary_id),
             points=series_by_brand[bid],
         )

@@ -63,6 +63,7 @@ class KgBrand(Base):
     aliases: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     official_domains: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    positioning: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="approved")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

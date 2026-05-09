@@ -105,6 +105,7 @@ class CitationRow(BaseModel):
 class CitationDomainRow(BaseModel):
     domain: str
     count: int
+    tier: int | None = None
 
 
 class CitationsOut(BaseModel):

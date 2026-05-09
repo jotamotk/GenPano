@@ -29,11 +29,18 @@ import { useSearchParams } from 'react-router-dom';
 import { useProject } from '../../contexts/ProjectContext';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { MockDataBadge } from '../../components/ui';
 
 import IndustryTopicsHero from '../../components/industry/IndustryTopicsHero';
 import IndustryTopicEmergingRadar from '../../components/industry/IndustryTopicEmergingRadar';
 import TopicIntentMatrix from '../../components/topics/TopicIntentMatrix';
 import IndustryTopicDetailDrawer from '../../components/industry/IndustryTopicDetailDrawer';
+
+import {
+  useIndustryTopics,
+  useIndustryTopicIntentMatrix,
+} from '../../hooks/useIndustries';
+import { adaptTopicIntentMatrix } from '../../adapters/chartAdapters';
 
 import { INDUSTRIES, BRANDS, INDUSTRY_TOPIC_HEATMAP } from '../../data/mock';
 
@@ -64,13 +71,55 @@ export default function IndustryTopicsPage() {
   const handleClose = useCallback(() => setSelectedTopic(null), []);
 
   const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  const topicsQ = useIndustryTopics(liveIndustryId, { name: industry.name, limit: 50 });
+  const intentQ = useIndustryTopicIntentMatrix(liveIndustryId, {
+    name: industry.name,
+    limit: 8,
+  });
+
+  // Convert backend topic items into the heatmap shape the FE component expects.
+  const liveTopicHeatmap = (() => {
+    if (!topicsQ.data || topicsQ.data.items.length === 0) return null;
+    return topicsQ.data.items.map((it, i) => ({
+      id: it.topic_id ?? `live-${i}`,
+      topicId: it.topic_id,
+      topicName: it.topic_name,
+      mentionCount: it.mention_count,
+      uniqueBrandCount: it.unique_brand_count,
+      hotScore: it.hot_score,
+      isEmerging: false,
+    }));
+  })();
+  const topicHeatmap = liveTopicHeatmap ?? INDUSTRY_TOPIC_HEATMAP;
+  const heatmapIsMock = !liveTopicHeatmap;
+
+  const liveIntent = adaptTopicIntentMatrix(intentQ.data);
+  const intentMatrixData =
+    liveIntent.topics.length > 0
+      ? liveIntent.topics.map((t, i) => ({
+          id: t.topicId ?? i,
+          topicId: t.topicId,
+          topicName: t.topicName,
+          // TopicIntentMatrix renders absolute counts mapped from cells
+          intents: liveIntent.intents,
+          counts: t.cells.map((c) => c.count),
+          mentionCount: t.total,
+        }))
+      : INDUSTRY_TOPIC_HEATMAP;
+  const intentIsMock = liveIntent.topics.length === 0;
 
   return (
     <div className="space-y-3">
+      {heatmapIsMock && (
+        <div className="flex justify-end px-1">
+          <MockDataBadge reason="行业 ID 非 live" />
+        </div>
+      )}
+
       {/* ── 段 ② Topics Hero (page banner) ── */}
       <IndustryTopicsHero
         industryName={`${industry.icon || ''} ${industry.name} Topic 格局`.trim()}
-        heatmap={INDUSTRY_TOPIC_HEATMAP}
+        heatmap={topicHeatmap}
       />
 
       {/* ── 段 ① Filter bar (sticky, 复用 Brand Mode FilterBar) ── */}
@@ -78,18 +127,23 @@ export default function IndustryTopicsPage() {
 
       {/* ── 段 ③ 新兴 / 衰退 Topic 雷达 ── */}
       <IndustryTopicEmergingRadar
-        topics={INDUSTRY_TOPIC_HEATMAP}
+        topics={topicHeatmap}
         brands={industryBrands}
         limit={5}
         onTopicClick={handleTopicClick}
       />
 
       {/* ── 段 ④ Topic × Intent 交叉矩阵 (组件共享 Brand Mode) ── */}
-      <TopicIntentMatrix
-        topics={INDUSTRY_TOPIC_HEATMAP}
-        limit={8}
-        onTopicClick={handleTopicClick}
-      />
+      <div>
+        {intentIsMock && (
+          <div className="mb-1 flex justify-end px-1"><MockDataBadge /></div>
+        )}
+        <TopicIntentMatrix
+          topics={intentMatrixData}
+          limit={8}
+          onTopicClick={handleTopicClick}
+        />
+      </div>
 
       {/* ── 段 ⑤ Topic Detail Drawer (点击 ③/④ 触发) ── */}
       <IndustryTopicDetailDrawer

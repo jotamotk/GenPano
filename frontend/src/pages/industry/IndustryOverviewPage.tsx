@@ -24,6 +24,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useProject } from '../../contexts/ProjectContext';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { MockDataBadge } from '../../components/ui';
 
 import IndustryHero from '../../components/industry/IndustryHero';
 import IndustryDistributionCard from '../../components/industry/IndustryDistributionCard';
@@ -34,6 +35,20 @@ import IndustryMoversRow from '../../components/industry/IndustryMoversRow';
 import IndustryGroupMap from '../../components/industry/IndustryGroupMap';
 
 import { computeIQR } from '../../lib/industry/statistics';
+import {
+  useIndustryOverview,
+  useIndustryDistribution,
+  useIndustryRanking,
+  useIndustryAvgGeo,
+  useIndustryMovers,
+  useIndustryGroups,
+} from '../../hooks/useIndustries';
+import {
+  adaptIndustryDistribution,
+  adaptIndustryRanking,
+  adaptIndustryMovers,
+  adaptIndustryGroups,
+} from '../../adapters/chartAdapters';
 import {
   INDUSTRIES,
   BRANDS,
@@ -104,11 +119,33 @@ export default function IndustryOverviewPage() {
     [industryId]
   );
 
+  // Live mode resolves a numeric industry id (mock industry ids are slugs).
+  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  const overviewQ = useIndustryOverview(liveIndustryId, { name: industry.name });
+  const distributionQ = useIndustryDistribution(liveIndustryId, { name: industry.name });
+  const rankingQ = useIndustryRanking(liveIndustryId, {
+    name: industry.name,
+    limit: 50,
+    primary_brand_id:
+      typeof activeProject?.primaryBrandId === 'number'
+        ? (activeProject.primaryBrandId as number)
+        : undefined,
+  });
+  const avgGeoQ = useIndustryAvgGeo(liveIndustryId, { name: industry.name });
+  const moversQ = useIndustryMovers(liveIndustryId, { name: industry.name, limit: 5 });
+  const groupsQ = useIndustryGroups(liveIndustryId, { name: industry.name, limit: 5 });
+
   /* Brands scoped to current industry (fallback to all if no match) */
+  const liveIndustryBrands = useMemo(() => {
+    if (!rankingQ.data || rankingQ.data.items.length === 0) return null;
+    return adaptIndustryRanking(rankingQ.data, industryId);
+  }, [rankingQ.data, industryId]);
   const industryBrands = useMemo(() => {
+    if (liveIndustryBrands) return liveIndustryBrands as any[];
     const filtered = BRANDS.filter((b) => b.industryId === industry.id);
     return filtered.length ? filtered : BRANDS;
-  }, [industry.id]);
+  }, [liveIndustryBrands, industry.id]);
+  const brandsIsMock = !liveIndustryBrands;
 
   const primaryBrand = useMemo(
     () =>
@@ -121,9 +158,18 @@ export default function IndustryOverviewPage() {
   );
 
   /* ── 段 ② Hero stats ── */
+  const heroIsMock = !(overviewQ.data && overviewQ.data.hero_counts);
   const heroStats = useMemo(() => {
+    if (overviewQ.data?.hero_counts) {
+      return {
+        brandCount: overviewQ.data.hero_counts.brand_count,
+        topicCount: overviewQ.data.hero_counts.topic_count,
+        categoryCount: overviewQ.data.hero_counts.category_count,
+        responseCount: overviewQ.data.hero_counts.response_count,
+      };
+    }
     const responseCount = industryBrands.reduce(
-      (s, b) => s + Math.round((b.mentionRate || 0) * 20000 + 500),
+      (s, b: any) => s + Math.round((b.mentionRate || 0) * 20000 + 500),
       0
     );
     return {
@@ -132,21 +178,26 @@ export default function IndustryOverviewPage() {
       categoryCount: countCategoriesForIndustry(industry.id),
       responseCount,
     };
-  }, [industry, industryBrands]);
+  }, [industry, industryBrands, overviewQ.data]);
 
   /* ── 段 ③ 5-KPI IQR stats (single source: computeIQR) ── */
+  const liveDistribution = adaptIndustryDistribution(distributionQ.data);
+  const distributionIsMock = !(distributionQ.data && Object.keys(liveDistribution).length > 0);
   const kpiCards = useMemo(() => {
-    const mentionVals = industryBrands.map((b) => (b.mentionRate || 0) * 100);
-    const sovVals = industryBrands.map((b) => b.sov || 0);
-    const sentimentVals = industryBrands.map((b) => (b.sentiment || 0) * 100);
-    const citationVals = industryBrands.map((b) => b.citationShare || 0);
-    const rankingVals = industryBrands.map((b) => b.ranking || 0).filter(Boolean);
+    const mentionVals = industryBrands.map((b: any) => (b.mentionRate || 0) * 100);
+    const sovVals = industryBrands.map((b: any) => b.sov || 0);
+    const sentimentVals = industryBrands.map((b: any) => (b.sentiment || 0) * 100);
+    const citationVals = industryBrands.map((b: any) => b.citationShare || 0);
+    const rankingVals = industryBrands.map((b: any) => b.ranking || 0).filter(Boolean);
+
+    const pickStats = (metric: string, fallback: any[]) =>
+      liveDistribution[metric] ?? computeIQR(fallback);
 
     return [
       {
         label: '提及率',
         unit: '%',
-        stats: computeIQR(mentionVals),
+        stats: pickStats('mention_rate', mentionVals),
         primaryValue:
           primaryBrand != null ? (primaryBrand.mentionRate || 0) * 100 : null,
         primaryName: primaryBrand?.name,
@@ -156,7 +207,7 @@ export default function IndustryOverviewPage() {
       {
         label: 'SoV',
         unit: '%',
-        stats: computeIQR(sovVals),
+        stats: pickStats('sov', sovVals),
         primaryValue: primaryBrand != null ? primaryBrand.sov ?? 0 : null,
         primaryName: primaryBrand?.name,
         direction: 'higher_is_better',
@@ -165,7 +216,7 @@ export default function IndustryOverviewPage() {
       {
         label: '情感',
         unit: '%',
-        stats: computeIQR(sentimentVals),
+        stats: pickStats('sentiment', sentimentVals),
         primaryValue:
           primaryBrand != null ? (primaryBrand.sentiment || 0) * 100 : null,
         primaryName: primaryBrand?.name,
@@ -175,7 +226,7 @@ export default function IndustryOverviewPage() {
       {
         label: '引用份额',
         unit: '%',
-        stats: computeIQR(citationVals),
+        stats: pickStats('citation', citationVals),
         primaryValue:
           primaryBrand != null ? primaryBrand.citationShare ?? 0 : null,
         primaryName: primaryBrand?.name,
@@ -185,7 +236,7 @@ export default function IndustryOverviewPage() {
       {
         label: '排名',
         unit: '',
-        stats: computeIQR(rankingVals),
+        stats: pickStats('rank', rankingVals),
         primaryValue:
           primaryBrand != null ? primaryBrand.ranking ?? null : null,
         primaryName: primaryBrand?.name,
@@ -193,21 +244,38 @@ export default function IndustryOverviewPage() {
         formatValue: (v) => (v == null ? '—' : `#${Math.round(v)}`),
       },
     ];
-  }, [industryBrands, primaryBrand]);
+  }, [industryBrands, primaryBrand, liveDistribution]);
 
   /* ── 段 ⑤ Trend series ── */
-  const trendData = useMemo(
-    () => buildTrendSeries(primaryBrand),
-    [primaryBrand]
-  );
+  // Live: combine industry-avg-geo + primary brand metric
+  const trendIsMock = !(avgGeoQ.data && avgGeoQ.data.points.length > 0);
+  const trendData = useMemo(() => {
+    if (avgGeoQ.data && avgGeoQ.data.points.length > 0) {
+      return avgGeoQ.data.points.map((p) => ({
+        name: p.date.slice(5),
+        industryAvg: p.avg_geo_score ?? 0,
+        myBrand: primaryBrand?.panoScore ?? p.industry_median ?? 0,
+      }));
+    }
+    return buildTrendSeries(primaryBrand);
+  }, [primaryBrand, avgGeoQ.data]);
 
-  // Live banner only fires when industryId is numeric (real backend
-  // industry); mock 'beauty' / 'fashion' string IDs short-circuit.
-  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  // Movers (gainers/losers) — pass through to existing component when live.
+  const liveMovers = adaptIndustryMovers(moversQ.data);
+  const moversIsMock = !(moversQ.data && (liveMovers.gainers.length > 0 || liveMovers.losers.length > 0));
+
+  // Groups — pass through aggregated rows.
+  const liveGroups = adaptIndustryGroups(groupsQ.data);
+  const groupsIsMock = !(groupsQ.data && liveGroups.length > 0);
 
   return (
     <div className="space-y-3">
       {/* LIVE banner — pulled from /v1/industries/:id/overview when industryId is numeric */}
+      {heroIsMock && (
+        <div className="flex justify-end px-1">
+          <MockDataBadge reason="行业 ID 非 live" />
+        </div>
+      )}
 
       {/* ── 段 ② Hero (page banner; 置顶并用 border-b 与 FilterBar 分隔) ── */}
       <IndustryHero

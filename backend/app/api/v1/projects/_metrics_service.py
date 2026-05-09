@@ -12,6 +12,7 @@ from typing import TypedDict
 from genpano_models import (
     BrandMention,
     CitationSource,
+    DomainAuthority,
     GeoScoreDaily,
     Project,
     ProjectTopicPin,
@@ -22,6 +23,7 @@ from genpano_models import (
 from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._legacy_lookups import resolve_topic_names
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
     CitationRow,
@@ -174,13 +176,14 @@ async def get_topics(
                 last_seen_at=last_seen,
             )
 
+    name_map = await resolve_topic_names(session, [p.topic_id for p in pins])
     items = []
     for p in pins:
         agg = aggregates.get(p.topic_id)
         items.append(
             TopicRow(
                 topic_id=p.topic_id,
-                topic_name=f"topic-{p.topic_id}",  # Phase A.7 fills real names
+                topic_name=name_map.get(p.topic_id) or f"topic-{p.topic_id}",
                 state=p.state,
                 mention_count=agg["mention_count"] if agg else 0,
                 avg_sentiment=agg["avg_sentiment"] if agg else None,
@@ -443,10 +446,15 @@ async def get_citations(
         for c in items_raw
     ]
 
-    # Top domains
+    # Top domains (with tier from domain_authorities)
     stmt_dom = (
-        select(CitationSource.domain, func.count().label("cnt"))
+        select(
+            CitationSource.domain,
+            func.count().label("cnt"),
+            func.max(DomainAuthority.tier).label("tier"),
+        )
         .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+        .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
         .where(
             and_(
                 BrandMention.brand_id == brand_id,
@@ -460,7 +468,14 @@ async def get_citations(
         .limit(10)
     )
     dom_rows = (await session.execute(stmt_dom)).all()
-    by_domain = [CitationDomainRow(domain=r[0], count=int(r[1] or 0)) for r in dom_rows]
+    by_domain = [
+        CitationDomainRow(
+            domain=r[0],
+            count=int(r[1] or 0),
+            tier=int(r[2]) if r[2] is not None else None,
+        )
+        for r in dom_rows
+    ]
 
     # Total count
     stmt_total = (

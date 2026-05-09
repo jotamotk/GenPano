@@ -2,10 +2,15 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge } from '../../components/ui';
+import { Card, Badge, MockDataBadge } from '../../components/ui';
 import { MiniSparkline, CompetitorQuadrantChart } from '../../components/charts';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { useBrandProducts } from '../../hooks/useBrandMetrics';
+import { useProductRelations } from '../../hooks/useCharts';
+import { adaptProductRelations } from '../../adapters/chartAdapters';
 import {
   BRANDS,
   PRODUCTS,
@@ -32,8 +37,15 @@ export default function BrandProductsPage() {
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   useBrandAnalysisFilters(); // C10: mount filter state in URL (filters read inside subcomponents)
 
+  // ── Live data hooks ──
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+  const productsQ = useBrandProducts(isLive ? liveProjectId : null);
+  const relationsQ = useProductRelations(isLive ? liveProjectId : null);
+
   // Filter products by brand, sort by sov desc so products[0] is flagship.
-  const products = useMemo(() => {
+  const mockProducts = useMemo(() => {
     return PRODUCTS.filter(
       (p) =>
         p.brand === primary.name ||
@@ -42,11 +54,34 @@ export default function BrandProductsPage() {
     ).sort((a, b) => (b.sov || 0) - (a.sov || 0));
   }, [primary.id, primary.name, primary.nameEn]);
 
+  const liveProducts = useMemo(() => {
+    if (!isLive || !productsQ.data || productsQ.data.items.length === 0) return null;
+    return productsQ.data.items.map((p) => ({
+      id: p.product_id,
+      primaryName: p.product_name,
+      brand: primary.name,
+      brandEn: primary.nameEn,
+      brandId: p.brand_id ?? primary.id,
+      category: p.category,
+      categoryName: p.category,
+      mentionRate: p.mention_rate ?? 0,
+      mentionCount: p.mention_count,
+      sov: p.sov ?? 0,
+      sentiment: p.avg_sentiment ?? 0,
+      ranking: p.ranking,
+      trend: p.trend_30d ?? 0,
+      sparkData: p.sparkline ?? [],
+      panoScore: p.avg_geo_score,
+    }));
+  }, [isLive, productsQ.data, primary]);
+  const products = liveProducts ?? mockProducts;
+  const productsIsMock = !liveProducts;
+
   // ─── ① BCG data ─────────────────────────────────────────────
   const bcgData = useMemo(() => {
     if (!products.length) return [];
     const primaryProductId = products[0]?.id;
-    return products.map((p) => ({
+    return products.map((p: any) => ({
       name: p.primaryName,
       x: p.mentionRate || 0,
       y: p.trend || 0,
@@ -57,13 +92,23 @@ export default function BrandProductsPage() {
   }, [products]);
 
   // ─── ⑤ product relations ────────────────────────────────────
+  const liveRelations = adaptProductRelations(relationsQ.data);
   const productRelations = useMemo(() => {
+    if (isLive && liveRelations.length > 0) {
+      return liveRelations.map((r) => ({
+        productA: r.productA,
+        productB: r.productB,
+        type: r.type,
+        confidence: r.confidence,
+      }));
+    }
     if (products.length < 3) return [];
-    const productIds = products.map((p) => p.id);
+    const productIds = (products as any[]).map((p) => p.id);
     return PRODUCT_RELATIONS.filter(
       (r) => productIds.includes(r.productA) && productIds.includes(r.productB),
     );
-  }, [products]);
+  }, [products, isLive, liveRelations]);
+  const relationsIsMock = !(isLive && liveRelations.length > 0);
 
   const handleBubbleClick = (item) =>
     navigate(`/brand/products/${item.productId}?brandId=${primary.id}`);
@@ -98,8 +143,9 @@ export default function BrandProductsPage() {
     <div className="space-y-3">
       {/* Page title */}
       <div>
-        <h2 className="text-xl font-brand font-bold text-themed-primary">
+        <h2 className="text-xl font-brand font-bold text-themed-primary flex items-center gap-2">
           {t('brand_products.page_title', '产品组合')}
+          {productsIsMock && <MockDataBadge />}
         </h2>
         <p className="text-xs text-themed-muted mt-0.5">
           {t('brand_products.page_subtitle', { brand: primary.name, count: products.length })}
@@ -285,8 +331,9 @@ export default function BrandProductsPage() {
       {productRelations.length > 0 && (
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-2">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_products.section_relations', '产品关系')}
+              {relationsIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_products.section_relations_hint', '产品间的竞争、替代、搭配关系')}

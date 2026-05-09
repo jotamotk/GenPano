@@ -2,11 +2,28 @@ import React, { useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge } from '../../components/ui';
+import { Card, Badge, MockDataBadge } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { useBrandSentiment } from '../../hooks/useBrandMetrics';
+import {
+  useSentimentByEngine,
+  useSentimentTrendByEngine,
+  useTopicHeatmap,
+  useTopicAttribution,
+  useMentionSamples,
+} from '../../hooks/useCharts';
+import {
+  adaptSentimentByEngine,
+  adaptSentimentTrend,
+  adaptHeatmap,
+  adaptTopicAttribution,
+  adaptMentionSamples,
+} from '../../adapters/chartAdapters';
 import {
   BRANDS,
   SENTIMENT_DISTRIBUTION,
@@ -39,16 +56,44 @@ export default function BrandSentimentPage() {
   // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
   const [polarity, setPolarity] = useState('all');
 
+  // ── Live data hooks ──
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+  const sentimentQ = useBrandSentiment(isLive ? liveProjectId : null);
+  const engineQ = useSentimentByEngine(isLive ? liveProjectId : null);
+  const trendQ = useSentimentTrendByEngine(isLive ? liveProjectId : null);
+  const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
+    metric: 'sentiment',
+    topN: 8,
+  });
+  const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5);
+  const samplesQ = useMentionSamples(isLive ? liveProjectId : null, {
+    polarity: polarity === 'all' ? undefined : polarity,
+    limit: 30,
+  });
+
   // ──────────────────────────────────────────────────────────────
-  // Sentiment distribution — aggregate across all engines.
+  // Sentiment distribution — prefer live, fallback to mock aggregate.
   // ──────────────────────────────────────────────────────────────
-  const positive = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.positive, 0);
-  const negative = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.negative, 0);
-  const neutral = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.neutral, 0);
-  const total = positive + negative + neutral || 1;
-  const positivePct = Math.round((positive / total) * 100);
-  const negativePct = Math.round((negative / total) * 100);
-  const neutralPct = Math.round((neutral / total) * 100);
+  let positivePct: number;
+  let negativePct: number;
+  let neutralPct: number;
+  let distributionIsMock = true;
+  if (isLive && sentimentQ.data && sentimentQ.data.state !== 'empty') {
+    positivePct = Math.round(sentimentQ.data.distribution.positive_pct);
+    negativePct = Math.round(sentimentQ.data.distribution.negative_pct);
+    neutralPct = Math.round(sentimentQ.data.distribution.neutral_pct);
+    distributionIsMock = false;
+  } else {
+    const positive = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.positive, 0);
+    const negative = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.negative, 0);
+    const neutral = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.neutral, 0);
+    const total = positive + negative + neutral || 1;
+    positivePct = Math.round((positive / total) * 100);
+    negativePct = Math.round((negative / total) * 100);
+    neutralPct = Math.round((neutral / total) * 100);
+  }
 
   // §4.6-IA-v2.N / C12: Sentiment Distribution renders as a Donut.
   const distributionSegments = [
@@ -58,14 +103,36 @@ export default function BrandSentimentPage() {
   ];
 
   // ──────────────────────────────────────────────────────────────
-  // Engine stacked bar (% stack)
+  // Engine stacked bar — prefer live, fallback to mock.
   // ──────────────────────────────────────────────────────────────
-  const stackedChartData = SENTIMENT_DISTRIBUTION.map((d) => ({
-    engine: d.engine,
-    positive: d.positive,
-    negative: d.negative,
-    neutral: d.neutral,
-  }));
+  const liveStackedData = adaptSentimentByEngine(engineQ.data);
+  const stackedChartData =
+    isLive && liveStackedData.length > 0
+      ? liveStackedData
+      : SENTIMENT_DISTRIBUTION.map((d) => ({
+          engine: d.engine,
+          positive: d.positive,
+          negative: d.negative,
+          neutral: d.neutral,
+        }));
+  const stackedIsMock = !(isLive && liveStackedData.length > 0);
+
+  // Sentiment trend (engine lines)
+  const liveTrend = adaptSentimentTrend(trendQ.data);
+  const trendDataLive = liveTrend.rows.length > 0 ? liveTrend.rows : null;
+  const trendIsMock = !(isLive && trendDataLive);
+  const trendLines = trendDataLive
+    ? liveTrend.engines.map((eng, idx) => ({
+        key: eng,
+        label: eng,
+        color: idx === 0 ? 'var(--color-engine-chatgpt)' : `var(--color-chart-${(idx % 5) + 2})`,
+        area: idx === 0,
+      }))
+    : [
+        { key: 'chatgpt', label: 'ChatGPT', color: 'var(--color-engine-chatgpt)', area: true },
+        { key: 'doubao', label: '豆包', color: 'var(--color-engine-doubao)', area: false },
+        { key: 'deepseek', label: 'DeepSeek', color: 'var(--color-engine-deepseek)', area: false, dashed: true },
+      ];
 
   // ──────────────────────────────────────────────────────────────
   // Brand × Topic sentiment heatmap (diverging -1 … +1).
@@ -93,7 +160,7 @@ export default function BrandSentimentPage() {
     })),
   ];
 
-  const sentimentHeatmapRows = sentimentRowSeeds.map((r) => ({
+  const mockSentimentHeatmapRows = sentimentRowSeeds.map((r) => ({
     brandId: r.brandId,
     brandName: r.brandName,
     values: heatmapTopics.map((topic, i) => {
@@ -108,11 +175,37 @@ export default function BrandSentimentPage() {
       };
     }),
   }));
+  const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
+  const sentimentHeatmapRows =
+    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+      ? liveHeatmapRows
+      : mockSentimentHeatmapRows;
+  const sentimentHeatmapIsMock = !(
+    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+  );
+
+  // ──────────────────────────────────────────────────────────────
+  // Topic attribution (live → mock).
+  // ──────────────────────────────────────────────────────────────
+  const liveAttribution = adaptTopicAttribution(attributionQ.data);
+  const topicAttribution =
+    isLive && liveAttribution.length > 0
+      ? liveAttribution.map((a) => ({
+          topicName: a.topicName,
+          sampleSnippet: a.sampleSnippet ?? '',
+          negativeCount: a.negativeCount,
+          negativeRatio: a.negativeRatio,
+        }))
+      : SENTIMENT_TOPIC_ATTRIBUTION || [];
+  const attributionIsMock = !(isLive && liveAttribution.length > 0);
 
   // ──────────────────────────────────────────────────────────────
   // Filter response samples by polarity (local control)
   // ──────────────────────────────────────────────────────────────
-  const filteredResponses = (SENTIMENT_DETAIL_LIST || []).filter((item) => {
+  const liveSamples = adaptMentionSamples(samplesQ.data);
+  const samplesData = isLive && liveSamples.length > 0 ? liveSamples : SENTIMENT_DETAIL_LIST || [];
+  const samplesIsMock = !(isLive && liveSamples.length > 0);
+  const filteredResponses = samplesData.filter((item: any) => {
     if (polarity === 'all') return true;
     if (polarity === 'positive') return item.label === '正面';
     if (polarity === 'negative') return item.label === '负面';
@@ -140,8 +233,9 @@ export default function BrandSentimentPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card className="p-4">
           <div className="flex items-baseline justify-between mb-2">
-            <h3 className="text-sm font-semibold text-themed-primary">
+            <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_sentiment.distribution_title')}
+              {distributionIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_sentiment.distribution_subtitle', { default: '全引擎汇总' })}
@@ -163,8 +257,9 @@ export default function BrandSentimentPage() {
 
         <Card className="p-4">
           <div className="flex items-baseline justify-between mb-2">
-            <h3 className="text-sm font-semibold text-themed-primary">
+            <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_sentiment.by_engine_title')}
+              {stackedIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_sentiment.by_engine_subtitle', { default: '按引擎统计' })}
@@ -195,20 +290,17 @@ export default function BrandSentimentPage() {
       {/* ② Sentiment trend (engine lines) */}
       <Card className="p-4">
         <div className="flex items-baseline justify-between mb-2">
-          <h3 className="text-sm font-semibold text-themed-primary">
+          <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_sentiment.trend_title')}
+            {trendIsMock && <MockDataBadge />}
           </h3>
           <span className="text-[11px] text-themed-muted">
             {t('brand_sentiment.trend_subtitle')}
           </span>
         </div>
         <TrendChart
-          data={SENTIMENT_TREND_BY_ENGINE}
-          lines={[
-            { key: 'chatgpt', label: 'ChatGPT', color: 'var(--color-engine-chatgpt)', area: true },
-            { key: 'doubao', label: '豆包', color: 'var(--color-engine-doubao)', area: false },
-            { key: 'deepseek', label: 'DeepSeek', color: 'var(--color-engine-deepseek)', area: false, dashed: true },
-          ]}
+          data={trendDataLive ?? SENTIMENT_TREND_BY_ENGINE}
+          lines={trendLines}
           height={240}
         />
       </Card>
@@ -216,7 +308,10 @@ export default function BrandSentimentPage() {
       {/* ③ Brand × Topic sentiment heatmap (diverging scale) */}
       <div>
         <div className="flex items-baseline justify-between mb-2 px-1">
-          <h3 className="text-sm font-semibold text-themed-primary">品牌 × Topic 情感热力图</h3>
+          <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
+            品牌 × Topic 情感热力图
+            {sentimentHeatmapIsMock && <MockDataBadge />}
+          </h3>
           <span className="text-[11px] text-themed-muted">我 + Top 4 竞品 × Top 8 Topic · 红负蓝正 · 点击进入 Topic 详情</span>
         </div>
         <BrandTopicHeatmap
@@ -230,15 +325,16 @@ export default function BrandSentimentPage() {
       {/* ④ Topic 归因：哪些 Topic 拉低了情感？ */}
       <Card className="p-4">
         <div className="flex items-baseline justify-between mb-2">
-          <h3 className="text-sm font-semibold text-themed-primary">
+          <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_sentiment.topic_attribution_title', { default: '哪些 Topic 拉低了情感?' })}
+            {attributionIsMock && <MockDataBadge />}
           </h3>
           <span className="text-[11px] text-themed-muted">
             {t('brand_sentiment.topic_attribution_subtitle', { default: '负面情感集中的主题识别' })}
           </span>
         </div>
         <div className="flex flex-col gap-2.5">
-          {(SENTIMENT_TOPIC_ATTRIBUTION || []).slice(0, 5).map((topic, idx) => (
+          {(topicAttribution || []).slice(0, 5).map((topic: any, idx: number) => (
             <div
               key={idx}
               className="rounded-card bg-themed-subtle p-3 hover:bg-themed-subtle/80 transition-colors cursor-pointer border-l-4"
@@ -301,8 +397,9 @@ export default function BrandSentimentPage() {
       {/* ⑥ Response 样本 */}
       <Card className="p-4">
         <div className="flex items-baseline justify-between mb-3">
-          <h3 className="text-sm font-semibold text-themed-primary">
+          <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_sentiment.samples_title')}
+            {samplesIsMock && <MockDataBadge />}
           </h3>
           <span className="text-[11px] text-themed-muted">{filteredResponses.length} 条</span>
         </div>

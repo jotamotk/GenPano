@@ -4,12 +4,29 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge } from '../../components/ui';
+import { Card, Badge, MockDataBadge } from '../../components/ui';
 import { DonutChart, TrendChart, HorizontalBar } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import KpiCard from '../../components/dashboard/KpiCard';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { useBrandMetrics, useCompetitorMetrics } from '../../hooks/useBrandMetrics';
+import {
+  useEngineMetrics,
+  usePositionDistribution,
+  useTopicHeatmap,
+} from '../../hooks/useCharts';
+import {
+  adaptCompetitorMetricsToSov,
+  adaptMetricsToSparklines,
+} from '../../adapters/dashboardAdapter';
+import {
+  adaptEngineMetricsToBreakdown,
+  adaptPositionDistribution,
+  adaptHeatmap,
+} from '../../adapters/chartAdapters';
 import {
   BRANDS,
   MENTION_TREND_BY_ENGINE,
@@ -39,37 +56,91 @@ export default function BrandVisibilityPage() {
   // downstream fetches (kept as placeholder here, ready for real backend).
   const { filters } = useBrandAnalysisFilters();
 
+  // ── Live data hooks (gated on UUID project id) ──
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+
+  const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
+    'mention_rate',
+    'sov',
+  ]);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const engineQ = useEngineMetrics(isLive ? liveProjectId : null);
+  const positionQ = usePositionDistribution(isLive ? liveProjectId : null);
+  const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
+    metric: 'mention_rate',
+    topN: 8,
+  });
+
   // §4.6-IA-v2.N / C11: mentionRate is stored as decimal 0-1.
-  const mentionRateDec = primary.mentionRate || 0;
-  const mentionRatePct = (mentionRateDec * 100).toFixed(1);
   const sovEntry = SOV_DATA.find((s) => s.name === primary.name);
-  const sovPct = sovEntry ? sovEntry.value : 0;
+  const mockMentionRateDec = primary.mentionRate || 0;
+  const mockMentionRatePct = (mockMentionRateDec * 100).toFixed(1);
+  const mockSovPct = sovEntry ? sovEntry.value : 0;
+
+  // Live KPIs from /metrics: take latest point of each series.
+  const liveSparklines = metricsQ.data ? adaptMetricsToSparklines(metricsQ.data) : null;
+  const lastMention =
+    liveSparklines?.mention.length ? liveSparklines.mention[liveSparklines.mention.length - 1] : null;
+  const lastSov =
+    liveSparklines?.sov.length ? liveSparklines.sov[liveSparklines.sov.length - 1] : null;
+
+  const mentionRatePct = isLive && lastMention != null ? lastMention.toFixed(1) : mockMentionRatePct;
+  const sovPct = isLive && lastSov != null ? lastSov.toFixed(1) : mockSovPct;
   const mentionDelta = 2.3;
   const sovDelta = -1.1;
 
-  // Spark data (14d window)
-  const mentionSparkData = MENTION_TREND_BY_ENGINE.slice(0, 14).map((d) => d.chatgpt || 0);
-  const sovSparkData = TREND_DATA.slice(0, 14).map((d) => d.mentionRate || 0);
+  const mentionSparkData =
+    isLive && liveSparklines?.mention.length
+      ? liveSparklines.mention.slice(-14)
+      : MENTION_TREND_BY_ENGINE.slice(0, 14).map((d) => d.chatgpt || 0);
+  const sovSparkData =
+    isLive && liveSparklines?.sov.length
+      ? liveSparklines.sov.slice(-14)
+      : TREND_DATA.slice(0, 14).map((d) => d.mentionRate || 0);
 
-  // Engine breakdown
-  const engineKeyMap = { 'ChatGPT': 'chatgpt', '豆包': 'doubao', 'DeepSeek': 'deepseek' };
-  const engineBreakdownData = ENGINES.map((engine) => {
-    const latestTrend = MENTION_TREND_BY_ENGINE[MENTION_TREND_BY_ENGINE.length - 1] || {};
-    const key = engineKeyMap[engine.name] || engine.name.toLowerCase();
-    // engine.mentionRate is now decimal; convert to % for the bar chart axis.
-    const fallback = (engine.mentionRate || 0) * 100;
-    return {
-      engine: engine.name,
-      mentionRate: latestTrend[key] != null ? latestTrend[key] : fallback,
-      sov: Math.round(engine.score * 0.3),
-      citationShare: Math.round(engine.score * 0.25),
-    };
-  });
+  // SoV donut data
+  const liveSovData = competitorsQ.data ? adaptCompetitorMetricsToSov(competitorsQ.data) : [];
+  const sovData =
+    isLive && liveSovData.length > 0
+      ? liveSovData.map((s, i) => ({ ...s, color: SOV_DATA[i % SOV_DATA.length]?.color || 'var(--color-accent)' }))
+      : SOV_DATA;
+  const sovIsMock = !(isLive && liveSovData.length > 0);
 
-  // Heatmap data: rows = current + top 4 competitors; cols = top 8 Topic labels.
-  // In a real build this comes from API; here we fabricate from COMPETITOR_MENTION_MATRIX
-  // by treating each engine × some Topic bucket as a column.
-  const heatmapTopics = [
+  // Engine breakdown — live from /metrics/by-engine, fallback to mock.
+  const liveEngineBreakdown = adaptEngineMetricsToBreakdown(engineQ.data);
+  const engineBreakdownData =
+    isLive && liveEngineBreakdown.length > 0
+      ? liveEngineBreakdown
+      : (() => {
+          const engineKeyMap: Record<string, string> = {
+            ChatGPT: 'chatgpt',
+            豆包: 'doubao',
+            DeepSeek: 'deepseek',
+          };
+          return ENGINES.map((engine) => {
+            const latestTrend = MENTION_TREND_BY_ENGINE[MENTION_TREND_BY_ENGINE.length - 1] || {};
+            const key = engineKeyMap[engine.name] || engine.name.toLowerCase();
+            const fallback = (engine.mentionRate || 0) * 100;
+            return {
+              engine: engine.name,
+              mentionRate: latestTrend[key] != null ? latestTrend[key] : fallback,
+              sov: Math.round(engine.score * 0.3),
+              citationShare: Math.round(engine.score * 0.25),
+            };
+          });
+        })();
+  const engineIsMock = !(isLive && liveEngineBreakdown.length > 0);
+
+  // Position distribution — live from /position-distribution, else mock.
+  const livePositionData = adaptPositionDistribution(positionQ.data);
+  const positionData = isLive && livePositionData.length > 0 ? livePositionData : MENTION_POSITION_DATA;
+  const positionIsMock = !(isLive && livePositionData.length > 0);
+
+  // Heatmap — live from /topic-heatmap or fallback to deterministic mock.
+  const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
+  const heatmapTopicsMock = [
     { topicId: 't1', topicLabel: '保湿精华推荐' },
     { topicId: 't2', topicLabel: '抗老护肤品牌' },
     { topicId: 't3', topicLabel: '敏感肌适用' },
@@ -79,8 +150,8 @@ export default function BrandVisibilityPage() {
     { topicId: 't7', topicLabel: '孕妇可用成分' },
     { topicId: 't8', topicLabel: '夜间修护方案' },
   ];
-  const heatmapRows = [
-    { brandId: primary.id, brandName: primary.name, _base: mentionRateDec },
+  const mockHeatmapRows = [
+    { brandId: primary.id, brandName: primary.name, _base: mockMentionRateDec },
     ...COMPETITOR_MENTION_MATRIX.slice(0, 4).map((row, idx) => ({
       brandId: `comp-${idx}`,
       brandName: row.brand,
@@ -89,8 +160,7 @@ export default function BrandVisibilityPage() {
   ].map((r) => ({
     brandId: r.brandId,
     brandName: r.brandName,
-    values: heatmapTopics.map((topic, i) => {
-      // Deterministic-ish synthetic distribution derived from _base and topic index.
+    values: heatmapTopicsMock.map((topic, i) => {
       const wave = Math.sin((r.brandName.length + i) * 1.17) * 0.08;
       const value = Math.max(0, Math.min(1, r._base + wave + (i % 3 === 0 ? 0.02 : -0.01)));
       return {
@@ -101,6 +171,23 @@ export default function BrandVisibilityPage() {
       };
     }),
   }));
+  const heatmapRows =
+    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+      ? liveHeatmapRows
+      : mockHeatmapRows;
+  const heatmapIsMock = !(isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0));
+
+  // Trend chart for PANO trend
+  const trendDataLive = liveSparklines?.mention.length
+    ? liveSparklines.mention.map((v, idx) => ({
+        name: `D${idx + 1}`,
+        mentionRate: v,
+        panoScore: liveSparklines.sentiment[idx] ?? 0,
+        competitorScore: 0,
+      }))
+    : null;
+  const trendData = isLive && trendDataLive ? trendDataLive : TREND_DATA;
+  const trendIsMock = !(isLive && trendDataLive);
 
   return (
     <div className="space-y-3">
@@ -140,15 +227,16 @@ export default function BrandVisibilityPage() {
         />
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.sov_distribution_title')}
+              {sovIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_visibility.sov_distribution_subtitle')}
             </span>
           </div>
           <div className="flex items-center justify-center">
-            <DonutChart segments={SOV_DATA} size={152} />
+            <DonutChart segments={sovData} size={152} />
           </div>
         </Card>
       </div>
@@ -157,8 +245,9 @@ export default function BrandVisibilityPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.by_engine_title')}
+              {engineIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_visibility.by_engine_subtitle')}
@@ -188,15 +277,16 @@ export default function BrandVisibilityPage() {
 
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.position_dist_title')}
+              {positionIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
               {t('brand_visibility.position_dist_subtitle')}
             </span>
           </div>
           <HorizontalBar
-            data={MENTION_POSITION_DATA}
+            data={positionData}
             height={200}
             monochrome
             defaultColor="var(--color-accent)"
@@ -208,7 +298,10 @@ export default function BrandVisibilityPage() {
       {/* ③ Brand × Topic 提及率热力图 */}
       <div>
         <div className="flex items-baseline justify-between mb-1.5 px-1">
-          <h3 className="text-[13px] font-semibold text-themed-primary">品牌 × Topic 提及率热力图</h3>
+          <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
+            品牌 × Topic 提及率热力图
+            {heatmapIsMock && <MockDataBadge />}
+          </h3>
           <span className="text-[11px] text-themed-muted">我 + Top 4 竞品 × Top 8 Topic · 点击进入 Topic 详情</span>
         </div>
         <BrandTopicHeatmap
@@ -222,15 +315,16 @@ export default function BrandVisibilityPage() {
       {/* ④ Trend (mention rate + PANO, sentiment lives on its own page) */}
       <Card className="p-3">
         <div className="flex items-baseline justify-between mb-1">
-          <h3 className="text-[13px] font-semibold text-themed-primary">
+          <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_visibility.pano_trend_title')}
+            {trendIsMock && <MockDataBadge />}
           </h3>
           <span className="text-[11px] text-themed-muted">
             {t('brand_visibility.pano_trend_subtitle')}
           </span>
         </div>
         <TrendChart
-          data={TREND_DATA}
+          data={trendData}
           lines={[
             { key: 'mentionRate', label: t('brand_visibility.mention_rate'), color: 'var(--color-accent)', area: true },
             { key: 'panoScore', label: 'PANO Score', color: 'var(--color-chart-3)', area: false, dashed: true },

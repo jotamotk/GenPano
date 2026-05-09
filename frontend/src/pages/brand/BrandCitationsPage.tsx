@@ -2,12 +2,29 @@ import React, { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, Button } from '../../components/ui';
+import { Card, Badge, Button, MockDataBadge } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import ContentGapPanel from '../../components/citation/ContentGapPanel';
 import PrTargetsPanel from '../../components/citation/PrTargetsPanel';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { useBrandCitations } from '../../hooks/useBrandMetrics';
+import {
+  useAuthorityTrend,
+  useCitationComposition,
+  useContentGap,
+  usePrTargets,
+  useSimulatorBaseline,
+} from '../../hooks/useCharts';
+import {
+  adaptAuthorityTrend,
+  adaptCitationComposition,
+  adaptContentGap,
+  adaptPrTargets,
+  adaptSimulatorBaseline,
+} from '../../adapters/chartAdapters';
 import {
   BRANDS,
   AUTHORITY_SHARE_SERIES,
@@ -36,6 +53,118 @@ export default function BrandCitationsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
+
+  // ── Live data hooks ──
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+  const citationsQ = useBrandCitations(isLive ? liveProjectId : null, 50);
+  const authorityTrendQ = useAuthorityTrend(isLive ? liveProjectId : null);
+  const compositionQ = useCitationComposition(isLive ? liveProjectId : null);
+  const contentGapQ = useContentGap(isLive ? liveProjectId : null, 12);
+  const prTargetsQ = usePrTargets(isLive ? liveProjectId : null);
+  const simulatorQ = useSimulatorBaseline(isLive ? liveProjectId : null);
+
+  // Authority share trend
+  const liveAuthority = adaptAuthorityTrend(authorityTrendQ.data);
+  const authoritySeries =
+    isLive && liveAuthority.length > 0 ? liveAuthority : AUTHORITY_SHARE_SERIES;
+  const authorityIsMock = !(isLive && liveAuthority.length > 0);
+
+  // Citation composition donut
+  const liveComposition = adaptCitationComposition(compositionQ.data);
+  const compositionData =
+    isLive && liveComposition.length > 0 ? liveComposition : CITATION_SOURCE_COMPOSITION;
+  const compositionIsMock = !(isLive && liveComposition.length > 0);
+
+  // Top domains: prefer /citations response.by_domain_top (already has tier).
+  const liveDomains =
+    isLive && citationsQ.data && citationsQ.data.by_domain_top.length > 0
+      ? citationsQ.data.by_domain_top.map((d, i) => ({
+          domain: d.domain,
+          tier: d.tier ?? (i < 3 ? 1 : i < 6 ? 2 : 3),
+          count: d.count,
+        }))
+      : null;
+  const topDomains = liveDomains ?? TOP_CITED_DOMAINS;
+  const topDomainsIsMock = !liveDomains;
+
+  // Top cited pages: from /citations.items
+  const livePages =
+    isLive && citationsQ.data && citationsQ.data.items.length > 0
+      ? Array.from(
+          citationsQ.data.items.reduce<Map<string, { url: string; title: string; tier: number; count: number }>>(
+            (acc, c) => {
+              const key = c.url;
+              const existing = acc.get(key);
+              if (existing) existing.count += 1;
+              else
+                acc.set(key, {
+                  url: c.url,
+                  title: c.title || c.domain || c.url,
+                  tier: 2,
+                  count: 1,
+                });
+              return acc
+            },
+            new Map(),
+          ).values(),
+        )
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 6)
+      : null;
+  const topPages = livePages ?? TOP_CITED_PAGES;
+  const topPagesIsMock = !livePages;
+
+  // Content Gap
+  const liveGap = adaptContentGap(contentGapQ.data);
+  const contentGapTopicsLive =
+    isLive && liveGap.topics.length > 0
+      ? liveGap.topics.map((t, i) => ({
+          topicName: t.topicName,
+          mentionRate: t.mentionRate,
+          citationRate: t.citationRate,
+          gap: t.gap,
+          suggestion: t.suggestion ?? '',
+          rank: i + 1,
+        }))
+      : CONTENT_GAP_TOPICS;
+  const contentGapDistLive =
+    isLive && liveGap.pageTypeDistribution.length > 0
+      ? liveGap.pageTypeDistribution
+      : CONTENT_GAP_PAGE_TYPE_DISTRIBUTION;
+  const contentGapIsMock = !(isLive && liveGap.topics.length > 0);
+
+  // PR Targets
+  const livePr = adaptPrTargets(prTargetsQ.data);
+  const prTargets = isLive && livePr.targets.length > 0 ? livePr.targets : PR_TARGETS;
+  const prMatrix =
+    isLive && livePr.tier2Matrix.brands.length > 0 ? livePr.tier2Matrix : TIER2_COVERAGE_MATRIX;
+  const prKols = isLive && livePr.kolScorecards.length > 0 ? livePr.kolScorecards : KOL_SCORECARDS;
+  const prIsMock = !(isLive && livePr.targets.length > 0);
+
+  // Simulator
+  const liveSim = adaptSimulatorBaseline(simulatorQ.data);
+  const simulatorBaseline =
+    isLive && liveSim.currentPanoA > 0
+      ? {
+          ...liveSim,
+          industryMedian: liveSim.industryMedian || SIMULATOR_BASELINE.industryMedian,
+          industryTop3Avg: liveSim.industryTop3Avg || SIMULATOR_BASELINE.industryTop3Avg,
+          tierWeights: Object.keys(liveSim.tierWeights).length
+            ? liveSim.tierWeights
+            : SIMULATOR_BASELINE.tierWeights,
+          defaultConfidence: Object.keys(liveSim.defaultConfidence).length
+            ? liveSim.defaultConfidence
+            : SIMULATOR_BASELINE.defaultConfidence,
+          currentByTier: Object.keys(liveSim.currentByTier).length
+            ? liveSim.currentByTier
+            : SIMULATOR_BASELINE.currentByTier,
+        }
+      : SIMULATOR_BASELINE;
+  const simulatorPresets =
+    isLive && liveSim.presets.length > 0 ? liveSim.presets : SIMULATOR_PRESETS;
+  const simulatorIsMock = !(isLive && liveSim.currentPanoA > 0);
 
   const setSub = (next) => {
     const nextParams = new URLSearchParams(params);
@@ -91,15 +220,16 @@ export default function BrandCitationsPage() {
           {/* Authority share trend */}
           <Card className="p-4">
             <div className="flex items-baseline justify-between mb-3">
-              <h3 className="text-sm font-semibold text-themed-primary">
+              <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
                 {t('brand_citations.authority_trend_title')}
+                {authorityIsMock && <MockDataBadge />}
               </h3>
               <span className="text-[11px] text-themed-muted">
                 {t('brand_citations.authority_trend_subtitle')}
               </span>
             </div>
             <TrendChart
-              data={AUTHORITY_SHARE_SERIES.map((d) => ({ name: d.date, ...d }))}
+              data={authoritySeries.map((d: any) => ({ name: d.date, ...d }))}
               lines={[
                 { key: 'official_domain_pct', label: t('brand_citations.official_domain'), color: 'var(--color-accent)', area: true },
                 { key: 'co_occurrence_pct', label: t('brand_citations.co_occurrence'), color: 'var(--color-chart-3)', area: false },
@@ -112,20 +242,22 @@ export default function BrandCitationsPage() {
           {/* Source composition + top domains */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <Card className="p-4">
-              <h3 className="text-sm font-semibold text-themed-primary mb-3">
+              <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
                 {t('brand_citations.composition_title')}
+                {compositionIsMock && <MockDataBadge />}
               </h3>
-              <DonutChart segments={CITATION_SOURCE_COMPOSITION} size={200} />
+              <DonutChart segments={compositionData} size={200} />
             </Card>
             <Card className="p-4">
-              <h3 className="text-sm font-semibold text-themed-primary mb-3">
+              <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
                 {t('brand_citations.top_domains_title')}
+                {topDomainsIsMock && <MockDataBadge />}
               </h3>
               <div className="space-y-2">
-                {(TOP_CITED_DOMAINS || []).slice(0, 8).map((d) => (
+                {(topDomains || []).slice(0, 8).map((d: any) => (
                   <div key={d.domain} className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Badge variant="muted">{`T${d.tier}`}</Badge>
+                      <Badge variant="muted">{`T${d.tier ?? '?'}`}</Badge>
                       <span className="text-sm text-themed-primary">{d.domain}</span>
                     </div>
                     <span className="text-sm text-themed-muted tabular-nums">{formatNumber(d.count)}</span>
@@ -137,11 +269,12 @@ export default function BrandCitationsPage() {
 
           {/* Top cited pages */}
           <Card className="p-4">
-            <h3 className="text-sm font-semibold text-themed-primary mb-3">
+            <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
               {t('brand_citations.top_pages_title')}
+              {topPagesIsMock && <MockDataBadge />}
             </h3>
             <div className="space-y-2">
-              {(TOP_CITED_PAGES || []).slice(0, 6).map((p, i) => (
+              {(topPages || []).slice(0, 6).map((p: any, i: number) => (
                 <a
                   key={i}
                   href={p.url}
@@ -152,7 +285,7 @@ export default function BrandCitationsPage() {
                   <div className="text-sm font-medium text-themed-primary truncate">{p.title}</div>
                   <div className="text-xs text-themed-muted truncate mt-0.5">{p.url}</div>
                   <div className="text-xs text-themed-muted mt-1">
-                    {formatNumber(p.count)} × · Tier {p.tier}
+                    {formatNumber(p.count)} × · Tier {p.tier ?? '?'}
                   </div>
                 </a>
               ))}
@@ -162,23 +295,38 @@ export default function BrandCitationsPage() {
       )}
 
       {sub === 'content-gap' && (
-        <ContentGapPanel
-          topics={CONTENT_GAP_TOPICS}
-          distribution={CONTENT_GAP_PAGE_TYPE_DISTRIBUTION}
-          maxTopics={20}
-        />
+        <div>
+          {contentGapIsMock && (
+            <div className="mb-2"><MockDataBadge reason="缺少 topic_score_daily 数据" /></div>
+          )}
+          <ContentGapPanel
+            topics={contentGapTopicsLive}
+            distribution={contentGapDistLive}
+            maxTopics={20}
+          />
+        </div>
       )}
 
       {sub === 'pr-targets' && (
-        <PrTargetsPanel
-          targets={PR_TARGETS}
-          tier2Matrix={TIER2_COVERAGE_MATRIX}
-          kolScorecards={KOL_SCORECARDS}
-        />
+        <div>
+          {prIsMock && (
+            <div className="mb-2"><MockDataBadge reason="缺少 PR/KOL 真实数据" /></div>
+          )}
+          <PrTargetsPanel
+            targets={prTargets}
+            tier2Matrix={prMatrix}
+            kolScorecards={prKols}
+          />
+        </div>
       )}
 
       {sub === 'simulator' && (
-        <AuthoritySimulator baseline={SIMULATOR_BASELINE} presets={SIMULATOR_PRESETS} />
+        <div>
+          {simulatorIsMock && (
+            <div className="mb-2"><MockDataBadge reason="缺少 geo_score_weekly 真实数据" /></div>
+          )}
+          <AuthoritySimulator baseline={simulatorBaseline} presets={simulatorPresets} />
+        </div>
       )}
     </div>
   );
