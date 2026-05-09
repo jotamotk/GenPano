@@ -114,9 +114,7 @@ async def list_prompts(
         return []
     topic_cols = await _table_columns(session, "topics") if has_prompt_topic_id else set()
     can_join_topics = (
-        has_prompt_topic_id
-        and await _table_exists(session, "topics")
-        and "id" in topic_cols
+        has_prompt_topic_id and await _table_exists(session, "topics") and "id" in topic_cols
     )
     can_filter_brand = can_join_topics and "brand_id" in topic_cols
     if brand_id is not None and not can_filter_brand:
@@ -134,9 +132,7 @@ async def list_prompts(
     topic_id_expr = "pr.topic_id" if has_prompt_topic_id else "NULL AS topic_id"
     text_expr = "pr.text" if "text" in prompt_cols else "'' AS text"
     topic_text_expr = (
-        "t.text AS topic_text"
-        if can_join_topics and "text" in topic_cols
-        else "NULL AS topic_text"
+        "t.text AS topic_text" if can_join_topics and "text" in topic_cols else "NULL AS topic_text"
     )
     order_expr = "pr.topic_id, pr.id" if has_prompt_topic_id else "pr.id"
     sql = text(
