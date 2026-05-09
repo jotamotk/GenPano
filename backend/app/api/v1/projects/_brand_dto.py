@@ -29,9 +29,15 @@ class ProductRow(BaseModel):
     sku: str | None = None
     category: str | None = None
     mention_count: int = 0
+    mention_rate: float | None = None  # 0..1 decimal
     avg_position_rank: float | None = None
     avg_geo_score: float | None = None
+    avg_sentiment: float | None = None  # 0..1
+    sov: float | None = None  # 0..100 percent
+    ranking: int | None = None
     win_rate: float | None = None
+    trend_30d: float | None = None  # signed delta as decimal (e.g. +0.05 = +5%)
+    sparkline: list[float] = []  # 30d daily mention_rate
     top_features: list[ProductFeatureRow] = []
     top_scenarios: list[ProductScenarioRow] = []
 

@@ -85,12 +85,120 @@ export function useIndustryOverview(
 
 export function useIndustryRanking(
   industryId: number | null | undefined,
-  params: { name?: string; limit?: number } = {},
+  params: { name?: string; limit?: number; primary_brand_id?: number } = {},
 ) {
   return useQuery({
     queryKey: ['industries', 'ranking', industryId, params],
     queryFn: () => industriesApi.ranking(industryId as number, params),
     enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryDistribution(
+  industryId: number | null | undefined,
+  params: { name?: string } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'distribution', industryId, params],
+    queryFn: () => industriesApi.distribution(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryMovers(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'movers', industryId, params],
+    queryFn: () => industriesApi.movers(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryGroups(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'groups', industryId, params],
+    queryFn: () => industriesApi.groups(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryTopDomains(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'top-domains', industryId, params],
+    queryFn: () => industriesApi.topDomains(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustrySegments(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'segments', industryId, params],
+    queryFn: () => industriesApi.segments(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryRankingByEngine(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'ranking-by-engine', industryId, params],
+    queryFn: () => industriesApi.rankingByEngine(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryTopicIntentMatrix(
+  industryId: number | null | undefined,
+  params: { name?: string; limit?: number } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'topic-intent-matrix', industryId, params],
+    queryFn: () => industriesApi.topicIntentMatrix(industryId as number, params),
+    enabled: typeof industryId === 'number' && industryId > 0,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export function useIndustryTopicDetail(
+  industryId: number | null | undefined,
+  topicId: number | null | undefined,
+  params: { name?: string } = {},
+) {
+  return useQuery({
+    queryKey: ['industries', 'topic-detail', industryId, topicId, params],
+    queryFn: () =>
+      industriesApi.topicDetail(industryId as number, topicId as number, params),
+    enabled:
+      typeof industryId === 'number' && industryId > 0 &&
+      typeof topicId === 'number' && topicId > 0,
     staleTime: 60_000,
     retry: false,
   })

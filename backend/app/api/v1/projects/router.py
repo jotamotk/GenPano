@@ -40,6 +40,40 @@ from app.api.v1.projects._brand_service import (
     get_diagnostics,
     get_products,
 )
+from app.api.v1.projects._charts_dto import (
+    AuthorityRadarOut,
+    AuthorityTrendOut,
+    CitationCompositionOut,
+    ContentGapOut,
+    EngineMetricsOut,
+    GroupSharedDomainsOut,
+    MentionSamplesOut,
+    PositionDistributionOut,
+    ProductRelationsOut,
+    PrTargetsOut,
+    SentimentByEngineOut,
+    SentimentTrendByEngineOut,
+    SimulatorBaselineOut,
+    TopicAttributionOut,
+    TopicHeatmapOut,
+)
+from app.api.v1.projects._charts_service import (
+    get_authority_radar,
+    get_authority_trend,
+    get_citation_composition,
+    get_content_gap,
+    get_engine_metrics,
+    get_group_shared_domains,
+    get_mention_samples,
+    get_position_distribution,
+    get_pr_targets,
+    get_product_relations,
+    get_sentiment_by_engine,
+    get_sentiment_trend_by_engine,
+    get_simulator_baseline,
+    get_topic_attribution,
+    get_topic_heatmap,
+)
 from app.api.v1.projects._dto import (
     CompetitorIn,
     ProjectIn,
@@ -343,3 +377,280 @@ async def project_diagnostics(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
     )
+
+
+# ── Phase 5: Chart-data endpoints ────────────────────────────────
+
+
+@router.get("/{project_id}/metrics/by-engine", response_model=EngineMetricsOut)
+async def project_engine_metrics(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> EngineMetricsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_engine_metrics(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/position-distribution",
+    response_model=PositionDistributionOut,
+)
+async def project_position_distribution(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> PositionDistributionOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_position_distribution(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get("/{project_id}/topic-heatmap", response_model=TopicHeatmapOut)
+async def project_topic_heatmap(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    metric: str = Query("mention_rate"),
+    compare_with: str | None = Query(None),
+    top_n: int = Query(8, ge=1, le=30),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> TopicHeatmapOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    cw = None
+    if compare_with:
+        try:
+            cw = [int(x) for x in compare_with.split(",") if x.strip()]
+        except ValueError as exc:
+            raise validation_error("compare_with", "must be CSV of integer brand_ids") from exc
+    return await get_topic_heatmap(
+        session,
+        project,
+        metric=metric,
+        compare_with=cw,
+        top_n=top_n,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get("/{project_id}/sentiment/by-engine", response_model=SentimentByEngineOut)
+async def project_sentiment_by_engine(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> SentimentByEngineOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_sentiment_by_engine(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/sentiment/trend-by-engine",
+    response_model=SentimentTrendByEngineOut,
+)
+async def project_sentiment_trend_by_engine(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> SentimentTrendByEngineOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_sentiment_trend_by_engine(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/sentiment/topic-attribution",
+    response_model=TopicAttributionOut,
+)
+async def project_topic_attribution(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+) -> TopicAttributionOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_topic_attribution(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+        limit=limit,
+    )
+
+
+@router.get("/{project_id}/mention-samples", response_model=MentionSamplesOut)
+async def project_mention_samples(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    polarity: str | None = Query(None),
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+) -> MentionSamplesOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_mention_samples(
+        session,
+        project,
+        polarity=polarity,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+        limit=limit,
+    )
+
+
+@router.get(
+    "/{project_id}/citations/authority-trend",
+    response_model=AuthorityTrendOut,
+)
+async def project_authority_trend(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> AuthorityTrendOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_authority_trend(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/citations/composition",
+    response_model=CitationCompositionOut,
+)
+async def project_citation_composition(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> CitationCompositionOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_citation_composition(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get("/{project_id}/citations/content-gap", response_model=ContentGapOut)
+async def project_content_gap(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    limit: int = Query(12, ge=1, le=50),
+) -> ContentGapOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_content_gap(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+        limit=limit,
+    )
+
+
+@router.get("/{project_id}/citations/pr-targets", response_model=PrTargetsOut)
+async def project_pr_targets(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+) -> PrTargetsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_pr_targets(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+    )
+
+
+@router.get(
+    "/{project_id}/citations/simulator-baseline",
+    response_model=SimulatorBaselineOut,
+)
+async def project_simulator_baseline(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> SimulatorBaselineOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_simulator_baseline(session, project)
+
+
+@router.get(
+    "/{project_id}/competitors/authority-radar",
+    response_model=AuthorityRadarOut,
+)
+async def project_authority_radar(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> AuthorityRadarOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_authority_radar(session, project)
+
+
+@router.get(
+    "/{project_id}/group-shared-domains",
+    response_model=GroupSharedDomainsOut,
+)
+async def project_group_shared_domains(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> GroupSharedDomainsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_group_shared_domains(session, project)
+
+
+@router.get(
+    "/{project_id}/products/relations",
+    response_model=ProductRelationsOut,
+)
+async def project_product_relations(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> ProductRelationsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_product_relations(session, project)

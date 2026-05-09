@@ -7,7 +7,7 @@ import {
   ScatterChart, Scatter, ZAxis, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { Badge, Button, Card } from '../ui';
+import { Badge, Button, Card, MockDataBadge } from '../ui';
 import { MiniSparkline } from '../charts';
 import { useLocale } from '../../contexts/LocaleContext';
 import ProfileGroupFilter, { ProfileGroupSampleWarning } from '../filters/ProfileGroupFilter';
@@ -924,8 +924,9 @@ export default function BrandPanoramaPanel({
       <div id={scrollAnchorId} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card className="p-4">
           <div className="flex items-baseline justify-between mb-1">
-            <div className="flex items-baseline">
+            <div className="flex items-baseline gap-2">
               <h3 className="text-sm font-semibold text-themed-primary">{t('dashboard.competition.sov_pie_title')}</h3>
+              {!isLive && <MockDataBadge />}
               <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
             </div>
             <span className="text-[11px] text-themed-muted">{t('dashboard.competition.sov_pie_subtitle')}</span>
@@ -934,8 +935,9 @@ export default function BrandPanoramaPanel({
         </Card>
         <Card className="p-4">
           <div className="flex items-baseline justify-between mb-1">
-            <div className="flex items-baseline">
+            <div className="flex items-baseline gap-2">
               <h3 className="text-sm font-semibold text-themed-primary">{t('dashboard.competition.quadrant_title')}</h3>
+              {!isLive && <MockDataBadge />}
               <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
             </div>
             <span className="text-[11px] text-themed-muted">{t('dashboard.competition.quadrant_subtitle')}</span>
@@ -947,14 +949,18 @@ export default function BrandPanoramaPanel({
       {/* ③ Trend view */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card className="p-4">
-          <div className="flex items-baseline mb-2">
+          <div className="flex items-baseline mb-2 gap-2">
             <h3 className="text-sm font-semibold text-themed-primary">{t('dashboard.trend.pano_title')}</h3>
+            {!isLive && <MockDataBadge />}
             <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
           </div>
           <PanoTrendChart trendData={trendData} primaryName={primary.name} competitors={competitors} t={t} />
         </Card>
         <Card className="p-4">
-          <h3 className="text-sm font-semibold text-themed-primary mb-3">{t('dashboard.trend.kpi_summary_title')}</h3>
+          <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
+            {t('dashboard.trend.kpi_summary_title')}
+            {(!isLive || !sparklineOverride) && <MockDataBadge />}
+          </h3>
           <KpiSparklineSummary rows={sparklineRows} />
         </Card>
       </div>

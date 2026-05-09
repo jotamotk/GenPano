@@ -4,11 +4,25 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge } from '../../components/ui';
+import { Card, Badge, MockDataBadge } from '../../components/ui';
 import { TrendChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
+import {
+  useAuthorityRadar,
+  useGroupSharedDomains,
+  useTopicHeatmap,
+} from '../../hooks/useCharts';
+import {
+  adaptAuthorityRadar,
+  adaptHeatmap,
+  adaptGroupSharedDomains,
+} from '../../adapters/chartAdapters';
+import { adaptCompetitorTrendsToTrendData } from '../../adapters/dashboardAdapter';
 import {
   BRANDS,
   AUTHORITY_RADAR_DATA,
@@ -38,6 +52,19 @@ export default function BrandCompetitorsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
+
+  // ── Live data hooks ──
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const isLive = isLiveProjectId(liveProjectId);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score');
+  const radarQ = useAuthorityRadar(isLive ? liveProjectId : null);
+  const groupQ = useGroupSharedDomains(isLive ? liveProjectId : null);
+  const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
+    metric: 'mention_rate',
+    topN: 8,
+  });
 
   const competitors = useMemo(
     () =>
@@ -85,15 +112,18 @@ export default function BrandCompetitorsPage() {
   // ──────────────────────────────────────────────────────────────
   // ②a Authority Radar — 1:1 我 vs 所选竞品 vs 行业中位
   // ──────────────────────────────────────────────────────────────
+  const liveRadar = adaptAuthorityRadar(radarQ.data);
+  const radarSrc = isLive && liveRadar.length > 0 ? liveRadar : AUTHORITY_RADAR_DATA;
+  const radarIsMock = !(isLive && liveRadar.length > 0);
   const radarData = useMemo(
     () =>
-      (AUTHORITY_RADAR_DATA || []).map((row) => ({
+      (radarSrc || []).map((row: any) => ({
         dimension: row.tier,
         me: row.me,
         industryMedian: row.industryMedian,
-        focus: row.topCompetitor, // mock reuses "topCompetitor" — treated as the selected
+        focus: row.topCompetitor,
       })),
-    [],
+    [radarSrc],
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -116,7 +146,7 @@ export default function BrandCompetitorsPage() {
         { brandId: focus.id, brandName: focus.name, _base: focus.mentionRate || 0 },
       ]
     : [];
-  const compareHeatmapRows = rowSeeds.map((r) => ({
+  const mockCompareHeatmapRows = rowSeeds.map((r) => ({
     brandId: r.brandId,
     brandName: r.brandName,
     values: heatmapTopics.map((topic, i) => {
@@ -125,33 +155,62 @@ export default function BrandCompetitorsPage() {
       return { topicId: topic.topicId, topicLabel: topic.topicLabel, value: v, sample: 36 + ((i + r.brandName.length) % 19) };
     }),
   }));
+  const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
+  const compareHeatmapRows =
+    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+      ? liveHeatmapRows.filter(
+          (r) => r.brandId === primary.id || (focus && String(r.brandId) === String(focus.id)),
+        )
+      : mockCompareHeatmapRows;
+  const compareHeatmapIsMock = !(
+    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+  );
 
   // ──────────────────────────────────────────────────────────────
   // ②c PANO trend (我 vs focus)
   // ──────────────────────────────────────────────────────────────
+  const liveTrendData =
+    isLive && trendsQ.data && trendsQ.data.series.length > 0
+      ? adaptCompetitorTrendsToTrendData(trendsQ.data, null)
+      : null;
   const trendData = useMemo(() => {
+    if (liveTrendData) {
+      // Convert {day, panoScore, [brand_name]: score} → recharts line shape
+      return liveTrendData.map((p, i) => ({
+        name: p.day != null ? `D${p.day}` : `D${i + 1}`,
+        ...p,
+      }));
+    }
     const maxDays = primary.sparkPano?.length || 14;
     return Array.from({ length: maxDays }, (_, i) => {
-      const point = { name: `D${i + 1}` };
+      const point: Record<string, any> = { name: `D${i + 1}` };
       point[primary.id] = primary.sparkPano?.[i] || 0;
       if (focus) point[focus.id] = focus.sparkPano?.[i] || 0;
       return point;
     });
-  }, [primary, focus]);
+  }, [primary, focus, liveTrendData]);
+  const trendIsMock = !liveTrendData;
 
   const trendLines = focus
-    ? [
-        { key: primary.id, label: primary.name, color: 'var(--color-accent)', area: true },
-        { key: focus.id, label: focus.name, color: 'var(--color-chart-3)', area: false, dashed: true },
-      ]
+    ? liveTrendData
+      ? [
+          { key: 'panoScore', label: primary.name, color: 'var(--color-accent)', area: true },
+          { key: focus.name, label: focus.name, color: 'var(--color-chart-3)', area: false, dashed: true },
+        ]
+      : [
+          { key: primary.id, label: primary.name, color: 'var(--color-accent)', area: true },
+          { key: focus.id, label: focus.name, color: 'var(--color-chart-3)', area: false, dashed: true },
+        ]
     : [];
 
   // ──────────────────────────────────────────────────────────────
   // ③ Structural context (kept but pushed below the fold)
   // ──────────────────────────────────────────────────────────────
-  const sameGroupItems = SAME_GROUP_SHARED?.sharedDomains?.filter(
-    (d) => d.domain !== `${primary.id}.com.cn`,
-  ) || [];
+  const liveGroup = adaptGroupSharedDomains(groupQ.data);
+  const groupSrc = isLive && liveGroup.sharedDomains.length > 0 ? liveGroup : SAME_GROUP_SHARED;
+  const groupIsMock = !(isLive && liveGroup.sharedDomains.length > 0);
+  const sameGroupItems =
+    groupSrc?.sharedDomains?.filter((d: any) => d.domain !== `${primary.id}.com.cn`) || [];
 
   // ──────────────────────────────────────────────────────────────
   // ④ Tier 2 权威媒体覆盖矩阵 (我 vs 3 主要竞品)
@@ -246,8 +305,9 @@ export default function BrandCompetitorsPage() {
           {/* ②a Authority Radar */}
           <Card className="p-3">
             <div className="flex items-baseline justify-between mb-1">
-              <h3 className="text-[13px] font-semibold text-themed-primary">
+              <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
                 Authority Radar · 我 vs {focus.name}
+                {radarIsMock && <MockDataBadge />}
               </h3>
               <span className="text-[11px] text-themed-muted">
                 Tier 1 官方 / Tier 2 权威媒体 / Tier 3 KOL / Tier 4 UGC / 总覆盖
@@ -269,8 +329,9 @@ export default function BrandCompetitorsPage() {
           {/* ②b Brand × Topic heatmap (我 vs focus) */}
           <div>
             <div className="flex items-baseline justify-between mb-1.5 px-1">
-              <h3 className="text-[13px] font-semibold text-themed-primary">
+              <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
                 Topic 胜负图 · 我 vs {focus.name}
+                {compareHeatmapIsMock && <MockDataBadge />}
               </h3>
               <span className="text-[11px] text-themed-muted">
                 颜色越深 = 提及率越高 · 对比同一列看谁在该 Topic 占优
@@ -287,8 +348,9 @@ export default function BrandCompetitorsPage() {
           {/* ②c PANO trend */}
           <Card className="p-3">
             <div className="flex items-baseline justify-between mb-1">
-              <h3 className="text-[13px] font-semibold text-themed-primary">
+              <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
                 PANO 趋势 · 我 vs {focus.name}
+                {trendIsMock && <MockDataBadge />}
               </h3>
               <span className="text-[11px] text-themed-muted">近 14 天走势</span>
             </div>
@@ -371,12 +433,13 @@ export default function BrandCompetitorsPage() {
       {sameGroupItems.length > 0 && (
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_competitors.same_group_title')}
+              {groupIsMock && <MockDataBadge />}
             </h3>
             <span className="text-[11px] text-themed-muted">
-              {SAME_GROUP_SHARED?.group && `隶属集团: ${SAME_GROUP_SHARED.group}`}
-              {SAME_GROUP_SHARED?.sharedRatio != null && ` · 共享占总引用 ${Math.round(SAME_GROUP_SHARED.sharedRatio * 100)}%`}
+              {groupSrc?.group && `隶属集团: ${groupSrc.group}`}
+              {groupSrc?.sharedRatio != null && ` · 共享占总引用 ${Math.round(groupSrc.sharedRatio * 100)}%`}
             </span>
           </div>
           <p className="text-[11px] text-themed-muted mb-2 leading-relaxed">

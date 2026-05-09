@@ -84,6 +84,7 @@ export interface CitationRow {
 export interface CitationDomainRow {
   domain: string
   count: number
+  tier?: number | null
 }
 
 export interface CitationsOut {
@@ -114,6 +115,18 @@ export interface TopicsOut {
   state: 'ok' | 'empty' | 'partial'
 }
 
+export interface ProductFeatureRow {
+  feature_name: string
+  feature_sentiment: 'positive' | 'neutral' | 'negative' | null
+  mention_count: number
+  avg_score: number | null
+}
+
+export interface ProductScenarioRow {
+  scenario: string
+  mention_count: number
+}
+
 export interface ProductRow {
   product_id: number
   product_name: string
@@ -121,9 +134,17 @@ export interface ProductRow {
   sku: string | null
   category: string | null
   mention_count: number
+  mention_rate?: number | null
   avg_position_rank: number | null
   avg_geo_score: number | null
+  avg_sentiment?: number | null
+  sov?: number | null
+  ranking?: number | null
   win_rate: number | null
+  trend_30d?: number | null
+  sparkline?: number[]
+  top_features?: ProductFeatureRow[]
+  top_scenarios?: ProductScenarioRow[]
 }
 
 export interface ProductsOut {

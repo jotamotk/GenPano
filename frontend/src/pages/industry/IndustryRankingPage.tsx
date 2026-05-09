@@ -22,6 +22,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useProject } from '../../contexts/ProjectContext';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
+import { MockDataBadge } from '../../components/ui';
 
 import IndustryRankingHero from '../../components/industry/IndustryRankingHero';
 import IndustryTierBreakdown from '../../components/industry/IndustryTierBreakdown';
@@ -30,6 +31,18 @@ import IndustryRankingMoversGrid from '../../components/industry/IndustryRanking
 import IndustryEngineRankingMatrix from '../../components/industry/IndustryEngineRankingMatrix';
 import IndustryTopCitationDomains from '../../components/industry/IndustryTopCitationDomains';
 import IndustrySegmentRanking from '../../components/industry/IndustrySegmentRanking';
+
+import {
+  useIndustryRanking,
+  useIndustryMovers,
+  useIndustryRankingByEngine,
+  useIndustryTopDomains,
+  useIndustrySegments,
+} from '../../hooks/useIndustries';
+import {
+  adaptIndustryRanking,
+  adaptIndustryTopDomains,
+} from '../../adapters/chartAdapters';
 
 import { INDUSTRIES, BRANDS, TOP_CITED_DOMAINS } from '../../data/mock';
 
@@ -48,26 +61,62 @@ export default function IndustryRankingPage() {
     [industryId]
   );
 
+  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  const rankingQ = useIndustryRanking(liveIndustryId, {
+    name: industry.name,
+    limit: 50,
+    primary_brand_id:
+      typeof activeProject?.primaryBrandId === 'number'
+        ? (activeProject.primaryBrandId as number)
+        : undefined,
+  });
+  const moversQ = useIndustryMovers(liveIndustryId, { name: industry.name, limit: 5 });
+  const engineQ = useIndustryRankingByEngine(liveIndustryId, {
+    name: industry.name,
+    limit: 10,
+  });
+  const topDomainsQ = useIndustryTopDomains(liveIndustryId, {
+    name: industry.name,
+    limit: 10,
+  });
+  const segmentsQ = useIndustrySegments(liveIndustryId, { name: industry.name, limit: 5 });
+
   /* Brands scoped to industry */
+  const liveIndustryBrands = useMemo(() => {
+    if (!rankingQ.data || rankingQ.data.items.length === 0) return null;
+    return adaptIndustryRanking(rankingQ.data, industryId);
+  }, [rankingQ.data, industryId]);
   const industryBrands = useMemo(() => {
+    if (liveIndustryBrands) return liveIndustryBrands as any[];
     const filtered = BRANDS.filter((b) => b.industryId === industry.id);
     return filtered.length ? filtered : BRANDS;
-  }, [industry.id]);
+  }, [liveIndustryBrands, industry.id]);
+  const brandsIsMock = !liveIndustryBrands;
 
   const primaryBrand = useMemo(
     () =>
       activeProject?.primaryBrandId
-        ? industryBrands.find((b) => b.id === activeProject.primaryBrandId) ||
+        ? industryBrands.find((b: any) => b.id === activeProject.primaryBrandId) ||
           BRANDS.find((b) => b.id === activeProject.primaryBrandId) ||
           null
         : null,
     [activeProject?.primaryBrandId, industryBrands]
   );
 
-  const liveIndustryId = /^\d+$/.test(String(industryId)) ? Number(industryId) : null;
+  // Live top citation domains.
+  const liveTopDomains = adaptIndustryTopDomains(topDomainsQ.data);
+  const topCitationDomains =
+    liveTopDomains.length > 0 ? liveTopDomains : TOP_CITED_DOMAINS;
+  const topDomainsIsMock = !(liveTopDomains.length > 0);
 
   return (
     <div className="space-y-3">
+      {brandsIsMock && (
+        <div className="flex justify-end px-1">
+          <MockDataBadge reason="行业 ID 非 live" />
+        </div>
+      )}
+
       {/* ── 段 ② Hero (page banner, 置顶且 border-b 与 FilterBar 分隔) ── */}
       <IndustryRankingHero
         industryName={`${industry.icon || ''} ${industry.name} 排行榜`.trim()}
@@ -105,11 +154,16 @@ export default function IndustryRankingPage() {
       />
 
       {/* ── 段 ⑦ Top 10 引用源 (从 Overview v2 段⑧ 迁入) ── */}
-      <IndustryTopCitationDomains
-        domains={TOP_CITED_DOMAINS}
-        primaryBrandId={primaryBrand?.id || null}
-        limit={10}
-      />
+      <div>
+        {topDomainsIsMock && (
+          <div className="mb-1 flex justify-end px-1"><MockDataBadge /></div>
+        )}
+        <IndustryTopCitationDomains
+          domains={topCitationDomains}
+          primaryBrandId={primaryBrand?.id || null}
+          limit={10}
+        />
+      </div>
 
       {/* ── 段 ⑧ Segment Ranking (3 赛道 × Top 5) ── */}
       <IndustrySegmentRanking

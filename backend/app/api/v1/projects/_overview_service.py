@@ -21,6 +21,8 @@ from datetime import date, datetime, timedelta
 from typing import cast
 
 from genpano_models import (
+    BrandGroupMember,
+    BrandGroupSharedDomain,
     BrandMention,
     GeoScoreDaily,
     Project,
@@ -29,8 +31,10 @@ from genpano_models import (
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._legacy_lookups import resolve_brand_name
 from app.api.v1.projects._overview_dto import (
     BrandOverviewOut,
+    GroupSharedDomainRow,
     KpiCard,
     TopPromptRow,
     TrendPoint,
@@ -242,11 +246,55 @@ async def _top_prompts(
 ) -> list[TopPromptRow]:
     """Top N prompts by mention_count over the window.
 
-    Joins via brand_mentions.response_id → llm_responses.prompt_id (FK
-    upstream; we just aggregate brand_mentions for now and emit synthetic
-    prompt_text placeholders since `llm_responses` and `prompts` are
-    upstream stub tables).
+    Joins `brand_mentions` → `llm_responses` → `prompts` (legacy upstream
+    tables). Falls back to a brand-level aggregate if the join path is
+    unavailable (e.g. SQLite test fixtures without those tables).
     """
+    from sqlalchemy import text as _text
+
+    try:
+        result = await session.execute(
+            _text(
+                """
+                SELECT p.id,
+                       p.text,
+                       COUNT(bm.id)::int AS cnt,
+                       AVG(bm.position_rank) AS avg_rank,
+                       AVG(bm.sentiment_score) AS avg_sent
+                FROM brand_mentions bm
+                JOIN llm_responses r ON r.id = bm.response_id
+                JOIN prompts p ON p.id = r.prompt_id
+                WHERE bm.brand_id = :bid
+                  AND bm.created_at >= :from_d
+                  AND bm.created_at <= :to_d
+                GROUP BY p.id, p.text
+                ORDER BY cnt DESC
+                LIMIT :lim
+                """
+            ),
+            {
+                "bid": brand_id,
+                "from_d": datetime.combine(from_date, datetime.min.time()),
+                "to_d": datetime.combine(to_date, datetime.max.time()),
+                "lim": limit,
+            },
+        )
+        rows = result.all()
+        if rows:
+            return [
+                TopPromptRow(
+                    prompt_id=int(r[0]) if r[0] is not None else None,
+                    prompt_text=r[1] or "",
+                    mention_count=int(r[2] or 0),
+                    avg_position_rank=round(r[3], 2) if r[3] is not None else None,
+                    avg_sentiment_score=round(r[4], 2) if r[4] is not None else None,
+                )
+                for r in rows
+            ]
+    except Exception:
+        pass
+
+    # Fallback: brand-level aggregation when llm_responses/prompts unavailable.
     stmt = (
         select(
             BrandMention.brand_id,
@@ -269,10 +317,45 @@ async def _top_prompts(
     return [
         TopPromptRow(
             prompt_id=None,
-            prompt_text=f"(brand {r[0]} top mentions, prompt aggregation Phase A.7)",
+            prompt_text=f"(aggregated prompts for brand #{r[0]})",
             mention_count=int(r[1] or 0),
             avg_position_rank=round(r[2] or 0, 2) if r[2] is not None else None,
             avg_sentiment_score=round(r[3] or 0, 2) if r[3] is not None else None,
+        )
+        for r in rows
+    ]
+
+
+async def _same_group_shared_domains(
+    session: AsyncSession, brand_id: int, *, limit: int = 8
+) -> list[GroupSharedDomainRow]:
+    """Resolve shared domains for the brand's corporate group (Phase A.6)."""
+    membership = (
+        await session.execute(
+            select(BrandGroupMember.group_id).where(
+                BrandGroupMember.brand_id == brand_id
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is None:
+        return []
+    rows = (
+        await session.execute(
+            select(
+                BrandGroupSharedDomain.domain,
+                BrandGroupSharedDomain.brand_count,
+                BrandGroupSharedDomain.total_mentions,
+            )
+            .where(BrandGroupSharedDomain.group_id == membership)
+            .order_by(BrandGroupSharedDomain.total_mentions.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        GroupSharedDomainRow(
+            domain=r[0],
+            brand_count=int(r[1] or 0),
+            total_mentions=int(r[2] or 0),
         )
         for r in rows
     ]
@@ -300,13 +383,15 @@ async def get_brand_overview(
     sov_30d = await _trend(session, brand_id, from_d, to_d, "avg_sov")
     sentiment_30d = await _sentiment_trend(session, brand_id, from_d, to_d)
     top_prompts = await _top_prompts(session, brand_id, from_d, to_d)
+    brand_name = await resolve_brand_name(session, brand_id)
+    shared_domains = await _same_group_shared_domains(session, brand_id)
 
     state = "ok" if any(c.value for c in kpi_cards) else "empty"
 
     return BrandOverviewOut(
         project_id=project.id,
         brand_id=brand_id,
-        brand_name=None,  # Phase A.7 will JOIN brands.name
+        brand_name=brand_name,
         industry_id=project.industry_id,
         period={"from": from_d.isoformat(), "to": to_d.isoformat()},
         kpi_cards=kpi_cards,
@@ -314,6 +399,6 @@ async def get_brand_overview(
         sov_30d=sov_30d,
         sentiment_30d=sentiment_30d,
         top_prompts=top_prompts,
-        same_group_shared_domains=[],  # Phase A.6 wires
+        same_group_shared_domains=shared_domains,
         state=state,
     )
