@@ -27,6 +27,11 @@ from typing import Any
 from app.admin.prompt_matrix.lib import is_natural_user_prompt
 from app.admin.topic_plan.lib import TopicPlanLLMError
 
+try:
+    from json_repair import repair_json
+except Exception:  # pragma: no cover - optional dependency
+    repair_json = None
+
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
     try:
@@ -64,13 +69,47 @@ def query_pool_strip_markdown_fence(raw: str | None) -> str:
 def query_pool_load_json_object(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, list):
+        return {"queries": raw}
+    cleaned = query_pool_strip_markdown_fence(raw)
     try:
-        parsed = json.loads(query_pool_strip_markdown_fence(raw))
-    except Exception as error:
-        raise TopicPlanLLMError("llm_json_invalid", "LLM returned invalid JSON") from error
+        parsed = json.loads(cleaned)
+    except Exception as first_error:
+        if repair_json is None:
+            raise TopicPlanLLMError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from first_error
+        try:
+            parsed = json.loads(repair_json(cleaned))
+        except Exception as repair_error:
+            raise TopicPlanLLMError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from repair_error
+    if isinstance(parsed, list):
+        return {"queries": parsed}
     if not isinstance(parsed, dict):
         raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON root must be an object")
     return parsed
+
+
+def query_pool_extract_llm_items(data: dict[str, Any], root_key: str) -> list[Any]:
+    items = data.get(root_key)
+    if isinstance(items, list):
+        return items
+    singular_key = (
+        "query" if root_key == "queries" else root_key[:-1] if root_key.endswith("s") else ""
+    )
+    for key in (singular_key, "drafts", "candidates", "choices", "items", "results"):
+        if not key:
+            continue
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+    if data.get("candidate_key") or data.get("query"):
+        return [data]
+    raise TopicPlanLLMError("llm_schema_invalid", f"LLM JSON must contain a {root_key} array")
 
 
 def query_pool_normalize_query_text(value: Any) -> str:
@@ -255,9 +294,7 @@ def parse_query_pool_llm_queries(
     expected = [str(key) for key in expected_keys]
     expected_set = set(expected)
     data = query_pool_load_json_object(raw)
-    queries = data.get("queries")
-    if not isinstance(queries, list):
-        raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON must contain a queries array")
+    queries = query_pool_extract_llm_items(data, "queries")
     parsed: dict[str, str] = {}
     for index, item in enumerate(queries):
         if not isinstance(item, dict):

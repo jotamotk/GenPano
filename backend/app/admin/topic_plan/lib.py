@@ -383,9 +383,11 @@ def strip_markdown_fence(raw: str) -> str:
     return text.strip()
 
 
-def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
+def _load_json_object(raw: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, list):
+        return {"topics": raw}
     cleaned = strip_markdown_fence(raw)
     if not cleaned.lstrip().startswith(("{", "[")):
         raise TopicPlanLLMError("llm_json_invalid", "LLM returned invalid JSON")
@@ -402,16 +404,34 @@ def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
             raise TopicPlanLLMError(
                 "llm_json_invalid", "LLM returned invalid JSON"
             ) from repair_error
+    if isinstance(parsed, list):
+        return {"topics": parsed}
     if not isinstance(parsed, dict):
         raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON root must be an object")
     return parsed
 
 
-def parse_llm_topics(raw: str | dict[str, Any]) -> list[LLMTopic]:
+def _extract_llm_items(data: dict[str, Any], root_key: str) -> list[Any]:
+    items = data.get(root_key)
+    if isinstance(items, list):
+        return items
+    singular_key = root_key[:-1] if root_key.endswith("s") else ""
+    for key in (singular_key, "drafts", "candidates", "choices", "items", "results"):
+        if not key:
+            continue
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+    if data.get("title"):
+        return [data]
+    raise TopicPlanLLMError("llm_schema_invalid", f"LLM JSON must contain a {root_key} array")
+
+
+def parse_llm_topics(raw: str | dict[str, Any] | list[Any]) -> list[LLMTopic]:
     data = _load_json_object(raw)
-    topics = data.get("topics")
-    if not isinstance(topics, list):
-        raise TopicPlanLLMError("llm_schema_invalid", "LLM JSON must contain a topics array")
+    topics = _extract_llm_items(data, "topics")
 
     parsed: list[LLMTopic] = []
     for index, item in enumerate(topics):

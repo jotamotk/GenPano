@@ -636,6 +636,13 @@ def test_coerce_aliases_invalid_json_falls_through_to_comma_split():
     assert out == ["not", "valid", "json"]
 
 
+def test_product_discovery_parser_accepts_common_llm_shapes():
+    from app.admin.products.llm import _parse_response
+
+    assert _parse_response('{"items":[{"name":"DLP","category":"数据安全"}]}')[0]["name"] == "DLP"
+    assert _parse_response('[{"name":"DSPM","category":"云安全"}]')[0]["name"] == "DSPM"
+
+
 # ── audit gate ───────────────────────────────────────────────
 
 

@@ -212,6 +212,14 @@ def test_validate_brand_candidates_empty_raises():
     assert exc.value.code == "missing_llm_field"
 
 
+def test_brand_management_llm_parser_accepts_array_root():
+    from app.admin.brand_management.llm import _load_json_object
+
+    data = _load_json_object('[{"name":"bestCoffer","industry":"数据安全"}]')
+
+    assert extract_llm_items(data, "brands")[0]["name"] == "bestCoffer"
+
+
 def test_brand_enrich_context_filters_empties():
     out = brand_enrich_context({"name_zh": "x", "industry": "", "founded_year": 1990})
     assert out == {"name_zh": "x", "founded_year": 1990}

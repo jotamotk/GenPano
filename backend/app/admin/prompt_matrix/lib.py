@@ -631,9 +631,11 @@ def strip_markdown_fence(raw: str) -> str:
     return text.strip()
 
 
-def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
+def _load_json_object(raw: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, list):
+        return {"prompts": raw}
     cleaned = strip_markdown_fence(raw)
     try:
         parsed = json.loads(cleaned)
@@ -648,9 +650,29 @@ def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
             raise PromptMatrixError(
                 "llm_json_invalid", "LLM returned invalid JSON"
             ) from repair_error
+    if isinstance(parsed, list):
+        return {"prompts": parsed}
     if not isinstance(parsed, dict):
         raise PromptMatrixError("llm_schema_invalid", "LLM JSON root must be an object")
     return parsed
+
+
+def _extract_llm_items(data: dict[str, Any], root_key: str) -> list[Any]:
+    items = data.get(root_key)
+    if isinstance(items, list):
+        return items
+    singular_key = root_key[:-1] if root_key.endswith("s") else ""
+    for key in (singular_key, "drafts", "candidates", "choices", "items", "results"):
+        if not key:
+            continue
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+    if data.get("text"):
+        return [data]
+    raise PromptMatrixError("llm_schema_invalid", f"LLM JSON must contain a {root_key} array")
 
 
 def _topic_lookup_key(value: Any) -> int:
@@ -681,9 +703,7 @@ def parse_llm_prompt_candidates(
     default_template_version: str = "v1",
 ) -> list[LLMPromptCandidate]:
     data = _load_json_object(raw)
-    prompts = data.get("prompts")
-    if not isinstance(prompts, list):
-        raise PromptMatrixError("llm_schema_invalid", "LLM JSON must contain a prompts array")
+    prompts = _extract_llm_items(data, "prompts")
 
     parsed: list[LLMPromptCandidate] = []
     for index, item in enumerate(prompts):

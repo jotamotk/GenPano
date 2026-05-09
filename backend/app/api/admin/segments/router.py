@@ -25,6 +25,7 @@ from genpano_models import AdminUser
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
+from app.admin.products import db as products_db
 from app.admin.segments import db as segments_db
 from app.api.admin.auth.router import current_admin
 from app.core.errors import not_found, validation_error
@@ -34,6 +35,103 @@ router = APIRouter(tags=["Admin · Segments"])
 
 
 _SEGMENT_PAYLOAD_ERRORS = {"segment_name_required", "invalid_segment_status"}
+
+
+def _coerce_product_ids(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("product_ids")
+    if raw in (None, ""):
+        raw = payload.get("productIds")
+    if raw in (None, ""):
+        raw = payload.get("product_id") or payload.get("productId")
+    values = raw if isinstance(raw, list) else [raw]
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ids.append(text)
+    return ids[:20]
+
+
+def _coerce_payload_products(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw = payload.get("products")
+    values = raw if isinstance(raw, list) else []
+    if not values:
+        values = [
+            {
+                "product_id": payload.get("product_id") or payload.get("productId"),
+                "product_name": payload.get("product_name") or payload.get("productName"),
+                "product_category": payload.get("product_category")
+                or payload.get("productCategory"),
+                "product_description": (
+                    payload.get("product_description") or payload.get("productDescription")
+                ),
+                "product_sku": payload.get("product_sku") or payload.get("productSku"),
+            }
+        ]
+    products: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        product = {
+            "product_id": str(item.get("product_id") or item.get("id") or "").strip(),
+            "product_name": str(item.get("product_name") or item.get("name") or "").strip(),
+            "product_category": str(
+                item.get("product_category") or item.get("category") or ""
+            ).strip(),
+            "product_description": str(
+                item.get("product_description") or item.get("description") or ""
+            ).strip(),
+            "product_sku": str(item.get("product_sku") or item.get("sku") or "").strip(),
+        }
+        product = {key: value for key, value in product.items() if value}
+        key = product.get("product_id") or product.get("product_name")
+        if not key or key.casefold() in seen:
+            continue
+        seen.add(key.casefold())
+        products.append(product)
+    return products[:20]
+
+
+async def _resolve_generation_products(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    *,
+    brand_id: str | None,
+) -> list[dict[str, str]]:
+    selected_ids = _coerce_product_ids(payload)
+    payload_products = _coerce_payload_products(payload)
+    if not selected_ids:
+        return payload_products
+
+    db_products = await products_db.fetch_products_by_ids(
+        session,
+        brand_id=brand_id,
+        product_ids=selected_ids,
+    )
+    products = [
+        {
+            "product_id": str(item.get("id") or item.get("product_id") or "").strip(),
+            "product_name": str(item.get("name") or item.get("product_name") or "").strip(),
+            "product_category": str(
+                item.get("category") or item.get("product_category") or ""
+            ).strip(),
+            "product_description": str(
+                item.get("description") or item.get("product_description") or ""
+            ).strip(),
+            "product_sku": str(item.get("sku") or item.get("product_sku") or "").strip(),
+        }
+        for item in db_products
+    ]
+    products = [{key: value for key, value in item.items() if value} for item in products]
+    if products:
+        return products
+
+    wanted = set(selected_ids)
+    return [item for item in payload_products if item.get("product_id") in wanted]
 
 
 @router.get("", response_model=None)
@@ -308,6 +406,11 @@ async def generate_segments_route(
     payload = {**payload, "brand_id": brand_id, "brand_name": brand_name}
     if not brand_name:
         raise validation_error("brand_name", "brand_name_required")
+    product_contexts = await _resolve_generation_products(session, payload, brand_id=brand_id)
+    payload["product_ids"] = [
+        item.get("product_id") for item in product_contexts if item.get("product_id")
+    ]
+    payload["products"] = product_contexts
 
     service = SegmentProfileGenerationService(
         model=payload.get("llm_model"),
@@ -328,6 +431,7 @@ async def generate_segments_route(
             product_description=str(
                 payload.get("product_description") or payload.get("productDescription") or ""
             ),
+            products=product_contexts,
         )
     except SegmentProfileGenerationError as error:
         # Audit the LLM-side failure so an outage shows up in audit-log
@@ -703,6 +807,18 @@ async def generate_profiles_route(
     brand_name = (payload.get("brand_name") or payload.get("brand") or "").strip()
     if not brand_name:
         raise validation_error("brand_name", "brand_name_required")
+    product_contexts = await _resolve_generation_products(
+        session,
+        payload,
+        brand_id=str(payload.get("brand_id") or payload.get("brandId") or "").strip() or None,
+    )
+    payload = {
+        **payload,
+        "products": product_contexts,
+        "product_ids": [
+            item.get("product_id") for item in product_contexts if item.get("product_id")
+        ],
+    }
 
     if payload.get("async_generation") or payload.get("async"):
         job_id = await schedule_profile_generation_job(

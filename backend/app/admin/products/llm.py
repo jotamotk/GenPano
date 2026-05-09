@@ -26,6 +26,11 @@ from app.admin.topic_plan.lib import (
     load_doubao_config,
 )
 
+try:
+    from json_repair import repair_json
+except Exception:  # pragma: no cover
+    repair_json = None
+
 
 @dataclass
 class ProductDiscoveryResult:
@@ -55,11 +60,33 @@ def _parse_response(raw: str | dict[str, Any]) -> list[dict[str, Any]]:
     """Mirror admin_console ``_parse_product_discovery_response``."""
     try:
         data = raw if isinstance(raw, dict) else json.loads(_strip_markdown_fence(str(raw or "")))
-    except Exception as error:
-        raise TopicPlanLLMError(
-            "llm_json_invalid", "Product discovery returned invalid JSON"
-        ) from error
-    products = data.get("products") if isinstance(data, dict) else None
+    except Exception as first_error:
+        if repair_json is None:
+            raise TopicPlanLLMError(
+                "llm_json_invalid", "Product discovery returned invalid JSON"
+            ) from first_error
+        try:
+            data = json.loads(repair_json(_strip_markdown_fence(str(raw or ""))))
+        except Exception as repair_error:
+            raise TopicPlanLLMError(
+                "llm_json_invalid", "Product discovery returned invalid JSON"
+            ) from repair_error
+    if isinstance(data, list):
+        products = data
+    elif isinstance(data, dict):
+        products = None
+        for key in ("products", "items", "results", "candidates"):
+            value = data.get(key)
+            if isinstance(value, list):
+                products = value
+                break
+            if isinstance(value, dict):
+                products = [value]
+                break
+        if products is None and data.get("name"):
+            products = [data]
+    else:
+        products = None
     if not isinstance(products, list):
         raise TopicPlanLLMError(
             "llm_schema_invalid",
