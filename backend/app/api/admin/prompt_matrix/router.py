@@ -79,6 +79,9 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
     quality_gate_status = tags.get("quality_gate_status") or tags.get("qualityGateStatus")
     quality_gate_reason = tags.get("quality_gate_reason") or tags.get("qualityGateReason")
     quality_gate_message = tags.get("quality_gate_message") or tags.get("qualityGateMessage")
+    competitor_name = tags.get("competitor_name") or tags.get("competitorName")
+    competitor_brand_id = tags.get("competitor_brand_id") or tags.get("competitorBrandId")
+    scenario_axis = tags.get("scenario_axis") or tags.get("scenarioAxis")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -98,6 +101,9 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
         "duplicate_of": c.duplicate_of,
         "prompt_scope": prompt_scope,
         "competitive_type": competitive_type if prompt_scope == "competitive" else None,
+        "competitor_name": competitor_name if prompt_scope == "competitive" else None,
+        "competitor_brand_id": competitor_brand_id if prompt_scope == "competitive" else None,
+        "scenario_axis": scenario_axis if prompt_scope == "competitive" else None,
         "quality_gate_status": quality_gate_status,
         "quality_gate_reason": quality_gate_reason,
         "quality_gate_message": quality_gate_message,

@@ -96,6 +96,11 @@ def _reviewable_quality_issue(
             "message": "Branded prompt must include the topic brand or product",
         }
     if prompt_scope == "competitive":
+        if not competitor_name:
+            return {
+                "reason": "competitive_competitor_missing",
+                "message": "Competitive prompt must include a selected competitor",
+            }
         if not prompt_text_has_competitive_signal(text):
             return {
                 "reason": "prompt_scope_mismatch",
