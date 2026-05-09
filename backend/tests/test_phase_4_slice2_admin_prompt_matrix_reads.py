@@ -433,6 +433,45 @@ async def test_candidates_list_filters_by_intent_and_prompt_scope(
 
 
 @pytest.mark.asyncio
+async def test_candidates_non_branded_scope_requires_explicit_scope(
+    client, admin_operator, db_session: AsyncSession
+):
+    rows = [
+        ("explicit non-brand", {"prompt_scope": "non_branded"}),
+        ("legacy untagged NIKE prompt", {}),
+        ("explicit branded NIKE prompt", {"prompt_scope": "branded"}),
+    ]
+    for i, (text, tags) in enumerate(rows):
+        db_session.add(
+            PromptCandidate(
+                id=_new_id(),
+                run_id=None,
+                topic_id=i + 1,
+                topic_text="t",
+                brand_id=1,
+                brand_name="NIKE",
+                dimension="brand",
+                intent="commercial",
+                language="en-US",
+                text=text,
+                status="pending",
+                confidence=0.8,
+                tags=tags,
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/admin/prompt-matrix/candidates?status=all&prompt_scope=non_branded"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pagination"]["total"] == 1
+    assert body["rows"][0]["text"] == "explicit non-brand"
+
+
+@pytest.mark.asyncio
 async def test_candidates_list_filters_quality_gate_blocked(
     client, admin_operator, db_session: AsyncSession
 ):

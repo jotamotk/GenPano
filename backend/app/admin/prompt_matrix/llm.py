@@ -205,6 +205,11 @@ SLOT_METADATA_KEYS = (
     "competitor_brand_id",
     "competitor_source",
     "scenario_axis",
+    "comparison_axis",
+    "product_name",
+    "brand_context_version",
+    "context_refs",
+    "topic_axis",
 )
 
 
@@ -343,6 +348,7 @@ class PromptMatrixClient:
                         {
                             "name": "Competitor brand name",
                             "scenario_axes": ["price_value", "use_case", "quality_fit"],
+                            "comparison_axes": ["price", "fit", "quality"],
                         }
                     ]
                 }
@@ -355,7 +361,8 @@ class PromptMatrixClient:
                     "You find realistic competitor brands for Prompt Matrix generation. "
                     "Return strict JSON only. Prefer brands from known_brands when they fit, "
                     "but include well-known market competitors when the local KG is incomplete. "
-                    "Return at most 3 competitors per topic and 2-4 short scenario_axes per competitor."
+                    "Return at most 3 competitors per topic, plus 2-4 short "
+                    "scenario_axes and comparison_axes per competitor."
                 ),
             },
             {
@@ -434,12 +441,16 @@ class PromptMatrixClient:
                     continue
                 matched = brand_lookup.get(normalize_prompt_text(name))
                 axes = raw.get("scenario_axes") or raw.get("scenarios") or []
+                comparison_axes = raw.get("comparison_axes") or raw.get("axes") or axes
                 competitors.append(
                     {
                         "name": matched.get("name") if matched else name,
                         "brand_id": matched.get("id") if matched else None,
                         "source": "llm",
                         "scenario_axes": axes if isinstance(axes, list) else [],
+                        "comparison_axes": comparison_axes
+                        if isinstance(comparison_axes, list)
+                        else [],
                     }
                 )
             if competitors:

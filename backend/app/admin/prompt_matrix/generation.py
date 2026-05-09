@@ -58,6 +58,11 @@ PROMPT_METADATA_ALIASES = {
     "competitor_brand_id": ("competitor_brand_id", "competitorBrandId"),
     "competitor_source": ("competitor_source", "competitorSource"),
     "scenario_axis": ("scenario_axis", "scenarioAxis"),
+    "comparison_axis": ("comparison_axis", "comparisonAxis"),
+    "product_name": ("product_name", "productName"),
+    "brand_context_version": ("brand_context_version", "brandContextVersion"),
+    "context_refs": ("context_refs", "contextRefs"),
+    "topic_axis": ("topic_axis", "topicAxis"),
 }
 
 
@@ -229,6 +234,14 @@ async def _insert_candidate_batch(
         tags.pop("promptScope", None)
         tags.pop("competitiveType", None)
         tags.pop("competitive_type", None)
+        if topic.get("brand_context_version") and not tags.get("brand_context_version"):
+            tags["brand_context_version"] = topic["brand_context_version"]
+        if isinstance(topic.get("context_refs"), dict) and not tags.get("context_refs"):
+            tags["context_refs"] = topic["context_refs"]
+        if topic.get("topic_axis") and not tags.get("topic_axis"):
+            tags["topic_axis"] = topic["topic_axis"]
+        if topic.get("product_name") and not tags.get("product_name"):
+            tags["product_name"] = topic["product_name"]
         tags = {
             **tags,
             "prompt_scope": prompt_scope,
@@ -287,6 +300,19 @@ async def _insert_candidate_batch(
                 "reason": row.reason,
                 "duplicate_of": row.duplicate_of,
                 "tags": row.tags,
+                "prompt_scope": prompt_scope,
+                "competitive_type": competitive_type,
+                "competitor_name": tags.get("competitor_name")
+                if prompt_scope == "competitive"
+                else None,
+                "competitor_brand_id": tags.get("competitor_brand_id")
+                if prompt_scope == "competitive"
+                else None,
+                "scenario_axis": tags.get("scenario_axis"),
+                "comparison_axis": tags.get("comparison_axis"),
+                "product_name": tags.get("product_name"),
+                "brand_context_version": tags.get("brand_context_version"),
+                "context_refs": tags.get("context_refs") or {},
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
         )

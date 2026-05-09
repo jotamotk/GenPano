@@ -4848,6 +4848,15 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                   <template x-if="promptMatrixCompetitorLabel(item)">
                                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-danger/10 text-danger text-[10px] font-semibold" x-text="promptMatrixCompetitorLabel(item)"></span>
                                   </template>
+                                  <template x-if="promptMatrixProductLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-info/10 text-info text-[10px] font-semibold" x-text="promptMatrixProductLabel(item)"></span>
+                                  </template>
+                                  <template x-if="promptMatrixComparisonAxisLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="promptMatrixComparisonAxisLabel(item)"></span>
+                                  </template>
+                                  <template x-if="promptMatrixContextVersionLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="promptMatrixContextVersionLabel(item)"></span>
+                                  </template>
                                   <template x-if="promptMatrixQualityGateLabel(item)">
                                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-danger/10 text-danger text-[10px] font-semibold" x-text="promptMatrixQualityGateLabel(item)"></span>
                                   </template>
@@ -15159,6 +15168,27 @@ function adminApp() {
       const tags = (item && item.tags) || {};
       const competitor = (item && (item.competitor_name || item.competitorName)) || tags.competitor_name || tags.competitorName || '';
       return competitor ? ('vs ' + competitor) : '';
+    },
+
+    promptMatrixProductLabel(item){
+      const tags = (item && item.tags) || {};
+      const product = (item && (item.product_name || item.productName)) || tags.product_name || tags.productName || '';
+      return product ? ('Product ' + product) : '';
+    },
+
+    promptMatrixComparisonAxisLabel(item){
+      const tags = (item && item.tags) || {};
+      const axis = (item && (item.comparison_axis || item.comparisonAxis || item.scenario_axis || item.scenarioAxis))
+        || tags.comparison_axis || tags.comparisonAxis || tags.scenario_axis || tags.scenarioAxis || '';
+      return axis ? ('Axis ' + axis) : '';
+    },
+
+    promptMatrixContextVersionLabel(item){
+      const tags = (item && item.tags) || {};
+      const version = (item && (item.brand_context_version || item.brandContextVersion)) || tags.brand_context_version || tags.brandContextVersion || '';
+      if (!version) return '';
+      const text = String(version);
+      return 'Context ' + (text.length > 18 ? text.slice(0, 18) + '...' : text);
     },
 
     promptMatrixQualityGateValue(item){

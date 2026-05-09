@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
 from app.admin.prompt_matrix import db as pm_db
+from app.admin.prompt_matrix.context import attach_brand_context_to_topics
 from app.admin.prompt_matrix.lib import (
     ALLOWED_INTENTS,
     ALLOWED_PROMPT_SCOPES,
@@ -82,6 +83,7 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
     competitor_name = tags.get("competitor_name") or tags.get("competitorName")
     competitor_brand_id = tags.get("competitor_brand_id") or tags.get("competitorBrandId")
     scenario_axis = tags.get("scenario_axis") or tags.get("scenarioAxis")
+    comparison_axis = tags.get("comparison_axis") or tags.get("comparisonAxis")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -104,6 +106,11 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
         "competitor_name": competitor_name if prompt_scope == "competitive" else None,
         "competitor_brand_id": competitor_brand_id if prompt_scope == "competitive" else None,
         "scenario_axis": scenario_axis if prompt_scope == "competitive" else None,
+        "comparison_axis": comparison_axis if prompt_scope == "competitive" else None,
+        "product_name": tags.get("product_name") or tags.get("productName"),
+        "brand_context_version": tags.get("brand_context_version")
+        or tags.get("brandContextVersion"),
+        "context_refs": tags.get("context_refs") or tags.get("contextRefs") or {},
         "quality_gate_status": quality_gate_status,
         "quality_gate_reason": quality_gate_reason,
         "quality_gate_message": quality_gate_message,
@@ -941,11 +948,23 @@ async def generate_prompts(
     if estimated <= 0:
         raise validation_error("config", "no_prompt_combinations")
 
-    known_brands = await pm_db.fetch_brand_rows(session)
-    existing_prompts = await pm_db.fetch_existing_prompt_texts(session, topic_ids=topic_ids)
-    request_config: dict[str, Any] = {**config, "selection": selection_snapshot}
-
     run_id = str(uuid.uuid4())
+    known_brands = await pm_db.fetch_brand_rows(session)
+    try:
+        brand_context_versions = await attach_brand_context_to_topics(
+            session,
+            topics=topics,
+            known_brands=known_brands,
+            run_id=run_id,
+        )
+    except PromptMatrixError as error:
+        raise _llm_error_to_http(error) from error
+    existing_prompts = await pm_db.fetch_existing_prompt_texts(session, topic_ids=topic_ids)
+    request_config: dict[str, Any] = {
+        **config,
+        "selection": selection_snapshot,
+        "brand_context_versions": brand_context_versions,
+    }
     run = PromptGenerationRun(
         id=run_id,
         admin_id=operator.id,

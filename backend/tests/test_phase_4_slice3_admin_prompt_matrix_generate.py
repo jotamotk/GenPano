@@ -18,6 +18,7 @@ import pytest_asyncio
 from genpano_models import (
     AdminAuditLog,
     AdminUser,
+    BrandContextSnapshot,
     PromptCandidate,
     PromptGenerationRun,
 )
@@ -133,6 +134,18 @@ def _topic(*, raw_id: int = 1, brand_id: int = 1, brand: str = "NIKE") -> dict[s
         "missing_intents": [],
         "missing_languages": [],
         "brand_leak_count": 0,
+        "brand_context_version": "bcx-test",
+        "brand_context_pack": {
+            "brand": {"name": brand, "industry": "footwear"},
+            "products": [{"name": "Pegasus", "category": "running shoes"}],
+            "scenarios": [{"name": "beginner running"}],
+            "competitors": [{"name": "Adidas", "comparison_axes": ["comfort"]}],
+            "audience_hypotheses": [],
+            "claims": {},
+            "source_notes": [],
+        },
+        "context_refs": {"scenarios": ["beginner running"]},
+        "topic_axis": "scenario",
         "selected": False,
     }
 
@@ -273,6 +286,149 @@ async def test_generate_sync_inserts_candidates_and_completes(
     )
     assert len(audit) == 1
     assert audit[0].severity == "med"
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_reuses_latest_context_snapshot_for_legacy_topic(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    topic = _topic()
+    topic.pop("brand_context_version", None)
+    topic.pop("brand_context_pack", None)
+    topic.pop("context_refs", None)
+    topic.pop("topic_axis", None)
+    topic["product_name"] = "Pegasus"
+    snapshot = BrandContextSnapshot(
+        id=_new_id(),
+        brand_id=1,
+        version="bcx-1-existing",
+        payload_json={
+            "brand": {"name": "NIKE", "industry": "footwear"},
+            "products": [{"name": "Pegasus", "category": "running shoes"}],
+            "scenarios": [],
+            "competitors": [{"name": "Adidas", "comparison_axes": ["comfort"]}],
+            "audience_hypotheses": [],
+            "claims": {},
+            "source_notes": [],
+        },
+        source_notes_json=[],
+        status="active",
+    )
+    db_session.add(snapshot)
+    await db_session.commit()
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[topic]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear", "aliases": []}]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [
+                    _llm_prompt(
+                        "Is NIKE Pegasus good for beginner running shoes?",
+                        language="en-US",
+                        prompt_scope="branded",
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 1, "language_count": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    run = (
+        await db_session.execute(
+            select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
+        )
+    ).scalar_one()
+    assert run.request_config["brand_context_versions"]["1"] == "bcx-1-existing"
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.tags["brand_context_version"] == "bcx-1-existing"
+    assert candidate.tags["context_refs"]["products"] == ["Pegasus"]
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_refreshes_context_snapshot_when_missing(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    topic = _topic()
+    topic.pop("brand_context_version", None)
+    topic.pop("brand_context_pack", None)
+    topic.pop("context_refs", None)
+    topic.pop("topic_axis", None)
+    topic["product_name"] = "Pegasus"
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[topic]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[{"id": 1, "name": "NIKE", "industry_id": "footwear", "aliases": []}]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+
+    class FakeTopicPlanClient:
+        async def research_brand_context(self, **kwargs):
+            return [
+                {
+                    "name": "NIKE",
+                    "industry": "footwear",
+                    "products": [{"name": "Pegasus", "category": "running shoes"}],
+                    "source_notes": [{"title": "Official", "url": "https://nike.example"}],
+                }
+            ]
+
+    monkeypatch.setattr(
+        "app.admin.prompt_matrix.context.DoubaoTopicPlanClient",
+        FakeTopicPlanClient,
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [
+                    _llm_prompt(
+                        "Is NIKE Pegasus good for beginner running shoes?",
+                        language="en-US",
+                        prompt_scope="branded",
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 1, "language_count": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    snapshot = (
+        await db_session.execute(
+            select(BrandContextSnapshot).where(BrandContextSnapshot.created_from_run_id == run_id)
+        )
+    ).scalar_one()
+    assert snapshot.payload_json["products"][0]["name"] == "Pegasus"
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.tags["brand_context_version"] == snapshot.version
 
 
 @pytest.mark.asyncio
