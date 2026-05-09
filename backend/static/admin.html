@@ -4430,7 +4430,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">意图覆盖</span>
-                      <select x-model="promptMatrixConfig.intentCount" @change="loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                      <select x-model="promptMatrixConfig.intentCount" @change="syncPromptMatrixMaxPromptsWithEstimate(); loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                         <option value="2">基础 2 类</option>
                         <option value="3">均衡 3 类</option>
                         <option value="4">完整 4 类</option>
@@ -4438,7 +4438,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     </label>
                     <label class="space-y-1">
                       <span class="text-[10px] font-semibold text-ink-muted uppercase">目标市场</span>
-                      <select x-model="promptMatrixConfig.languageCount" @change="loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                      <select x-model="promptMatrixConfig.languageCount" @change="syncPromptMatrixMaxPromptsWithEstimate(); loadPromptMatrixTopics(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                         <option value="2">中国 + 英文市场</option>
                         <option value="1">仅中国市场</option>
                       </select>
@@ -4483,13 +4483,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">每 Topic 上限</span>
                         <input x-model.number="promptMatrixConfig.maxPerTopic" type="number" min="1" step="1" :max="promptMatrixMaxPerTopicCap()"
-                               @change="normalizePromptMatrixMaxPerTopic(); normalizePromptMatrixMaxPrompts(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
+                               @change="normalizePromptMatrixMaxPerTopic(); syncPromptMatrixMaxPromptsWithEstimate(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
                                class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                       </label>
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">生成数量</span>
                         <input x-model.number="promptMatrixConfig.maxPrompts" type="number" min="1" step="1" :max="promptMatrixMaxPromptsCap()"
-                               @change="normalizePromptMatrixMaxPrompts(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
+                               @change="onPromptMatrixMaxPromptsChanged()"
                                class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                       </label>
                       <label class="space-y-1">
@@ -4737,6 +4737,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                             <input x-model="promptMatrixCandidateQuery" @input.debounce.350ms="onPromptMatrixCandidateFilterChanged()" placeholder="搜索候选 Prompt"
                                    class="w-56 h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
                           </div>
+                          <select x-model="promptMatrixCandidateBrand" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部品牌</option>
+                            <template x-for="brand in promptMatrixTopicBrands()" :key="'candidate-brand-' + brand.id">
+                              <option :value="String(brand.id)" x-text="brand.name"></option>
+                            </template>
+                          </select>
                           <select x-model.number="promptMatrixCandidatePerPage" @change="onPromptMatrixCandidatePageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                             <option value="10">10 / 页</option>
                             <option value="20">20 / 页</option>
@@ -11619,6 +11625,7 @@ function adminApp() {
       maxPrompts: 10,
       overflowPolicy: 'split',
     },
+    promptMatrixMaxPromptsTouched: false,
     promptMatrixLoading: false,
     promptMatrixError: '',
     promptMatrixTopicsLoading: false,
@@ -11675,6 +11682,7 @@ function adminApp() {
     promptMatrixCandidateTotalPagesValue: 1,
     promptMatrixCandidateStatusCounts: { pending: 0, approved: 0, rejected: 0, all: 0 },
     promptMatrixCandidateQuery: '',
+    promptMatrixCandidateBrand: 'all',
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
     promptMatrixPromptLanguage: '',
@@ -14669,6 +14677,7 @@ function adminApp() {
         this.promptMatrixSelectedTopicIds = next;
         this.promptMatrixSelectedTopicCache = cache;
       }
+      this.syncPromptMatrixMaxPromptsWithEstimate();
     },
 
     clearPromptMatrixSelection(){
@@ -14677,6 +14686,7 @@ function adminApp() {
       this.promptMatrixExcludedTopicIds = {};
       this.promptMatrixSelectedTopicCache = {};
       this.promptMatrixSelectionFilters = null;
+      this.syncPromptMatrixMaxPromptsWithEstimate();
     },
 
     setPromptMatrixTopics(selected, scope = 'filtered'){
@@ -14692,6 +14702,7 @@ function adminApp() {
           const cache = {};
           this.promptMatrixPageTopics().forEach(topic => { cache[this.promptMatrixTopicKey(topic)] = topic; });
           this.promptMatrixSelectedTopicCache = cache;
+          this.syncPromptMatrixMaxPromptsWithEstimate();
         } else {
           this.clearPromptMatrixSelection();
         }
@@ -14796,6 +14807,10 @@ function adminApp() {
       return Math.max(10, this.promptMatrixRawPromptCount() * 2);
     },
 
+    promptMatrixSuggestedMaxPromptsValue(){
+      return Math.max(10, this.promptMatrixRawPromptCount());
+    },
+
     promptMatrixMaxPromptsValue(){
       const parsed = Number(this.promptMatrixConfig.maxPrompts);
       if (!Number.isFinite(parsed)) return 10;
@@ -14804,6 +14819,23 @@ function adminApp() {
 
     normalizePromptMatrixMaxPrompts(){
       this.promptMatrixConfig.maxPrompts = this.promptMatrixMaxPromptsValue();
+    },
+
+    syncPromptMatrixMaxPromptsWithEstimate(){
+      if (this.promptMatrixMaxPromptsTouched) {
+        this.normalizePromptMatrixMaxPrompts();
+        return;
+      }
+      this.promptMatrixConfig.maxPrompts = Math.min(
+        this.promptMatrixSuggestedMaxPromptsValue(),
+        this.promptMatrixMaxPromptsCap(),
+      );
+    },
+
+    onPromptMatrixMaxPromptsChanged(){
+      this.promptMatrixMaxPromptsTouched = true;
+      this.normalizePromptMatrixMaxPrompts();
+      if (this.promptMatrixActionPanel === 'gaps') this.loadPromptMatrixGaps();
     },
 
     estimatedPromptCountValue(){
@@ -14881,10 +14913,12 @@ function adminApp() {
         this.promptMatrixTopicTotal = pagination.total || 0;
         this.promptMatrixTopicTotalPagesValue = pagination.total_pages || 1;
         this.promptMatrixTopicPage = pagination.page || this.promptMatrixTopicPage;
+        this.syncPromptMatrixMaxPromptsWithEstimate();
       } catch (e) {
         this.promptMatrixTopics = [];
         this.promptMatrixTopicTotal = 0;
         this.promptMatrixTopicTotalPagesValue = 1;
+        this.syncPromptMatrixMaxPromptsWithEstimate();
         this.promptMatrixTopicsError = e.message || 'Topic load failed';
       } finally {
         this.promptMatrixTopicsLoading = false;
@@ -15080,6 +15114,7 @@ function adminApp() {
           per_page:String(this.promptMatrixCandidatePerPage || 20),
         });
         if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
+        if (this.promptMatrixCandidateBrand && this.promptMatrixCandidateBrand !== 'all') qp.set('brand_id', this.promptMatrixCandidateBrand);
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;
         const res = await fetch('/api/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);

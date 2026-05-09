@@ -11,6 +11,7 @@ def test_prompt_matrix_generation_count_uses_manual_numeric_cap() -> None:
     html = _admin_html()
 
     assert "maxPrompts: 10," in html
+    assert "promptMatrixMaxPromptsTouched: false" in html
     assert 'x-model.number="promptMatrixConfig.maxPerTopic"' in html
     assert ':max="promptMatrixMaxPerTopicCap()"' in html
     assert "promptMatrixMaxPerTopicValue()" in html
@@ -18,12 +19,25 @@ def test_prompt_matrix_generation_count_uses_manual_numeric_cap() -> None:
     assert 'x-model.number="promptMatrixConfig.maxPrompts"' in html
     assert 'type="number" min="1" step="1"' in html
     assert ':max="promptMatrixMaxPromptsCap()"' in html
+    assert '@change="onPromptMatrixMaxPromptsChanged()"' in html
     assert "promptMatrixRawPromptCount()" in html
+    assert "promptMatrixSuggestedMaxPromptsValue()" in html
     assert "promptMatrixMaxPromptsCap()" in html
+    assert "syncPromptMatrixMaxPromptsWithEstimate()" in html
+    assert "onPromptMatrixMaxPromptsChanged()" in html
     assert "qp.set('max_per_topic', this.promptMatrixMaxPerTopicValue());" in html
     assert "max_per_topic: this.promptMatrixMaxPerTopicValue()," in html
     assert "this.promptMatrixConfig.maxPrompts || 8000" not in html
     assert "Number(this.promptMatrixConfig.maxPrompts) || 8000" not in html
+
+
+def test_prompt_matrix_candidate_filters_include_brand_select() -> None:
+    html = _admin_html()
+
+    assert "promptMatrixCandidateBrand: 'all'" in html
+    assert 'x-model="promptMatrixCandidateBrand"' in html
+    assert "promptMatrixTopicBrands()" in html
+    assert "qp.set('brand_id', this.promptMatrixCandidateBrand)" in html
 
 
 def test_prompt_matrix_copy_distinguishes_quantity_from_allowed_cap() -> None:

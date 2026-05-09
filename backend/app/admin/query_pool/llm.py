@@ -27,6 +27,7 @@ from app.admin.query_pool.text_clean import (
     query_pool_chunked,
     query_pool_llm_batch_size,
     query_pool_llm_error_detail,
+    query_pool_llm_response_error_detail,
     query_pool_usage_to_dict,
 )
 from app.admin.topic_plan.lib import (
@@ -150,7 +151,8 @@ class QueryPoolLLMClient:
         if response.status_code != 200:
             raise TopicPlanLLMError(
                 "llm_call_failed",
-                f"Query Pool LLM generation failed: HTTP {response.status_code}",
+                "Query Pool LLM generation failed: "
+                + query_pool_llm_response_error_detail(response),
             )
         data = response.json()
         choices = data.get("choices") or []

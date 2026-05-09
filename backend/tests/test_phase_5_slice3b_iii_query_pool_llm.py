@@ -161,6 +161,7 @@ async def test_generate_query_batches_split_at_batch_size_boundary(monkeypatch):
 async def test_http_error_raises_llm_call_failed():
     fake_resp = MagicMock(spec=httpx.Response)
     fake_resp.status_code = 503
+    fake_resp.text = '{"error":{"message":"upstream quota exceeded"}}'
     with patch("app.admin.query_pool.llm.httpx.AsyncClient") as mock_client_cls:
         client_ctx = AsyncMock()
         client_ctx.__aenter__.return_value = client_ctx
@@ -173,6 +174,7 @@ async def test_http_error_raises_llm_call_failed():
             async for _ in client.generate_query_batches([_ctx("k1")]):
                 pass
         assert exc_info.value.code == "llm_call_failed"
+        assert "upstream quota exceeded" in exc_info.value.message
 
 
 @pytest.mark.asyncio

@@ -365,6 +365,18 @@ def query_pool_llm_error_detail(error: Exception) -> str:
     return ": ".join(parts)
 
 
+def query_pool_llm_response_error_detail(response: Any) -> str:
+    status_code = getattr(response, "status_code", None)
+    detail = f"HTTP {status_code}" if status_code else "HTTP error"
+    try:
+        text = (getattr(response, "text", "") or "").strip()
+    except Exception:  # pragma: no cover - defensive for unusual response mocks
+        text = ""
+    if text:
+        detail = f"{detail}: {text[:500]}"
+    return detail
+
+
 def query_pool_chunked(items: list[Any], size: int) -> list[list[Any]]:
     size = max(1, int(size or 1))
     return [items[i : i + size] for i in range(0, len(items), size)]

@@ -1065,3 +1065,15 @@ def llm_error_detail(error: Exception) -> str:
     if message:
         parts.append(message[:500])
     return ": ".join(parts)
+
+
+def llm_response_error_detail(response: Any) -> str:
+    status_code = getattr(response, "status_code", None)
+    detail = f"HTTP {status_code}" if status_code else "HTTP error"
+    try:
+        text = (getattr(response, "text", "") or "").strip()
+    except Exception:  # pragma: no cover - defensive for unusual response mocks
+        text = ""
+    if text:
+        detail = f"{detail}: {text[:500]}"
+    return detail

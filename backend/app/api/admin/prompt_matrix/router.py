@@ -595,6 +595,7 @@ async def get_candidates(
     session: AsyncSession = _DependsDb,
     status: str = Query("pending"),
     q: str | None = Query(None),
+    brand_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -606,10 +607,11 @@ async def get_candidates(
         session,
         status=status_norm,
         query=q,
+        brand_id=brand_id,
         limit=per_page,
         offset=offset,
     )
-    counts = await pm_db.candidate_status_counts(session, query=q)
+    counts = await pm_db.candidate_status_counts(session, query=q, brand_id=brand_id)
     return {
         "success": True,
         "rows": rows,
