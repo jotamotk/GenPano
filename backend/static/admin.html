@@ -9837,11 +9837,27 @@ function segmentCrudPanel() {
       const body = await res.json().catch(() => ({}));
       const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
       if (!res.ok || body.success === false) {
-        const error = new Error(body.title || body.message || body.error || ('HTTP ' + res.status));
+        // Enrich the message so the many call sites that render `error.message`
+        // verbatim (e.g. `x-text="someError"`) at minimum show a copyable
+        // signature: title (HTTP <status> · ID:<rid12>). Without this the
+        // raw render is just "HTTP 502" with no clue where it came from.
+        const baseTitle = body.title || body.message || body.error || ('HTTP ' + res.status);
+        const trail = [];
+        if (res.status) trail.push('HTTP ' + res.status);
+        if (requestId) trail.push('ID:' + String(requestId).slice(0, 12));
+        const message = trail.length ? `${baseTitle}（${trail.join(' · ')}）` : baseTitle;
+        const error = new Error(message);
         error.body = body;
         error.status = res.status;
         error.requestId = requestId;
         error.path = url;
+        // Auto-route to the sticky error panel so users always have a
+        // copyable diagnostic block — opt out per call with
+        // `apiJson(url, { silentError: true })` when caller renders inline.
+        if (!options.silentError) {
+          try { document.dispatchEvent(new CustomEvent('admin-error', { detail: error })); }
+          catch (_) { /* CustomEvent unsupported; sticky panel just stays silent */ }
+        }
         throw error;
       }
       return body;
@@ -10946,11 +10962,27 @@ function brandManagementPanel() {
       const body = await res.json().catch(() => ({}));
       const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
       if (!res.ok || body.success === false) {
-        const error = new Error(body.title || body.message || body.error || ('HTTP ' + res.status));
+        // Enrich the message so the many call sites that render `error.message`
+        // verbatim (e.g. `x-text="someError"`) at minimum show a copyable
+        // signature: title (HTTP <status> · ID:<rid12>). Without this the
+        // raw render is just "HTTP 502" with no clue where it came from.
+        const baseTitle = body.title || body.message || body.error || ('HTTP ' + res.status);
+        const trail = [];
+        if (res.status) trail.push('HTTP ' + res.status);
+        if (requestId) trail.push('ID:' + String(requestId).slice(0, 12));
+        const message = trail.length ? `${baseTitle}（${trail.join(' · ')}）` : baseTitle;
+        const error = new Error(message);
         error.body = body;
         error.status = res.status;
         error.requestId = requestId;
         error.path = url;
+        // Auto-route to the sticky error panel so users always have a
+        // copyable diagnostic block — opt out per call with
+        // `apiJson(url, { silentError: true })` when caller renders inline.
+        if (!options.silentError) {
+          try { document.dispatchEvent(new CustomEvent('admin-error', { detail: error })); }
+          catch (_) { /* CustomEvent unsupported; sticky panel just stays silent */ }
+        }
         throw error;
       }
       return body;
@@ -17244,6 +17276,13 @@ function adminApp() {
         if (e.key==='Escape') { this.palette=false; this.userDrawer=null; this.brandDrawer=null; this.crDrawer=null; this.qaDrawer=null; this.attemptDrawer=null; this.debugDrawer=null; this.confirmAction=null; this.analyzerSelectedQuery=null; this.selectedTopic=null; }
       });
       window.addEventListener('popstate', () => this.applyRouteFromLocation());
+      // Sub-components (segmentCrudPanel, brandManagementPanel, ...) live in
+      // their own Alpine x-data scopes and cannot reach this.showErrorFrom
+      // directly. They dispatch a CustomEvent('admin-error') with the thrown
+      // Error as detail; we route it into the sticky panel here.
+      document.addEventListener('admin-error', (e) => {
+        if (e && e.detail) this.showErrorFrom(e.detail);
+      });
       this.$nextTick(()=>{ lucide.createIcons(); });
       this.checkAdminSession();
     },
