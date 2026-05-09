@@ -55,6 +55,9 @@ def test_build_messages_returns_system_and_user():
     assert "branded" in msgs[1]["content"]
     assert "competitive" in msgs[1]["content"]
     assert "competitive_type" in msgs[1]["content"]
+    assert "competitor_name" in msgs[1]["content"]
+    assert "comparison_axis" in msgs[1]["content"]
+    assert "brand_context_version" in msgs[1]["content"]
 
 
 def test_query_pool_context_inherits_competitive_scope_and_type():

@@ -229,6 +229,90 @@ def test_candidates_from_llm_queries_emits_well_formed_rows():
     assert stats["duplicate_review"] == 0
 
 
+def test_candidates_from_llm_queries_carries_prompt_metadata():
+    context = _ctx("k1")
+    context.update(
+        {
+            "prompt_scope": "competitive",
+            "competitive_type": "switching",
+            "competitor_name": "BetaVault",
+            "comparison_axis": "security posture",
+            "brand_context_version": "ctx-1",
+            "prompt_metadata": {
+                "prompt_scope": "competitive",
+                "competitive_type": "switching",
+                "product_name": "Acme Vault",
+                "scenario_axis": "secure file sharing",
+                "competitor_name": "BetaVault",
+                "comparison_axis": "security posture",
+                "brand_context_version": "ctx-1",
+                "context_refs": {"snapshot_id": "snap-1"},
+            },
+        }
+    )
+    rows, stats = query_pool_candidates_from_llm_queries(
+        [context],
+        {"k1": "Acme Vault or BetaVault for secure file sharing?"},
+        {"model": "doubao"},
+    )
+
+    assert stats["rejected_total"] == 0
+    assert rows[0]["metadata"]["prompt_scope"] == "competitive"
+    assert rows[0]["metadata"]["competitor_name"] == "BetaVault"
+    assert rows[0]["metadata"]["comparison_axis"] == "security posture"
+    assert rows[0]["metadata"]["brand_context_version"] == "ctx-1"
+    assert rows[0]["metadata"]["context_refs"] == {"snapshot_id": "snap-1"}
+
+
+def test_candidates_from_llm_queries_scope_guard_blocks_non_branded_brand_injection():
+    context = _ctx("k1")
+    context.update(
+        {
+            "prompt_scope": "non_branded",
+            "prompt_metadata": {
+                "prompt_scope": "non_branded",
+                "brand_name": "Acme",
+                "competitor_name": "BetaVault",
+            },
+        }
+    )
+
+    rows, stats = query_pool_candidates_from_llm_queries(
+        [context],
+        {"k1": "Is Acme worth buying for this use case?"},
+        {"model": "doubao"},
+    )
+
+    assert rows == []
+    assert stats["by_reason"]["scope_guard_non_branded_brand"] == 1
+
+
+def test_candidates_from_llm_queries_scope_guard_blocks_competitor_drift():
+    context = _ctx("k1")
+    context.update(
+        {
+            "prompt_scope": "competitive",
+            "competitive_type": "direct_comparison",
+            "competitor_name": "BetaVault",
+            "prompt_metadata": {
+                "prompt_scope": "competitive",
+                "competitive_type": "direct_comparison",
+                "brand_name": "Acme",
+                "competitor_name": "BetaVault",
+            },
+        }
+    )
+
+    rows, stats = query_pool_candidates_from_llm_queries(
+        [context],
+        {"k1": "Is Acme better than GammaVault for this use case?"},
+        {"model": "doubao"},
+    )
+
+    assert rows == []
+    assert stats["by_reason"]["scope_guard_competitor_changed"] == 1
+
+
 def test_candidates_from_llm_queries_dedupes_repeats():
     contexts = [_ctx("k1"), _ctx("k2", profile_id="prof2")]
     same_q = "敏感肌屏障不稳，修复面霜怎么选才不刺激？"

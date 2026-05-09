@@ -76,6 +76,13 @@ def _parse_int_list(raw: Any) -> list[int]:
     return out
 
 
+def _normalize_prompt_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if raw.upper().startswith("P-"):
+        raw = raw[2:].strip()
+    return raw
+
+
 async def fetch_prompt_ids_from_selection(
     session: AsyncSession,
     selection: dict[str, Any],
@@ -89,16 +96,21 @@ async def fetch_prompt_ids_from_selection(
     soft-delete column when present.
     """
     if selection["mode"] == "explicit":
-        return list(selection["prompt_ids"])
+        ids = [_normalize_prompt_id(item) for item in selection["prompt_ids"]]
+        return list(dict.fromkeys(item for item in ids if item))
     filters = selection.get("filters") or {}
     intent = (filters.get("intent") or "").strip().lower()
     language = (filters.get("language") or filters.get("lang") or "").strip()
+    prompt_scope = (filters.get("prompt_scope") or filters.get("scope") or "").strip().lower()
+    competitive_type = (
+        (filters.get("competitive_type") or filters.get("competitiveType") or "").strip().lower()
+    )
     query = (filters.get("q") or filters.get("query") or "").strip()
     try:
         topic_ids = _parse_int_list(filters.get("topic_ids") or filters.get("topic_id"))
     except ValueError:
         topic_ids = []
-    excluded = {str(x) for x in (selection.get("excluded_prompt_ids") or [])}
+    excluded = {_normalize_prompt_id(x) for x in (selection.get("excluded_prompt_ids") or [])}
     if not await _table_exists(session, "prompts"):
         return []
     prompt_cols = await _table_columns(session, "prompts")
@@ -112,6 +124,17 @@ async def fetch_prompt_ids_from_selection(
     if language and "language" in prompt_cols:
         where.append("p.language = :language")
         params["language"] = language
+    if prompt_scope and "tags" in prompt_cols:
+        where.append(
+            "(p.tags->>'prompt_scope' = :prompt_scope OR p.tags->>'promptScope' = :prompt_scope)"
+        )
+        params["prompt_scope"] = prompt_scope
+    if competitive_type and "tags" in prompt_cols:
+        where.append(
+            "(p.tags->>'competitive_type' = :competitive_type "
+            "OR p.tags->>'competitiveType' = :competitive_type)"
+        )
+        params["competitive_type"] = competitive_type
     if topic_ids and "topic_id" in prompt_cols:
         where.append("p.topic_id = ANY(:topic_ids)")
         params["topic_ids"] = topic_ids
@@ -155,6 +178,29 @@ async def fetch_query_pool_prompt_rows(
     ):
         topic_join = "LEFT JOIN topics t ON t.id = p.topic_id"
         topic_select = "t.text AS topic_text"
+    topic_cols = await _table_columns(session, "topics") if topic_join else set()
+    brand_join = ""
+    brand_id_select = "NULL::text AS brand_id"
+    brand_name_select = "NULL::text AS brand_name"
+    if topic_join and "brand_id" in topic_cols:
+        brand_id_select = "t.brand_id AS brand_id"
+        if await _table_exists(session, "brands") and "id" in await _table_columns(
+            session, "brands"
+        ):
+            brand_join = "LEFT JOIN brands b ON b.id = t.brand_id"
+            brand_cols = await _table_columns(session, "brands")
+            if "name" in brand_cols:
+                brand_name_select = "b.name AS brand_name"
+    product_join = ""
+    product_name_select = "NULL::text AS product_name"
+    if topic_join and "product_id" in topic_cols:
+        if await _table_exists(session, "products") and "id" in await _table_columns(
+            session, "products"
+        ):
+            product_cols = await _table_columns(session, "products")
+            product_join = "LEFT JOIN products prod ON prod.id = t.product_id"
+            if "name" in product_cols:
+                product_name_select = "prod.name AS product_name"
     topic_id_select = "p.topic_id" if "topic_id" in prompt_cols else "NULL::text AS topic_id"
     tags_select = (
         "COALESCE(p.tags, '{}'::jsonb) AS tags" if "tags" in prompt_cols else "'{}'::jsonb AS tags"
@@ -162,9 +208,12 @@ async def fetch_query_pool_prompt_rows(
     status_where = "AND COALESCE(p.status, 'active') = 'active'" if "status" in prompt_cols else ""
     sql = text(
         f"""
-        SELECT CAST(p.id AS TEXT) AS id, {topic_id_select}, p.text, {topic_select}, {tags_select}
+        SELECT CAST(p.id AS TEXT) AS id, {topic_id_select}, p.text, {topic_select},
+               {brand_id_select}, {brand_name_select}, {product_name_select}, {tags_select}
         FROM prompts p
         {topic_join}
+        {brand_join}
+        {product_join}
         WHERE CAST(p.id AS TEXT) = ANY(:prompt_ids)
         {status_where}
         """
@@ -268,6 +317,7 @@ async def insert_query_pool_candidates(
                 generation_method=c.get("generation_method") or "llm",
                 llm_model=c.get("llm_model"),
                 llm_usage_json=c.get("llm_usage") or {},
+                metadata_json=c.get("metadata") or c.get("metadata_json") or {},
                 candidate_status=c["candidate_status"],
                 created_at=_now(),
             )

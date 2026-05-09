@@ -217,6 +217,89 @@ QUERY_POOL_SAFE_FALLBACK_QUERIES_EN = (
     "How do I avoid picking the wrong one?",
 )
 
+QUERY_POOL_METADATA_KEYS = (
+    "prompt_scope",
+    "competitive_type",
+    "slot_id",
+    "brand_id",
+    "brand_name",
+    "product_name",
+    "scenario_axis",
+    "competitor_name",
+    "competitor_brand_id",
+    "competitor_source",
+    "comparison_axis",
+    "brand_context_version",
+    "context_refs",
+    "topic_axis",
+)
+
+
+def _coerce_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def query_pool_candidate_metadata(context: dict[str, Any] | None) -> dict[str, Any]:
+    context = context or {}
+    metadata = _coerce_dict(context.get("prompt_metadata"))
+    for key in QUERY_POOL_METADATA_KEYS:
+        value = context.get(key)
+        if value is not None and value != "" and key not in metadata:
+            metadata[key] = value
+    metadata.setdefault("prompt_scope", context.get("prompt_scope") or "non_branded")
+    if context.get("competitive_type") and "competitive_type" not in metadata:
+        metadata["competitive_type"] = context["competitive_type"]
+    for key in ("prompt_id", "topic_id", "segment_id", "profile_id"):
+        value = context.get(key)
+        if value is not None and value != "":
+            metadata[key] = value
+    return metadata
+
+
+def _contains_term(text: str, term: Any) -> bool:
+    needle = query_pool_normalize_query_text(term)
+    if len(needle) < 2:
+        return False
+    return needle.casefold() in str(text or "").casefold()
+
+
+def query_pool_scope_guard_issue(query: str, context: dict[str, Any] | None) -> str | None:
+    ctx = context or {}
+    metadata = query_pool_candidate_metadata(ctx)
+    prompt_scope = str(metadata.get("prompt_scope") or ctx.get("prompt_scope") or "").strip()
+    prompt_scope = prompt_scope or "non_branded"
+
+    if prompt_scope == "non_branded":
+        forbidden_terms = [metadata.get("brand_name"), metadata.get("competitor_name")]
+        if any(_contains_term(query, term) for term in forbidden_terms):
+            return "scope_guard_non_branded_brand"
+        return None
+
+    if prompt_scope == "competitive":
+        competitor_name = metadata.get("competitor_name")
+        if competitor_name and not _contains_term(query, competitor_name):
+            return "scope_guard_competitor_changed"
+        return None
+
+    if prompt_scope == "branded":
+        product_name = metadata.get("product_name")
+        prompt_text = (context or {}).get("prompt_text") or ""
+        if (
+            product_name
+            and _contains_term(prompt_text, product_name)
+            and not _contains_term(query, product_name)
+        ):
+            return "scope_guard_product_drift"
+    return None
+
 
 def query_pool_safe_fallback_queries(
     context: dict[str, Any] | None, candidate_key: str, *, prefer_cjk: bool = False
@@ -444,6 +527,20 @@ def query_pool_candidates_from_llm_queries(
                         }
                     )
                 continue
+        scope_guard_reason = query_pool_scope_guard_issue(rendered_query, context)
+        if scope_guard_reason:
+            rejected_by_reason[scope_guard_reason] = (
+                int(rejected_by_reason.get(scope_guard_reason) or 0) + 1
+            )
+            if len(rejected_sample) < 20:
+                rejected_sample.append(
+                    {
+                        "candidate_key": candidate_key,
+                        "reason": scope_guard_reason,
+                        "text": rendered_query,
+                    }
+                )
+            continue
         # Dedup against everything seen so far in this run.
         # ``is_natural_user_prompt`` already normalized whitespace via
         # query_pool_clean_query_text; sha256 over the rendered text
@@ -454,6 +551,8 @@ def query_pool_candidates_from_llm_queries(
             duplicate_review += 1
             continue
         seen.add(render_hash)
+        metadata = query_pool_candidate_metadata(context)
+        metadata["scope_guard_status"] = "passed"
         candidates.append(
             {
                 "id": str(uuid.uuid4()),
@@ -467,6 +566,7 @@ def query_pool_candidates_from_llm_queries(
                 "generation_method": "llm",
                 "llm_model": llm_model,
                 "llm_usage": llm_usage,
+                "metadata": metadata,
             }
         )
     rejected_total = sum(int(c or 0) for c in rejected_by_reason.values())

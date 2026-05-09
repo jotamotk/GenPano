@@ -46,6 +46,22 @@ QUERY_POOL_ENGINE_POLICIES = {
 QUERY_POOL_PROFILE_STRATEGIES = {"balanced", "core", "full"}
 QUERY_POOL_OVERFLOW_POLICIES = {"split", "hold"}
 QUERY_POOL_PROMPT_SCOPES = {"non_branded", "branded", "competitive"}
+QUERY_POOL_PROMPT_METADATA_KEYS = (
+    "prompt_scope",
+    "competitive_type",
+    "slot_id",
+    "brand_id",
+    "brand_name",
+    "product_name",
+    "scenario_axis",
+    "competitor_name",
+    "competitor_brand_id",
+    "competitor_source",
+    "comparison_axis",
+    "brand_context_version",
+    "context_refs",
+    "topic_axis",
+)
 
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
@@ -63,15 +79,27 @@ def _admin_float(value: Any, default: float) -> float:
         return float(default)
 
 
-def _prompt_scope_from_prompt(prompt: dict[str, Any]) -> str:
-    tags_value = prompt.get("tags")
-    tags: dict[str, Any] = tags_value if isinstance(tags_value, dict) else {}
-    if isinstance(tags_value, str):
+def _coerce_tags(value: Any) -> dict[str, Any]:
+    tags: dict[str, Any] = value if isinstance(value, dict) else {}
+    if isinstance(value, str):
         try:
-            parsed_tags = json.loads(tags_value)
+            parsed_tags = json.loads(value)
         except Exception:
             parsed_tags = {}
         tags = parsed_tags if isinstance(parsed_tags, dict) else {}
+    return tags
+
+
+def _first_value(*values: Any) -> Any | None:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _prompt_scope_from_prompt(prompt: dict[str, Any]) -> str:
+    tags_value = prompt.get("tags")
+    tags = _coerce_tags(tags_value)
     raw = (
         prompt.get("prompt_scope")
         or prompt.get("promptScope")
@@ -88,13 +116,7 @@ def _prompt_scope_from_prompt(prompt: dict[str, Any]) -> str:
 
 def _competitive_type_from_prompt(prompt: dict[str, Any], prompt_scope: str) -> str | None:
     tags_value = prompt.get("tags")
-    tags: dict[str, Any] = tags_value if isinstance(tags_value, dict) else {}
-    if isinstance(tags_value, str):
-        try:
-            parsed_tags = json.loads(tags_value)
-        except Exception:
-            parsed_tags = {}
-        tags = parsed_tags if isinstance(parsed_tags, dict) else {}
+    tags = _coerce_tags(tags_value)
     raw = (
         prompt.get("competitive_type")
         or prompt.get("competitiveType")
@@ -107,6 +129,98 @@ def _competitive_type_from_prompt(prompt: dict[str, Any], prompt_scope: str) -> 
         return normalize_competitive_type(prompt_scope, raw)
     except PromptMatrixError:
         return None
+
+
+def _prompt_metadata_from_prompt(
+    prompt: dict[str, Any],
+    *,
+    prompt_scope: str,
+    competitive_type: str | None,
+) -> dict[str, Any]:
+    tags = _coerce_tags(prompt.get("tags"))
+    metadata: dict[str, Any] = {
+        "prompt_scope": prompt_scope,
+        **({"competitive_type": competitive_type} if competitive_type else {}),
+    }
+    aliases: dict[str, tuple[Any, ...]] = {
+        "slot_id": (
+            prompt.get("slot_id"),
+            prompt.get("slotId"),
+            tags.get("slot_id"),
+            tags.get("slotId"),
+        ),
+        "brand_id": (
+            prompt.get("brand_id"),
+            prompt.get("brandId"),
+            tags.get("brand_id"),
+            tags.get("brandId"),
+        ),
+        "brand_name": (
+            prompt.get("brand_name"),
+            prompt.get("brandName"),
+            tags.get("brand_name"),
+            tags.get("brandName"),
+        ),
+        "product_name": (
+            prompt.get("product_name"),
+            prompt.get("productName"),
+            tags.get("product_name"),
+            tags.get("productName"),
+        ),
+        "scenario_axis": (
+            prompt.get("scenario_axis"),
+            prompt.get("scenarioAxis"),
+            tags.get("scenario_axis"),
+            tags.get("scenarioAxis"),
+        ),
+        "competitor_name": (
+            prompt.get("competitor_name"),
+            prompt.get("competitorName"),
+            tags.get("competitor_name"),
+            tags.get("competitorName"),
+        ),
+        "competitor_brand_id": (
+            prompt.get("competitor_brand_id"),
+            prompt.get("competitorBrandId"),
+            tags.get("competitor_brand_id"),
+            tags.get("competitorBrandId"),
+        ),
+        "competitor_source": (
+            prompt.get("competitor_source"),
+            prompt.get("competitorSource"),
+            tags.get("competitor_source"),
+            tags.get("competitorSource"),
+        ),
+        "comparison_axis": (
+            prompt.get("comparison_axis"),
+            prompt.get("comparisonAxis"),
+            tags.get("comparison_axis"),
+            tags.get("comparisonAxis"),
+        ),
+        "brand_context_version": (
+            prompt.get("brand_context_version"),
+            prompt.get("brandContextVersion"),
+            tags.get("brand_context_version"),
+            tags.get("brandContextVersion"),
+        ),
+        "context_refs": (
+            prompt.get("context_refs"),
+            prompt.get("contextRefs"),
+            tags.get("context_refs"),
+            tags.get("contextRefs"),
+        ),
+        "topic_axis": (
+            prompt.get("topic_axis"),
+            prompt.get("topicAxis"),
+            tags.get("topic_axis"),
+            tags.get("topicAxis"),
+        ),
+    }
+    for key, values in aliases.items():
+        value = _first_value(*values)
+        if value is not None:
+            metadata[key] = value
+    return metadata
 
 
 def query_pool_config(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -288,6 +402,11 @@ def query_pool_candidate_contexts(
     for prompt in prompt_rows:
         prompt_scope = _prompt_scope_from_prompt(prompt)
         competitive_type = _competitive_type_from_prompt(prompt, prompt_scope)
+        prompt_metadata = _prompt_metadata_from_prompt(
+            prompt,
+            prompt_scope=prompt_scope,
+            competitive_type=competitive_type,
+        )
         sampled_profiles = sample_query_pool_profiles(
             profile_pool,
             profiles_per_prompt,
@@ -300,23 +419,26 @@ def query_pool_candidate_contexts(
             prompt_id = str(prompt.get("id") or "")
             segment_id = str(profile.get("segment_id") or "")
             profile_id = str(profile.get("profile_id") or "")
-            contexts.append(
-                {
-                    "candidate_key": (f"{prompt_id}|{segment_id}|{profile_id}|{len(contexts) + 1}"),
-                    "prompt_id": prompt_id,
-                    "prompt_text": (prompt.get("templateText") or prompt.get("text") or "").strip(),
-                    "prompt_scope": prompt_scope,
-                    "competitive_type": competitive_type,
-                    "topic_id": str(prompt.get("topic_id") or ""),
-                    "topic_text": str(prompt.get("topic_text") or "").strip(),
-                    "segment_id": segment_id,
-                    "segment_name": str(profile.get("segment_name") or "").strip(),
-                    "profile_id": profile_id,
-                    "profile_name": str(profile.get("profile_name") or "").strip(),
-                    "profile_demographic": str(profile.get("profile_demographic") or "").strip(),
-                    "profile_need": str(profile.get("profile_need") or "").strip(),
-                }
-            )
+            context = {
+                "candidate_key": (f"{prompt_id}|{segment_id}|{profile_id}|{len(contexts) + 1}"),
+                "prompt_id": prompt_id,
+                "prompt_text": (prompt.get("templateText") or prompt.get("text") or "").strip(),
+                "prompt_scope": prompt_scope,
+                "competitive_type": competitive_type,
+                "topic_id": str(prompt.get("topic_id") or ""),
+                "topic_text": str(prompt.get("topic_text") or "").strip(),
+                "segment_id": segment_id,
+                "segment_name": str(profile.get("segment_name") or "").strip(),
+                "profile_id": profile_id,
+                "profile_name": str(profile.get("profile_name") or "").strip(),
+                "profile_demographic": str(profile.get("profile_demographic") or "").strip(),
+                "profile_need": str(profile.get("profile_need") or "").strip(),
+                "prompt_metadata": dict(prompt_metadata),
+            }
+            for key in QUERY_POOL_PROMPT_METADATA_KEYS:
+                if key in prompt_metadata:
+                    context[key] = prompt_metadata[key]
+            contexts.append(context)
     return contexts, raw_estimated
 
 
@@ -348,6 +470,17 @@ def query_pool_summary(
     represented_profiles = {
         row.get("profile_id") for row in represented_source if row.get("profile_id")
     }
+    scope_distribution: dict[str, int] = {}
+    brand_context_versions: set[str] = set()
+    for row in represented_source:
+        metadata = row.get("metadata") or row.get("prompt_metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        scope = str(row.get("prompt_scope") or metadata.get("prompt_scope") or "non_branded")
+        scope_distribution[scope] = int(scope_distribution.get(scope) or 0) + 1
+        context_version = row.get("brand_context_version") or metadata.get("brand_context_version")
+        if context_version:
+            brand_context_versions.add(str(context_version))
     active_segments = {row.get("segment_id") for row in profile_pool if query_pool_weight(row) > 0}
     active_profiles = {row.get("profile_id") for row in profile_pool if query_pool_weight(row) > 0}
     assembled = len(candidate_rows) if candidates is not None else len(contexts)
@@ -392,4 +525,6 @@ def query_pool_summary(
         "llm_model": meta.get("model"),
         "llm_usage": meta.get("usage") or {},
         "llm_batches": meta.get("batches", 0),
+        "scope_distribution": scope_distribution,
+        "brand_context_versions": sorted(brand_context_versions),
     }
