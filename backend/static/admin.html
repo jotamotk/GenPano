@@ -4482,15 +4482,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     <div class="mt-3 grid grid-cols-3 gap-2">
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">每 Topic 上限</span>
-                        <select x-model="promptMatrixConfig.maxPerTopic" @change="if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()" class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
-                          <option value="2">2</option>
-                          <option value="4">4</option>
-                          <option value="6">6</option>
-                          <option value="8">8</option>
-                        </select>
+                        <input x-model.number="promptMatrixConfig.maxPerTopic" type="number" min="1" step="1" :max="promptMatrixMaxPerTopicCap()"
+                               @change="normalizePromptMatrixMaxPerTopic(); normalizePromptMatrixMaxPrompts(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
+                               class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                       </label>
                       <label class="space-y-1">
-                        <span class="text-[10px] font-semibold text-ink-muted uppercase">生成上限</span>
+                        <span class="text-[10px] font-semibold text-ink-muted uppercase">生成数量</span>
                         <input x-model.number="promptMatrixConfig.maxPrompts" type="number" min="1" step="1" :max="promptMatrixMaxPromptsCap()"
                                @change="normalizePromptMatrixMaxPrompts(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
                                class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
@@ -4623,7 +4620,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <div class="grid grid-cols-4 gap-4 flex-1 text-[12px]">
                           <div><div class="text-ink-muted">预计生成</div><div class="font-semibold text-ink mt-1" x-text="estimatedPromptCount() + ' prompts'"></div></div>
                           <div><div class="text-ink-muted">Topic</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixSelectedTopicCount()"></div></div>
-                          <div><div class="text-ink-muted">生成上限</div><div class="font-semibold text-ink mt-1" x-text="Number(promptMatrixConfig.maxPrompts).toLocaleString()"></div></div>
+                          <div><div class="text-ink-muted">生成数量</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixMaxPromptsValue().toLocaleString()"></div></div>
                           <div><div class="text-ink-muted">更新时间</div><div class="font-semibold text-ink mt-1" x-text="promptMatrixGenerateStarted ? '刚刚' : '未运行'"></div></div>
                         </div>
                         <div class="flex items-center gap-2">
@@ -14766,12 +14763,28 @@ function adminApp() {
       };
     },
 
+    promptMatrixMaxPerTopicCap(){
+      const intentCount = Number(this.promptMatrixConfig.intentCount) || 0;
+      const languageCount = Number(this.promptMatrixConfig.languageCount) || 0;
+      return Math.max(1, intentCount * languageCount);
+    },
+
+    promptMatrixMaxPerTopicValue(){
+      const parsed = Number(this.promptMatrixConfig.maxPerTopic);
+      if (!Number.isFinite(parsed)) return 4;
+      return Math.max(1, Math.min(Math.floor(parsed), this.promptMatrixMaxPerTopicCap()));
+    },
+
+    normalizePromptMatrixMaxPerTopic(){
+      this.promptMatrixConfig.maxPerTopic = this.promptMatrixMaxPerTopicValue();
+    },
+
     promptMatrixRawPromptCount(){
       const cfg = this.promptMatrixConfig;
       const topicCount = this.promptMatrixSelectedTopicCount();
       const intentCount = Number(cfg.intentCount) || 0;
       const languageCount = Number(cfg.languageCount) || 0;
-      const maxPerTopic = Number(cfg.maxPerTopic) || 0;
+      const maxPerTopic = this.promptMatrixMaxPerTopicValue();
       return Math.min(topicCount * intentCount * languageCount, topicCount * maxPerTopic);
     },
 
@@ -14804,7 +14817,7 @@ function adminApp() {
     promptCountFormulaText(){
       const cfg = this.promptMatrixConfig;
       const topicCount = this.promptMatrixSelectedTopicCount();
-      return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${cfg.maxPerTopic} 条 · 总上限 ${this.promptMatrixMaxPromptsValue().toLocaleString()} / 最高 ${this.promptMatrixMaxPromptsCap().toLocaleString()}`;
+      return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${this.promptMatrixMaxPerTopicValue()} 条 · 本次生成 ${this.promptMatrixMaxPromptsValue().toLocaleString()} / 可填上限 ${this.promptMatrixMaxPromptsCap().toLocaleString()}`;
     },
 
     updatePromptMatrixQualityGates(body = {}){
@@ -14890,7 +14903,7 @@ function adminApp() {
         Object.entries(selection.mode === 'all_matching' ? (selection.filters || {}) : this.promptMatrixCurrentFilters()).forEach(([key, value]) => {
           if (value !== '' && value !== null && value !== undefined) qp.set(key, value);
         });
-        qp.set('max_per_topic', this.promptMatrixConfig.maxPerTopic || 4);
+        qp.set('max_per_topic', this.promptMatrixMaxPerTopicValue());
         qp.set('max_prompts', this.promptMatrixMaxPromptsValue());
         const res = await fetch('/api/admin/prompt-matrix/gaps?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
@@ -15299,6 +15312,7 @@ function adminApp() {
       this.promptMatrixLastMetrics = null;
       this.promptMatrixLastRejected = [];
       this.promptMatrixShowRejected = false;
+      this.normalizePromptMatrixMaxPerTopic();
       this.normalizePromptMatrixMaxPrompts();
       const estimatedBeforeRun = this.estimatedPromptCount();
       this.promptMatrixGenerateSteps = [
@@ -15322,7 +15336,7 @@ function adminApp() {
             template_strategy: this.promptMatrixConfig.templateStrategy,
             prompt_style: this.promptMatrixConfig.promptStyle,
             audience_mode: this.promptMatrixConfig.audienceMode,
-            max_per_topic: Number(this.promptMatrixConfig.maxPerTopic) || 4,
+            max_per_topic: this.promptMatrixMaxPerTopicValue(),
             max_prompts: this.promptMatrixMaxPromptsValue(),
             overflow_policy: this.promptMatrixConfig.overflowPolicy,
           }),
