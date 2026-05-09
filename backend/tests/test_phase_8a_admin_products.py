@@ -302,6 +302,69 @@ async def test_list_validates_limit_high(client, admin_operator, monkeypatch):
     assert resp.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_db_list_products_does_not_require_topics_product_id(monkeypatch):
+    """Product picker should still load when topic-product binding is absent."""
+    from app.admin.products import db as products_db
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name == "products"
+
+    class _FakeResult:
+        def __init__(self, rows: list[dict]):
+            self.rows = rows
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self.rows[0] if self.rows else None
+
+        def all(self):
+            return self.rows
+
+    class _FakeSession:
+        async def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "topics" in sql:
+                raise AssertionError("topics.product_id should be optional for product lists")
+            if "COUNT(*) AS c FROM products" in sql:
+                return _FakeResult([{"c": 1}])
+            if "FROM products p" in sql:
+                return _FakeResult(
+                    [
+                        {
+                            "id": 11,
+                            "brand_id": 7,
+                            "brand_name": "TestBrand",
+                            "name": "Core Product",
+                            "sku": None,
+                            "category": "Security",
+                            "description": "A tracked product",
+                            "aliases": [],
+                            "status": "active",
+                            "created_at": None,
+                            "updated_at": None,
+                            "topic_count": 0,
+                        }
+                    ]
+                )
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    monkeypatch.setattr(products_db, "_table_exists", _fake_table_exists)
+
+    rows, total = await products_db.list_products(
+        _FakeSession(),
+        brand_id=7,
+        status="active",
+        limit=200,
+        offset=0,
+    )
+
+    assert total == 1
+    assert rows[0]["topic_count"] == 0
+
+
 # ── POST /brands/{id}/products create ────────────────────────
 
 

@@ -42,8 +42,12 @@ router = APIRouter(tags=["Admin · Query Pool"])
 QUERY_POOL_CANDIDATE_STATUSES = {"candidate", "review", "ready"}
 
 
-def _isoformat(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
+def _isoformat(value: datetime | str | None) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
 
 
 def _now() -> datetime:
@@ -531,6 +535,36 @@ async def _latest_run_id(session: AsyncSession) -> str | None:
     return str(row[0]) if row else None
 
 
+async def _legacy_table_exists(session: AsyncSession, name: str) -> bool:
+    try:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = :n LIMIT 1"
+                ),
+                {"n": name},
+            )
+        ).first()
+    except Exception:
+        return False
+    return row is not None
+
+
+async def _legacy_table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :n"
+            ),
+            {"n": name},
+        )
+    except Exception:
+        return set()
+    return {row[0] for row in result.all()}
+
+
 def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
     """Wire-shape that matches admin_console's _query_pool_candidate_row.
 
@@ -581,6 +615,27 @@ async def _fetch_candidates_paged(
     """Paged candidate query with prompt + topic + segment + profile JOINs."""
     where: list[str] = ["q.run_id = :run_id"]
     params: dict[str, Any] = {"run_id": run_id}
+    prompt_cols = await _legacy_table_columns(session, "prompts")
+    prompts_available = (
+        "id" in prompt_cols
+        and "text" in prompt_cols
+        and await _legacy_table_exists(session, "prompts")
+    )
+    prompt_topic_available = prompts_available and "topic_id" in prompt_cols
+    topic_cols = await _legacy_table_columns(session, "topics") if prompt_topic_available else set()
+    topics_available = (
+        prompt_topic_available
+        and "id" in topic_cols
+        and await _legacy_table_exists(session, "topics")
+    )
+    segment_cols = await _legacy_table_columns(session, "segments")
+    segments_available = "id" in segment_cols and await _legacy_table_exists(session, "segments")
+    profile_cols = await _legacy_table_columns(session, "profiles")
+    profiles_available = (
+        "id" in profile_cols
+        and "segment_id" in profile_cols
+        and await _legacy_table_exists(session, "profiles")
+    )
     if status and status != "all":
         where.append("q.candidate_status = :status")
         params["status"] = status
@@ -591,20 +646,25 @@ async def _fetch_candidates_paged(
         where.append("q.profile_id = :profile_id")
         params["profile_id"] = profile_id
     if query:
-        where.append(
-            "(q.rendered_query ILIKE :like OR q.prompt_id ILIKE :like "
-            "OR COALESCE(q.segment_id, '') ILIKE :like "
-            "OR COALESCE(q.profile_id, '') ILIKE :like "
-            "OR EXISTS (SELECT 1 FROM prompts pr_search "
-            "WHERE CAST(pr_search.id AS TEXT) = q.prompt_id "
-            "AND COALESCE(pr_search.text, '') ILIKE :like))"
-        )
+        search_parts = [
+            "q.rendered_query ILIKE :like",
+            "q.prompt_id ILIKE :like",
+            "COALESCE(q.segment_id, '') ILIKE :like",
+            "COALESCE(q.profile_id, '') ILIKE :like",
+        ]
+        if prompts_available:
+            search_parts.append(
+                "EXISTS (SELECT 1 FROM prompts pr_search "
+                "WHERE CAST(pr_search.id AS TEXT) = q.prompt_id "
+                "AND COALESCE(pr_search.text, '') ILIKE :like)"
+            )
+        where.append("(" + " OR ".join(search_parts) + ")")
         params["like"] = f"%{query}%"
 
     # approx_total ignores cursor
     where_clause = " AND ".join(where)
     count_sql = text(
-        f"SELECT COUNT(*)::int AS cnt FROM query_generation_candidates q WHERE {where_clause}"
+        f"SELECT COUNT(*) AS cnt FROM query_generation_candidates q WHERE {where_clause}"
     )
     approx_total = int((await session.execute(count_sql, params)).scalar() or 0)
 
@@ -616,25 +676,60 @@ async def _fetch_candidates_paged(
         page_params["cursor_seq"] = cursor_seq
     order = "DESC" if direction == "prev" else "ASC"
     page_params["limit"] = limit + 1
+    prompt_join = (
+        "LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id" if prompts_available else ""
+    )
+    topic_join = "LEFT JOIN topics t ON t.id = pr.topic_id" if topics_available else ""
+    segment_join = "LEFT JOIN segments s ON s.id = q.segment_id" if segments_available else ""
+    profile_join = (
+        "LEFT JOIN profiles p ON p.segment_id = q.segment_id "
+        "AND (COALESCE(p.code, '') = q.profile_id OR CAST(p.id AS TEXT) = q.profile_id)"
+        if profiles_available
+        else ""
+    )
+    prompt_text_expr = "pr.text AS prompt_text" if prompts_available else "'' AS prompt_text"
+    topic_id_expr = "pr.topic_id AS topic_id" if prompt_topic_available else "'' AS topic_id"
+    topic_text_expr = (
+        "t.text AS topic_text" if topics_available and "text" in topic_cols else "'' AS topic_text"
+    )
+    segment_name_expr = (
+        "s.name AS segment_name"
+        if segments_available and "name" in segment_cols
+        else "'' AS segment_name"
+    )
+    profile_name_expr = (
+        "p.name AS profile_name"
+        if profiles_available and "name" in profile_cols
+        else "'' AS profile_name"
+    )
+    profile_demographic_expr = (
+        "p.demographic AS profile_demographic"
+        if profiles_available and "demographic" in profile_cols
+        else "'' AS profile_demographic"
+    )
+    profile_need_expr = (
+        "p.need AS profile_need"
+        if profiles_available and "need" in profile_cols
+        else "'' AS profile_need"
+    )
     sql = text(
         f"""
         SELECT q.id, q.run_id, q.candidate_seq, q.prompt_id, q.segment_id, q.profile_id,
                q.rendered_query, q.generation_method, q.llm_model, q.llm_usage_json,
                q.candidate_status, q.scheduler_intake_batch_id,
                q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
-               pr.text AS prompt_text,
-               pr.topic_id AS topic_id,
-               t.text AS topic_text,
-               s.name AS segment_name,
-               p.name AS profile_name,
-               p.demographic AS profile_demographic,
-               p.need AS profile_need
+               {prompt_text_expr},
+               {topic_id_expr},
+               {topic_text_expr},
+               {segment_name_expr},
+               {profile_name_expr},
+               {profile_demographic_expr},
+               {profile_need_expr}
         FROM query_generation_candidates q
-        LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
-        LEFT JOIN topics t ON t.id = pr.topic_id
-        LEFT JOIN segments s ON s.id = q.segment_id
-        LEFT JOIN profiles p ON p.segment_id = q.segment_id
-          AND (COALESCE(p.code, '') = q.profile_id OR CAST(p.id AS TEXT) = q.profile_id)
+        {prompt_join}
+        {topic_join}
+        {segment_join}
+        {profile_join}
         WHERE {" AND ".join(page_where)}
         ORDER BY q.candidate_seq {order}
         LIMIT :limit

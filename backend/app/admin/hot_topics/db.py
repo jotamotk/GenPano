@@ -52,6 +52,26 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     return row is not None
 
 
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :n"
+            ),
+            {"n": name},
+        )
+    except Exception:
+        return set()
+    return {row[0] for row in result.all()}
+
+
+async def _prompts_hotspot_id_available(session: AsyncSession) -> bool:
+    if not await _table_exists(session, "prompts"):
+        return False
+    return "hotspot_id" in await _table_columns(session, "prompts")
+
+
 async def list_hot_topics(
     session: AsyncSession,
     *,
@@ -276,7 +296,7 @@ async def delete_hot_topic(session: AsyncSession, hot_id: int) -> tuple[bool, in
     if not await _table_exists(session, "hot_topics"):
         return False, 0
     unlinked = 0
-    if await _table_exists(session, "prompts"):
+    if await _prompts_hotspot_id_available(session):
         result = await session.execute(
             text("UPDATE prompts SET hotspot_id = NULL WHERE hotspot_id = :id"),
             {"id": hot_id},
@@ -327,7 +347,7 @@ async def batch_update_hot_topics(
         return {"updated": 0}
     if action == "delete":
         unlinked = 0
-        if await _table_exists(session, "prompts"):
+        if await _prompts_hotspot_id_available(session):
             result = await session.execute(
                 text("UPDATE prompts SET hotspot_id = NULL WHERE hotspot_id = ANY(:ids)"),
                 {"ids": ids},

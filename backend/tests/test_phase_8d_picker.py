@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 import pytest
 import pytest_asyncio
 from genpano_models import AdminUser
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -82,6 +83,30 @@ async def test_topics_with_brand_filter_empty(client, admin_operator):
 
 
 @pytest.mark.asyncio
+async def test_topics_existing_stub_table_with_id_only_returns_empty(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    import importlib
+
+    picker_router = importlib.import_module("app.api.picker.router")
+    await db_session.execute(text("CREATE TABLE topics (id INTEGER PRIMARY KEY)"))
+    await db_session.commit()
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name == "topics"
+
+    async def _fake_table_columns(_session, name: str) -> set[str]:
+        return {"id"} if name == "topics" else set()
+
+    monkeypatch.setattr(picker_router, "_table_exists", _fake_table_exists)
+    monkeypatch.setattr(picker_router, "_table_columns", _fake_table_columns, raising=False)
+
+    resp = await client.get("/api/topics")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
 async def test_prompts_returns_empty_when_table_missing(client, admin_operator):
     resp = await client.get("/api/prompts")
     assert resp.status_code == 200
@@ -91,6 +116,28 @@ async def test_prompts_returns_empty_when_table_missing(client, admin_operator):
 @pytest.mark.asyncio
 async def test_prompts_with_filters(client, admin_operator):
     resp = await client.get("/api/prompts?brand_id=1&topic_id=2")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_prompts_existing_stub_table_with_id_only_returns_empty(
+    client, admin_operator, monkeypatch
+):
+    import importlib
+
+    picker_router = importlib.import_module("app.api.picker.router")
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name == "prompts"
+
+    async def _fake_table_columns(_session, name: str) -> set[str]:
+        return {"id"} if name == "prompts" else set()
+
+    monkeypatch.setattr(picker_router, "_table_exists", _fake_table_exists)
+    monkeypatch.setattr(picker_router, "_table_columns", _fake_table_columns, raising=False)
+
+    resp = await client.get("/api/prompts")
     assert resp.status_code == 200
     assert resp.json() == []
 

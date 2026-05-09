@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from genpano_models import AdminUser, QueryGenerationRun
+from genpano_models import AdminUser, QueryGenerationCandidate, QueryGenerationRun
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -130,6 +130,34 @@ async def test_list_candidates_no_runs_returns_empty(client, admin_operator):
 
 
 # ── happy path with mocked fetcher ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_real_sql_tolerates_prompt_stub(
+    client, admin_operator, run, db_session: AsyncSession
+):
+    candidate = QueryGenerationCandidate(
+        id=_new_id(),
+        run_id=run.id,
+        candidate_seq=1,
+        prompt_id="1",
+        segment_id="s1",
+        profile_id="prof1",
+        rendered_query="Rendered query",
+        render_hash="hash-real-sql",
+        generation_method="llm",
+        candidate_status="candidate",
+    )
+    db_session.add(candidate)
+    await db_session.commit()
+
+    resp = await client.get(f"/api/admin/query-pool/candidates?run_id={run.id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["rows"][0]["prompt_text"] == ""
+    assert body["rows"][0]["topic_text"] == ""
 
 
 @pytest.mark.asyncio

@@ -86,6 +86,37 @@ def _isoformat(value: Any) -> str | None:
     return str(value)
 
 
+async def _topics_product_id_available(session: AsyncSession) -> bool:
+    if not await _table_exists(session, "topics"):
+        return False
+    return "product_id" in await _table_columns(session, "topics")
+
+
+async def _topic_count_select_expr(session: AsyncSession, product_alias: str = "p") -> str:
+    if await _topics_product_id_available(session):
+        return (
+            f"(SELECT COUNT(*) FROM topics t WHERE t.product_id = {product_alias}.id) "
+            "AS topic_count"
+        )
+    return "0 AS topic_count"
+
+
+async def _topic_count_for_product(session: AsyncSession, product_id: int) -> int:
+    if not await _topics_product_id_available(session):
+        return 0
+    topic_row = (
+        (
+            await session.execute(
+                text("SELECT COUNT(*) AS c FROM topics WHERE product_id = :id"),
+                {"id": product_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return int((dict(topic_row) if topic_row else {}).get("c") or 0)
+
+
 async def brand_exists(session: AsyncSession, *, brand_id: int) -> bool:
     if not await _table_exists(session, "brands"):
         return False
@@ -165,6 +196,7 @@ async def list_products(
         where.append("(p.name ILIKE :q OR p.sku ILIKE :q OR p.category ILIKE :q)")
         params["q"] = f"%{q}%"
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    topic_count_expr = await _topic_count_select_expr(session)
 
     total_row = (
         (await session.execute(text(f"SELECT COUNT(*) AS c FROM products p {where_sql}"), params))
@@ -178,7 +210,7 @@ async def list_products(
         SELECT p.id, p.brand_id, b.name AS brand_name,
                p.name, p.sku, p.category, p.description,
                p.aliases, p.status, p.created_at, p.updated_at,
-               (SELECT COUNT(*) FROM topics t WHERE t.product_id = p.id) AS topic_count
+               {topic_count_expr}
         FROM products p
         LEFT JOIN brands b ON b.id = p.brand_id
         {where_sql}
@@ -193,12 +225,13 @@ async def list_products(
 async def get_product(session: AsyncSession, product_id: int) -> dict[str, Any] | None:
     if not await _table_exists(session, "products"):
         return None
+    topic_count_expr = await _topic_count_select_expr(session)
     sql = text(
-        """
+        f"""
         SELECT p.id, p.brand_id, b.name AS brand_name,
                p.name, p.sku, p.category, p.description,
                p.aliases, p.status, p.created_at, p.updated_at,
-               (SELECT COUNT(*) FROM topics t WHERE t.product_id = p.id) AS topic_count
+               {topic_count_expr}
         FROM products p
         LEFT JOIN brands b ON b.id = p.brand_id
         WHERE p.id = :id
@@ -337,17 +370,7 @@ async def update_product(
         .first()
     )
     item["brand_name"] = (dict(brand_row) if brand_row else {}).get("name")
-    topic_row = (
-        (
-            await session.execute(
-                text("SELECT COUNT(*) AS c FROM topics WHERE product_id = :id"),
-                {"id": product_id},
-            )
-        )
-        .mappings()
-        .first()
-    )
-    item["topic_count"] = int((dict(topic_row) if topic_row else {}).get("c") or 0)
+    item["topic_count"] = await _topic_count_for_product(session, product_id)
     item["created_at"] = _isoformat(item.get("created_at"))
     item["updated_at"] = _isoformat(item.get("updated_at"))
     await session.commit()
@@ -361,7 +384,7 @@ async def delete_product(session: AsyncSession, product_id: int) -> tuple[bool, 
     if not await _table_exists(session, "products"):
         return False, 0
     unlinked = 0
-    if await _table_exists(session, "topics"):
+    if await _topics_product_id_available(session):
         result = await session.execute(
             text("UPDATE topics SET product_id = NULL WHERE product_id = :id"),
             {"id": product_id},
