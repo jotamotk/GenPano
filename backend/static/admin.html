@@ -4165,7 +4165,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <td class="px-3 py-2.5 text-[11px]">
                           <span :class="t.source==='初始化' || t.source==='审核通过' ? 'text-accent' : 'text-info'" x-text="t.source"></span>
                         </td>
-                        <td class="px-3 py-2.5 text-[10px] text-ink-muted max-w-[140px] truncate" x-text="t.brands.join(', ')"></td>
+                        <td class="px-3 py-2.5 text-[10px] text-ink-muted max-w-[140px] truncate" x-text="(t.brands || []).join(', ')"></td>
                         <td class="px-3 py-2.5 tabular-nums text-ink-body" x-text="t.promptCount"></td>
                         <td class="px-3 py-2.5 tabular-nums text-ink-body" x-text="t.queryCount"></td>
                         <td class="px-3 py-2.5">
@@ -13391,6 +13391,30 @@ function adminApp() {
         this.loadAnalyzerResponses(1);
         this.loadAnalyzerDaily();
       }
+    },
+
+    async apiJson(url, options = {}) {
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.success === false) {
+        throw new Error(body.message || body.error || body.title || ('HTTP ' + res.status));
+      }
+      return body;
+    },
+
+    formatAutoAssignError(result) {
+      if (!result) return '';
+      if (typeof result === 'string') return result;
+      const err = result.error;
+      if (typeof err === 'string') return err;
+      if (err && typeof err === 'object') {
+        return err.title || err.message || err.detail || err.code || JSON.stringify(err);
+      }
+      return result.message || result.title || JSON.stringify(result);
     },
 
     llmExtractionRows(){

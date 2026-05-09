@@ -1,0 +1,50 @@
+name: Admin E2E Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Staging base URL, for example https://staging.example.com"
+        required: true
+        type: string
+      real_generation:
+        description: "Run the optional real search-backed LLM small sample"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  staging-admin-e2e:
+    name: Staging Admin E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Staging Admin release gate
+        env:
+          ADMIN_E2E_STAGING: "1"
+          ADMIN_E2E_REAL_GENERATE: ${{ inputs.real_generation && '1' || '0' }}
+          ADMIN_E2E_EMAIL: ${{ secrets.ADMIN_E2E_EMAIL }}
+          ADMIN_E2E_PASSWORD: ${{ secrets.ADMIN_E2E_PASSWORD }}
+          E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+          PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
+        run: npm run test:e2e:admin:staging -- --reporter=github
