@@ -18,10 +18,10 @@ from app.admin.prompt_matrix.lib import (
     MAX_PROMPTS_HARD_LIMIT,
     LLMPromptCandidate,
     PromptMatrixError,
+    build_prompt_generation_slots,
     build_prompt_matrix_messages,
-    chunked,
     clamp_int,
-    estimate_generation_count,
+    intent_language_combinations,
     llm_error_detail,
     llm_response_error_detail,
     merge_usage,
@@ -34,6 +34,110 @@ from app.admin.topic_plan.lib import (
     TopicPlanLLMError,
     load_doubao_config,
 )
+
+DEFAULT_LLM_TARGET_PROMPTS_PER_REQUEST = 12
+
+
+def _topic_key(topic: dict[str, Any]) -> str | None:
+    raw = topic.get("raw_id") or topic.get("id")
+    try:
+        return str(int(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _slots_for_topic(topic: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
+    combinations = config.get("combinations") or intent_language_combinations(
+        config.get("intent_count"),
+        config.get("language_count"),
+        config.get("max_per_topic"),
+    )
+    return build_prompt_generation_slots(
+        topic=topic,
+        combinations=combinations,
+        max_per_topic=config.get("max_per_topic"),
+    )
+
+
+def _slot_batches(
+    *,
+    topics: list[dict[str, Any]],
+    config: dict[str, Any],
+    max_topics: int,
+    max_slots: int,
+) -> list[tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], int]]:
+    batches: list[tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], int]] = []
+    current_topics: list[dict[str, Any]] = []
+    current_slots: dict[str, list[dict[str, Any]]] = {}
+    current_count = 0
+
+    def flush() -> None:
+        nonlocal current_topics, current_slots, current_count
+        if current_count <= 0:
+            return
+        batches.append(
+            (
+                list(current_topics),
+                {key: list(slots) for key, slots in current_slots.items()},
+                current_count,
+            )
+        )
+        current_topics = []
+        current_slots = {}
+        current_count = 0
+
+    for topic in topics:
+        key = _topic_key(topic)
+        if key is None:
+            continue
+        remaining_slots = _slots_for_topic(topic, config)
+        while remaining_slots:
+            needs_new_topic = key not in current_slots
+            topic_limit_hit = needs_new_topic and len(current_topics) >= max_topics
+            if current_count and (topic_limit_hit or current_count >= max_slots):
+                flush()
+                continue
+
+            room = max_slots - current_count
+            if room <= 0:
+                flush()
+                continue
+
+            if key not in current_slots:
+                current_topics.append(topic)
+                current_slots[key] = []
+            take_count = min(len(remaining_slots), room)
+            current_slots[key].extend(remaining_slots[:take_count])
+            current_count += take_count
+            remaining_slots = remaining_slots[take_count:]
+            if current_count >= max_slots:
+                flush()
+
+    flush()
+    return batches
+
+
+def _limit_slots(
+    slots_by_topic: dict[str, list[dict[str, Any]]],
+    limit: int,
+) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    remaining = max(0, limit)
+    for key, slots in slots_by_topic.items():
+        if remaining <= 0:
+            break
+        selected = slots[:remaining]
+        if selected:
+            result[key] = selected
+            remaining -= len(selected)
+    return result
+
+
+def _topics_for_slots(
+    topics: list[dict[str, Any]], slots_by_topic: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    keys = set(slots_by_topic)
+    return [topic for topic in topics if (_topic_key(topic) or "") in keys]
 
 
 class PromptMatrixClient:
@@ -79,25 +183,32 @@ class PromptMatrixClient:
         if not topics:
             return
         batch_size = clamp_int(os.getenv("PROMPT_MATRIX_LLM_TOPICS_PER_REQUEST"), 2, 1, 5)
+        max_slots_per_request = clamp_int(
+            os.getenv("PROMPT_MATRIX_LLM_TARGET_PROMPTS_PER_REQUEST"),
+            DEFAULT_LLM_TARGET_PROMPTS_PER_REQUEST,
+            1,
+            40,
+        )
         max_prompts = clamp_int(
             config.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
         )
         generated_prompts: list[LLMPromptCandidate] = []
-        for batch in chunked(topics, batch_size):
+        for batch, slots_by_topic, slot_count in _slot_batches(
+            topics=topics,
+            config=config,
+            max_topics=batch_size,
+            max_slots=max_slots_per_request,
+        ):
             remaining = max_prompts - len(generated_prompts)
             if remaining <= 0:
                 break
             batch_config = dict(config)
-            target = min(
-                remaining,
-                estimate_generation_count(
-                    selected_topics=len(batch),
-                    intent_count=config.get("intent_count"),
-                    language_count=config.get("language_count"),
-                    max_per_topic=config.get("max_per_topic"),
-                    max_prompts=remaining,
-                ),
-            )
+            target = min(remaining, slot_count)
+            limited_slots = _limit_slots(slots_by_topic, target)
+            batch = _topics_for_slots(batch, limited_slots)
+            if not batch:
+                continue
+            batch_config["generation_slots_by_topic"] = limited_slots
             batch_config["max_prompts"] = over_request_count(target)
             prompts, meta = await self._generate_prompt_batch(
                 topics=batch,

@@ -306,8 +306,9 @@ def build_prompt_generation_slots(
 ) -> list[dict[str, Any]]:
     """Assign prompt scope/type inside the existing per-topic quota.
 
-    The slot count is capped by max_per_topic and the existing intent/language
-    combinations, so adding prompt scopes never multiplies generation volume.
+    The slot count is capped by max_per_topic. When the user asks for more
+    slots than the selected intent/language combinations, the combinations
+    rotate while prompt scope/type keep varying inside the same per-topic quota.
     """
     limit = clamp_int(max_per_topic, len(combinations), 1, MAX_PER_TOPIC_LIMIT)
     base_slots = list(combinations or [])
@@ -1093,8 +1094,22 @@ def build_prompt_matrix_messages(
         config.get("language_count"),
         config.get("max_per_topic"),
     )
+    slot_overrides = config.get("generation_slots_by_topic")
+    if not isinstance(slot_overrides, dict):
+        slot_overrides = {}
     for topic in topics:
         topic_id_raw = topic.get("raw_id") or topic.get("id") or 0
+        topic_key = str(int(topic_id_raw))
+        override_slots = slot_overrides.get(topic_key)
+        generation_slots = (
+            [dict(slot) for slot in override_slots if isinstance(slot, dict)]
+            if isinstance(override_slots, list)
+            else build_prompt_generation_slots(
+                topic=topic,
+                combinations=combinations,
+                max_per_topic=config.get("max_per_topic"),
+            )
+        )
         entry: dict[str, Any] = {
             "topic_id": int(topic_id_raw),
             "title": topic.get("title") or topic.get("text") or "",
@@ -1102,11 +1117,7 @@ def build_prompt_matrix_messages(
             "consumer_aliases": consumer_aliases_for_topic(topic, known_brands),
             "dimension": _topic_dimension(topic) or "brand",
             "required_focus_terms": sorted(topic_relevance_terms(topic, known_brands))[:12],
-            "generation_slots": build_prompt_generation_slots(
-                topic=topic,
-                combinations=combinations,
-                max_per_topic=config.get("max_per_topic"),
-            ),
+            "generation_slots": generation_slots,
         }
         # Module C-4: surface SKU context to the LLM when the topic is pinned
         # to a specific product. Prompts generated under this topic must

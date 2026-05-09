@@ -11,6 +11,7 @@ against sqlite. ``GET /runs/{id}`` and ``POST /runs/{id}/stop`` use
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import AsyncGenerator
@@ -117,6 +118,42 @@ def test_build_prompt_matrix_messages_frontloads_quality_rules():
     assert "competitive" in combined
     assert "competitive_type" in combined
     assert "generation_slots" in combined
+
+
+def test_build_prompt_matrix_messages_uses_generation_slot_override():
+    from app.admin.prompt_matrix.lib import build_prompt_matrix_messages
+
+    override_slots = [
+        {
+            "intent": "commercial",
+            "language": "en-US",
+            "prompt_scope": "competitive",
+            "competitive_type": "shortlist",
+        }
+    ]
+    messages = build_prompt_matrix_messages(
+        topics=[
+            {
+                "raw_id": 1,
+                "title": "running shoe comfort",
+                "brand": "NIKE",
+                "brand_id": 1,
+                "dimension_key": "category",
+            }
+        ],
+        config={
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 20,
+            "max_prompts": 20,
+            "generation_slots_by_topic": {"1": override_slots},
+        },
+        known_brands=[],
+        existing_prompts=[],
+    )
+    payload = json.loads(messages[1]["content"].split("payload:\n", 1)[1])
+
+    assert payload["topics"][0]["generation_slots"] == override_slots
 
 
 def test_prompt_scope_helpers_normalize_legacy_alias_and_competitive_type():
