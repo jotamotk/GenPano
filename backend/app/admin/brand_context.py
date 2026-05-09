@@ -12,7 +12,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from genpano_models import BrandContextSnapshot
+from genpano_models import (
+    BrandContextSnapshot,
+    KGEntityAttribute,
+    KGEntityClaim,
+    LLMEntityCandidate,
+)
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -54,6 +60,17 @@ def _dedupe_named(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         item["name"] = name
         out.append(item)
+    return out
+
+
+def _merge_unique_texts(existing: Any, additions: list[str], *, limit: int = 12) -> list[str]:
+    out = _clean_list(existing, limit=limit)
+    for item in additions:
+        text = _clean_text(item, limit=300)
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -287,6 +304,11 @@ async def persist_brand_context_snapshots(
         if not pack:
             continue
         brand_id = int(brand["id"])
+        pack = await enrich_context_pack_with_approved_extractions(
+            session,
+            brand_id=brand_id,
+            payload=pack,
+        )
         versions[brand_id] = await persist_brand_context_snapshot(
             session,
             brand_id=brand_id,
@@ -295,6 +317,155 @@ async def persist_brand_context_snapshots(
         )
         packs_by_brand_id[brand_id] = pack
     return versions, packs_by_brand_id
+
+
+async def enrich_context_pack_with_approved_extractions(
+    session: AsyncSession,
+    *,
+    brand_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Add approved extraction facts to a context pack for generation.
+
+    Pending candidates stay out of the pack; only approved entity candidates
+    and formal active KG attributes / claims are merged.
+    """
+    pack = dict(payload or {})
+    pack["brand"] = dict(pack.get("brand") or {})
+    pack["products"] = list(pack.get("products") or [])
+    pack["scenarios"] = list(pack.get("scenarios") or [])
+    pack["competitors"] = list(pack.get("competitors") or [])
+    pack["audience_hypotheses"] = list(pack.get("audience_hypotheses") or [])
+    raw_claims = pack.get("claims")
+    pack["claims"] = dict(raw_claims) if isinstance(raw_claims, dict) else {}
+    source_notes = list(pack.get("source_notes") or [])
+
+    approved_entities = list(
+        (
+            await session.execute(
+                select(LLMEntityCandidate).where(
+                    LLMEntityCandidate.brand_id == brand_id,
+                    LLMEntityCandidate.status == "approved",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in approved_entities:
+        attrs = row.attributes_json if isinstance(row.attributes_json, dict) else {}
+        if row.entity_type == "scenario":
+            pack["scenarios"].append(
+                {
+                    "name": _clean_text(row.name, limit=160),
+                    "pain_points": _clean_list(attrs.get("pain_points"), limit=8),
+                    "decision_criteria": _clean_list(attrs.get("decision_criteria"), limit=8),
+                    "buying_stage": _clean_text(attrs.get("buying_stage"), limit=80) or None,
+                }
+            )
+        elif row.entity_type == "competitor":
+            pack["competitors"].append(
+                {
+                    "name": _clean_text(row.name, limit=256),
+                    "competitor_type": _clean_text(
+                        attrs.get("competitor_type") or attrs.get("type"), limit=40
+                    )
+                    or "direct",
+                    "overlap_category": _clean_text(attrs.get("overlap_category"), limit=120)
+                    or None,
+                    "comparison_axes": _clean_list(
+                        attrs.get("comparison_axes") or attrs.get("axes"), limit=8
+                    ),
+                    "relation_reason": _clean_text(attrs.get("relation_reason"), limit=240) or None,
+                }
+            )
+        elif row.entity_type == "product":
+            pack["products"].append(_product_from_search({"name": row.name, **attrs}))
+        elif row.entity_type == "segment":
+            pack["audience_hypotheses"].append(
+                {
+                    "segment_name": _clean_text(row.name, limit=160),
+                    "needs": _clean_list(attrs.get("needs"), limit=8),
+                    "regions": _clean_list(attrs.get("regions"), limit=8),
+                    "buying_stage": _clean_text(attrs.get("buying_stage"), limit=80) or None,
+                }
+            )
+
+    kg_attrs = list(
+        (
+            await session.execute(
+                select(KGEntityAttribute).where(
+                    KGEntityAttribute.status == "active",
+                    (
+                        (KGEntityAttribute.entity_id == str(brand_id))
+                        | (KGEntityAttribute.entity_ref_key == f"brand:{brand_id}")
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if kg_attrs:
+        source_notes.insert(
+            0,
+            {
+                "title": "Approved KG entity attributes",
+                "url": "",
+                "snippet": f"{len(kg_attrs)} approved attributes merged into context.",
+                "source_type": "kg_entity_attributes",
+            },
+        )
+    for attr in kg_attrs:
+        if attr.entity_kind != "brand":
+            continue
+        key = _clean_text(attr.attribute_key, limit=80)
+        value = _clean_text(attr.attribute_value, limit=400)
+        if key in {"industry", "positioning", "description"} and value:
+            pack["brand"][key] = value
+        elif value:
+            approved = pack["brand"].get("approved_attributes")
+            if not isinstance(approved, dict):
+                approved = {}
+            approved[key] = _merge_unique_texts(approved.get(key), [value], limit=12)
+            pack["brand"]["approved_attributes"] = approved
+
+    claims = list(
+        (
+            await session.execute(
+                select(KGEntityClaim).where(
+                    KGEntityClaim.status == "active",
+                    (
+                        (KGEntityClaim.entity_id == str(brand_id))
+                        | (KGEntityClaim.entity_ref_key == f"brand:{brand_id}")
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if claims:
+        source_notes.append(
+            {
+                "title": "Approved KG entity claims",
+                "url": "",
+                "snippet": f"{len(claims)} approved claims merged into context.",
+                "source_type": "kg_entity_claims",
+            },
+        )
+    for claim in claims:
+        key = _clean_text(claim.claim_type, limit=64) or "claims"
+        pack["claims"][key] = _merge_unique_texts(pack["claims"].get(key), [claim.text], limit=12)
+
+    pack["products"] = _dedupe_named(pack["products"])
+    pack["scenarios"] = _dedupe_named(pack["scenarios"])
+    pack["competitors"] = _dedupe_named(pack["competitors"])
+    pack["audience_hypotheses"] = [
+        item for item in pack["audience_hypotheses"] if item.get("segment_name")
+    ][:12]
+    pack["source_notes"] = source_notes[:30]
+    return pack
 
 
 def topic_context_refs(

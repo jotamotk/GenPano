@@ -332,6 +332,7 @@
               </template>
             </a>
           </template>
+
         </div>
       </template>
     </nav>
@@ -3503,7 +3504,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       </template>
 
       <!-- ============ PAGE: PLANNER GENERATION WORKFLOW ============ -->
-      <template x-if="['planner-topics','planner-prompt-matrix','planner-query-pool','planner-generation'].includes(page)">
+      <template x-if="['planner-topics','planner-prompt-matrix','planner-query-pool','planner-llm-extraction','planner-generation'].includes(page)">
         <div class="space-y-4">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2 text-[12px]">
@@ -5523,6 +5524,113 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <div class="text-[12px] text-ink leading-relaxed p-3 rounded-card bg-surface-page border border-b-card/50" x-text="q.actualQueryText"></div>
                     </div>
                   </template>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="page==='planner-llm-extraction'">
+            <div class="space-y-4">
+              <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+                <div class="flex items-center justify-between gap-4 mb-4">
+                  <div>
+                    <h3 class="text-[15px] font-bold text-ink">LLM Extraction</h3>
+                    <p class="text-[12px] text-ink-muted mt-1">审核从 search-backed context / LLM response 中抽取的实体、属性与观点；通过后进入 KG context。</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button @click="backfillLLMExtractionCandidates()" :disabled="llmExtractionBackfilling"
+                            class="h-9 px-3 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12.5px] font-semibold hover:bg-accent/10 disabled:opacity-50">
+                      <span x-text="llmExtractionBackfilling ? 'Backfill...' : 'Backfill'"></span>
+                    </button>
+                    <button @click="loadLLMExtractionCandidates()" :disabled="llmExtractionLoading"
+                            class="h-9 px-3 rounded-btn border border-b-default bg-surface text-[12.5px] font-semibold text-ink-body hover:bg-surface-page disabled:opacity-50">
+                      <span x-text="llmExtractionLoading ? '刷新中...' : '刷新'"></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2 mb-4">
+                  <div class="flex items-center gap-1 p-1 rounded-btn-lg bg-surface-page border border-b-card">
+                    <button class="seg-tab" :class="{active: llmExtractionTab==='entities'}" @click="setLLMExtractionTab('entities')">Entity</button>
+                    <button class="seg-tab" :class="{active: llmExtractionTab==='attributes'}" @click="setLLMExtractionTab('attributes')">Attribute</button>
+                    <button class="seg-tab" :class="{active: llmExtractionTab==='claims'}" @click="setLLMExtractionTab('claims')">Claim</button>
+                  </div>
+                  <select x-model="llmExtractionStatus" @change="loadLLMExtractionCandidates()" class="h-9 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="all">All</option>
+                  </select>
+                  <select x-model="llmExtractionType" @change="loadLLMExtractionCandidates()" class="h-9 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                    <option value="all">All types</option>
+                    <option value="brand">Brand</option>
+                    <option value="product">Product</option>
+                    <option value="competitor">Competitor</option>
+                    <option value="segment">Segment</option>
+                    <option value="profile">Profile</option>
+                    <option value="scenario">Scenario</option>
+                  </select>
+                  <input x-model="llmExtractionBrandId" @keydown.enter="loadLLMExtractionCandidates()" placeholder="brand_id"
+                         class="h-9 w-28 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                  <input x-model="llmExtractionQuery" @keydown.enter="loadLLMExtractionCandidates()" placeholder="搜索名称 / 内容"
+                         class="h-9 flex-1 min-w-[220px] rounded-input border border-b-default bg-white px-3 text-[12px] text-ink focus:outline-none focus:shadow-focus-accent" />
+                </div>
+
+                <template x-if="llmExtractionError">
+                  <div class="rounded-card bg-danger/5 border border-danger/20 p-3 text-[12px] text-danger mb-3" x-text="llmExtractionError"></div>
+                </template>
+                <div class="rounded-card-lg border border-b-card overflow-hidden">
+                  <table class="w-full text-[13px]">
+                    <thead>
+                      <tr class="bg-surface-page border-b border-b-card">
+                        <th class="px-4 py-3 text-left text-[11px] font-semibold text-ink-muted uppercase">对象</th>
+                        <th class="px-4 py-3 text-left text-[11px] font-semibold text-ink-muted uppercase">抽取内容</th>
+                        <th class="px-4 py-3 text-left text-[11px] font-semibold text-ink-muted uppercase">证据 / Context</th>
+                        <th class="px-4 py-3 text-left text-[11px] font-semibold text-ink-muted uppercase">状态</th>
+                        <th class="px-4 py-3 text-right text-[11px] font-semibold text-ink-muted uppercase">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-if="llmExtractionLoading">
+                        <tr><td colspan="5" class="px-4 py-8 text-center text-[12px] text-ink-muted">加载中...</td></tr>
+                      </template>
+                      <template x-if="!llmExtractionLoading && llmExtractionRows().length===0">
+                        <tr><td colspan="5" class="px-4 py-8 text-center text-[12px] text-ink-muted">暂无候选</td></tr>
+                      </template>
+                      <template x-for="item in llmExtractionRows()" :key="item.id">
+                        <tr class="border-b border-b-card hover:bg-surface-page">
+                          <td class="px-4 py-3 align-top">
+                            <div class="font-semibold text-ink" x-text="llmExtractionItemName(item)"></div>
+                            <div class="flex flex-wrap gap-1 mt-1">
+                              <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="llmExtractionItemType(item)"></span>
+                              <span x-show="item.brand_context_version" class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page border border-b-card text-ink-muted text-[10px] font-semibold" x-text="item.brand_context_version"></span>
+                            </div>
+                          </td>
+                          <td class="px-4 py-3 align-top">
+                            <div class="text-ink-body leading-relaxed" x-text="llmExtractionItemValue(item)"></div>
+                            <div x-show="item.candidate_key" class="mt-1 text-[10px] text-ink-muted font-mono truncate max-w-[420px]" x-text="item.candidate_key"></div>
+                          </td>
+                          <td class="px-4 py-3 align-top">
+                            <div class="text-[12px] text-ink-muted" x-text="llmExtractionEvidenceLabel(item)"></div>
+                            <div class="mt-1 text-[10px] text-ink-faint truncate max-w-[360px]" x-text="llmExtractionSourceLabel(item)"></div>
+                          </td>
+                          <td class="px-4 py-3 align-top">
+                            <span class="inline-flex items-center px-2 h-6 rounded-badge text-[11px] font-semibold"
+                                  :class="item.status === 'approved' ? 'bg-success/10 text-success' : item.status === 'rejected' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning'"
+                                  x-text="item.status"></span>
+                          </td>
+                          <td class="px-4 py-3 align-top text-right">
+                            <div class="inline-flex items-center gap-1">
+                              <button @click="approveLLMExtractionCandidate(item)" :disabled="item.status !== 'pending' || llmExtractionReviewing"
+                                      class="h-8 px-3 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40">通过</button>
+                              <button @click="rejectLLMExtractionCandidate(item)" :disabled="item.status !== 'pending' || llmExtractionReviewing"
+                                      class="h-8 px-3 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold disabled:opacity-40">拒绝</button>
+                            </div>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
@@ -11859,6 +11967,19 @@ function adminApp() {
     queryPoolSelectedCandidateIds: {},
     queryPoolCandidateCursor: { next: null, prev: null },
     queryPoolCandidatePageInfo: { hasNext: false, hasPrev: false, approxTotal: 0, currentCount: 0 },
+    llmExtractionTab: 'entities',
+    llmExtractionStatus: 'pending',
+    llmExtractionType: 'all',
+    llmExtractionBrandId: '',
+    llmExtractionQuery: '',
+    llmExtractionLoading: false,
+    llmExtractionReviewing: false,
+    llmExtractionBackfilling: false,
+    llmExtractionError: '',
+    llmExtractionEntities: [],
+    llmExtractionAttributes: [],
+    llmExtractionClaims: [],
+    llmExtractionPagination: { page: 1, per_page: 50, total: 0, total_pages: 1 },
     queryPoolAssembleSteps: [
       { name:'Prompt 校验', status:'idle', label:'等待中', value:'0 个 Prompt' },
       { name:'Segment/Profile 采样', status:'idle', label:'等待中', value:'0 个 Profile' },
@@ -11996,6 +12117,7 @@ function adminApp() {
         { key:'planner-topics',        label:'Topic Plan',          icon:'layers-3',            group:'Planner', subtitle:'行业基线 + 品牌 / 产品覆盖' },
         { key:'planner-prompt-matrix', label:'Prompt Matrix',       icon:'message-square-text', group:'Planner', subtitle:'Intent × Language × Template 生成矩阵' },
         { key:'planner-query-pool',    label:'Query Pool',          icon:'send-horizontal',     group:'Planner', subtitle:'Prompt × Segment × Profile 候选池' },
+        { key:'planner-llm-extraction', label:'LLM Extraction',      icon:'sparkles',           group:'Planner', subtitle:'实体 / 属性 / Claim 候选审核' },
         { key:'planner-scheduler',     label:'采集调度',             icon:'calendar-clock',      group:'Planner', subtitle:'预算 / 资源 / 优先级 · Query 入队控制' },
         { key:'planner-prompts',    label:'Prompt 模板',  icon:'file-text',      group:'Planner', subtitle:'版本管理 + A/B 灰度 + 回归测试 + 审批' },
         { key:'planner-profiles',   label:'Segment', icon:'users',          group:'Planner', subtitle:'人群 Segment · 权重 · 单个 Profile 池' },
@@ -13261,6 +13383,7 @@ function adminApp() {
       if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
       if (key === 'planner-query-pool') this.loadQueryPoolPrompts();
       if (key === 'planner-query-pool') this.loadQueryPoolCandidates();
+      if (key === 'planner-llm-extraction') this.loadLLMExtractionCandidates();
       if (key === 'analyzer-quality') {
         this.loadAnalyzerStats();
         this.loadAnalyzerLlms();
@@ -13268,6 +13391,140 @@ function adminApp() {
         this.loadAnalyzerResponses(1);
         this.loadAnalyzerDaily();
       }
+    },
+
+    llmExtractionRows(){
+      if (this.llmExtractionTab === 'attributes') return this.llmExtractionAttributes || [];
+      if (this.llmExtractionTab === 'claims') return this.llmExtractionClaims || [];
+      return this.llmExtractionEntities || [];
+    },
+
+    setLLMExtractionTab(tab){
+      this.llmExtractionTab = tab;
+      this.llmExtractionPagination.page = 1;
+      this.loadLLMExtractionCandidates();
+    },
+
+    llmExtractionEndpoint(){
+      // Static API contracts: /api/admin/llm-extraction/candidates, /api/admin/llm-extraction/attributes, /api/admin/llm-extraction/claims
+      if (this.llmExtractionTab === 'attributes') return API_BASE + '/llm-extraction/attributes';
+      if (this.llmExtractionTab === 'claims') return API_BASE + '/llm-extraction/claims';
+      return API_BASE + '/llm-extraction/candidates';
+    },
+
+    llmExtractionReviewEndpoint(item, action){
+      const base = this.llmExtractionEndpoint();
+      return base + '/' + encodeURIComponent(item.id) + '/' + action;
+    },
+
+    async loadLLMExtractionCandidates(page = this.llmExtractionPagination.page || 1){
+      this.llmExtractionLoading = true;
+      this.llmExtractionError = '';
+      try {
+        const qp = new URLSearchParams();
+        qp.set('status', this.llmExtractionStatus || 'pending');
+        qp.set('page', String(page || 1));
+        qp.set('per_page', String(this.llmExtractionPagination.per_page || 50));
+        if (this.llmExtractionType && this.llmExtractionType !== 'all') {
+          qp.set(this.llmExtractionTab === 'entities' ? 'entity_type' : 'entity_kind', this.llmExtractionType);
+        }
+        if (String(this.llmExtractionBrandId || '').trim()) qp.set('brand_id', String(this.llmExtractionBrandId).trim());
+        if (String(this.llmExtractionQuery || '').trim()) qp.set('q', String(this.llmExtractionQuery).trim());
+        const body = await this.apiJson(this.llmExtractionEndpoint() + '?' + qp.toString());
+        const rows = Array.isArray(body.items) ? body.items : [];
+        if (this.llmExtractionTab === 'attributes') this.llmExtractionAttributes = rows;
+        else if (this.llmExtractionTab === 'claims') this.llmExtractionClaims = rows;
+        else this.llmExtractionEntities = rows;
+        this.llmExtractionPagination = body.pagination || this.llmExtractionPagination;
+        this.$nextTick(()=>lucide.createIcons());
+      } catch (e) {
+        this.llmExtractionError = e.message || 'LLM Extraction load failed';
+      } finally {
+        this.llmExtractionLoading = false;
+      }
+    },
+
+    async approveLLMExtractionCandidate(item){
+      if (!item || item.status !== 'pending') return;
+      this.llmExtractionReviewing = true;
+      this.llmExtractionError = '';
+      try {
+        await this.apiJson(this.llmExtractionReviewEndpoint(item, 'approve'), {
+          method:'POST',
+          body: JSON.stringify({ reason:'admin_approve_llm_extraction' }),
+        });
+        await this.loadLLMExtractionCandidates();
+        this.toast('已通过 LLM Extraction 候选');
+      } catch (e) {
+        this.llmExtractionError = e.message || 'Approve failed';
+      } finally {
+        this.llmExtractionReviewing = false;
+      }
+    },
+
+    async rejectLLMExtractionCandidate(item){
+      if (!item || item.status !== 'pending') return;
+      this.llmExtractionReviewing = true;
+      this.llmExtractionError = '';
+      try {
+        await this.apiJson(this.llmExtractionReviewEndpoint(item, 'reject'), {
+          method:'POST',
+          body: JSON.stringify({ reason:'admin_reject_llm_extraction' }),
+        });
+        await this.loadLLMExtractionCandidates();
+        this.toast('已拒绝 LLM Extraction 候选');
+      } catch (e) {
+        this.llmExtractionError = e.message || 'Reject failed';
+      } finally {
+        this.llmExtractionReviewing = false;
+      }
+    },
+
+    async backfillLLMExtractionCandidates(){
+      this.llmExtractionBackfilling = true;
+      this.llmExtractionError = '';
+      try {
+        const payload = { reason:'admin_backfill_llm_extraction' };
+        if (String(this.llmExtractionBrandId || '').trim()) payload.brand_id = Number(this.llmExtractionBrandId);
+        const body = await this.apiJson(API_BASE + '/llm-extraction/backfill', {
+          method:'POST',
+          body: JSON.stringify(payload),
+        });
+        const summary = body.summary || {};
+        this.toast('Backfill 完成：' + (summary.entities_created || 0) + ' entities / ' + (summary.attributes_created || 0) + ' attributes / ' + (summary.claims_created || 0) + ' claims');
+        await this.loadLLMExtractionCandidates(1);
+      } catch (e) {
+        this.llmExtractionError = e.message || 'Backfill failed';
+      } finally {
+        this.llmExtractionBackfilling = false;
+      }
+    },
+
+    llmExtractionItemName(item){
+      return item.name || item.entity_name || item.entity_id || item.id;
+    },
+
+    llmExtractionItemType(item){
+      return item.entity_type || item.entity_kind || 'candidate';
+    },
+
+    llmExtractionItemValue(item){
+      if (this.llmExtractionTab === 'attributes') return (item.attribute_key || '') + ': ' + (item.attribute_value || '');
+      if (this.llmExtractionTab === 'claims') return (item.claim_type || '') + ': ' + (item.text || '');
+      const attrs = item.attributes || {};
+      const keys = Object.keys(attrs || {}).filter(Boolean).slice(0, 3);
+      return keys.length ? keys.map(k => k + '=' + JSON.stringify(attrs[k])).join(' · ') : (item.domain || item.normalized_name || '');
+    },
+
+    llmExtractionEvidenceLabel(item){
+      const evidence = item.evidence || {};
+      return evidence.source || item.source || 'llm_search';
+    },
+
+    llmExtractionSourceLabel(item){
+      const notes = Array.isArray(item.source_notes) ? item.source_notes : [];
+      const first = notes[0] || {};
+      return first.title || first.url || first.snippet || '';
     },
 
     currentNav(){

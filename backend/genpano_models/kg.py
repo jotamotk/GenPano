@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -186,5 +187,94 @@ class KgRelationCandidate(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     merged_into_relation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class KGEntityAttribute(Base):
+    """Approved structured attributes extracted from search-backed LLM context."""
+
+    __tablename__ = "kg_entity_attributes"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_kind IN ('brand','product','competitor','segment','profile','scenario')",
+            name="ck_kg_entity_attributes_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active','archived')",
+            name="ck_kg_entity_attributes_status",
+        ),
+        UniqueConstraint(
+            "entity_ref_key",
+            "attribute_key",
+            "normalized_value",
+            name="uq_kg_entity_attributes_key_value",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    entity_ref_key: Mapped[str] = mapped_column(String(384), nullable=False)
+    attribute_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    attribute_value: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_value: Mapped[str] = mapped_column(String(512), nullable=False)
+    value_json: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, server_default="llm_extraction")
+    evidence: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    approved_from_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class KGEntityClaim(Base):
+    """Approved claims / opinions extracted from search-backed LLM context."""
+
+    __tablename__ = "kg_entity_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_kind IN ('brand','product','competitor','segment','profile','scenario')",
+            name="ck_kg_entity_claims_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active','archived')",
+            name="ck_kg_entity_claims_status",
+        ),
+        UniqueConstraint(
+            "entity_ref_key",
+            "claim_type",
+            "normalized_text",
+            "scenario",
+            name="uq_kg_entity_claims_key_text",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    entity_ref_key: Mapped[str] = mapped_column(String(384), nullable=False)
+    claim_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(String(700), nullable=False)
+    scenario: Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, server_default="llm_extraction")
+    evidence: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    approved_from_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
