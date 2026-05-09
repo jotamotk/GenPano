@@ -40,6 +40,8 @@ DEFAULT_LLM_TARGET_PROMPTS_PER_REQUEST = 12
 
 def _topic_key(topic: dict[str, Any]) -> str | None:
     raw = topic.get("raw_id") or topic.get("id")
+    if raw is None:
+        return None
     try:
         return str(int(raw))
     except (TypeError, ValueError):
