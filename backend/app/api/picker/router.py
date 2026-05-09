@@ -40,6 +40,20 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     return row is not None
 
 
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :n"
+            ),
+            {"n": name},
+        )
+    except Exception:
+        return set()
+    return {row[0] for row in result.all()}
+
+
 @router.get("/topics", response_model=None)
 async def list_topics(
     operator: Annotated[AdminUser, Depends(current_admin)],
@@ -50,13 +64,33 @@ async def list_topics(
     filter dropdown which cascades from the brand selector."""
     if not await _table_exists(session, "topics"):
         return []
+    cols = await _table_columns(session, "topics")
+    if "id" not in cols:
+        return []
+    brand_expr = "brand_id" if "brand_id" in cols else "NULL AS brand_id"
+    text_expr = "text" if "text" in cols else "'' AS text"
+    category_expr = "category" if "category" in cols else "NULL AS category"
     if brand_id is not None:
+        if "brand_id" not in cols:
+            return []
         sql = text(
-            "SELECT id, brand_id, text, category FROM topics WHERE brand_id = :brand_id ORDER BY id"
+            f"""
+            SELECT id, {brand_expr}, {text_expr}, {category_expr}
+            FROM topics
+            WHERE brand_id = :brand_id
+            ORDER BY id
+            """
         )
         rows = (await session.execute(sql, {"brand_id": brand_id})).mappings().all()
     else:
-        sql = text("SELECT id, brand_id, text, category FROM topics ORDER BY brand_id, id")
+        order_expr = "brand_id, id" if "brand_id" in cols else "id"
+        sql = text(
+            f"""
+            SELECT id, {brand_expr}, {text_expr}, {category_expr}
+            FROM topics
+            ORDER BY {order_expr}
+            """
+        )
         rows = (await session.execute(sql)).mappings().all()
     return [dict(r) for r in rows]
 
@@ -72,6 +106,21 @@ async def list_prompts(
     tracker's searchable prompt picker — client filters in-memory by text."""
     if not await _table_exists(session, "prompts"):
         return []
+    prompt_cols = await _table_columns(session, "prompts")
+    if "id" not in prompt_cols:
+        return []
+    has_prompt_topic_id = "topic_id" in prompt_cols
+    if topic_id is not None and not has_prompt_topic_id:
+        return []
+    topic_cols = await _table_columns(session, "topics") if has_prompt_topic_id else set()
+    can_join_topics = (
+        has_prompt_topic_id
+        and await _table_exists(session, "topics")
+        and "id" in topic_cols
+    )
+    can_filter_brand = can_join_topics and "brand_id" in topic_cols
+    if brand_id is not None and not can_filter_brand:
+        return []
     where: list[str] = []
     params: dict[str, Any] = {}
     if brand_id is not None:
@@ -81,13 +130,22 @@ async def list_prompts(
         where.append("pr.topic_id = :topic_id")
         params["topic_id"] = topic_id
     where_clause = " AND ".join(where) if where else "1=1"
+    topic_join = "LEFT JOIN topics t ON pr.topic_id = t.id" if can_join_topics else ""
+    topic_id_expr = "pr.topic_id" if has_prompt_topic_id else "NULL AS topic_id"
+    text_expr = "pr.text" if "text" in prompt_cols else "'' AS text"
+    topic_text_expr = (
+        "t.text AS topic_text"
+        if can_join_topics and "text" in topic_cols
+        else "NULL AS topic_text"
+    )
+    order_expr = "pr.topic_id, pr.id" if has_prompt_topic_id else "pr.id"
     sql = text(
         f"""
-        SELECT pr.id, pr.topic_id, pr.text, t.text AS topic_text
+        SELECT pr.id, {topic_id_expr}, {text_expr}, {topic_text_expr}
         FROM prompts pr
-        LEFT JOIN topics t ON pr.topic_id = t.id
+        {topic_join}
         WHERE {where_clause}
-        ORDER BY pr.topic_id, pr.id
+        ORDER BY {order_expr}
         """
     )
     rows = (await session.execute(sql, params)).mappings().all()

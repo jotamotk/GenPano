@@ -100,6 +100,23 @@ def _llm_error_to_http(error: TopicPlanLLMError) -> Any:
     return _problem(400, error.code, error.message, detail=error.message)
 
 
+async def _legacy_column_exists(session: AsyncSession, table: str, column: str) -> bool:
+    try:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :table "
+                    "AND column_name = :column LIMIT 1"
+                ),
+                {"table": table, "column": column},
+            )
+        ).first()
+    except Exception:
+        return False
+    return row is not None
+
+
 async def _approve_topic_in_topics_table(session: AsyncSession, candidate: TopicCandidate) -> int:
     """Insert (or find) a row in the legacy ``topics`` table for an approved
     candidate. Returns the topic id to stamp on ``approved_topic_id``.
@@ -132,7 +149,7 @@ async def _approve_topic_in_topics_table(session: AsyncSession, candidate: Topic
         "text": candidate.title,
         "category": candidate.dimension,
     }
-    if candidate.product_id:
+    if candidate.product_id and await _legacy_column_exists(session, "topics", "product_id"):
         insert_sql = text(
             """
             INSERT INTO topics

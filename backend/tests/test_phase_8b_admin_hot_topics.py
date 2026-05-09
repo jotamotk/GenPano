@@ -460,6 +460,39 @@ async def test_delete_audit_high(client, admin_operator, monkeypatch, db_session
 
 
 @pytest.mark.asyncio
+async def test_db_delete_hot_topic_does_not_require_prompts_hotspot_id(monkeypatch):
+    from app.admin.hot_topics import db as hot_topics_db
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name in {"hot_topics", "prompts"}
+
+    class _FakeResult:
+        rowcount = 1
+
+    class _FakeSession:
+        async def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "UPDATE prompts SET hotspot_id" in sql:
+                raise AssertionError("prompts.hotspot_id should be optional")
+            if "DELETE FROM hot_topics WHERE id = :id" in sql:
+                return _FakeResult()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+    monkeypatch.setattr(hot_topics_db, "_table_exists", _fake_table_exists)
+
+    deleted, unlinked = await hot_topics_db.delete_hot_topic(_FakeSession(), 7)
+
+    assert deleted is True
+    assert unlinked == 0
+
+
+@pytest.mark.asyncio
 async def test_archive_expired_returns_count(
     client, admin_operator, monkeypatch, db_session: AsyncSession
 ):
@@ -537,6 +570,39 @@ async def test_batch_delete_high(client, admin_operator, monkeypatch, db_session
 
 
 # ── POST /hot-topics/collect ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_db_batch_delete_hot_topics_does_not_require_prompts_hotspot_id(monkeypatch):
+    from app.admin.hot_topics import db as hot_topics_db
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name in {"hot_topics", "prompts"}
+
+    class _FakeResult:
+        rowcount = 2
+
+    class _FakeSession:
+        async def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "UPDATE prompts SET hotspot_id" in sql:
+                raise AssertionError("prompts.hotspot_id should be optional")
+            if "DELETE FROM hot_topics WHERE id = ANY(:ids)" in sql:
+                return _FakeResult()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(hot_topics_db, "_table_exists", _fake_table_exists)
+
+    result = await hot_topics_db.batch_update_hot_topics(
+        _FakeSession(),
+        ids=[1, 2],
+        action="delete",
+    )
+
+    assert result == {"deleted": 2, "unlinked_prompts": 0}
 
 
 @pytest.mark.asyncio

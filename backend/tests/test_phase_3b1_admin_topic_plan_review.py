@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -213,6 +214,49 @@ async def test_review_approve_calls_topics_insert(
 
 
 # ── bulk review ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_approve_topic_insert_does_not_require_topics_product_id():
+    import importlib
+
+    router_mod = importlib.import_module("app.api.admin.topic_plan.router")
+    candidate = SimpleNamespace(
+        brand_id=7,
+        title="Product topic",
+        dimension="product",
+        product_id=42,
+    )
+
+    class _FakeResult:
+        def __init__(self, first_row=None, scalar=None):
+            self.first_row = first_row
+            self.scalar = scalar
+
+        def first(self):
+            return self.first_row
+
+        def scalar_one(self):
+            return self.scalar
+
+    class _FakeSession:
+        async def execute(self, statement, _params=None):
+            sql = str(statement)
+            if "information_schema.columns" in sql:
+                return _FakeResult(first_row=None)
+            if "SELECT id FROM topics" in sql:
+                return _FakeResult(first_row=None)
+            if "INSERT INTO topics" in sql:
+                if "product_id" in sql:
+                    raise AssertionError("topics.product_id should be optional")
+                return _FakeResult(scalar=123)
+            if "UPDATE topic_candidates SET approved_topic_id" in sql:
+                return _FakeResult()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    topic_id = await router_mod._approve_topic_in_topics_table(_FakeSession(), candidate)
+
+    assert topic_id == 123
 
 
 @pytest.mark.asyncio
