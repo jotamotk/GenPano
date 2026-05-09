@@ -365,6 +365,7 @@ class QueryGenerationCandidate(Base):
     generation_method: Mapped[str] = mapped_column(String(32), nullable=False, server_default="llm")
     llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     llm_usage_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
+    metadata_json: Mapped[Any] = mapped_column(_jsonb(), nullable=False, server_default="{}")
     candidate_status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="candidate"
     )

@@ -205,6 +205,43 @@ def test_contexts_parse_prompt_scope_from_json_string_tags():
     assert contexts[0]["prompt_scope"] == "branded"
 
 
+def test_contexts_inherit_prompt_slot_metadata_for_query_layer():
+    prompts = [
+        {
+            **_prompt("a"),
+            "brand_name": "Acme",
+            "tags": {
+                "prompt_scope": "competitive",
+                "competitive_type": "direct_comparison",
+                "slot_id": "slot-1",
+                "product_name": "Acme Vault",
+                "scenario_axis": "secure file sharing",
+                "competitor_name": "BetaVault",
+                "competitor_brand_id": "brand-beta",
+                "comparison_axis": "security posture",
+                "brand_context_version": "ctx-20260510",
+                "context_refs": {"snapshot_id": "snap-1"},
+            },
+        }
+    ]
+    pool = [_row("s1", 5, "p1", 5)]
+    cfg = query_pool_config({"profiles_per_prompt": 1})
+    contexts, raw = query_pool_candidate_contexts(prompts, pool, cfg)
+
+    assert raw == 1
+    ctx = contexts[0]
+    assert ctx["prompt_scope"] == "competitive"
+    assert ctx["competitive_type"] == "direct_comparison"
+    assert ctx["slot_id"] == "slot-1"
+    assert ctx["product_name"] == "Acme Vault"
+    assert ctx["scenario_axis"] == "secure file sharing"
+    assert ctx["competitor_name"] == "BetaVault"
+    assert ctx["comparison_axis"] == "security posture"
+    assert ctx["brand_context_version"] == "ctx-20260510"
+    assert ctx["prompt_metadata"]["competitor_brand_id"] == "brand-beta"
+    assert ctx["prompt_metadata"]["context_refs"] == {"snapshot_id": "snap-1"}
+
+
 def test_contexts_caps_at_max_candidates():
     prompts = [_prompt(str(i)) for i in range(10)]
     pool = [_row("s1", 5, "p1", 5)]

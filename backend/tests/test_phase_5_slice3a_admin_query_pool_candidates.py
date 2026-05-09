@@ -193,6 +193,15 @@ async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run
                     "profile_demographic": "30F",
                     "profile_need": "trust",
                     "rendered_query": "Is X safe?",
+                    "metadata_json": {
+                        "prompt_scope": "competitive",
+                        "competitive_type": "direct_comparison",
+                        "product_name": "Acme Vault",
+                        "scenario_axis": "secure file sharing",
+                        "competitor_name": "BetaVault",
+                        "comparison_axis": "security posture",
+                        "brand_context_version": "ctx-1",
+                    },
                     "generation_method": "llm",
                     "llm_model": "gpt-4",
                     "llm_usage_json": {"tokens": 12},
@@ -222,6 +231,11 @@ async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run
     assert row["topic_text"] == "safety"
     assert row["segment_name"] == "young-pros"
     assert row["profile_name"] == "Anna"
+    assert row["metadata"]["prompt_scope"] == "competitive"
+    assert row["prompt_scope"] == "competitive"
+    assert row["competitor_name"] == "BetaVault"
+    assert row["comparison_axis"] == "security posture"
+    assert row["brand_context_version"] == "ctx-1"
     assert row["llm_usage"] == {"tokens": 12}
     # No cursor pagination state when no cursor was given and !has_more
     assert body["next_cursor"] is None

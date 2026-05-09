@@ -66,6 +66,20 @@ def _candidate(seq, *, prompt_id="p1", segment_id="s1"):
     }
 
 
+def _candidate_with_metadata(seq):
+    row = _candidate(seq)
+    row["metadata"] = {
+        "prompt_scope": "competitive",
+        "competitive_type": "direct_comparison",
+        "product_name": "Acme Vault",
+        "scenario_axis": "secure file sharing",
+        "competitor_name": "BetaVault",
+        "comparison_axis": "security posture",
+        "brand_context_version": "ctx-1",
+    }
+    return row
+
+
 # ── insert_query_pool_run_completed ──────────────────────────
 
 
@@ -114,6 +128,38 @@ async def test_insert_completed_writes_run_and_candidates(db_session: AsyncSessi
 
 
 # ── start_query_pool_assembly_run ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_insert_candidates_persists_query_metadata(db_session: AsyncSession):
+    run = QueryGenerationRun(
+        id=_new_id(),
+        admin_id="admin-1",
+        status="running",
+        request_config={},
+        prompt_ids=["p1"],
+        segment_ids_selected=["s1"],
+        profiles_per_prompt=1,
+        desired_engine_policy="inherit",
+        max_candidates=10,
+        overflow_policy="split",
+        candidates_estimated=1,
+        candidates_assembled=0,
+        preflight_summary={},
+    )
+    db_session.add(run)
+    await db_session.commit()
+
+    await qp_db.insert_query_pool_candidates(db_session, run.id, [_candidate_with_metadata(1)])
+
+    row = (
+        await db_session.execute(
+            select(QueryGenerationCandidate).where(QueryGenerationCandidate.run_id == run.id)
+        )
+    ).scalar_one()
+    assert row.metadata_json["prompt_scope"] == "competitive"
+    assert row.metadata_json["competitor_name"] == "BetaVault"
+    assert row.metadata_json["brand_context_version"] == "ctx-1"
 
 
 @pytest.mark.asyncio

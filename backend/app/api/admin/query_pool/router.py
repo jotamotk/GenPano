@@ -55,6 +55,7 @@ def _now() -> datetime:
 
 
 def _candidate_row(c: QueryGenerationCandidate) -> dict[str, Any]:
+    metadata = _json_dict(getattr(c, "metadata_json", None))
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -63,6 +64,15 @@ def _candidate_row(c: QueryGenerationCandidate) -> dict[str, Any]:
         "segment_id": c.segment_id,
         "profile_id": c.profile_id,
         "rendered_query": c.rendered_query,
+        "metadata": metadata,
+        "prompt_scope": metadata.get("prompt_scope"),
+        "competitive_type": metadata.get("competitive_type"),
+        "product_name": metadata.get("product_name"),
+        "scenario_axis": metadata.get("scenario_axis"),
+        "competitor_name": metadata.get("competitor_name"),
+        "competitor_brand_id": metadata.get("competitor_brand_id"),
+        "comparison_axis": metadata.get("comparison_axis"),
+        "brand_context_version": metadata.get("brand_context_version"),
         "generation_method": c.generation_method,
         "llm_model": c.llm_model,
         "llm_usage": c.llm_usage_json or {},
@@ -506,6 +516,18 @@ QUERY_POOL_DIRECTIONS = {"next", "prev"}
 QUERY_POOL_LIST_STATUSES = {"candidate", "review", "ready", "all"}
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _encode_cursor(candidate_seq: int | None) -> str | None:
     if candidate_seq is None:
         return None
@@ -573,6 +595,7 @@ def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
     nullable text columns so the SPA's `||` chains keep working.
     """
     candidate_seq = row.get("candidate_seq")
+    metadata = _json_dict(row.get("metadata_json") or row.get("metadata"))
     return {
         "id": str(row.get("id") or ""),
         "run_id": str(row.get("run_id") or ""),
@@ -588,6 +611,15 @@ def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
         "profile_demographic": row.get("profile_demographic") or "",
         "profile_need": row.get("profile_need") or "",
         "rendered_query": row.get("rendered_query") or "",
+        "metadata": metadata,
+        "prompt_scope": metadata.get("prompt_scope"),
+        "competitive_type": metadata.get("competitive_type"),
+        "product_name": metadata.get("product_name"),
+        "scenario_axis": metadata.get("scenario_axis"),
+        "competitor_name": metadata.get("competitor_name"),
+        "competitor_brand_id": metadata.get("competitor_brand_id"),
+        "comparison_axis": metadata.get("comparison_axis"),
+        "brand_context_version": metadata.get("brand_context_version"),
         "generation_method": row.get("generation_method") or "llm",
         "llm_model": row.get("llm_model"),
         "llm_usage": row.get("llm_usage_json") or {},
@@ -615,6 +647,8 @@ async def _fetch_candidates_paged(
     """Paged candidate query with prompt + topic + segment + profile JOINs."""
     where: list[str] = ["q.run_id = :run_id"]
     params: dict[str, Any] = {"run_id": run_id}
+    query_candidate_cols = await _legacy_table_columns(session, "query_generation_candidates")
+    query_metadata_available = "metadata_json" in query_candidate_cols
     prompt_cols = await _legacy_table_columns(session, "prompts")
     prompts_available = (
         "id" in prompt_cols
@@ -658,6 +692,8 @@ async def _fetch_candidates_paged(
                 "WHERE CAST(pr_search.id AS TEXT) = q.prompt_id "
                 "AND COALESCE(pr_search.text, '') ILIKE :like)"
             )
+        if query_metadata_available:
+            search_parts.append("CAST(q.metadata_json AS TEXT) ILIKE :like")
         where.append("(" + " OR ".join(search_parts) + ")")
         params["like"] = f"%{query}%"
 
@@ -712,10 +748,14 @@ async def _fetch_candidates_paged(
         if profiles_available and "need" in profile_cols
         else "'' AS profile_need"
     )
+    metadata_expr = (
+        "q.metadata_json AS metadata_json" if query_metadata_available else "'{}' AS metadata_json"
+    )
     sql = text(
         f"""
         SELECT q.id, q.run_id, q.candidate_seq, q.prompt_id, q.segment_id, q.profile_id,
                q.rendered_query, q.generation_method, q.llm_model, q.llm_usage_json,
+               {metadata_expr},
                q.candidate_status, q.scheduler_intake_batch_id,
                q.reviewed_by, q.reviewed_at, q.review_reason, q.created_at,
                {prompt_text_expr},

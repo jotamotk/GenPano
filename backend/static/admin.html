@@ -5510,6 +5510,16 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <span class="text-ink-muted" x-text="q.profileGroup"></span>
                         <span class="text-ink-faint" x-text="'(' + q.profileDesc + ')'"></span>
                       </div>
+                      <div class="flex flex-wrap items-center gap-1.5 mb-2 text-[10px]">
+                        <template x-for="badge in queryPoolCandidateMetadataBadges(q)" :key="badge.key">
+                          <span class="inline-flex items-center px-2 h-5 rounded-badge font-semibold"
+                                :class="badge.tone === 'warning' ? 'bg-warning/10 text-warning' : badge.tone === 'success' ? 'bg-success/10 text-success' : 'bg-accent/10 text-accent'"
+                                x-text="badge.label"></span>
+                        </template>
+                        <span x-show="queryPoolCandidateContextLabel(q)"
+                              class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page border border-b-card text-ink-muted font-semibold"
+                              x-text="queryPoolCandidateContextLabel(q)"></span>
+                      </div>
                       <div class="text-[12px] text-ink leading-relaxed p-3 rounded-card bg-surface-page border border-b-card/50" x-text="q.actualQueryText"></div>
                     </div>
                   </template>
@@ -15813,6 +15823,7 @@ function adminApp() {
     },
 
     queryPoolPromptId(prompt){
+      if (prompt && prompt.raw_id != null) return String(prompt.raw_id);
       return prompt && prompt.id != null ? String(prompt.id) : '';
     },
 
@@ -16237,6 +16248,32 @@ function adminApp() {
       }[status] || '候选';
     },
 
+    queryPoolCandidateScopeLabel(row){
+      const scope = row?.promptScope || row?.metadata?.prompt_scope || 'non_branded';
+      return {
+        non_branded: 'Non-branded',
+        branded: 'Branded',
+        competitive: 'Competitive',
+      }[scope] || scope;
+    },
+
+    queryPoolCandidateContextLabel(row){
+      const version = row?.brandContextVersion || row?.metadata?.brand_context_version || '';
+      return version ? 'Context ' + version : '';
+    },
+
+    queryPoolCandidateMetadataBadges(row){
+      const badges = [];
+      const scope = row?.promptScope || row?.metadata?.prompt_scope || 'non_branded';
+      badges.push({ key:'scope', label:this.queryPoolCandidateScopeLabel(row), tone:scope === 'competitive' ? 'warning' : 'accent' });
+      if (row?.competitiveType) badges.push({ key:'type', label:row.competitiveType, tone:'warning' });
+      if (row?.productName) badges.push({ key:'product', label:row.productName, tone:'accent' });
+      if (row?.scenarioAxis) badges.push({ key:'scenario', label:row.scenarioAxis, tone:'accent' });
+      if (row?.competitorName) badges.push({ key:'competitor', label:'vs ' + row.competitorName, tone:'warning' });
+      if (row?.comparisonAxis) badges.push({ key:'axis', label:row.comparisonAxis, tone:'accent' });
+      return badges;
+    },
+
     queryPoolCandidatePageRangeText(){
       const shown = this.queryPoolCandidateRows.length;
       const approxTotal = Number(this.queryPoolCandidatePageInfo.approxTotal || 0);
@@ -16276,21 +16313,32 @@ function adminApp() {
         }
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || '候选加载失败');
-        const rows = (body.rows || []).map(row => ({
-          id: row.id,
-          runId: row.run_id,
-          candidateSeq: row.candidate_seq,
-          promptId: row.prompt_id,
-          promptText: row.prompt_text || '',
-          topicId: row.topic_id || '',
-          topicText: row.topic_text || '',
-          segmentId: row.segment_id,
-          profileId: row.profile_id,
-          profileGroup: row.segment_id || '未绑定 Segment',
-          profileDesc: row.profile_id || '未绑定 Profile',
-          actualQueryText: row.rendered_query,
-          candidateStatus: row.candidate_status || 'candidate',
-        }));
+        const rows = (body.rows || []).map(row => {
+          const metadata = row.metadata || row.metadata_json || {};
+          return {
+            id: row.id,
+            runId: row.run_id,
+            candidateSeq: row.candidate_seq,
+            promptId: row.prompt_id,
+            promptText: row.prompt_text || '',
+            topicId: row.topic_id || '',
+            topicText: row.topic_text || '',
+            segmentId: row.segment_id,
+            profileId: row.profile_id,
+            profileGroup: row.segment_id || '未绑定 Segment',
+            profileDesc: row.profile_id || '未绑定 Profile',
+            actualQueryText: row.rendered_query,
+            candidateStatus: row.candidate_status || 'candidate',
+            metadata,
+            promptScope: row.prompt_scope || metadata.prompt_scope || 'non_branded',
+            competitiveType: row.competitive_type || metadata.competitive_type || '',
+            productName: row.product_name || metadata.product_name || '',
+            scenarioAxis: row.scenario_axis || metadata.scenario_axis || '',
+            competitorName: row.competitor_name || metadata.competitor_name || '',
+            comparisonAxis: row.comparison_axis || metadata.comparison_axis || '',
+            brandContextVersion: row.brand_context_version || metadata.brand_context_version || '',
+          };
+        });
         this.queryPoolCandidateRows = rows;
         const visibleIds = new Set(rows.map(row => row.id));
         this.queryPoolSelectedCandidateIds = Object.fromEntries(
