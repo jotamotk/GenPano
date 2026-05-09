@@ -813,6 +813,9 @@ async def generate_profiles_route(
         brand_id=str(payload.get("brand_id") or payload.get("brandId") or "").strip() or None,
     )
     payload = {
+        key: value for key, value in payload.items() if key not in {"goal", "constraints", "notes"}
+    }
+    payload = {
         **payload,
         "products": product_contexts,
         "product_ids": [

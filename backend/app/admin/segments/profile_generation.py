@@ -34,6 +34,7 @@ from app.admin.segments.llm import (
     SegmentProfileGenerationError,
     SegmentProfileGenerationService,
     drafts_with_brand_context,
+    profile_generation_prompt_defaults,
     segment_profile_generation_status,
 )
 
@@ -168,16 +169,16 @@ async def execute_profile_generation_job(
                 model=payload.get("llm_model"),
                 allow_fallback=False,
             )
+            products = payload.get("products") if isinstance(payload.get("products"), list) else []
+            goal, constraints = profile_generation_prompt_defaults(products)
             try:
                 result = await service.generate_profiles(
                     segment=seg,
                     brand_name=brand_name,
                     count=_bounded_count(payload.get("count"), 6, 1, 50),
-                    goal=str(payload.get("goal") or ""),
-                    constraints=str(payload.get("constraints") or payload.get("notes") or ""),
-                    products=payload.get("products")
-                    if isinstance(payload.get("products"), list)
-                    else [],
+                    goal=goal,
+                    constraints=constraints,
+                    products=products,
                 )
             except SegmentProfileGenerationError as error:
                 await set_profile_generation_job(
@@ -298,13 +299,15 @@ async def execute_profile_generation_sync(
         model=payload.get("llm_model"),
         allow_fallback=False,
     )
+    products = payload.get("products") if isinstance(payload.get("products"), list) else []
+    goal, constraints = profile_generation_prompt_defaults(products)
     result = await service.generate_profiles(
         segment=seg,
         brand_name=brand_name,
         count=_bounded_count(payload.get("count"), 6, 1, 50),
-        goal=str(payload.get("goal") or ""),
-        constraints=str(payload.get("constraints") or payload.get("notes") or ""),
-        products=payload.get("products") if isinstance(payload.get("products"), list) else [],
+        goal=goal,
+        constraints=constraints,
+        products=products,
     )
 
     await segments_db.write_profile_generation_log(

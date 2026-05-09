@@ -2784,14 +2784,6 @@
                     </select>
                     <div x-show="profileLlmProductError" class="text-[11px] text-danger" x-text="profileLlmProductError"></div>
                   </label>
-                  <label class="space-y-1.5 col-span-2">
-                    <span class="font-semibold text-ink-muted">生成目标</span>
-                    <textarea x-model="llmForm.goal" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
-                  </label>
-                  <label class="space-y-1.5 col-span-2">
-                    <span class="font-semibold text-ink-muted">约束</span>
-                    <textarea x-model="llmForm.notes" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
-                  </label>
                   <div class="col-span-2 flex justify-end gap-2">
                     <button @click="generateSegmentLlm()" :disabled="profileLlmLoading || !(llmForm.brandId || llmForm.brand)" class="h-9 px-4 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                       <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
@@ -9845,8 +9837,6 @@ function segmentCrudPanel() {
       productIds: [],
       products: [],
       count: 6,
-      goal: 'Generate reviewable Profile drafts for the current Segment.',
-      notes: 'Cover price, proof, scenario, channel, and competitor-comparison needs without duplicates.',
     },
 
     init() {
@@ -10847,8 +10837,6 @@ function segmentCrudPanel() {
             brand_id: brandOption?.id || null,
             brand_name: brand,
             count: this.llmForm.count,
-            goal: this.llmForm.goal,
-            constraints: this.llmForm.notes,
             "product_ids": this.llmForm.productIds,
             "products": this.llmForm.products,
             async_generation: true,

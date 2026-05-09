@@ -58,6 +58,35 @@ class GenerationResult:
     estimated_cost: float | None = None
 
 
+PROFILE_GENERATION_GOAL_ZH = (
+    "生成可进入 Query Pool 采样的 Profile 草稿。每个 Profile 都必须服务于当前 Segment 的采样边界，"
+    "如果选择了产品，则围绕所选产品的真实能力、典型使用场景、采购/使用决策链路和竞品替换需求生成；"
+    "如果未选择产品，则围绕品牌整体定位和当前 Segment 生成。"
+)
+PROFILE_GENERATION_CONSTRAINTS_ZH = (
+    "不要生成与品牌、Segment 或所选产品无关的 Profile；"
+    "不要套用美妆、护肤、香氛、礼赠等通用消费品模板。"
+    "每个 Profile 需要写清画像、触发需求、决策关注点、可采样边界和排除口径，"
+    "名称不能空泛，不能互相重复。"
+)
+
+
+def profile_generation_prompt_defaults(
+    products: list[dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    """Backend-owned Chinese Profile prompt defaults for Admin LLM generation."""
+    product_contexts = _normalise_product_contexts(products)
+    if not product_contexts:
+        return PROFILE_GENERATION_GOAL_ZH, PROFILE_GENERATION_CONSTRAINTS_ZH
+    product_names = "、".join(
+        item["product_name"] for item in product_contexts[:5] if item.get("product_name")
+    )
+    goal = PROFILE_GENERATION_GOAL_ZH
+    if product_names:
+        goal += f" 本次产品范围：{product_names}。"
+    return goal, PROFILE_GENERATION_CONSTRAINTS_ZH
+
+
 def _bounded_count(value: Any, default: int, min_value: int, max_value: int) -> int:
     try:
         count = int(value)
@@ -811,12 +840,13 @@ class SegmentProfileGenerationService:
         """
         count = _bounded_count(count, 6, 1, 50)
         product_contexts = _normalise_product_contexts(products)
+        default_goal, default_constraints = profile_generation_prompt_defaults(product_contexts)
         payload = {
             "segment": segment,
             "brand_name": brand_name,
             "count": count,
-            "goal": goal,
-            "constraints": constraints,
+            "generation_goal": (goal or "").strip() or default_goal,
+            "generation_constraints": (constraints or "").strip() or default_constraints,
             "product_scope": "selected_products" if product_contexts else "brand",
             "products": product_contexts,
         }
@@ -885,25 +915,25 @@ class SegmentProfileGenerationService:
             if value
         ) or str(segment.get("name") or "Segment")
         archetypes = [
-            ("Evidence seeker", "Needs proof, comparisons, expert backing, and real reviews."),
+            ("证据验证型 Profile", "需要产品能力证据、部署案例、专家背书和真实评价。"),
             (
-                "Promotion optimizer",
-                "Compares bundles, official channels, discounts, and final price.",
+                "预算采购型 Profile",
+                "比较采购成本、服务范围、合同条款、交付周期和总体拥有成本。",
             ),
             (
-                "Scenario buyer",
-                "Frames the question around a concrete occasion and risk of mismatch.",
+                "场景落地型 Profile",
+                "围绕具体业务场景、接入难度、组织协同和失败风险提出问题。",
             ),
             (
-                "Competitor comparer",
-                "Needs a direct standard for comparing substitutes and trade-offs.",
+                "竞品替换型 Profile",
+                "需要用同一套标准比较替代方案、迁移收益、切换成本和取舍。",
             ),
-            ("Repeat buyer", "Cares about long-term experience, availability, and upgrade value."),
-            ("First-time buyer", "Needs a simple buying path and beginner-friendly explanation."),
-            ("Risk checker", "Looks for downsides, after-sales risk, and negative feedback."),
+            ("存量扩容型 Profile", "关注长期使用体验、稳定性、扩容价值和续约风险。"),
+            ("新场景教育型 Profile", "需要低门槛解释、入门路径和业务价值说明。"),
+            ("风险审查型 Profile", "排查负面反馈、售后风险、合规缺口和适配边界。"),
             (
-                "Channel verifier",
-                "Needs trusted source, authenticity, and purchase-channel guidance.",
+                "渠道可信型 Profile",
+                "需要确认官方渠道、服务资质、交付可信度和采购流程。",
             ),
         ]
         items: list[dict[str, Any]] = []
@@ -914,7 +944,7 @@ class SegmentProfileGenerationService:
                     "id": f"P-{suffix}-{index + 1:02d}",
                     "name": title,
                     "demographic": base_demo,
-                    "need": f"{subject}: {need}",
+                    "need": f"{subject}：{need}",
                     "weight": min(1.0, round(0.8 + (index % 5) * 0.05, 2)),
                     "status": "draft",
                     "persona_json": {
