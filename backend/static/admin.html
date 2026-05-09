@@ -8784,6 +8784,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         <div class="flex items-center gap-2 flex-wrap">
           <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-danger/10 text-danger" x-text="errorPanel?.code || 'error'"></span>
           <span class="font-semibold text-ink break-words" x-text="errorPanel?.title || ''"></span>
+          <template x-if="errorPanel?.count && errorPanel.count > 1">
+            <span class="text-[11px] text-ink-muted" x-text="'× ' + errorPanel.count"></span>
+          </template>
           <template x-if="errorQueue && errorQueue.length > 0">
             <span class="text-[11px] text-ink-muted" x-text="'+' + errorQueue.length + ' 条'"></span>
           </template>
@@ -10393,6 +10396,16 @@ function segmentCrudPanel() {
       const timestamp = new Date().toISOString();
       const payload = { code, title, detail, status, requestId, path, timestamp };
       payload.copyText = this.formatErrorCopy(payload);
+      // Light dedup — if the same code+detail is already on the panel, just
+      // bump a counter instead of stacking another card. Keeps a polling
+      // loop that fires the same failure repeatedly from drowning the queue.
+      const sameAsCurrent = this.errorPanel
+        && this.errorPanel.code === payload.code
+        && (this.errorPanel.detail || '') === (payload.detail || '');
+      if (sameAsCurrent) {
+        this.errorPanel.count = (this.errorPanel.count || 1) + 1;
+        return;
+      }
       if (this.errorPanel) {
         this.errorQueue.push(payload);
       } else {
@@ -10400,6 +10413,34 @@ function segmentCrudPanel() {
         this.errorPanelExpanded = false;
         this.errorPanelCopied = false;
       }
+    },
+    /* Surface a long-running task's terminal "failed" state into the sticky
+     * panel. Used by Topic / Prompt / Query polling loops where the HTTP call
+     * succeeded (200) but the task body says it failed (run.status==='failed'
+     * or stop/poll giveup) — those signals never reach the global fetch
+     * wrapper, so they used to vanish in the auto-dismiss bottom-right toast
+     * after ~2.2s. This routes them to the same copyable diagnostic block. */
+    showTaskFailure(actionLabel, source) {
+      let detail = '';
+      let requestId = '';
+      let code = 'task_failed';
+      if (typeof source === 'string') {
+        detail = source;
+      } else if (source && typeof source === 'object') {
+        detail = source.llm_error || source.message || source.detail || '';
+        requestId = source.request_id || source.requestId || '';
+        if (source.code) code = source.code;
+      }
+      this.showErrorFrom({
+        body: {
+          code,
+          title: actionLabel + '失败',
+          detail,
+          request_id: requestId,
+        },
+        status: 0,
+        requestId,
+      });
     },
     formatErrorCopy(e) {
       const lines = [
@@ -14378,7 +14419,10 @@ function adminApp() {
         await this.loadTopicPlanTopics();
         this.toast(body.already_finalized ? 'Topic 生成已结束' : 'Topic 生成已停止');
       } catch (e) {
-        this.toast('Topic 停止失败: ' + (e.message || e));
+        // The fetch wrapper / apiJson already pushed the failure into the
+        // sticky panel; route the contextual hint there too instead of an
+        // auto-dismiss toast.
+        this.showTaskFailure('Topic 停止', e);
       } finally {
         this.topicPlanStopLoading = false;
         this.$nextTick(()=>lucide.createIcons());
@@ -14417,7 +14461,11 @@ function adminApp() {
             const message = this.isGenerationQualityBlocked(run.metrics, run.llm_error)
               ? this.generationQualityBlockedMessage('Topic', run.metrics)
               : (run.llm_error || 'unknown_error');
-            this.toast('Topic 生成失败: ' + message);
+            // run.status==='failed' is a 200 response body — the fetch wrapper
+            // never sees it, so the only place the user used to learn about
+            // the failure was a 2.2s toast. Route to the sticky panel instead
+            // so the diagnostic is copyable.
+            this.showTaskFailure('Topic 生成', { detail: message, request_id: run.request_id, code: 'topic_plan_run_failed' });
           } else if (run.status === 'cancelled') {
             this.topicPlanGenerateLoading = false;
             this.topicPlanActiveRunId = '';
@@ -14435,7 +14483,7 @@ function adminApp() {
             this.topicPlanActiveRunId = '';
             this.topicPlanRunStatus = 'polling_failed';
             this.clearTopicPlanRunPolling();
-            this.toast('Topic 生成状态查询失败: ' + this.topicPlanGenerateError);
+            this.showTaskFailure('Topic 生成状态查询', this.topicPlanGenerateError);
           } else {
             keepPolling = true;
           }
@@ -14522,7 +14570,7 @@ function adminApp() {
         this.topicPlanGenerateError = e.message || 'Topic generation failed';
         this.topicPlanGenerateLoading = false;
         this.topicPlanActiveRunId = '';
-        this.toast('Topic 生成失败: ' + this.topicPlanGenerateError);
+        this.showTaskFailure('Topic 生成', e || this.topicPlanGenerateError);
       } finally {
         this.$nextTick(()=>lucide.createIcons());
       }
@@ -15299,7 +15347,7 @@ function adminApp() {
         await this.loadPromptMatrixTopics();
         this.toast(body.already_finalized ? 'Prompt 生成已结束' : 'Prompt 生成已停止');
       } catch (e) {
-        this.toast('Prompt 停止失败: ' + (e.message || e));
+        this.showTaskFailure('Prompt 停止', e);
       } finally {
         this.promptMatrixStopLoading = false;
         this.$nextTick(()=>lucide.createIcons());
@@ -15338,7 +15386,10 @@ function adminApp() {
             const message = this.isGenerationQualityBlocked(run.metrics, run.llm_error)
               ? this.generationQualityBlockedMessage('Prompt', run.metrics)
               : (run.llm_error || 'unknown_error');
-            this.toast('Prompt 生成失败: ' + message);
+            // Same shape as Topic 生成失败 above — 200 response, status===failed
+            // in body, never reaches the global fetch wrapper. Route to the
+            // sticky panel so the failure is readable + copyable.
+            this.showTaskFailure('Prompt 生成', { detail: message, request_id: run.request_id, code: 'prompt_matrix_run_failed' });
           } else if (run.status === 'cancelled') {
             this.promptMatrixGenerateLoading = false;
             this.promptMatrixActiveRunId = '';
@@ -15358,7 +15409,7 @@ function adminApp() {
             this.promptMatrixActiveRunId = '';
             this.promptMatrixRunStatus = 'polling_failed';
             this.clearPromptMatrixRunPolling();
-            this.toast('Prompt 生成状态查询失败: ' + this.promptMatrixGenerateError);
+            this.showTaskFailure('Prompt 生成状态查询', this.promptMatrixGenerateError);
           } else {
             keepPolling = true;
           }
@@ -15457,7 +15508,7 @@ function adminApp() {
         this.promptMatrixGenerateError = e.message || 'Prompt generation failed';
         this.promptMatrixGenerateLoading = false;
         this.promptMatrixActiveRunId = '';
-        this.toast('Prompt 生成失败: ' + this.promptMatrixGenerateError);
+        this.showTaskFailure('Prompt 生成', e || this.promptMatrixGenerateError);
       } finally {
         this.$nextTick(()=>lucide.createIcons());
       }
@@ -16224,7 +16275,7 @@ function adminApp() {
         await this.loadQueryPoolCandidates();
         this.toast(body.already_finalized ? 'Query 组装已结束' : 'Query 组装已停止');
       } catch (e) {
-        this.toast('Query 停止失败: ' + (e.message || e));
+        this.showTaskFailure('Query 停止', e);
       } finally {
         this.queryPoolStopLoading = false;
         this.$nextTick(()=>lucide.createIcons());
