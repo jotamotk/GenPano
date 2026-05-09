@@ -13,7 +13,6 @@ export default function EmailSentPage() {
 
   const email = searchParams.get('email') || ''
   const type = searchParams.get('type') as 'verify' | 'reset' | null
-  const previewUrl = searchParams.get('previewUrl')
   const [cooldown, setCooldown] = useState(0)
 
   const isReset = type === 'reset'
@@ -115,17 +114,6 @@ export default function EmailSentPage() {
               </div>
             </div>
 
-            {previewUrl && !isReset && (
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="block w-full h-12 px-4 mb-3 text-center leading-[48px] text-base font-semibold text-primary-600 rounded-[10px] border border-primary-200 bg-primary-50 hover:bg-primary-100 transition-colors"
-              >
-                {language === 'zh' ? '打开验证邮件' : 'Open verification email'}
-              </a>
-            )}
-
             {/* Resend button */}
             <button
               type="button"
@@ -140,16 +128,6 @@ export default function EmailSentPage() {
             <p className="text-xs text-gray-400 text-center mt-3">
               {t.emailSent.noEmailHint}
             </p>
-
-            {/* View email link */}
-            <div className="text-center mt-3">
-              <a
-                href={email ? `mailto:${email}` : '#'}
-                className="text-sm text-primary-500 hover:text-primary-600 transition-colors"
-              >
-                {t.emailSent.viewEmail}
-              </a>
-            </div>
           </div>
         </div>
       </div>

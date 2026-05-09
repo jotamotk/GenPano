@@ -134,7 +134,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
             </h1>
           </div>
           <p style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>
-            页面渲染失败。请把下面的诊断信息复制后发给支持，便于我们定位。
+            页面渲染失败。请复制下方诊断信息发送至支持团队，便于排查问题。
           </p>
           <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button

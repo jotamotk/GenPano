@@ -55,7 +55,7 @@ export default function IndustryGroupMap({
                     {g.groupName}
                     {myInGroup && (
                       <span className="ml-1.5 text-[10px] text-[var(--color-accent)]">
-                        (我的集团)
+                        (所属集团)
                       </span>
                     )}
                   </div>

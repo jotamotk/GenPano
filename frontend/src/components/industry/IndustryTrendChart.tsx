@@ -10,7 +10,7 @@ import TrendChart from '../charts/TrendChart';
 
 const LINES = [
   { key: 'industryAvg', label: '行业均值', color: 'var(--color-chart-axis-text)', dashed: true, area: false },
-  { key: 'myBrand',     label: '我的品牌', color: 'var(--color-accent)',         area: true },
+  { key: 'myBrand',     label: '主品牌', color: 'var(--color-accent)',         area: true },
 ];
 
 export default function IndustryTrendChart({ data = [], hasPrimary = false }) {

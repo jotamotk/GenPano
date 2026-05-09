@@ -97,13 +97,13 @@ export default function IndustryLeaderboardTable({
                     {isPrimary && (
                       <span
                         className="inline-block w-1 h-3 bg-[var(--color-accent)] rounded"
-                        aria-label="我的品牌"
+                        aria-label="主品牌"
                       />
                     )}
                     <span className="text-themed-primary">{b.name}</span>
                     {isPrimary && (
                       <span className="text-[10px] text-[var(--color-accent)]">
-                        (我的品牌)
+                        (主品牌)
                       </span>
                     )}
                   </span>

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -235,11 +235,9 @@ export default function BrandSentimentPage() {
           <div className="flex items-baseline justify-between mb-2">
             <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_sentiment.distribution_title')}
+              <InfoTooltip text={t('brand_sentiment.distribution_subtitle', { default: '全引擎汇总' })} />
               {distributionIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_sentiment.distribution_subtitle', { default: '全引擎汇总' })}
-            </span>
           </div>
           <div className="flex items-center justify-center gap-6 mt-2">
             <DonutChart segments={distributionSegments} size={180} />
@@ -259,11 +257,9 @@ export default function BrandSentimentPage() {
           <div className="flex items-baseline justify-between mb-2">
             <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_sentiment.by_engine_title')}
+              <InfoTooltip text={t('brand_sentiment.by_engine_subtitle', { default: '按引擎统计' })} />
               {stackedIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_sentiment.by_engine_subtitle', { default: '按引擎统计' })}
-            </span>
           </div>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={stackedChartData} margin={{ top: 8, right: 16, left: -8, bottom: 0 }}>
@@ -292,11 +288,9 @@ export default function BrandSentimentPage() {
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_sentiment.trend_title')}
+            <InfoTooltip text={t('brand_sentiment.trend_subtitle')} />
             {trendIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_sentiment.trend_subtitle')}
-          </span>
         </div>
         <TrendChart
           data={trendDataLive ?? SENTIMENT_TREND_BY_ENGINE}
@@ -310,9 +304,9 @@ export default function BrandSentimentPage() {
         <div className="flex items-baseline justify-between mb-2 px-1">
           <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             品牌 × Topic 情感热力图
+            <InfoTooltip text="主品牌 + Top 4 竞品 × Top 8 Topic · 红负蓝正 · 点击进入 Topic 详情" />
             {sentimentHeatmapIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">我 + Top 4 竞品 × Top 8 Topic · 红负蓝正 · 点击进入 Topic 详情</span>
         </div>
         <BrandTopicHeatmap
           rows={sentimentHeatmapRows}
@@ -327,11 +321,9 @@ export default function BrandSentimentPage() {
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_sentiment.topic_attribution_title', { default: '哪些 Topic 拉低了情感?' })}
+            <InfoTooltip text={t('brand_sentiment.topic_attribution_subtitle', { default: '负面情感集中的主题识别' })} />
             {attributionIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_sentiment.topic_attribution_subtitle', { default: '负面情感集中的主题识别' })}
-          </span>
         </div>
         <div className="flex flex-col gap-2.5">
           {(topicAttribution || []).slice(0, 5).map((topic: any, idx: number) => (

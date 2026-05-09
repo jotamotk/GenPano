@@ -92,7 +92,7 @@ export default function IndustryRankingHero({
         >
           <div className="flex items-center justify-between mb-2">
             <div className="text-[13px] font-medium text-themed-primary">
-              我的位置 · {primaryBrand.name}
+              主品牌位置 · {primaryBrand.name}
             </div>
             <ArrowRight size={14} className="text-themed-muted" />
           </div>

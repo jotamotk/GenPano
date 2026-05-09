@@ -64,7 +64,7 @@ export default function LeadFormModal({ open, onClose, diagnostic, defaultBrand 
               <label className="text-xs font-medium text-themed-secondary block mb-1.5">联系人姓名</label>
               <input
                 type="text"
-                placeholder="请输入姓名"
+                placeholder="输入姓名"
                 className="t-input w-full text-sm"
               />
             </div>
@@ -81,7 +81,7 @@ export default function LeadFormModal({ open, onClose, diagnostic, defaultBrand 
             <label className="text-xs font-medium text-themed-secondary block mb-1.5">最关心的问题 (可选)</label>
             <textarea
               rows={3}
-              placeholder="描述您最关心的 GEO 优化问题..."
+              placeholder="描述最关心的 GEO 优化问题..."
               className="t-input w-full text-sm resize-none"
             />
           </div>
@@ -96,7 +96,7 @@ export default function LeadFormModal({ open, onClose, diagnostic, defaultBrand 
           </Button>
         </div>
         <p className="text-[11px] text-themed-faint mt-3 text-center">
-          提交后将自动生成品牌 PANO Score 诊断报告 (PDF), 发送至您的邮箱和我们的 BD 团队
+          提交后将自动生成品牌 PANO Score 诊断报告 (PDF), 发送至联系邮箱及 BD 团队
         </p>
       </div>
     </div>

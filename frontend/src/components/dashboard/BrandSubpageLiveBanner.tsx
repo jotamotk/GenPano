@@ -179,7 +179,7 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     if (!competitorMetrics.data) return null
     const c = competitorMetrics.data
     isEmpty = c.competitors.length === 0 && c.primary == null
-    title = `竞品矩阵 — 我品牌 vs ${c.competitors.length} 个竞品`
+    title = `竞品矩阵 — 主品牌 vs ${c.competitors.length} 个竞品`
     endpointLabel = `/v1/projects/${c.project_id.slice(0, 8)}…/competitors/metrics`
     const myScore = c.primary?.avg_geo_score ?? null
     const topCompetitor = [...c.competitors].sort(
@@ -187,7 +187,7 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     )[0]
     cards = [
       {
-        label: '我的 GEO 分',
+        label: '主品牌 GEO 分',
         value: myScore == null ? '—' : myScore.toFixed(1),
       },
       {

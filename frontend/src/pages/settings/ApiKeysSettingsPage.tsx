@@ -211,7 +211,7 @@ function McpConfigCard({
       {!firstKey && (
         <p className="text-[11px] text-themed-muted mt-2">
           {t('settings.mcp.no_key_hint') ||
-            '生成一把 API 密钥后, 这里会显示你的真实 prefix.'}
+            '生成 API 密钥后, 此处将显示真实的 prefix.'}
         </p>
       )}
     </Card>
