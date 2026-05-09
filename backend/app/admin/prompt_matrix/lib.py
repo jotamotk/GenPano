@@ -39,6 +39,7 @@ REVIEW_STATUSES = {"pending", "approved", "rejected"}
 DEFAULT_MAX_PROMPTS = 10
 MAX_PER_TOPIC_LIMIT = 20
 MAX_PROMPTS_HARD_LIMIT = 100_000
+DEFAULT_COMPETITIVE_SCENARIO_AXES = ("price_value", "use_case", "quality_fit")
 
 INTENT_LABELS = {
     "informational": "Information seeking",
@@ -279,23 +280,75 @@ def _topic_has_explicit_brand_anchor(topic: dict[str, Any]) -> bool:
     )
 
 
-def _scope_rotation_for_topic(topic: dict[str, Any]) -> list[dict[str, str]]:
+def _languages_from_combinations(combinations: list[dict[str, Any]]) -> list[str]:
+    languages: list[str] = []
+    for combo in combinations:
+        language = str(combo.get("language") or combo.get("lang") or "").strip()
+        if language and language not in languages:
+            languages.append(language)
+    return languages or list(ALLOWED_LANGUAGES)
+
+
+def _normalized_competitor_contexts(
+    competitors: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for competitor in competitors or []:
+        name = str(competitor.get("name") or competitor.get("competitor_name") or "").strip()
+        if not name:
+            continue
+        axes = competitor.get("scenario_axes") or competitor.get("scenarios") or []
+        if not isinstance(axes, list) or not axes:
+            axes = list(DEFAULT_COMPETITIVE_SCENARIO_AXES)
+        contexts.append(
+            {
+                "competitor_name": name,
+                "competitor_brand_id": competitor.get("brand_id")
+                or competitor.get("competitor_brand_id"),
+                "competitor_source": competitor.get("source") or "llm",
+                "scenario_axes": [str(axis).strip() for axis in axes if str(axis).strip()],
+            }
+        )
+    return contexts or [{"scenario_axes": list(DEFAULT_COMPETITIVE_SCENARIO_AXES)}]
+
+
+def _slot_templates_for_topic(
+    topic: dict[str, Any],
+    languages: list[str],
+    competitors: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    templates: list[dict[str, Any]] = []
+    for language in languages:
+        templates.append({"language": language, "prompt_scope": "non_branded"})
     if _topic_has_explicit_brand_anchor(topic):
-        return [
-            {"prompt_scope": "branded"},
-            {"prompt_scope": "competitive", "competitive_type": "direct_comparison"},
-            {"prompt_scope": "competitive", "competitive_type": "brand_alternative"},
-            {"prompt_scope": "non_branded"},
-            {"prompt_scope": "competitive", "competitive_type": "product_alternative"},
-            {"prompt_scope": "competitive", "competitive_type": "switching"},
-            {"prompt_scope": "competitive", "competitive_type": "shortlist"},
-        ]
-    return [
-        {"prompt_scope": "non_branded"},
-        {"prompt_scope": "competitive", "competitive_type": "shortlist"},
-        {"prompt_scope": "competitive", "competitive_type": "product_alternative"},
-        {"prompt_scope": "competitive", "competitive_type": "brand_alternative"},
-    ]
+        for language in languages:
+            templates.append({"language": language, "prompt_scope": "branded"})
+    competitor_contexts = _normalized_competitor_contexts(competitors)
+    for language in languages:
+        for context in competitor_contexts:
+            axes = context.get("scenario_axes") or list(DEFAULT_COMPETITIVE_SCENARIO_AXES)
+            for index, competitive_type in enumerate(ALLOWED_COMPETITIVE_TYPES):
+                scenario_axis = axes[index % len(axes)]
+                templates.append(
+                    {
+                        "language": language,
+                        "prompt_scope": "competitive",
+                        "competitive_type": competitive_type,
+                        "scenario_axis": scenario_axis,
+                        **{
+                            key: value
+                            for key, value in context.items()
+                            if key
+                            in {
+                                "competitor_name",
+                                "competitor_brand_id",
+                                "competitor_source",
+                            }
+                            and value
+                        },
+                    }
+                )
+    return templates
 
 
 def build_prompt_generation_slots(
@@ -303,6 +356,7 @@ def build_prompt_generation_slots(
     topic: dict[str, Any],
     combinations: list[dict[str, Any]],
     max_per_topic: Any,
+    competitors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Assign prompt scope/type inside the existing per-topic quota.
 
@@ -314,18 +368,39 @@ def build_prompt_generation_slots(
     base_slots = list(combinations or [])
     if not base_slots:
         return []
-    rotation = _scope_rotation_for_topic(topic)
+    languages = _languages_from_combinations(base_slots)
+    templates = _slot_templates_for_topic(topic, languages, competitors)
+    combos_by_language: dict[str, list[dict[str, Any]]] = {
+        language: [
+            combo
+            for combo in base_slots
+            if str(combo.get("language") or combo.get("lang") or "").strip() == language
+        ]
+        for language in languages
+    }
+    combo_offsets = {language: 0 for language in languages}
     slots: list[dict[str, Any]] = []
     for index in range(limit):
-        combo = base_slots[index % len(base_slots)]
-        scope = rotation[index % len(rotation)]
+        template = templates[index % len(templates)]
+        language = str(template.get("language") or languages[index % len(languages)])
+        language_combos = combos_by_language.get(language) or base_slots
+        offset = combo_offsets.get(language, 0)
+        combo = language_combos[offset % len(language_combos)]
+        combo_offsets[language] = offset + 1
         slot: dict[str, Any] = {
             "intent": str(combo.get("intent") or "").strip(),
             "language": str(combo.get("language") or combo.get("lang") or "").strip(),
-            "prompt_scope": scope["prompt_scope"],
+            "prompt_scope": str(template["prompt_scope"]),
         }
-        if scope.get("competitive_type"):
-            slot["competitive_type"] = scope["competitive_type"]
+        for key in (
+            "competitive_type",
+            "competitor_name",
+            "competitor_brand_id",
+            "competitor_source",
+            "scenario_axis",
+        ):
+            if template.get(key):
+                slot[key] = template[key]
         slots.append(slot)
     return slots
 
@@ -469,7 +544,7 @@ def dedupe_prompt_candidates(
 
     db_normalized = {normalize_prompt_text(text) for text in existing_texts if text}
     db_normalized.discard("")
-    batch_normalized: set[str] = set()
+    batch_normalized_by_topic: dict[int, set[str]] = {}
     accepted: list[LLMPromptCandidate] = []
     skipped: list[dict[str, Any]] = []
 
@@ -485,11 +560,12 @@ def dedupe_prompt_candidates(
         if is_near_duplicate_prompt(item.text, db_normalized):
             skipped.append({"text": item.text, "reason": "duplicate_db"})
             continue
-        if is_near_duplicate_prompt(item.text, batch_normalized):
+        topic_batch_normalized = batch_normalized_by_topic.setdefault(item.topic_id, set())
+        if is_near_duplicate_prompt(item.text, topic_batch_normalized):
             skipped.append({"text": item.text, "reason": "duplicate_intra_batch"})
             continue
         accepted.append(item)
-        batch_normalized.add(normalize_prompt_text(item.text))
+        topic_batch_normalized.add(normalize_prompt_text(item.text))
     return accepted, skipped
 
 
@@ -910,6 +986,7 @@ def parse_llm_prompt_candidates(
     known_brands: list[dict[str, Any]],
     default_template_strategy: str = "latest",
     default_template_version: str = "v1",
+    enforce_quality: bool = True,
 ) -> list[LLMPromptCandidate]:
     data = _load_json_object(raw)
     prompts = _extract_llm_items(data, "prompts")
@@ -964,6 +1041,31 @@ def parse_llm_prompt_candidates(
         tags.pop("promptScope", None)
         tags.pop("competitiveType", None)
         tags.pop("competitive_type", None)
+        competitor_name = (
+            item.get("competitor_name")
+            or item.get("competitorName")
+            or tags.get("competitor_name")
+            or tags.get("competitorName")
+        )
+        competitor_brand_id = (
+            item.get("competitor_brand_id")
+            or item.get("competitorBrandId")
+            or tags.get("competitor_brand_id")
+            or tags.get("competitorBrandId")
+        )
+        competitor_source = (
+            item.get("competitor_source")
+            or item.get("competitorSource")
+            or tags.get("competitor_source")
+            or tags.get("competitorSource")
+        )
+        scenario_axis = (
+            item.get("scenario_axis") or item.get("scenarioAxis") or tags.get("scenario_axis")
+        )
+        tags.pop("competitorName", None)
+        tags.pop("competitorBrandId", None)
+        tags.pop("competitorSource", None)
+        tags.pop("scenarioAxis", None)
 
         if intent not in ALLOWED_INTENTS:
             raise PromptMatrixError(
@@ -980,45 +1082,46 @@ def parse_llm_prompt_candidates(
                 "llm_schema_invalid",
                 f"Prompt item #{index + 1} confidence must be between 0 and 1",
             )
-        if not is_natural_user_prompt(text):
-            raise PromptMatrixError(
-                "prompt_not_natural",
-                f"Prompt item #{index + 1} must be a natural consumer question",
-            )
-        if has_prompt_language_mismatch(text, language):
-            raise PromptMatrixError(
-                "prompt_language_mismatch",
-                f"Prompt item #{index + 1} language does not match its text",
-            )
-        if prompt_scope == "non_branded":
-            leaked_terms = detect_brand_leaks(text, known_brands)
-            if leaked_terms:
-                code = (
-                    "category_brand_leak"
-                    if _topic_dimension(topic) == "category"
-                    else "prompt_scope_mismatch"
-                )
+        if enforce_quality:
+            if not is_natural_user_prompt(text):
                 raise PromptMatrixError(
-                    code,
-                    f"Prompt item #{index + 1} leaks a brand name in non_branded scope",
+                    "prompt_not_natural",
+                    f"Prompt item #{index + 1} must be a natural consumer question",
                 )
-        if prompt_scope == "branded" and not prompt_text_has_brand_anchor(
-            text, topic, known_brands
-        ):
-            raise PromptMatrixError(
-                "prompt_scope_mismatch",
-                f"Prompt item #{index + 1} is branded but does not include the topic brand or product",
-            )
-        if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text):
-            raise PromptMatrixError(
-                "prompt_scope_mismatch",
-                f"Prompt item #{index + 1} is competitive but lacks comparison or alternative intent",
-            )
-        if not is_prompt_relevant_to_topic(text, topic, known_brands, language=language):
-            raise PromptMatrixError(
-                "prompt_topic_mismatch",
-                f"Prompt item #{index + 1} does not match its source topic",
-            )
+            if has_prompt_language_mismatch(text, language):
+                raise PromptMatrixError(
+                    "prompt_language_mismatch",
+                    f"Prompt item #{index + 1} language does not match its text",
+                )
+            if prompt_scope == "non_branded":
+                leaked_terms = detect_brand_leaks(text, known_brands)
+                if leaked_terms:
+                    code = (
+                        "category_brand_leak"
+                        if _topic_dimension(topic) == "category"
+                        else "prompt_scope_mismatch"
+                    )
+                    raise PromptMatrixError(
+                        code,
+                        f"Prompt item #{index + 1} leaks a brand name in non_branded scope",
+                    )
+            if prompt_scope == "branded" and not prompt_text_has_brand_anchor(
+                text, topic, known_brands
+            ):
+                raise PromptMatrixError(
+                    "prompt_scope_mismatch",
+                    f"Prompt item #{index + 1} is branded but does not include the topic brand or product",
+                )
+            if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text):
+                raise PromptMatrixError(
+                    "prompt_scope_mismatch",
+                    f"Prompt item #{index + 1} is competitive but lacks comparison or alternative intent",
+                )
+            if not is_prompt_relevant_to_topic(text, topic, known_brands, language=language):
+                raise PromptMatrixError(
+                    "prompt_topic_mismatch",
+                    f"Prompt item #{index + 1} does not match its source topic",
+                )
 
         parsed.append(
             LLMPromptCandidate(
@@ -1034,6 +1137,10 @@ def parse_llm_prompt_candidates(
                     **tags,
                     "prompt_scope": prompt_scope,
                     **({"competitive_type": competitive_type} if competitive_type else {}),
+                    **({"competitor_name": competitor_name} if competitor_name else {}),
+                    **({"competitor_brand_id": competitor_brand_id} if competitor_brand_id else {}),
+                    **({"competitor_source": competitor_source} if competitor_source else {}),
+                    **({"scenario_axis": scenario_axis} if scenario_axis else {}),
                     "source": tags.get("source") or "prompt_matrix",
                     "routing": tags.get("routing") or "deferred_to_query_pool",
                 },
@@ -1097,10 +1204,15 @@ def build_prompt_matrix_messages(
     slot_overrides = config.get("generation_slots_by_topic")
     if not isinstance(slot_overrides, dict):
         slot_overrides = {}
+    competitors_by_topic = config.get("competitors_by_topic")
+    if not isinstance(competitors_by_topic, dict):
+        competitors_by_topic = {}
     for topic in topics:
         topic_id_raw = topic.get("raw_id") or topic.get("id") or 0
         topic_key = str(int(topic_id_raw))
         override_slots = slot_overrides.get(topic_key)
+        topic_competitors_raw = competitors_by_topic.get(topic_key)
+        topic_competitors = topic_competitors_raw if isinstance(topic_competitors_raw, list) else []
         generation_slots = (
             [dict(slot) for slot in override_slots if isinstance(slot, dict)]
             if isinstance(override_slots, list)
@@ -1108,6 +1220,7 @@ def build_prompt_matrix_messages(
                 topic=topic,
                 combinations=combinations,
                 max_per_topic=config.get("max_per_topic"),
+                competitors=topic_competitors,
             )
         )
         entry: dict[str, Any] = {
@@ -1118,6 +1231,7 @@ def build_prompt_matrix_messages(
             "dimension": _topic_dimension(topic) or "brand",
             "required_focus_terms": sorted(topic_relevance_terms(topic, known_brands))[:12],
             "generation_slots": generation_slots,
+            "competitors": topic_competitors[:5],
         }
         # Module C-4: surface SKU context to the LLM when the topic is pinned
         # to a specific product. Prompts generated under this topic must
@@ -1139,6 +1253,9 @@ def build_prompt_matrix_messages(
                 "language": "zh-CN|en-US",
                 "prompt_scope": "non_branded|branded|competitive",
                 "competitive_type": "direct_comparison|brand_alternative|product_alternative|switching|shortlist|null",
+                "competitor_name": "copy generation slot competitor_name when competitive, else null",
+                "competitor_brand_id": "copy generation slot competitor_brand_id when present, else null",
+                "scenario_axis": "copy generation slot scenario_axis when competitive, else null",
                 "template_strategy": config.get("template_strategy", "latest"),
                 "template_version": "v1",
                 "text": "A natural consumer question",
@@ -1149,6 +1266,9 @@ def build_prompt_matrix_messages(
                     "routing": "deferred_to_query_pool",
                     "prompt_scope": "copy prompt_scope",
                     "competitive_type": "copy competitive_type when prompt_scope is competitive",
+                    "competitor_name": "copy competitor_name when prompt_scope is competitive and slot has one",
+                    "competitor_brand_id": "copy competitor_brand_id when slot has one",
+                    "scenario_axis": "copy scenario_axis when prompt_scope is competitive",
                 },
             }
         ]
@@ -1205,7 +1325,7 @@ def build_prompt_matrix_messages(
         "S1. 每条 output.prompts[i] 必须写 prompt_scope，且只能是 non_branded / branded / competitive；同时复制到 tags.prompt_scope。legacy competitor 只用于读取旧数据，新输出不要使用。\n"
         "S2. non_branded：围绕 topic.title 的品类、功能、场景或问题提问，禁止出现 known_brand_terms、selected brand alias 或竞品名。\n"
         "S3. branded：可以自然包含 topic.brand 或 consumer_aliases，用来问该品牌/该产品相关问题，但不要写成品牌营销标题。\n"
-        "S4. competitive：必须按 generation_slots 中的 competitive_type 做替代、对比、平替、切换或 shortlist 角度；如果 payload 没给明确竞品，不要杜撰具体竞品名，可写“同类品牌/平替/竞品”。\n"
+        "S4. competitive：必须按 generation_slots 中的 competitive_type、competitor_name 和 scenario_axis 做替代、对比、平替、切换或 shortlist 角度；输出时把槽位的 competitor_name、competitor_brand_id、scenario_axis 复制到顶层字段和 tags；如果槽位没有明确竞品，不要杜撰具体竞品名，可写“同类品牌/平替/竞品”。\n"
         "S5. Topic 层不存品牌词，品牌/竞品词只在 Prompt 的 branded 或 competitive scope 出现；Query 层只继承 scope 和 competitive_type 并加入 Profile。\n"
         "S6. 每条 prompt 必须对应 payload.topics[].generation_slots 里的一个槽位；不要因为 scope 增多而额外生成更多条。\n\n"
         "前置质检规则，生成时必须主动满足，不要依赖后端丢弃：\n"

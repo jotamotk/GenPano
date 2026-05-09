@@ -50,6 +50,19 @@ def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:
     assert "competitive_type" in html
 
 
+def test_prompt_matrix_candidate_rows_show_quality_gate_badges() -> None:
+    html = _admin_html()
+
+    assert "promptMatrixQualityGateLabel(item)" in html
+    assert "promptMatrixQualityGateReason(item)" in html
+    assert "quality_gate_status" in html
+    assert "quality_gate_reason" in html
+    assert "promptMatrixCandidateQualityGate: 'all'" in html
+    assert 'x-model="promptMatrixCandidateQualityGate"' in html
+    assert "qp.set('quality_gate', this.promptMatrixCandidateQualityGate)" in html
+    assert "质检拦截" in html
+
+
 def test_prompt_matrix_copy_distinguishes_quantity_from_allowed_cap() -> None:
     html = _admin_html()
     max_per_topic_index = html.index('x-model.number="promptMatrixConfig.maxPerTopic"')

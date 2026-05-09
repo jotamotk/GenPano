@@ -91,6 +91,7 @@ def _llm_prompt(
     prompt_scope: str = "branded",
     language: str = "zh-CN",
     competitive_type: str | None = None,
+    tags_extra: dict[str, Any] | None = None,
 ) -> Any:
     from app.admin.prompt_matrix.lib import LLMPromptCandidate
 
@@ -106,6 +107,7 @@ def _llm_prompt(
         tags={
             "prompt_scope": prompt_scope,
             **({"competitive_type": competitive_type} if competitive_type else {}),
+            **(tags_extra or {}),
         },
     )
 
@@ -114,7 +116,7 @@ def _topic(*, raw_id: int = 1, brand_id: int = 1, brand: str = "NIKE") -> dict[s
     return {
         "id": f"T-{raw_id}",
         "raw_id": raw_id,
-        "title": "Test topic",
+        "title": "beginner running shoes",
         "brand": brand,
         "brand_id": brand_id,
         "industry": "footwear",
@@ -274,11 +276,10 @@ async def test_generate_sync_inserts_candidates_and_completes(
 
 
 @pytest.mark.asyncio
-async def test_generate_sync_quality_blocked_marks_failed(
+async def test_generate_sync_quality_blocked_candidates_remain_reviewable(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):
-    """LLM returns only rejected items -> run.status='failed' /
-    llm_error='quality_gate_blocked'."""
+    """LLM quality failures are still visible as reviewable candidates."""
     monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
     _patch_db(
         monkeypatch,
@@ -311,22 +312,188 @@ async def test_generate_sync_quality_blocked_marks_failed(
             select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
         )
     ).scalar_one()
-    assert run.status == "failed"
-    assert run.llm_error == "quality_gate_blocked"
+    assert run.status == "completed"
+    assert run.llm_error is None
+    assert run.candidates_generated == 1
+    assert run.metrics_json["accepted"] == 0
+    assert run.metrics_json["reviewable_blocked"] == 1
+    assert run.metrics_json["hard_rejected"] == 0
+    assert run.metrics_json["rejected_total"] == 1
 
-    audit = list(
-        (
-            await db_session.execute(
-                select(AdminAuditLog).where(
-                    AdminAuditLog.action == "generate_prompt_matrix_quality_blocked",
-                    AdminAuditLog.resource_id == run_id,
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.status == "pending"
+    assert candidate.tags["quality_gate_status"] == "blocked"
+    assert candidate.tags["quality_gate_reason"] == "prompt_not_natural"
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_persists_discovered_competitors_in_run_config(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    from app.admin.prompt_matrix import generation as gen_mod
+    from app.admin.topic_plan.lib import DoubaoConfig
+
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[_topic()]),
+        fetch_brand_rows=AsyncMock(return_value=[{"id": 1, "name": "NIKE", "aliases": []}]),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+
+    class FakeClient:
+        def __init__(self, config=None):
+            self.config = DoubaoConfig(api_key="test", base_url="http://fake", model="doubao-test")
+
+        async def generate_prompt_batches(self, **kwargs):
+            kwargs["config"]["competitors_by_topic"] = {
+                "1": [
+                    {
+                        "name": "Adidas",
+                        "brand_id": 2,
+                        "source": "llm",
+                        "scenario_axes": ["daily training"],
+                    }
+                ]
+            }
+            yield (
+                [
+                    _llm_prompt(
+                        "Is NIKE better than Adidas for beginner running shoes?",
+                        language="en-US",
+                        prompt_scope="competitive",
+                        competitive_type="direct_comparison",
+                        tags_extra={
+                            "competitor_name": "Adidas",
+                            "competitor_brand_id": 2,
+                            "scenario_axis": "daily training",
+                        },
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+
+    monkeypatch.setattr(gen_mod, "PromptMatrixClient", FakeClient)
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 1, "max_per_topic": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    run = (
+        await db_session.execute(
+            select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
+        )
+    ).scalar_one()
+    assert run.request_config["competitors_by_topic"]["1"][0]["name"] == "Adidas"
+    assert run.request_config["competitors_by_topic"]["1"][0]["source"] == "llm"
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_surfaces_reviewable_quality_blocks_for_full_estimate(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    """Estimated 80 can produce 24 clean + 56 quality-blocked candidates."""
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    brands = ["NIKE", "Adidas", "Puma", "Asics"]
+    topics = [_topic(raw_id=i, brand_id=i, brand=brand) for i, brand in enumerate(brands, start=1)]
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=topics),
+        fetch_brand_rows=AsyncMock(
+            return_value=[
+                {"id": i, "name": brand, "industry_id": "footwear", "aliases": []}
+                for i, brand in enumerate(brands, start=1)
+            ]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    prompts = []
+    valid_templates = [
+        "Is {brand} a good beginner running shoes choice for wet road jogging?",
+        "Should wide feet runners consider {brand} beginner running shoes?",
+        "Can {brand} beginner running shoes handle light gym training?",
+        "Are {brand} beginner running shoes practical for daily school commute?",
+        "Do {brand} beginner running shoes feel soft on treadmill runs?",
+        "Would {brand} beginner running shoes work for long weekend errands?",
+    ]
+    blocked_templates = [
+        "Could {brand} beginner running shoes handle rainy park jogging?",
+        "Are flat feet support needs okay with {brand} beginner running shoes?",
+        "Would {brand} beginner running shoes be useful on airport travel days?",
+        "Can someone standing at work wear {brand} beginner running shoes?",
+        "Do {brand} beginner running shoes feel stable on city pavement walks?",
+        "Are {brand} beginner running shoes soft enough for easy recovery runs?",
+        "Could outdoor stair workouts damage {brand} beginner running shoes?",
+        "Should I pack {brand} beginner running shoes for a summer holiday?",
+        "Are morning dog walks comfortable in {brand} beginner running shoes?",
+        "Can {brand} beginner running shoes match casual denim outfits?",
+        "Would a beginner half marathon be too much for {brand} beginner running shoes?",
+        "Are {brand} beginner running shoes discreet enough for office lunch breaks?",
+        "Could {brand} beginner running shoes survive light hiking paths?",
+        "Do evening neighborhood laps feel cushioned in {brand} beginner running shoes?",
+    ]
+    for topic in topics:
+        topic_id = int(topic["raw_id"])
+        brand = str(topic["brand"])
+        for template in valid_templates:
+            prompts.append(
+                _llm_prompt(
+                    template.format(brand=brand),
+                    topic_id=topic_id,
+                    language="en-US",
                 )
             )
+        for template in blocked_templates:
+            prompts.append(
+                _llm_prompt(
+                    template.format(brand=brand),
+                    topic_id=topic_id,
+                    language="zh-CN",
+                )
+            )
+    _patch_client(monkeypatch, [(prompts, {"model": "doubao-test", "usage": {}})])
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={
+            "topic_ids": [1, 2, 3, 4],
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 20,
+            "max_prompts": 80,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    run_id = body["run_id"]
+    assert body["summary"]["estimated"] == 80
+    assert len(body["candidates"]) == 80
+
+    run = (
+        await db_session.execute(
+            select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
         )
+    ).scalar_one()
+    assert run.status == "completed"
+    assert run.candidates_generated == 80
+    assert run.metrics_json["accepted"] == 24
+    assert run.metrics_json["reviewable_blocked"] == 56
+    assert run.metrics_json["hard_rejected"] == 0
+    assert run.metrics_json["rejected_total"] == 56
+
+    cands = list(
+        (await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id)))
         .scalars()
         .all()
     )
-    assert len(audit) == 1
+    assert len(cands) == 80
+    assert sum(1 for cand in cands if cand.tags.get("quality_gate_status") == "blocked") == 56
 
 
 @pytest.mark.asyncio

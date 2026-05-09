@@ -25,6 +25,7 @@ from app.admin.prompt_matrix.lib import (
     detect_brand_leaks,
     has_prompt_language_mismatch,
     is_natural_user_prompt,
+    is_prompt_relevant_to_topic,
     merge_usage,
     normalize_competitive_type,
     normalize_prompt_scope,
@@ -33,8 +34,62 @@ from app.admin.prompt_matrix.lib import (
     sample_existing_for_context,
 )
 from app.admin.prompt_matrix.llm import PromptMatrixClient
+from app.admin.topic_plan.layer_classifier import reject_reason
 
 logger = logging.getLogger(__name__)
+
+REVIEWABLE_QUALITY_REASONS = {
+    "looks_like_topic",
+    "looks_like_query",
+    "prompt_not_natural",
+    "prompt_language_mismatch",
+    "category_brand_leak",
+    "prompt_scope_mismatch",
+    "prompt_topic_mismatch",
+}
+
+
+def _reviewable_quality_issue(
+    *,
+    text: str,
+    language: str,
+    prompt_scope: str,
+    topic: dict[str, Any],
+    known_brands: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not is_natural_user_prompt(text):
+        return {"reason": "prompt_not_natural", "message": "Prompt is not a natural user question"}
+    layer_reason = reject_reason(text, "prompt")
+    if layer_reason in REVIEWABLE_QUALITY_REASONS:
+        return {"reason": layer_reason, "message": "Prompt crosses the prompt layer boundary"}
+    if has_prompt_language_mismatch(text, language):
+        return {"reason": "prompt_language_mismatch", "message": "Prompt language does not match"}
+    if prompt_scope == "non_branded":
+        leaked = detect_brand_leaks(text, known_brands)
+        if leaked:
+            reason = (
+                "category_brand_leak"
+                if topic.get("dimension_key") == "category"
+                else "prompt_scope_mismatch"
+            )
+            return {
+                "reason": reason,
+                "message": "Non-branded prompt contains brand terms",
+                "leaks": leaked[:5],
+            }
+    if prompt_scope == "branded" and not prompt_text_has_brand_anchor(text, topic, known_brands):
+        return {
+            "reason": "prompt_scope_mismatch",
+            "message": "Branded prompt must include the topic brand or product",
+        }
+    if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text):
+        return {
+            "reason": "prompt_scope_mismatch",
+            "message": "Competitive prompt must include comparison or alternative intent",
+        }
+    if not is_prompt_relevant_to_topic(text, topic, known_brands, language=language):
+        return {"reason": "prompt_topic_mismatch", "message": "Prompt does not match its topic"}
+    return None
 
 
 async def _is_run_cancelled(session: AsyncSession, run_id: str) -> bool:
@@ -70,7 +125,7 @@ async def _insert_candidate_batch(
     if remaining <= 0:
         return []
     accepted, batch_skipped = dedupe_prompt_candidates(
-        candidates, existing_prompts, max_count=remaining
+        candidates, existing_prompts, max_count=remaining, layer_check=False
     )
     skipped.extend(batch_skipped)
     inserted: list[dict[str, Any]] = []
@@ -91,12 +146,6 @@ async def _insert_candidate_batch(
             continue
         text_v = item.get("text") or ""
         language = item.get("language") or ""
-        if not is_natural_user_prompt(text_v):
-            skipped.append({"text": text_v, "reason": "prompt_not_natural"})
-            continue
-        if has_prompt_language_mismatch(text_v, language):
-            skipped.append({"text": text_v, "reason": "prompt_language_mismatch"})
-            continue
         raw_tags_value = item.get("tags")
         raw_tags: dict[str, Any] = raw_tags_value if isinstance(raw_tags_value, dict) else {}
         tags = {k: v for k, v in raw_tags.items() if k != "engines"}
@@ -117,36 +166,13 @@ async def _insert_candidate_batch(
         except PromptMatrixError as error:
             skipped.append({"text": text_v, "reason": error.code, "message": error.message})
             continue
-        if prompt_scope == "non_branded":
-            leaked = detect_brand_leaks(text_v, known_brands)
-            if leaked:
-                reason = (
-                    "category_brand_leak"
-                    if topic.get("dimension_key") == "category"
-                    else "prompt_scope_mismatch"
-                )
-                skipped.append({"text": text_v, "reason": reason, "leaks": leaked[:5]})
-                continue
-        if prompt_scope == "branded" and not prompt_text_has_brand_anchor(
-            text_v, topic, known_brands
-        ):
-            skipped.append(
-                {
-                    "text": text_v,
-                    "reason": "prompt_scope_mismatch",
-                    "message": "branded prompt must include the topic brand or product",
-                }
-            )
-            continue
-        if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text_v):
-            skipped.append(
-                {
-                    "text": text_v,
-                    "reason": "prompt_scope_mismatch",
-                    "message": "competitive prompt must include comparison or alternative intent",
-                }
-            )
-            continue
+        quality_issue = _reviewable_quality_issue(
+            text=text_v,
+            language=language,
+            prompt_scope=prompt_scope,
+            topic=topic,
+            known_brands=known_brands,
+        )
         tags.pop("promptScope", None)
         tags.pop("competitiveType", None)
         tags.pop("competitive_type", None)
@@ -157,6 +183,18 @@ async def _insert_candidate_batch(
             "source": "prompt_matrix",
             "routing": "deferred_to_query_pool",
         }
+        if quality_issue:
+            tags = {
+                **tags,
+                "quality_gate_status": "blocked",
+                "quality_gate_reason": quality_issue["reason"],
+                "quality_gate_message": quality_issue.get("message") or quality_issue["reason"],
+                **(
+                    {"quality_gate_leaks": quality_issue["leaks"]}
+                    if quality_issue.get("leaks")
+                    else {}
+                ),
+            }
 
         row = PromptCandidate(
             id=str(uuid.uuid4()),
@@ -232,6 +270,7 @@ async def _finalize_run(
     candidates_generated: int,
     metrics: dict[str, Any] | None = None,
     llm_error: str | None = None,
+    request_config: dict[str, Any] | None = None,
 ) -> None:
     from datetime import UTC, datetime
 
@@ -249,10 +288,22 @@ async def _finalize_run(
     run.candidates_generated = candidates_generated
     if metrics is not None:
         run.metrics_json = dict(metrics)
+    if request_config is not None:
+        run.request_config = dict(request_config)
     if llm_error is not None:
         run.llm_error = llm_error
     run.completed_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
+
+
+def _request_config_with_generation_context(
+    request_config: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(request_config)
+    for key in ("competitors_by_topic", "competitor_discovery_error"):
+        if config.get(key):
+            merged[key] = config[key]
+    return merged
 
 
 def run_failed_status_code(error_code: str | None) -> int:
@@ -327,6 +378,7 @@ async def execute_generation(
             )
 
         if cancelled or await _is_run_cancelled(session, run_id):
+            final_request_config = _request_config_with_generation_context(request_config, config)
             await _finalize_run(
                 session,
                 run_id=run_id,
@@ -334,6 +386,7 @@ async def execute_generation(
                 llm_model=llm_model,
                 usage=usage,
                 candidates_generated=len(inserted),
+                request_config=final_request_config,
             )
             await emit_audit(
                 session,
@@ -343,7 +396,7 @@ async def execute_generation(
                 resource_type="prompt_generation_run",
                 resource_id=run_id,
                 after={
-                    "request_config": request_config,
+                    "request_config": final_request_config,
                     "estimated_prompts": estimated,
                     "candidates_generated": len(inserted),
                     "batches": batches,
@@ -361,14 +414,34 @@ async def execute_generation(
 
         from app.admin.topic_plan.db import compute_generation_metrics
 
+        quality_passed = sum(
+            1 for row in inserted if (row.get("tags") or {}).get("quality_gate_status") != "blocked"
+        )
+        reviewable_blocked = len(inserted) - quality_passed
         metrics = compute_generation_metrics(
             requested=estimated,
-            accepted=len(inserted),
+            accepted=quality_passed,
             skipped=skipped,
             batches=batches,
             llm_model=llm_model,
         )
+        hard_rejected = len(skipped)
+        metrics.update(
+            {
+                "reviewable_blocked": reviewable_blocked,
+                "hard_rejected": hard_rejected,
+                "visible_candidates": len(inserted),
+                "rejected_total": reviewable_blocked + hard_rejected,
+                "quality_blocked": len(inserted) == 0 and hard_rejected > 0,
+                **(
+                    {"competitor_discovery_error": config["competitor_discovery_error"]}
+                    if config.get("competitor_discovery_error")
+                    else {}
+                ),
+            }
+        )
         terminal = "failed" if metrics.get("quality_blocked") else "completed"
+        final_request_config = _request_config_with_generation_context(request_config, config)
         await _finalize_run(
             session,
             run_id=run_id,
@@ -378,6 +451,7 @@ async def execute_generation(
             candidates_generated=len(inserted),
             metrics=metrics,
             llm_error="quality_gate_blocked" if metrics.get("quality_blocked") else None,
+            request_config=final_request_config,
         )
         action = (
             "generate_prompt_matrix_quality_blocked"
@@ -392,7 +466,7 @@ async def execute_generation(
             resource_type="prompt_generation_run",
             resource_id=run_id,
             after={
-                "request_config": request_config,
+                "request_config": final_request_config,
                 "estimated_prompts": estimated,
                 "candidates_generated": len(inserted),
                 "batches": batches,
@@ -422,13 +496,29 @@ async def execute_generation(
 
         metrics = compute_generation_metrics(
             requested=estimated,
-            accepted=len(inserted),
+            accepted=sum(
+                1
+                for row in inserted
+                if (row.get("tags") or {}).get("quality_gate_status") != "blocked"
+            ),
             skipped=skipped,
             batches=batches,
             llm_model=llm_model,
         )
+        reviewable_blocked = sum(
+            1 for row in inserted if (row.get("tags") or {}).get("quality_gate_status") == "blocked"
+        )
         metrics.update(
             {
+                "reviewable_blocked": reviewable_blocked,
+                "hard_rejected": len(skipped),
+                "visible_candidates": len(inserted),
+                "rejected_total": reviewable_blocked + len(skipped),
+                **(
+                    {"competitor_discovery_error": config["competitor_discovery_error"]}
+                    if config.get("competitor_discovery_error")
+                    else {}
+                ),
                 "partial_failure": bool(inserted),
                 "batch_error_code": topic_error.code,
                 "batch_error_message": topic_error.message,
@@ -436,6 +526,7 @@ async def execute_generation(
         )
         llm_error_detail = f"{topic_error.code}: {topic_error.message}"
         try:
+            final_request_config = _request_config_with_generation_context(request_config, config)
             await _finalize_run(
                 session,
                 run_id=run_id,
@@ -445,6 +536,7 @@ async def execute_generation(
                 candidates_generated=len(inserted),
                 metrics=metrics,
                 llm_error=llm_error_detail,
+                request_config=final_request_config,
             )
             await emit_audit(
                 session,
@@ -454,7 +546,7 @@ async def execute_generation(
                 resource_type="prompt_generation_run",
                 resource_id=run_id,
                 after={
-                    "request_config": request_config,
+                    "request_config": final_request_config,
                     "error": topic_error.code,
                     "error_message": topic_error.message,
                     "candidates_generated": len(inserted),

@@ -4743,6 +4743,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <option :value="String(brand.id)" x-text="brand.name"></option>
                             </template>
                           </select>
+                          <select x-model="promptMatrixCandidateQualityGate" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部质检</option>
+                            <option value="blocked">质检拦截</option>
+                          </select>
                           <select x-model.number="promptMatrixCandidatePerPage" @change="onPromptMatrixCandidatePageSizeChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                             <option value="10">10 / 页</option>
                             <option value="20">20 / 页</option>
@@ -4808,7 +4812,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                   <template x-if="promptMatrixCompetitiveTypeLabel(item)">
                                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="promptMatrixCompetitiveTypeLabel(item)"></span>
                                   </template>
+                                  <template x-if="promptMatrixQualityGateLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-danger/10 text-danger text-[10px] font-semibold" x-text="promptMatrixQualityGateLabel(item)"></span>
+                                  </template>
                                 </div>
+                                <template x-if="promptMatrixQualityGateReason(item)">
+                                  <div class="text-[11px] text-danger mt-1 leading-relaxed" x-text="promptMatrixQualityGateReason(item)"></div>
+                                </template>
                               </td>
                               <td class="px-4 py-3">
                                 <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
@@ -11729,6 +11739,7 @@ function adminApp() {
     promptMatrixCandidateStatusCounts: { pending: 0, approved: 0, rejected: 0, all: 0 },
     promptMatrixCandidateQuery: '',
     promptMatrixCandidateBrand: 'all',
+    promptMatrixCandidateQualityGate: 'all',
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
     promptMatrixPromptLanguage: '',
@@ -15066,6 +15077,24 @@ function adminApp() {
       return labels[value] || value;
     },
 
+    promptMatrixQualityGateValue(item){
+      const tags = (item && item.tags) || {};
+      const raw = (item && (item.quality_gate_status || item.qualityGateStatus)) || tags.quality_gate_status || tags.qualityGateStatus || '';
+      return String(raw || '').trim().toLowerCase();
+    },
+
+    promptMatrixQualityGateLabel(item){
+      return this.promptMatrixQualityGateValue(item) === 'blocked' ? '质检拦截' : '';
+    },
+
+    promptMatrixQualityGateReason(item){
+      if (this.promptMatrixQualityGateValue(item) !== 'blocked') return '';
+      const tags = (item && item.tags) || {};
+      const reason = (item && (item.quality_gate_reason || item.qualityGateReason)) || tags.quality_gate_reason || tags.qualityGateReason || '';
+      const message = (item && (item.quality_gate_message || item.qualityGateMessage)) || tags.quality_gate_message || tags.qualityGateMessage || '';
+      return message || this.rejectionReasonLabel(reason);
+    },
+
     promptRoutingLabel(item){
       const routing = (item && item.routing) || (item && item.tags && item.tags.routing);
       if (routing && routing !== 'deferred_to_query_pool') return routing;
@@ -15209,6 +15238,7 @@ function adminApp() {
         });
         if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
         if (this.promptMatrixCandidateBrand && this.promptMatrixCandidateBrand !== 'all') qp.set('brand_id', this.promptMatrixCandidateBrand);
+        if (this.promptMatrixCandidateQualityGate && this.promptMatrixCandidateQualityGate !== 'all') qp.set('quality_gate', this.promptMatrixCandidateQualityGate);
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;
         const res = await fetch('/api/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);

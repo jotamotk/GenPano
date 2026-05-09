@@ -7,6 +7,7 @@ DoubaoTopicPlanClient port shipped in Phase 3 B.1).
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -25,8 +26,10 @@ from app.admin.prompt_matrix.lib import (
     llm_error_detail,
     llm_response_error_detail,
     merge_usage,
+    normalize_prompt_text,
     over_request_count,
     parse_llm_prompt_candidates,
+    strip_markdown_fence,
     usage_to_dict,
 )
 from app.admin.topic_plan.lib import (
@@ -54,11 +57,45 @@ def _slots_for_topic(topic: dict[str, Any], config: dict[str, Any]) -> list[dict
         config.get("language_count"),
         config.get("max_per_topic"),
     )
+    competitors_by_topic = config.get("competitors_by_topic")
+    topic_competitors: list[dict[str, Any]] = []
+    key = _topic_key(topic)
+    if isinstance(competitors_by_topic, dict) and key:
+        raw_competitors = competitors_by_topic.get(key)
+        if isinstance(raw_competitors, list):
+            topic_competitors = [
+                competitor for competitor in raw_competitors if isinstance(competitor, dict)
+            ]
     return build_prompt_generation_slots(
         topic=topic,
         combinations=combinations,
         max_per_topic=config.get("max_per_topic"),
+        competitors=topic_competitors,
     )
+
+
+def _needs_competitor_discovery(
+    topics: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> bool:
+    if isinstance(config.get("competitors_by_topic"), dict):
+        return False
+    for topic in topics:
+        for slot in _slots_for_topic(topic, config):
+            if slot.get("prompt_scope") == "competitive":
+                return True
+    return False
+
+
+def _known_brand_by_name(known_brands: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for brand in known_brands:
+        names = [brand.get("name"), *(brand.get("aliases") or [])]
+        for name in names:
+            normalized = normalize_prompt_text(str(name or ""))
+            if normalized:
+                result[normalized] = brand
+    return result
 
 
 def _slot_batches(
@@ -173,6 +210,143 @@ class PromptMatrixClient:
             batches += 1
         return all_prompts, {"model": self.config.model, "usage": usage, "batches": batches}
 
+    async def _discover_topic_competitors(
+        self,
+        *,
+        topics: list[dict[str, Any]],
+        known_brands: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        brand_lookup = _known_brand_by_name(known_brands)
+        payload = {
+            "topics": [
+                {
+                    "topic_id": int(topic.get("raw_id") or topic.get("id") or 0),
+                    "title": topic.get("title") or topic.get("text") or "",
+                    "brand": topic.get("brand") or topic.get("brand_name") or "",
+                    "industry": topic.get("industry") or topic.get("industry_id") or "",
+                    "dimension": topic.get("dimension_key") or topic.get("dimension") or "",
+                }
+                for topic in topics
+                if _topic_key(topic)
+            ],
+            "known_brands": [
+                {
+                    "id": brand.get("id"),
+                    "name": brand.get("name"),
+                    "industry": brand.get("industry_id") or brand.get("industry_name") or "",
+                    "aliases": brand.get("aliases") or [],
+                }
+                for brand in known_brands[:200]
+            ],
+            "output_schema": {
+                "competitors_by_topic": {
+                    "1": [
+                        {
+                            "name": "Competitor brand name",
+                            "scenario_axes": ["price_value", "use_case", "quality_fit"],
+                        }
+                    ]
+                }
+            },
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You find realistic competitor brands for Prompt Matrix generation. "
+                    "Return strict JSON only. Prefer brands from known_brands when they fit, "
+                    "but include well-known market competitors when the local KG is incomplete. "
+                    "Return at most 3 competitors per topic and 2-4 short scenario_axes per competitor."
+                ),
+            },
+            {
+                "role": "user",
+                "content": "Find competitors for these topics:\n"
+                + json.dumps(payload, ensure_ascii=False),
+            },
+        ]
+        timeout_seconds = clamp_int(
+            os.getenv("PROMPT_MATRIX_LLM_COMPETITOR_TIMEOUT_SECONDS") or 45,
+            45,
+            15,
+            120,
+        )
+        url = self.config.base_url.rstrip("/") + "/chat/completions"
+        body = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 2048,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.post(url, json=body, headers=headers)
+        except httpx.RequestError as error:
+            raise PromptMatrixError(
+                "competitor_discovery_failed",
+                "Prompt Matrix competitor discovery failed: " + llm_error_detail(error),
+            ) from error
+        if response.status_code != 200:
+            raise PromptMatrixError(
+                "competitor_discovery_failed",
+                "Prompt Matrix competitor discovery failed: " + llm_response_error_detail(response),
+            )
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise PromptMatrixError(
+                "competitor_discovery_failed",
+                "Prompt Matrix competitor discovery returned invalid JSON",
+            ) from error
+        choices = data.get("choices") if isinstance(data, dict) else []
+        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+        content = message.get("content") if isinstance(message, dict) else "{}"
+        try:
+            parsed = json.loads(strip_markdown_fence(content or "{}"))
+        except json.JSONDecodeError as error:
+            raise PromptMatrixError(
+                "competitor_discovery_failed",
+                "Prompt Matrix competitor discovery returned invalid JSON",
+            ) from error
+        raw_map = parsed.get("competitors_by_topic") if isinstance(parsed, dict) else {}
+        if not raw_map and isinstance(parsed, dict):
+            raw_map = parsed
+        if not isinstance(raw_map, dict):
+            return {}
+        result: dict[str, list[dict[str, Any]]] = {}
+        for topic_key, raw_competitors in raw_map.items():
+            try:
+                normalized_topic_key = str(int(topic_key))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(raw_competitors, list):
+                continue
+            competitors: list[dict[str, Any]] = []
+            for raw in raw_competitors[:3]:
+                if not isinstance(raw, dict):
+                    continue
+                name = str(raw.get("name") or raw.get("competitor_name") or "").strip()
+                if not name:
+                    continue
+                matched = brand_lookup.get(normalize_prompt_text(name))
+                axes = raw.get("scenario_axes") or raw.get("scenarios") or []
+                competitors.append(
+                    {
+                        "name": matched.get("name") if matched else name,
+                        "brand_id": matched.get("id") if matched else None,
+                        "source": "llm",
+                        "scenario_axes": axes if isinstance(axes, list) else [],
+                    }
+                )
+            if competitors:
+                result[normalized_topic_key] = competitors
+        return result
+
     async def generate_prompt_batches(
         self,
         *,
@@ -194,6 +368,17 @@ class PromptMatrixClient:
         max_prompts = clamp_int(
             config.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
         )
+        if _needs_competitor_discovery(topics, config):
+            try:
+                config["competitors_by_topic"] = await self._discover_topic_competitors(
+                    topics=topics,
+                    known_brands=known_brands,
+                )
+            except PromptMatrixError as error:
+                config["competitor_discovery_error"] = {
+                    "code": error.code,
+                    "message": error.message,
+                }
         generated_prompts: list[LLMPromptCandidate] = []
         for batch, slots_by_topic, slot_count in _slot_batches(
             topics=topics,
@@ -294,6 +479,7 @@ class PromptMatrixClient:
             known_brands=known_brands,
             default_template_strategy=config.get("template_strategy") or "latest",
             default_template_version="v1",
+            enforce_quality=False,
         )
         usage = usage_to_dict(data.get("usage"))
         return prompts, {"model": self.config.model, "usage": usage}

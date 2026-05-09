@@ -388,8 +388,57 @@ async def test_candidates_list_filters_by_brand(client, admin_operator, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_candidates_list_filters_quality_gate_blocked(
+    client, admin_operator, db_session: AsyncSession
+):
+    for i, tags in enumerate(
+        [
+            {"quality_gate_status": "blocked", "quality_gate_reason": "prompt_language_mismatch"},
+            {},
+        ]
+    ):
+        db_session.add(
+            PromptCandidate(
+                id=_new_id(),
+                run_id=None,
+                topic_id=i + 1,
+                topic_text="t",
+                brand_id=1,
+                brand_name="NIKE",
+                dimension="brand",
+                intent="informational",
+                language="zh-CN",
+                text=f"p{i}",
+                status="pending",
+                confidence=0.8,
+                tags=tags,
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get("/api/admin/prompt-matrix/candidates?quality_gate=blocked")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pagination"]["total"] == 1
+    assert body["summary"]["status_counts"] == {
+        "pending": 1,
+        "approved": 0,
+        "rejected": 0,
+        "all": 1,
+    }
+    assert body["rows"][0]["quality_gate_status"] == "blocked"
+    assert body["rows"][0]["quality_gate_reason"] == "prompt_language_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_candidates_invalid_status_422(client, admin_operator):
     resp = await client.get("/api/admin/prompt-matrix/candidates?status=merged")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_candidates_invalid_quality_gate_422(client, admin_operator):
+    resp = await client.get("/api/admin/prompt-matrix/candidates?quality_gate=maybe")
     assert resp.status_code == 422
 
 
