@@ -308,7 +308,9 @@ def build_prompt_generation_slots(
     The slot count is capped by max_per_topic and the existing intent/language
     combinations, so adding prompt scopes never multiplies generation volume.
     """
-    limit = clamp_int(max_per_topic, len(combinations), 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES))
+    limit = clamp_int(
+        max_per_topic, len(combinations), 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
+    )
     base_slots = combinations[:limit]
     rotation = _scope_rotation_for_topic(topic)
     slots: list[dict[str, Any]] = []
