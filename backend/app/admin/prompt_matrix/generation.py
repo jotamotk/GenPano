@@ -26,7 +26,10 @@ from app.admin.prompt_matrix.lib import (
     has_prompt_language_mismatch,
     is_natural_user_prompt,
     merge_usage,
+    normalize_competitive_type,
     normalize_prompt_scope,
+    prompt_text_has_brand_anchor,
+    prompt_text_has_competitive_signal,
     sample_existing_for_context,
 )
 from app.admin.prompt_matrix.llm import PromptMatrixClient
@@ -104,6 +107,13 @@ async def _insert_candidate_batch(
                 or tags.get("prompt_scope")
                 or tags.get("promptScope")
             )
+            competitive_type = normalize_competitive_type(
+                prompt_scope,
+                item.get("competitive_type")
+                or item.get("competitiveType")
+                or tags.get("competitive_type")
+                or tags.get("competitiveType"),
+            )
         except PromptMatrixError as error:
             skipped.append({"text": text_v, "reason": error.code, "message": error.message})
             continue
@@ -117,10 +127,33 @@ async def _insert_candidate_batch(
                 )
                 skipped.append({"text": text_v, "reason": reason, "leaks": leaked[:5]})
                 continue
+        if prompt_scope == "branded" and not prompt_text_has_brand_anchor(
+            text_v, topic, known_brands
+        ):
+            skipped.append(
+                {
+                    "text": text_v,
+                    "reason": "prompt_scope_mismatch",
+                    "message": "branded prompt must include the topic brand or product",
+                }
+            )
+            continue
+        if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text_v):
+            skipped.append(
+                {
+                    "text": text_v,
+                    "reason": "prompt_scope_mismatch",
+                    "message": "competitive prompt must include comparison or alternative intent",
+                }
+            )
+            continue
         tags.pop("promptScope", None)
+        tags.pop("competitiveType", None)
+        tags.pop("competitive_type", None)
         tags = {
             **tags,
             "prompt_scope": prompt_scope,
+            **({"competitive_type": competitive_type} if competitive_type else {}),
             "source": "prompt_matrix",
             "routing": "deferred_to_query_pool",
         }
@@ -385,6 +418,23 @@ async def execute_generation(
                 str(error)[:500] or "Prompt Matrix generation failed",
             )
         )
+        from app.admin.topic_plan.db import compute_generation_metrics
+
+        metrics = compute_generation_metrics(
+            requested=estimated,
+            accepted=len(inserted),
+            skipped=skipped,
+            batches=batches,
+            llm_model=llm_model,
+        )
+        metrics.update(
+            {
+                "partial_failure": bool(inserted),
+                "batch_error_code": topic_error.code,
+                "batch_error_message": topic_error.message,
+            }
+        )
+        llm_error_detail = f"{topic_error.code}: {topic_error.message}"
         try:
             await _finalize_run(
                 session,
@@ -393,7 +443,8 @@ async def execute_generation(
                 llm_model=llm_model,
                 usage=usage,
                 candidates_generated=len(inserted),
-                llm_error=topic_error.code,
+                metrics=metrics,
+                llm_error=llm_error_detail,
             )
             await emit_audit(
                 session,
@@ -402,7 +453,12 @@ async def execute_generation(
                 severity="med",
                 resource_type="prompt_generation_run",
                 resource_id=run_id,
-                after={"request_config": request_config, "error": topic_error.code},
+                after={
+                    "request_config": request_config,
+                    "error": topic_error.code,
+                    "error_message": topic_error.message,
+                    "candidates_generated": len(inserted),
+                },
                 reason="prompt_matrix_generate",
             )
         except Exception:

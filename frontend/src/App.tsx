@@ -23,7 +23,10 @@ import DiagnosticsPage from './pages/DiagnosticsPage'     // to be cut down to s
 import TopicsPage from './pages/TopicsPage'
 import ReportsPage from './pages/ReportsPage'
 import KnowledgeGraphPage from './pages/KnowledgeGraphPage'
-import SettingsPage from './pages/SettingsPage'
+import SettingsLayout from './pages/settings/SettingsLayout'
+import AccountSettingsPage from './pages/settings/AccountSettingsPage'
+import ApiKeysSettingsPage from './pages/settings/ApiKeysSettingsPage'
+import NotificationsSettingsPage from './pages/settings/NotificationsSettingsPage'
 import ProjectSettingsPage from './pages/ProjectSettingsPage'
 import AlertsPage from './pages/AlertsPage'
 import ToastViewport from './components/ui/ToastViewport'
@@ -188,7 +191,12 @@ export default function App() {
 
           {/* ── Orthogonal authenticated pages ── */}
           <Route path="/brands"          element={<BrandsPage />} />
-          <Route path="/settings"        element={<SettingsPage />} />
+          <Route path="/settings" element={<SettingsLayout />}>
+            <Route index                  element={<Navigate to="/settings/account" replace />} />
+            <Route path="account"         element={<AccountSettingsPage />} />
+            <Route path="api-keys"        element={<ApiKeysSettingsPage />} />
+            <Route path="notifications"   element={<NotificationsSettingsPage />} />
+          </Route>
           <Route path="/project-settings" element={<ProjectSettingsPage />} />
           <Route path="/alerts"          element={<AlertsPage />} />
 

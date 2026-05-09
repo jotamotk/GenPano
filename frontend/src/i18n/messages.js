@@ -97,6 +97,16 @@ export const MESSAGES = {
       alerts: { aria: '告警' },
       user_menu: { aria: '账号菜单' },
     },
+    /* ─── 顶栏头像下拉菜单 ─── */
+    user_menu: {
+      account: '账户信息',
+      api_keys: 'API Keys',
+      notifications: '通知偏好',
+      project_settings: '项目设置',
+      logout: '退出登录',
+      logging_out: '退出中…',
+      guest: '访客',
+    },
     brand_picker: {
       aria: '切换品牌',
       empty: '未选择品牌',
@@ -727,6 +737,13 @@ export const MESSAGES = {
     },
     settings: {
       page_title: '账户设置',
+      page_subtitle: '管理你的账户信息、API 密钥和通知偏好',
+      nav: {
+        aria: '账户设置导航',
+        account: '账户信息',
+        api_keys: 'API Keys',
+        notifications: '通知偏好',
+      },
       account: {
         title: '账户信息',
         username: '用户名',
@@ -1094,6 +1111,16 @@ export const MESSAGES = {
       search: { aria: 'Search (⌘K)' },
       alerts: { aria: 'Alerts' },
       user_menu: { aria: 'Account menu' },
+    },
+    /* ─── Topbar avatar dropdown menu ─── */
+    user_menu: {
+      account: 'Account',
+      api_keys: 'API Keys',
+      notifications: 'Notifications',
+      project_settings: 'Project settings',
+      logout: 'Log out',
+      logging_out: 'Logging out…',
+      guest: 'Guest',
     },
     brand_picker: {
       aria: 'Switch brand',
@@ -1731,6 +1758,13 @@ export const MESSAGES = {
     },
     settings: {
       page_title: 'Account settings',
+      page_subtitle: 'Manage your account, API keys, and notification preferences',
+      nav: {
+        aria: 'Account settings navigation',
+        account: 'Account',
+        api_keys: 'API Keys',
+        notifications: 'Notifications',
+      },
       account: {
         title: 'Account info',
         username: 'Username',

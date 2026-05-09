@@ -5,6 +5,7 @@ import { PROJECTS } from '../data/mock';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useUnreadAlertCount } from '../hooks/useAlerts';
+import UserMenu from '../components/UserMenu';
 
 /* ─────────────────────────────────────────────────────────────
    DashboardLayout — Brand/Industry Mode IA v2.0 (see PRD §4.6-IA-v2)
@@ -231,20 +232,8 @@ function Topbar({ mode, onSwitchMode, t, locale, setLocale, onNavigate }) {
         {locale === 'zh-CN' ? 'EN' : '中文'}
       </button>
 
-      {/* User menu — opens dropdown (settings / logout) in T1' UserMenu component */}
-      <button
-        onClick={() => onNavigate('/settings')}
-        className="flex items-center gap-2 h-9 pl-1 pr-2 rounded-pill hover:bg-themed-subtle transition-colors"
-        aria-label={t('topbar.user_menu.aria')}
-      >
-        <div
-          className="w-8 h-8 rounded-card flex items-center justify-center text-sm font-bold text-themed-accent"
-          style={{ background: 'var(--gradient-avatar-warm)' }}
-        >
-          F
-        </div>
-        <span className="text-themed-muted">{icons.chevron}</span>
-      </button>
+      {/* User menu — avatar dropdown (Account / API Keys / Notifications / Logout) */}
+      <UserMenu />
     </header>
   );
 }
@@ -362,7 +351,7 @@ function BrandSidebar({ t, onNavigate, currentPath, activeProject, search }) {
       {/* Project footer — MVP Project hidden per §4.6-IA-v2.G */}
       <div className="px-4 py-3 border-t border-themed-card">
         <button
-          onClick={() => onNavigate('/settings?section=project')}
+          onClick={() => onNavigate('/project-settings')}
           className="w-full flex items-center justify-between gap-2 text-xs text-themed-muted hover:text-themed-primary transition-colors"
         >
           <span className="truncate">
