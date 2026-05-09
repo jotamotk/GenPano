@@ -158,13 +158,36 @@ function buildApiError(res: Response, problem: ProblemDetails, url: string): Api
   return new ApiError(problem, { requestId, path: url })
 }
 
+// Public/auth surfaces where we must NOT redirect on 401 — those routes
+// already render their own auth UI, and redirecting would loop forever
+// (the redirect target itself triggers another 401 → redirect, with the
+// `redirect` query string URL-encoded each iteration until the URL grows
+// past server limits and the rate limiter trips → 429).
+const PUBLIC_AUTH_PATHS = new Set([
+  '/',
+  '/login',
+  '/auth',
+  '/register',
+  '/forgot',
+  '/forgot-password',
+  '/email-sent',
+  '/setup',
+  '/reset-password',
+  '/reset-password-success',
+  '/auth/callback',
+])
+
 function handleUnauthorized(): void {
   clearStoredToken()
-  if (typeof window !== 'undefined') {
-    const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-    // Use replace to avoid adding 401 page to history
-    window.location.replace(`/login?redirect=${redirect}`)
+  if (typeof window === 'undefined') return
+  const path = window.location.pathname
+  if (PUBLIC_AUTH_PATHS.has(path)) {
+    // Already on a public/auth page — clearing the stale token is enough.
+    return
   }
+  const redirect = encodeURIComponent(path + window.location.search)
+  // Use replace to avoid adding 401 page to history
+  window.location.replace(`/login?redirect=${redirect}`)
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {

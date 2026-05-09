@@ -18,13 +18,18 @@ import {
 
 export const PROJECTS_QUERY_KEY = ['projects'] as const
 
-export function useProjects() {
+export function useProjects(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: PROJECTS_QUERY_KEY,
     queryFn: () => projectsApi.list(),
     select: (data) => data.items,
     staleTime: 30_000,
     retry: false, // 401 should fail fast; user gets redirected to /login
+    // Skip the request entirely when the caller knows there is no auth
+    // context (e.g. ProjectProvider mounted on a public page). Without
+    // this gate, the unauthenticated request 401s, which used to push
+    // the user into a redirect loop on /login.
+    enabled: options.enabled !== false,
   })
 }
 

@@ -30,6 +30,7 @@ import { useLocale } from './LocaleContext';
 import { useProjects, PROJECTS_QUERY_KEY, type ProjectOut } from '../hooks/useProjects';
 import { projectsApi } from '../api/projects';
 import { registerToastPusher } from '../lib/showApiError';
+import { useAuth } from './AuthContext';
 
 /** Convert backend ProjectOut to the legacy mock shape (str ids, camelCase). */
 function toMockShape(p: ProjectOut): {
@@ -67,10 +68,14 @@ const ProjectContext = createContext({
 
 export function ProjectProvider({ children, initialAuthenticated = true }) {
   const qc = useQueryClient();
+  const { token } = useAuth();
   // Live backend projects (null when the user is not authenticated /
   // backend is offline / no projects exist). When >= 1 project lands,
   // we treat live mode as authoritative.
-  const { data: liveProjectsRaw } = useProjects();
+  // Skip the fetch entirely when there is no auth token — a request to
+  // /v1/projects/ without auth 401s, which would otherwise trigger
+  // handleUnauthorized → redirect loop on public auth pages.
+  const { data: liveProjectsRaw } = useProjects({ enabled: !!token });
   const liveProjects = useMemo(
     () => (liveProjectsRaw ?? []).map(toMockShape),
     [liveProjectsRaw],
