@@ -4833,6 +4833,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                   <template x-if="promptMatrixCompetitiveTypeLabel(item)">
                                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="promptMatrixCompetitiveTypeLabel(item)"></span>
                                   </template>
+                                  <template x-if="promptMatrixCompetitorLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-danger/10 text-danger text-[10px] font-semibold" x-text="promptMatrixCompetitorLabel(item)"></span>
+                                  </template>
                                   <template x-if="promptMatrixQualityGateLabel(item)">
                                     <span class="inline-flex items-center px-2 h-5 rounded-badge bg-danger/10 text-danger text-[10px] font-semibold" x-text="promptMatrixQualityGateLabel(item)"></span>
                                   </template>
@@ -15107,6 +15110,13 @@ function adminApp() {
         shortlist:'Shortlist',
       };
       return labels[value] || value;
+    },
+
+    promptMatrixCompetitorLabel(item){
+      if (this.promptMatrixScopeValue(item) !== 'competitive') return '';
+      const tags = (item && item.tags) || {};
+      const competitor = (item && (item.competitor_name || item.competitorName)) || tags.competitor_name || tags.competitorName || '';
+      return competitor ? ('vs ' + competitor) : '';
     },
 
     promptMatrixQualityGateValue(item){

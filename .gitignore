@@ -50,6 +50,8 @@ coverage/
 .coverage
 backend/.coverage
 backend/htmlcov/
+frontend/test-results/
+frontend/playwright-report/
 .mcp.json
 
 # Secrets — private keys, cookies, credentials

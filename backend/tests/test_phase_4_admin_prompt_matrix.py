@@ -236,6 +236,14 @@ def test_prompt_generation_slots_can_exceed_intent_language_combinations():
         },
         combinations=config["combinations"],
         max_per_topic=config["max_per_topic"],
+        competitors=[
+            {
+                "name": "Adidas",
+                "brand_id": 2,
+                "source": "llm",
+                "scenario_axes": ["comfort"],
+            }
+        ],
     )
 
     assert len(slots) == 12
@@ -244,6 +252,34 @@ def test_prompt_generation_slots_can_exceed_intent_language_combinations():
         "branded",
         "competitive",
     }
+
+
+def test_prompt_generation_slots_do_not_create_generic_competitive_without_competitor():
+    from app.admin.prompt_matrix.lib import build_prompt_generation_slots, prompt_generation_config
+
+    config = prompt_generation_config(
+        {
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 12,
+            "max_prompts": 12,
+        }
+    )
+
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "brand",
+            "brand": "NIKE",
+        },
+        combinations=config["combinations"],
+        max_per_topic=config["max_per_topic"],
+        competitors=[],
+    )
+
+    assert slots
+    assert "competitive" not in {slot["prompt_scope"] for slot in slots}
 
 
 def test_prompt_generation_slots_prioritize_non_branded_for_each_language():

@@ -53,7 +53,9 @@ def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:
     assert "promptMatrixScopeLabel(item)" in html
     assert "promptMatrixScopeTone(item)" in html
     assert "promptMatrixCompetitiveTypeLabel(item)" in html
+    assert "promptMatrixCompetitorLabel(item)" in html
     assert "competitive_type" in html
+    assert "competitor_name" in html
 
 
 def test_prompt_matrix_candidate_rows_show_quality_gate_badges() -> None:

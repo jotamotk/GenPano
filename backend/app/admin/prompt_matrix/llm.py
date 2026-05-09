@@ -31,6 +31,7 @@ from app.admin.prompt_matrix.lib import (
     normalize_prompt_text,
     over_request_count,
     parse_llm_prompt_candidates,
+    prompt_generation_needs_competitors,
     strip_markdown_fence,
     usage_to_dict,
 )
@@ -91,9 +92,17 @@ def _needs_competitor_discovery(
     if isinstance(config.get("competitors_by_topic"), dict):
         return False
     for topic in topics:
-        for slot in _slots_for_topic(topic, config):
-            if slot.get("prompt_scope") == "competitive":
-                return True
+        combinations = config.get("combinations") or intent_language_combinations(
+            config.get("intent_count"),
+            config.get("language_count"),
+            config.get("max_per_topic"),
+        )
+        if prompt_generation_needs_competitors(
+            topic=topic,
+            combinations=combinations,
+            max_per_topic=config.get("max_per_topic"),
+        ):
+            return True
     return False
 
 

@@ -309,7 +309,21 @@ def _normalized_competitor_contexts(
                 "scenario_axes": [str(axis).strip() for axis in axes if str(axis).strip()],
             }
         )
-    return contexts or [{"scenario_axes": list(DEFAULT_COMPETITIVE_SCENARIO_AXES)}]
+    return contexts
+
+
+def prompt_generation_needs_competitors(
+    *,
+    topic: dict[str, Any],
+    combinations: list[dict[str, Any]],
+    max_per_topic: Any,
+) -> bool:
+    limit = clamp_int(max_per_topic, len(combinations), 1, MAX_PER_TOPIC_LIMIT)
+    languages = _languages_from_combinations(combinations)
+    non_competitive_slots = len(languages)
+    if _topic_has_explicit_brand_anchor(topic):
+        non_competitive_slots += len(languages)
+    return limit > non_competitive_slots
 
 
 def _slot_templates_for_topic(
@@ -1338,7 +1352,7 @@ def build_prompt_matrix_messages(
         "Topic layer = high-level, reusable, brand-neutral consumer demand subject. Do not turn Topic titles back into brand slogans.\n"
         "Prompt layer = complete natural user input. Prompt owns prompt_scope: non_branded, branded, competitive.\n"
         "Query layer = Prompt + Segment/Profile personal context. Do not add age, city, exact budget, persona, or first-person anchors here; Query Pool will do that.\n\n"
-        "Competitive strict rule: if a generation slot has competitor_name, output.text must directly name that competitor and compare or position it against topic.brand/topic.product; copy generation_slots[].slot_id to output.slot_id and tags.slot_id.\n"
+        "Competitive strict rule: if a generation slot has competitor_name, output.text must directly name that competitor and compare or position it against topic.brand/topic.product; copy generation_slots[].slot_id to output.slot_id and tags.slot_id. Competitive without a concrete competitor_name is invalid; never output generic similar products, same-category brands, alternatives, or competitors when competitor_name is missing.\n"
         "prompt_scope 规则：\n"
         "S1. 每条 output.prompts[i] 必须写 prompt_scope，且只能是 non_branded / branded / competitive；同时复制到 tags.prompt_scope。legacy competitor 只用于读取旧数据，新输出不要使用。\n"
         "S2. non_branded：围绕 topic.title 的品类、功能、场景或问题提问，禁止出现 known_brand_terms、selected brand alias 或竞品名。\n"
