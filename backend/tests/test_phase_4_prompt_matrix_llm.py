@@ -194,6 +194,64 @@ async def test_competitive_slots_use_discovered_competitors(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_prompt_generation_retries_transient_batch_failure(monkeypatch) -> None:
+    monkeypatch.setenv("PROMPT_MATRIX_LLM_BATCH_RETRIES", "1")
+    monkeypatch.setenv("PROMPT_MATRIX_LLM_RETRY_DELAY_SECONDS", "0")
+
+    class RetryClient(PromptMatrixClient):
+        def __init__(self) -> None:
+            super().__init__(config=_config())
+            self.attempts = 0
+
+        async def _discover_topic_competitors(self, **kwargs):
+            return {}
+
+        async def _generate_prompt_batch(self, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise PromptMatrixError(
+                    "llm_call_failed",
+                    "Prompt Matrix generation failed: timeout",
+                )
+            return (
+                [
+                    LLMPromptCandidate(
+                        topic_id=1,
+                        intent="informational",
+                        language="en-US",
+                        text="Is NIKE good for beginner running shoes?",
+                        template_strategy="latest",
+                        template_version="v1",
+                        confidence=0.8,
+                        reason="covers requested slot",
+                        tags={"prompt_scope": "branded", "source": "prompt_matrix"},
+                    )
+                ],
+                {"model": self.config.model, "usage": {}},
+            )
+
+    client = RetryClient()
+    generated: list[LLMPromptCandidate] = []
+    async for prompts, _meta in client.generate_prompt_batches(
+        topics=[_topic()],
+        config=prompt_generation_config(
+            {
+                "intent_count": 1,
+                "language_count": 1,
+                "max_per_topic": 1,
+                "max_prompts": 1,
+            }
+        ),
+        known_brands=[],
+        existing_prompts=[],
+    ):
+        generated.extend(prompts)
+
+    assert client.attempts == 2
+    assert len(generated) == 1
+
+
+@pytest.mark.asyncio
 async def test_http_error_includes_upstream_body() -> None:
     fake_resp = MagicMock(spec=httpx.Response)
     fake_resp.status_code = 429

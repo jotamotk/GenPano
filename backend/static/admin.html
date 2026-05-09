@@ -15381,9 +15381,17 @@ function adminApp() {
     },
 
     async loadPromptMatrixRun(runId){
-      const res = await fetch('/api/admin/prompt-matrix/runs/' + encodeURIComponent(runId), { credentials:'same-origin' });
+      const res = await fetch('/api/admin/prompt-matrix/runs/' + encodeURIComponent(runId), { credentials:'same-origin', silentError:true });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Run load failed');
+      if (!res.ok || body.success === false) {
+        const detail = body && typeof body.detail === 'object' ? body.detail : body;
+        const message = detail.message || detail.title || detail.error || body.message || body.error || 'Run load failed';
+        const error = new Error(message);
+        error.status = res.status || detail.status || 0;
+        error.body = detail;
+        error.requestId = detail.request_id || '';
+        throw error;
+      }
       return body.run || {};
     },
 
@@ -17585,8 +17593,12 @@ function adminApp() {
       // their own Alpine x-data scopes and cannot reach this.showErrorFrom
       // directly. They dispatch a CustomEvent('admin-error') with the thrown
       // Error as detail; we route it into the sticky panel here.
+      const adminRoot = this;
       document.addEventListener('admin-error', (e) => {
-        if (e && e.detail) this.showErrorFrom(e.detail);
+        const target = (adminRoot && typeof adminRoot.showErrorFrom === 'function')
+          ? adminRoot
+          : (window.Alpine && window.Alpine.$data ? window.Alpine.$data(document.body) : null);
+        if (e && e.detail && target && typeof target.showErrorFrom === 'function') target.showErrorFrom(e.detail);
       });
       this.$nextTick(()=>{ lucide.createIcons(); });
       this.checkAdminSession();

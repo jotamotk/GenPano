@@ -497,7 +497,7 @@ async def test_generate_sync_surfaces_reviewable_quality_blocks_for_full_estimat
 
 
 @pytest.mark.asyncio
-async def test_generate_sync_keeps_partial_results_and_error_detail(
+async def test_generate_sync_completes_with_partial_results_after_batch_error(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):
     from app.admin.prompt_matrix.lib import PromptMatrixError
@@ -530,19 +530,20 @@ async def test_generate_sync_keeps_partial_results_and_error_detail(
         json={"topic_ids": [1], "max_prompts": 10},
     )
 
+    assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["code"] == "llm_call_failed"
-    assert "HTTP 429" in body["detail"]
+    assert body["success"] is True
     run_id = body["run_id"]
     run = (
         await db_session.execute(
             select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
         )
     ).scalar_one()
-    assert run.status == "failed"
+    assert run.status == "completed"
     assert run.candidates_generated == 1
-    assert "HTTP 429" in run.llm_error
+    assert run.llm_error is None
     assert run.metrics_json["partial_failure"] is True
+    assert run.metrics_json["partial_completion"] is True
     assert "HTTP 429" in run.metrics_json["batch_error_message"]
 
 
