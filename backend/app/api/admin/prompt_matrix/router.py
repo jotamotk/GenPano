@@ -33,8 +33,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.audit import emit_audit
 from app.admin.prompt_matrix import db as pm_db
 from app.admin.prompt_matrix.lib import (
+    DEFAULT_MAX_PROMPTS,
+    MAX_PROMPTS_HARD_LIMIT,
     PromptMatrixError,
     clamp_int,
+    prompt_generation_max_prompts_cap,
+    prompt_generation_raw_count,
     transition_candidate_status,
 )
 from app.api.admin.auth.router import current_admin
@@ -112,7 +116,9 @@ def _run_to_dict(run: PromptGenerationRun) -> dict[str, Any]:
 
 def _run_timeout_seconds(run: PromptGenerationRun) -> int:
     request_config = run.request_config if isinstance(run.request_config, dict) else {}
-    estimated = clamp_int(request_config.get("max_prompts"), 8000, 1, 100_000)
+    estimated = clamp_int(
+        request_config.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
+    )
     default_timeout = max(900, min(7200, estimated * 2))
     return clamp_int(os.getenv("PROMPT_MATRIX_RUN_TIMEOUT_SECONDS"), default_timeout, 300, 14400)
 
@@ -417,7 +423,7 @@ async def get_config(
             "promptStyle": "natural",
             "audienceMode": "general",
             "maxPerTopic": 4,
-            "maxPrompts": 8000,
+            "maxPrompts": DEFAULT_MAX_PROMPTS,
             "overflowPolicy": "split",
         },
         "summary": {
@@ -487,7 +493,7 @@ async def get_gaps(
     intent_count: int = Query(4, ge=1),
     language_count: int = Query(2, ge=1),
     max_per_topic: int = Query(4, ge=1, le=20),
-    max_prompts: int = Query(8000, ge=1),
+    max_prompts: int = Query(DEFAULT_MAX_PROMPTS, ge=1),
     template_strategy: str = Query("latest"),
     prompt_style: str = Query("natural"),
     audience_mode: str = Query("general"),
@@ -703,6 +709,16 @@ async def generate_prompts(
     if not topics:
         raise not_found("selected_topics_not_found")
     topic_ids = [int(t["raw_id"]) for t in topics]
+
+    raw_estimated = prompt_generation_raw_count(
+        selected_topics=len(topics),
+        intent_count=config["intent_count"],
+        language_count=config["language_count"],
+        max_per_topic=config["max_per_topic"],
+    )
+    max_prompts_cap = prompt_generation_max_prompts_cap(raw_estimated)
+    if config["max_prompts"] > max_prompts_cap:
+        raise validation_error("max_prompts", f"must be <= {max_prompts_cap}")
 
     estimated = estimate_generation_count(
         selected_topics=len(topics),

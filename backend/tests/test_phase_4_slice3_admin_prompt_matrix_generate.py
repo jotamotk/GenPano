@@ -150,6 +150,37 @@ async def test_generate_unknown_topics_404(client, admin_operator, monkeypatch):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_generate_rejects_max_prompts_above_dynamic_cap(client, admin_operator, monkeypatch):
+    """One topic with 4 raw combinations has cap max(10, 4 * 2) == 10."""
+
+    monkeypatch.delenv("PROMPT_MATRIX_SYNC_GENERATE", raising=False)
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[_topic()]),
+        fetch_brand_rows=AsyncMock(return_value=[]),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+
+    async def fake_background(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(
+        "app.admin.prompt_matrix.generation.execute_generation_background",
+        fake_background,
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 11},
+    )
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["field"] == "max_prompts"
+    assert detail["reason"] == "must be <= 10"
+
+
 # ── sync mode ─────────────────────────────────────────────────
 
 
@@ -188,7 +219,7 @@ async def test_generate_sync_inserts_candidates_and_completes(
             "intent_count": 4,
             "language_count": 2,
             "max_per_topic": 4,
-            "max_prompts": 50,
+            "max_prompts": 10,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -316,7 +347,7 @@ async def test_generate_background_returns_running_immediately(
 
     resp = await client.post(
         "/api/admin/prompt-matrix/generate",
-        json={"topic_ids": [1], "max_prompts": 30},
+        json={"topic_ids": [1], "max_prompts": 10},
     )
     assert resp.status_code == 200
     body = resp.json()

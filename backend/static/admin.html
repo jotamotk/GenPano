@@ -4491,7 +4491,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       </label>
                       <label class="space-y-1">
                         <span class="text-[10px] font-semibold text-ink-muted uppercase">生成上限</span>
-                        <input x-model="promptMatrixConfig.maxPrompts" type="number" min="100" step="100"
+                        <input x-model.number="promptMatrixConfig.maxPrompts" type="number" min="1" step="1" :max="promptMatrixMaxPromptsCap()"
+                               @change="normalizePromptMatrixMaxPrompts(); if (promptMatrixActionPanel==='gaps') loadPromptMatrixGaps()"
                                class="w-full h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink" />
                       </label>
                       <label class="space-y-1">
@@ -11618,7 +11619,7 @@ function adminApp() {
       promptStyle: 'natural',
       audienceMode: 'general',
       maxPerTopic: 4,
-      maxPrompts: 8000,
+      maxPrompts: 10,
       overflowPolicy: 'split',
     },
     promptMatrixLoading: false,
@@ -14765,7 +14766,7 @@ function adminApp() {
       };
     },
 
-    promptCountRaw(){
+    promptMatrixRawPromptCount(){
       const cfg = this.promptMatrixConfig;
       const topicCount = this.promptMatrixSelectedTopicCount();
       const intentCount = Number(cfg.intentCount) || 0;
@@ -14774,15 +14775,36 @@ function adminApp() {
       return Math.min(topicCount * intentCount * languageCount, topicCount * maxPerTopic);
     },
 
+    promptCountRaw(){
+      return this.promptMatrixRawPromptCount();
+    },
+
+    promptMatrixMaxPromptsCap(){
+      return Math.max(10, this.promptMatrixRawPromptCount() * 2);
+    },
+
+    promptMatrixMaxPromptsValue(){
+      const parsed = Number(this.promptMatrixConfig.maxPrompts);
+      if (!Number.isFinite(parsed)) return 10;
+      return Math.max(1, Math.min(Math.floor(parsed), this.promptMatrixMaxPromptsCap()));
+    },
+
+    normalizePromptMatrixMaxPrompts(){
+      this.promptMatrixConfig.maxPrompts = this.promptMatrixMaxPromptsValue();
+    },
+
+    estimatedPromptCountValue(){
+      return Math.min(this.promptMatrixRawPromptCount(), this.promptMatrixMaxPromptsValue());
+    },
+
     estimatedPromptCount(){
-      const maxPrompts = Number(this.promptMatrixConfig.maxPrompts) || 0;
-      return Math.min(this.promptCountRaw(), maxPrompts).toLocaleString();
+      return this.estimatedPromptCountValue().toLocaleString();
     },
 
     promptCountFormulaText(){
       const cfg = this.promptMatrixConfig;
       const topicCount = this.promptMatrixSelectedTopicCount();
-      return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${cfg.maxPerTopic} 条 · 总上限 ${Number(cfg.maxPrompts).toLocaleString()}`;
+      return `${topicCount} 个 Topic × ${cfg.intentCount} 类意图 × ${cfg.languageCount} 个市场 · 每 Topic 最多 ${cfg.maxPerTopic} 条 · 总上限 ${this.promptMatrixMaxPromptsValue().toLocaleString()} / 最高 ${this.promptMatrixMaxPromptsCap().toLocaleString()}`;
     },
 
     updatePromptMatrixQualityGates(body = {}){
@@ -14869,7 +14891,7 @@ function adminApp() {
           if (value !== '' && value !== null && value !== undefined) qp.set(key, value);
         });
         qp.set('max_per_topic', this.promptMatrixConfig.maxPerTopic || 4);
-        qp.set('max_prompts', this.promptMatrixConfig.maxPrompts || 8000);
+        qp.set('max_prompts', this.promptMatrixMaxPromptsValue());
         const res = await fetch('/api/admin/prompt-matrix/gaps?' + qp.toString(), { credentials:'same-origin' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Gap load failed');
@@ -15107,7 +15129,7 @@ function adminApp() {
     },
 
     promptMatrixApplyRunProgress(run){
-      const estimated = Number(run.estimated_prompts || this.estimatedPromptCount() || 0);
+      const estimated = Number(run.estimated_prompts || this.estimatedPromptCountValue() || 0);
       const generated = Number(run.candidates_generated || 0);
       const status = run.status || 'running';
       const finished = status === 'completed';
@@ -15277,6 +15299,7 @@ function adminApp() {
       this.promptMatrixLastMetrics = null;
       this.promptMatrixLastRejected = [];
       this.promptMatrixShowRejected = false;
+      this.normalizePromptMatrixMaxPrompts();
       const estimatedBeforeRun = this.estimatedPromptCount();
       this.promptMatrixGenerateSteps = [
         { name:'Topic 校验', status:'done', label:'完成', value:this.promptMatrixSelectedTopicCount() + ' Topic' },
@@ -15300,7 +15323,7 @@ function adminApp() {
             prompt_style: this.promptMatrixConfig.promptStyle,
             audience_mode: this.promptMatrixConfig.audienceMode,
             max_per_topic: Number(this.promptMatrixConfig.maxPerTopic) || 4,
-            max_prompts: Number(this.promptMatrixConfig.maxPrompts) || 8000,
+            max_prompts: this.promptMatrixMaxPromptsValue(),
             overflow_policy: this.promptMatrixConfig.overflowPolicy,
           }),
         });

@@ -28,6 +28,8 @@ ALLOWED_INTENTS = ("informational", "commercial", "transactional", "navigational
 ALLOWED_LANGUAGES = ("zh-CN", "en-US")
 ALLOWED_PROMPT_SCOPES = ("non_branded", "branded", "competitor")
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
+DEFAULT_MAX_PROMPTS = 10
+MAX_PROMPTS_HARD_LIMIT = 100_000
 
 INTENT_LABELS = {
     "informational": "Information seeking",
@@ -229,11 +231,31 @@ def estimate_generation_count(
     max_per_topic: Any,
     max_prompts: Any,
 ) -> int:
-    topic_count = clamp_int(selected_topics, 0, 0, 1_000_000)
-    per_topic = len(intent_language_combinations(intent_count, language_count, max_per_topic))
-    raw_total = topic_count * per_topic
+    raw_total = prompt_generation_raw_count(
+        selected_topics=selected_topics,
+        intent_count=intent_count,
+        language_count=language_count,
+        max_per_topic=max_per_topic,
+    )
     cap = clamp_int(max_prompts, raw_total, 1, 1_000_000)
     return min(raw_total, cap)
+
+
+def prompt_generation_raw_count(
+    *,
+    selected_topics: Any,
+    intent_count: Any,
+    language_count: Any,
+    max_per_topic: Any,
+) -> int:
+    topic_count = clamp_int(selected_topics, 0, 0, 1_000_000)
+    per_topic = len(intent_language_combinations(intent_count, language_count, max_per_topic))
+    return topic_count * per_topic
+
+
+def prompt_generation_max_prompts_cap(raw_prompt_count: Any) -> int:
+    raw_total = clamp_int(raw_prompt_count, 0, 0, 1_000_000)
+    return max(DEFAULT_MAX_PROMPTS, raw_total * 2)
 
 
 def normalize_prompt_text(value: str) -> str:
@@ -831,7 +853,9 @@ def prompt_generation_config(payload: dict[str, Any]) -> dict[str, Any]:
     max_per_topic = clamp_int(
         payload.get("max_per_topic"), 4, 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
     )
-    max_prompts = clamp_int(payload.get("max_prompts"), 8000, 1, 100_000)
+    max_prompts = clamp_int(
+        payload.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
+    )
     return {
         "intent_count": intent_count,
         "language_count": language_count,
