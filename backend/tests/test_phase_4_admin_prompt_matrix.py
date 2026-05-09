@@ -177,7 +177,7 @@ def test_prompt_scope_helpers_normalize_legacy_alias_and_competitive_type():
     assert "competitive_type" in unexpected_type.value.message
 
 
-def test_prompt_generation_slots_do_not_multiply_generation_count():
+def test_prompt_generation_slots_start_with_reviewable_non_branded_coverage():
     from app.admin.prompt_matrix.lib import build_prompt_generation_slots
 
     slots = build_prompt_generation_slots(
@@ -196,10 +196,9 @@ def test_prompt_generation_slots_do_not_multiply_generation_count():
     )
 
     assert len(slots) == 2
-    assert {slot["prompt_scope"] for slot in slots} == {"branded", "competitive"}
+    assert {slot["prompt_scope"] for slot in slots} == {"non_branded"}
     assert all(slot["intent"] and slot["language"] for slot in slots)
-    competitive_slots = [slot for slot in slots if slot["prompt_scope"] == "competitive"]
-    assert competitive_slots[0]["competitive_type"] == "direct_comparison"
+    assert {slot["language"] for slot in slots} == {"en-US", "zh-CN"}
 
 
 def test_prompt_generation_slots_can_exceed_intent_language_combinations():
@@ -245,6 +244,35 @@ def test_prompt_generation_slots_can_exceed_intent_language_combinations():
         "branded",
         "competitive",
     }
+
+
+def test_prompt_generation_slots_prioritize_non_branded_for_each_language():
+    from app.admin.prompt_matrix.lib import build_prompt_generation_slots, prompt_generation_config
+
+    config = prompt_generation_config(
+        {
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 8,
+            "max_prompts": 8,
+        }
+    )
+
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "brand",
+            "brand": "NIKE",
+        },
+        combinations=config["combinations"],
+        max_per_topic=config["max_per_topic"],
+    )
+    non_branded_languages = {
+        slot["language"] for slot in slots if slot["prompt_scope"] == "non_branded"
+    }
+
+    assert non_branded_languages == {"zh-CN", "en-US"}
 
 
 def test_parse_llm_prompt_candidates_persists_prompt_scope():
@@ -374,6 +402,10 @@ def test_parse_llm_prompt_candidates_persists_competitive_type():
                     "confidence": 0.8,
                     "prompt_scope": "competitor",
                     "competitive_type": "direct_comparison",
+                    "competitor_name": "Adidas",
+                    "competitor_brand_id": 2,
+                    "competitor_source": "llm",
+                    "scenario_axis": "beginner fit",
                 }
             ]
         },
@@ -393,6 +425,10 @@ def test_parse_llm_prompt_candidates_persists_competitive_type():
 
     assert parsed[0].tags["prompt_scope"] == "competitive"
     assert parsed[0].tags["competitive_type"] == "direct_comparison"
+    assert parsed[0].tags["competitor_name"] == "Adidas"
+    assert parsed[0].tags["competitor_brand_id"] == 2
+    assert parsed[0].tags["competitor_source"] == "llm"
+    assert parsed[0].tags["scenario_axis"] == "beginner fit"
     assert parsed[0].competitive_type == "direct_comparison"
 
 

@@ -54,6 +54,9 @@ async def test_large_per_topic_generation_splits_llm_calls_by_slot_count(monkeyp
             super().__init__(config=_config())
             self.slot_counts: list[int] = []
 
+        async def _discover_topic_competitors(self, **kwargs):
+            return {}
+
         async def _generate_prompt_batch(self, **kwargs):
             config = kwargs["config"]
             topics = kwargs["topics"]
@@ -105,6 +108,89 @@ async def test_large_per_topic_generation_splits_llm_calls_by_slot_count(monkeyp
 
     assert generated == 20
     assert client.slot_counts == [12, 8]
+
+
+@pytest.mark.asyncio
+async def test_competitive_slots_use_discovered_competitors(monkeypatch) -> None:
+    monkeypatch.setenv("PROMPT_MATRIX_LLM_TARGET_PROMPTS_PER_REQUEST", "12")
+
+    class RecordingClient(PromptMatrixClient):
+        def __init__(self) -> None:
+            super().__init__(config=_config())
+            self.discovered = False
+            self.recorded_slots: list[dict[str, object]] = []
+
+        async def _discover_topic_competitors(self, **kwargs):
+            self.discovered = True
+            return {
+                "1": [
+                    {
+                        "name": "Adidas",
+                        "brand_id": 2,
+                        "source": "llm",
+                        "scenario_axes": ["comfort", "daily training"],
+                    }
+                ]
+            }
+
+        async def _generate_prompt_batch(self, **kwargs):
+            config = kwargs["config"]
+            slots_by_topic = config.get("generation_slots_by_topic") or {}
+            self.recorded_slots.extend(slots_by_topic.get("1", []))
+            competitive_slots = [
+                slot
+                for slot in slots_by_topic.get("1", [])
+                if slot.get("prompt_scope") == "competitive"
+            ]
+            prompts = [
+                LLMPromptCandidate(
+                    topic_id=1,
+                    intent=str(slot["intent"]),
+                    language=str(slot["language"]),
+                    text="Is NIKE better than Adidas for daily training comfort?",
+                    template_strategy="latest",
+                    template_version="v1",
+                    confidence=0.8,
+                    reason="covers competitor slot",
+                    tags={
+                        "prompt_scope": "competitive",
+                        "competitive_type": slot["competitive_type"],
+                        "competitor_name": slot["competitor_name"],
+                        "competitor_brand_id": slot["competitor_brand_id"],
+                    },
+                    competitive_type=str(slot["competitive_type"]),
+                )
+                for slot in competitive_slots[:1]
+            ]
+            return prompts, {"model": self.config.model, "usage": {}}
+
+    client = RecordingClient()
+    generated: list[LLMPromptCandidate] = []
+    async for prompts, _meta in client.generate_prompt_batches(
+        topics=[_topic()],
+        config=prompt_generation_config(
+            {
+                "intent_count": 4,
+                "language_count": 2,
+                "max_per_topic": 8,
+                "max_prompts": 8,
+            }
+        ),
+        known_brands=[],
+        existing_prompts=[],
+    ):
+        generated.extend(prompts)
+
+    competitive_slots = [
+        slot for slot in client.recorded_slots if slot.get("prompt_scope") == "competitive"
+    ]
+    assert client.discovered is True
+    assert competitive_slots
+    assert {slot["competitor_name"] for slot in competitive_slots} == {"Adidas"}
+    assert {slot["competitor_brand_id"] for slot in competitive_slots} == {2}
+    assert all(slot.get("scenario_axis") for slot in competitive_slots)
+    assert generated[0].tags["competitor_name"] == "Adidas"
+    assert generated[0].tags["competitor_brand_id"] == 2
 
 
 @pytest.mark.asyncio

@@ -359,6 +359,9 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
     except PromptMatrixError:
         prompt_scope = "non_branded"
     competitive_type = tags.get("competitive_type") or tags.get("competitiveType")
+    quality_gate_status = tags.get("quality_gate_status") or tags.get("qualityGateStatus")
+    quality_gate_reason = tags.get("quality_gate_reason") or tags.get("qualityGateReason")
+    quality_gate_message = tags.get("quality_gate_message") or tags.get("qualityGateMessage")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -378,6 +381,9 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
         "duplicate_of": c.duplicate_of,
         "prompt_scope": prompt_scope,
         "competitive_type": competitive_type if prompt_scope == "competitive" else None,
+        "quality_gate_status": quality_gate_status,
+        "quality_gate_reason": quality_gate_reason,
+        "quality_gate_message": quality_gate_message,
         "tags": tags,
         "review_reason": c.review_reason,
         "approved_prompt_id": c.approved_prompt_id,
@@ -386,12 +392,22 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
     }
 
 
+def _quality_gate_filter_condition(quality_gate: str) -> Any | None:
+    if quality_gate != "blocked":
+        return None
+    return or_(
+        PromptCandidate.tags["quality_gate_status"].as_string() == "blocked",
+        PromptCandidate.tags["qualityGateStatus"].as_string() == "blocked",
+    )
+
+
 async def fetch_candidates(
     session: AsyncSession,
     *,
     status: str = "pending",
     query: str | None = None,
     brand_id: int | None = None,
+    quality_gate: str = "all",
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -403,6 +419,10 @@ async def fetch_candidates(
     if brand_id is not None:
         base = base.where(PromptCandidate.brand_id == brand_id)
         count_stmt = count_stmt.where(PromptCandidate.brand_id == brand_id)
+    quality_gate_condition = _quality_gate_filter_condition(quality_gate)
+    if quality_gate_condition is not None:
+        base = base.where(quality_gate_condition)
+        count_stmt = count_stmt.where(quality_gate_condition)
     if query:
         like = f"%{query}%"
         cond = or_(
@@ -420,13 +440,20 @@ async def fetch_candidates(
 
 
 async def candidate_status_counts(
-    session: AsyncSession, *, query: str | None = None, brand_id: int | None = None
+    session: AsyncSession,
+    *,
+    query: str | None = None,
+    brand_id: int | None = None,
+    quality_gate: str = "all",
 ) -> dict[str, int]:
     base = select(PromptCandidate.status, func.count(PromptCandidate.id)).group_by(
         PromptCandidate.status
     )
     if brand_id is not None:
         base = base.where(PromptCandidate.brand_id == brand_id)
+    quality_gate_condition = _quality_gate_filter_condition(quality_gate)
+    if quality_gate_condition is not None:
+        base = base.where(quality_gate_condition)
     if query:
         like = f"%{query}%"
         base = base.where(

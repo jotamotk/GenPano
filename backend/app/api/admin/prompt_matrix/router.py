@@ -70,6 +70,9 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
     except PromptMatrixError:
         prompt_scope = "non_branded"
     competitive_type = tags.get("competitive_type") or tags.get("competitiveType")
+    quality_gate_status = tags.get("quality_gate_status") or tags.get("qualityGateStatus")
+    quality_gate_reason = tags.get("quality_gate_reason") or tags.get("qualityGateReason")
+    quality_gate_message = tags.get("quality_gate_message") or tags.get("qualityGateMessage")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -89,6 +92,9 @@ def _candidate_row(c: PromptCandidate) -> dict[str, Any]:
         "duplicate_of": c.duplicate_of,
         "prompt_scope": prompt_scope,
         "competitive_type": competitive_type if prompt_scope == "competitive" else None,
+        "quality_gate_status": quality_gate_status,
+        "quality_gate_reason": quality_gate_reason,
+        "quality_gate_message": quality_gate_message,
         "tags": tags,
         "review_reason": c.review_reason,
         "approved_prompt_id": c.approved_prompt_id,
@@ -607,22 +613,32 @@ async def get_candidates(
     status: str = Query("pending"),
     q: str | None = Query(None),
     brand_id: int | None = Query(None, ge=1),
+    quality_gate: str = Query("all"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
     status_norm = status.strip().lower()
     if status_norm not in {"pending", "approved", "rejected", "all"}:
         raise validation_error("status", "must be one of pending / approved / rejected / all")
+    quality_gate_norm = quality_gate.strip().lower()
+    if quality_gate_norm not in {"all", "blocked"}:
+        raise validation_error("quality_gate", "must be one of all / blocked")
     offset = (page - 1) * per_page
     rows, total = await pm_db.fetch_candidates(
         session,
         status=status_norm,
         query=q,
         brand_id=brand_id,
+        quality_gate=quality_gate_norm,
         limit=per_page,
         offset=offset,
     )
-    counts = await pm_db.candidate_status_counts(session, query=q, brand_id=brand_id)
+    counts = await pm_db.candidate_status_counts(
+        session,
+        query=q,
+        brand_id=brand_id,
+        quality_gate=quality_gate_norm,
+    )
     return {
         "success": True,
         "rows": rows,
