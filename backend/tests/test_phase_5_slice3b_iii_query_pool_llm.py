@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from app.admin.query_pool.lib import query_pool_candidate_contexts
 from app.admin.query_pool.llm import QueryPoolLLMClient, build_query_pool_llm_messages
 from app.admin.topic_plan.lib import DoubaoConfig, TopicPlanLLMError
 
@@ -52,7 +53,41 @@ def test_build_messages_returns_system_and_user():
     assert "prompt_scope" in msgs[1]["content"]
     assert "non_branded" in msgs[1]["content"]
     assert "branded" in msgs[1]["content"]
-    assert "competitor" in msgs[1]["content"]
+    assert "competitive" in msgs[1]["content"]
+    assert "competitive_type" in msgs[1]["content"]
+
+
+def test_query_pool_context_inherits_competitive_scope_and_type():
+    contexts, raw_estimated = query_pool_candidate_contexts(
+        [
+            {
+                "id": "p1",
+                "text": "Is NIKE better than Adidas for beginner running shoes?",
+                "topic_id": 1,
+                "topic_text": "beginner running shoes",
+                "tags": {"prompt_scope": "competitor", "competitive_type": "switching"},
+            }
+        ],
+        [
+            {
+                "segment_id": "s1",
+                "profile_id": "prof1",
+                "segment_weight": 1,
+                "profile_weight": 1,
+                "profile_name": "Anna",
+            }
+        ],
+        {
+            "profiles_per_prompt": 1,
+            "profile_strategy": "balanced",
+            "max_candidates": 10,
+            "overflow_policy": "split",
+        },
+    )
+
+    assert raw_estimated == 1
+    assert contexts[0]["prompt_scope"] == "competitive"
+    assert contexts[0]["competitive_type"] == "switching"
 
 
 @pytest.mark.asyncio

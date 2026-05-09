@@ -34,8 +34,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.prompt_matrix.lib import (
     ALLOWED_INTENTS,
     ALLOWED_LANGUAGES,
+    PromptMatrixError,
     detect_brand_leaks,
     intent_language_combinations,
+    normalize_prompt_scope,
 )
 from app.admin.topic_plan.db import map_dimension
 
@@ -349,6 +351,14 @@ async def fetch_prompts(
 
 
 def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
+    tags = c.tags if isinstance(c.tags, dict) else {}
+    try:
+        prompt_scope = normalize_prompt_scope(
+            tags.get("prompt_scope") or tags.get("promptScope") or "non_branded"
+        )
+    except PromptMatrixError:
+        prompt_scope = "non_branded"
+    competitive_type = tags.get("competitive_type") or tags.get("competitiveType")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -366,7 +376,9 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
         "confidence": float(c.confidence or 0),
         "reason": c.reason,
         "duplicate_of": c.duplicate_of,
-        "tags": c.tags or {},
+        "prompt_scope": prompt_scope,
+        "competitive_type": competitive_type if prompt_scope == "competitive" else None,
+        "tags": tags,
         "review_reason": c.review_reason,
         "approved_prompt_id": c.approved_prompt_id,
         "created_at": _isoformat(c.created_at),

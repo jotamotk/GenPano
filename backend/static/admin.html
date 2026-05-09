@@ -4804,6 +4804,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                   <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="item.intent"></span>
                                   <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="item.language"></span>
                                   <span class="inline-flex items-center px-2 h-5 rounded-badge bg-surface-page text-ink-muted text-[10px] font-semibold" x-text="promptMatrixSourceLabel(item)"></span>
+                                  <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold" :class="promptMatrixScopeTone(item)" x-text="promptMatrixScopeLabel(item)"></span>
+                                  <template x-if="promptMatrixCompetitiveTypeLabel(item)">
+                                    <span class="inline-flex items-center px-2 h-5 rounded-badge bg-warning/10 text-warning text-[10px] font-semibold" x-text="promptMatrixCompetitiveTypeLabel(item)"></span>
+                                  </template>
                                 </div>
                               </td>
                               <td class="px-4 py-3">
@@ -4967,6 +4971,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               :class="p.intent==='informational' ? 'bg-info/10 text-info' : p.intent==='commercial' ? 'bg-accent/10 text-accent' : p.intent==='transactional' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
                               x-text="intentLabel(p.intent)"></span>
                         <span class="px-1.5 h-4 rounded-badge bg-surface-page text-[9px] font-semibold text-ink-muted inline-flex items-center" x-text="languageLabel(p.lang)"></span>
+                        <span class="px-1.5 h-4 rounded-badge text-[9px] font-semibold inline-flex items-center" :class="promptMatrixScopeTone(p)" x-text="promptMatrixScopeLabel(p)"></span>
                         <span class="text-ink-faint" x-text="promptRoutingLabel(p)"></span>
                         <span class="ml-auto inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
                               :class="p.status==='active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
@@ -14970,6 +14975,51 @@ function adminApp() {
       if (!item) return '未知来源';
       const source = item.source || (item.tags && item.tags.source) || 'prompt_matrix';
       return source === 'prompt_matrix' ? 'LLM / Prompt Matrix' : source;
+    },
+
+    promptMatrixScopeValue(item){
+      const tags = (item && item.tags) || {};
+      const raw = (item && (item.prompt_scope || item.promptScope)) || tags.prompt_scope || tags.promptScope || 'non_branded';
+      const normalized = String(raw || 'non_branded').trim().toLowerCase().replace(/-/g, '_');
+      if (normalized === 'competitor') return 'competitive';
+      if (['non_branded', 'branded', 'competitive'].includes(normalized)) return normalized;
+      return 'non_branded';
+    },
+
+    promptMatrixScopeLabel(item){
+      const scope = this.promptMatrixScopeValue(item);
+      const labels = {
+        non_branded:'Non-branded',
+        branded:'Branded',
+        competitive:'Competitive',
+      };
+      return labels[scope] || scope;
+    },
+
+    promptMatrixScopeTone(item){
+      const scope = this.promptMatrixScopeValue(item);
+      if (scope === 'branded') return 'bg-accent/10 text-accent';
+      if (scope === 'competitive') return 'bg-warning/10 text-warning';
+      return 'bg-success/10 text-success';
+    },
+
+    promptMatrixCompetitiveTypeValue(item){
+      const tags = (item && item.tags) || {};
+      const raw = (item && (item.competitive_type || item.competitiveType)) || tags.competitive_type || tags.competitiveType || '';
+      return String(raw || '').trim().toLowerCase().replace(/-/g, '_');
+    },
+
+    promptMatrixCompetitiveTypeLabel(item){
+      if (this.promptMatrixScopeValue(item) !== 'competitive') return '';
+      const value = this.promptMatrixCompetitiveTypeValue(item);
+      const labels = {
+        direct_comparison:'Direct comparison',
+        brand_alternative:'Brand alternative',
+        product_alternative:'Product alternative',
+        switching:'Switching',
+        shortlist:'Shortlist',
+      };
+      return labels[value] || value;
     },
 
     promptRoutingLabel(item){

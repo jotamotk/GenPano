@@ -40,6 +40,15 @@ def test_prompt_matrix_candidate_filters_include_brand_select() -> None:
     assert "qp.set('brand_id', this.promptMatrixCandidateBrand)" in html
 
 
+def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:
+    html = _admin_html()
+
+    assert "promptMatrixScopeLabel(item)" in html
+    assert "promptMatrixScopeTone(item)" in html
+    assert "promptMatrixCompetitiveTypeLabel(item)" in html
+    assert "competitive_type" in html
+
+
 def test_prompt_matrix_copy_distinguishes_quantity_from_allowed_cap() -> None:
     html = _admin_html()
     max_per_topic_index = html.index('x-model.number="promptMatrixConfig.maxPerTopic"')

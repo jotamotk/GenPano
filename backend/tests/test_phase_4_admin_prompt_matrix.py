@@ -114,7 +114,55 @@ def test_build_prompt_matrix_messages_frontloads_quality_rules():
     assert "prompt_scope" in combined
     assert "non_branded" in combined
     assert "branded" in combined
-    assert "competitor" in combined
+    assert "competitive" in combined
+    assert "competitive_type" in combined
+    assert "generation_slots" in combined
+
+
+def test_prompt_scope_helpers_normalize_legacy_alias_and_competitive_type():
+    from app.admin.prompt_matrix.lib import (
+        PromptMatrixError,
+        normalize_competitive_type,
+        normalize_prompt_scope,
+    )
+
+    assert normalize_prompt_scope("competitor") == "competitive"
+    assert normalize_prompt_scope("competitive") == "competitive"
+    assert normalize_prompt_scope("") == "non_branded"
+    assert normalize_competitive_type("competitive", "switching") == "switching"
+
+    with pytest.raises(PromptMatrixError) as missing_type:
+        normalize_competitive_type("competitive", "")
+    assert "competitive_type" in missing_type.value.message
+
+    with pytest.raises(PromptMatrixError) as unexpected_type:
+        normalize_competitive_type("branded", "switching")
+    assert "competitive_type" in unexpected_type.value.message
+
+
+def test_prompt_generation_slots_do_not_multiply_generation_count():
+    from app.admin.prompt_matrix.lib import build_prompt_generation_slots
+
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "brand",
+            "brand": "NIKE",
+        },
+        combinations=[
+            {"intent": "informational", "language": "en-US"},
+            {"intent": "commercial", "language": "en-US"},
+            {"intent": "transactional", "language": "zh-CN"},
+        ],
+        max_per_topic=2,
+    )
+
+    assert len(slots) == 2
+    assert {slot["prompt_scope"] for slot in slots} == {"branded", "competitive"}
+    assert all(slot["intent"] and slot["language"] for slot in slots)
+    competitive_slots = [slot for slot in slots if slot["prompt_scope"] == "competitive"]
+    assert competitive_slots[0]["competitive_type"] == "direct_comparison"
 
 
 def test_parse_llm_prompt_candidates_persists_prompt_scope():
@@ -127,7 +175,7 @@ def test_parse_llm_prompt_candidates_persists_prompt_scope():
                     "topic_id": 1,
                     "intent": "informational",
                     "language": "en-US",
-                    "text": "How should I choose running shoes for knee pain?",
+                    "text": "How should I choose NIKE running shoes for knee pain?",
                     "confidence": 0.8,
                     "tags": {"prompt_scope": "branded"},
                 },
@@ -163,7 +211,7 @@ def test_parse_llm_prompt_candidates_accepts_common_llm_shapes():
         "topic_id": 1,
         "intent": "informational",
         "language": "en-US",
-        "text": "How should I choose running shoes for knee pain?",
+        "text": "How should I choose NIKE running shoes for knee pain?",
         "confidence": 0.8,
         "prompt_scope": "branded",
     }
@@ -228,6 +276,106 @@ def test_parse_llm_prompt_candidates_allows_branded_scope_for_category_topic():
     )
 
     assert parsed[0].tags["prompt_scope"] == "branded"
+
+
+def test_parse_llm_prompt_candidates_persists_competitive_type():
+    from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
+
+    parsed = parse_llm_prompt_candidates(
+        {
+            "prompts": [
+                {
+                    "topic_id": 1,
+                    "intent": "commercial",
+                    "language": "en-US",
+                    "text": "How does NIKE compare with Adidas for beginner running shoes?",
+                    "confidence": 0.8,
+                    "prompt_scope": "competitor",
+                    "competitive_type": "direct_comparison",
+                }
+            ]
+        },
+        topics_by_id={
+            1: {
+                "id": 1,
+                "title": "beginner running shoes",
+                "dimension": "brand",
+                "brand": "NIKE",
+            }
+        },
+        known_brands=[
+            {"name": "NIKE", "aliases": []},
+            {"name": "Adidas", "aliases": []},
+        ],
+    )
+
+    assert parsed[0].tags["prompt_scope"] == "competitive"
+    assert parsed[0].tags["competitive_type"] == "direct_comparison"
+    assert parsed[0].competitive_type == "direct_comparison"
+
+
+def test_parse_llm_prompt_candidates_rejects_competitive_without_type():
+    from app.admin.prompt_matrix.lib import PromptMatrixError, parse_llm_prompt_candidates
+
+    with pytest.raises(PromptMatrixError) as exc_info:
+        parse_llm_prompt_candidates(
+            {
+                "prompts": [
+                    {
+                        "topic_id": 1,
+                        "intent": "commercial",
+                        "language": "en-US",
+                        "text": "How does NIKE compare with Adidas for beginner running shoes?",
+                        "confidence": 0.8,
+                        "prompt_scope": "competitive",
+                    }
+                ]
+            },
+            topics_by_id={
+                1: {
+                    "id": 1,
+                    "title": "beginner running shoes",
+                    "dimension": "brand",
+                    "brand": "NIKE",
+                }
+            },
+            known_brands=[{"name": "NIKE", "aliases": []}],
+        )
+
+    assert exc_info.value.code == "llm_schema_invalid"
+    assert "competitive_type" in exc_info.value.message
+
+
+def test_parse_llm_prompt_candidates_rejects_branded_without_brand_anchor():
+    from app.admin.prompt_matrix.lib import PromptMatrixError, parse_llm_prompt_candidates
+
+    with pytest.raises(PromptMatrixError) as exc_info:
+        parse_llm_prompt_candidates(
+            {
+                "prompts": [
+                    {
+                        "topic_id": 1,
+                        "intent": "informational",
+                        "language": "en-US",
+                        "text": "How should I choose running shoes for knee pain?",
+                        "confidence": 0.8,
+                        "prompt_scope": "branded",
+                    }
+                ]
+            },
+            topics_by_id={
+                1: {
+                    "id": 1,
+                    "title": "running shoes for knee pain",
+                    "dimension": "product",
+                    "brand": "NIKE",
+                }
+            },
+            known_brands=[{"name": "NIKE", "aliases": []}],
+        )
+
+    assert exc_info.value.code == "prompt_scope_mismatch"
+    assert "branded" in exc_info.value.message
 
 
 def test_parse_llm_prompt_candidates_rejects_invalid_prompt_scope():
