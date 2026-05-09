@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { authApi } from '../api/auth'
+import { track, reset as resetAnalytics } from '../lib/analytics'
 
 interface User {
   id: string
@@ -17,7 +18,7 @@ interface AuthContextValue {
   token: string | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
   setTokenAndUser: (token: string, user: User) => void
 }
 
@@ -57,7 +58,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokenAndUser(res.token, res.user)
   }, [setTokenAndUser])
 
-  const logout = useCallback(() => {
+  // Logout 6-step contract (Harness D2 `logout-6-step-order` — see lib/analytics.ts):
+  //   server-revoke -> track('user_logged_out') -> mixpanel.reset() -> clear local
+  //   token+user -> caller navigates. The track() must run before reset() so it
+  //   still carries the current distinct_id; reset() must run before the local
+  //   state clear so analytics see the same identity at logout time.
+  const logout = useCallback(async () => {
+    await authApi.logout()
+    await track('user_logged_out')
+    await resetAnalytics()
     localStorage.removeItem('genpano_token')
     setToken(null)
     setUser(null)

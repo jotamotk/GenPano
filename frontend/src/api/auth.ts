@@ -130,4 +130,17 @@ export const authApi = {
   async resetPassword(token: string, password: string): Promise<void> {
     await apiClient.post<void>('/auth/reset-password', { token, password }, { skipAuth: true })
   },
+
+  async logout(): Promise<void> {
+    // Best-effort backend session revocation. The /auth/logout endpoint is
+    // documented in the OpenAPI spec but the backend may not yet implement it;
+    // ignore errors so the local-state cleanup in AuthContext.logout always
+    // runs (the JWT is also cleared client-side, so a missed server call only
+    // leaves a still-valid token until its TTL expires).
+    try {
+      await apiClient.post<void>('/auth/logout')
+    } catch {
+      /* swallow — local logout proceeds regardless */
+    }
+  },
 }
