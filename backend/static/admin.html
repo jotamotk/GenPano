@@ -4743,6 +4743,19 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <option :value="String(brand.id)" x-text="brand.name"></option>
                             </template>
                           </select>
+                          <select x-model="promptMatrixCandidateIntent" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部意图</option>
+                            <option value="informational">informational</option>
+                            <option value="commercial">commercial</option>
+                            <option value="transactional">transactional</option>
+                            <option value="navigational">navigational</option>
+                          </select>
+                          <select x-model="promptMatrixCandidateScope" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部类型</option>
+                            <option value="non_branded">non-branded</option>
+                            <option value="branded">branded</option>
+                            <option value="competitive">competitive</option>
+                          </select>
                           <select x-model="promptMatrixCandidateQualityGate" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                             <option value="all">全部质检</option>
                             <option value="blocked">质检拦截</option>
@@ -11739,6 +11752,8 @@ function adminApp() {
     promptMatrixCandidateStatusCounts: { pending: 0, approved: 0, rejected: 0, all: 0 },
     promptMatrixCandidateQuery: '',
     promptMatrixCandidateBrand: 'all',
+    promptMatrixCandidateIntent: 'all',
+    promptMatrixCandidateScope: 'all',
     promptMatrixCandidateQualityGate: 'all',
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
@@ -15238,6 +15253,8 @@ function adminApp() {
         });
         if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
         if (this.promptMatrixCandidateBrand && this.promptMatrixCandidateBrand !== 'all') qp.set('brand_id', this.promptMatrixCandidateBrand);
+        if (this.promptMatrixCandidateIntent && this.promptMatrixCandidateIntent !== 'all') qp.set('intent', this.promptMatrixCandidateIntent);
+        if (this.promptMatrixCandidateScope && this.promptMatrixCandidateScope !== 'all') qp.set('prompt_scope', this.promptMatrixCandidateScope);
         if (this.promptMatrixCandidateQualityGate && this.promptMatrixCandidateQualityGate !== 'all') qp.set('quality_gate', this.promptMatrixCandidateQualityGate);
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;

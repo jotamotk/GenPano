@@ -36,9 +36,15 @@ def test_prompt_matrix_candidate_filters_include_brand_select() -> None:
     html = _admin_html()
 
     assert "promptMatrixCandidateBrand: 'all'" in html
+    assert "promptMatrixCandidateIntent: 'all'" in html
+    assert "promptMatrixCandidateScope: 'all'" in html
     assert 'x-model="promptMatrixCandidateBrand"' in html
+    assert 'x-model="promptMatrixCandidateIntent"' in html
+    assert 'x-model="promptMatrixCandidateScope"' in html
     assert "promptMatrixTopicBrands()" in html
     assert "qp.set('brand_id', this.promptMatrixCandidateBrand)" in html
+    assert "qp.set('intent', this.promptMatrixCandidateIntent)" in html
+    assert "qp.set('prompt_scope', this.promptMatrixCandidateScope)" in html
 
 
 def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:

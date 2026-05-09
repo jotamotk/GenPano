@@ -33,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.audit import emit_audit
 from app.admin.prompt_matrix import db as pm_db
 from app.admin.prompt_matrix.lib import (
+    ALLOWED_INTENTS,
+    ALLOWED_PROMPT_SCOPES,
     DEFAULT_MAX_PROMPTS,
     MAX_PROMPTS_HARD_LIMIT,
     PromptMatrixError,
@@ -613,6 +615,8 @@ async def get_candidates(
     status: str = Query("pending"),
     q: str | None = Query(None),
     brand_id: int | None = Query(None, ge=1),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
     quality_gate: str = Query("all"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -620,6 +624,19 @@ async def get_candidates(
     status_norm = status.strip().lower()
     if status_norm not in {"pending", "approved", "rejected", "all"}:
         raise validation_error("status", "must be one of pending / approved / rejected / all")
+    intent_norm = (intent or "").strip().lower() or None
+    if intent_norm == "all":
+        intent_norm = None
+    elif intent_norm and intent_norm not in ALLOWED_INTENTS:
+        raise validation_error("intent", "must be one of " + " / ".join(ALLOWED_INTENTS))
+    prompt_scope_norm = (prompt_scope or "").strip().lower() or None
+    if prompt_scope_norm == "all":
+        prompt_scope_norm = None
+    elif prompt_scope_norm and prompt_scope_norm not in ALLOWED_PROMPT_SCOPES:
+        raise validation_error(
+            "prompt_scope",
+            "must be one of " + " / ".join(ALLOWED_PROMPT_SCOPES),
+        )
     quality_gate_norm = quality_gate.strip().lower()
     if quality_gate_norm not in {"all", "blocked"}:
         raise validation_error("quality_gate", "must be one of all / blocked")
@@ -629,6 +646,8 @@ async def get_candidates(
         status=status_norm,
         query=q,
         brand_id=brand_id,
+        intent=intent_norm,
+        prompt_scope=prompt_scope_norm,
         quality_gate=quality_gate_norm,
         limit=per_page,
         offset=offset,
@@ -637,6 +656,8 @@ async def get_candidates(
         session,
         query=q,
         brand_id=brand_id,
+        intent=intent_norm,
+        prompt_scope=prompt_scope_norm,
         quality_gate=quality_gate_norm,
     )
     return {

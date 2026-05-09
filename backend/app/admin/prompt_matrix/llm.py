@@ -27,6 +27,7 @@ from app.admin.prompt_matrix.lib import (
     llm_error_detail,
     llm_response_error_detail,
     merge_usage,
+    normalize_prompt_scope,
     normalize_prompt_text,
     over_request_count,
     parse_llm_prompt_candidates,
@@ -186,6 +187,86 @@ def _topics_for_slots(
 ) -> list[dict[str, Any]]:
     keys = set(slots_by_topic)
     return [topic for topic in topics if (_topic_key(topic) or "") in keys]
+
+
+SLOT_METADATA_KEYS = (
+    "slot_id",
+    "competitive_type",
+    "competitor_name",
+    "competitor_brand_id",
+    "competitor_source",
+    "scenario_axis",
+)
+
+
+def _candidate_prompt_scope(candidate: LLMPromptCandidate) -> str | None:
+    tags = candidate.tags if isinstance(candidate.tags, dict) else {}
+    try:
+        return normalize_prompt_scope(tags.get("prompt_scope") or tags.get("promptScope"))
+    except PromptMatrixError:
+        return None
+
+
+def _candidate_competitive_type(candidate: LLMPromptCandidate) -> str | None:
+    tags = candidate.tags if isinstance(candidate.tags, dict) else {}
+    value = (
+        candidate.competitive_type or tags.get("competitive_type") or tags.get("competitiveType")
+    )
+    return str(value).strip() if value else None
+
+
+def _matches_generation_slot(candidate: LLMPromptCandidate, slot: dict[str, Any]) -> bool:
+    tags = candidate.tags if isinstance(candidate.tags, dict) else {}
+    slot_id = tags.get("slot_id") or tags.get("slotId")
+    if slot_id and slot.get("slot_id") and str(slot_id) != str(slot.get("slot_id")):
+        return False
+    if str(slot.get("intent") or "") != str(candidate.intent or ""):
+        return False
+    if str(slot.get("language") or "") != str(candidate.language or ""):
+        return False
+    prompt_scope = _candidate_prompt_scope(candidate)
+    if prompt_scope != str(slot.get("prompt_scope") or ""):
+        return False
+    if prompt_scope == "competitive":
+        slot_competitive_type = str(slot.get("competitive_type") or "")
+        if (
+            slot_competitive_type
+            and _candidate_competitive_type(candidate) != slot_competitive_type
+        ):
+            return False
+    return True
+
+
+def _apply_generation_slot_metadata(
+    prompts: list[LLMPromptCandidate],
+    slots_by_topic: dict[str, list[dict[str, Any]]],
+) -> list[LLMPromptCandidate]:
+    used_slots: dict[str, set[int]] = {}
+    for candidate in prompts:
+        try:
+            topic_key = str(int(candidate.topic_id))
+        except (TypeError, ValueError):
+            continue
+        slots = slots_by_topic.get(topic_key) or []
+        if not slots or not isinstance(candidate.tags, dict):
+            continue
+        used_for_topic = used_slots.setdefault(topic_key, set())
+        matched_index: int | None = None
+        for index, slot in enumerate(slots):
+            if index in used_for_topic:
+                continue
+            if _matches_generation_slot(candidate, slot):
+                matched_index = index
+                break
+        if matched_index is None:
+            continue
+        slot = slots[matched_index]
+        for key in SLOT_METADATA_KEYS:
+            value = slot.get(key)
+            if value is not None and value != "" and not candidate.tags.get(key):
+                candidate.tags[key] = value
+        used_for_topic.add(matched_index)
+    return prompts
 
 
 class PromptMatrixClient:
@@ -418,6 +499,7 @@ class PromptMatrixClient:
                         + [item.text for item in generated_prompts],
                         active_hotspots=active_hotspots,
                     )
+                    prompts = _apply_generation_slot_metadata(prompts, limited_slots)
                     break
                 except PromptMatrixError as error:
                     last_error = error
