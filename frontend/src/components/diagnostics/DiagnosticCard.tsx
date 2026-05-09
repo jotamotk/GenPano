@@ -181,7 +181,7 @@ function ExplanationBlock({ diag }) {
           <div className="text-[11px] font-semibold text-themed-primary mb-2">行业对标 · {ib.metric}</div>
           <div className="grid grid-cols-3 gap-3 mb-3">
             <div>
-              <div className="text-[10px] text-themed-muted mb-0.5">我方</div>
+              <div className="text-[10px] text-themed-muted mb-0.5">本品牌</div>
               <div className="text-base font-semibold text-themed-primary tabular-nums">{ib.myValue}</div>
             </div>
             <div>

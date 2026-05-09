@@ -23,10 +23,10 @@ import Button from '../ui/Button';
 /* ── i18n (placeholder) ── */
 const t = {
   title: '联系 GEO 顾问',
-  subtitle: '我们的顾问团队将在 24 小时内为您提供定制化的诊断报告和优化建议',
+  subtitle: '专家顾问团队将在 24 小时内提供定制化的诊断报告和优化建议',
   field_brand: '品牌名称',
   field_name: '联系人姓名',
-  field_namePlaceholder: '请输入您的姓名',
+  field_namePlaceholder: '输入姓名',
   field_contact: '手机或邮箱',
   field_contactPlaceholder: '输入手机号（大陆）或邮箱地址',
   field_concerns: '最关心的问题（至少选一项）',
@@ -37,7 +37,7 @@ const t = {
   btn_submit: '提交',
   btn_cancel: '取消',
   success_title: '已提交',
-  success_message: '感谢您的咨询，我们将在 24 小时内联系您',
+  success_message: '感谢咨询，团队将在 24 小时内联系',
   success_pdf: '诊断报告 PDF 生成中...',
   error_nameRequired: '请输入联系人姓名',
   error_contactRequired: '请输入手机号或邮箱',

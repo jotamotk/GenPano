@@ -137,7 +137,7 @@ function LeftPanel({ t }) {
           className="text-[28px] font-brand font-bold leading-tight mb-4"
           style={{ color: 'var(--color-text-primary)', letterSpacing: '-0.02em' }}
         >
-          {tOr(t, 'auth.leftpanel.tagline', '管理你的品牌监测数据')}
+          {tOr(t, 'auth.leftpanel.tagline', '品牌监测数据管理平台')}
         </h2>
         <p
           className="text-base leading-relaxed mb-8"
@@ -482,7 +482,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
           {tOr(
             t,
             'auth.step1.new.verify_body',
-            '我们会发送一封验证邮件。验证完成后，你可以设置密码并补充账号信息。'
+            '验证邮件已发送。验证完成后，请设置密码并补充账号信息。'
           )}
         </p>
         {error && (
@@ -625,7 +625,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
     const bodyTpl = tOr(
       t,
       'auth.step1.forgot.sent_body',
-      '如果 {email} 已注册，我们会发送密码重置邮件。请在 1 小时内完成重置。'
+      '若 {email} 已注册，系统将发送密码重置邮件。请在 1 小时内完成重置。'
     );
     const body = bodyTpl.replace('{email}', email);
     return (
@@ -677,7 +677,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
   const headerFor = () => {
     if (step === 'step_1_new') {
       return {
-        title: tOr(t, 'auth.step1.new.title', '验证你的邮箱'),
+        title: tOr(t, 'auth.step1.new.title', '验证邮箱'),
         subtitle: null,
       };
     }
@@ -689,17 +689,17 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
     }
     if (step === 'step_1_forgot' || step === 'step_1_forgot_sent') {
       return {
-        title: tOr(t, 'auth.step1.forgot.title', '重置你的密码'),
+        title: tOr(t, 'auth.step1.forgot.title', '重置密码'),
         subtitle:
           step === 'step_1_forgot'
-            ? tOr(t, 'auth.step1.forgot.subtitle', '输入邮箱，我们会发送密码重置链接。')
+            ? tOr(t, 'auth.step1.forgot.subtitle', '输入邮箱后，系统将发送密码重置链接。')
             : null,
       };
     }
     // step_0_email or step_1_looking_up
     return {
       title: tOr(t, 'auth.step0.title', '登录或注册'),
-      subtitle: tOr(t, 'auth.step0.subtitle', '输入邮箱，继续访问你的 GenPano 工作台。'),
+      subtitle: tOr(t, 'auth.step0.subtitle', '输入邮箱以继续访问 GenPano 工作台。'),
     };
   };
 

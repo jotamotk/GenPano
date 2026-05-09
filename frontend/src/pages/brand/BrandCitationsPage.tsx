@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, Button, MockDataBadge } from '../../components/ui';
+import { Card, Badge, Button, MockDataBadge, InfoTooltip } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import ContentGapPanel from '../../components/citation/ContentGapPanel';
 import PrTargetsPanel from '../../components/citation/PrTargetsPanel';
@@ -222,11 +222,9 @@ export default function BrandCitationsPage() {
             <div className="flex items-baseline justify-between mb-3">
               <h3 className="text-sm font-semibold text-themed-primary flex items-center gap-2">
                 {t('brand_citations.authority_trend_title')}
+                <InfoTooltip text={t('brand_citations.authority_trend_subtitle')} />
                 {authorityIsMock && <MockDataBadge />}
               </h3>
-              <span className="text-[11px] text-themed-muted">
-                {t('brand_citations.authority_trend_subtitle')}
-              </span>
             </div>
             <TrendChart
               data={authoritySeries.map((d: any) => ({ name: d.date, ...d }))}
@@ -409,7 +407,7 @@ function AuthoritySimulator({ baseline, presets }) {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-themed-muted">你的 PANO 评分</span>
+                <span className="text-xs text-themed-muted">主品牌 PANO 评分</span>
                 <span className="text-lg font-bold text-themed-primary tabular-nums">
                   {baseline.currentPanoA}
                 </span>

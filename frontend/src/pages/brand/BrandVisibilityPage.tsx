@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
 import { DonutChart, TrendChart, HorizontalBar } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -229,11 +229,9 @@ export default function BrandVisibilityPage() {
           <div className="flex items-baseline justify-between mb-1">
             <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.sov_distribution_title')}
+              <InfoTooltip text={t('brand_visibility.sov_distribution_subtitle')} />
               {sovIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_visibility.sov_distribution_subtitle')}
-            </span>
           </div>
           <div className="flex items-center justify-center">
             <DonutChart segments={sovData} size={152} />
@@ -247,11 +245,9 @@ export default function BrandVisibilityPage() {
           <div className="flex items-baseline justify-between mb-1">
             <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.by_engine_title')}
+              <InfoTooltip text={t('brand_visibility.by_engine_subtitle')} />
               {engineIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_visibility.by_engine_subtitle')}
-            </span>
           </div>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={engineBreakdownData} margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
@@ -279,11 +275,9 @@ export default function BrandVisibilityPage() {
           <div className="flex items-baseline justify-between mb-1">
             <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               {t('brand_visibility.position_dist_title')}
+              <InfoTooltip text={t('brand_visibility.position_dist_subtitle')} />
               {positionIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_visibility.position_dist_subtitle')}
-            </span>
           </div>
           <HorizontalBar
             data={positionData}
@@ -300,9 +294,9 @@ export default function BrandVisibilityPage() {
         <div className="flex items-baseline justify-between mb-1.5 px-1">
           <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
             品牌 × Topic 提及率热力图
+            <InfoTooltip text="主品牌 + Top 4 竞品 × Top 8 Topic · 点击进入 Topic 详情" />
             {heatmapIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">我 + Top 4 竞品 × Top 8 Topic · 点击进入 Topic 详情</span>
         </div>
         <BrandTopicHeatmap
           rows={heatmapRows}
@@ -317,11 +311,9 @@ export default function BrandVisibilityPage() {
         <div className="flex items-baseline justify-between mb-1">
           <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
             {t('brand_visibility.pano_trend_title')}
+            <InfoTooltip text={t('brand_visibility.pano_trend_subtitle')} />
             {trendIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_visibility.pano_trend_subtitle')}
-          </span>
         </div>
         <TrendChart
           data={trendData}

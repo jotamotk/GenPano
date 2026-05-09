@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
 import { TrendChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -244,11 +244,11 @@ export default function BrandCompetitorsPage() {
 
       {/* ① Top 3 威胁卡 */}
       <div>
-        <div className="flex items-baseline justify-between mb-1.5 px-1">
-          <h3 className="text-[13px] font-semibold text-themed-primary">Top 3 威胁竞品</h3>
-          <span className="text-[11px] text-themed-muted">
-            按 PANO 差距 × SoV × 情感综合排序 · 点击卡片切换下方深度拆解
-          </span>
+        <div className="flex items-baseline mb-1.5 px-1 gap-2">
+          <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
+            Top 3 威胁竞品
+            <InfoTooltip text="按 PANO 差距 × SoV × 情感综合排序 · 点击卡片切换下方深度拆解" />
+          </h3>
         </div>
         {threatCards.length === 0 ? (
           <Card className="p-3">
@@ -281,10 +281,10 @@ export default function BrandCompetitorsPage() {
                       {card.threatScore.toFixed(0)}
                     </span>
                   </div>
-                  <p className="text-[11px] text-themed-muted mb-1.5">在以下维度领先我们:</p>
+                  <p className="text-[11px] text-themed-muted mb-1.5">在以下维度领先主品牌:</p>
                   <div className="flex flex-wrap gap-1.5">
                     {card.wins.length === 0 ? (
-                      <span className="text-[11px] text-themed-muted">整体略胜我方</span>
+                      <span className="text-[11px] text-themed-muted">整体略胜主品牌</span>
                     ) : (
                       card.wins.map((w) => (
                         <Badge key={w.key} variant="red" size="sm">
@@ -306,12 +306,10 @@ export default function BrandCompetitorsPage() {
           <Card className="p-3">
             <div className="flex items-baseline justify-between mb-1">
               <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
-                Authority Radar · 我 vs {focus.name}
+                Authority Radar · {primary.name} vs {focus.name}
+                <InfoTooltip text="Tier 1 官方 / Tier 2 权威媒体 / Tier 3 KOL / Tier 4 UGC / 总覆盖" />
                 {radarIsMock && <MockDataBadge />}
               </h3>
-              <span className="text-[11px] text-themed-muted">
-                Tier 1 官方 / Tier 2 权威媒体 / Tier 3 KOL / Tier 4 UGC / 总覆盖
-              </span>
             </div>
             <ResponsiveContainer width="100%" height={260}>
               <RadarChart data={radarData} margin={{ top: 12, right: 48, bottom: 12, left: 48 }}>
@@ -326,16 +324,14 @@ export default function BrandCompetitorsPage() {
             </ResponsiveContainer>
           </Card>
 
-          {/* ②b Brand × Topic heatmap (我 vs focus) */}
+          {/* ②b Brand × Topic heatmap */}
           <div>
             <div className="flex items-baseline justify-between mb-1.5 px-1">
               <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
-                Topic 胜负图 · 我 vs {focus.name}
+                Topic 胜负图 · {primary.name} vs {focus.name}
+                <InfoTooltip text="颜色越深 = 提及率越高 · 对比同一列看谁在该 Topic 占优" />
                 {compareHeatmapIsMock && <MockDataBadge />}
               </h3>
-              <span className="text-[11px] text-themed-muted">
-                颜色越深 = 提及率越高 · 对比同一列看谁在该 Topic 占优
-              </span>
             </div>
             <BrandTopicHeatmap
               rows={compareHeatmapRows}
@@ -349,26 +345,24 @@ export default function BrandCompetitorsPage() {
           <Card className="p-3">
             <div className="flex items-baseline justify-between mb-1">
               <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
-                PANO 趋势 · 我 vs {focus.name}
+                PANO 趋势 · {primary.name} vs {focus.name}
+                <InfoTooltip text="近 14 天走势" />
                 {trendIsMock && <MockDataBadge />}
               </h3>
-              <span className="text-[11px] text-themed-muted">近 14 天走势</span>
             </div>
             <TrendChart data={trendData} lines={trendLines} height={200} />
           </Card>
         </>
       )}
 
-      {/* ③ Tier 2 权威媒体覆盖对比 (我 vs 3 主要竞品 × 8 家媒体) */}
+      {/* ③ Tier 2 权威媒体覆盖对比 */}
       {tier2Matrix?.brands?.length > 0 && (
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary">
+            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
               Tier 2 权威媒体覆盖对比
+              <InfoTooltip text="行 = 媒体域 · 列 = 品牌 · 单元格 = 近 30 天被引用次数 · 颜色越深 = 次数越多" />
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              行 = 媒体域 · 列 = 品牌 · 单元格 = 近 30 天被引用次数 · 颜色越深 = 次数越多
-            </span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">

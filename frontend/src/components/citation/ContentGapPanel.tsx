@@ -42,7 +42,7 @@ export default function ContentGapPanel({
               内容缺口 Top {topN.length}
             </h3>
             <p className="text-xs text-themed-muted mt-0.5">
-              这些话题里你的品牌被提到很多, 但 AI 很少把它们归因到你的官方或合作内容上
+              这些话题里主品牌被提到很多, 但 AI 很少把它们归因到官方或合作内容上
             </p>
           </div>
           <Badge variant="default" size="sm">

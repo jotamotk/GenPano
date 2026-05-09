@@ -106,7 +106,7 @@ export const MESSAGES = {
       current: '当前行业',
     },
     industry_sidebar: {
-      switch_to_brand: '← 回到品牌模式查看我的品牌',
+      switch_to_brand: '← 回到品牌模式',
     },
     /* ─── Brand Mode 子视图文案 (§4.6-IA-v2.C.2.2) ─── */
     brand_visibility: {
@@ -395,7 +395,7 @@ export const MESSAGES = {
         anchor_actions: {
           focus_label: '焦点区: 在不指定执行步骤的前提下, 用以下问题驱动团队复盘',
           q1: '过去 14 天 {engine} 上的提及质量为何下滑? 是模型版本更新, 还是内容生态迁移?',
-          q2: '我们的"权威背书"信号 (媒体报道 / 行业奖项 / 专家引用) 是否在被替代?',
+          q2: '"权威背书"信号 (媒体报道 / 行业奖项 / 专家引用) 是否在被替代?',
           q3: '负面关键词"{negKeyword}"是来自真实用户体验, 还是来自竞品对比叙述?',
           q4: '哪些 Topic 是"必须守住"的, 哪些可以战略性放弃以聚焦资源?',
           disclaimer: '⚠️ 本节为事实探查型问题, 不提供具体执行剧本. 剧本属付费咨询业务边界 (PRD §4.8.6).',
@@ -413,7 +413,7 @@ export const MESSAGES = {
       },
       lead: {
         architecture_title: '4 层诊断架构',
-        architecture_subtitle: '基于 {brand} 当前 GEO 表现, 我们将所有诊断按读者视角和处理路径分为 4 层. Quick Wins / Strategic Bets / Branding Risks 可在工具内自助跟踪; Consulting Accelerators 涉及策略转向 + 内容生态建设, 适合付费咨询协助推进.',
+        architecture_subtitle: '基于 {brand} 的 GEO 表现, 诊断按读者视角和处理路径分为 4 层. Quick Wins / Strategic Bets / Branding Risks 可在工具内自助跟踪; Consulting Accelerators 涉及策略转向 + 内容生态建设, 适合付费咨询协助推进.',
         items_label: '项',
         empty: '本层暂无符合条件的诊断',
         more: '另有 {count} 项可在工具内继续查看',
@@ -438,7 +438,7 @@ export const MESSAGES = {
           },
           consultingAccelerators: {
             title: 'Consulting Accelerators',
-            description: '复杂归因 + 高影响 + 低自助置信度 — 我方顾问可显著加速进展',
+            description: '复杂归因 + 高影响 + 低自助置信度 — 专家顾问可显著加速进展',
             reader: '咨询',
           },
         },
@@ -455,10 +455,10 @@ export const MESSAGES = {
         title: '需要专业 GEO 优化方案?',
         subtitle: '预约 30 分钟免费诊断咨询, 获取定制化优化建议',
         button: '联系 GEO 顾问',
-        lead_title: '本报告揭示的 GEO 问题可由我们的顾问协助解决',
+        lead_title: '本报告揭示的 GEO 问题可由专家顾问协助解决',
         lead_subtitle: '{p0Count} 条 P0 紧急诊断 + {p1Count} 条 P1 重要诊断. 预约资深顾问 30 分钟一对一沟通.',
         lead_button: '预约 GEO 诊断咨询',
-        dynamic: '你的品牌在 {engine} 中的可见度下降了 {pct}% — 我们的 GEO 顾问可以帮你制定恢复计划.',
+        dynamic: '{brand} 在 {engine} 中的可见度下降了 {pct}% — GEO 顾问可协助制定恢复计划.',
       },
       generate_modal: {
         title: '生成新报告',
@@ -496,11 +496,11 @@ export const MESSAGES = {
         competitor_comparison: '对比 Top 3 竞品, 本品牌在 S (情感) 维度领先 ({sLead}), 但在 V (可见度) 维度落后 ({vLag}).',
         diagnostic_summary: '本期共 {total} 条诊断, 其中 {p0} 条 P0 (新增 {p0New}), {p1} 条 P1 (已改善 {p1Imp}). 最需优先关注: {topDiagnostic}.',
         anchor_actions: '本期优先级最高的 {p0} 条 P0 + {p1} 条 P1 诊断, 已转换为下列锚点问题. 这些问题用于驱动团队"先想清楚, 再动手", 不是直接的执行剧本.',
-        branding_narrative: '本期 {brand} 的叙事弧出现明显偏移. 核心信号: {topDiagnostic}. 建议 Branding 团队回到"我们想被记住的样子是什么", 重新校准心智锚点.',
+        branding_narrative: '本期 {brand} 的叙事弧出现明显偏移. 核心信号: {topDiagnostic}. 建议 Branding 团队回到"品牌想被记住的样子是什么", 重新校准心智锚点.',
       },
     },
     dashboard: {
-      page_subtitle: '市场宏观视角 · 我 vs 竞品 vs 行业',
+      page_subtitle: '市场宏观视角 · 主品牌 vs 竞品 vs 行业',
       /* NOTE: 旧 `hierarchy_note` 已删除 (2026-04-16, PRD §4.6.0a / §6c) —
          原文是页面职责边界描述, 属开发者约束, 不得对用户呈现.
          页面边界改由 KPI 卡 + 告警条的 "查看品牌详情 →" 交互引导自然传达. */
@@ -508,8 +508,8 @@ export const MESSAGES = {
          `projects.length === 0` 时 <DashboardEmptyState /> 接管整页.
          主 CTA → /projects/new (T9), 次 CTA → /industries. */
       empty: {
-        title: '先创建一个项目，看看你的品牌在 AI 里的表现',
-        subtitle: '选择你要监测的品牌和竞品，平台会持续追踪它们在 ChatGPT、豆包、DeepSeek 中的表现',
+        title: '创建项目，开始监测品牌在 AI 中的表现',
+        subtitle: '选择需要监测的品牌和竞品，平台将持续追踪在 ChatGPT、豆包、DeepSeek 等引擎中的表现',
         cta_primary: '+ 创建第一个项目',
         cta_secondary: '先探索行业数据',
         preview_pano_label: 'PANO Score',
@@ -552,7 +552,7 @@ export const MESSAGES = {
         grade_pass: '及格',
         grade_attention: '需关注',
         industry_avg: '行业均值',
-        my_brand: '我的品牌',
+        my_brand: '主品牌',
       },
       kpi: {
         /* ── PRD §4.6.1a 2026-04-16 修订: 提及率 与 SoV 口径不等价, 同时作为独立 KPI ──
@@ -587,7 +587,7 @@ export const MESSAGES = {
       },
       trend: {
         title: '趋势',
-        pano_title: 'PANO 趋势 (我 vs Top 3 竞品)',
+        pano_title: 'PANO 趋势 (主品牌 vs Top 3 竞品)',
         kpi_summary_title: '5 KPI sparkline 汇总',
         pano_self: '主品牌',
       },
@@ -744,7 +744,7 @@ export const MESSAGES = {
       },
       mcp: {
         title: 'MCP Server 配置',
-        description: '将以下配置添加到你的 Claude 应用程序以启用 GENPANO MCP 服务器集成',
+        description: '将以下配置添加到 Claude 应用程序以启用 GENPANO MCP 服务器集成',
       },
       notifications: {
         title: '通知偏好',
@@ -869,7 +869,7 @@ export const MESSAGES = {
          文案需同时支持中英两套, 且两分支 DOM 结构差异不得泄露 next 值. */
       step0: {
         title: '登录或注册',
-        subtitle: '输入邮箱，继续访问你的 GenPano 工作台。',
+        subtitle: '输入邮箱以继续访问 GenPano 工作台。',
         email_label: '邮箱',
         email_placeholder: 'name@example.com',
         submit: '继续',
@@ -880,11 +880,11 @@ export const MESSAGES = {
       step1: {
         new: {
           chip: '新账号',
-          title: '验证你的邮箱',
+          title: '验证邮箱',
           password_label: '密码',
           password_confirm_label: '确认密码',
           password_hint: '至少 8 位，建议包含数字和字母',
-          verify_body: '我们会发送一封验证邮件。验证完成后，你可以设置密码并补充账号信息。',
+          verify_body: '验证邮件已发送。验证完成后，请设置密码并补充账号信息。',
           submit: '发送验证邮件',
           submitting: '发送中…',
           switch_email: '换个邮箱',
@@ -903,14 +903,14 @@ export const MESSAGES = {
           switch_email: '换个邮箱',
         },
         forgot: {
-          title: '重置你的密码',
-          subtitle: '输入邮箱，我们会发送密码重置链接。',
+          title: '重置密码',
+          subtitle: '输入邮箱后，系统将发送密码重置链接。',
           email_label: '邮箱',
           submit: '发送重置链接',
           submitting: '发送中…',
           back: '返回登录',
           sent_title: '重置邮件已发送',
-          sent_body: '如果 {email} 已注册，我们会发送密码重置邮件。请在 1 小时内完成重置。',
+          sent_body: '若 {email} 已注册，系统将发送密码重置邮件。请在 1 小时内完成重置。',
           resend: '重新发送',
         },
       },
@@ -945,8 +945,8 @@ export const MESSAGES = {
        Project 时从顶部提示建项目; sessionStorage dismiss 粒度为"页面". */
     project: {
       gatedBanner: {
-        title: '创建项目后，这里会显示你自己的数据',
-        body: '你正在查看行业公共数据。创建项目后会自动生成你的诊断、告警和周报。',
+        title: '创建项目后，将在此显示专属数据',
+        body: '当前展示行业公共数据。创建项目后将自动生成专属诊断、告警和周报。',
         cta_primary: '+ 创建第一个项目',
         cta_secondary: '先探索行业数据',
         dismiss_aria: '关闭提示',
@@ -990,13 +990,13 @@ export const MESSAGES = {
         card_warning_short: '跨行业, 数据口径不同',
       },
       banner: {
-        not_watching_title: '{brand} 暂未加入你的监控',
-        not_watching_body: '数据来自 GENPANO 平台全量采集 (每日更新). 加入监控后系统会持续追踪变化并生成针对你的诊断 / Branding Narrative / 周报.',
+        not_watching_title: '{brand} 暂未加入监控',
+        not_watching_body: '数据来自 GENPANO 平台全量采集 (每日更新). 加入监控后系统将持续追踪变化并生成专属诊断 / Branding Narrative / 周报.',
         not_watching_link: '什么是监控?',
-        anonymous_title: '你正在浏览 GENPANO 的公开数据',
+        anonymous_title: '当前正在浏览 GENPANO 的公开数据',
         anonymous_body: '免费注册后可持续追踪此品牌、接收诊断告警、生成体检报告.',
         anonymous_cta: '免费注册监控',
-        diagnostics_upsell: '加入监控后系统会持续追踪这些诊断的演变趋势 + 周报中重点提醒 + Branding Narrative 深度叙事',
+        diagnostics_upsell: '加入监控后系统将持续追踪这些诊断的演变趋势 + 周报中重点提醒 + Branding Narrative 深度叙事',
         sticky_cta: '免费注册持续监控 {brand}',
       },
       breadcrumb: {
@@ -1006,7 +1006,7 @@ export const MESSAGES = {
         from_product: '返回产品详情',
       },
       benchmark: {
-        vs_project: 'vs 我的 Project 竞品',
+        vs_project: 'vs 项目竞品',
         vs_industry_top5: 'vs 行业 Top 5',
         vs_industry_top5_note: '(行业基线, 因尚未监控)',
       },
