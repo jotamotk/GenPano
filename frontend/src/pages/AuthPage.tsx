@@ -218,6 +218,19 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // OAuth callback notice — separate from `error` so it renders as a
+  // banner above the form instead of styling the email input as invalid.
+  // ?error=oauth_not_configured | oauth_failed comes from the backend
+  // when GOOGLE_CLIENT_ID is missing or the OAuth handshake aborts.
+  const oauthErrorParam = searchParams.get('error');
+  const [oauthNotice, setOAuthNotice] = useState(
+    oauthErrorParam === 'oauth_not_configured'
+      ? tOr(t, 'auth.errors.oauth_not_configured', 'Google 登录暂未启用，请使用邮箱继续。')
+      : oauthErrorParam === 'oauth_failed'
+        ? tOr(t, 'auth.errors.oauth_failed', 'Google 登录未完成，请重试或使用邮箱继续。')
+        : null,
+  );
+
   const emailInputRef = useRef(null);
   const passwordInputRef = useRef(null);
 
@@ -335,6 +348,7 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
   };
 
   const startGoogleOAuth = () => {
+    setOAuthNotice(null);
     window.location.href = authApi.getGoogleOAuthUrl();
   };
 
@@ -369,6 +383,19 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
 
   const renderStep0 = () => (
     <form onSubmit={submitEmail} className="space-y-4" noValidate>
+      {oauthNotice && (
+        <div
+          role="status"
+          className="rounded-card p-3 text-sm leading-relaxed"
+          style={{
+            background: 'var(--color-warning-bg, rgba(255,165,0,0.08))',
+            border: '1px solid var(--color-border-subtle)',
+            color: 'var(--color-text-body)',
+          }}
+        >
+          {oauthNotice}
+        </div>
+      )}
       <div>
         <label className="block text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-body)' }}>
           {tOr(t, 'auth.step0.email_label', '邮箱')}
