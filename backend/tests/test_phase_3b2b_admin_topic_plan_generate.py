@@ -23,7 +23,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from genpano_models import AdminAuditLog, AdminUser, TopicCandidate, TopicPlanRun
+from genpano_models import (
+    AdminAuditLog,
+    AdminUser,
+    BrandContextSnapshot,
+    TopicCandidate,
+    TopicPlanRun,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,7 +114,12 @@ def _coverage_with_one_gap(brand_name: str = "NIKE", brand_id: int = 1) -> dict[
     }
 
 
-def _llm_topic(title: str, brand: str = "NIKE", dimension: str = "product") -> Any:
+def _llm_topic(
+    title: str,
+    brand: str = "NIKE",
+    dimension: str = "product",
+    product_name: str | None = None,
+) -> Any:
     from app.admin.topic_plan.lib import LLMTopic
 
     return LLMTopic(
@@ -118,6 +129,7 @@ def _llm_topic(title: str, brand: str = "NIKE", dimension: str = "product") -> A
         reason="consumer demand",
         confidence=0.85,
         coverage_gap=f"{brand}:{dimension}",
+        product_name=product_name,
     )
 
 
@@ -228,6 +240,92 @@ async def test_generate_sync_inserts_candidates_and_completes_run(
     )
     assert len(audit) == 1
     assert audit[0].severity == "med"
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_persists_context_snapshot_and_topic_refs(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("TOPIC_PLAN_SYNC_GENERATE", "1")
+    _patch_tp_db(
+        monkeypatch,
+        fetch_brands=AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "name": "NIKE",
+                    "industry_id": "footwear",
+                    "products": [
+                        {
+                            "id": 10,
+                            "name": "Pegasus",
+                            "category": "running shoes",
+                            "aliases": [],
+                        }
+                    ],
+                }
+            ]
+        ),
+        build_coverage=AsyncMock(return_value=_coverage_with_one_gap()),
+        fetch_pending_candidate_titles=AsyncMock(return_value=[]),
+        fetch_products_by_brand=AsyncMock(return_value={}),
+    )
+    _patch_doubao(
+        monkeypatch,
+        (
+            [
+                _llm_topic(
+                    "Which Pegasus shoes are best for new runners?",
+                    dimension="product",
+                    product_name="Pegasus",
+                )
+            ],
+            {
+                "model": "doubao-test",
+                "usage": {"total_tokens": 60},
+                "brand_context_packs": {
+                    "NIKE": {
+                        "brand": {"name": "NIKE", "industry": "footwear"},
+                        "products": [{"name": "Pegasus", "category": "running shoes"}],
+                        "scenarios": [{"name": "beginner running"}],
+                        "competitors": [{"name": "Adidas", "competitor_type": "direct"}],
+                        "audience_hypotheses": [{"segment_name": "new runners"}],
+                        "claims": {"pros": ["stable fit"]},
+                        "source_notes": [
+                            {"title": "Official", "url": "https://nike.example/pegasus"}
+                        ],
+                    }
+                },
+            },
+        ),
+    )
+
+    resp = await client.post(
+        "/api/admin/topic-plan/generate",
+        json={"brand_ids": [1], "max_topics": 5},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    snapshot = (
+        await db_session.execute(
+            select(BrandContextSnapshot).where(BrandContextSnapshot.created_from_run_id == run_id)
+        )
+    ).scalar_one()
+    assert snapshot.brand_id == 1
+    assert snapshot.payload_json["products"][0]["name"] == "Pegasus"
+
+    candidate = (
+        await db_session.execute(select(TopicCandidate).where(TopicCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.brand_context_version == snapshot.version
+    assert candidate.topic_axis == "product"
+    assert candidate.context_refs_json["products"] == ["Pegasus"]
+
+    run = (
+        await db_session.execute(select(TopicPlanRun).where(TopicPlanRun.id == run_id))
+    ).scalar_one()
+    assert run.request_config["brand_context_versions"]["1"] == snapshot.version
 
 
 @pytest.mark.asyncio

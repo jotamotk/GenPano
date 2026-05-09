@@ -26,12 +26,34 @@ def _config() -> DoubaoConfig:
 
 @pytest.mark.asyncio
 async def test_generate_topics_happy_path(monkeypatch):
-    captured = {}
+    posted = []
 
     async def fake_post(self, url, json=None, headers=None):
-        captured["url"] = url
-        captured["body"] = json
-        captured["headers"] = headers
+        posted.append({"url": url, "body": json, "headers": headers})
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": (
+                                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                                        '"products":[{"name":"Pegasus",'
+                                        '"category":"running shoes"}],'
+                                        '"scenarios":[{"name":"beginner running"}],'
+                                        '"competitors":[{"name":"Adidas","competitor_type":"direct",'
+                                        '"comparison_axes":["cushioning"]}],'
+                                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                                    ),
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -65,10 +87,53 @@ async def test_generate_topics_happy_path(monkeypatch):
     assert topics[0].title == "NIKE跑鞋选购指南"
     assert meta["model"] == "doubao-2"
     assert meta["usage"]["total_tokens"] == 46
-    assert captured["url"] == "https://example.invalid/v3/chat/completions"
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["body"]["model"] == "doubao-2"
-    assert isinstance(captured["body"]["messages"], list)
+    assert meta["brand_context_packs"]["NIKE"]["products"][0]["name"] == "Pegasus"
+    assert posted[0]["url"] == "https://example.invalid/v3/responses"
+    assert posted[1]["url"] == "https://example.invalid/v3/chat/completions"
+    assert posted[1]["headers"]["Authorization"] == "Bearer test-key"
+    assert posted[1]["body"]["model"] == "doubao-2"
+    assert isinstance(posted[1]["body"]["messages"], list)
+    assert "brand_context_packs" in posted[1]["body"]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_generate_topics_missing_brand_search_context_raises(monkeypatch):
+    posted = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        posted.append({"url": url, "body": json, "headers": headers})
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"brands":[{"name":"NIKE","industry":"sportswear"}]}',
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    client = DoubaoTopicPlanClient(_config())
+
+    with pytest.raises(TopicPlanLLMError) as exc:
+        await client.generate_topics(
+            industry="footwear",
+            category="running",
+            brands=[{"id": 1, "name": "NIKE"}, {"id": 2, "name": "Adidas"}],
+            coverage_gaps=[],
+            max_topics=1,
+            existing_topics=[],
+        )
+
+    assert exc.value.code == "brand_context_search_failed"
+    assert "Adidas" in exc.value.message
+    assert len(posted) == 1
 
 
 @pytest.mark.asyncio
@@ -100,6 +165,7 @@ async def test_generate_topics_uses_web_research_context(monkeypatch):
                 },
             )
         assert "brand_research" in json["messages"][1]["content"]
+        assert "brand_context_packs" in json["messages"][1]["content"]
         assert "新手慢跑" in json["messages"][1]["content"]
         return httpx.Response(
             200,
@@ -141,6 +207,16 @@ async def test_generate_topics_uses_web_research_context(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_topics_http_error_raises(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output_text": (
+                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                    )
+                },
+            )
         return httpx.Response(
             400,
             json={"error": {"code": "InvalidModel", "message": "model endpoint not found"}},
@@ -165,7 +241,7 @@ async def test_generate_topics_http_error_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_topics_network_error_raises(monkeypatch):
+async def test_generate_topics_search_failure_raises(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
         raise httpx.ConnectError("dns")
 
@@ -181,12 +257,23 @@ async def test_generate_topics_network_error_raises(monkeypatch):
             max_topics=1,
             existing_topics=[],
         )
-    assert exc.value.code == "llm_call_failed"
+    assert exc.value.code == "brand_context_search_failed"
+    assert "dns" in exc.value.message
 
 
 @pytest.mark.asyncio
 async def test_generate_topics_empty_choices(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output_text": (
+                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                    )
+                },
+            )
         return httpx.Response(200, json={"choices": []})
 
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
@@ -207,6 +294,16 @@ async def test_generate_topics_empty_choices(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_topics_malformed_json_payload(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output_text": (
+                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                    )
+                },
+            )
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": "not json {"}}]},

@@ -26,6 +26,7 @@ Backward compatibility:
 from genpano_models.admin_console import (
     AdminLoginAttempt,
     AdminUser,
+    BrandContextSnapshot,
     BrandGenerationLog,
     Profile,
     PromptCandidate,
@@ -101,6 +102,7 @@ __all__ = [
     "Alert",
     "AlertRule",
     "Base",
+    "BrandContextSnapshot",
     "BrandGenerationLog",
     "BrandGroup",
     "BrandGroupMember",

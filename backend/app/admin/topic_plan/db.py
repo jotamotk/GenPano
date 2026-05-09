@@ -516,6 +516,9 @@ def _candidate_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "review_reason": row.get("review_reason"),
         "approved_topic_id": row.get("approved_topic_id"),
+        "brand_context_version": row.get("brand_context_version"),
+        "context_refs": row.get("context_refs_json") or {},
+        "topic_axis": row.get("topic_axis"),
         "created_at": _isoformat(row.get("created_at")),
         "reviewed_at": _isoformat(row.get("reviewed_at")),
     }
@@ -559,6 +562,29 @@ async def fetch_candidates(
     )
     rows = (await session.execute(sql, params)).mappings().all()
     return [_candidate_row_to_dict(dict(r)) for r in rows]
+
+
+async def merge_run_request_config(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    patch: dict[str, Any],
+) -> None:
+    run = await session.get(TopicPlanRun, run_id)
+    if run is None:
+        return
+    current = run.request_config if isinstance(run.request_config, dict) else {}
+    merged = dict(current)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            inner = dict(merged[key])
+            inner.update(value)
+            merged[key] = inner
+        else:
+            merged[key] = value
+    run.request_config = merged
+    run.updated_at = _now()
+    await session.flush()
 
 
 # ---------------------------------------------------------------------------

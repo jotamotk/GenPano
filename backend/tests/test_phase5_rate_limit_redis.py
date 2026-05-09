@@ -9,6 +9,8 @@ Verifies that:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from app.core import rate_limit as rl
@@ -46,7 +48,7 @@ def test_reset_for_tests_clears_redis_cache() -> None:
 def test_redis_unreachable_backoff_window() -> None:
     """After a connection failure we back off so we don't ping Redis on every request."""
     rl.reset_for_tests()
-    rl._redis_unreachable_until = 9999.0
+    rl._redis_unreachable_until = time.monotonic() + 9999.0
     # While still in the backoff window, _get_redis_client returns None.
     import asyncio
 

@@ -3990,6 +3990,18 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           <td class="px-3 py-2.5 min-w-[260px]">
                             <div class="font-semibold text-ink leading-snug" x-text="item.title"></div>
                             <div class="text-[10px] text-ink-muted mt-0.5" x-text="item.reason || item.id"></div>
+                            <div class="flex flex-wrap items-center gap-1 mt-1 text-[10px]"
+                                 x-show="item.brand_context_version || item.topic_axis || topicPlanContextRefsLabel(item)">
+                              <span x-show="item.brand_context_version"
+                                    class="inline-flex items-center px-1.5 h-5 rounded-badge bg-info/10 text-info font-semibold"
+                                    x-text="'Context ' + topicPlanShortContextVersion(item.brand_context_version)"></span>
+                              <span x-show="item.topic_axis"
+                                    class="inline-flex items-center px-1.5 h-5 rounded-badge bg-surface-page text-ink-muted font-semibold"
+                                    x-text="'Axis ' + item.topic_axis"></span>
+                              <span x-show="topicPlanContextRefsLabel(item)"
+                                    class="inline-flex items-center px-1.5 h-5 rounded-badge bg-surface-page text-ink-muted max-w-[260px] truncate"
+                                    x-text="topicPlanContextRefsLabel(item)"></span>
+                            </div>
                           </td>
                           <td class="px-3 py-2.5 text-ink-body font-medium" x-text="item.brand"></td>
                           <td class="px-3 py-2.5">
@@ -13661,6 +13673,35 @@ function adminApp() {
       }[String(status || '').toLowerCase()] || status || '';
     },
 
+    topicPlanShortContextVersion(value){
+      const text = String(value || '');
+      return text.length > 20 ? text.slice(0, 20) + '...' : text;
+    },
+
+    topicPlanContextRefsLabel(item){
+      const refs = item && item.context_refs;
+      if (!refs || typeof refs !== 'object') return '';
+      return Object.entries(refs)
+        .filter(([, value]) => {
+          if (Array.isArray(value)) return value.length > 0;
+          return value !== undefined && value !== null && String(value).trim() !== '';
+        })
+        .slice(0, 3)
+        .map(([key, value]) => {
+          const values = Array.isArray(value) ? value.slice(0, 3).join(', ') : String(value);
+          return key + ': ' + values;
+        })
+        .join(' | ');
+    },
+
+    topicPlanCandidateContextSearchBlob(item){
+      return [
+        item && item.brand_context_version,
+        item && item.topic_axis,
+        this.topicPlanContextRefsLabel(item),
+      ].filter(Boolean).join(' ').toLowerCase();
+    },
+
     filteredTopicPlanCandidates(){
       const q = this.topicPlanCandidateQuery.trim().toLowerCase();
       if (!q) return this.topicPlanPendingItems;
@@ -13669,6 +13710,7 @@ function adminApp() {
           || String(item.brand || '').toLowerCase().includes(q)
           || String(item.coverage_gap || '').toLowerCase().includes(q)
           || String(item.reason || '').toLowerCase().includes(q)
+          || this.topicPlanCandidateContextSearchBlob(item).includes(q)
           || String(item.id || '').toLowerCase().includes(q);
       });
     },
