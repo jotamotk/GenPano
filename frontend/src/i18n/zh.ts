@@ -55,7 +55,6 @@ export const zh = {
     step2Reset: '点击邮件中的按钮设置新密码',
     resendButton: '重新发送邮件',
     noEmailHint: '没有收到邮件？请检查垃圾邮件文件夹',
-    viewEmail: '查看邮件',
     nextSteps: '下一步',
     nextStepsReset: '下一步',
   },

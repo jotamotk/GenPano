@@ -31,9 +31,8 @@ export default function RegisterPage() {
 
     setIsLoading(true)
     try {
-      const result = await authApi.register(email)
+      await authApi.register(email)
       const params = new URLSearchParams({ email, type: 'verify' })
-      if (result.previewUrl) params.set('previewUrl', result.previewUrl)
       navigate(`/email-sent?${params.toString()}`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : ''

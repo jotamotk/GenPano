@@ -57,7 +57,6 @@ export const en: Translations = {
     step2Reset: 'Click the button in the email to set a new password',
     resendButton: 'Resend email',
     noEmailHint: 'No email yet? Check your spam folder.',
-    viewEmail: 'Open email',
     nextSteps: 'Next step',
     nextStepsReset: 'Next step',
   },

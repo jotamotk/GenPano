@@ -276,9 +276,8 @@ export default function AuthPage({ type = 'login', initialStep = null }) {
 
     setSubmitting(true);
     try {
-      const result = await authApi.register(email);
+      await authApi.register(email);
       const qs = new URLSearchParams({ email, type: 'verify' });
-      if (result?.previewUrl) qs.set('previewUrl', result.previewUrl);
       if (returnTo) qs.set('redirect', returnTo);
       navigate(`/email-sent?${qs.toString()}`);
     } catch (err) {
