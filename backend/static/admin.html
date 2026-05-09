@@ -8948,6 +8948,50 @@ const API_BASE = (() => {
   return APP_BASE_PATH + '/api';
 })();
 
+// Global fetch wrapper — every admin API failure surfaces a copyable
+// diagnostic block via the sticky error panel, even if the call site uses
+// raw fetch() (i.e. bypasses apiJson). Without this, ~80 direct-fetch sites
+// in this file would each need migration; the wrapper covers them all in
+// one place.
+//
+// Behavior:
+//   • Only intercepts URLs that look like admin API calls (`/api/...` or
+//     `API_BASE/...`) so static asset fetches and third-party calls pass
+//     through untouched.
+//   • On non-ok responses, parses the body once (via `res.clone()` so the
+//     caller still reads the body normally) and dispatches an `admin-error`
+//     CustomEvent; the adminApp root forwards it into the sticky panel.
+//   • Per-call opt-out: pass `silentError: true` on the fetch options. This
+//     also turns off `apiJson`'s own panel dispatch.
+//   • Errors thrown inside the wrapper are swallowed — fetch contract is
+//     "return a Response", and we must never break that for callers who
+//     expect to inspect res.status themselves.
+(() => {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async function patchedFetch(input, options) {
+    const res = await _origFetch(input, options);
+    try {
+      if (options && options.silentError) return res;
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const isAdminApi = url.startsWith('/api/') || url.startsWith(API_BASE);
+      if (!isAdminApi || res.ok) return res;
+      let parsed = {};
+      try { parsed = await res.clone().json(); } catch (_) { /* non-JSON body */ }
+      const requestId = res.headers.get('X-Request-ID') || (parsed && parsed.request_id) || '';
+      const baseTitle = (parsed && (parsed.title || parsed.message || parsed.error)) || ('HTTP ' + res.status);
+      const trail = ['HTTP ' + res.status];
+      if (requestId) trail.push('ID:' + String(requestId).slice(0, 12));
+      const err = new Error(`${baseTitle}（${trail.join(' · ')}）`);
+      err.body = parsed;
+      err.status = res.status;
+      err.requestId = requestId;
+      err.path = url;
+      document.dispatchEvent(new CustomEvent('admin-error', { detail: err }));
+    } catch (_) { /* swallow — must never break fetch */ }
+    return res;
+  };
+})();
+
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
 // hasn't been upgraded yet) fall back to null and render as '—' in the UI.
@@ -9836,11 +9880,15 @@ function segmentCrudPanel() {
       });
       const body = await res.json().catch(() => ({}));
       const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
+      // Body-level success:false (HTTP 200 with {success: false, error: ...})
+      // is the legacy shape; we still need to surface those even though the
+      // global fetch wrapper only fires on non-ok HTTP. The wrapper handles
+      // res.status >= 400 cases, so we only emit here for the 200+success:false
+      // path to avoid double-dispatch.
       if (!res.ok || body.success === false) {
         // Enrich the message so the many call sites that render `error.message`
         // verbatim (e.g. `x-text="someError"`) at minimum show a copyable
-        // signature: title (HTTP <status> · ID:<rid12>). Without this the
-        // raw render is just "HTTP 502" with no clue where it came from.
+        // signature: title (HTTP <status> · ID:<rid12>).
         const baseTitle = body.title || body.message || body.error || ('HTTP ' + res.status);
         const trail = [];
         if (res.status) trail.push('HTTP ' + res.status);
@@ -9851,10 +9899,9 @@ function segmentCrudPanel() {
         error.status = res.status;
         error.requestId = requestId;
         error.path = url;
-        // Auto-route to the sticky error panel so users always have a
-        // copyable diagnostic block — opt out per call with
-        // `apiJson(url, { silentError: true })` when caller renders inline.
-        if (!options.silentError) {
+        // Only dispatch when the wrapper didn't already (i.e. legacy 200 +
+        // success:false). Caller can still opt out via options.silentError.
+        if (res.ok && body.success === false && !options.silentError) {
           try { document.dispatchEvent(new CustomEvent('admin-error', { detail: error })); }
           catch (_) { /* CustomEvent unsupported; sticky panel just stays silent */ }
         }
@@ -10961,11 +11008,15 @@ function brandManagementPanel() {
       });
       const body = await res.json().catch(() => ({}));
       const requestId = res.headers.get('X-Request-ID') || body.request_id || '';
+      // Body-level success:false (HTTP 200 with {success: false, error: ...})
+      // is the legacy shape; we still need to surface those even though the
+      // global fetch wrapper only fires on non-ok HTTP. The wrapper handles
+      // res.status >= 400 cases, so we only emit here for the 200+success:false
+      // path to avoid double-dispatch.
       if (!res.ok || body.success === false) {
         // Enrich the message so the many call sites that render `error.message`
         // verbatim (e.g. `x-text="someError"`) at minimum show a copyable
-        // signature: title (HTTP <status> · ID:<rid12>). Without this the
-        // raw render is just "HTTP 502" with no clue where it came from.
+        // signature: title (HTTP <status> · ID:<rid12>).
         const baseTitle = body.title || body.message || body.error || ('HTTP ' + res.status);
         const trail = [];
         if (res.status) trail.push('HTTP ' + res.status);
@@ -10976,10 +11027,9 @@ function brandManagementPanel() {
         error.status = res.status;
         error.requestId = requestId;
         error.path = url;
-        // Auto-route to the sticky error panel so users always have a
-        // copyable diagnostic block — opt out per call with
-        // `apiJson(url, { silentError: true })` when caller renders inline.
-        if (!options.silentError) {
+        // Only dispatch when the wrapper didn't already (i.e. legacy 200 +
+        // success:false). Caller can still opt out via options.silentError.
+        if (res.ok && body.success === false && !options.silentError) {
           try { document.dispatchEvent(new CustomEvent('admin-error', { detail: error })); }
           catch (_) { /* CustomEvent unsupported; sticky panel just stays silent */ }
         }
@@ -12251,9 +12301,9 @@ function adminApp() {
 
     async loadBrands() {
       try {
-        const res = await fetch(API_BASE + '/analyzer/brands', { credentials: 'same-origin' });
-        if (!res.ok) return;
-        const list = await res.json();
+        // Filter is best-effort; failures already surface via the global
+        // sticky panel (admin-error event from apiJson) — no extra toast.
+        const list = await this.apiJson(API_BASE + '/analyzer/brands', { silentError: true });
         this.availableBrands = Array.isArray(list) ? list : [];
       } catch (e) {
         // Non-fatal — filter just stays empty.
@@ -12264,20 +12314,15 @@ function adminApp() {
 
     async loadAnalyzerStats() {
       try {
-        const res = await fetch(API_BASE + '/analyzer/stats', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        this.analyzerStats = await res.json();
+        this.analyzerStats = await this.apiJson(API_BASE + '/analyzer/stats');
       } catch (e) {
         this.analyzerStats = null;
-        this.toast('加载分析统计失败: ' + (e.message || e));
       }
     },
 
     async loadAnalyzerLlms() {
       try {
-        const res = await fetch(API_BASE + '/analyzer/llms', { credentials: 'same-origin' });
-        if (!res.ok) return;
-        const list = await res.json();
+        const list = await this.apiJson(API_BASE + '/analyzer/llms', { silentError: true });
         this.analyzerLlms = Array.isArray(list) ? list : [];
       } catch (e) {
         this.analyzerLlms = [];
@@ -12297,15 +12342,11 @@ function adminApp() {
         if (this.analyzerFilter.llm)       qp.set('llm', this.analyzerFilter.llm);
         if (this.analyzerFilter.date_from) qp.set('date_from', this.analyzerFilter.date_from);
         if (this.analyzerFilter.date_to)   qp.set('date_to', this.analyzerFilter.date_to);
-        const res = await fetch(API_BASE + '/analyzer/responses?' + qp.toString(),
-                                { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const rows = await res.json();
+        const rows = await this.apiJson(API_BASE + '/analyzer/responses?' + qp.toString());
         this.analyzerResponses = Array.isArray(rows) ? rows : [];
         this.analyzerResponsesPage = page;
       } catch (e) {
         this.analyzerResponses = [];
-        this.toast('加载 Response 列表失败: ' + (e.message || e));
       } finally {
         this.analyzerResponsesLoading = false;
       }
@@ -12318,10 +12359,7 @@ function adminApp() {
         qp.set('days', '7');
         if (this.analyzerFilter.brand_id) qp.set('brand_id', this.analyzerFilter.brand_id);
         if (this.analyzerFilter.llm)      qp.set('llm', this.analyzerFilter.llm);
-        const res = await fetch(API_BASE + '/analyzer/daily?' + qp.toString(),
-                                { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const rows = await res.json();
+        const rows = await this.apiJson(API_BASE + '/analyzer/daily?' + qp.toString(), { silentError: true });
         this.analyzerDaily = Array.isArray(rows) ? rows : [];
       } catch (e) {
         this.analyzerDaily = [];
@@ -12340,13 +12378,12 @@ function adminApp() {
       this.analyzerSelectedResponseId = responseId;
       this.analyzerDetail = null;
       try {
-        const res = await fetch(API_BASE + '/analyzer/response/' + encodeURIComponent(responseId),
-                                { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        this.analyzerDetail = await res.json();
+        this.analyzerDetail = await this.apiJson(
+          API_BASE + '/analyzer/response/' + encodeURIComponent(responseId),
+        );
         this.$nextTick(() => lucide.createIcons());
       } catch (e) {
-        this.analyzerDetail = { error: '加载详情失败: ' + (e.message || e) };
+        this.analyzerDetail = { error: e.message || '加载详情失败' };
       }
     },
 
@@ -12357,23 +12394,17 @@ function adminApp() {
       }
       this.analyzerTriggering = true;
       try {
-        const body = { action, date: this.analyzerTriggerDate };
-        if (this.analyzerFilter.brand_id) body.brand_id = Number(this.analyzerFilter.brand_id);
-        const res = await fetch(API_BASE + '/analyzer/trigger', {
+        const payload = { action, date: this.analyzerTriggerDate };
+        if (this.analyzerFilter.brand_id) payload.brand_id = Number(this.analyzerFilter.brand_id);
+        const data = await this.apiJson(API_BASE + '/analyzer/trigger', {
           method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.success === false) {
-          throw new Error(data.error || ('HTTP ' + res.status));
-        }
         this.toast(data.message || (action === 'aggregate' ? '聚合任务已排队' : '分析任务已排队'));
         // Refresh stats so pending/running counts reflect the new task
         setTimeout(() => this.loadAnalyzerStats(), 1000);
       } catch (e) {
-        this.toast('触发失败: ' + (e.message || e));
+        // apiJson already surfaced the sticky panel; no extra toast.
       } finally {
         this.analyzerTriggering = false;
       }
@@ -12381,19 +12412,16 @@ function adminApp() {
 
     async rerunAnalyzerResponse(responseId) {
       try {
-        const res = await fetch(API_BASE + '/analyzer/rerun/' + encodeURIComponent(responseId), {
+        await this.apiJson(API_BASE + '/analyzer/rerun/' + encodeURIComponent(responseId), {
           method: 'POST',
-          credentials: 'same-origin',
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
         this.toast('已排队重新分析 #' + responseId);
         // Optimistically mark row pending; reload stats + table after a delay
         const row = this.analyzerResponses.find(r => r.response_id === responseId);
         if (row) row.analysis_status = 'pending';
         setTimeout(() => { this.loadAnalyzerStats(); this.loadAnalyzerResponses(this.analyzerResponsesPage); }, 1500);
       } catch (e) {
-        this.toast('重跑失败: ' + (e.message || e));
+        // apiJson already surfaced the sticky panel.
       }
     },
 
@@ -12403,9 +12431,7 @@ function adminApp() {
       if (!this.attemptFilter.brandId) { this.availableTopics = []; return; }
       try {
         const qp = new URLSearchParams({ brand_id: this.attemptFilter.brandId });
-        const res = await fetch(API_BASE + '/topics?' + qp.toString(), { credentials: 'same-origin' });
-        if (!res.ok) return;
-        const list = await res.json();
+        const list = await this.apiJson(API_BASE + '/topics?' + qp.toString(), { silentError: true });
         this.availableTopics = Array.isArray(list) ? list : [];
       } catch (e) {
         // Non-fatal — topic filter just stays empty.
@@ -12416,9 +12442,7 @@ function adminApp() {
       if (!this.attemptFilter.brandId) { this.availablePrompts = []; return; }
       try {
         const qp = new URLSearchParams({ brand_id: this.attemptFilter.brandId });
-        const res = await fetch(API_BASE + '/prompts?' + qp.toString(), { credentials: 'same-origin' });
-        if (!res.ok) return;
-        const list = await res.json();
+        const list = await this.apiJson(API_BASE + '/prompts?' + qp.toString(), { silentError: true });
         this.availablePrompts = Array.isArray(list) ? list : [];
       } catch (e) {
         // Non-fatal.
