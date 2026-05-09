@@ -11,6 +11,7 @@ against sqlite. ``GET /runs/{id}`` and ``POST /runs/{id}/stop`` use
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import AsyncGenerator
@@ -119,6 +120,42 @@ def test_build_prompt_matrix_messages_frontloads_quality_rules():
     assert "generation_slots" in combined
 
 
+def test_build_prompt_matrix_messages_uses_generation_slot_override():
+    from app.admin.prompt_matrix.lib import build_prompt_matrix_messages
+
+    override_slots = [
+        {
+            "intent": "commercial",
+            "language": "en-US",
+            "prompt_scope": "competitive",
+            "competitive_type": "shortlist",
+        }
+    ]
+    messages = build_prompt_matrix_messages(
+        topics=[
+            {
+                "raw_id": 1,
+                "title": "running shoe comfort",
+                "brand": "NIKE",
+                "brand_id": 1,
+                "dimension_key": "category",
+            }
+        ],
+        config={
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 20,
+            "max_prompts": 20,
+            "generation_slots_by_topic": {"1": override_slots},
+        },
+        known_brands=[],
+        existing_prompts=[],
+    )
+    payload = json.loads(messages[1]["content"].split("payload:\n", 1)[1])
+
+    assert payload["topics"][0]["generation_slots"] == override_slots
+
+
 def test_prompt_scope_helpers_normalize_legacy_alias_and_competitive_type():
     from app.admin.prompt_matrix.lib import (
         PromptMatrixError,
@@ -163,6 +200,51 @@ def test_prompt_generation_slots_do_not_multiply_generation_count():
     assert all(slot["intent"] and slot["language"] for slot in slots)
     competitive_slots = [slot for slot in slots if slot["prompt_scope"] == "competitive"]
     assert competitive_slots[0]["competitive_type"] == "direct_comparison"
+
+
+def test_prompt_generation_slots_can_exceed_intent_language_combinations():
+    from app.admin.prompt_matrix.lib import (
+        build_prompt_generation_slots,
+        prompt_generation_config,
+        prompt_generation_raw_count,
+    )
+
+    config = prompt_generation_config(
+        {
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 12,
+            "max_prompts": 12,
+        }
+    )
+
+    assert config["max_per_topic"] == 12
+    assert (
+        prompt_generation_raw_count(
+            selected_topics=1,
+            intent_count=4,
+            language_count=2,
+            max_per_topic=12,
+        )
+        == 12
+    )
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "brand",
+            "brand": "NIKE",
+        },
+        combinations=config["combinations"],
+        max_per_topic=config["max_per_topic"],
+    )
+
+    assert len(slots) == 12
+    assert {slot["prompt_scope"] for slot in slots} >= {
+        "non_branded",
+        "branded",
+        "competitive",
+    }
 
 
 def test_parse_llm_prompt_candidates_persists_prompt_scope():

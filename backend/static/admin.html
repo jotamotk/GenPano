@@ -14828,9 +14828,7 @@ function adminApp() {
     },
 
     promptMatrixMaxPerTopicCap(){
-      const intentCount = Number(this.promptMatrixConfig.intentCount) || 0;
-      const languageCount = Number(this.promptMatrixConfig.languageCount) || 0;
-      return Math.max(1, intentCount * languageCount);
+      return 20;
     },
 
     promptMatrixMaxPerTopicValue(){
@@ -14846,10 +14844,8 @@ function adminApp() {
     promptMatrixRawPromptCount(){
       const cfg = this.promptMatrixConfig;
       const topicCount = this.promptMatrixSelectedTopicCount();
-      const intentCount = Number(cfg.intentCount) || 0;
-      const languageCount = Number(cfg.languageCount) || 0;
       const maxPerTopic = this.promptMatrixMaxPerTopicValue();
-      return Math.min(topicCount * intentCount * languageCount, topicCount * maxPerTopic);
+      return topicCount * maxPerTopic;
     },
 
     promptCountRaw(){

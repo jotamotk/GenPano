@@ -37,6 +37,7 @@ ALLOWED_COMPETITIVE_TYPES = (
 )
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
 DEFAULT_MAX_PROMPTS = 10
+MAX_PER_TOPIC_LIMIT = 20
 MAX_PROMPTS_HARD_LIMIT = 100_000
 
 INTENT_LABELS = {
@@ -305,16 +306,18 @@ def build_prompt_generation_slots(
 ) -> list[dict[str, Any]]:
     """Assign prompt scope/type inside the existing per-topic quota.
 
-    The slot count is capped by max_per_topic and the existing intent/language
-    combinations, so adding prompt scopes never multiplies generation volume.
+    The slot count is capped by max_per_topic. When the user asks for more
+    slots than the selected intent/language combinations, the combinations
+    rotate while prompt scope/type keep varying inside the same per-topic quota.
     """
-    limit = clamp_int(
-        max_per_topic, len(combinations), 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
-    )
-    base_slots = combinations[:limit]
+    limit = clamp_int(max_per_topic, len(combinations), 1, MAX_PER_TOPIC_LIMIT)
+    base_slots = list(combinations or [])
+    if not base_slots:
+        return []
     rotation = _scope_rotation_for_topic(topic)
     slots: list[dict[str, Any]] = []
-    for index, combo in enumerate(base_slots):
+    for index in range(limit):
+        combo = base_slots[index % len(base_slots)]
         scope = rotation[index % len(rotation)]
         slot: dict[str, Any] = {
             "intent": str(combo.get("intent") or "").strip(),
@@ -353,7 +356,7 @@ def prompt_generation_raw_count(
     max_per_topic: Any,
 ) -> int:
     topic_count = clamp_int(selected_topics, 0, 0, 1_000_000)
-    per_topic = len(intent_language_combinations(intent_count, language_count, max_per_topic))
+    per_topic = clamp_int(max_per_topic, 4, 1, MAX_PER_TOPIC_LIMIT)
     return topic_count * per_topic
 
 
@@ -1057,9 +1060,7 @@ def transition_candidate_status(current_status: str, requested_status: str) -> s
 def prompt_generation_config(payload: dict[str, Any]) -> dict[str, Any]:
     intent_count = clamp_int(payload.get("intent_count"), 4, 1, len(ALLOWED_INTENTS))
     language_count = clamp_int(payload.get("language_count"), 2, 1, len(ALLOWED_LANGUAGES))
-    max_per_topic = clamp_int(
-        payload.get("max_per_topic"), 4, 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
-    )
+    max_per_topic = clamp_int(payload.get("max_per_topic"), 4, 1, MAX_PER_TOPIC_LIMIT)
     max_prompts = clamp_int(
         payload.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
     )
@@ -1093,8 +1094,22 @@ def build_prompt_matrix_messages(
         config.get("language_count"),
         config.get("max_per_topic"),
     )
+    slot_overrides = config.get("generation_slots_by_topic")
+    if not isinstance(slot_overrides, dict):
+        slot_overrides = {}
     for topic in topics:
         topic_id_raw = topic.get("raw_id") or topic.get("id") or 0
+        topic_key = str(int(topic_id_raw))
+        override_slots = slot_overrides.get(topic_key)
+        generation_slots = (
+            [dict(slot) for slot in override_slots if isinstance(slot, dict)]
+            if isinstance(override_slots, list)
+            else build_prompt_generation_slots(
+                topic=topic,
+                combinations=combinations,
+                max_per_topic=config.get("max_per_topic"),
+            )
+        )
         entry: dict[str, Any] = {
             "topic_id": int(topic_id_raw),
             "title": topic.get("title") or topic.get("text") or "",
@@ -1102,11 +1117,7 @@ def build_prompt_matrix_messages(
             "consumer_aliases": consumer_aliases_for_topic(topic, known_brands),
             "dimension": _topic_dimension(topic) or "brand",
             "required_focus_terms": sorted(topic_relevance_terms(topic, known_brands))[:12],
-            "generation_slots": build_prompt_generation_slots(
-                topic=topic,
-                combinations=combinations,
-                max_per_topic=config.get("max_per_topic"),
-            ),
+            "generation_slots": generation_slots,
         }
         # Module C-4: surface SKU context to the LLM when the topic is pinned
         # to a specific product. Prompts generated under this topic must
