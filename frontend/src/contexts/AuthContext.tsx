@@ -11,6 +11,9 @@ interface User {
   provider?: string
   emailVerified?: boolean
   locale?: 'zh-CN' | 'en-US'
+  // True when the user has zero non-deleted Project rows. Drives
+  // RequireOnboarded → /onboarding redirect.
+  needsOnboarding?: boolean
 }
 
 interface AuthContextValue {
@@ -20,6 +23,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
   setTokenAndUser: (token: string, user: User) => void
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -53,6 +57,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(newUser)
   }, [])
 
+  // Re-fetch /auth/me without a full re-login. Used after onboarding so
+  // the freshly-flipped `needsOnboarding=false` flag unblocks the guard.
+  const refreshUser = useCallback(async () => {
+    const stored = localStorage.getItem('genpano_token')
+    if (!stored) return
+    try {
+      const u = await authApi.getMe(stored)
+      setUser(u as User)
+    } catch {
+      /* swallow — caller can fall back to a hard reload if needed */
+    }
+  }, [])
+
   const login = useCallback(async (email: string, password: string) => {
     const res = await authApi.login(email, password)
     setTokenAndUser(res.token, res.user)
@@ -68,12 +85,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await track('user_logged_out')
     await resetAnalytics()
     localStorage.removeItem('genpano_token')
+    try {
+      window.sessionStorage?.removeItem('genpano_onboarding_skipped')
+    } catch {
+      /* ignore — non-critical */
+    }
     setToken(null)
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, setTokenAndUser }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, logout, setTokenAndUser, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

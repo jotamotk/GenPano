@@ -19,7 +19,38 @@ export const FAKE_USER = {
   provider: 'email',
   emailVerified: true,
   locale: 'zh-CN' as const,
+  needsOnboarding: false,
 }
+
+// Same identity as FAKE_USER but flagged for the onboarding flow.
+// Used by onboarding-flow.spec.ts so the dashboard guard fires.
+export const FAKE_USER_NEEDS_ONBOARDING = {
+  ...FAKE_USER,
+  needsOnboarding: true,
+}
+
+// Mock results for /v1/brands/search. The third entry simulates a brand
+// the current user already monitors so the UI can show the ✓ badge.
+export const FAKE_BRAND_SEARCH_RESULTS = [
+  {
+    brandId: 1,
+    brandName: 'Nike',
+    industry: 'Sports',
+    isAlreadyMonitoring: false,
+  },
+  {
+    brandId: 2,
+    brandName: 'Nike China',
+    industry: 'Sports',
+    isAlreadyMonitoring: false,
+  },
+  {
+    brandId: 3,
+    brandName: 'Adidas',
+    industry: 'Sports',
+    isAlreadyMonitoring: true,
+  },
+]
 
 export const FAKE_PROJECT = {
   id: FAKE_PROJECT_ID,

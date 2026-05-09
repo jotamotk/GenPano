@@ -2,10 +2,50 @@ import React from 'react';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { Target, Globe } from 'lucide-react';
 import { PROJECTS } from '../data/mock';
+import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useUnreadAlertCount } from '../hooks/useAlerts';
 import UserMenu from '../components/UserMenu';
+
+/* Banner shown when the user is signed in but has zero live Project rows.
+   Triggered after they click Skip on /onboarding — invites them back to
+   pick a brand so dashboards show their data instead of industry-wide
+   demo content. Hidden on the /onboarding route itself to avoid a loop. */
+function OnboardingReminderBanner({ t }) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  if (!user?.needsOnboarding) return null;
+  if (location.pathname === '/onboarding') return null;
+  return (
+    <div
+      role="status"
+      data-testid="onboarding-banner"
+      className="flex items-center justify-between gap-4 px-4 py-3 mb-5 rounded-lg border"
+      style={{
+        background: 'rgba(99, 91, 255, 0.06)',
+        borderColor: 'rgba(99, 91, 255, 0.25)',
+      }}
+    >
+      <div className="text-sm text-themed-primary">
+        <span className="font-semibold">{t('dashboard.onboarding_banner.title')}</span>
+        <span className="text-themed-secondary ml-2">
+          {t('dashboard.onboarding_banner.body')}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={() => navigate('/onboarding')}
+        className="text-sm font-medium px-3 py-1.5 rounded-md text-white"
+        style={{ background: '#635bff' }}
+        data-testid="onboarding-banner-cta"
+      >
+        {t('dashboard.onboarding_banner.cta')} →
+      </button>
+    </div>
+  );
+}
 
 /* ─────────────────────────────────────────────────────────────
    DashboardLayout — Brand/Industry Mode IA v2.0 (see PRD §4.6-IA-v2)
@@ -486,6 +526,7 @@ export default function DashboardLayout() {
 
         <main className="flex-1 overflow-auto bg-themed-page">
           <div className="px-6 py-5">
+            <OnboardingReminderBanner t={t} />
             <Outlet />
           </div>
         </main>

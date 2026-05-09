@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
+from genpano_models import Project
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -119,7 +120,27 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _to_user_dto(user: User) -> UserDto:
+async def _user_needs_onboarding(db: AsyncSession, user_id: str) -> bool:
+    """True when the user has no live Project rows.
+
+    "Live" = `deleted_at IS NULL`; soft-deleted projects don't count, so a
+    user who hard-removes their only project is re-prompted on next /me.
+
+    Falls back to ``True`` when the projects table is unreachable (e.g. an
+    auth-only test environment that hasn't migrated the App schema). The
+    onboarding flow is the safe default — it never breaks a working user
+    who already has projects, only prompts an extra step at most once.
+    """
+    stmt = (
+        select(Project.id).where(Project.user_id == user_id, Project.deleted_at.is_(None)).limit(1)
+    )
+    try:
+        return (await db.execute(stmt)).first() is None
+    except Exception:
+        return True
+
+
+async def _to_user_dto(db: AsyncSession, user: User) -> UserDto:
     return UserDto(
         id=user.id,
         email=user.email,
@@ -130,12 +151,13 @@ def _to_user_dto(user: User) -> UserDto:
         email_verified=user.email_verified,
         locale=user.locale,  # type: ignore[arg-type]
         created_at=user.created_at,
+        needs_onboarding=await _user_needs_onboarding(db, user.id),
     )
 
 
-def _login_response(user: User) -> LoginResponse:
+async def _login_response(db: AsyncSession, user: User) -> LoginResponse:
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
-    return LoginResponse(token=token, user=_to_user_dto(user))
+    return LoginResponse(token=token, user=await _to_user_dto(db, user))
 
 
 async def _find_user_by_email(db: AsyncSession, email: str) -> User | None:
@@ -418,7 +440,7 @@ async def setup_account(
     send_welcome_email(to=user.email, locale=payload.locale)
     await db.commit()
     await db.refresh(user)
-    return _login_response(user)
+    return await _login_response(db, user)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -449,7 +471,7 @@ async def login(
     user.last_login_at = datetime.now(UTC).replace(tzinfo=None)
     await db.commit()
     await db.refresh(user)
-    return _login_response(user)
+    return await _login_response(db, user)
 
 
 @router.post("/forgot-password", response_model=OkResponse)
@@ -511,8 +533,11 @@ async def reset_password(
 
 
 @router.get("/me", response_model=UserDto)
-async def me(current_user: Annotated[User, Depends(get_current_user)]) -> UserDto:
-    return _to_user_dto(current_user)
+async def me(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserDto:
+    return await _to_user_dto(db, current_user)
 
 
 @router.get("/google")

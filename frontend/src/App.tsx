@@ -104,6 +104,41 @@ function RequireAuth({ children }) {
   return children
 }
 
+/* RequireOnboarded — soft gate for the brand-setup step.
+   Mounted inside RequireAuth: by the time it runs we already have a user.
+   Sends users with `needsOnboarding=true` to /onboarding so they pick a
+   primary brand before seeing dashboards. The /onboarding route itself
+   bypasses this guard.
+
+   "Soft" semantics: clicking Skip on /onboarding sets a session-only
+   flag (`genpano_onboarding_skipped`) that lets the user reach the
+   dashboard for the current tab. The dashboard then surfaces a "未设置
+   品牌" banner inviting them back. The flag is intentionally
+   session-scoped so a fresh login or tab still hits the guard. */
+const ONBOARDING_SKIP_KEY = 'genpano_onboarding_skipped'
+
+function readOnboardingSkipped(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.sessionStorage?.getItem(ONBOARDING_SKIP_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function RequireOnboarded({ children }) {
+  const { user } = useAuth()
+  const location = useLocation()
+  if (
+    user?.needsOnboarding &&
+    !readOnboardingSkipped() &&
+    location.pathname !== '/onboarding'
+  ) {
+    return <Navigate to="/onboarding" replace />
+  }
+  return children
+}
+
 function PublicOnly({ children }) {
   const { user, isLoading } = useAuth()
   const location = useLocation()
@@ -112,7 +147,11 @@ function PublicOnly({ children }) {
   if (user) {
     const params = new URLSearchParams(location.search)
     const redirect = params.get('redirect') || params.get('return_to')
-    return <Navigate to={isSafeRedirectTarget(redirect) ? redirect : '/brand/overview'} replace />
+    if (isSafeRedirectTarget(redirect)) return <Navigate to={redirect} replace />
+    // First-time users (no Project yet) get the onboarding step before
+    // landing on a dashboard that would otherwise show industry-wide data.
+    const target = user.needsOnboarding ? '/onboarding' : '/brand/overview'
+    return <Navigate to={target} replace />
   }
   return children
 }
@@ -134,8 +173,9 @@ function AuthCallback() {
         const user = await authApi.getMe(token)
         if (!cancelled) {
           setTokenAndUser(token, user)
-          window.history.replaceState({}, '', '/brand/overview')
-          window.location.replace('/brand/overview')
+          const target = user.needsOnboarding ? '/onboarding' : '/brand/overview'
+          window.history.replaceState({}, '', target)
+          window.location.replace(target)
         }
       } catch {
         window.location.replace('/login?error=oauth_failed')
@@ -170,7 +210,7 @@ export default function App() {
             Authenticated app shell (Brand/Industry Mode IA v2.0)
             §4.6-IA-v2. Route Guard wiring lands in Session T4'.
             ══════════════════════════════════════════════════════════ */}
-        <Route element={<RequireAuth><DashboardLayout /></RequireAuth>}>
+        <Route element={<RequireAuth><RequireOnboarded><DashboardLayout /></RequireOnboarded></RequireAuth>}>
           {/* ── Brand Mode sub-views (§4.6-IA-v2.C.2) ── */}
           <Route path="/brand/overview"            element={<DashboardPage />} />
           <Route path="/brand/visibility"          element={<BrandVisibilityPage />} />
