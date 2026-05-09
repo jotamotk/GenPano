@@ -29,9 +29,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE kg_brands ADD COLUMN IF NOT EXISTS positioning VARCHAR(32)"
-    )
+    # Postgres-only: SQLite CI runs the FastAPI test suite without needing the
+    # `kg_brands` table at all (mirrors the Phase 6 admin-console migration).
+    if op.get_bind().dialect.name != "postgresql":
+        return
+
+    op.execute("ALTER TABLE kg_brands ADD COLUMN IF NOT EXISTS positioning VARCHAR(32)")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_kg_brands_positioning "
         "ON kg_brands (positioning) WHERE positioning IS NOT NULL"
@@ -43,6 +46,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.execute("DROP INDEX IF EXISTS idx_brand_mentions_brand_created")
     op.execute("DROP INDEX IF EXISTS idx_kg_brands_positioning")
     op.execute("ALTER TABLE kg_brands DROP COLUMN IF EXISTS positioning")
