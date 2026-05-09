@@ -527,6 +527,45 @@ async def execute_generation(
         llm_error_detail = f"{topic_error.code}: {topic_error.message}"
         try:
             final_request_config = _request_config_with_generation_context(request_config, config)
+            if inserted:
+                metrics["partial_completion"] = True
+                await _finalize_run(
+                    session,
+                    run_id=run_id,
+                    status="completed",
+                    llm_model=llm_model,
+                    usage=usage,
+                    candidates_generated=len(inserted),
+                    metrics=metrics,
+                    request_config=final_request_config,
+                )
+                await emit_audit(
+                    session,
+                    operator=operator,
+                    action="generate_prompt_matrix",
+                    severity="med",
+                    resource_type="prompt_generation_run",
+                    resource_id=run_id,
+                    after={
+                        "request_config": final_request_config,
+                        "estimated_prompts": estimated,
+                        "candidates_generated": len(inserted),
+                        "batches": batches,
+                        "partial_failure": True,
+                        "error": topic_error.code,
+                        "error_message": topic_error.message,
+                    },
+                    reason="prompt_matrix_generate",
+                )
+                return {
+                    "inserted": inserted,
+                    "skipped": skipped,
+                    "usage": usage,
+                    "model": llm_model,
+                    "batches": batches,
+                    "metrics": metrics,
+                    "partial_failure": True,
+                }
             await _finalize_run(
                 session,
                 run_id=run_id,

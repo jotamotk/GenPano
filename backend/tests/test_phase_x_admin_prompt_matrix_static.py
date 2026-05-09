@@ -63,6 +63,17 @@ def test_prompt_matrix_candidate_rows_show_quality_gate_badges() -> None:
     assert "质检拦截" in html
 
 
+def test_prompt_matrix_run_polling_handles_errors_locally() -> None:
+    html = _admin_html()
+
+    assert (
+        "fetch('/api/admin/prompt-matrix/runs/' + encodeURIComponent(runId), "
+        "{ credentials:'same-origin', silentError:true })"
+    ) in html
+    assert "const adminRoot = this;" in html
+    assert "typeof adminRoot.showErrorFrom === 'function'" in html
+
+
 def test_prompt_matrix_copy_distinguishes_quantity_from_allowed_cap() -> None:
     html = _admin_html()
     max_per_topic_index = html.index('x-model.number="promptMatrixConfig.maxPerTopic"')

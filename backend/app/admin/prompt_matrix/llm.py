@@ -7,6 +7,7 @@ DoubaoTopicPlanClient port shipped in Phase 3 B.1).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator
@@ -39,6 +40,14 @@ from app.admin.topic_plan.lib import (
 )
 
 DEFAULT_LLM_TARGET_PROMPTS_PER_REQUEST = 12
+
+
+def _retry_delay_seconds() -> float:
+    try:
+        parsed = float(os.getenv("PROMPT_MATRIX_LLM_RETRY_DELAY_SECONDS") or "0.5")
+    except ValueError:
+        parsed = 0.5
+    return max(0.0, min(parsed, 5.0))
 
 
 def _topic_key(topic: dict[str, Any]) -> str | None:
@@ -397,13 +406,31 @@ class PromptMatrixClient:
                 continue
             batch_config["generation_slots_by_topic"] = limited_slots
             batch_config["max_prompts"] = over_request_count(target)
-            prompts, meta = await self._generate_prompt_batch(
-                topics=batch,
-                config=batch_config,
-                known_brands=known_brands,
-                existing_prompts=existing_prompts + [item.text for item in generated_prompts],
-                active_hotspots=active_hotspots,
-            )
+            attempts = 1 + clamp_int(os.getenv("PROMPT_MATRIX_LLM_BATCH_RETRIES"), 2, 0, 5)
+            last_error: PromptMatrixError | None = None
+            for attempt in range(attempts):
+                try:
+                    prompts, meta = await self._generate_prompt_batch(
+                        topics=batch,
+                        config=batch_config,
+                        known_brands=known_brands,
+                        existing_prompts=existing_prompts
+                        + [item.text for item in generated_prompts],
+                        active_hotspots=active_hotspots,
+                    )
+                    break
+                except PromptMatrixError as error:
+                    last_error = error
+                    if attempt >= attempts - 1:
+                        raise
+                    delay = _retry_delay_seconds()
+                    if delay:
+                        await asyncio.sleep(delay)
+            else:  # pragma: no cover - loop always breaks or raises
+                raise last_error or PromptMatrixError(
+                    "llm_call_failed",
+                    "Prompt Matrix generation failed",
+                )
             batch_prompts = prompts[:target]
             generated_prompts.extend(batch_prompts)
             yield batch_prompts, meta
