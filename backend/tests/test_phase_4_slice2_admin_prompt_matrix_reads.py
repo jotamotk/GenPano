@@ -148,6 +148,7 @@ async def test_config_returns_brands_industries_stats(client, admin_operator, mo
     assert body["summary"]["llm_configured"] is False
     assert body["stats"]["topicsTotal"] == 10
     assert len(body["qualityGates"]) == 4
+    assert body["defaults"]["maxPrompts"] == 10
 
 
 # ── /topics ───────────────────────────────────────────────────

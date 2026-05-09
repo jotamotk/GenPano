@@ -14,6 +14,8 @@ from typing import Any
 import httpx
 
 from app.admin.prompt_matrix.lib import (
+    DEFAULT_MAX_PROMPTS,
+    MAX_PROMPTS_HARD_LIMIT,
     LLMPromptCandidate,
     PromptMatrixError,
     build_prompt_matrix_messages,
@@ -76,7 +78,9 @@ class PromptMatrixClient:
         if not topics:
             return
         batch_size = clamp_int(os.getenv("PROMPT_MATRIX_LLM_TOPICS_PER_REQUEST"), 2, 1, 5)
-        max_prompts = clamp_int(config.get("max_prompts"), 8000, 1, 100_000)
+        max_prompts = clamp_int(
+            config.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
+        )
         generated_prompts: list[LLMPromptCandidate] = []
         for batch in chunked(topics, batch_size):
             remaining = max_prompts - len(generated_prompts)
