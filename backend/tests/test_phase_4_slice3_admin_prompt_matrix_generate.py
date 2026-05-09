@@ -329,6 +329,112 @@ async def test_generate_sync_quality_blocked_candidates_remain_reviewable(
 
 
 @pytest.mark.asyncio
+async def test_generate_sync_blocks_competitive_prompt_missing_named_competitor(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[_topic()]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[
+                {"id": 1, "name": "NIKE", "industry_id": "footwear", "aliases": []},
+                {"id": 2, "name": "Adidas", "industry_id": "footwear", "aliases": []},
+            ]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [
+                    _llm_prompt(
+                        "Is NIKE a better alternative for beginner running shoes?",
+                        language="en-US",
+                        prompt_scope="competitive",
+                        competitive_type="direct_comparison",
+                        tags_extra={
+                            "competitor_name": "Adidas",
+                            "competitor_brand_id": 2,
+                            "scenario_axis": "comfort",
+                        },
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 1, "max_per_topic": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.status == "pending"
+    assert candidate.tags["quality_gate_status"] == "blocked"
+    assert candidate.tags["quality_gate_reason"] == "competitive_competitor_missing"
+
+
+@pytest.mark.asyncio
+async def test_generate_sync_blocks_competitive_prompt_missing_topic_brand(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[_topic()]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[
+                {"id": 1, "name": "NIKE", "industry_id": "footwear", "aliases": []},
+                {"id": 2, "name": "Adidas", "industry_id": "footwear", "aliases": []},
+            ]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [
+                    _llm_prompt(
+                        "Is Adidas better than other options for beginner running shoes?",
+                        language="en-US",
+                        prompt_scope="competitive",
+                        competitive_type="direct_comparison",
+                        tags_extra={
+                            "competitor_name": "Adidas",
+                            "competitor_brand_id": 2,
+                            "scenario_axis": "comfort",
+                        },
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [1], "max_prompts": 1, "max_per_topic": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.status == "pending"
+    assert candidate.tags["quality_gate_status"] == "blocked"
+    assert candidate.tags["quality_gate_reason"] == "competitive_brand_anchor_missing"
+
+
+@pytest.mark.asyncio
 async def test_generate_sync_persists_discovered_competitors_in_run_config(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):

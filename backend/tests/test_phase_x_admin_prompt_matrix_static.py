@@ -36,9 +36,15 @@ def test_prompt_matrix_candidate_filters_include_brand_select() -> None:
     html = _admin_html()
 
     assert "promptMatrixCandidateBrand: 'all'" in html
+    assert "promptMatrixCandidateIntent: 'all'" in html
+    assert "promptMatrixCandidateScope: 'all'" in html
     assert 'x-model="promptMatrixCandidateBrand"' in html
+    assert 'x-model="promptMatrixCandidateIntent"' in html
+    assert 'x-model="promptMatrixCandidateScope"' in html
     assert "promptMatrixTopicBrands()" in html
     assert "qp.set('brand_id', this.promptMatrixCandidateBrand)" in html
+    assert "qp.set('intent', this.promptMatrixCandidateIntent)" in html
+    assert "qp.set('prompt_scope', this.promptMatrixCandidateScope)" in html
 
 
 def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:
@@ -61,6 +67,17 @@ def test_prompt_matrix_candidate_rows_show_quality_gate_badges() -> None:
     assert 'x-model="promptMatrixCandidateQualityGate"' in html
     assert "qp.set('quality_gate', this.promptMatrixCandidateQualityGate)" in html
     assert "质检拦截" in html
+
+
+def test_prompt_matrix_reviewed_candidates_can_be_deleted() -> None:
+    html = _admin_html()
+
+    assert "promptMatrixCandidateDeleting: false" in html
+    assert "promptMatrixCanDeleteCandidate(item)" in html
+    assert "deletePromptCandidate(item)" in html
+    assert "deleteSelectedPromptCandidates()" in html
+    assert "/api/admin/prompt-matrix/candidates/bulk-delete" in html
+    assert "method: ids.length === 1 ? 'DELETE' : 'POST'" in html
 
 
 def test_prompt_matrix_run_polling_handles_errors_locally() -> None:

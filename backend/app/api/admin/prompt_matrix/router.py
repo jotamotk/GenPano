@@ -27,12 +27,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from genpano_models import AdminUser, PromptCandidate, PromptGenerationRun
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
 from app.admin.prompt_matrix import db as pm_db
 from app.admin.prompt_matrix.lib import (
+    ALLOWED_INTENTS,
+    ALLOWED_PROMPT_SCOPES,
     DEFAULT_MAX_PROMPTS,
     MAX_PROMPTS_HARD_LIMIT,
     PromptMatrixError,
@@ -47,6 +50,9 @@ from app.core.errors import _problem, not_found, validation_error
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin · Prompt Matrix"])
+
+
+DELETABLE_CANDIDATE_STATUSES = {"approved", "rejected"}
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -306,6 +312,157 @@ async def bulk_review_candidates(
         "failed": failed,
     }
     if failed:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=409, content=body)  # type: ignore[return-value]
+    return body
+
+
+async def _delete_candidates(
+    session: AsyncSession,
+    *,
+    candidate_ids: list[str],
+    operator: AdminUser,
+    reason: str | None,
+    request: Request,
+) -> dict[str, Any]:
+    if not candidate_ids:
+        return {"deleted": [], "missing": [], "failed": []}
+    rows = list(
+        (
+            await session.execute(
+                select(PromptCandidate).where(PromptCandidate.id.in_(candidate_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {str(row.id): row for row in rows}
+    missing = [candidate_id for candidate_id in candidate_ids if candidate_id not in by_id]
+    failed: list[dict[str, Any]] = []
+    deletable: list[str] = []
+    before_statuses: dict[str, str] = {}
+    for candidate_id in candidate_ids:
+        row = by_id.get(candidate_id)
+        if row is None:
+            continue
+        status = str(row.status or "").lower()
+        if status not in DELETABLE_CANDIDATE_STATUSES:
+            failed.append(
+                {
+                    "id": candidate_id,
+                    "error": "candidate_delete_forbidden",
+                    "message": "Only reviewed Prompt candidates can be deleted",
+                }
+            )
+            continue
+        deletable.append(candidate_id)
+        before_statuses[candidate_id] = status
+
+    deleted: list[str] = []
+    if deletable:
+        await session.execute(sa_delete(PromptCandidate).where(PromptCandidate.id.in_(deletable)))
+        await session.commit()
+        deleted = sorted(deletable)
+        await emit_audit(
+            session,
+            operator=operator,
+            action="delete_prompt_candidate",
+            severity="med",
+            resource_type="prompt_candidate",
+            resource_id=",".join(deleted[:20]),
+            before={"statuses": before_statuses},
+            after={
+                "deleted": deleted,
+                "missing": missing,
+                "failed_count": len(failed),
+                "deleted_count": len(deleted),
+            },
+            reason=reason or "prompt_candidate_delete",
+            request=request,
+        )
+    return {"deleted": deleted, "missing": missing, "failed": failed}
+
+
+@router.delete("/candidates/{candidate_id}", response_model=None)
+async def delete_candidate(
+    candidate_id: str,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Delete a reviewed Prompt Matrix candidate. Calls emit_audit via
+    ``_delete_candidates`` (med, action=delete_prompt_candidate).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    reason = (payload.get("reason") or "").strip() or None
+
+    result = await _delete_candidates(
+        session,
+        candidate_ids=[candidate_id],
+        operator=operator,
+        reason=reason,
+        request=request,
+    )
+    if result["missing"]:
+        raise not_found("candidate_not_found")
+    if result["failed"]:
+        raise _problem(
+            400,
+            "candidate_delete_forbidden",
+            "Candidate cannot be deleted",
+            detail=result["failed"][0]["message"],
+        )
+    return {"success": True, **result}
+
+
+@router.post("/candidates/bulk-delete", response_model=None)
+async def bulk_delete_candidates(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> dict[str, Any]:
+    """Delete reviewed Prompt Matrix candidates in bulk. Calls emit_audit
+    via ``_delete_candidates`` when rows are removed.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    raw_ids = payload.get("candidate_ids") or []
+    reason = (payload.get("reason") or "").strip() or None
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise validation_error("candidate_ids", "required, non-empty list")
+    candidate_ids = list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
+    if not candidate_ids:
+        raise validation_error("candidate_ids", "required, non-empty list")
+    if len(candidate_ids) > 200:
+        raise validation_error("candidate_ids", "max 200 per call")
+
+    result = await _delete_candidates(
+        session,
+        candidate_ids=candidate_ids,
+        operator=operator,
+        reason=reason,
+        request=request,
+    )
+    body = {
+        "success": not result["failed"],
+        **result,
+        "summary": {
+            "deleted_count": len(result["deleted"]),
+            "missing_count": len(result["missing"]),
+            "failed_count": len(result["failed"]),
+        },
+    }
+    if result["failed"]:
         from fastapi.responses import JSONResponse
 
         return JSONResponse(status_code=409, content=body)  # type: ignore[return-value]
@@ -613,6 +770,8 @@ async def get_candidates(
     status: str = Query("pending"),
     q: str | None = Query(None),
     brand_id: int | None = Query(None, ge=1),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
     quality_gate: str = Query("all"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -620,6 +779,19 @@ async def get_candidates(
     status_norm = status.strip().lower()
     if status_norm not in {"pending", "approved", "rejected", "all"}:
         raise validation_error("status", "must be one of pending / approved / rejected / all")
+    intent_norm = (intent or "").strip().lower() or None
+    if intent_norm == "all":
+        intent_norm = None
+    elif intent_norm and intent_norm not in ALLOWED_INTENTS:
+        raise validation_error("intent", "must be one of " + " / ".join(ALLOWED_INTENTS))
+    prompt_scope_norm = (prompt_scope or "").strip().lower() or None
+    if prompt_scope_norm == "all":
+        prompt_scope_norm = None
+    elif prompt_scope_norm and prompt_scope_norm not in ALLOWED_PROMPT_SCOPES:
+        raise validation_error(
+            "prompt_scope",
+            "must be one of " + " / ".join(ALLOWED_PROMPT_SCOPES),
+        )
     quality_gate_norm = quality_gate.strip().lower()
     if quality_gate_norm not in {"all", "blocked"}:
         raise validation_error("quality_gate", "must be one of all / blocked")
@@ -629,6 +801,8 @@ async def get_candidates(
         status=status_norm,
         query=q,
         brand_id=brand_id,
+        intent=intent_norm,
+        prompt_scope=prompt_scope_norm,
         quality_gate=quality_gate_norm,
         limit=per_page,
         offset=offset,
@@ -637,6 +811,8 @@ async def get_candidates(
         session,
         query=q,
         brand_id=brand_id,
+        intent=intent_norm,
+        prompt_scope=prompt_scope_norm,
         quality_gate=quality_gate_norm,
     )
     return {

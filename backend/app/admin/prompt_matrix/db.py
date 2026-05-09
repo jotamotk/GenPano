@@ -401,12 +401,30 @@ def _quality_gate_filter_condition(quality_gate: str) -> Any | None:
     )
 
 
+def _prompt_scope_filter_condition(prompt_scope: str | None) -> Any | None:
+    if not prompt_scope or prompt_scope == "all":
+        return None
+    base = or_(
+        PromptCandidate.tags["prompt_scope"].as_string() == prompt_scope,
+        PromptCandidate.tags["promptScope"].as_string() == prompt_scope,
+    )
+    if prompt_scope != "non_branded":
+        return base
+    return or_(
+        base,
+        PromptCandidate.tags["prompt_scope"].as_string().is_(None),
+        PromptCandidate.tags["promptScope"].as_string().is_(None),
+    )
+
+
 async def fetch_candidates(
     session: AsyncSession,
     *,
     status: str = "pending",
     query: str | None = None,
     brand_id: int | None = None,
+    intent: str | None = None,
+    prompt_scope: str | None = None,
     quality_gate: str = "all",
     limit: int = 20,
     offset: int = 0,
@@ -419,6 +437,13 @@ async def fetch_candidates(
     if brand_id is not None:
         base = base.where(PromptCandidate.brand_id == brand_id)
         count_stmt = count_stmt.where(PromptCandidate.brand_id == brand_id)
+    if intent:
+        base = base.where(PromptCandidate.intent == intent)
+        count_stmt = count_stmt.where(PromptCandidate.intent == intent)
+    prompt_scope_condition = _prompt_scope_filter_condition(prompt_scope)
+    if prompt_scope_condition is not None:
+        base = base.where(prompt_scope_condition)
+        count_stmt = count_stmt.where(prompt_scope_condition)
     quality_gate_condition = _quality_gate_filter_condition(quality_gate)
     if quality_gate_condition is not None:
         base = base.where(quality_gate_condition)
@@ -444,6 +469,8 @@ async def candidate_status_counts(
     *,
     query: str | None = None,
     brand_id: int | None = None,
+    intent: str | None = None,
+    prompt_scope: str | None = None,
     quality_gate: str = "all",
 ) -> dict[str, int]:
     base = select(PromptCandidate.status, func.count(PromptCandidate.id)).group_by(
@@ -451,6 +478,11 @@ async def candidate_status_counts(
     )
     if brand_id is not None:
         base = base.where(PromptCandidate.brand_id == brand_id)
+    if intent:
+        base = base.where(PromptCandidate.intent == intent)
+    prompt_scope_condition = _prompt_scope_filter_condition(prompt_scope)
+    if prompt_scope_condition is not None:
+        base = base.where(prompt_scope_condition)
     quality_gate_condition = _quality_gate_filter_condition(quality_gate)
     if quality_gate_condition is not None:
         base = base.where(quality_gate_condition)

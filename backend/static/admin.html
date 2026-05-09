@@ -4743,6 +4743,19 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <option :value="String(brand.id)" x-text="brand.name"></option>
                             </template>
                           </select>
+                          <select x-model="promptMatrixCandidateIntent" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部意图</option>
+                            <option value="informational">informational</option>
+                            <option value="commercial">commercial</option>
+                            <option value="transactional">transactional</option>
+                            <option value="navigational">navigational</option>
+                          </select>
+                          <select x-model="promptMatrixCandidateScope" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
+                            <option value="all">全部类型</option>
+                            <option value="non_branded">non-branded</option>
+                            <option value="branded">branded</option>
+                            <option value="competitive">competitive</option>
+                          </select>
                           <select x-model="promptMatrixCandidateQualityGate" @change="onPromptMatrixCandidateFilterChanged()" class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink">
                             <option value="all">全部质检</option>
                             <option value="blocked">质检拦截</option>
@@ -4754,31 +4767,39 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           </select>
                         </div>
                       </div>
-                      <div x-show="promptMatrixCandidateStatus === 'pending' || promptMatrixSelectedCandidateCount() > 0"
+                      <div x-show="promptMatrixSelectablePageCandidates().length > 0 || promptMatrixSelectedCandidateCount() > 0"
                            class="rounded-card border border-b-card bg-surface-page px-3 py-2 flex flex-wrap items-center justify-between gap-3">
                         <label class="inline-flex items-center gap-2 text-[12px] text-ink-body">
                           <input type="checkbox"
                                  :checked="isPromptMatrixCandidatePageSelected()"
                                  @change="setPromptMatrixCandidatePageSelection($event.target.checked)"
-                                 :disabled="promptMatrixSelectablePageCandidates().length===0 || promptMatrixCandidateReviewing"
+                                 :disabled="promptMatrixSelectablePageCandidates().length===0 || promptMatrixCandidateReviewing || promptMatrixCandidateDeleting"
                                  class="w-3.5 h-3.5 rounded border-b-default text-accent focus:ring-accent/30 disabled:opacity-40">
-                          <span x-text="'已选 ' + promptMatrixSelectedCandidateCount() + ' 条待审 Prompt'"></span>
+                          <span x-text="'已选 ' + promptMatrixSelectedCandidateCount() + ' 条 Prompt'"></span>
                         </label>
                         <div class="flex items-center gap-2">
                           <button @click="bulkReviewPromptCandidates('approved')"
-                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  :disabled="selectedPromptMatrixReviewableCandidateIds().length===0 || promptMatrixCandidateReviewing || promptMatrixCandidateDeleting"
                                   class="h-8 px-3 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5">
                             <i data-lucide="check" class="w-3.5 h-3.5"></i>
                             批量通过
                           </button>
                           <button @click="bulkReviewPromptCandidates('rejected')"
-                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  :disabled="selectedPromptMatrixReviewableCandidateIds().length===0 || promptMatrixCandidateReviewing || promptMatrixCandidateDeleting"
                                   class="h-8 px-3 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5">
                             <i data-lucide="x" class="w-3.5 h-3.5"></i>
                             批量拒绝
                           </button>
+                          <template x-if="selectedPromptMatrixDeletableCandidateIds().length > 0">
+                            <button @click="deleteSelectedPromptCandidates()"
+                                    :disabled="promptMatrixCandidateDeleting || promptMatrixCandidateReviewing"
+                                    class="h-8 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1.5">
+                              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                              <span x-text="'删除 ' + selectedPromptMatrixDeletableCandidateIds().length + ' 条'"></span>
+                            </button>
+                          </template>
                           <button @click="clearPromptMatrixCandidateSelection()"
-                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing"
+                                  :disabled="promptMatrixSelectedCandidateCount()===0 || promptMatrixCandidateReviewing || promptMatrixCandidateDeleting"
                                   class="h-8 px-3 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface disabled:opacity-40">
                             清空选择
                           </button>
@@ -4793,7 +4814,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                 <input type="checkbox"
                                        :checked="isPromptMatrixCandidateSelected(item)"
                                        @change="togglePromptMatrixCandidate(item, $event.target.checked)"
-                                       :disabled="item.status !== 'pending' || promptMatrixCandidateReviewing"
+                                       :disabled="(!promptMatrixCanReviewCandidate(item) && !promptMatrixCanDeleteCandidate(item)) || promptMatrixCandidateReviewing || promptMatrixCandidateDeleting"
                                        class="w-3.5 h-3.5 rounded border-b-default text-accent focus:ring-accent/30 disabled:opacity-30">
                               </td>
                               <td class="px-4 py-3">
@@ -4828,12 +4849,20 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <td class="px-4 py-3 text-right">
                                 <template x-if="item.status === 'pending'">
                                   <div>
-                                    <button @click="reviewPromptCandidate(item, 'approved')" :disabled="promptMatrixCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40">通过</button>
-                                    <button @click="reviewPromptCandidate(item, 'rejected')" :disabled="promptMatrixCandidateReviewing" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1 disabled:opacity-40">拒绝</button>
+                                    <button @click="reviewPromptCandidate(item, 'approved')" :disabled="promptMatrixCandidateReviewing || promptMatrixCandidateDeleting" class="h-7 px-2.5 rounded-btn bg-success/10 text-success text-[11px] font-semibold disabled:opacity-40">通过</button>
+                                    <button @click="reviewPromptCandidate(item, 'rejected')" :disabled="promptMatrixCandidateReviewing || promptMatrixCandidateDeleting" class="h-7 px-2.5 rounded-btn bg-danger/10 text-danger text-[11px] font-semibold ml-1 disabled:opacity-40">拒绝</button>
                                   </div>
                                 </template>
                                 <template x-if="item.status !== 'pending'">
-                                  <span class="text-[11px] text-ink-muted" x-text="item.approved_prompt_id ? 'Prompt #' + item.approved_prompt_id : '已审核'"></span>
+                                  <div class="inline-flex items-center justify-end gap-1.5">
+                                    <span class="text-[11px] text-ink-muted" x-text="item.approved_prompt_id ? 'Prompt #' + item.approved_prompt_id : '已审核'"></span>
+                                    <template x-if="promptMatrixCanDeleteCandidate(item)">
+                                      <button @click="deletePromptCandidate(item)" :disabled="promptMatrixCandidateDeleting || promptMatrixCandidateReviewing" class="h-7 px-2.5 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1">
+                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                        删除
+                                      </button>
+                                    </template>
+                                  </div>
                                 </template>
                               </td>
                             </tr>
@@ -11702,6 +11731,7 @@ function adminApp() {
     promptMatrixRunPollFailures: 0,
     promptMatrixRunPollMaxFailures: 3,
     promptMatrixCandidateReviewing: false,
+    promptMatrixCandidateDeleting: false,
     promptMatrixBrands: [],
     promptMatrixIndustries: [],
     promptMatrixTopicQuery: '',
@@ -11739,6 +11769,8 @@ function adminApp() {
     promptMatrixCandidateStatusCounts: { pending: 0, approved: 0, rejected: 0, all: 0 },
     promptMatrixCandidateQuery: '',
     promptMatrixCandidateBrand: 'all',
+    promptMatrixCandidateIntent: 'all',
+    promptMatrixCandidateScope: 'all',
     promptMatrixCandidateQualityGate: 'all',
     promptMatrixSelectedCandidateIds: {},
     promptMatrixPromptIntent: '',
@@ -15143,8 +15175,35 @@ function adminApp() {
       return String((item && item.id) || '');
     },
 
+    promptMatrixCanReviewCandidate(item){
+      return !!item && item.status === 'pending';
+    },
+
+    promptMatrixCanDeleteCandidate(item){
+      return !!item && (item.status === 'approved' || item.status === 'rejected');
+    },
+
     promptMatrixSelectablePageCandidates(){
-      return (this.promptMatrixPendingItems || []).filter(item => item.status === 'pending');
+      return (this.promptMatrixPendingItems || []).filter(item => this.promptMatrixCanReviewCandidate(item) || this.promptMatrixCanDeleteCandidate(item));
+    },
+
+    selectedPromptMatrixCandidateRows(){
+      const selected = this.promptMatrixSelectedCandidateIds || {};
+      return (this.promptMatrixPendingItems || []).filter(item => selected[this.promptMatrixCandidateKey(item)]);
+    },
+
+    selectedPromptMatrixReviewableCandidateIds(){
+      return this.selectedPromptMatrixCandidateRows()
+        .filter(item => this.promptMatrixCanReviewCandidate(item))
+        .map(item => this.promptMatrixCandidateKey(item))
+        .filter(Boolean);
+    },
+
+    selectedPromptMatrixDeletableCandidateIds(){
+      return this.selectedPromptMatrixCandidateRows()
+        .filter(item => this.promptMatrixCanDeleteCandidate(item))
+        .map(item => this.promptMatrixCandidateKey(item))
+        .filter(Boolean);
     },
 
     selectedPromptMatrixCandidateIds(){
@@ -15167,7 +15226,7 @@ function adminApp() {
 
     togglePromptMatrixCandidate(item, selected){
       const id = this.promptMatrixCandidateKey(item);
-      if (!id || item.status !== 'pending') return;
+      if (!id || (!this.promptMatrixCanReviewCandidate(item) && !this.promptMatrixCanDeleteCandidate(item))) return;
       const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
       if (selected) next[id] = true;
       else delete next[id];
@@ -15192,7 +15251,7 @@ function adminApp() {
     syncPromptMatrixCandidateSelection(){
       const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
       (this.promptMatrixPendingItems || []).forEach(item => {
-        if (item.status !== 'pending') delete next[this.promptMatrixCandidateKey(item)];
+        if (!this.promptMatrixCanReviewCandidate(item) && !this.promptMatrixCanDeleteCandidate(item)) delete next[this.promptMatrixCandidateKey(item)];
       });
       this.promptMatrixSelectedCandidateIds = next;
     },
@@ -15238,6 +15297,8 @@ function adminApp() {
         });
         if ((this.promptMatrixCandidateQuery || '').trim()) qp.set('q', this.promptMatrixCandidateQuery.trim());
         if (this.promptMatrixCandidateBrand && this.promptMatrixCandidateBrand !== 'all') qp.set('brand_id', this.promptMatrixCandidateBrand);
+        if (this.promptMatrixCandidateIntent && this.promptMatrixCandidateIntent !== 'all') qp.set('intent', this.promptMatrixCandidateIntent);
+        if (this.promptMatrixCandidateScope && this.promptMatrixCandidateScope !== 'all') qp.set('prompt_scope', this.promptMatrixCandidateScope);
         if (this.promptMatrixCandidateQualityGate && this.promptMatrixCandidateQualityGate !== 'all') qp.set('quality_gate', this.promptMatrixCandidateQualityGate);
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;
@@ -15549,7 +15610,7 @@ function adminApp() {
     },
 
     async reviewPromptCandidate(item, status){
-      if (this.promptMatrixCandidateReviewing) return;
+      if (this.promptMatrixCandidateReviewing || this.promptMatrixCandidateDeleting) return;
       this.promptMatrixCandidateReviewing = true;
       try {
         const res = await fetch('/api/admin/prompt-matrix/candidates/' + encodeURIComponent(item.id) + '/review', {
@@ -15576,8 +15637,8 @@ function adminApp() {
     },
 
     async bulkReviewPromptCandidates(status){
-      const ids = this.selectedPromptMatrixCandidateIds();
-      if (ids.length === 0 || this.promptMatrixCandidateReviewing) return;
+      const ids = this.selectedPromptMatrixReviewableCandidateIds();
+      if (ids.length === 0 || this.promptMatrixCandidateReviewing || this.promptMatrixCandidateDeleting) return;
       const label = status === 'approved' ? '通过' : '拒绝';
       if (!window.confirm('确认批量' + label + '选中的 ' + ids.length + ' 条候选 Prompt？')) return;
       this.promptMatrixCandidateReviewing = true;
@@ -15612,6 +15673,61 @@ function adminApp() {
         this.promptMatrixCandidateReviewing = false;
         this.$nextTick(()=>lucide.createIcons());
       }
+    },
+
+    async performDeletePromptCandidates(candidateIds, reason){
+      const ids = Array.from(new Set((candidateIds || []).filter(Boolean)));
+      if (!ids.length || this.promptMatrixCandidateDeleting || this.promptMatrixCandidateReviewing) return;
+      this.promptMatrixCandidateDeleting = true;
+      try {
+        const url = ids.length === 1
+          ? '/api/admin/prompt-matrix/candidates/' + encodeURIComponent(ids[0])
+          : '/api/admin/prompt-matrix/candidates/bulk-delete';
+        const res = await fetch(url, {
+          method: ids.length === 1 ? 'DELETE' : 'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify(ids.length === 1 ? { reason } : { candidate_ids: ids, reason }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Prompt candidate delete failed');
+        const next = { ...(this.promptMatrixSelectedCandidateIds || {}) };
+        ids.forEach(id => { delete next[id]; });
+        this.promptMatrixSelectedCandidateIds = next;
+        this.toast('已删除 ' + ((body.deleted || ids).length || ids.length) + ' 条 Prompt 候选');
+        await this.loadPromptMatrixCandidates();
+      } catch (e) {
+        this.toast('删除 Prompt 候选失败: ' + (e.message || e));
+      } finally {
+        this.promptMatrixCandidateDeleting = false;
+        this.$nextTick(()=>lucide.createIcons());
+      }
+    },
+
+    deletePromptCandidate(item){
+      if (!this.promptMatrixCanDeleteCandidate(item)) return;
+      this.confirmAction = {
+        title:'删除 Prompt 候选',
+        desc:'删除后该已审核候选将从候选列表移除；不会删除已经进入 Query Pool 的数据。',
+        danger:true,
+        action:(reason)=>this.performDeletePromptCandidates([this.promptMatrixCandidateKey(item)], reason),
+      };
+      this.$nextTick(()=>lucide.createIcons());
+    },
+
+    deleteSelectedPromptCandidates(){
+      const ids = this.selectedPromptMatrixDeletableCandidateIds();
+      if (!ids.length) {
+        this.toast('请先选择已审核 Prompt 候选');
+        return;
+      }
+      this.confirmAction = {
+        title:'批量删除 Prompt 候选',
+        desc:'将删除当前选中的 ' + ids.length + ' 条已审核 Prompt 候选；待审核候选不会被删除。',
+        danger:true,
+        action:(reason)=>this.performDeletePromptCandidates(ids, reason),
+      };
+      this.$nextTick(()=>lucide.createIcons());
     },
 
     queryPoolPromptId(prompt){

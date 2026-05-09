@@ -31,6 +31,7 @@ from app.admin.prompt_matrix.lib import (
     normalize_prompt_scope,
     prompt_text_has_brand_anchor,
     prompt_text_has_competitive_signal,
+    prompt_text_mentions_competitor,
     sample_existing_for_context,
 )
 from app.admin.prompt_matrix.llm import PromptMatrixClient
@@ -44,8 +45,19 @@ REVIEWABLE_QUALITY_REASONS = {
     "prompt_not_natural",
     "prompt_language_mismatch",
     "category_brand_leak",
+    "competitive_competitor_missing",
+    "competitive_brand_anchor_missing",
     "prompt_scope_mismatch",
     "prompt_topic_mismatch",
+}
+
+
+PROMPT_METADATA_ALIASES = {
+    "slot_id": ("slot_id", "slotId"),
+    "competitor_name": ("competitor_name", "competitorName"),
+    "competitor_brand_id": ("competitor_brand_id", "competitorBrandId"),
+    "competitor_source": ("competitor_source", "competitorSource"),
+    "scenario_axis": ("scenario_axis", "scenarioAxis"),
 }
 
 
@@ -56,6 +68,7 @@ def _reviewable_quality_issue(
     prompt_scope: str,
     topic: dict[str, Any],
     known_brands: list[dict[str, Any]],
+    competitor_name: Any | None = None,
 ) -> dict[str, Any] | None:
     if not is_natural_user_prompt(text):
         return {"reason": "prompt_not_natural", "message": "Prompt is not a natural user question"}
@@ -82,11 +95,22 @@ def _reviewable_quality_issue(
             "reason": "prompt_scope_mismatch",
             "message": "Branded prompt must include the topic brand or product",
         }
-    if prompt_scope == "competitive" and not prompt_text_has_competitive_signal(text):
-        return {
-            "reason": "prompt_scope_mismatch",
-            "message": "Competitive prompt must include comparison or alternative intent",
-        }
+    if prompt_scope == "competitive":
+        if not prompt_text_has_competitive_signal(text):
+            return {
+                "reason": "prompt_scope_mismatch",
+                "message": "Competitive prompt must include comparison or alternative intent",
+            }
+        if competitor_name and not prompt_text_mentions_competitor(text, competitor_name):
+            return {
+                "reason": "competitive_competitor_missing",
+                "message": "Competitive prompt must directly mention the selected competitor",
+            }
+        if competitor_name and not prompt_text_has_brand_anchor(text, topic, known_brands):
+            return {
+                "reason": "competitive_brand_anchor_missing",
+                "message": "Competitive prompt must compare against the topic brand or product",
+            }
     if not is_prompt_relevant_to_topic(text, topic, known_brands, language=language):
         return {"reason": "prompt_topic_mismatch", "message": "Prompt does not match its topic"}
     return None
@@ -166,12 +190,36 @@ async def _insert_candidate_batch(
         except PromptMatrixError as error:
             skipped.append({"text": text_v, "reason": error.code, "message": error.message})
             continue
+        for normalized_key, aliases in PROMPT_METADATA_ALIASES.items():
+            value = next(
+                (
+                    item.get(alias)
+                    for alias in aliases
+                    if item.get(alias) is not None and item.get(alias) != ""
+                ),
+                None,
+            )
+            if value is None:
+                value = next(
+                    (
+                        tags.get(alias)
+                        for alias in aliases
+                        if tags.get(alias) is not None and tags.get(alias) != ""
+                    ),
+                    None,
+                )
+            if value is not None and not tags.get(normalized_key):
+                tags[normalized_key] = value
+            for alias in aliases:
+                if alias != normalized_key:
+                    tags.pop(alias, None)
         quality_issue = _reviewable_quality_issue(
             text=text_v,
             language=language,
             prompt_scope=prompt_scope,
             topic=topic,
             known_brands=known_brands,
+            competitor_name=tags.get("competitor_name"),
         )
         tags.pop("promptScope", None)
         tags.pop("competitiveType", None)

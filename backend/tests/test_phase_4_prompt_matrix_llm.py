@@ -194,6 +194,78 @@ async def test_competitive_slots_use_discovered_competitors(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_competitive_slot_metadata_is_backfilled_when_llm_omits_it(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PROMPT_MATRIX_LLM_TARGET_PROMPTS_PER_REQUEST", "12")
+
+    class BackfillClient(PromptMatrixClient):
+        def __init__(self) -> None:
+            super().__init__(config=_config())
+
+        async def _discover_topic_competitors(self, **kwargs):
+            return {
+                "1": [
+                    {
+                        "name": "Adidas",
+                        "brand_id": 2,
+                        "source": "llm",
+                        "scenario_axes": ["comfort"],
+                    }
+                ]
+            }
+
+        async def _generate_prompt_batch(self, **kwargs):
+            slots_by_topic = kwargs["config"].get("generation_slots_by_topic") or {}
+            slot = next(
+                slot
+                for slot in slots_by_topic.get("1", [])
+                if slot.get("prompt_scope") == "competitive"
+            )
+            return (
+                [
+                    LLMPromptCandidate(
+                        topic_id=1,
+                        intent=str(slot["intent"]),
+                        language=str(slot["language"]),
+                        text="Is NIKE better than Adidas for beginner running shoes?",
+                        template_strategy="latest",
+                        template_version="v1",
+                        confidence=0.8,
+                        reason="covers competitor slot",
+                        tags={
+                            "prompt_scope": "competitive",
+                            "competitive_type": slot["competitive_type"],
+                        },
+                        competitive_type=str(slot["competitive_type"]),
+                    )
+                ],
+                {"model": self.config.model, "usage": {}},
+            )
+
+    client = BackfillClient()
+    generated: list[LLMPromptCandidate] = []
+    async for prompts, _meta in client.generate_prompt_batches(
+        topics=[_topic()],
+        config=prompt_generation_config(
+            {
+                "intent_count": 4,
+                "language_count": 2,
+                "max_per_topic": 8,
+                "max_prompts": 8,
+            }
+        ),
+        known_brands=[],
+        existing_prompts=[],
+    ):
+        generated.extend(prompts)
+
+    assert generated[0].tags["competitor_name"] == "Adidas"
+    assert generated[0].tags["competitor_brand_id"] == 2
+    assert generated[0].tags["scenario_axis"] == "comfort"
+
+
+@pytest.mark.asyncio
 async def test_prompt_generation_retries_transient_batch_failure(monkeypatch) -> None:
     monkeypatch.setenv("PROMPT_MATRIX_LLM_BATCH_RETRIES", "1")
     monkeypatch.setenv("PROMPT_MATRIX_LLM_RETRY_DELAY_SECONDS", "0")

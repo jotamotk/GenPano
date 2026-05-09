@@ -392,6 +392,9 @@ def build_prompt_generation_slots(
             "language": str(combo.get("language") or combo.get("lang") or "").strip(),
             "prompt_scope": str(template["prompt_scope"]),
         }
+        topic_key = str(topic.get("raw_id") or topic.get("id") or "").strip()
+        if topic_key:
+            slot["slot_id"] = f"{topic_key}:{index + 1}"
         for key in (
             "competitive_type",
             "competitor_name",
@@ -709,6 +712,13 @@ COMPETITIVE_SIGNAL_TERMS = (
 def prompt_text_has_competitive_signal(text: str) -> bool:
     lowered = f" {str(text or '').casefold()} "
     return any(signal.casefold() in lowered for signal in COMPETITIVE_SIGNAL_TERMS)
+
+
+def prompt_text_mentions_competitor(text: str, competitor_name: Any) -> bool:
+    normalized_competitor = normalize_prompt_text(str(competitor_name or ""))
+    if len(normalized_competitor) < 2:
+        return False
+    return normalized_competitor in normalize_prompt_text(str(text or ""))
 
 
 def strip_brand_terms(text: str, brands: list[dict[str, Any]]) -> str:
@@ -1059,9 +1069,13 @@ def parse_llm_prompt_candidates(
             or tags.get("competitor_source")
             or tags.get("competitorSource")
         )
+        slot_id = (
+            item.get("slot_id") or item.get("slotId") or tags.get("slot_id") or tags.get("slotId")
+        )
         scenario_axis = (
             item.get("scenario_axis") or item.get("scenarioAxis") or tags.get("scenario_axis")
         )
+        tags.pop("slotId", None)
         tags.pop("competitorName", None)
         tags.pop("competitorBrandId", None)
         tags.pop("competitorSource", None)
@@ -1137,6 +1151,7 @@ def parse_llm_prompt_candidates(
                     **tags,
                     "prompt_scope": prompt_scope,
                     **({"competitive_type": competitive_type} if competitive_type else {}),
+                    **({"slot_id": slot_id} if slot_id else {}),
                     **({"competitor_name": competitor_name} if competitor_name else {}),
                     **({"competitor_brand_id": competitor_brand_id} if competitor_brand_id else {}),
                     **({"competitor_source": competitor_source} if competitor_source else {}),
@@ -1249,6 +1264,7 @@ def build_prompt_matrix_messages(
         "prompts": [
             {
                 "topic_id": 123,
+                "slot_id": "copy generation slot slot_id",
                 "intent": "informational|commercial|transactional|navigational",
                 "language": "zh-CN|en-US",
                 "prompt_scope": "non_branded|branded|competitive",
@@ -1264,6 +1280,7 @@ def build_prompt_matrix_messages(
                 "tags": {
                     "source": "prompt_matrix",
                     "routing": "deferred_to_query_pool",
+                    "slot_id": "copy slot_id",
                     "prompt_scope": "copy prompt_scope",
                     "competitive_type": "copy competitive_type when prompt_scope is competitive",
                     "competitor_name": "copy competitor_name when prompt_scope is competitive and slot has one",
@@ -1321,6 +1338,7 @@ def build_prompt_matrix_messages(
         "Topic layer = high-level, reusable, brand-neutral consumer demand subject. Do not turn Topic titles back into brand slogans.\n"
         "Prompt layer = complete natural user input. Prompt owns prompt_scope: non_branded, branded, competitive.\n"
         "Query layer = Prompt + Segment/Profile personal context. Do not add age, city, exact budget, persona, or first-person anchors here; Query Pool will do that.\n\n"
+        "Competitive strict rule: if a generation slot has competitor_name, output.text must directly name that competitor and compare or position it against topic.brand/topic.product; copy generation_slots[].slot_id to output.slot_id and tags.slot_id.\n"
         "prompt_scope 规则：\n"
         "S1. 每条 output.prompts[i] 必须写 prompt_scope，且只能是 non_branded / branded / competitive；同时复制到 tags.prompt_scope。legacy competitor 只用于读取旧数据，新输出不要使用。\n"
         "S2. non_branded：围绕 topic.title 的品类、功能、场景或问题提问，禁止出现 known_brand_terms、selected brand alias 或竞品名。\n"

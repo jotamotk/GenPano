@@ -388,6 +388,51 @@ async def test_candidates_list_filters_by_brand(client, admin_operator, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_candidates_list_filters_by_intent_and_prompt_scope(
+    client, admin_operator, db_session: AsyncSession
+):
+    rows = [
+        ("informational", "competitive"),
+        ("commercial", "competitive"),
+        ("commercial", "branded"),
+    ]
+    for i, (intent, prompt_scope) in enumerate(rows):
+        db_session.add(
+            PromptCandidate(
+                id=_new_id(),
+                run_id=None,
+                topic_id=i + 1,
+                topic_text="t",
+                brand_id=1,
+                brand_name="NIKE",
+                dimension="brand",
+                intent=intent,
+                language="zh-CN",
+                text=f"p{i}",
+                status="pending",
+                confidence=0.8,
+                tags={"prompt_scope": prompt_scope},
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/admin/prompt-matrix/candidates?status=all&intent=commercial&prompt_scope=competitive"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pagination"]["total"] == 1
+    assert body["rows"][0]["intent"] == "commercial"
+    assert body["rows"][0]["prompt_scope"] == "competitive"
+    assert body["summary"]["status_counts"] == {
+        "pending": 1,
+        "approved": 0,
+        "rejected": 0,
+        "all": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_candidates_list_filters_quality_gate_blocked(
     client, admin_operator, db_session: AsyncSession
 ):
@@ -440,6 +485,15 @@ async def test_candidates_invalid_status_422(client, admin_operator):
 async def test_candidates_invalid_quality_gate_422(client, admin_operator):
     resp = await client.get("/api/admin/prompt-matrix/candidates?quality_gate=maybe")
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_candidates_invalid_intent_and_scope_422(client, admin_operator):
+    bad_intent = await client.get("/api/admin/prompt-matrix/candidates?intent=maybe")
+    bad_scope = await client.get("/api/admin/prompt-matrix/candidates?prompt_scope=maybe")
+
+    assert bad_intent.status_code == 422
+    assert bad_scope.status_code == 422
 
 
 # ── audit gate ────────────────────────────────────────────────
