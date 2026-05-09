@@ -1,8 +1,16 @@
-const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
+import { apiClient } from '../lib/apiClient'
 
-const appBase = trimTrailingSlash(import.meta.env.BASE_URL || '')
-const configuredApiBase = import.meta.env.VITE_API_BASE
-const API_BASE = trimTrailingSlash(configuredApiBase || `${appBase}/api` || '/api')
+/**
+ * Auth API client.
+ *
+ * Routes through the shared `apiClient` so every request:
+ *   • carries the standard headers (`Accept-Language`, `Authorization` from
+ *     the persisted JWT when present);
+ *   • surfaces backend errors as the structured `ApiError` (with
+ *     request_id, status, problem.code, etc.) so callers can render the
+ *     copyable diagnostic panel instead of a bare "Unknown error" string;
+ *   • participates in the same correlation pipeline as the rest of the app.
+ */
 
 export interface LoginResponse {
   token: string
@@ -53,67 +61,36 @@ export interface SetupTokenResponse {
   tokenType: 'verify_email' | 'oauth_setup'
 }
 
-async function parseError(res: Response): Promise<Error> {
-  try {
-    const data = await res.json()
-    const message =
-      data?.message ||
-      data?.detail?.message ||
-      data?.detail?.reason ||
-      (typeof data?.detail === 'string' ? data.detail : null) ||
-      res.statusText
-    return new Error(message)
-  } catch {
-    return new Error(res.statusText || 'Unknown error')
-  }
-}
-
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-  token?: string,
-): Promise<T> {
-  const headers = new Headers(options.headers)
-  headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
-  if (!res.ok) throw await parseError(res)
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
-}
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
+const appBase = trimTrailingSlash(import.meta.env.BASE_URL || '')
+const configuredApiBase = (import.meta.env as Record<string, string | undefined>).VITE_API_BASE
+const API_BASE = trimTrailingSlash(configuredApiBase || `${appBase}/api` || '/api')
 
 export const authApi = {
   async register(email: string): Promise<RegisterResponse> {
-    return request<RegisterResponse>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    })
+    return apiClient.post<RegisterResponse>('/auth/register', { email }, { skipAuth: true })
   },
 
   async lookup(email: string): Promise<LookupResponse> {
-    return request<LookupResponse>('/auth/lookup', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    })
+    return apiClient.post<LookupResponse>('/auth/lookup', { email }, { skipAuth: true })
   },
 
   async login(email: string, password: string): Promise<LoginResponse> {
-    return request<LoginResponse>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    })
+    // skipAuth: avoid the global 401-redirect; LoginPage handles invalid
+    // credentials inline.
+    return apiClient.post<LoginResponse>('/auth/login', { email, password }, { skipAuth: true })
   },
 
   async forgotPassword(email: string): Promise<{ message: string }> {
-    return request<{ message: string }>('/auth/forgot-password', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    })
+    return apiClient.post<{ message: string }>(
+      '/auth/forgot-password',
+      { email },
+      { skipAuth: true },
+    )
   },
 
   async getMe(token: string): Promise<MeResponse> {
-    return request<MeResponse>('/auth/me', { method: 'GET' }, token)
+    return apiClient.get<MeResponse>('/auth/me', { token })
   },
 
   getGoogleOAuthUrl(): string {
@@ -121,18 +98,21 @@ export const authApi = {
   },
 
   async checkEmail(email: string): Promise<{ exists: boolean }> {
-    return request<{ exists: boolean }>(`/auth/check-email?email=${encodeURIComponent(email)}`)
+    return apiClient.get<{ exists: boolean }>(
+      `/auth/check-email?email=${encodeURIComponent(email)}`,
+      { skipAuth: true },
+    )
   },
 
   async resendVerification(email: string): Promise<void> {
-    await request<void>('/auth/resend-verification', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    })
+    await apiClient.post<void>('/auth/resend-verification', { email }, { skipAuth: true })
   },
 
   async getSetupToken(token: string): Promise<SetupTokenResponse> {
-    return request<SetupTokenResponse>(`/auth/setup-token?token=${encodeURIComponent(token)}`)
+    return apiClient.get<SetupTokenResponse>(
+      `/auth/setup-token?token=${encodeURIComponent(token)}`,
+      { skipAuth: true },
+    )
   },
 
   async setup(data: {
@@ -144,16 +124,10 @@ export const authApi = {
     newsletter: boolean
     locale?: 'zh-CN' | 'en-US'
   }): Promise<LoginResponse> {
-    return request<LoginResponse>('/auth/setup', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    })
+    return apiClient.post<LoginResponse>('/auth/setup', data, { skipAuth: true })
   },
 
   async resetPassword(token: string, password: string): Promise<void> {
-    await request<void>('/auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ token, password }),
-    })
+    await apiClient.post<void>('/auth/reset-password', { token, password }, { skipAuth: true })
   },
 }
