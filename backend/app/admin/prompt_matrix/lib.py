@@ -300,6 +300,9 @@ def _normalized_competitor_contexts(
         axes = competitor.get("scenario_axes") or competitor.get("scenarios") or []
         if not isinstance(axes, list) or not axes:
             axes = list(DEFAULT_COMPETITIVE_SCENARIO_AXES)
+        comparison_axes = competitor.get("comparison_axes") or competitor.get("axes") or axes
+        if not isinstance(comparison_axes, list) or not comparison_axes:
+            comparison_axes = axes
         contexts.append(
             {
                 "competitor_name": name,
@@ -307,6 +310,9 @@ def _normalized_competitor_contexts(
                 or competitor.get("competitor_brand_id"),
                 "competitor_source": competitor.get("source") or "llm",
                 "scenario_axes": [str(axis).strip() for axis in axes if str(axis).strip()],
+                "comparison_axes": [
+                    str(axis).strip() for axis in comparison_axes if str(axis).strip()
+                ],
             }
         )
     return contexts
@@ -341,14 +347,17 @@ def _slot_templates_for_topic(
     for language in languages:
         for context in competitor_contexts:
             axes = context.get("scenario_axes") or list(DEFAULT_COMPETITIVE_SCENARIO_AXES)
+            comparison_axes = context.get("comparison_axes") or axes
             for index, competitive_type in enumerate(ALLOWED_COMPETITIVE_TYPES):
                 scenario_axis = axes[index % len(axes)]
+                comparison_axis = comparison_axes[index % len(comparison_axes)]
                 templates.append(
                     {
                         "language": language,
                         "prompt_scope": "competitive",
                         "competitive_type": competitive_type,
                         "scenario_axis": scenario_axis,
+                        "comparison_axis": comparison_axis,
                         **{
                             key: value
                             for key, value in context.items()
@@ -384,6 +393,23 @@ def build_prompt_generation_slots(
         return []
     languages = _languages_from_combinations(base_slots)
     templates = _slot_templates_for_topic(topic, languages, competitors)
+    context_refs = topic.get("context_refs") if isinstance(topic.get("context_refs"), dict) else {}
+    product_names = context_refs.get("products") if isinstance(context_refs, dict) else []
+    product_name = (
+        str(topic.get("product_name") or "").strip()
+        or (
+            str(product_names[0]).strip()
+            if isinstance(product_names, list) and product_names
+            else ""
+        )
+        or None
+    )
+    scenario_values = context_refs.get("scenarios") if isinstance(context_refs, dict) else []
+    scenario_axis = (
+        str(scenario_values[0]).strip()
+        if isinstance(scenario_values, list) and scenario_values
+        else None
+    )
     combos_by_language: dict[str, list[dict[str, Any]]] = {
         language: [
             combo
@@ -409,12 +435,23 @@ def build_prompt_generation_slots(
         topic_key = str(topic.get("raw_id") or topic.get("id") or "").strip()
         if topic_key:
             slot["slot_id"] = f"{topic_key}:{index + 1}"
+        if topic.get("brand_context_version"):
+            slot["brand_context_version"] = topic["brand_context_version"]
+        if isinstance(context_refs, dict) and context_refs:
+            slot["context_refs"] = context_refs
+        if topic.get("topic_axis"):
+            slot["topic_axis"] = topic["topic_axis"]
+        if product_name:
+            slot["product_name"] = product_name
+        if scenario_axis and "scenario_axis" not in slot:
+            slot["scenario_axis"] = scenario_axis
         for key in (
             "competitive_type",
             "competitor_name",
             "competitor_brand_id",
             "competitor_source",
             "scenario_axis",
+            "comparison_axis",
         ):
             if template.get(key):
                 slot[key] = template[key]
@@ -1089,11 +1126,29 @@ def parse_llm_prompt_candidates(
         scenario_axis = (
             item.get("scenario_axis") or item.get("scenarioAxis") or tags.get("scenario_axis")
         )
+        comparison_axis = (
+            item.get("comparison_axis") or item.get("comparisonAxis") or tags.get("comparison_axis")
+        )
+        product_name = (
+            item.get("product_name") or item.get("productName") or tags.get("product_name")
+        )
+        brand_context_version = (
+            item.get("brand_context_version")
+            or item.get("brandContextVersion")
+            or tags.get("brand_context_version")
+        )
+        context_refs = (
+            item.get("context_refs") or item.get("contextRefs") or tags.get("context_refs")
+        )
         tags.pop("slotId", None)
         tags.pop("competitorName", None)
         tags.pop("competitorBrandId", None)
         tags.pop("competitorSource", None)
         tags.pop("scenarioAxis", None)
+        tags.pop("comparisonAxis", None)
+        tags.pop("productName", None)
+        tags.pop("brandContextVersion", None)
+        tags.pop("contextRefs", None)
 
         if intent not in ALLOWED_INTENTS:
             raise PromptMatrixError(
@@ -1170,6 +1225,14 @@ def parse_llm_prompt_candidates(
                     **({"competitor_brand_id": competitor_brand_id} if competitor_brand_id else {}),
                     **({"competitor_source": competitor_source} if competitor_source else {}),
                     **({"scenario_axis": scenario_axis} if scenario_axis else {}),
+                    **({"comparison_axis": comparison_axis} if comparison_axis else {}),
+                    **({"product_name": product_name} if product_name else {}),
+                    **(
+                        {"brand_context_version": brand_context_version}
+                        if brand_context_version
+                        else {}
+                    ),
+                    **({"context_refs": context_refs} if isinstance(context_refs, dict) else {}),
                     "source": tags.get("source") or "prompt_matrix",
                     "routing": tags.get("routing") or "deferred_to_query_pool",
                 },
@@ -1261,7 +1324,14 @@ def build_prompt_matrix_messages(
             "required_focus_terms": sorted(topic_relevance_terms(topic, known_brands))[:12],
             "generation_slots": generation_slots,
             "competitors": topic_competitors[:5],
+            "brand_context_version": topic.get("brand_context_version") or None,
+            "context_refs": topic.get("context_refs")
+            if isinstance(topic.get("context_refs"), dict)
+            else {},
+            "topic_axis": topic.get("topic_axis") or None,
         }
+        if isinstance(topic.get("brand_context_pack"), dict):
+            entry["brand_context_pack"] = topic["brand_context_pack"]
         # Module C-4: surface SKU context to the LLM when the topic is pinned
         # to a specific product. Prompts generated under this topic must
         # mention this product (rule 23 below).
@@ -1286,6 +1356,7 @@ def build_prompt_matrix_messages(
                 "competitor_name": "copy generation slot competitor_name when competitive, else null",
                 "competitor_brand_id": "copy generation slot competitor_brand_id when present, else null",
                 "scenario_axis": "copy generation slot scenario_axis when competitive, else null",
+                "comparison_axis": "copy generation slot comparison_axis when competitive, else null",
                 "template_strategy": config.get("template_strategy", "latest"),
                 "template_version": "v1",
                 "text": "A natural consumer question",
@@ -1300,6 +1371,9 @@ def build_prompt_matrix_messages(
                     "competitor_name": "copy competitor_name when prompt_scope is competitive and slot has one",
                     "competitor_brand_id": "copy competitor_brand_id when slot has one",
                     "scenario_axis": "copy scenario_axis when prompt_scope is competitive",
+                    "comparison_axis": "copy comparison_axis when prompt_scope is competitive",
+                    "brand_context_version": "copy topic brand_context_version",
+                    "context_refs": "copy topic context_refs when present",
                 },
             }
         ]

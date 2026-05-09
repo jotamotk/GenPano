@@ -170,6 +170,10 @@ def _topic_row_to_dict(
         "missing_intents": missing_intents,
         "missing_languages": missing_languages,
         "brand_leak_count": leak_count,
+        "product_name": row.get("product_name"),
+        "brand_context_version": row.get("brand_context_version"),
+        "context_refs": row.get("context_refs_json") or {},
+        "topic_axis": row.get("topic_axis"),
         "selected": False,
     }
 
@@ -221,9 +225,20 @@ async def fetch_topics(
                COALESCE(pm.prompt_count, 0)::int AS prompt_count,
                COALESCE(pm.prompt_intents, ARRAY[]::text[]) AS prompt_intents,
                COALESCE(pm.prompt_languages, ARRAY[]::text[]) AS prompt_languages,
-               0::int AS brand_leak_count
+               0::int AS brand_leak_count,
+               tc.product_name,
+               tc.brand_context_version,
+               tc.context_refs_json,
+               tc.topic_axis
         FROM topics t
         JOIN brands b ON b.id = t.brand_id
+        LEFT JOIN LATERAL (
+            SELECT product_name, brand_context_version, context_refs_json, topic_axis
+            FROM topic_candidates
+            WHERE approved_topic_id = t.id
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+        ) tc ON TRUE
         LEFT JOIN (
             SELECT topic_id,
                    COUNT(id)::int AS prompt_count,
@@ -362,6 +377,10 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
     quality_gate_status = tags.get("quality_gate_status") or tags.get("qualityGateStatus")
     quality_gate_reason = tags.get("quality_gate_reason") or tags.get("qualityGateReason")
     quality_gate_message = tags.get("quality_gate_message") or tags.get("qualityGateMessage")
+    competitor_name = tags.get("competitor_name") or tags.get("competitorName")
+    competitor_brand_id = tags.get("competitor_brand_id") or tags.get("competitorBrandId")
+    scenario_axis = tags.get("scenario_axis") or tags.get("scenarioAxis")
+    comparison_axis = tags.get("comparison_axis") or tags.get("comparisonAxis")
     return {
         "id": c.id,
         "run_id": c.run_id,
@@ -384,6 +403,14 @@ def _candidate_row_to_dict(c: PromptCandidate) -> dict[str, Any]:
         "quality_gate_status": quality_gate_status,
         "quality_gate_reason": quality_gate_reason,
         "quality_gate_message": quality_gate_message,
+        "competitor_name": competitor_name if prompt_scope == "competitive" else None,
+        "competitor_brand_id": competitor_brand_id if prompt_scope == "competitive" else None,
+        "scenario_axis": scenario_axis,
+        "comparison_axis": comparison_axis,
+        "product_name": tags.get("product_name") or tags.get("productName"),
+        "brand_context_version": tags.get("brand_context_version")
+        or tags.get("brandContextVersion"),
+        "context_refs": tags.get("context_refs") or tags.get("contextRefs") or {},
         "tags": tags,
         "review_reason": c.review_reason,
         "approved_prompt_id": c.approved_prompt_id,
@@ -410,11 +437,7 @@ def _prompt_scope_filter_condition(prompt_scope: str | None) -> Any | None:
     )
     if prompt_scope != "non_branded":
         return base
-    return or_(
-        base,
-        PromptCandidate.tags["prompt_scope"].as_string().is_(None),
-        PromptCandidate.tags["promptScope"].as_string().is_(None),
-    )
+    return base
 
 
 async def fetch_candidates(

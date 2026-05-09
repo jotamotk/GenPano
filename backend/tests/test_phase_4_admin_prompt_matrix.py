@@ -252,6 +252,41 @@ def test_prompt_generation_slots_can_exceed_intent_language_combinations():
         "branded",
         "competitive",
     }
+    competitive_slots = [slot for slot in slots if slot["prompt_scope"] == "competitive"]
+    assert competitive_slots[0]["competitor_name"] == "Adidas"
+    assert competitive_slots[0]["comparison_axis"] == "comfort"
+
+
+def test_prompt_generation_slots_copy_context_and_product_metadata():
+    from app.admin.prompt_matrix.lib import build_prompt_generation_slots, prompt_generation_config
+
+    config = prompt_generation_config(
+        {
+            "intent_count": 2,
+            "language_count": 2,
+            "max_per_topic": 4,
+            "max_prompts": 4,
+        }
+    )
+
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "product",
+            "brand": "NIKE",
+            "brand_context_version": "bcx-1",
+            "context_refs": {"products": ["Pegasus"], "scenarios": ["beginner running"]},
+            "topic_axis": "product",
+        },
+        combinations=config["combinations"],
+        max_per_topic=config["max_per_topic"],
+    )
+
+    assert {slot["brand_context_version"] for slot in slots} == {"bcx-1"}
+    assert {slot["product_name"] for slot in slots} == {"Pegasus"}
+    assert {slot["topic_axis"] for slot in slots} == {"product"}
+    assert all(slot["context_refs"]["products"] == ["Pegasus"] for slot in slots)
 
 
 def test_prompt_generation_slots_do_not_create_generic_competitive_without_competitor():
