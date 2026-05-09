@@ -694,6 +694,92 @@ async def test_bulk_review_too_many_422(client, admin_operator):
     assert resp.status_code == 422
 
 
+# ── delete reviewed candidates ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_approved_candidate_succeeds_and_audits(
+    client, admin_operator, db_session: AsyncSession
+):
+    cand = _candidate(status="approved")
+    db_session.add(cand)
+    await db_session.commit()
+
+    resp = await client.request(
+        "DELETE",
+        f"/api/admin/prompt-matrix/candidates/{cand.id}",
+        json={"reason": "approved prompt is no longer useful"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["deleted"] == [cand.id]
+
+    deleted = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.id == cand.id))
+    ).scalar_one_or_none()
+    assert deleted is None
+
+    audit = (
+        await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "delete_prompt_candidate",
+                AdminAuditLog.resource_id == cand.id,
+            )
+        )
+    ).scalar_one()
+    assert audit.severity == "med"
+
+
+@pytest.mark.asyncio
+async def test_delete_pending_candidate_returns_400(
+    client, admin_operator, db_session: AsyncSession
+):
+    cand = _candidate(status="pending")
+    db_session.add(cand)
+    await db_session.commit()
+
+    resp = await client.request(
+        "DELETE",
+        f"/api/admin/prompt-matrix/candidates/{cand.id}",
+        json={"reason": "not reviewed yet"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "candidate_delete_forbidden"
+    assert (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.id == cand.id))
+    ).scalar_one_or_none()
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_reviewed_candidates_succeeds(
+    client, admin_operator, db_session: AsyncSession
+):
+    approved = _candidate(status="approved", text="approved")
+    rejected = _candidate(status="rejected", text="rejected")
+    pending = _candidate(status="pending", text="pending")
+    db_session.add_all([approved, rejected, pending])
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/candidates/bulk-delete",
+        json={
+            "candidate_ids": [approved.id, rejected.id],
+            "reason": "cleanup reviewed candidates",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert sorted(body["deleted"]) == sorted([approved.id, rejected.id])
+    assert body["failed"] == []
+    assert (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.id == pending.id))
+    ).scalar_one_or_none()
+
+
 # ── runs ──────────────────────────────────────────────────────
 
 

@@ -69,6 +69,17 @@ def test_prompt_matrix_candidate_rows_show_quality_gate_badges() -> None:
     assert "质检拦截" in html
 
 
+def test_prompt_matrix_reviewed_candidates_can_be_deleted() -> None:
+    html = _admin_html()
+
+    assert "promptMatrixCandidateDeleting: false" in html
+    assert "promptMatrixCanDeleteCandidate(item)" in html
+    assert "deletePromptCandidate(item)" in html
+    assert "deleteSelectedPromptCandidates()" in html
+    assert "/api/admin/prompt-matrix/candidates/bulk-delete" in html
+    assert "method: ids.length === 1 ? 'DELETE' : 'POST'" in html
+
+
 def test_prompt_matrix_run_polling_handles_errors_locally() -> None:
     html = _admin_html()
 
