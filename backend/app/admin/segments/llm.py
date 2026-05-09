@@ -30,6 +30,11 @@ from app.admin.topic_plan.lib import (
     load_doubao_config,
 )
 
+try:  # optional dependency, same pattern as topic_plan / prompt_matrix
+    from json_repair import repair_json
+except Exception:  # pragma: no cover
+    repair_json = None
+
 
 class SegmentProfileGenerationError(Exception):
     """Coded error returned to the API layer when LLM output is unusable.
@@ -98,19 +103,52 @@ def _strip_markdown_fence(raw: str) -> str:
     return text.strip()
 
 
-def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
+def _load_json_object(raw: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, list):
+        return {"items": raw}
     cleaned = _strip_markdown_fence(raw)
     try:
         parsed = json.loads(cleaned)
-    except Exception as error:
-        raise SegmentProfileGenerationError(
-            "llm_json_invalid", "LLM returned invalid JSON"
-        ) from error
+    except Exception as first_error:
+        if repair_json is None:
+            raise SegmentProfileGenerationError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from first_error
+        try:
+            parsed = json.loads(repair_json(cleaned))
+        except Exception as repair_error:
+            raise SegmentProfileGenerationError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from repair_error
+    if isinstance(parsed, list):
+        return {"items": parsed}
     if not isinstance(parsed, dict):
         raise SegmentProfileGenerationError("llm_schema_invalid", "LLM JSON root must be an object")
     return parsed
+
+
+def _extract_llm_items(data: dict[str, Any], root_key: str) -> list[Any]:
+    items = data.get(root_key)
+    if isinstance(items, list):
+        return items
+    singular_key = root_key[:-1] if root_key.endswith("s") else ""
+    for key in (singular_key, "drafts", "candidates", "choices", "items", "results"):
+        if not key:
+            continue
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+    if root_key == "segments" and data.get("name"):
+        return [data]
+    if root_key == "profiles" and data.get("name"):
+        return [data]
+    raise SegmentProfileGenerationError(
+        "llm_schema_invalid", f"LLM JSON must contain a {root_key} array"
+    )
 
 
 def _usage_to_dict(usage_obj: Any) -> dict[str, Any]:
@@ -179,6 +217,67 @@ def _first_non_empty(raw: dict[str, Any], *keys: str) -> Any:
         if key in raw and raw.get(key) not in (None, ""):
             return raw.get(key)
     return None
+
+
+_FALLBACKABLE_GENERATION_ERRORS = {
+    "llm_json_invalid",
+    "llm_schema_invalid",
+    "missing_llm_field",
+    "invalid_llm_output",
+    "duplicate_segment_name",
+    "invalid_segment_status",
+    "invalid_weight",
+}
+
+
+def _should_fallback_generation(error: SegmentProfileGenerationError, allow_fallback: bool) -> bool:
+    return allow_fallback or error.code in _FALLBACKABLE_GENERATION_ERRORS
+
+
+def _normalise_product_contexts(
+    products: list[dict[str, Any]] | None = None,
+    *,
+    product_id: str | int | None = None,
+    product_name: str = "",
+    product_category: str = "",
+    product_description: str = "",
+    product_sku: str = "",
+) -> list[dict[str, str]]:
+    raw_items: list[dict[str, Any]] = []
+    if isinstance(products, list):
+        raw_items.extend(item for item in products if isinstance(item, dict))
+    if product_id or product_name or product_category or product_description or product_sku:
+        raw_items.append(
+            {
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_category": product_category,
+                "product_description": product_description,
+                "product_sku": product_sku,
+            }
+        )
+
+    normalised: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        product = {
+            "product_id": str(item.get("product_id") or item.get("id") or "").strip(),
+            "product_name": str(item.get("product_name") or item.get("name") or "").strip(),
+            "product_category": str(
+                item.get("product_category") or item.get("category") or ""
+            ).strip(),
+            "product_description": str(
+                item.get("product_description") or item.get("description") or ""
+            ).strip(),
+            "product_sku": str(item.get("product_sku") or item.get("sku") or "").strip(),
+        }
+        product = {key: value for key, value in product.items() if value}
+        key = product.get("product_id") or product.get("product_name")
+        if not key or key.casefold() in seen:
+            continue
+        seen.add(key.casefold())
+        normalised.append(product)
+    return normalised[:12]
 
 
 def _profile_status(value: Any) -> str:
@@ -493,11 +592,7 @@ class SegmentProfileGenerationService:
             )
         content = (choices[0].get("message") or {}).get("content") or "{}"
         parsed = _load_json_object(content)
-        items = parsed.get(root_key)
-        if not isinstance(items, list):
-            raise SegmentProfileGenerationError(
-                "llm_schema_invalid", f"LLM JSON must contain a {root_key} array"
-            )
+        items = _extract_llm_items(parsed, root_key)
         return items, model, _usage_to_dict(data.get("usage"))
 
     async def generate_segments(
@@ -512,28 +607,33 @@ class SegmentProfileGenerationService:
         product_name: str = "",
         product_category: str = "",
         product_description: str = "",
+        products: list[dict[str, Any]] | None = None,
         goal: str = "",
         constraints: str = "",
     ) -> GenerationResult:
         count = _bounded_count(count, 6, 1, 20)
         status = status if status in {"active", "draft", "paused"} else "draft"
-        product_context = {
-            "product_id": str(product_id or "").strip(),
-            "product_name": str(product_name or "").strip(),
-            "product_category": str(product_category or "").strip(),
-            "product_description": str(product_description or "").strip(),
-        }
-        product_context = {key: value for key, value in product_context.items() if value}
+        product_contexts = _normalise_product_contexts(
+            products,
+            product_id=product_id,
+            product_name=product_name,
+            product_category=product_category,
+            product_description=product_description,
+        )
         payload = {
             "brand_name": brand_name,
             "industry": industry,
             "count": count,
             "status": status,
             "positioning": positioning,
-            "product": product_context,
+            "product_scope": "selected_products" if product_contexts else "brand",
+            "product": product_contexts[0] if len(product_contexts) == 1 else {},
+            "products": product_contexts,
             "generation_goal": (
-                "生成可进入 Query Pool 采样的客户/用户/采购决策 Segment，覆盖核心高意向客户、"
-                "预算/采购决策者、技术/安全评估者、竞品替换者、风险/合规关注者和新客教育人群。"
+                "生成可进入 Query Pool 采样的客户/用户/采购决策 Segment。如果 products 非空，"
+                "必须围绕所选产品分别生成有差异的 Segment；如果 products 为空，则基于品牌整体生成。"
+                "覆盖核心高意向客户、预算/采购决策者、技术/安全评估者、竞品替换者、"
+                "风险/合规关注者和新客教育人群。"
             ),
             "generation_constraints": (
                 "每个 Segment 必须与所选品牌、行业和产品上下文强相关，写清采样边界、触发场景、"
@@ -572,13 +672,13 @@ class SegmentProfileGenerationService:
                 usage=usage,
                 estimated_cost=None,
             )
-        except SegmentProfileGenerationError:
-            if not self.allow_fallback:
+        except SegmentProfileGenerationError as error:
+            if not _should_fallback_generation(error, self.allow_fallback):
                 raise
         return self._fallback_segments(
             brand_name=brand_name,
             industry=industry,
-            product_name=product_context.get("product_name", ""),
+            product_names=[item.get("product_name", "") for item in product_contexts],
             count=count,
             status=status,
             prompt=prompt,
@@ -592,13 +692,14 @@ class SegmentProfileGenerationService:
         count: int,
         status: str,
         prompt: str,
-        product_name: str = "",
+        product_names: list[str] | None = None,
     ) -> GenerationResult:
         """Deterministic fallback used only when ``allow_fallback`` is set
         — admin_console has the same opt-in path for ops dry-runs."""
         brand = (brand_name or "Brand").strip() or "Brand"
         industry_name = (industry or "General").strip() or "General"
-        product_label = (product_name or "").strip()
+        product_labels = [name.strip() for name in product_names or [] if name.strip()]
+        product_label = " / ".join(product_labels[:3])
         subject = f"{brand} {product_label}".strip() if product_label else brand
         brand_slug = _slug(f"{brand}-{product_label}" if product_label else brand, "brand").upper()
         archetypes = [
@@ -700,6 +801,7 @@ class SegmentProfileGenerationService:
         count: int,
         goal: str,
         constraints: str,
+        products: list[dict[str, Any]] | None = None,
     ) -> GenerationResult:
         """Generate Profile drafts for one Segment (LLM single-shot).
 
@@ -708,12 +810,15 @@ class SegmentProfileGenerationService:
         + httpx instead of sync OpenAI SDK.
         """
         count = _bounded_count(count, 6, 1, 50)
+        product_contexts = _normalise_product_contexts(products)
         payload = {
             "segment": segment,
             "brand_name": brand_name,
             "count": count,
             "goal": goal,
             "constraints": constraints,
+            "product_scope": "selected_products" if product_contexts else "brand",
+            "products": product_contexts,
         }
         prompt = _json_prompt(
             "generate_profiles",
@@ -743,11 +848,15 @@ class SegmentProfileGenerationService:
                 usage=usage,
                 estimated_cost=None,
             )
-        except SegmentProfileGenerationError:
-            if not self.allow_fallback:
+        except SegmentProfileGenerationError as error:
+            if not _should_fallback_generation(error, self.allow_fallback):
                 raise
         return self._fallback_profiles(
-            segment=segment, brand_name=brand_name, count=count, prompt=prompt
+            segment=segment,
+            brand_name=brand_name,
+            count=count,
+            prompt=prompt,
+            product_names=[item.get("product_name", "") for item in product_contexts],
         )
 
     def _fallback_profiles(
@@ -757,11 +866,15 @@ class SegmentProfileGenerationService:
         brand_name: str,
         count: int,
         prompt: str,
+        product_names: list[str] | None = None,
     ) -> GenerationResult:
         """Deterministic fallback used only when ``allow_fallback`` is set."""
         segment_id = str(segment.get("id") or segment.get("code") or "SEG").upper()
         suffix = re.sub(r"[^A-Z0-9]+", "-", segment_id).strip("-")[-18:] or "SEG"
         brand = (brand_name or "Brand").strip() or "Brand"
+        product_labels = [name.strip() for name in product_names or [] if name.strip()]
+        product_label = " / ".join(product_labels[:3])
+        subject = f"{brand} {product_label}".strip() if product_label else brand
         base_demo = " / ".join(
             value
             for value in [
@@ -801,12 +914,13 @@ class SegmentProfileGenerationService:
                     "id": f"P-{suffix}-{index + 1:02d}",
                     "name": title,
                     "demographic": base_demo,
-                    "need": f"{brand}: {need}",
+                    "need": f"{subject}: {need}",
                     "weight": min(1.0, round(0.8 + (index % 5) * 0.05, 2)),
                     "status": "draft",
                     "persona_json": {
                         "segment_id": segment_id,
                         "brand": brand,
+                        "products": product_labels,
                         "archetype": title,
                     },
                 }

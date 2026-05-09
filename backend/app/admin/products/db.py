@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -244,6 +245,51 @@ async def get_product(session: AsyncSession, product_id: int) -> dict[str, Any] 
     item["created_at"] = _isoformat(item.get("created_at"))
     item["updated_at"] = _isoformat(item.get("updated_at"))
     return item
+
+
+async def fetch_products_by_ids(
+    session: AsyncSession,
+    *,
+    brand_id: str | int | None = None,
+    product_ids: Sequence[str | int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return active product context rows for LLM prompts.
+
+    ``brand_id`` and ``product_ids`` are compared as text because the
+    admin surface carries legacy ids as strings, while the products table
+    may be integer-backed.
+    """
+    if not await _table_exists(session, "products"):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in product_ids or []:
+        text_id = str(value or "").strip()
+        if not text_id or text_id in seen:
+            continue
+        seen.add(text_id)
+        ids.append(text_id)
+    if not ids:
+        return []
+    where = ["CAST(p.id AS TEXT) IN :ids"]
+    params: dict[str, Any] = {"ids": ids}
+    brand_text = str(brand_id or "").strip()
+    if brand_text:
+        where.append("CAST(p.brand_id AS TEXT) = :brand_id")
+        params["brand_id"] = brand_text
+    sql = text(
+        f"""
+        SELECT p.id, p.brand_id, b.name AS brand_name,
+               p.name, p.sku, p.category, p.description, p.status
+        FROM products p
+        LEFT JOIN brands b ON b.id = p.brand_id
+        WHERE {" AND ".join(where)}
+        ORDER BY p.id
+        """
+    ).bindparams(bindparam("ids", expanding=True))
+    rows = [dict(row) for row in (await session.execute(sql, params)).mappings().all()]
+    order = {value: index for index, value in enumerate(ids)}
+    return sorted(rows, key=lambda item: order.get(str(item.get("id") or ""), len(order)))
 
 
 async def create_product(
@@ -489,6 +535,7 @@ __all__ = [
     "delete_product",
     "existing_product_names_for_brand",
     "fetch_brand_context",
+    "fetch_products_by_ids",
     "get_product",
     "list_products",
     "update_product",

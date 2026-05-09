@@ -35,6 +35,11 @@ from app.admin.topic_plan.lib import (
     load_doubao_config,
 )
 
+try:
+    from json_repair import repair_json
+except Exception:  # pragma: no cover
+    repair_json = None
+
 
 @dataclass
 class BrandGenerationResult:
@@ -62,14 +67,27 @@ def _strip_markdown_fence(raw: str) -> str:
     return text.strip()
 
 
-def _load_json_object(raw: str | dict[str, Any]) -> dict[str, Any]:
+def _load_json_object(raw: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if isinstance(raw, list):
+        return {"items": raw}
     cleaned = _strip_markdown_fence(raw)
     try:
         parsed = json.loads(cleaned)
-    except Exception as error:
-        raise BrandManagementError("llm_json_invalid", "LLM returned invalid JSON") from error
+    except Exception as first_error:
+        if repair_json is None:
+            raise BrandManagementError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from first_error
+        try:
+            parsed = json.loads(repair_json(cleaned))
+        except Exception as repair_error:
+            raise BrandManagementError(
+                "llm_json_invalid", "LLM returned invalid JSON"
+            ) from repair_error
+    if isinstance(parsed, list):
+        return {"items": parsed}
     if not isinstance(parsed, dict):
         raise BrandManagementError("llm_schema_invalid", "LLM JSON root must be an object")
     return parsed

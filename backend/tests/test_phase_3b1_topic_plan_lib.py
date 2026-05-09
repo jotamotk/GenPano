@@ -104,6 +104,21 @@ def test_parse_llm_topics_minimum_valid():
     assert topics[0].dimension == "product"
 
 
+def test_parse_llm_topics_accepts_common_llm_shapes():
+    item = {
+        "title": "NIKE跑鞋选购指南",
+        "brand": "NIKE",
+        "dimension": "product",
+        "reason": "consumers want to know which to buy",
+        "confidence": 0.85,
+        "coverage_gap": "NIKE:product",
+    }
+
+    assert parse_llm_topics([item])[0].title == "NIKE跑鞋选购指南"
+    assert parse_llm_topics({"items": [item]})[0].brand == "NIKE"
+    assert parse_llm_topics({"topic": item})[0].dimension == "product"
+
+
 def test_parse_llm_topics_invalid_dimension_raises():
     raw = json.dumps(
         {
@@ -126,7 +141,7 @@ def test_parse_llm_topics_invalid_dimension_raises():
 
 def test_parse_llm_topics_missing_topics_array():
     with pytest.raises(TopicPlanLLMError) as exc:
-        parse_llm_topics(json.dumps({"items": []}))
+        parse_llm_topics(json.dumps({"unexpected": []}))
     assert exc.value.code == "llm_schema_invalid"
 
 

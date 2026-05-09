@@ -218,6 +218,79 @@ async def test_segment_generation_prompt_includes_product_context(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_segment_generation_prompt_includes_multiple_product_contexts(monkeypatch):
+    """Selected products should be first-class prompt context, not free text."""
+
+    captured: dict[str, str] = {}
+
+    async def fake_call_llm_json(self, prompt: str, root_key: str, max_count: int):
+        captured["prompt"] = prompt
+        return [_valid_segment_draft()], "gpt-test", {"prompt_tokens": 1}
+
+    monkeypatch.setattr(
+        SegmentProfileGenerationService,
+        "_call_llm_json",
+        fake_call_llm_json,
+    )
+
+    service = SegmentProfileGenerationService(config={"default_model": "gpt-test"})
+    await service.generate_segments(
+        brand_name="bestCoffer",
+        industry="数据安全",
+        count=1,
+        status="active",
+        positioning="面向企业的数据安全与合规能力。",
+        products=[
+            {
+                "product_id": "42",
+                "product_name": "bestCoffer DLP",
+                "product_category": "数据防泄漏",
+                "product_description": "识别敏感数据流转并阻断外发风险",
+            },
+            {
+                "product_id": "43",
+                "product_name": "bestCoffer DSPM",
+                "product_category": "数据安全态势管理",
+                "product_description": "发现云上敏感数据暴露和权限风险",
+            },
+        ],
+    )
+
+    prompt = captured["prompt"]
+    assert '"product_scope": "selected_products"' in prompt
+    assert "bestCoffer DLP" in prompt
+    assert "bestCoffer DSPM" in prompt
+    assert "所选产品" in prompt
+
+
+@pytest.mark.asyncio
+async def test_segment_generation_schema_error_uses_deterministic_fallback(monkeypatch):
+    """Malformed-but-retryable LLM output should not bubble as a 502."""
+
+    async def fake_call_llm_json(self, prompt: str, root_key: str, max_count: int):
+        raise SegmentProfileGenerationError("llm_schema_invalid", "wrong root key")
+
+    monkeypatch.setattr(
+        SegmentProfileGenerationService,
+        "_call_llm_json",
+        fake_call_llm_json,
+    )
+
+    service = SegmentProfileGenerationService(config={"default_model": "gpt-test"})
+    result = await service.generate_segments(
+        brand_name="bestCoffer",
+        industry="数据安全",
+        count=2,
+        status="active",
+        positioning="面向企业的数据安全与合规能力。",
+    )
+
+    assert result.model == "fallback-segment-profile-v1"
+    assert len(result.items) == 2
+    assert all("bestCoffer" in item["name"] for item in result.items)
+
+
+@pytest.mark.asyncio
 async def test_generate_route_passes_product_context_to_service(
     client, admin_operator, monkeypatch
 ):
@@ -251,6 +324,43 @@ async def test_generate_route_passes_product_context_to_service(
     assert captured["product_name"] == "DLP"
     assert captured["product_category"] == "数据防泄漏"
     assert captured["product_description"] == "阻断敏感数据外发"
+
+
+@pytest.mark.asyncio
+async def test_generate_route_passes_multiple_product_contexts_to_service(
+    client, admin_operator, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return GenerationResult(
+            items=[_valid_segment_draft(1)],
+            model="stub-doubao",
+            prompt="stub-prompt",
+            usage={"total_tokens": 5},
+            estimated_cost=None,
+        )
+
+    _patch_llm_service(monkeypatch, generate=_capture)
+    resp = await client.post(
+        "/api/admin/segments/generate",
+        json={
+            "brand_name": "TestBrand",
+            "industry": "数据安全",
+            "product_ids": ["42", "43"],
+            "products": [
+                {"product_id": "42", "product_name": "DLP", "product_category": "数据防泄漏"},
+                {"product_id": "43", "product_name": "DSPM", "product_category": "云数据安全"},
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    products = captured["products"]
+    assert isinstance(products, list)
+    assert [item["product_id"] for item in products] == ["42", "43"]
+    assert [item["product_name"] for item in products] == ["DLP", "DSPM"]
 
 
 def test_validate_profile_candidates_skips_silent_invalid():

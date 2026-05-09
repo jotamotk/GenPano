@@ -194,6 +194,47 @@ async def test_generate_sync_returns_drafts_and_audit(
 
 
 @pytest.mark.asyncio
+async def test_generate_sync_passes_product_contexts_to_service(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    db_session.add(_segment("SEG-PRODUCT"))
+    await db_session.commit()
+    captured: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return GenerationResult(
+            items=[_valid_profile_draft()],
+            model="stub-doubao",
+            prompt="stub-prompt",
+            usage={"total_tokens": 5},
+            estimated_cost=None,
+        )
+
+    _patch_llm_service(monkeypatch, generate=_capture)
+    resp = await client.post(
+        "/api/admin/segments/SEG-PRODUCT/profiles/generate",
+        json={
+            "brand_name": "TestBrand",
+            "count": 3,
+            "products": [
+                {
+                    "product_id": "42",
+                    "product_name": "DLP",
+                    "product_category": "数据防泄漏",
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    products = captured["products"]
+    assert isinstance(products, list)
+    assert products[0]["product_id"] == "42"
+    assert products[0]["product_name"] == "DLP"
+
+
+@pytest.mark.asyncio
 async def test_generate_sync_llm_call_failed_503(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):

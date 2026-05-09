@@ -156,6 +156,50 @@ def test_parse_llm_prompt_candidates_persists_prompt_scope():
     assert parsed[1].tags["prompt_scope"] == "non_branded"
 
 
+def test_parse_llm_prompt_candidates_accepts_common_llm_shapes():
+    from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
+
+    item = {
+        "topic_id": 1,
+        "intent": "informational",
+        "language": "en-US",
+        "text": "How should I choose running shoes for knee pain?",
+        "confidence": 0.8,
+        "prompt_scope": "branded",
+    }
+    topics_by_id = {
+        1: {
+            "id": 1,
+            "title": "running shoes for knee pain",
+            "dimension": "product",
+            "brand": "NIKE",
+        }
+    }
+    known_brands = [{"name": "NIKE", "aliases": []}]
+
+    assert parse_llm_prompt_candidates(
+        [item],
+        topics_by_id=topics_by_id,
+        known_brands=known_brands,
+    )[0].text.startswith("How should")
+    assert (
+        parse_llm_prompt_candidates(
+            {"items": [item]},
+            topics_by_id=topics_by_id,
+            known_brands=known_brands,
+        )[0].tags["prompt_scope"]
+        == "branded"
+    )
+    assert (
+        parse_llm_prompt_candidates(
+            {"prompt": item},
+            topics_by_id=topics_by_id,
+            known_brands=known_brands,
+        )[0].intent
+        == "informational"
+    )
+
+
 def test_parse_llm_prompt_candidates_allows_branded_scope_for_category_topic():
     from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
 

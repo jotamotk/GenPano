@@ -2775,6 +2775,16 @@
                     <input x-model.number="llmForm.count" type="number" min="1" max="20" step="1" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20">
                   </label>
                   <label class="space-y-1.5 col-span-2">
+                    <span class="font-semibold text-ink-muted">产品（可多选）</span>
+                    <select multiple size="4" x-model="llmForm.productIds" @change="syncProfileLlmProducts()" :disabled="!llmForm.brandId || profileLlmProductsLoading" class="w-full min-h-[96px] rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60">
+                      <option x-show="!profileLlmProductOptions.length" value="" disabled x-text="profileLlmProductsLoading ? '加载产品中...' : '不选择产品则按品牌整体生成'"></option>
+                      <template x-for="product in profileLlmProductOptions" :key="product.id">
+                        <option :value="product.id" x-text="segmentLlmProductLabel(product)"></option>
+                      </template>
+                    </select>
+                    <div x-show="profileLlmProductError" class="text-[11px] text-danger" x-text="profileLlmProductError"></div>
+                  </label>
+                  <label class="space-y-1.5 col-span-2">
                     <span class="font-semibold text-ink-muted">生成目标</span>
                     <textarea x-model="llmForm.goal" rows="3" class="w-full rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20"></textarea>
                   </label>
@@ -3144,9 +3154,9 @@
                       </select>
                     </label>
                     <label class="space-y-1.5">
-                      <span class="font-semibold text-ink-muted">产品线</span>
-                      <select x-model="segmentLlmForm.productId" @change="syncSelectedProduct()" :disabled="!segmentLlmForm.brandId || segmentLlmProductsLoading" class="w-full h-10 rounded-btn border border-b-default bg-surface px-3 outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60">
-                        <option value="" x-text="segmentLlmProductsLoading ? '加载产品中...' : (segmentLlmProductOptions.length ? '品牌整体 / 不限定产品' : '品牌整体（暂无产品）')"></option>
+                      <span class="font-semibold text-ink-muted">产品（可多选）</span>
+                      <select multiple size="4" x-model="segmentLlmForm.productIds" @change="syncSelectedProducts()" :disabled="!segmentLlmForm.brandId || segmentLlmProductsLoading" class="w-full min-h-[96px] rounded-btn border border-b-default bg-surface px-3 py-2 outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60">
+                        <option x-show="!segmentLlmProductOptions.length" value="" disabled x-text="segmentLlmProductsLoading ? '加载产品中...' : '不选择产品则按品牌整体生成'"></option>
                         <template x-for="product in segmentLlmProductOptions" :key="product.id">
                           <option :value="product.id" x-text="segmentLlmProductLabel(product)"></option>
                         </template>
@@ -9790,6 +9800,9 @@ function segmentCrudPanel() {
     profileLlmApplyLoading: false,
     profileLlmApplyMessage: '',
     profileLlmApplyTone: 'info',
+    profileLlmProductOptions: [],
+    profileLlmProductsLoading: false,
+    profileLlmProductError: '',
     editingSegmentId: null,
     editingProfileId: null,
     segmentFormSaving: false,
@@ -9815,18 +9828,22 @@ function segmentCrudPanel() {
       brandId: '',
       brand: '',
       productId: '',
+      productIds: [],
       productName: '',
       productCategory: '',
       productDescription: '',
+      products: [],
       industry: '',
       count: 6,
       status: 'active',
-      positioning: '请概括所选品牌在「所选行业」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把产品线写在这里；产品线请用上方产品下拉选择。',
+      positioning: '请概括所选品牌在「所选行业」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把具体产品写在这里；具体产品请用上方产品多选框选择。',
     },
     profileForm: { id: '', name: '', demographic: '', need: '', weight: '1.0', status: 'active', persona_json: {} },
     llmForm: {
       brandId: '',
       brand: '',
+      productIds: [],
+      products: [],
       count: 6,
       goal: 'Generate reviewable Profile drafts for the current Segment.',
       notes: 'Cover price, proof, scenario, channel, and competitor-comparison needs without duplicates.',
@@ -9993,7 +10010,7 @@ function segmentCrudPanel() {
       const industryLabel = String(industry || this.segmentLlmForm.industry || '').trim() || '所选行业';
       const brandLabel = String(this.segmentLlmForm.brand || '').trim() || '所选品牌';
       return {
-        positioning: `请概括「${brandLabel}」在「${industryLabel}」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把产品线写在这里；产品线请用上方产品下拉选择。`,
+        positioning: `请概括「${brandLabel}」在「${industryLabel}」行业的真实定位、核心客户、主要产品/服务能力和典型使用场景。不要把具体产品写在这里；具体产品请用上方产品多选框选择。`,
       };
     },
 
@@ -10028,26 +10045,51 @@ function segmentCrudPanel() {
 
     clearSegmentLlmProductSelection() {
       this.segmentLlmForm.productId = '';
+      this.segmentLlmForm.productIds = [];
       this.segmentLlmForm.productName = '';
       this.segmentLlmForm.productCategory = '';
       this.segmentLlmForm.productDescription = '';
+      this.segmentLlmForm.products = [];
     },
 
-    syncSelectedProduct() {
-      const id = String(this.segmentLlmForm.productId || '').trim();
-      if (!id) {
+    productPayloadFromSelection(ids, options) {
+      const selectedIds = Array.isArray(ids) ? ids.map(id => String(id || '').trim()).filter(Boolean) : [];
+      const selectedSet = new Set(selectedIds);
+      return (options || [])
+        .filter(product => selectedSet.has(String(product.id || '').trim()))
+        .map(product => ({
+          product_id: String(product.id || '').trim(),
+          product_name: product.name || '',
+          product_category: product.category || '',
+          product_description: product.description || '',
+          product_sku: product.sku || '',
+        }));
+    },
+
+    syncSelectedProducts() {
+      const products = this.productPayloadFromSelection(this.segmentLlmForm.productIds, this.segmentLlmProductOptions);
+      if (!products.length) {
         this.clearSegmentLlmProductSelection();
         return;
       }
-      const product = this.segmentLlmProductOptions.find(item => String(item.id) === id);
-      if (!product) {
-        this.clearSegmentLlmProductSelection();
-        return;
-      }
-      this.segmentLlmForm.productId = String(product.id || '');
-      this.segmentLlmForm.productName = product.name || '';
-      this.segmentLlmForm.productCategory = product.category || '';
-      this.segmentLlmForm.productDescription = product.description || '';
+      this.segmentLlmForm.productIds = products.map(product => product.product_id);
+      this.segmentLlmForm.products = products;
+      const first = products[0] || {};
+      this.segmentLlmForm.productId = first.product_id || '';
+      this.segmentLlmForm.productName = first.product_name || '';
+      this.segmentLlmForm.productCategory = first.product_category || '';
+      this.segmentLlmForm.productDescription = first.product_description || '';
+    },
+
+    clearProfileLlmProductSelection() {
+      this.llmForm.productIds = [];
+      this.llmForm.products = [];
+    },
+
+    syncProfileLlmProducts() {
+      const products = this.productPayloadFromSelection(this.llmForm.productIds, this.profileLlmProductOptions);
+      this.llmForm.productIds = products.map(product => product.product_id);
+      this.llmForm.products = products;
     },
 
     async loadSegmentLlmProducts() {
@@ -10077,6 +10119,33 @@ function segmentCrudPanel() {
       }
     },
 
+    async loadProfileLlmProducts() {
+      const brandId = String(this.llmForm.brandId || '').trim();
+      this.profileLlmProductOptions = [];
+      this.profileLlmProductError = '';
+      this.clearProfileLlmProductSelection();
+      if (!brandId) return;
+      this.profileLlmProductsLoading = true;
+      try {
+        const params = new URLSearchParams({ brand_id: brandId, status: 'active', limit: '200' });
+        const body = await this.apiJson(API_BASE + '/admin/products?' + params.toString());
+        this.profileLlmProductOptions = (body.products || []).map(product => ({
+          id: String(product.id || '').trim(),
+          name: String(product.name || '').trim(),
+          sku: String(product.sku || '').trim(),
+          category: String(product.category || '').trim(),
+          description: String(product.description || '').trim(),
+          status: String(product.status || 'active').trim(),
+        })).filter(product => product.id && product.name);
+      } catch (error) {
+        this.profileLlmProductOptions = [];
+        this.profileLlmProductError = error.message || '产品加载失败';
+      } finally {
+        this.profileLlmProductsLoading = false;
+        this.refreshIcons();
+      }
+    },
+
     ensureSelectedBrandIsValid(scope) {
       const form = scope === 'profile' ? this.llmForm : this.segmentLlmForm;
       if (!this.brandOptions.length) {
@@ -10085,6 +10154,9 @@ function segmentCrudPanel() {
         if (scope === 'segment') {
           this.segmentLlmProductOptions = [];
           this.clearSegmentLlmProductSelection();
+        } else if (scope === 'profile') {
+          this.profileLlmProductOptions = [];
+          this.clearProfileLlmProductSelection();
         }
         return;
       }
@@ -10096,6 +10168,8 @@ function segmentCrudPanel() {
           if (brand.industry) this.segmentLlmForm.industry = brand.industry;
           this.resetSegmentLlmPromptDefaults(false);
           this.loadSegmentLlmProducts();
+        } else if (scope === 'profile') {
+          this.loadProfileLlmProducts();
         }
         return;
       }
@@ -10104,6 +10178,9 @@ function segmentCrudPanel() {
       if (scope === 'segment') {
         this.segmentLlmProductOptions = [];
         this.clearSegmentLlmProductSelection();
+      } else if (scope === 'profile') {
+        this.profileLlmProductOptions = [];
+        this.clearProfileLlmProductSelection();
       }
     },
 
@@ -10117,6 +10194,8 @@ function segmentCrudPanel() {
         if (brand.industry) this.segmentLlmForm.industry = brand.industry;
         this.resetSegmentLlmPromptDefaults(false);
         this.loadSegmentLlmProducts();
+      } else if (scope === 'profile') {
+        this.loadProfileLlmProducts();
       }
     },
 
@@ -10459,7 +10538,7 @@ function segmentCrudPanel() {
       }
       this.segmentLlmForm.brandId = String(brandOption?.id || this.segmentLlmForm.brandId || '');
       this.segmentLlmForm.brand = brand;
-      this.syncSelectedProduct();
+      this.syncSelectedProducts();
       this.resetSegmentLlmPromptDefaults(false);
       this.segmentLlmLoading = true;
       this.segmentLlmError = '';
@@ -10477,6 +10556,8 @@ function segmentCrudPanel() {
             count: this.segmentLlmForm.count,
             status: targetStatus,
             positioning: this.segmentLlmForm.positioning,
+            "product_ids": this.segmentLlmForm.productIds,
+            "products": this.segmentLlmForm.products,
             "product_id": this.segmentLlmForm.productId || null,
             "product_name": this.segmentLlmForm.productName || '',
             "product_category": this.segmentLlmForm.productCategory || '',
@@ -10693,6 +10774,7 @@ function segmentCrudPanel() {
         this.llmForm.brand = '';
       }
       this.profileLlmError = '';
+      if (this.llmForm.brandId) this.loadProfileLlmProducts();
       this.llmPanelOpen = true;
       this.refreshIcons();
     },
@@ -10740,6 +10822,7 @@ function segmentCrudPanel() {
       }
       this.llmForm.brandId = String(brandOption?.id || this.llmForm.brandId || '');
       this.llmForm.brand = brand;
+      this.syncProfileLlmProducts();
       this.profileLlmLoading = true;
       this.profileLlmError = '';
       this.profileLlmApplyMessage = '';
@@ -10757,6 +10840,8 @@ function segmentCrudPanel() {
             count: this.llmForm.count,
             goal: this.llmForm.goal,
             constraints: this.llmForm.notes,
+            "product_ids": this.llmForm.productIds,
+            "products": this.llmForm.products,
             async_generation: true,
           }),
         });

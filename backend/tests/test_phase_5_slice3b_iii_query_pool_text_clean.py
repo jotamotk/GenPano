@@ -41,10 +41,8 @@ def test_load_json_object_invalid_raises():
     assert exc_info.value.code == "llm_json_invalid"
 
 
-def test_load_json_object_array_root_raises_schema():
-    with pytest.raises(TopicPlanLLMError) as exc_info:
-        query_pool_load_json_object("[]")
-    assert exc_info.value.code == "llm_schema_invalid"
+def test_load_json_object_array_root_wraps_queries():
+    assert query_pool_load_json_object("[]") == {"queries": []}
 
 
 # ── normalize + clean ────────────────────────────────────────
@@ -124,6 +122,18 @@ def test_parse_returns_keyed_map_in_expected_order():
     out = parse_query_pool_llm_queries(raw, ["k1", "k2"], validate_queries=False)
     assert list(out.keys()) == ["k1", "k2"]
     assert out["k1"] == "Q1?"
+
+
+def test_parse_accepts_common_llm_shapes():
+    item = {"candidate_key": "k1", "query": "Q1?"}
+
+    assert parse_query_pool_llm_queries([item], ["k1"], validate_queries=False) == {"k1": "Q1?"}
+    assert parse_query_pool_llm_queries({"items": [item]}, ["k1"], validate_queries=False) == {
+        "k1": "Q1?"
+    }
+    assert parse_query_pool_llm_queries({"query": item}, ["k1"], validate_queries=False) == {
+        "k1": "Q1?"
+    }
 
 
 def test_parse_rejects_missing_keys():
