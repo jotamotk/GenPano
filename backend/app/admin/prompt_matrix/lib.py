@@ -37,6 +37,7 @@ ALLOWED_COMPETITIVE_TYPES = (
 )
 REVIEW_STATUSES = {"pending", "approved", "rejected"}
 DEFAULT_MAX_PROMPTS = 10
+MAX_PER_TOPIC_LIMIT = 20
 MAX_PROMPTS_HARD_LIMIT = 100_000
 
 INTENT_LABELS = {
@@ -308,13 +309,14 @@ def build_prompt_generation_slots(
     The slot count is capped by max_per_topic and the existing intent/language
     combinations, so adding prompt scopes never multiplies generation volume.
     """
-    limit = clamp_int(
-        max_per_topic, len(combinations), 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
-    )
-    base_slots = combinations[:limit]
+    limit = clamp_int(max_per_topic, len(combinations), 1, MAX_PER_TOPIC_LIMIT)
+    base_slots = list(combinations or [])
+    if not base_slots:
+        return []
     rotation = _scope_rotation_for_topic(topic)
     slots: list[dict[str, Any]] = []
-    for index, combo in enumerate(base_slots):
+    for index in range(limit):
+        combo = base_slots[index % len(base_slots)]
         scope = rotation[index % len(rotation)]
         slot: dict[str, Any] = {
             "intent": str(combo.get("intent") or "").strip(),
@@ -353,7 +355,7 @@ def prompt_generation_raw_count(
     max_per_topic: Any,
 ) -> int:
     topic_count = clamp_int(selected_topics, 0, 0, 1_000_000)
-    per_topic = len(intent_language_combinations(intent_count, language_count, max_per_topic))
+    per_topic = clamp_int(max_per_topic, 4, 1, MAX_PER_TOPIC_LIMIT)
     return topic_count * per_topic
 
 
@@ -1057,9 +1059,7 @@ def transition_candidate_status(current_status: str, requested_status: str) -> s
 def prompt_generation_config(payload: dict[str, Any]) -> dict[str, Any]:
     intent_count = clamp_int(payload.get("intent_count"), 4, 1, len(ALLOWED_INTENTS))
     language_count = clamp_int(payload.get("language_count"), 2, 1, len(ALLOWED_LANGUAGES))
-    max_per_topic = clamp_int(
-        payload.get("max_per_topic"), 4, 1, len(ALLOWED_INTENTS) * len(ALLOWED_LANGUAGES)
-    )
+    max_per_topic = clamp_int(payload.get("max_per_topic"), 4, 1, MAX_PER_TOPIC_LIMIT)
     max_prompts = clamp_int(
         payload.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
     )

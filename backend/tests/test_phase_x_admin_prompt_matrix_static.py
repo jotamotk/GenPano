@@ -15,6 +15,7 @@ def test_prompt_matrix_generation_count_uses_manual_numeric_cap() -> None:
     assert 'x-model.number="promptMatrixConfig.maxPerTopic"' in html
     assert ':max="promptMatrixMaxPerTopicCap()"' in html
     assert "promptMatrixMaxPerTopicValue()" in html
+    assert "return 20;" in html
     assert 'x-model="promptMatrixConfig.maxPerTopic"' not in html
     assert 'x-model.number="promptMatrixConfig.maxPrompts"' in html
     assert 'type="number" min="1" step="1"' in html

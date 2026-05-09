@@ -165,6 +165,51 @@ def test_prompt_generation_slots_do_not_multiply_generation_count():
     assert competitive_slots[0]["competitive_type"] == "direct_comparison"
 
 
+def test_prompt_generation_slots_can_exceed_intent_language_combinations():
+    from app.admin.prompt_matrix.lib import (
+        build_prompt_generation_slots,
+        prompt_generation_config,
+        prompt_generation_raw_count,
+    )
+
+    config = prompt_generation_config(
+        {
+            "intent_count": 4,
+            "language_count": 2,
+            "max_per_topic": 12,
+            "max_prompts": 12,
+        }
+    )
+
+    assert config["max_per_topic"] == 12
+    assert (
+        prompt_generation_raw_count(
+            selected_topics=1,
+            intent_count=4,
+            language_count=2,
+            max_per_topic=12,
+        )
+        == 12
+    )
+    slots = build_prompt_generation_slots(
+        topic={
+            "id": 1,
+            "title": "beginner running shoes",
+            "dimension": "brand",
+            "brand": "NIKE",
+        },
+        combinations=config["combinations"],
+        max_per_topic=config["max_per_topic"],
+    )
+
+    assert len(slots) == 12
+    assert {slot["prompt_scope"] for slot in slots} >= {
+        "non_branded",
+        "branded",
+        "competitive",
+    }
+
+
 def test_parse_llm_prompt_candidates_persists_prompt_scope():
     from app.admin.prompt_matrix.lib import parse_llm_prompt_candidates
 
