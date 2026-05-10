@@ -67,6 +67,8 @@ def _candidate_row(c: QueryGenerationCandidate) -> dict[str, Any]:
         "metadata": metadata,
         "prompt_scope": metadata.get("prompt_scope"),
         "competitive_type": metadata.get("competitive_type"),
+        "brand_id": metadata.get("brand_id") or metadata.get("brandId"),
+        "brand_name": metadata.get("brand_name") or metadata.get("brandName"),
         "product_name": metadata.get("product_name"),
         "scenario_axis": metadata.get("scenario_axis"),
         "competitor_name": metadata.get("competitor_name"),
@@ -614,6 +616,8 @@ def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
         "metadata": metadata,
         "prompt_scope": metadata.get("prompt_scope"),
         "competitive_type": metadata.get("competitive_type"),
+        "brand_id": metadata.get("brand_id") or metadata.get("brandId"),
+        "brand_name": metadata.get("brand_name") or metadata.get("brandName"),
         "product_name": metadata.get("product_name"),
         "scenario_axis": metadata.get("scenario_axis"),
         "competitor_name": metadata.get("competitor_name"),
@@ -639,6 +643,7 @@ async def _fetch_candidates_paged(
     status: str | None,
     segment_id: str | None,
     profile_id: str | None,
+    brand_id: int | None,
     query: str | None,
     limit: int,
     cursor_seq: int | None,
@@ -679,6 +684,26 @@ async def _fetch_candidates_paged(
     if profile_id:
         where.append("q.profile_id = :profile_id")
         params["profile_id"] = profile_id
+    if brand_id is not None:
+        brand_parts: list[str] = []
+        params["brand_id_text"] = str(brand_id)
+        if query_metadata_available:
+            brand_parts.extend(
+                [
+                    "q.metadata_json->>'brand_id' = :brand_id_text",
+                    "q.metadata_json->>'brandId' = :brand_id_text",
+                ]
+            )
+        if topics_available and "brand_id" in topic_cols:
+            brand_parts.append(
+                "EXISTS ("
+                "SELECT 1 FROM prompts pr_brand "
+                "JOIN topics t_brand ON t_brand.id = pr_brand.topic_id "
+                "WHERE CAST(pr_brand.id AS TEXT) = q.prompt_id "
+                "AND CAST(t_brand.brand_id AS TEXT) = :brand_id_text"
+                ")"
+            )
+        where.append("(" + " OR ".join(brand_parts or ["FALSE"]) + ")")
     if query:
         search_parts = [
             "q.rendered_query ILIKE :like",
@@ -793,6 +818,7 @@ async def list_candidates(
     segment_alias: str | None = Query(None, alias="segment"),
     profile_id: str | None = Query(None, alias="profile_id"),
     profile_alias: str | None = Query(None, alias="profile"),
+    brand_id: int | None = Query(None, ge=1),
     q: str | None = Query(None),
     limit: int = Query(100, ge=1, le=200),
     cursor: str | None = Query(None),
@@ -836,6 +862,7 @@ async def list_candidates(
         status=status_norm or None,
         segment_id=seg,
         profile_id=prof,
+        brand_id=brand_id,
         query=qq,
         limit=limit,
         cursor_seq=cursor_seq,

@@ -27,6 +27,7 @@ type GateState = {
   queryAssembleMode: 'normal' | 'run_failed';
   extractionBackfillMode: 'normal' | 'failed';
   deletedPromptCandidateIds: string[];
+  queryCandidateBrandFilters: string[];
 };
 
 const makeState = (): GateState => ({
@@ -99,6 +100,8 @@ const makeState = (): GateState => ({
       candidate_status: 'candidate',
       metadata: {
         prompt_scope: 'competitive',
+        brand_id: brandId,
+        brand_name: brandName,
         product_name: 'Gate Vault',
         competitor_name: 'DealRoom',
         competitive_type: 'direct_comparison',
@@ -170,6 +173,7 @@ const makeState = (): GateState => ({
   queryAssembleMode: 'normal',
   extractionBackfillMode: 'normal',
   deletedPromptCandidateIds: [],
+  queryCandidateBrandFilters: [],
 });
 
 const routeAdminApi = async (page: Page, state: GateState) => {
@@ -461,11 +465,19 @@ const routeAdminApi = async (page: Page, state: GateState) => {
     }
 
     if (method === 'GET' && path.endsWith('/admin/query-pool/candidates')) {
+      const brandFilter = url.searchParams.get('brand_id');
+      if (brandFilter) state.queryCandidateBrandFilters.push(brandFilter);
+      const rows = brandFilter
+        ? state.queryCandidates.filter(row => {
+            const metadata = (row.metadata || row.metadata_json || {}) as Record<string, unknown>;
+            return String(metadata.brand_id || metadata.brandId || '') === brandFilter;
+          })
+        : state.queryCandidates;
       await fulfillJson(route, {
         success: true,
-        rows: state.queryCandidates,
+        rows,
         page_info: { has_next: false, has_prev: false, next_cursor: null, prev_cursor: null },
-        summary: { total: state.queryCandidates.length },
+        summary: { total: rows.length },
       });
       return;
     }
@@ -559,6 +571,9 @@ test('Admin release gate covers Topic, Prompt Matrix, Query Pool, and Extraction
   await expect(page.getByText(state.queryCandidates[0].rendered_query as string)).toBeVisible();
   await expect(page.getByText('DealRoom').first()).toBeVisible();
   await expect(page.getByText(/bcx-/).first()).toBeVisible();
+  await page.locator('select[x-model="queryPoolCandidateBrand"]').selectOption(String(brandId));
+  await expect(page.getByText(state.queryCandidates[0].rendered_query as string)).toBeVisible();
+  expect(state.queryCandidateBrandFilters).toContain(String(brandId));
 
   await page.goto('/admin/planner-llm-extraction', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('LLM Extraction').first()).toBeVisible();

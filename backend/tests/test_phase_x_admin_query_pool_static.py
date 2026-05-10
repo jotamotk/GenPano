@@ -19,6 +19,16 @@ def test_query_pool_candidate_rows_show_inherited_prompt_metadata() -> None:
     assert "brand_context_version" in html
 
 
+def test_query_pool_candidates_can_filter_by_brand() -> None:
+    html = _admin_html()
+
+    assert "queryPoolCandidateBrand: 'all'" in html
+    assert 'x-model="queryPoolCandidateBrand"' in html
+    assert "queryPoolCandidateBrands()" in html
+    assert "qp.set('brand_id', brandFilter)" in html
+    assert "this.queryPoolCandidateBrand = 'all'" in html
+
+
 def test_query_pool_prompt_selection_uses_raw_prompt_id() -> None:
     html = _admin_html()
 
