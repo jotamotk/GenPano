@@ -16911,6 +16911,9 @@ function adminApp() {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选状态更新失败');
         ids.forEach(id => delete this.queryPoolSelectedCandidateIds[id]);
+        if (status === 'ready' && !String(this.queryPoolCandidateStatus || '').trim()) {
+          this.queryPoolCandidateStatus = 'candidate';
+        }
         this.toast('已更新 ' + ids.length + ' 条 Query 候选为 ' + this.queryPoolCandidateStatusLabel(status));
         await this.loadQueryPoolCandidates();
       } catch (error) {
