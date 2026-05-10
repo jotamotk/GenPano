@@ -723,8 +723,8 @@ async def upsert_account_profiles(
         account = await accounts_db.fetch_account_basics(session, account_id=account_id)
         if not account:
             raise not_found("account_not_found")
-        daily_limit_changed = (
-            daily_limit is not None and daily_limit != int(account.get("daily_limit") or 0)
+        daily_limit_changed = daily_limit is not None and daily_limit != int(
+            account.get("daily_limit") or 0
         )
         if daily_limit_changed:
             ok = await accounts_db.update_account_daily_limit(

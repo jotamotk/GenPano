@@ -84,10 +84,7 @@ def _manual_dispatch_message(result: dict[str, Any]) -> str | None:
             f"找到 {dispatchable} 条可派发计划, 但写入队列失败。"
             f"前两条错误: {'; '.join(str(x) for x in failures[:2])}"
         )
-    return (
-        f"本次没有入队。启用计划 {enabled} 条, 可派发 {dispatchable} 条, "
-        f"账号容量 {quotas}/天。"
-    )
+    return f"本次没有入队。启用计划 {enabled} 条, 可派发 {dispatchable} 条, 账号容量 {quotas}/天。"
 
 
 # ── /scheduler/config ────────────────────────────────────────
