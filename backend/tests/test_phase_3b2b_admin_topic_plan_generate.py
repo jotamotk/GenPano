@@ -47,6 +47,23 @@ def test_topic_plan_run_timeout_allows_day_scale(monkeypatch):
     assert run_timeout_seconds(run) == 86400
 
 
+def test_topic_plan_brand_batches_split_large_topic_requests(monkeypatch):
+    from app.admin.topic_plan.db import topic_plan_brand_batches
+
+    monkeypatch.setenv("TOPIC_PLAN_LLM_TOPICS_PER_REQUEST", "20")
+
+    batches = list(
+        topic_plan_brand_batches(
+            [{"id": 24, "name": "bestCoffer"}],
+            [{"brand_id": 24, "count": 45, "priority": "P1"}],
+            max_topics=100,
+            max_per_brand=45,
+        )
+    )
+
+    assert [cap for _, _, cap in batches] == [20, 20, 5]
+
+
 def _new_id() -> str:
     return str(uuid.uuid4())
 

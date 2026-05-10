@@ -218,6 +218,82 @@ async def test_delete_topic_plan_topics_does_not_require_candidate_updated_at(mo
     assert session.committed is True
 
 
+@pytest.mark.asyncio
+async def test_delete_topic_plan_topics_unlinks_prompts_instead_of_blocking(monkeypatch):
+    import app.admin.topic_plan.db as tp_db
+
+    async def _fake_table_exists(_session, name: str) -> bool:
+        return name in {"topics", "brands", "prompts", "topic_candidates"}
+
+    async def _fake_table_columns(_session, name: str) -> set[str]:
+        if name == "topics":
+            return {"id", "brand_id", "text", "category", "status"}
+        if name == "brands":
+            return {"id", "name", "industry"}
+        if name == "prompts":
+            return {"id", "topic_id", "updated_at"}
+        if name == "topic_candidates":
+            return {"approved_topic_id", "updated_at"}
+        return set()
+
+    class _FakeResult:
+        def __init__(self, rows=None, tuples=None, rowcount=0):
+            self.rows = rows or []
+            self.tuples = tuples or []
+            self.rowcount = rowcount
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+        def fetchall(self):
+            return self.tuples
+
+    class _FakeSession:
+        async def execute(self, statement, _params=None):
+            sql = " ".join(str(statement).split())
+            if "SELECT t.id" in sql:
+                return _FakeResult(
+                    rows=[
+                        {
+                            "id": 155,
+                            "brand_id": 24,
+                            "text": "Topic with prompts",
+                            "category": "scenario",
+                            "status": "active",
+                            "brand_name": "bestCoffer",
+                            "industry": "Data security",
+                        }
+                    ]
+                )
+            if "SELECT p.topic_id" in sql:
+                return _FakeResult(rows=[{"topic_id": 155, "prompt_count": 3, "query_count": 0}])
+            if "UPDATE prompts" in sql:
+                assert "topic_id = NULL" in sql
+                assert "updated_at = NOW()" in sql
+                return _FakeResult(rowcount=3)
+            if "UPDATE topic_candidates" in sql:
+                return _FakeResult(rowcount=1)
+            if "DELETE FROM topics" in sql:
+                return _FakeResult(tuples=[(155,)])
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(tp_db, "_table_exists", _fake_table_exists)
+    monkeypatch.setattr(tp_db, "_table_columns", _fake_table_columns)
+
+    result = await tp_db.delete_topic_plan_topics(_FakeSession(), [155])
+
+    assert result["blocked"] == []
+    assert result["deleted"][0]["raw_id"] == 155
+    assert result["deleted"][0]["prompt_count"] == 3
+    assert result["deleted"][0]["unlinked_prompt_count"] == 3
+
+
 # ── POST /topics/bulk-delete ──────────────────────────────────
 
 
