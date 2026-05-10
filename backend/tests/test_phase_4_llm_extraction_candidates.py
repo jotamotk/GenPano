@@ -191,6 +191,35 @@ async def test_backfill_from_context_snapshot_creates_reviewable_candidates(
 
 
 @pytest.mark.asyncio
+async def test_llm_extraction_admin_api_alias_lists_candidates(
+    client,
+    admin_operator: AdminUser,
+    db_session: AsyncSession,
+) -> None:
+    candidate = LLMEntityCandidate(
+        id=_new_id(),
+        brand_id=7,
+        brand_context_version="bcx-7-test",
+        entity_type="competitor",
+        name="DealRoom",
+        normalized_name="dealroom",
+        parent_brand_id=7,
+        candidate_key="entity:competitor:dealroom:7",
+        confidence=0.91,
+        status="pending",
+    )
+    db_session.add(candidate)
+    await db_session.commit()
+
+    resp = await client.get("/admin/api/llm-extraction/candidates?status=pending")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert any(row["name"] == "DealRoom" for row in body["items"])
+
+
+@pytest.mark.asyncio
 async def test_attribute_approval_writes_formal_kg_attribute_and_audit(
     client,
     admin_operator: AdminUser,
@@ -396,5 +425,10 @@ def test_admin_html_exposes_llm_extraction_review_surface() -> None:
     assert "/api/admin/llm-extraction/candidates" in html
     assert "/api/admin/llm-extraction/attributes" in html
     assert "/api/admin/llm-extraction/claims" in html
+    assert "API_BASE + '/llm-extraction" not in html
+    assert "return '/api/admin/llm-extraction/candidates'" in html
+    assert "return '/api/admin/llm-extraction/attributes'" in html
+    assert "return '/api/admin/llm-extraction/claims'" in html
+    assert "this.apiJson('/api/admin/llm-extraction/backfill'" in html
     assert "approveLLMExtractionCandidate" in html
     assert "rejectLLMExtractionCandidate" in html

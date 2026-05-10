@@ -1804,8 +1804,8 @@
               <button class="h-9 px-4 rounded-btn border border-accent/30 bg-accent/5 text-accent text-[12px] font-semibold hover:bg-accent/10 disabled:opacity-40"
                       :disabled="schedulerTriggering"
                       @click="manualTriggerScheduler()"
-                      title="立即派发所有启用的 Query 计划，不论 next_run_at"
-                      x-text="schedulerTriggering ? '触发中…' : '▶ 立即触发一次'"></button>
+                      title="只派发启用的 Query 计划；不会从 Query Pool 自动取候选，也不会创建新计划"
+                      x-text="schedulerTriggering ? '派发中…' : '立即派发 Query 计划'"></button>
               <span x-show="schedulerSaveMsg" class="ml-2 text-[11px] text-success" x-text="schedulerSaveMsg"></span>
               <span x-show="schedulerSaveErr" class="ml-2 text-[11px] text-danger" x-text="schedulerSaveErr"></span>
             </div>
@@ -13553,9 +13553,9 @@ function adminApp() {
 
     llmExtractionEndpoint(){
       // Static API contracts: /api/admin/llm-extraction/candidates, /api/admin/llm-extraction/attributes, /api/admin/llm-extraction/claims
-      if (this.llmExtractionTab === 'attributes') return API_BASE + '/llm-extraction/attributes';
-      if (this.llmExtractionTab === 'claims') return API_BASE + '/llm-extraction/claims';
-      return API_BASE + '/llm-extraction/candidates';
+      if (this.llmExtractionTab === 'attributes') return '/api/admin/llm-extraction/attributes';
+      if (this.llmExtractionTab === 'claims') return '/api/admin/llm-extraction/claims';
+      return '/api/admin/llm-extraction/candidates';
     },
 
     llmExtractionReviewEndpoint(item, action){
@@ -13632,7 +13632,7 @@ function adminApp() {
       try {
         const payload = { reason:'admin_backfill_llm_extraction' };
         if (String(this.llmExtractionBrandId || '').trim()) payload.brand_id = Number(this.llmExtractionBrandId);
-        const body = await this.apiJson(API_BASE + '/llm-extraction/backfill', {
+        const body = await this.apiJson('/api/admin/llm-extraction/backfill', {
           method:'POST',
           body: JSON.stringify(payload),
         });
@@ -17861,6 +17861,10 @@ function adminApp() {
       this.scheduleEditorTopics = [];
       this.scheduleEditorPrompts = [];
       this.loadScheduleEditorBrands();
+      if (base.pick_brand_id) {
+        this.loadScheduleEditorTopics();
+        this.loadScheduleEditorPrompts();
+      }
       this.loadScheduleEditorProfiles();
       this.$nextTick(() => lucide.createIcons());
     },
@@ -17875,7 +17879,8 @@ function adminApp() {
           const res = await fetch(API_BASE + '/admin/brands', { credentials: 'same-origin' });
           if (res.ok) {
             const data = await res.json();
-            this.scheduleEditorBrands = Array.isArray(data) ? data : (data.rows || []);
+            const rows = Array.isArray(data) ? data : (data.brands || data.rows || []);
+            this.scheduleEditorBrands = Array.isArray(rows) ? rows : [];
           }
         } catch (e) { /* non-fatal */ }
       }
