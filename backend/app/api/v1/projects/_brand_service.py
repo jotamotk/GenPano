@@ -42,6 +42,7 @@ from app.api.v1.projects._mention_rollups import (
     MentionRollup,
     brand_mention_daily_rollups,
     brand_mention_match_condition,
+    brand_mention_names,
     brand_mention_window_rollup,
     discover_related_brand_ids,
     geo_score,
@@ -115,6 +116,7 @@ async def _response_entity_competitor_metrics(
     if not rows:
         return None
 
+    primary_names = await brand_mention_names(session, primary_id)
     buckets: dict[str, dict[str, Any]] = {}
     total_mentions = 0
     all_response_ids: set[int] = set()
@@ -122,13 +124,16 @@ async def _response_entity_competitor_metrics(
     for response_id, brand_id, brand_name, mention_count, position_rank, sentiment_score in rows:
         rid = int(response_id)
         bid = int(brand_id) if brand_id is not None else None
+        name_key = str(brand_name or "").strip().lower()
+        is_primary = bid == primary_id or (bool(name_key) and name_key in primary_names)
+        bucket_brand_id = primary_id if is_primary else bid
         amount = int(mention_count or 1)
-        key = _brand_entity_key(bid, brand_name)
+        key = _brand_entity_key(bucket_brand_id, None if is_primary else brand_name)
         bucket = buckets.setdefault(
             key,
             {
                 "brand_key": key,
-                "brand_id": bid,
+                "brand_id": bucket_brand_id,
                 "brand_name": brand_name,
                 "mention_count": 0,
                 "response_ids": set(),
@@ -144,7 +149,7 @@ async def _response_entity_competitor_metrics(
             bucket["sentiments"].append(float(sentiment_score))
         total_mentions += amount
         all_response_ids.add(rid)
-        if bid == primary_id:
+        if is_primary:
             primary_response_ids.add(rid)
 
     if total_mentions <= 0 or not buckets:
