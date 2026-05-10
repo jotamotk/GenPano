@@ -481,6 +481,136 @@ async def test_project_metrics_use_filtered_admin_fact_set(client, db_session, u
 
 
 @pytest.mark.asyncio
+async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO brands (id, name, industry) VALUES
+              (2, '理肤泉', 'Beauty'),
+              (12, '雅诗兰黛', 'Beauty')
+            """
+        )
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (1201, 2, '理肤泉竞品分析', 'brand', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (1202, 1201, '雅诗兰黛小棕瓶适合哪些抗老需求？',
+               'commercial', 'non_branded', 'zh', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (1203, 'chatgpt', 'done', '雅诗兰黛小棕瓶适合哪些抗老需求？',
+               2, 'PROF-A', 1202, :now, :now, :now, 800)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (1204, 1203, 1202,
+               '雅诗兰黛小棕瓶通常会被推荐给关注抗老、修护和稳定肤况的人群。',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    db_session.add(
+        ResponseAnalysis(
+            response_id=1204,
+            target_brand_mentioned=True,
+            target_brand_rank=1,
+            sentiment_score=0.88,
+            geo_score=0.82,
+        )
+    )
+    await db_session.commit()
+
+    metrics_resp = await client.get(
+        f"/api/v1/projects/{project.id}/metrics",
+        headers=_bearer(user),
+        params={
+            "brand_id": 12,
+            "series": "mention_rate,sov,rank,sentiment",
+            "prompt_scope": "non_branded",
+        },
+    )
+    assert metrics_resp.status_code == 200, metrics_resp.text
+    metrics_body = metrics_resp.json()
+    assert metrics_body["brand_id"] == 12
+    assert metrics_body["state"] == "ok"
+    by_metric = {series["metric"]: series["points"] for series in metrics_body["series"]}
+    assert by_metric["mention_rate"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["sov"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["rank"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["sentiment"][0]["value"] == pytest.approx(0.88)
+
+    overview_resp = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+    assert overview_resp.status_code == 200, overview_resp.text
+    overview_body = overview_resp.json()
+    assert overview_body["brand_name"] == "雅诗兰黛"
+    assert overview_body["state"] == "ok"
+    assert overview_body["geo_score_30d"]
+    assert any(card["value"] > 0 for card in overview_body["kpi_cards"])
+
+    competitors_resp = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12, "prompt_scope": "non_branded"},
+    )
+    assert competitors_resp.status_code == 200, competitors_resp.text
+    competitors_body = competitors_resp.json()
+    assert competitors_body["primary"]["brand_id"] == 12
+    assert competitors_body["primary"]["brand_name"] == "雅诗兰黛"
+    assert competitors_body["primary"]["avg_geo_score"] > 0
+    assert competitors_body["competitors"] == []
+
+    trends_resp = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/trends",
+        headers=_bearer(user),
+        params={"brand_id": 12, "metric": "geo_score"},
+    )
+    assert trends_resp.status_code == 200, trends_resp.text
+    trends_body = trends_resp.json()
+    primary_series = next(series for series in trends_body["series"] if series["is_primary"])
+    assert primary_series["brand_id"] == 12
+    assert primary_series["brand_name"] == "雅诗兰黛"
+    assert primary_series["points"]
+
+
+@pytest.mark.asyncio
 async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 

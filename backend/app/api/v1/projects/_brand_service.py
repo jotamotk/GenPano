@@ -50,7 +50,14 @@ from app.api.v1.projects._mention_rollups import (
     metric_value,
     share_of_voice,
 )
-from app.api.v1.projects._topic_analysis_service import AnalysisFilters, _fact_rows, _has_admin_chain
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    _as_float,
+    _as_int,
+    _date_key,
+    _fact_rows,
+    _has_admin_chain,
+)
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -73,6 +80,84 @@ def _brand_entity_key(brand_id: int | None, brand_name: str | None) -> str:
     return f"name:{name}"
 
 
+def _fact_geo_score(value: object) -> float | None:
+    score = _as_float(value)
+    if score is None:
+        return None
+    return round(score * 100, 2) if 0 <= score <= 1 else round(score, 2)
+
+
+async def _fact_primary_competitor_row(
+    session: AsyncSession,
+    primary_id: int,
+    fact_rows: list[dict[str, Any]],
+) -> CompetitorBrandRow | None:
+    response_ids: set[int] = set()
+    denominator_response_ids: set[int] = set()
+    target_response_ids: set[int] = set()
+    target_mentions = 0
+    all_mentions = 0
+    ranks: list[float] = []
+    sentiments: list[float] = []
+    geo_scores: list[float] = []
+
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in response_ids:
+            continue
+        response_ids.add(rid)
+        is_non_branded = str(row.get("prompt_scope") or "").strip().lower() == "non_branded"
+        if is_non_branded:
+            denominator_response_ids.add(rid)
+        mentions = int(row.get("target_mention_count") or 0)
+        if mentions <= 0 and row.get("target_brand_mentioned"):
+            mentions = 1
+        total = int(row.get("all_mention_count") or 0)
+        if total <= 0 and mentions > 0:
+            total = 1
+        if mentions > 0:
+            target_response_ids.add(rid)
+            target_mentions += mentions
+            all_mentions += total
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        if rank is not None:
+            ranks.append(float(rank))
+        sentiment = _as_float(row.get("sentiment_score"))
+        if sentiment is not None:
+            sentiments.append(sentiment)
+        geo = _fact_geo_score(row.get("geo_score"))
+        if geo is not None:
+            geo_scores.append(geo)
+
+    if not response_ids:
+        return None
+    mention_denominator = len(denominator_response_ids) or len(response_ids)
+    name_map = await resolve_brand_names(session, [primary_id])
+    avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else None
+    avg_rank = sum(ranks) / len(ranks) if ranks else None
+    rollup = MentionRollup(
+        mention_count=target_mentions,
+        response_count=len(target_response_ids),
+        total_response_count=mention_denominator,
+        total_mention_count=all_mentions or max(target_mentions, len(response_ids)),
+        avg_position_rank=avg_rank,
+        avg_sentiment_score=avg_sentiment,
+    )
+    return CompetitorBrandRow(
+        brand_id=primary_id,
+        brand_key=_brand_entity_key(primary_id, None),
+        brand_name=name_map.get(primary_id),
+        avg_geo_score=round(sum(geo_scores) / len(geo_scores), 2)
+        if geo_scores
+        else geo_score(rollup),
+        avg_mention_rate=round(mention_rate(rollup), 4),
+        avg_sov=round(share_of_voice(rollup), 4),
+        avg_sentiment=round(avg_sentiment, 3) if avg_sentiment is not None else None,
+        co_mention_count=0,
+        delta_30d_pct=None,
+    )
+
+
 async def _response_entity_competitor_metrics(
     session: AsyncSession,
     project: Project,
@@ -85,11 +170,15 @@ async def _response_entity_competitor_metrics(
 
     from_dt = datetime.combine(from_d, datetime.min.time())
     to_dt = datetime.combine(to_d, datetime.max.time())
+    fact_brand_override = (
+        primary_id if primary_id != project.primary_brand_id else None
+    )
 
     fact_rows = await _fact_rows(
         session,
         project,
         filters=filters or AnalysisFilters(from_date=from_d, to_date=to_d),
+        brand_id_override=fact_brand_override,
     )
     scoped_response_ids = {
         int(row["response_id"]) for row in fact_rows if row.get("response_id") is not None
@@ -114,6 +203,9 @@ async def _response_entity_competitor_metrics(
         )
     ).all()
     if not rows:
+        fact_primary = await _fact_primary_competitor_row(session, primary_id, fact_rows)
+        if fact_primary is not None:
+            return fact_primary, [], "partial"
         return None
 
     primary_names = await brand_mention_names(session, primary_id)
@@ -196,6 +288,10 @@ async def _response_entity_competitor_metrics(
 
     primary = buckets.get(_brand_entity_key(primary_id, None))
     primary_row = make_row(primary) if primary is not None else None
+    if primary_row is None and fact_brand_override is not None:
+        fact_primary = await _fact_primary_competitor_row(session, primary_id, fact_rows)
+        if fact_primary is not None:
+            return fact_primary, [], "partial"
     competitors = [
         make_row(bucket)
         for key, bucket in buckets.items()
@@ -699,6 +795,77 @@ ALLOWED_TREND_METRICS = {
 }
 
 
+def _fact_trend_value(metric: str, row: dict[str, Any]) -> float | None:
+    if metric == "geo_score":
+        return _fact_geo_score(row.get("geo_score"))
+    if metric == "rank":
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        return float(rank) if rank is not None else None
+    if metric == "sentiment":
+        return _as_float(row.get("sentiment_score"))
+    if metric in {"mention_rate", "sov"}:
+        mentions = int(row.get("target_mention_count") or 0)
+        if mentions <= 0 and row.get("target_brand_mentioned"):
+            mentions = 1
+        total = int(row.get("all_mention_count") or 0)
+        if total <= 0 and mentions > 0:
+            total = 1
+        if metric == "mention_rate":
+            return 1.0 if mentions > 0 else 0.0
+        return round(mentions / total, 4) if total else None
+    if metric == "citation":
+        return float(row.get("citation_count") or 0)
+    return None
+
+
+async def _fact_primary_trend_series(
+    session: AsyncSession,
+    project: Project,
+    *,
+    primary_id: int,
+    metric: str,
+    from_d: date,
+    to_d: date,
+    brand_id_override: int | None,
+) -> CompetitorTrendSeries | None:
+    rows = await _fact_rows(
+        session,
+        project,
+        filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        brand_id_override=brand_id_override,
+    )
+    buckets: dict[str, list[float]] = {}
+    seen_response_ids: set[int] = set()
+    for row in rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen_response_ids:
+            continue
+        seen_response_ids.add(rid)
+        day = _date_key(
+            row.get("response_created_at")
+            or row.get("query_finished_at")
+            or row.get("query_created_at")
+        )
+        if not day:
+            continue
+        value = _fact_trend_value(metric, row)
+        if value is None:
+            continue
+        buckets.setdefault(day, []).append(value)
+    if not buckets:
+        return None
+    name_map = await resolve_brand_names(session, [primary_id])
+    return CompetitorTrendSeries(
+        brand_id=primary_id,
+        brand_name=name_map.get(primary_id),
+        is_primary=True,
+        points=[
+            CompetitorTrendPoint(date=day, value=round(sum(values) / len(values), 4))
+            for day, values in sorted(buckets.items())
+        ],
+    )
+
+
 async def get_competitor_trends(
     session: AsyncSession,
     project: Project,
@@ -720,6 +887,24 @@ async def get_competitor_trends(
     from_d, to_d = _resolve_window(from_date, to_date)
 
     primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if primary_id is not None and await _has_admin_chain(session):
+        fact_series = await _fact_primary_trend_series(
+            session,
+            project,
+            primary_id=primary_id,
+            metric=metric,
+            from_d=from_d,
+            to_d=to_d,
+            brand_id_override=brand_id_override,
+        )
+        if fact_series is not None:
+            return CompetitorTrendsOut(
+                project_id=project.id,
+                metric=metric,
+                period=_period(from_d, to_d),
+                series=[fact_series],
+                state="ok",
+            )
     if brand_id_override is not None and primary_id is not None:
         competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
     else:

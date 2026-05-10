@@ -42,6 +42,15 @@ from app.api.v1.projects._mention_rollups import (
     metric_value,
     share_of_voice,
 )
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    _as_float,
+    _as_int,
+    _date_key,
+    _fact_rows,
+    _has_admin_chain,
+    _is_non_branded_row,
+)
 from app.api.v1.projects._overview_dto import (
     BrandOverviewOut,
     GroupSharedDomainRow,
@@ -76,6 +85,169 @@ def _direction(delta: float | None) -> str | None:
     if delta < -0.5:
         return "down"
     return "flat"
+
+
+def _fact_geo_display(value: Any) -> float | None:
+    score = _as_float(value)
+    if score is None:
+        return None
+    return round(score * 100, 2) if 0 <= score <= 1 else round(score, 2)
+
+
+def _fact_target_mentions(row: dict[str, Any]) -> tuple[int, int]:
+    mentions = int(row.get("target_mention_count") or 0)
+    if mentions <= 0 and row.get("target_brand_mentioned"):
+        mentions = 1
+    total = int(row.get("all_mention_count") or 0)
+    if total <= 0 and mentions > 0:
+        total = 1
+    return mentions, total
+
+
+async def _overview_from_admin_facts(
+    session: AsyncSession,
+    project: Project,
+    *,
+    brand_id: int,
+    from_date: date,
+    to_date: date,
+    brand_id_override: int | None,
+) -> tuple[list[KpiCard], list[TrendPoint], list[TrendPoint], list[TrendPoint], list[TopPromptRow]] | None:
+    rows = await _fact_rows(
+        session,
+        project,
+        filters=AnalysisFilters(from_date=from_date, to_date=to_date),
+        brand_id_override=brand_id_override,
+    )
+    if not rows:
+        return None
+
+    buckets: dict[str, dict[str, Any]] = {}
+    prompt_buckets: dict[int | str, dict[str, Any]] = {}
+    seen_response_ids: set[int] = set()
+    for row in rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen_response_ids:
+            continue
+        seen_response_ids.add(rid)
+        day = _date_key(
+            row.get("response_created_at")
+            or row.get("query_finished_at")
+            or row.get("query_created_at")
+        )
+        if day is None:
+            continue
+        bucket = buckets.setdefault(
+            day,
+            {
+                "response_ids": set(),
+                "denominator_ids": set(),
+                "target_response_ids": set(),
+                "target_mentions": 0,
+                "all_mentions": 0,
+                "geo_scores": [],
+                "sentiments": [],
+                "ranks": [],
+            },
+        )
+        bucket["response_ids"].add(rid)
+        if _is_non_branded_row(row):
+            bucket["denominator_ids"].add(rid)
+        mentions, total = _fact_target_mentions(row)
+        if mentions > 0:
+            bucket["target_response_ids"].add(rid)
+            bucket["target_mentions"] += mentions
+            bucket["all_mentions"] += total
+            prompt_id = _as_int(row.get("prompt_id"))
+            prompt_key = prompt_id if prompt_id is not None else row.get("prompt_text") or rid
+            prompt_bucket = prompt_buckets.setdefault(
+                prompt_key,
+                {
+                    "prompt_id": prompt_id,
+                    "prompt_text": row.get("prompt_text") or "",
+                    "mention_count": 0,
+                    "ranks": [],
+                    "sentiments": [],
+                },
+            )
+            prompt_bucket["mention_count"] += mentions
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        if rank is not None:
+            bucket["ranks"].append(float(rank))
+            if mentions > 0:
+                prompt_buckets[prompt_key]["ranks"].append(float(rank))
+        sentiment = _as_float(row.get("sentiment_score"))
+        if sentiment is not None:
+            bucket["sentiments"].append(sentiment)
+            if mentions > 0:
+                prompt_buckets[prompt_key]["sentiments"].append(sentiment)
+        geo = _fact_geo_display(row.get("geo_score"))
+        if geo is not None:
+            bucket["geo_scores"].append(geo)
+
+    if not buckets:
+        return None
+
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 4) if values else None
+
+    geo_points: list[TrendPoint] = []
+    sov_points: list[TrendPoint] = []
+    sentiment_points: list[TrendPoint] = []
+    total_target_mentions = 0
+    total_all_mentions = 0
+    total_target_responses = 0
+    total_denominator = 0
+    all_geo_scores: list[float] = []
+    all_sentiments: list[float] = []
+
+    for day, bucket in sorted(buckets.items()):
+        geo = _avg(bucket["geo_scores"])
+        if geo is not None:
+            geo_points.append(TrendPoint(date=date.fromisoformat(day), value=geo))
+            all_geo_scores.extend(bucket["geo_scores"])
+        target_mentions = int(bucket["target_mentions"] or 0)
+        all_mentions = int(bucket["all_mentions"] or 0)
+        if all_mentions:
+            sov_points.append(
+                TrendPoint(date=date.fromisoformat(day), value=round(target_mentions / all_mentions, 4))
+            )
+        sentiment = _avg(bucket["sentiments"])
+        if sentiment is not None:
+            sentiment_points.append(TrendPoint(date=date.fromisoformat(day), value=sentiment))
+            all_sentiments.extend(bucket["sentiments"])
+        total_target_mentions += target_mentions
+        total_all_mentions += all_mentions
+        total_target_responses += len(bucket["target_response_ids"])
+        total_denominator += len(bucket["denominator_ids"]) or len(bucket["response_ids"])
+
+    if total_denominator <= 0:
+        return None
+    avg_geo = _avg(all_geo_scores) or 0
+    mention = total_target_responses / total_denominator
+    sov = total_target_mentions / total_all_mentions if total_all_mentions else 0
+    avg_sentiment = _avg(all_sentiments) or 0
+    kpi_cards = [
+        KpiCard(label_zh="GEO 评分", label_en="GeoScore", value=round(avg_geo, 1), delta_30d_pct=None),
+        KpiCard(label_zh="提及率", label_en="Mention Rate", value=round(mention * 100, 1), unit="%", delta_30d_pct=None),
+        KpiCard(label_zh="声量份额", label_en="Share of Voice", value=round(sov * 100, 1), unit="%", delta_30d_pct=None),
+        KpiCard(label_zh="情感分", label_en="Sentiment", value=round(avg_sentiment, 2), delta_30d_pct=None),
+    ]
+    top_prompts = [
+        TopPromptRow(
+            prompt_id=bucket["prompt_id"],
+            prompt_text=bucket["prompt_text"],
+            mention_count=int(bucket["mention_count"] or 0),
+            avg_position_rank=_avg(bucket["ranks"]),
+            avg_sentiment_score=_avg(bucket["sentiments"]),
+        )
+        for bucket in sorted(
+            prompt_buckets.values(),
+            key=lambda item: int(item["mention_count"] or 0),
+            reverse=True,
+        )[:10]
+    ]
+    return kpi_cards, geo_points, sov_points, sentiment_points, top_prompts
 
 
 def _empty_overview(project: Project) -> BrandOverviewOut:
@@ -498,11 +670,24 @@ async def get_brand_overview(
     if brand_id is None:
         return _empty_overview(project)
 
-    kpi_cards = await _kpi_cards(session, brand_id, from_d, to_d)
-    geo_30d = await _trend(session, brand_id, from_d, to_d, "avg_geo_score")
-    sov_30d = await _trend(session, brand_id, from_d, to_d, "avg_sov")
-    sentiment_30d = await _sentiment_trend(session, brand_id, from_d, to_d)
-    top_prompts = await _top_prompts(session, brand_id, from_d, to_d)
+    admin_fact_overview = None
+    if await _has_admin_chain(session):
+        admin_fact_overview = await _overview_from_admin_facts(
+            session,
+            project,
+            brand_id=brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            brand_id_override=brand_id_override,
+        )
+    if admin_fact_overview is not None:
+        kpi_cards, geo_30d, sov_30d, sentiment_30d, top_prompts = admin_fact_overview
+    else:
+        kpi_cards = await _kpi_cards(session, brand_id, from_d, to_d)
+        geo_30d = await _trend(session, brand_id, from_d, to_d, "avg_geo_score")
+        sov_30d = await _trend(session, brand_id, from_d, to_d, "avg_sov")
+        sentiment_30d = await _sentiment_trend(session, brand_id, from_d, to_d)
+        top_prompts = await _top_prompts(session, brand_id, from_d, to_d)
     brand_name = await resolve_brand_name(session, brand_id)
     shared_domains = await _same_group_shared_domains(session, brand_id)
 

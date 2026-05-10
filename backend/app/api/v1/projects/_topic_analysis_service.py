@@ -14,6 +14,7 @@ from genpano_models import Project
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._legacy_lookups import BRAND_NAME_COLUMNS, brand_table_columns
 from app.api.v1.projects._topic_analysis_dto import (
     BrandMentionDetail,
     CitationDetail,
@@ -41,6 +42,7 @@ from app.core.errors import not_found
 
 DEFAULT_WINDOW_DAYS = 30
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROJECT_BRAND = object()
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,63 @@ def _normalize_key(value: Any) -> str | None:
         return None
     norm = str(value).strip().lower().replace("-", "_")
     return norm or None
+
+
+def _clean_fact_term(value: Any) -> str | None:
+    if value is None:
+        return None
+    term = str(value).strip().lower()
+    return term or None
+
+
+def _expand_brand_fact_terms(values: set[str]) -> list[str]:
+    terms: set[str] = set()
+    for value in values:
+        term = _clean_fact_term(value)
+        if not term:
+            continue
+        terms.add(term)
+        if "雅诗兰黛" in term:
+            terms.add(term.replace("雅诗兰黛", "雅思兰黛"))
+        if "雅思兰黛" in term:
+            terms.add(term.replace("雅思兰黛", "雅诗兰黛"))
+    return sorted(terms)
+
+
+async def _brand_fact_terms(session: AsyncSession, brand_id: int) -> list[str]:
+    cols = await brand_table_columns(session)
+    name_cols = [c for c in BRAND_NAME_COLUMNS if c in cols]
+    if not name_cols:
+        return []
+
+    try:
+        row = (
+            await session.execute(
+                text(f"SELECT {', '.join(name_cols)} FROM brands WHERE id = :id"),
+                {"id": brand_id},
+            )
+        ).one_or_none()
+    except Exception:
+        return []
+    if row is None:
+        return []
+    return _expand_brand_fact_terms({term for value in row for term in [_clean_fact_term(value)] if term})
+
+
+def _text_scope_conditions(
+    expressions: list[str],
+    terms: list[str],
+    params: dict[str, Any],
+    *,
+    prefix: str,
+) -> list[str]:
+    conditions: list[str] = []
+    for idx, term in enumerate(terms):
+        key = f"{prefix}_{idx}"
+        params[key] = f"%{term}%"
+        for expr in expressions:
+            conditions.append(f"LOWER(COALESCE({expr}, '')) LIKE :{key}")
+    return conditions
 
 
 def _coerce_json(value: Any) -> dict[str, Any]:
@@ -345,13 +404,15 @@ async def _query_scope_conditions(
     filters: AnalysisFilters,
     query_cols: set[str],
     prefix: str = "q",
+    brand_id: int | None | object = _PROJECT_BRAND,
 ) -> tuple[list[str], dict[str, Any]]:
     params: dict[str, Any] = {}
     conditions: list[str] = []
 
-    if project.primary_brand_id is not None and "brand_id" in query_cols:
+    scoped_brand_id = project.primary_brand_id if brand_id is _PROJECT_BRAND else brand_id
+    if scoped_brand_id is not None and "brand_id" in query_cols:
         conditions.append(f"{prefix}.brand_id = :primary_brand_id")
-        params["primary_brand_id"] = int(project.primary_brand_id)
+        params["primary_brand_id"] = int(scoped_brand_id)
 
     if filters.from_date is not None or filters.to_date is not None:
         if "created_at" not in query_cols:
@@ -437,6 +498,7 @@ async def _fact_rows(
     filters: AnalysisFilters,
     topic_id: int | None = None,
     prompt_id: int | None = None,
+    brand_id_override: int | None = None,
 ) -> list[dict[str, Any]]:
     if not await _has_admin_chain(session):
         return []
@@ -456,9 +518,20 @@ async def _fact_rows(
     has_citations = await legacy_table_exists(session, "citation_sources")
     mention_cols = await legacy_table_columns(session, "brand_mentions") if has_mentions else set()
 
+    scope_brand_id = (
+        int(brand_id_override)
+        if brand_id_override is not None
+        else (int(project.primary_brand_id) if project.primary_brand_id is not None else None)
+    )
+    override_terms = (
+        await _brand_fact_terms(session, int(brand_id_override))
+        if brand_id_override is not None
+        else []
+    )
+
     params: dict[str, Any] = {}
     topic_where: list[str] = []
-    if project.primary_brand_id is not None and "brand_id" in topic_cols:
+    if brand_id_override is None and project.primary_brand_id is not None and "brand_id" in topic_cols:
         topic_where.append("t.brand_id = :topic_brand_id")
         params["topic_brand_id"] = int(project.primary_brand_id)
     if topic_id is not None:
@@ -480,6 +553,7 @@ async def _fact_rows(
         project=project,
         filters=filters,
         query_cols=query_cols,
+        brand_id=None if brand_id_override is not None else _PROJECT_BRAND,
     )
     query_join_conditions.extend(scoped_conditions)
     params.update(scoped_params)
@@ -510,6 +584,40 @@ async def _fact_rows(
                 _select_col(response_cols, "r", "created_at", "response_created_at"),
             ]
 
+    if brand_id_override is not None and scope_brand_id is not None:
+        params["topic_brand_id"] = scope_brand_id
+        brand_scope_conditions: list[str] = []
+        if "brand_id" in topic_cols:
+            brand_scope_conditions.append("t.brand_id = :topic_brand_id")
+        if "brand_id" in query_cols:
+            brand_scope_conditions.append("q.brand_id = :topic_brand_id")
+
+        text_exprs: list[str] = []
+        for column in ("text", "name", "title"):
+            if column in topic_cols:
+                text_exprs.append(f"t.{column}")
+                break
+        prompt_expr = _prompt_text_expr(prompt_cols)
+        if prompt_expr != "NULL":
+            text_exprs.append(prompt_expr)
+        query_expr = _query_text_expr(query_cols)
+        if query_expr != "NULL":
+            text_exprs.append(query_expr)
+        if response_join:
+            response_expr = _response_text_expr(response_cols)
+            if response_expr != "NULL":
+                text_exprs.append(response_expr)
+        brand_scope_conditions.extend(
+            _text_scope_conditions(
+                text_exprs,
+                override_terms,
+                params,
+                prefix="brand_scope_term",
+            )
+        )
+        if brand_scope_conditions:
+            topic_where.append(f"({' OR '.join(brand_scope_conditions)})")
+
     analysis_join = ""
     analysis_selects = [
         "NULL AS analysis_id",
@@ -528,7 +636,7 @@ async def _fact_rows(
             "ra.target_brand_mentioned AS target_brand_mentioned",
         ]
 
-    primary = int(project.primary_brand_id) if project.primary_brand_id is not None else None
+    primary = scope_brand_id
     params["primary_brand_id"] = primary
     mention_selects = [
         "0 AS target_mention_count",

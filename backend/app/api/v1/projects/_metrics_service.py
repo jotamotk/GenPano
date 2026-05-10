@@ -130,12 +130,19 @@ async def _metrics_from_admin_facts(
     session: AsyncSession,
     project: Project,
     *,
+    brand_id: int,
+    brand_id_override: int | None,
     requested: list[str],
     from_d: date,
     to_d: date,
     filters: AnalysisFilters,
 ) -> MetricsOut:
-    rows = await _fact_rows(session, project, filters=filters)
+    rows = await _fact_rows(
+        session,
+        project,
+        filters=filters,
+        brand_id_override=brand_id_override,
+    )
     buckets: dict[str, dict[str, object]] = {}
     seen_response_ids: set[int] = set()
 
@@ -166,7 +173,11 @@ async def _metrics_from_admin_facts(
         )
         bucket["response_ids"].add(response_id)  # type: ignore[attr-defined]
         target_mentions = int(row.get("target_mention_count") or 0)
+        if target_mentions <= 0 and row.get("target_brand_mentioned"):
+            target_mentions = 1
         all_mentions = int(row.get("all_mention_count") or 0)
+        if all_mentions <= 0 and target_mentions > 0:
+            all_mentions = 1
         bucket["target_mentions"] = int(bucket["target_mentions"] or 0) + target_mentions
         bucket["all_mentions"] = int(bucket["all_mentions"] or 0) + all_mentions
         if _is_non_branded_row(row):
@@ -195,7 +206,7 @@ async def _metrics_from_admin_facts(
 
     return MetricsOut(
         project_id=project.id,
-        brand_id=project.primary_brand_id,
+        brand_id=brand_id,
         period=_period(from_d, to_d),
         engines=list(filters.engines) if filters.engines else None,
         series=out_series,
@@ -240,18 +251,19 @@ async def get_metrics(
         to_d=to_d,
         engines=engines,
     )
-    if (
-        brand_id_override is None
-        or brand_id_override == project.primary_brand_id
-    ) and await _has_admin_chain(session):
-        return await _metrics_from_admin_facts(
+    if await _has_admin_chain(session):
+        fact_metrics = await _metrics_from_admin_facts(
             session,
             project,
+            brand_id=primary_brand_id,
+            brand_id_override=brand_id_override,
             requested=requested,
             from_d=from_d,
             to_d=to_d,
             filters=analysis_filters,
         )
+        if fact_metrics.state != "empty":
+            return fact_metrics
 
     out_series: list[MetricSeries] = []
     for metric in requested:
