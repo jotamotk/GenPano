@@ -155,8 +155,8 @@ def _run_timeout_seconds(run: PromptGenerationRun) -> int:
     estimated = clamp_int(
         request_config.get("max_prompts"), DEFAULT_MAX_PROMPTS, 1, MAX_PROMPTS_HARD_LIMIT
     )
-    default_timeout = max(900, min(7200, estimated * 2))
-    return clamp_int(os.getenv("PROMPT_MATRIX_RUN_TIMEOUT_SECONDS"), default_timeout, 300, 14400)
+    default_timeout = max(900, min(86_400, estimated * 2))
+    return clamp_int(os.getenv("PROMPT_MATRIX_RUN_TIMEOUT_SECONDS"), default_timeout, 300, 604_800)
 
 
 async def _mark_stale_run(session: AsyncSession, run: PromptGenerationRun) -> bool:

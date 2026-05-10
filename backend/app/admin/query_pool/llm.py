@@ -126,7 +126,7 @@ class QueryPoolLLMClient:
         self, contexts: list[dict[str, Any]]
     ) -> tuple[dict[str, str], dict[str, Any]]:
         """One LLM HTTP call against the chat-completions endpoint."""
-        timeout_seconds = _clamp_int(os.getenv("QUERY_POOL_LLM_TIMEOUT_SECONDS"), 90, 30, 240)
+        timeout_seconds = _clamp_int(os.getenv("QUERY_POOL_LLM_TIMEOUT_SECONDS"), 600, 30, 3600)
         max_tokens = _clamp_int(
             os.getenv("QUERY_POOL_LLM_MAX_TOKENS") or (1024 + len(contexts) * 320),
             4096,

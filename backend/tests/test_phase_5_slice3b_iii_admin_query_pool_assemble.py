@@ -31,6 +31,14 @@ from app.admin.topic_plan.lib import TopicPlanLLMError
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 
 
+def test_query_pool_run_timeout_allows_day_scale(monkeypatch):
+    router = _qp_router_module()
+
+    monkeypatch.setenv("QUERY_POOL_RUN_TIMEOUT_SECONDS", "86400")
+
+    assert router._run_timeout_seconds() == 86400
+
+
 def _new_id() -> str:
     return str(uuid.uuid4())
 

@@ -16,6 +16,7 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -29,6 +30,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def test_prompt_matrix_run_timeout_allows_day_scale(monkeypatch):
+    from app.api.admin.prompt_matrix.router import _run_timeout_seconds
+
+    monkeypatch.setenv("PROMPT_MATRIX_RUN_TIMEOUT_SECONDS", "86400")
+
+    run = SimpleNamespace(request_config={"max_prompts": 10_000})
+
+    assert _run_timeout_seconds(run) == 86400
 
 
 def _new_id() -> str:

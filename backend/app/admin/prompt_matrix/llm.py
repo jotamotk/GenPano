@@ -554,10 +554,10 @@ class PromptMatrixClient:
             active_hotspots=active_hotspots,
         )
         timeout_seconds = clamp_int(
-            os.getenv("PROMPT_MATRIX_LLM_TIMEOUT_SECONDS") or 90,
-            90,
+            os.getenv("PROMPT_MATRIX_LLM_TIMEOUT_SECONDS") or 600,
+            600,
             60,
-            240,
+            3600,
         )
         expected = max(1, int(config.get("max_prompts") or 1))
         max_tokens = clamp_int(
