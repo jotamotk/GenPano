@@ -262,6 +262,31 @@ async def test_generate_topics_search_failure_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_topics_search_timeout_message_is_actionable(monkeypatch):
+    async def fake_post(self, url, json=None, headers=None):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setenv("TOPIC_PLAN_WEB_RESEARCH_TIMEOUT_SECONDS", "90")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    client = DoubaoTopicPlanClient(config=_config())
+    with pytest.raises(TopicPlanLLMError) as exc:
+        await client.generate_topics(
+            industry="x",
+            category="y",
+            brands=[{"name": "NIKE"}],
+            coverage_gaps=[],
+            max_topics=1,
+            existing_topics=[],
+        )
+
+    assert exc.value.code == "brand_context_search_failed"
+    assert "ReadTimeout" in exc.value.message
+    assert "90s" in exc.value.message
+    assert "Web Search" in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_generate_topics_empty_choices(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
         if url.endswith("/responses"):

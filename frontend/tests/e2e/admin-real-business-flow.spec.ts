@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
+import { ensureAdminSession } from './admin-auth';
 import { installAdminErrorGuards } from './admin-fixtures';
 
 const stagingEnabled = process.env.ADMIN_E2E_STAGING === '1';
@@ -9,6 +10,7 @@ test.skip(
   !stagingEnabled || !realBusinessFlowEnabled,
   'Set ADMIN_E2E_STAGING=1 and ADMIN_E2E_REAL_BUSINESS_FLOW=1 to run the real business flow gate.',
 );
+test.setTimeout(20 * 60_000);
 
 type ApiResult = {
   ok: boolean;
@@ -31,18 +33,6 @@ const requireEnv = (name: string): string => {
     throw new Error(`${name} is required for the real Admin business-flow E2E gate.`);
   }
   return value;
-};
-
-const ensureAdminSession = async (page: Page) => {
-  await page.goto('/admin/planner-topics', { waitUntil: 'domcontentloaded' });
-  const emailInput = page.locator('input[type="email"]').first();
-  const passwordInput = page.locator('input[type="password"]').first();
-  if (await emailInput.isVisible().catch(() => false)) {
-    await emailInput.fill(requireEnv('ADMIN_E2E_EMAIL'));
-    await passwordInput.fill(requireEnv('ADMIN_E2E_PASSWORD'));
-    await page.locator('button[type="submit"], form button').first().click();
-  }
-  await expect(page.locator('main')).toBeVisible({ timeout: 30_000 });
 };
 
 const adminApi = async (page: Page, path: string, options: ApiOptions = {}): Promise<ApiResult> => {
