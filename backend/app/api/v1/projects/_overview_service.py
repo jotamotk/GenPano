@@ -17,6 +17,7 @@ collections []  + KPI cards with 0 / null deltas.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import cast
 
@@ -41,6 +42,7 @@ from app.api.v1.projects._overview_dto import (
 )
 
 DEFAULT_WINDOW_DAYS = 30
+logger = logging.getLogger(__name__)
 
 
 def _empty_overview(project: Project) -> BrandOverviewOut:
@@ -253,32 +255,33 @@ async def _top_prompts(
     from sqlalchemy import text as _text
 
     try:
-        result = await session.execute(
-            _text(
-                """
-                SELECT p.id,
-                       p.text,
-                       COUNT(bm.id)::int AS cnt,
-                       AVG(bm.position_rank) AS avg_rank,
-                       AVG(bm.sentiment_score) AS avg_sent
-                FROM brand_mentions bm
-                JOIN llm_responses r ON r.id = bm.response_id
-                JOIN prompts p ON p.id = r.prompt_id
-                WHERE bm.brand_id = :bid
-                  AND bm.created_at >= :from_d
-                  AND bm.created_at <= :to_d
-                GROUP BY p.id, p.text
-                ORDER BY cnt DESC
-                LIMIT :lim
-                """
-            ),
-            {
-                "bid": brand_id,
-                "from_d": datetime.combine(from_date, datetime.min.time()),
-                "to_d": datetime.combine(to_date, datetime.max.time()),
-                "lim": limit,
-            },
-        )
+        async with session.begin_nested():
+            result = await session.execute(
+                _text(
+                    """
+                    SELECT p.id,
+                           p.text,
+                           COUNT(bm.id)::int AS cnt,
+                           AVG(bm.position_rank) AS avg_rank,
+                           AVG(bm.sentiment_score) AS avg_sent
+                    FROM brand_mentions bm
+                    JOIN llm_responses r ON r.id = bm.response_id
+                    JOIN prompts p ON p.id = r.prompt_id
+                    WHERE bm.brand_id = :bid
+                      AND bm.created_at >= :from_d
+                      AND bm.created_at <= :to_d
+                    GROUP BY p.id, p.text
+                    ORDER BY cnt DESC
+                    LIMIT :lim
+                    """
+                ),
+                {
+                    "bid": brand_id,
+                    "from_d": datetime.combine(from_date, datetime.min.time()),
+                    "to_d": datetime.combine(to_date, datetime.max.time()),
+                    "lim": limit,
+                },
+            )
         rows = result.all()
         if rows:
             return [
@@ -292,7 +295,10 @@ async def _top_prompts(
                 for r in rows
             ]
     except Exception:
-        pass
+        logger.exception(
+            "Brand overview top prompts join failed; falling back to brand aggregate",
+            extra={"brand_id": brand_id},
+        )
 
     # Fallback: brand-level aggregation when llm_responses/prompts unavailable.
     stmt = (
@@ -313,7 +319,15 @@ async def _top_prompts(
         .order_by(func.count(BrandMention.id).desc())
         .limit(limit)
     )
-    rows = (await session.execute(stmt)).all()
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.exception(
+            "Brand overview top prompts fallback failed; returning empty top_prompts",
+            extra={"brand_id": brand_id},
+        )
+        return []
     return [
         TopPromptRow(
             prompt_id=None,
