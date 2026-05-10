@@ -432,34 +432,75 @@ async def get_industry_topics(
     limit: int = 50,
 ) -> IndustryTopicsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    f = datetime.combine(from_d, datetime.min.time())
+    t = datetime.combine(to_d, datetime.max.time())
 
-    stmt = (
+    topic_stmt = (
         select(
-            BrandMention.brand_name,
-            func.count(func.distinct(BrandMention.response_id)).label("cnt"),
-            func.count(func.distinct(BrandMention.brand_id)).label("brands"),
+            IndustryTopicDaily.topic_id,
+            func.sum(IndustryTopicDaily.mention_count).label("mentions"),
+            func.max(IndustryTopicDaily.unique_brand_count).label("brands"),
+            func.avg(IndustryTopicDaily.hot_score).label("hot"),
         )
         .where(
             and_(
-                BrandMention.created_at >= datetime.combine(from_d, datetime.min.time()),
-                BrandMention.created_at <= datetime.combine(to_d, datetime.max.time()),
+                IndustryTopicDaily.industry_id == industry_id,
+                IndustryTopicDaily.date >= f,
+                IndustryTopicDaily.date <= t,
             )
         )
-        .group_by(BrandMention.brand_name)
-        .order_by(desc("cnt"))
+        .group_by(IndustryTopicDaily.topic_id)
+        .order_by(desc("mentions"))
         .limit(limit)
     )
-    rows = (await session.execute(stmt)).all()
+    rows = (await session.execute(topic_stmt)).all()
+
+    if not rows and industry_name:
+        brand_rows = await session.execute(
+            select(GeoScoreDaily.brand_id)
+            .where(
+                and_(
+                    GeoScoreDaily.industry == industry_name,
+                    GeoScoreDaily.date >= f,
+                    GeoScoreDaily.date <= t,
+                )
+            )
+            .group_by(GeoScoreDaily.brand_id)
+        )
+        brand_ids = [int(r[0]) for r in brand_rows.all()]
+        if brand_ids:
+            fallback_stmt = (
+                select(
+                    TopicScoreDaily.topic_id,
+                    func.sum(TopicScoreDaily.mention_count).label("mentions"),
+                    func.count(func.distinct(TopicScoreDaily.brand_id)).label("brands"),
+                    func.avg(TopicScoreDaily.avg_geo_score).label("hot"),
+                )
+                .where(
+                    and_(
+                        TopicScoreDaily.brand_id.in_(brand_ids),
+                        TopicScoreDaily.date >= f,
+                        TopicScoreDaily.date <= t,
+                    )
+                )
+                .group_by(TopicScoreDaily.topic_id)
+                .order_by(desc("mentions"))
+                .limit(limit)
+            )
+            rows = (await session.execute(fallback_stmt)).all()
+
+    topic_ids = [int(r[0]) for r in rows if r[0] is not None]
+    name_map = await resolve_topic_names(session, topic_ids)
     items = [
         IndustryTopicRow(
-            topic_id=None,
-            topic_name=str(r[0] or "(unknown)"),
+            topic_id=int(r[0]),
+            topic_name=name_map.get(int(r[0])) or f"topic-{int(r[0])}",
             mention_count=int(r[1] or 0),
             unique_brand_count=int(r[2] or 0),
-            hot_score=None,
+            hot_score=round(float(r[3]), 4) if r[3] is not None else None,
         )
         for r in rows
-        if r[0]
+        if r[0] is not None
     ]
 
     return IndustryTopicsOut(

@@ -8,25 +8,46 @@
 import { useQuery } from '@tanstack/react-query'
 import { brandMetricsApi } from '../api/brandMetrics'
 import { isLiveProjectId } from './useBrandOverview'
+import { ProjectAnalysisParams } from '../lib/projectAnalysisFilters'
+
+const filterKey = (filters: ProjectAnalysisParams = {}) =>
+  [
+    filters.from ?? '',
+    filters.to ?? '',
+    filters.engine ?? '',
+    filters.segment_id ?? '',
+    filters.profile_id ?? '',
+  ].join('|')
 
 export function useBrandMetrics(
   projectId: string | null | undefined,
   series: string[] = ['mention_rate', 'sov', 'rank', 'sentiment'],
   brandIdOverride?: number | null,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['brand', 'metrics', projectId, series.join(','), brandIdOverride ?? null],
-    queryFn: () => brandMetricsApi.metrics(projectId as string, series, brandIdOverride),
+    queryKey: [
+      'brand',
+      'metrics',
+      projectId,
+      series.join(','),
+      brandIdOverride ?? null,
+      filterKey(filters),
+    ],
+    queryFn: () => brandMetricsApi.metrics(projectId as string, series, brandIdOverride, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,
   })
 }
 
-export function useBrandSentiment(projectId: string | null | undefined) {
+export function useBrandSentiment(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['brand', 'sentiment', projectId],
-    queryFn: () => brandMetricsApi.sentiment(projectId as string),
+    queryKey: ['brand', 'sentiment', projectId, filterKey(filters)],
+    queryFn: () => brandMetricsApi.sentiment(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,
@@ -36,10 +57,11 @@ export function useBrandSentiment(projectId: string | null | undefined) {
 export function useBrandCitations(
   projectId: string | null | undefined,
   pageSize = 50,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['brand', 'citations', projectId, pageSize],
-    queryFn: () => brandMetricsApi.citations(projectId as string, pageSize),
+    queryKey: ['brand', 'citations', projectId, pageSize, filterKey(filters)],
+    queryFn: () => brandMetricsApi.citations(projectId as string, pageSize, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,

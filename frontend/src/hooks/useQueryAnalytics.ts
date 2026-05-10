@@ -1,24 +1,27 @@
-/**
- * useQueryAnalytics — TanStack Query hook for the brand query analytics
- * endpoint. Used by the TopicsPage QueryActivityCard.
- *
- * Fires only when brandId is a positive integer; otherwise stays disabled
- * so the empty/auth-pending state doesn't issue a useless 401/empty call.
- */
-
 import { useQuery } from '@tanstack/react-query'
+
 import {
   QueryAnalyticsArgs,
   QueryAnalyticsOut,
   queryAnalyticsApi,
 } from '../api/queryAnalytics'
+import { isLiveProjectId } from '../lib/liveProject'
 
 export function useQueryAnalytics(args: QueryAnalyticsArgs) {
-  const { brandId, dateFrom, dateTo, engine } = args
+  const { projectId, dateFrom, dateTo, engine, segmentId, profileId } = args
   return useQuery<QueryAnalyticsOut>({
-    queryKey: ['admin', 'queries', 'analytics', brandId, dateFrom, dateTo, engine],
+    queryKey: [
+      'projects',
+      projectId,
+      'query-activity',
+      dateFrom,
+      dateTo,
+      engine,
+      segmentId,
+      profileId,
+    ],
     queryFn: () => queryAnalyticsApi.fetch(args),
-    enabled: typeof brandId === 'number' && brandId > 0,
+    enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,
   })

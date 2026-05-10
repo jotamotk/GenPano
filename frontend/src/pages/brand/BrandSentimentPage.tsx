@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -10,6 +10,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandSentiment } from '../../hooks/useBrandMetrics';
 import {
   useSentimentByEngine,
@@ -53,6 +54,7 @@ export default function BrandSentimentPage() {
   // C10: page must reference useBrandAnalysisFilters (filter state lives in URL
   // and drives downstream fetches once the backend is wired).
   const { filters } = useBrandAnalysisFilters();
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
   const [polarity, setPolarity] = useState('all');
@@ -61,17 +63,19 @@ export default function BrandSentimentPage() {
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
-  const sentimentQ = useBrandSentiment(isLive ? liveProjectId : null);
-  const engineQ = useSentimentByEngine(isLive ? liveProjectId : null);
-  const trendQ = useSentimentTrendByEngine(isLive ? liveProjectId : null);
+  const sentimentQ = useBrandSentiment(isLive ? liveProjectId : null, chartFilters);
+  const engineQ = useSentimentByEngine(isLive ? liveProjectId : null, chartFilters);
+  const trendQ = useSentimentTrendByEngine(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'sentiment',
     topN: 8,
+    filters: chartFilters,
   });
-  const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5);
+  const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5, chartFilters);
   const samplesQ = useMentionSamples(isLive ? liveProjectId : null, {
     polarity: polarity === 'all' ? undefined : polarity,
     limit: 30,
+    filters: chartFilters,
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -219,11 +223,10 @@ export default function BrandSentimentPage() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-2xl font-brand font-bold text-themed-primary">
-            {t('brand_sentiment.page_title')}
+            <MetricLabel helpText={t('brand_sentiment.page_subtitle', { brand: primary.name })}>
+              {t('brand_sentiment.page_title')}
+            </MetricLabel>
           </h2>
-          <p className="text-sm text-themed-muted mt-0.5">
-            {t('brand_sentiment.page_subtitle', { brand: primary.name })}
-          </p>
         </div>
       </div>
 

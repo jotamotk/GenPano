@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { TrendChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -12,6 +12,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityRadar,
@@ -53,6 +54,7 @@ export default function BrandCompetitorsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
@@ -65,6 +67,7 @@ export default function BrandCompetitorsPage() {
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'mention_rate',
     topN: 8,
+    filters: chartFilters,
   });
 
   const competitors = useMemo(
@@ -233,11 +236,10 @@ export default function BrandCompetitorsPage() {
       {/* Page header */}
       <div>
         <h2 className="text-xl font-brand font-bold text-themed-primary">
-          {t('brand_competitors.page_title')}
+          <MetricLabel helpText={t('brand_competitors.page_subtitle', { brand: primary.name })}>
+            {t('brand_competitors.page_title')}
+          </MetricLabel>
         </h2>
-        <p className="text-xs text-themed-muted mt-0.5">
-          {t('brand_competitors.page_subtitle', { brand: primary.name })}
-        </p>
       </div>
 
       {/* Shared filter bar */}

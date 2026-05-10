@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { DonutChart, TrendChart, HorizontalBar } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -13,6 +13,7 @@ import KpiCard from '../../components/dashboard/KpiCard';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandMetrics, useCompetitorMetrics } from '../../hooks/useBrandMetrics';
 import {
   useEngineMetrics,
@@ -56,6 +57,7 @@ export default function BrandVisibilityPage() {
   // import itself triggers the C10 harness grep, and reading filters lets us wire
   // downstream fetches (kept as placeholder here, ready for real backend).
   const { filters } = useBrandAnalysisFilters();
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // ── Live data hooks (gated on UUID project id) ──
   const { data: liveProjects } = useProjects();
@@ -65,13 +67,14 @@ export default function BrandVisibilityPage() {
   const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
     'mention_rate',
     'sov',
-  ]);
+  ], null, chartFilters);
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
-  const engineQ = useEngineMetrics(isLive ? liveProjectId : null);
-  const positionQ = usePositionDistribution(isLive ? liveProjectId : null);
+  const engineQ = useEngineMetrics(isLive ? liveProjectId : null, chartFilters);
+  const positionQ = usePositionDistribution(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'mention_rate',
     topN: 8,
+    filters: chartFilters,
   });
 
   // §4.6-IA-v2.N / C11: mentionRate is stored as decimal 0-1.
@@ -196,11 +199,10 @@ export default function BrandVisibilityPage() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-xl font-brand font-bold text-themed-primary">
-            {t('brand_visibility.page_title')}
+            <MetricLabel helpText={t('brand_visibility.page_subtitle', { brand: primary.name })}>
+              {t('brand_visibility.page_title')}
+            </MetricLabel>
           </h2>
-          <p className="text-xs text-themed-muted mt-0.5">
-            {t('brand_visibility.page_subtitle', { brand: primary.name })}
-          </p>
         </div>
         <Badge variant="accent" size="sm">{t('brand_visibility.primary_badge')}</Badge>
       </div>
@@ -215,6 +217,7 @@ export default function BrandVisibilityPage() {
           value={`${mentionRatePct}%`}
           delta={mentionDelta}
           deltaLabel="vs 7d"
+          helpText={t('dashboard.kpi.mention_rate_help')}
           sparkData={mentionSparkData}
           sparkColor="var(--color-accent)"
         />
@@ -223,6 +226,7 @@ export default function BrandVisibilityPage() {
           value={`${sovPct}%`}
           delta={sovDelta}
           deltaLabel="vs 7d"
+          helpText={t('dashboard.kpi.sov_help')}
           sparkData={sovSparkData}
           sparkColor="var(--color-chart-7)"
         />

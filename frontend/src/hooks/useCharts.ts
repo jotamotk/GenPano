@@ -9,23 +9,38 @@ import { useQuery } from '@tanstack/react-query'
 
 import { projectChartsApi } from '../api/charts'
 import { isLiveProjectId } from './useBrandOverview'
+import { ProjectAnalysisParams } from '../lib/projectAnalysisFilters'
 
 const STALE = 60_000
+const filterKey = (filters: ProjectAnalysisParams = {}) =>
+  [
+    filters.from ?? '',
+    filters.to ?? '',
+    filters.engine ?? '',
+    filters.segment_id ?? '',
+    filters.profile_id ?? '',
+  ].join('|')
 
-export function useEngineMetrics(projectId: string | null | undefined) {
+export function useEngineMetrics(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'engine-metrics', projectId],
-    queryFn: () => projectChartsApi.engineMetrics(projectId as string),
+    queryKey: ['charts', 'engine-metrics', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.engineMetrics(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
   })
 }
 
-export function usePositionDistribution(projectId: string | null | undefined) {
+export function usePositionDistribution(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'position-distribution', projectId],
-    queryFn: () => projectChartsApi.positionDistribution(projectId as string),
+    queryKey: ['charts', 'position-distribution', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.positionDistribution(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
@@ -38,6 +53,7 @@ export function useTopicHeatmap(
     metric?: 'mention_rate' | 'sentiment'
     compareWith?: number[]
     topN?: number
+    filters?: ProjectAnalysisParams
   } = {},
 ) {
   return useQuery({
@@ -48,6 +64,7 @@ export function useTopicHeatmap(
       opts.metric,
       (opts.compareWith ?? []).join(','),
       opts.topN,
+      filterKey(opts.filters),
     ],
     queryFn: () => projectChartsApi.topicHeatmap(projectId as string, opts),
     enabled: isLiveProjectId(projectId),
@@ -56,20 +73,26 @@ export function useTopicHeatmap(
   })
 }
 
-export function useSentimentByEngine(projectId: string | null | undefined) {
+export function useSentimentByEngine(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'sentiment-by-engine', projectId],
-    queryFn: () => projectChartsApi.sentimentByEngine(projectId as string),
+    queryKey: ['charts', 'sentiment-by-engine', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.sentimentByEngine(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
   })
 }
 
-export function useSentimentTrendByEngine(projectId: string | null | undefined) {
+export function useSentimentTrendByEngine(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'sentiment-trend-by-engine', projectId],
-    queryFn: () => projectChartsApi.sentimentTrendByEngine(projectId as string),
+    queryKey: ['charts', 'sentiment-trend-by-engine', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.sentimentTrendByEngine(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
@@ -79,10 +102,11 @@ export function useSentimentTrendByEngine(projectId: string | null | undefined) 
 export function useTopicAttribution(
   projectId: string | null | undefined,
   limit = 10,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['charts', 'topic-attribution', projectId, limit],
-    queryFn: () => projectChartsApi.topicAttribution(projectId as string, limit),
+    queryKey: ['charts', 'topic-attribution', projectId, limit, filterKey(filters)],
+    queryFn: () => projectChartsApi.topicAttribution(projectId as string, limit, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
@@ -91,10 +115,17 @@ export function useTopicAttribution(
 
 export function useMentionSamples(
   projectId: string | null | undefined,
-  opts: { polarity?: string; limit?: number } = {},
+  opts: { polarity?: string; limit?: number; filters?: ProjectAnalysisParams } = {},
 ) {
   return useQuery({
-    queryKey: ['charts', 'mention-samples', projectId, opts.polarity, opts.limit],
+    queryKey: [
+      'charts',
+      'mention-samples',
+      projectId,
+      opts.polarity,
+      opts.limit,
+      filterKey(opts.filters),
+    ],
     queryFn: () => projectChartsApi.mentionSamples(projectId as string, opts),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
@@ -102,30 +133,40 @@ export function useMentionSamples(
   })
 }
 
-export function useAuthorityTrend(projectId: string | null | undefined) {
+export function useAuthorityTrend(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'authority-trend', projectId],
-    queryFn: () => projectChartsApi.authorityTrend(projectId as string),
+    queryKey: ['charts', 'authority-trend', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.authorityTrend(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
   })
 }
 
-export function useCitationComposition(projectId: string | null | undefined) {
+export function useCitationComposition(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'citation-composition', projectId],
-    queryFn: () => projectChartsApi.citationComposition(projectId as string),
+    queryKey: ['charts', 'citation-composition', projectId, filterKey(filters)],
+    queryFn: () => projectChartsApi.citationComposition(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,
   })
 }
 
-export function useContentGap(projectId: string | null | undefined, limit = 12) {
+export function useContentGap(
+  projectId: string | null | undefined,
+  limit = 12,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['charts', 'content-gap', projectId, limit],
-    queryFn: () => projectChartsApi.contentGap(projectId as string, limit),
+    queryKey: ['charts', 'content-gap', projectId, limit, filterKey(filters)],
+    queryFn: () => projectChartsApi.contentGap(projectId as string, limit, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,

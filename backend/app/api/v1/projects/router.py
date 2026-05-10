@@ -74,6 +74,23 @@ from app.api.v1.projects._charts_service import (
     get_topic_attribution,
     get_topic_heatmap,
 )
+from app.api.v1.projects._topic_analysis_dto import (
+    ProjectSegmentsOut,
+    PromptQueriesOut,
+    QueryActivityOut,
+    QueryResponseDetailOut,
+    TopicMonitoringOut,
+    TopicPromptsOut,
+)
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    get_project_segments,
+    get_prompt_queries,
+    get_query_activity,
+    get_query_response_detail,
+    get_topic_monitoring,
+    get_topic_prompts,
+)
 from app.api.v1.projects._dto import (
     CompetitorIn,
     ProjectIn,
@@ -114,6 +131,24 @@ def _parse_date(value: str | None, field: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise validation_error(field, "must be ISO date YYYY-MM-DD") from exc
+
+
+def _analysis_filters(
+    *,
+    from_: str | None,
+    to: str | None,
+    engine: str | None,
+    segment_id: str | None,
+    profile_id: str | None,
+) -> AnalysisFilters:
+    engines = _parse_csv(engine)
+    return AnalysisFilters(
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+        engines=tuple(engines) if engines else None,
+        segment_id=segment_id or None,
+        profile_id=profile_id or None,
+    )
 
 
 @router.get("/", response_model=ProjectListOut)
@@ -267,6 +302,131 @@ async def project_topics(
     return await get_topics(session, project)
 
 
+@router.get("/{project_id}/topics/monitoring", response_model=TopicMonitoringOut)
+async def project_topic_monitoring(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+) -> TopicMonitoringOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_topic_monitoring(
+        session,
+        project,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+@router.get("/{project_id}/topics/{topic_id}/prompts", response_model=TopicPromptsOut)
+async def project_topic_prompts(
+    project_id: str,
+    topic_id: int,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+) -> TopicPromptsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_topic_prompts(
+        session,
+        project,
+        topic_id=topic_id,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+@router.get("/{project_id}/prompts/{prompt_id}/queries", response_model=PromptQueriesOut)
+async def project_prompt_queries(
+    project_id: str,
+    prompt_id: int,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+) -> PromptQueriesOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_prompt_queries(
+        session,
+        project,
+        prompt_id=prompt_id,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+@router.get("/{project_id}/queries/{query_id}/response", response_model=QueryResponseDetailOut)
+async def project_query_response(
+    project_id: str,
+    query_id: int,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> QueryResponseDetailOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_query_response_detail(session, project, query_id=query_id)
+
+
+@router.get("/{project_id}/query-activity", response_model=QueryActivityOut)
+async def project_query_activity(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+) -> QueryActivityOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_query_activity(
+        session,
+        project,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+@router.get("/{project_id}/segments", response_model=ProjectSegmentsOut)
+async def project_segments(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> ProjectSegmentsOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_project_segments(session, project)
+
+
 @router.get("/{project_id}/sentiment", response_model=SentimentOut)
 async def project_sentiment(
     project_id: str,
@@ -400,6 +560,9 @@ async def project_engine_metrics(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> EngineMetricsOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_engine_metrics(
@@ -407,6 +570,9 @@ async def project_engine_metrics(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -420,6 +586,9 @@ async def project_position_distribution(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> PositionDistributionOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_position_distribution(
@@ -427,6 +596,9 @@ async def project_position_distribution(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -466,6 +638,9 @@ async def project_sentiment_by_engine(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> SentimentByEngineOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment_by_engine(
@@ -473,6 +648,9 @@ async def project_sentiment_by_engine(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -486,6 +664,9 @@ async def project_sentiment_trend_by_engine(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> SentimentTrendByEngineOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment_trend_by_engine(
@@ -493,6 +674,9 @@ async def project_sentiment_trend_by_engine(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -506,6 +690,9 @@ async def project_topic_attribution(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
 ) -> TopicAttributionOut:
     project = await service.get_project_for_user(session, user, project_id)
@@ -514,6 +701,9 @@ async def project_topic_attribution(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
         limit=limit,
     )
 
@@ -549,6 +739,9 @@ async def project_authority_trend(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> AuthorityTrendOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_authority_trend(
@@ -556,6 +749,9 @@ async def project_authority_trend(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -569,6 +765,9 @@ async def project_citation_composition(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
 ) -> CitationCompositionOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_citation_composition(
@@ -576,6 +775,9 @@ async def project_citation_composition(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
     )
 
 
@@ -586,6 +788,9 @@ async def project_content_gap(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
     limit: int = Query(12, ge=1, le=50),
 ) -> ContentGapOut:
     project = await service.get_project_for_user(session, user, project_id)
@@ -594,6 +799,9 @@ async def project_content_gap(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
         limit=limit,
     )
 
