@@ -12,6 +12,10 @@ const alpineCdnPath = require.resolve('alpinejs/dist/cdn.min.js');
 let adminHtmlCache: string | null = null;
 let alpineCdnCache: string | null = null;
 
+type AdminErrorGuardOptions = {
+  allowedNetworkErrorUrls?: RegExp[];
+};
+
 const readAdminHtml = async () => {
   if (adminHtmlCache === null) {
     adminHtmlCache = await readFile(adminHtmlPath, 'utf8');
@@ -111,11 +115,17 @@ export const installAdminDocumentRoute = async (page: Page) => {
   });
 };
 
-export const installAdminErrorGuards = (page: Page) => {
+export const installAdminErrorGuards = (page: Page, options: AdminErrorGuardOptions = {}) => {
   const failures: string[] = [];
+  const isAllowedNetworkError = (url: string) => (
+    (options.allowedNetworkErrorUrls || []).some(pattern => pattern.test(url))
+  );
 
   page.on('console', message => {
     if (message.type() === 'error') {
+      if (message.text().startsWith('Failed to load resource:') && (options.allowedNetworkErrorUrls || []).length > 0) {
+        return;
+      }
       failures.push(`console error: ${message.text()}`);
     }
   });
@@ -126,6 +136,7 @@ export const installAdminErrorGuards = (page: Page) => {
     const failure = request.failure();
     if (!failure || failure.errorText.includes('ERR_ABORTED')) return;
     const url = request.url();
+    if (isAllowedNetworkError(url)) return;
     if (url.includes('/admin') || url.includes('/api/admin')) {
       failures.push(`request failed: ${request.method()} ${url} ${failure.errorText}`);
     }
@@ -134,6 +145,7 @@ export const installAdminErrorGuards = (page: Page) => {
     const status = response.status();
     if (status < 500) return;
     const url = response.url();
+    if (isAllowedNetworkError(url)) return;
     if (url.includes('/admin') || url.includes('/api/admin')) {
       failures.push(`network ${status}: ${url}`);
     }
