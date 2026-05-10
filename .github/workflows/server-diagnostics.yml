@@ -87,3 +87,124 @@ jobs:
 
             echo "=== Recent backend logs ==="
             docker compose logs --tail=220 backend
+
+            echo "=== Query picker diagnostics: bestCoffer counts ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -c "
+              WITH target_brand AS (
+                SELECT id::text AS brand_id, name, name_zh, name_en
+                FROM brands
+                WHERE LOWER(COALESCE(name, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_zh, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_en, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%bestCoffer%')
+                ORDER BY id
+                LIMIT 5
+              ),
+              branded_candidates AS (
+                SELECT
+                  q.id,
+                  q.run_id,
+                  q.candidate_seq,
+                  q.candidate_status,
+                  q.rendered_query,
+                  q.created_at,
+                  COALESCE(
+                    q.metadata_json->>'brand_id',
+                    q.metadata_json->>'brandId',
+                    t.brand_id::text
+                  ) AS resolved_brand_id
+                FROM query_generation_candidates q
+                LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
+                LEFT JOIN topics t ON t.id = pr.topic_id
+              )
+              SELECT
+                tb.brand_id,
+                COALESCE(tb.name, tb.name_zh, tb.name_en) AS brand_name,
+                bc.candidate_status,
+                COUNT(*) AS rows
+              FROM target_brand tb
+              LEFT JOIN branded_candidates bc ON bc.resolved_brand_id = tb.brand_id
+              GROUP BY tb.brand_id, brand_name, bc.candidate_status
+              ORDER BY tb.brand_id, bc.candidate_status;
+            "
+
+            echo "=== Query picker diagnostics: bestCoffer ready page shape ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -c "
+              WITH target_brand AS (
+                SELECT id::text AS brand_id
+                FROM brands
+                WHERE LOWER(COALESCE(name, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_zh, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_en, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%bestCoffer%')
+                ORDER BY id
+                LIMIT 1
+              ),
+              branded_ready AS (
+                SELECT
+                  q.id,
+                  q.run_id,
+                  q.candidate_seq,
+                  q.candidate_status,
+                  q.rendered_query,
+                  q.created_at,
+                  COALESCE(
+                    q.metadata_json->>'brand_id',
+                    q.metadata_json->>'brandId',
+                    t.brand_id::text
+                  ) AS resolved_brand_id
+                FROM query_generation_candidates q
+                LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
+                LEFT JOIN topics t ON t.id = pr.topic_id
+                WHERE q.candidate_status = 'ready'
+              )
+              SELECT
+                COUNT(*) AS ready_total,
+                COUNT(*) FILTER (WHERE candidate_seq IS NULL) AS null_seq,
+                COUNT(DISTINCT run_id) AS runs,
+                MIN(candidate_seq) AS min_seq,
+                MAX(candidate_seq) AS max_seq
+              FROM branded_ready br
+              JOIN target_brand tb ON br.resolved_brand_id = tb.brand_id;
+            "
+
+            docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -c "
+              WITH target_brand AS (
+                SELECT id::text AS brand_id
+                FROM brands
+                WHERE LOWER(COALESCE(name, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_zh, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name_en, '')) = LOWER('bestCoffer')
+                   OR LOWER(COALESCE(name, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%bestCoffer%')
+                   OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%bestCoffer%')
+                ORDER BY id
+                LIMIT 1
+              ),
+              branded_ready AS (
+                SELECT
+                  q.id,
+                  q.run_id,
+                  q.candidate_seq,
+                  q.rendered_query,
+                  COALESCE(
+                    q.metadata_json->>'brand_id',
+                    q.metadata_json->>'brandId',
+                    t.brand_id::text
+                  ) AS resolved_brand_id
+                FROM query_generation_candidates q
+                LEFT JOIN prompts pr ON CAST(pr.id AS TEXT) = q.prompt_id
+                LEFT JOIN topics t ON t.id = pr.topic_id
+                WHERE q.candidate_status = 'ready'
+              )
+              SELECT id, run_id, candidate_seq, LEFT(rendered_query, 80) AS query
+              FROM branded_ready br
+              JOIN target_brand tb ON br.resolved_brand_id = tb.brand_id
+              ORDER BY candidate_seq ASC, id ASC
+              OFFSET 95
+              LIMIT 20;
+            "
