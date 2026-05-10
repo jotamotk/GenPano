@@ -36,6 +36,17 @@ def test_scheduler_schedule_list_has_brand_filter_and_pagination() -> None:
     assert "scheduleTotalPages()" in html
 
 
+def test_scheduler_schedule_pagination_is_on_query_plan_list() -> None:
+    html = _admin_html()
+    pager = "'Page ' + schedulePage + ' / ' + scheduleTotalPages()"
+
+    query_plan_start = html.index("<!-- ─── A-2.5: Query 计划")
+    modal_start = html.index("<!-- ===== QUERY SCHEDULE CREATE / EDIT MODAL =====")
+    pager_index = html.index(pager)
+
+    assert query_plan_start < pager_index < modal_start
+
+
 def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
     html = _admin_html()
     section = html[

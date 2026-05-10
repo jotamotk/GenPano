@@ -1958,6 +1958,24 @@
                 </tbody>
               </table>
             </div>
+            <div x-show="schedulesTotal > 0"
+                 class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted">
+              <span x-text="'Page ' + schedulePage + ' / ' + scheduleTotalPages() + ' · total ' + (schedulesTotal || 0)"></span>
+              <div class="inline-flex items-center gap-1">
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(1)">«</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(schedulePage - 1)">‹</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(schedulePage + 1)">›</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(scheduleTotalPages())">»</button>
+              </div>
+            </div>
           </div>
 
           <!-- ─── A-2.6: Upcoming N-day preview ─── -->
@@ -8123,23 +8141,6 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       @click="scheduleEditor.querySource = 'pool'; loadScheduleEditorBrands(); loadScheduleEditorCandidates()">从 Query Pool 选</button>
               <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'custom'}"
                       @click="scheduleEditor.querySource = 'custom'">自定义文本</button>
-            </div>
-            <div class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted">
-              <span x-text="'Page ' + schedulePage + ' / ' + scheduleTotalPages() + ' · total ' + (schedulesTotal || 0)"></span>
-              <div class="inline-flex items-center gap-1">
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage <= 1"
-                        @click="setSchedulePage(1)">«</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage <= 1"
-                        @click="setSchedulePage(schedulePage - 1)">‹</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage >= scheduleTotalPages()"
-                        @click="setSchedulePage(schedulePage + 1)">›</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage >= scheduleTotalPages()"
-                        @click="setSchedulePage(scheduleTotalPages())">»</button>
-              </div>
             </div>
           </div>
 
