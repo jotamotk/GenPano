@@ -33,10 +33,36 @@ async def search_brands(
     pattern = f"%{q_norm.lower()}%"
     capped = max(1, min(limit, 50))
 
+    # Aliases is a JSONB array of alternate names (Chinese / English / typos).
+    # Probe schema once so the query stays portable across SQLite (test bind,
+    # no JSONB) and Postgres (prod). Falls back to name-only matching on
+    # SQLite or when the column is absent.
+    has_aliases = False
+    try:
+        col_row = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'brands' "
+                    "AND column_name = 'aliases' LIMIT 1"
+                )
+            )
+        ).first()
+        has_aliases = col_row is not None
+    except Exception:
+        has_aliases = False
+
+    aliases_clause = (
+        " OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(aliases, '[]'::jsonb)) AS a "
+        "WHERE LOWER(a) LIKE :pattern)"
+        if has_aliases
+        else ""
+    )
+
     try:
         result = await session.execute(
             text(
-                """
+                f"""
                 SELECT
                     id,
                     COALESCE(NULLIF(name_zh, ''), NULLIF(name_en, ''), name) AS display_name,
@@ -46,6 +72,7 @@ async def search_brands(
                     LOWER(COALESCE(name_zh, '')) LIKE :pattern
                     OR LOWER(COALESCE(name_en, '')) LIKE :pattern
                     OR LOWER(COALESCE(name, '')) LIKE :pattern
+                    {aliases_clause}
                 ORDER BY display_name
                 LIMIT :lim
                 """
