@@ -47,6 +47,24 @@ def test_prompt_matrix_candidate_filters_include_brand_select() -> None:
     assert "qp.set('prompt_scope', this.promptMatrixCandidateScope)" in html
 
 
+def test_prompt_matrix_candidate_load_has_retry_and_diagnostic_errors() -> None:
+    html = _admin_html()
+    section = html[
+        html.index("promptMatrixCandidateErrorMessage") : html.index(
+            "async loadPromptMatrixPrompts"
+        )
+    ]
+
+    assert "promptMatrixFetchCandidatesJson" in section
+    assert "promptMatrixReadJsonResponse" in section
+    assert "promptMatrixCandidateErrorMessage" in section
+    assert "window.setTimeout(() => controller.abort(), 45000)" in section
+    assert "[408, 429, 500, 502, 503, 504].includes(res.status)" in section
+    assert "HTTP ' + res.status" in section
+    assert "候选 Prompt 加载失败" in section
+    assert "Candidate load failed" not in section
+
+
 def test_prompt_matrix_candidate_rows_show_scope_badges() -> None:
     html = _admin_html()
 

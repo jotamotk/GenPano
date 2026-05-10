@@ -15769,12 +15769,62 @@ function adminApp() {
       this.loadPromptMatrixCandidates();
     },
 
+    promptMatrixCandidateErrorMessage(res, body, fallback = '候选 Prompt 加载失败'){
+      const details = [];
+      if (res && res.status) details.push('HTTP ' + res.status);
+      const rawDetail = body && (body.message || body.title || body.detail || body.code || body.error);
+      if (rawDetail) {
+        if (typeof rawDetail === 'string') {
+          details.push(rawDetail);
+        } else {
+          try { details.push(JSON.stringify(rawDetail)); }
+          catch (_) { details.push(String(rawDetail)); }
+        }
+      }
+      return details.length ? (fallback + '：' + details.join(' · ')) : fallback;
+    },
+
+    async promptMatrixReadJsonResponse(res){
+      const text = await res.text().catch(() => '');
+      if (!text) return {};
+      try { return JSON.parse(text); }
+      catch (_) { return { message: text.slice(0, 500) }; }
+    },
+
+    async promptMatrixFetchCandidatesJson(url, fetchOptions){
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const res = await fetch(url, fetchOptions);
+          const body = await this.promptMatrixReadJsonResponse(res);
+          if (!res.ok || body.success === false) {
+            const retryable = attempt === 0 && [408, 429, 500, 502, 503, 504].includes(res.status);
+            if (retryable) {
+              await new Promise(resolve => window.setTimeout(resolve, 800));
+              continue;
+            }
+            throw new Error(this.promptMatrixCandidateErrorMessage(res, body));
+          }
+          return body;
+        } catch (e) {
+          lastError = e;
+          if (e && e.name === 'AbortError') throw e;
+          if (attempt === 0) {
+            await new Promise(resolve => window.setTimeout(resolve, 800));
+            continue;
+          }
+          throw e;
+        }
+      }
+      throw lastError || new Error('候选 Prompt 加载失败');
+    },
+
     async loadPromptMatrixCandidates(){
       if (!this.isLoggedIn) return;
       this.promptMatrixCandidatesLoading = true;
       this.promptMatrixCandidatesError = '';
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timeoutId = controller ? window.setTimeout(() => controller.abort(), 15000) : null;
+      const timeoutId = controller ? window.setTimeout(() => controller.abort(), 45000) : null;
       try {
         const qp = new URLSearchParams({
           status:this.promptMatrixCandidateStatus || 'pending',
@@ -15788,9 +15838,7 @@ function adminApp() {
         if (this.promptMatrixCandidateQualityGate && this.promptMatrixCandidateQualityGate !== 'all') qp.set('quality_gate', this.promptMatrixCandidateQualityGate);
         const fetchOptions = { credentials:'same-origin' };
         if (controller) fetchOptions.signal = controller.signal;
-        const res = await fetch('/api/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Candidate load failed');
+        const body = await this.promptMatrixFetchCandidatesJson('/api/admin/prompt-matrix/candidates?' + qp.toString(), fetchOptions);
         this.promptMatrixPendingItems = body.rows || [];
         this.syncPromptMatrixCandidateSelection();
         const pagination = body.pagination || {};
@@ -15808,8 +15856,8 @@ function adminApp() {
         this.promptMatrixCandidateTotal = 0;
         this.promptMatrixCandidateTotalPagesValue = 1;
         this.promptMatrixCandidatesError = e.name === 'AbortError'
-          ? '候选 Prompt 加载超时，请检查数据库连接后重试'
-          : (e.message || 'Candidate load failed');
+          ? '候选 Prompt 加载超时（45s），请稍后重试或缩小筛选范围'
+          : (e.message || '候选 Prompt 加载失败');
       } finally {
         if (timeoutId) window.clearTimeout(timeoutId);
         this.promptMatrixCandidatesLoading = false;
