@@ -7929,16 +7929,28 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       </div>
       <div class="p-6 space-y-4">
         <!-- Summary stats -->
-        <div class="grid grid-cols-3 gap-3">
+        <div class="grid grid-cols-4 gap-3">
           <div class="rounded-card bg-surface-page border border-b-card p-3">
             <div class="text-[10px] text-ink-muted font-semibold uppercase">绑定 Profile</div>
             <div class="text-[18px] font-bold text-ink mt-0.5" x-text="(accountDrawerDetail?.total ?? 0) + ' 个'"></div>
           </div>
           <div class="rounded-card bg-surface-page border border-b-card p-3">
+            <div class="text-[10px] text-ink-muted font-semibold uppercase">账号日容量</div>
+            <template x-if="accountDrawerDetail">
+              <input type="number" min="0" max="10000"
+                     x-model.number="accountDrawerDetail.account.daily_limit"
+                     @change="accountDrawerDetail.account.daily_limit = Math.max(0, Math.min(parseInt(accountDrawerDetail.account.daily_limit || 0), 10000)); accountDrawerDirty = true"
+                     class="mt-1 w-full h-8 px-2 rounded-btn border border-b-default bg-surface text-[16px] font-bold text-ink text-right" />
+            </template>
+            <template x-if="!accountDrawerDetail">
+              <div class="text-[18px] font-bold text-ink-muted mt-1">—</div>
+            </template>
+          </div>
+          <div class="rounded-card bg-surface-page border border-b-card p-3">
             <div class="text-[10px] text-ink-muted font-semibold uppercase">配额合计</div>
             <div class="text-[18px] font-bold mt-0.5"
-                 :class="(accountDrawerDetail?.quota_total ?? 0) > (accountDrawerDetail?.account?.daily_limit ?? 0) ? 'text-warning' : 'text-ink'">
-              <span x-text="(accountDrawerDetail?.quota_total ?? 0) + ' / ' + (accountDrawerDetail?.account?.daily_limit ?? 0)"></span>
+                 :class="(accountDrawerDetail?.bindings || []).reduce((s,b)=>s+(parseInt(b.daily_quota)||0), 0) > (accountDrawerDetail?.account?.daily_limit ?? 0) ? 'text-warning' : 'text-ink'">
+              <span x-text="(accountDrawerDetail?.bindings || []).reduce((s,b)=>s+(parseInt(b.daily_quota)||0), 0) + ' / ' + (accountDrawerDetail?.account?.daily_limit ?? 0)"></span>
             </div>
           </div>
           <div class="rounded-card bg-surface-page border border-b-card p-3">
@@ -17596,6 +17608,7 @@ function adminApp() {
       this.accountDrawerError = null;
       try {
         const payload = {
+          daily_limit: parseInt(this.accountDrawerDetail.account?.daily_limit || 0),
           bindings: (this.accountDrawerDetail.bindings || []).map(b => ({
             profile_id: b.profile_id,
             daily_quota: parseInt(b.daily_quota) || 0,
@@ -18108,13 +18121,17 @@ function adminApp() {
           this.schedulerSaveErr = '';
         } else {
           // 0/0 — explain why so the user isn't stuck guessing.
-          let hint = '0 入队';
+          let hint = body.message || '0 入队';
           const en   = body.schedules_enabled    ?? 0;
           const disp = body.schedules_dispatchable ?? 0;
           const paused = body.paused_engines || [];
           const quotas = body.quotas_total ?? 0;
-          if (en === 0 && quotas === 0) {
+          if (body.message) {
+            // Backend already returned an operator-facing explanation.
+          } else if (en === 0 && quotas === 0) {
             hint += ' — 没有启用的 Query 计划，也没有 Profile 绑定。请先在下方表格添加 Query 计划 (或在账号池里给账号绑定 Profile)。';
+          } else if (en === 0 && quotas > 0) {
+            hint += ' — 账号容量已配置 (' + quotas + '/天)，但没有启用的 Query 计划。请先添加或启用 Query 计划；只调整账号 quota 不会自动入队。';
           } else if (en > 0 && disp === 0 && paused.length > 0) {
             hint += ' — 有 ' + en + ' 条启用的 Query 计划，但所有目标 LLM 都被暂停了 (' + paused.join(', ') + ')。点上方今日进度卡里的「恢复」按钮启用 LLM。';
           } else if (en > 0 && disp === 0) {

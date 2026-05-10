@@ -204,6 +204,34 @@ async def test_manual_trigger_zero_dispatched_reason_propagates(
     assert audit[0].after.get("queries_created") == 0
 
 
+@pytest.mark.asyncio
+async def test_manual_trigger_returns_operator_message_for_quota_without_schedules(
+    client, admin_operator, monkeypatch
+):
+    a = _scheduler_router_module()
+    fake_result = {
+        "target_total": 0,
+        "queries_created": 0,
+        "run_id": None,
+        "reason": "no_schedules_only_bindings_no_prompts",
+        "schedules_enabled": 0,
+        "schedules_dispatchable": 0,
+        "paused_engines": [],
+        "quotas_total": 125,
+        "schedule_failures": [],
+    }
+    monkeypatch.setattr(a, "run_manual_dispatch", AsyncMock(return_value=fake_result))
+
+    resp = await client.post("/api/admin/scheduler/manual_trigger", json={})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["queries_created"] == 0
+    assert "账号容量已配置" in body["message"]
+    assert "125" in body["message"]
+    assert "没有启用的 Query 计划" in body["message"]
+
+
 # ── audit gate ───────────────────────────────────────────────
 
 

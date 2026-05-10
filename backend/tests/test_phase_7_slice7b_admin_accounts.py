@@ -81,6 +81,7 @@ def _patch_db(
     status_ok=True,
     reset_ok=True,
     delete_ok=True,
+    daily_limit_ok=True,
 ):
     a = _accounts_router_module()
     monkeypatch.setattr(
@@ -115,6 +116,11 @@ def _patch_db(
         a.accounts_db,
         "delete_account",
         AsyncMock(return_value=delete_ok),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "update_account_daily_limit",
+        AsyncMock(return_value=daily_limit_ok),
     )
 
 
@@ -809,6 +815,7 @@ def _patch_profile_db(
     profiles_for_assign=None,
     insert_count=1,
     insert_raises=None,
+    daily_limit_ok=True,
 ):
     a = _accounts_router_module()
     monkeypatch.setattr(
@@ -847,6 +854,11 @@ def _patch_profile_db(
         a.accounts_db,
         "fetch_active_accounts_with_bound_count",
         AsyncMock(return_value=list(accounts_for_assign or [])),
+    )
+    monkeypatch.setattr(
+        a.accounts_db,
+        "update_account_daily_limit",
+        AsyncMock(return_value=daily_limit_ok),
     )
     monkeypatch.setattr(
         a.accounts_db,
@@ -1026,6 +1038,68 @@ async def test_put_profiles_persists_and_audits(
     assert len(audit) == 1
     assert audit[0].severity == "med"
     assert audit[0].after == {"upserted": 2, "removed": 1}
+
+
+@pytest.mark.asyncio
+async def test_put_profiles_updates_account_daily_limit(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    a = _accounts_router_module()
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "x",
+            "daily_limit": 20,
+            "query_count_today": 0,
+            "status": "active",
+        },
+        upsert_returns=(0, 0),
+    )
+    resp = await client.put(
+        "/api/admin/accounts/1/profiles",
+        json={"daily_limit": 100, "bindings": [], "remove_profile_ids": []},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["daily_limit"] == 100
+    a.accounts_db.update_account_daily_limit.assert_awaited_once()
+    _, kwargs = a.accounts_db.update_account_daily_limit.await_args
+    assert kwargs == {"account_id": 1, "daily_limit": 100}
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "update_account_profiles")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit[0].after["daily_limit"] == {"before": 20, "after": 100}
+
+
+@pytest.mark.asyncio
+async def test_put_profiles_rejects_invalid_daily_limit(client, admin_operator, monkeypatch):
+    _patch_profile_db(
+        monkeypatch,
+        account={
+            "id": 1,
+            "llm_name": "doubao",
+            "phone_number": "x",
+            "daily_limit": 20,
+            "query_count_today": 0,
+            "status": "active",
+        },
+    )
+    resp = await client.put(
+        "/api/admin/accounts/1/profiles",
+        json={"daily_limit": -1, "bindings": [], "remove_profile_ids": []},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "daily_limit_invalid"
 
 
 @pytest.mark.asyncio

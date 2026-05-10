@@ -51,6 +51,45 @@ def _validation_400(error: SchedulerValidationError) -> JSONResponse:
     )
 
 
+def _manual_dispatch_message(result: dict[str, Any]) -> str | None:
+    """Operator-facing explanation for 0-dispatch outcomes."""
+    if int(result.get("queries_created") or 0) > 0:
+        return None
+
+    enabled = int(result.get("schedules_enabled") or 0)
+    dispatchable = int(result.get("schedules_dispatchable") or 0)
+    quotas = int(result.get("quotas_total") or 0)
+    paused = [str(e) for e in (result.get("paused_engines") or []) if e]
+    failures = result.get("schedule_failures") or []
+
+    if enabled == 0 and quotas > 0:
+        return (
+            f"账号容量已配置 ({quotas}/天), 但没有启用的 Query 计划。"
+            "请先在下方添加或启用 Query 计划; 只调整账号 quota 不会自动入队。"
+        )
+    if enabled == 0:
+        return "没有启用的 Query 计划。请先添加并启用 Query 计划, 然后再触发调度。"
+    if dispatchable == 0 and paused:
+        return (
+            f"有 {enabled} 条启用的 Query 计划, 但目标 LLM 已暂停: "
+            f"{', '.join(paused)}。请先恢复对应 LLM 后再触发。"
+        )
+    if dispatchable == 0:
+        return (
+            f"有 {enabled} 条启用的 Query 计划, 但没有可派发计划。"
+            "请检查目标 LLM 是否在白名单内, 以及计划是否启用。"
+        )
+    if failures:
+        return (
+            f"找到 {dispatchable} 条可派发计划, 但写入队列失败。"
+            f"前两条错误: {'; '.join(str(x) for x in failures[:2])}"
+        )
+    return (
+        f"本次没有入队。启用计划 {enabled} 条, 可派发 {dispatchable} 条, "
+        f"账号容量 {quotas}/天。"
+    )
+
+
 # ── /scheduler/config ────────────────────────────────────────
 
 
@@ -483,7 +522,11 @@ async def scheduler_manual_trigger(
         reason=note,
         request=request,
     )
-    return JSONResponse(status_code=200, content={"success": True, **result})
+    message = _manual_dispatch_message(result)
+    return JSONResponse(
+        status_code=200,
+        content={"success": True, **result, **({"message": message} if message else {})},
+    )
 
 
 __all__ = ["router"]
