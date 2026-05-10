@@ -619,6 +619,15 @@ export const MESSAGES = {
       /* NOTE: 旧 `no_dup_caption` 已删除 (2026-04-16, PRD §4.6.0a / §6c) —
          原文是页面职责提醒, 属开发者备注, 不应展示给用户.
          需要引导时通过告警条 "查看品牌详情 →" CTA 自然完成跳转. */
+      /* PRD §4.1.1d E4: 用户已认证但未设置主品牌时, /brand/overview 顶部
+         展示该 banner 提示去 onboarding. 之前这块在文件后段单独定义了一个
+         同级 `dashboard:` key, 被 JS 对象字面量去重静默吞掉了 — 整个
+         dashboard 字典都拿不到, 页面渲染出原始 i18n key. 现在合并到这里. */
+      onboarding_banner: {
+        title: '你还没设置监测品牌',
+        body: '当前展示的是行业平均数据。设置品牌后将显示该品牌的实时 AI 表现。',
+        cta: '现在设置',
+      },
     },
     brand: {
       list_title: '品牌',
@@ -970,13 +979,9 @@ export const MESSAGES = {
         create_failed: '创建失败，请重试',
       },
     },
-    dashboard: {
-      onboarding_banner: {
-        title: '你还没设置监测品牌',
-        body: '当前展示的是行业平均数据。设置品牌后将显示该品牌的实时 AI 表现。',
-        cta: '现在设置',
-      },
-    },
+    /* `dashboard.onboarding_banner` was here as a duplicate top-level key,
+       which silently overrode the full dashboard dictionary above. The
+       banner copy now lives inline in the first `dashboard:` block. */
     /* ─── PRD §4.1.1d E4: Gated 页面顶部 Banner ───
        依赖 Project 的面 (/brands/:id?tab=diag / /topics 等), 已登录但零
        Project 时从顶部提示建项目; sessionStorage dismiss 粒度为"页面". */
@@ -1658,6 +1663,14 @@ export const MESSAGES = {
       /* NOTE: legacy `no_dup_caption` removed (2026-04-16, PRD §4.6.0a / §6c) —
          users should not be told "this page doesn't do X". The "Open brand detail →"
          CTA on the alert bar communicates the boundary through interaction. */
+      /* PRD §4.1.1d E4 — gated-surface banner copy. Previously defined under a
+         second `dashboard:` key at the same level, which silently shadowed
+         this whole dashboard dictionary at runtime. Inlined here. */
+      onboarding_banner: {
+        title: "You haven't set a brand yet",
+        body: "You're seeing industry-wide demo data. Pick a brand to unlock live AI visibility for it.",
+        cta: 'Set it up',
+      },
     },
     brand: {
       list_title: 'Brands',
@@ -2008,13 +2021,9 @@ export const MESSAGES = {
         create_failed: 'Could not create the project. Please retry.',
       },
     },
-    dashboard: {
-      onboarding_banner: {
-        title: "You haven't set a brand yet",
-        body: "You're seeing industry-wide demo data. Pick a brand to unlock live AI visibility for it.",
-        cta: 'Set it up',
-      },
-    },
+    /* `dashboard.onboarding_banner` was here as a duplicate top-level key,
+       which silently overrode the full dashboard dictionary above. Copy now
+       lives inline in the first `dashboard:` block. */
     /* ─── PRD §4.1.1d E4: gated-page top banner ─── */
     project: {
       gatedBanner: {
