@@ -3,6 +3,8 @@ import { Badge, Button, Card } from '../components/ui';
 import ProfileGroupFilter, { ProfileGroupSampleWarning } from '../components/filters/ProfileGroupFilter';
 import ProjectRequiredBanner from '../components/ProjectRequiredBanner';
 import TopicIntentMatrix from '../components/topics/TopicIntentMatrix';
+import QueryActivityCard from '../components/topics/QueryActivityCard';
+import { useProjects } from '../hooks/useProjects';
 import { TOPICS, PROMPTS, QUERIES, RESPONSES, INDUSTRY_TOPIC_HEATMAP } from '../data/mock';
 
 /* ─────────────────────────────────────────────────────────────
@@ -614,6 +616,15 @@ export default function TopicsPage() {
   const [selectedPrompt, setSelectedPrompt] = useState(null);
   const [selectedQuery, setSelectedQuery] = useState(null);
 
+  /* ── Live brand wiring for QueryActivityCard ──
+     Uses the user's first live project's primary_brand_id; the card
+     handles the "no brand selected" empty state itself, so unauth /
+     pre-onboarding users still get a clean fallback message. */
+  const { data: liveProjects } = useProjects();
+  const activeBrandId = liveProjects && liveProjects.length > 0
+    ? liveProjects[0].primary_brand_id
+    : null;
+
   const goTo = {
     topics:   () => { setView('topics'); setSelectedTopic(null); setSelectedPrompt(null); setSelectedQuery(null); },
     prompts:  (topic)  => { setView('prompts');  setSelectedTopic(topic); setSelectedPrompt(null); setSelectedQuery(null); },
@@ -646,6 +657,14 @@ export default function TopicsPage() {
           authenticated-zero-Project users see a conversion prompt at the top.
           The banner self-gates (auth + projects.length===0 + not dismissed). */}
       <ProjectRequiredBanner />
+
+      {/* 查询活动指标 — 仅在 Topic 列表层显示，下钻后让位给详情。
+          数据基于 LLM Response 分析（见 backend/app/admin/queries/analytics.py）。 */}
+      {view === 'topics' && (
+        <div className="mb-6">
+          <QueryActivityCard brandId={activeBrandId} />
+        </div>
+      )}
 
       {view !== 'topics' && <Breadcrumb items={breadcrumb} onNavigate={onBreadcrumb} />}
 

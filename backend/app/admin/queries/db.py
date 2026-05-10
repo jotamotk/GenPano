@@ -233,25 +233,179 @@ async def list_queries(
 # ── write paths (slice 9b) ──────────────────────────────────
 
 
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    """Return the set of column names for ``name``, or empty if missing.
+
+    Mirrors the picker router helper. Used by ensure_default_prompt() to
+    decide which optional columns (status / generated_by / created_at) to
+    include in the INSERT — production tables have them, sqlite stubs may
+    not, and we never assume.
+    """
+    try:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :n"
+                ),
+                {"n": name},
+            )
+        ).all()
+    except Exception:
+        return set()
+    return {r[0] for r in rows}
+
+
+async def ensure_default_prompt(
+    session: AsyncSession,
+    *,
+    brand_id: int | None,
+    query_text: str,
+) -> int | None:
+    """Find or create a prompt row for the given (brand, query_text), so
+    queries.prompt_id can be set non-NULL.
+
+    Idempotent — re-runs return the same prompt id. Returns ``None`` when
+    the upstream tables are unavailable (sqlite CI), brand_id is None, or
+    schema doesn't have the columns we need (defensive — admin_console
+    legacy schemas vary per deploy).
+
+    Mirrors the Alembic backfill logic (Step 1 + Step 2): one
+    ``category='legacy-import'`` topic per brand, one prompt per
+    distinct (brand, query_text) under that topic.
+    """
+    if brand_id is None:
+        return None
+    if not (
+        await _table_exists(session, "queries")
+        and await _table_exists(session, "topics")
+        and await _table_exists(session, "prompts")
+    ):
+        return None
+
+    topic_cols = await _table_columns(session, "topics")
+    prompt_cols = await _table_columns(session, "prompts")
+    if not ({"brand_id", "text", "category"}.issubset(topic_cols)
+            and {"topic_id", "text"}.issubset(prompt_cols)):
+        return None
+
+    existing = (
+        await session.execute(
+            text(
+                """
+                SELECT pr.id FROM prompts pr
+                JOIN topics t ON t.id = pr.topic_id
+                WHERE t.brand_id = :brand_id
+                  AND t.category = 'legacy-import'
+                  AND pr.text = :query_text
+                LIMIT 1
+                """
+            ),
+            {"brand_id": brand_id, "query_text": query_text},
+        )
+    ).first()
+    if existing is not None:
+        return int(existing[0])
+
+    topic_row = (
+        await session.execute(
+            text(
+                "SELECT id FROM topics WHERE brand_id = :brand_id "
+                "AND category = 'legacy-import' LIMIT 1"
+            ),
+            {"brand_id": brand_id},
+        )
+    ).first()
+    if topic_row is None:
+        topic_columns = ["brand_id", "text", "category"]
+        topic_value_exprs = [":brand_id", "'未分类查询'", "'legacy-import'"]
+        if "generated_by" in topic_cols:
+            topic_columns.append("generated_by")
+            topic_value_exprs.append("'backfill'")
+        if "status" in topic_cols:
+            topic_columns.append("status")
+            topic_value_exprs.append("'active'")
+        if "created_at" in topic_cols:
+            topic_columns.append("created_at")
+            topic_value_exprs.append("NOW()")
+        topic_row = (
+            await session.execute(
+                text(
+                    f"INSERT INTO topics ({', '.join(topic_columns)}) "
+                    f"VALUES ({', '.join(topic_value_exprs)}) RETURNING id"
+                ),
+                {"brand_id": brand_id},
+            )
+        ).first()
+        if topic_row is None:
+            return None
+    topic_id = int(topic_row[0])
+
+    prompt_columns = ["topic_id", "text"]
+    prompt_value_exprs = [":topic_id", ":query_text"]
+    if "intent" in prompt_cols:
+        prompt_columns.append("intent")
+        prompt_value_exprs.append("'informational'")
+    if "language" in prompt_cols:
+        prompt_columns.append("language")
+        prompt_value_exprs.append("'zh'")
+    if "status" in prompt_cols:
+        prompt_columns.append("status")
+        prompt_value_exprs.append("'active'")
+    if "generated_by" in prompt_cols:
+        prompt_columns.append("generated_by")
+        prompt_value_exprs.append("'backfill'")
+    if "created_at" in prompt_cols:
+        prompt_columns.append("created_at")
+        prompt_value_exprs.append("NOW()")
+    inserted = (
+        await session.execute(
+            text(
+                f"INSERT INTO prompts ({', '.join(prompt_columns)}) "
+                f"VALUES ({', '.join(prompt_value_exprs)}) RETURNING id"
+            ),
+            {"topic_id": topic_id, "query_text": query_text},
+        )
+    ).first()
+    if inserted is None:
+        return None
+    return int(inserted[0])
+
+
 async def create_query(
     session: AsyncSession,
     *,
     target_llm: str,
     query_text: str,
     brand_id: int | None,
+    prompt_id: int | None = None,
 ) -> int | None:
     """INSERT a new pending query. Returns the new id; ``None`` when the
-    queries table is missing (sqlite test path)."""
+    queries table is missing (sqlite test path).
+
+    When ``prompt_id`` is not supplied, calls ``ensure_default_prompt`` so
+    the new row is linked to a real prompts/topics chain — keeps the admin
+    "Query Attempts" filter dropdowns populated for queries created via
+    the ad-hoc POST /api/queries path.
+    """
     if not await _table_exists(session, "queries"):
         return None
+
+    if prompt_id is None:
+        prompt_id = await ensure_default_prompt(
+            session, brand_id=brand_id, query_text=query_text
+        )
+
     row = (
         (
             await session.execute(
                 text(
                     """
                 INSERT INTO queries
-                    (target_llm, query_text, brand_id, status, created_at, queued_at)
-                VALUES (:target_llm, :query_text, :brand_id, 'pending', NOW(), NOW())
+                    (target_llm, query_text, brand_id, prompt_id, status,
+                     created_at, queued_at)
+                VALUES (:target_llm, :query_text, :brand_id, :prompt_id,
+                        'pending', NOW(), NOW())
                 RETURNING id
                 """
                 ),
@@ -259,6 +413,7 @@ async def create_query(
                     "target_llm": target_llm,
                     "query_text": query_text,
                     "brand_id": brand_id,
+                    "prompt_id": prompt_id,
                 },
             )
         )
@@ -471,6 +626,7 @@ __all__ = [
     "batch_trigger_queries",
     "cleanup_queries",
     "create_query",
+    "ensure_default_prompt",
     "fetch_status_stats",
     "list_queries",
     "mark_query_failed",

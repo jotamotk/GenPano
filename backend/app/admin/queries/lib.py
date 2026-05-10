@@ -58,7 +58,7 @@ def split_pending_status(value: Any) -> str | None:
 
 def parse_create_query_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     """Validate POST /api/queries body. Required: target_llm + query_text.
-    brand_id is optional. Returns the dict the db helper INSERTs."""
+    brand_id and prompt_id are optional. Returns the dict the db helper INSERTs."""
     payload = payload or {}
     target_llm = str(payload.get("target_llm") or "").strip()
     query_text = str(payload.get("query_text") or "").strip()
@@ -75,10 +75,22 @@ def parse_create_query_payload(payload: dict[str, Any] | None) -> dict[str, Any]
             raise QueryValidationError(
                 "invalid_brand_id", "brand_id must be an integer or null"
             ) from error
+    raw_prompt = payload.get("prompt_id")
+    prompt_id: int | None
+    if raw_prompt is None or raw_prompt == "":
+        prompt_id = None
+    else:
+        try:
+            prompt_id = int(raw_prompt)
+        except (TypeError, ValueError) as error:
+            raise QueryValidationError(
+                "invalid_prompt_id", "prompt_id must be an integer or null"
+            ) from error
     return {
         "target_llm": target_llm,
         "query_text": query_text,
         "brand_id": brand_id,
+        "prompt_id": prompt_id,
     }
 
 
