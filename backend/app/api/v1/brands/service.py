@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.brands._dto import BrandSearchHit
+from app.api.v1.projects._legacy_lookups import brand_display_expr, brand_table_columns
 
 logger = logging.getLogger(__name__)
 
@@ -37,26 +38,38 @@ async def search_brands(
     pattern = f"%{q_norm.lower()}%"
     capped = max(1, min(limit, 50))
 
-    # Aliases is a JSONB array of alternate names (Chinese / English / typos).
-    # Probe schema once so the query stays portable across SQLite (test bind,
-    # no JSONB) and Postgres (prod). Falls back to name-only matching on
-    # SQLite or when the column is absent.
-    has_aliases = False
-    try:
-        col_row = (
-            await session.execute(
-                text(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = 'brands' "
-                    "AND column_name = 'aliases' LIMIT 1"
-                )
-            )
-        ).first()
-        has_aliases = col_row is not None
-    except Exception:
-        has_aliases = False
+    cols = await brand_table_columns(session)
+    display_expr = brand_display_expr(cols)
+    if display_expr is None:
+        return []
 
-    rows = await _query_brands(session, pattern=pattern, lim=capped, with_aliases=has_aliases)
+    name_clauses = [
+        f"LOWER(COALESCE({col}, '')) LIKE :pattern"
+        for col in ("name_zh", "name_en", "name", "primary_name")
+        if col in cols
+    ]
+    if not name_clauses:
+        return []
+
+    dialect_name = ""
+    try:
+        dialect_name = session.get_bind().dialect.name
+    except Exception:
+        dialect_name = ""
+
+    # Aliases is JSONB in production Postgres; skip it on SQLite test binds.
+    has_aliases = "aliases" in cols and dialect_name == "postgresql"
+    industry_expr = "industry" if "industry" in cols else "NULL"
+
+    rows = await _query_brands(
+        session,
+        pattern=pattern,
+        lim=capped,
+        display_expr=display_expr,
+        industry_expr=industry_expr,
+        name_clauses=name_clauses,
+        with_aliases=has_aliases,
+    )
 
     monitored: set[int] = set()
     if user_id:
@@ -89,6 +102,9 @@ async def _query_brands(
     *,
     pattern: str,
     lim: int,
+    display_expr: str,
+    industry_expr: str,
+    name_clauses: list[str],
     with_aliases: bool,
 ) -> list[tuple[int, str, str | None]]:
     """Run the brand-search SELECT, falling back to name-only when the
@@ -103,16 +119,14 @@ async def _query_brands(
         if with_aliases
         else ""
     )
-    name_only_select = """
+    name_only_select = f"""
         SELECT
             id,
-            COALESCE(NULLIF(name_zh, ''), NULLIF(name_en, ''), name) AS display_name,
-            industry
+            {display_expr} AS display_name,
+            {industry_expr} AS industry
         FROM brands
         WHERE
-            LOWER(COALESCE(name_zh, '')) LIKE :pattern
-            OR LOWER(COALESCE(name_en, '')) LIKE :pattern
-            OR LOWER(COALESCE(name, '')) LIKE :pattern
+            {" OR ".join(name_clauses)}
     """
     sql = text(f"{name_only_select} {aliases_clause} ORDER BY display_name LIMIT :lim")
     try:

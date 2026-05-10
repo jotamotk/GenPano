@@ -10,6 +10,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 import { useBrandCitations } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityTrend,
@@ -56,7 +57,7 @@ export default function BrandCitationsPage() {
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
-  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
   const citationsQ = useBrandCitations(isLive ? liveProjectId : null, 50);
   const authorityTrendQ = useAuthorityTrend(isLive ? liveProjectId : null);

@@ -8,6 +8,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 import { useBrandProducts } from '../../hooks/useBrandMetrics';
 import { useProductRelations } from '../../hooks/useCharts';
 import { adaptProductRelations } from '../../adapters/chartAdapters';
@@ -39,7 +40,7 @@ export default function BrandProductsPage() {
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
-  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
   const productsQ = useBrandProducts(isLive ? liveProjectId : null);
   const relationsQ = useProductRelations(isLive ? liveProjectId : null);

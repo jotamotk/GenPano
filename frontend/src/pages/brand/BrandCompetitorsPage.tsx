@@ -11,6 +11,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 import { useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityRadar,
@@ -55,7 +56,7 @@ export default function BrandCompetitorsPage() {
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
-  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
   const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score');

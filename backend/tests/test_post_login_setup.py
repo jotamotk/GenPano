@@ -102,6 +102,32 @@ async def seeded_brands(db_session: AsyncSession) -> None:
     await db_session.commit()
 
 
+@pytest_asyncio.fixture
+async def seeded_name_only_brands(db_session: AsyncSession) -> None:
+    """Emulate the legacy/admin brands table shape that only has name."""
+    for col in (
+        "name TEXT",
+        "industry TEXT",
+    ):
+        await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col}"))
+    await db_session.execute(
+        text(
+            "INSERT INTO brands (id, name, industry) VALUES "
+            "(:id1, :n1, :i1),"
+            "(:id2, :n2, :i2)"
+        ),
+        {
+            "id1": 12,
+            "n1": "雅诗兰黛",
+            "i1": "美妆个护",
+            "id2": 18,
+            "n2": "NIKE",
+            "i2": "Sports",
+        },
+    )
+    await db_session.commit()
+
+
 # ── /api/auth/me — needs_onboarding signal ────────────────────────────────
 
 
@@ -191,6 +217,27 @@ async def test_search_matches_chinese_name(client, user_a, seeded_brands):
     assert resp.status_code == 200
     items = resp.json()["items"]
     assert any(it["brandId"] == 1 for it in items)
+
+
+@pytest.mark.asyncio
+async def test_search_supports_name_only_legacy_brands_table(
+    client, user_a, seeded_name_only_brands
+):
+    resp = await client.get(
+        "/api/v1/brands/search",
+        params={"q": "雅诗兰黛"},
+        headers=_bearer(user_a),
+    )
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items == [
+        {
+            "brandId": 12,
+            "brandName": "雅诗兰黛",
+            "industry": "美妆个护",
+            "isAlreadyMonitoring": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

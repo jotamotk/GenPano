@@ -9,11 +9,10 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { brandOverviewApi } from '../api/brandOverview'
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+import { isLiveProjectId as isLiveProjectIdValue } from '../lib/liveProject'
 
 export function isLiveProjectId(id: string | null | undefined): boolean {
-  return !!id && UUID_RE.test(id)
+  return isLiveProjectIdValue(id)
 }
 
 export function useBrandOverview(
