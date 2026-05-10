@@ -15,7 +15,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -82,6 +82,7 @@ class _ManualDispatchBatchSession:
         self.inserted_query_rows = []
         self.schedule_update_calls = 0
         self.committed = False
+        self.next_query_id = 100
         self.batch_columns = [
             "id",
             "query_text",
@@ -187,9 +188,19 @@ class _ManualDispatchBatchSession:
             self.query_insert_rows += len(params) if isinstance(params, list) else 1
             if isinstance(params, list):
                 self.inserted_query_rows.extend(params)
+                ids = [
+                    {"id": query_id}
+                    for query_id in range(
+                        self.next_query_id,
+                        self.next_query_id + len(params),
+                    )
+                ]
+                self.next_query_id += len(params)
             else:
                 self.inserted_query_rows.append(params)
-            return _FakeResult([])
+                ids = [{"id": self.next_query_id}]
+                self.next_query_id += 1
+            return _FakeResult(ids if "RETURNING" in sql else [])
         if "UPDATE query_schedules" in sql:
             self.schedule_update_calls += 1
             return _FakeResult([])
@@ -216,15 +227,15 @@ async def test_manual_dispatch_batch_plan_uses_bulk_writes_to_avoid_proxy_timeou
 
     assert result["queries_created"] == 6
     assert result["run_id"] == 99
+    assert result["query_ids"] == [100, 101, 102, 103, 104, 105]
     assert session.query_insert_rows == 6
     assert session.query_insert_calls == 1
     assert session.schedule_update_calls == 1
     assert {row["profile_id"] for row in session.inserted_query_rows} == {101}
     assert {row["target_llm"] for row in session.inserted_query_rows} == {"chatgpt", "gemini"}
-    assert {(row["target_llm"], row["account_id"]) for row in session.inserted_query_rows} == {
-        ("chatgpt", 11),
-        ("gemini", 12),
-    }
+    assert {
+        (row["target_llm"], row["account_id"]) for row in session.inserted_query_rows
+    } == {("chatgpt", 11), ("gemini", 12)}
     assert session.committed is True
 
 
@@ -296,9 +307,11 @@ async def test_manual_trigger_success_audit_high(
     client, admin_operator, monkeypatch, db_session: AsyncSession
 ):
     a = _scheduler_router_module()
+    monkeypatch.setattr(a, "dispatch_many", MagicMock(return_value=(3, 0)))
     fake_result = {
         "target_total": 5,
         "queries_created": 3,
+        "query_ids": [101, 102, 103],
         "run_id": 42,
         "reason": "ok",
         "schedules_enabled": 5,
@@ -316,8 +329,11 @@ async def test_manual_trigger_success_audit_high(
     body = resp.json()
     assert body["success"] is True
     assert body["queries_created"] == 3
+    assert body["dispatched"] == 3
+    assert body["dispatch_failed"] == 0
     assert body["run_id"] == 42
     a.run_manual_dispatch.assert_awaited_once()
+    a.dispatch_many.assert_called_once_with([101, 102, 103])
     dispatch_kwargs = a.run_manual_dispatch.await_args.kwargs
     assert dispatch_kwargs["brand_id"] == 42
     assert dispatch_kwargs["schedule_limit"] == 1200
@@ -338,6 +354,8 @@ async def test_manual_trigger_success_audit_high(
     assert after.get("brand_id") == 42
     assert after.get("schedule_limit") == 1200
     assert after.get("reason") == "ok"
+    assert after.get("dispatched") == 3
+    assert after.get("dispatch_failed") == 0
 
 
 @pytest.mark.asyncio

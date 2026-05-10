@@ -8,6 +8,7 @@ import pytest
         "/admin/api/admin/brands",
         "/admin/api/topics",
         "/admin/api/prompts",
+        "/admin/api/queries?count=1",
         "/admin/api/profiles/lite",
         "/admin/api/scheduler/schedules",
         "/admin/api/llm-extraction/candidates?status=pending",

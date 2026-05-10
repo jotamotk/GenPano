@@ -18612,9 +18612,20 @@ function adminApp() {
         if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
         const created = body.queries_created || 0;
         const target  = body.target_total   || 0;
+        const dispatched = body.dispatched || 0;
+        const dispatchFailed = body.dispatch_failed || 0;
         if (created > 0) {
-          this.schedulerSaveMsg = '已触发: 入队 ' + created + ' / 目标 ' + target;
-          this.schedulerSaveErr = '';
+          const dispatchText = ' · 派发成功 ' + dispatched + (dispatchFailed ? ' · 派发失败 ' + dispatchFailed : '');
+          if (dispatched > 0 && dispatchFailed === 0) {
+            this.schedulerSaveMsg = '已触发: 创建 ' + created + ' / 目标 ' + target + dispatchText;
+            this.schedulerSaveErr = '';
+          } else if (dispatchFailed > 0) {
+            this.schedulerSaveMsg = '';
+            this.schedulerSaveErr = '已创建 ' + created + ' 条 Query，但派发失败 ' + dispatchFailed + ' 条，请检查 Celery/Redis worker';
+          } else {
+            this.schedulerSaveMsg = '已触发: 创建 ' + created + ' / 目标 ' + target + dispatchText;
+            this.schedulerSaveErr = '';
+          }
         } else {
           // 0/0 — explain why so the user isn't stuck guessing.
           let hint = body.message || '0 入队';

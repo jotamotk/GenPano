@@ -20,9 +20,10 @@ Design notes:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import column, insert, table, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.scheduler.lib import (
@@ -78,6 +79,10 @@ def _json_list(value: Any) -> list[Any]:
             return []
         return parsed if isinstance(parsed, list) else []
     return []
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 async def _schedule_brand_filter(
@@ -387,6 +392,7 @@ async def run_manual_dispatch(
 
     query_cols = await _table_columns(session, "queries")
     include_schedule_id = "schedule_id" in query_cols
+    include_queued_at = "queued_at" in query_cols
     insert_cols = [
         "prompt_id",
         "profile_id",
@@ -396,23 +402,16 @@ async def run_manual_dispatch(
         "target_llm",
         "status",
     ]
-    value_exprs = [
-        ":prompt_id",
-        ":profile_id",
-        ":brand_id",
-        ":account_id",
-        ":query_text",
-        ":target_llm",
-        "'pending'",
-    ]
     if include_schedule_id:
         insert_cols.append("schedule_id")
-        value_exprs.append(":schedule_id")
     insert_cols.append("created_at")
-    value_exprs.append("NOW()")
+    if include_queued_at:
+        insert_cols.append("queued_at")
+    queries_table = table("queries", column("id"), *(column(name) for name in insert_cols))
 
     insert_rows: list[dict[str, Any]] = []
     touched_schedule_ids: set[int] = set()
+    now = _utcnow_naive()
     for sch in due_schedules:
         try:
             query_text = str(sch.get("query_text") or "").strip()
@@ -448,26 +447,26 @@ async def run_manual_dispatch(
                 "account_id": account_id,
                 "query_text": query_text,
                 "target_llm": target_llm,
+                "status": "pending",
+                "created_at": now,
             }
             if include_schedule_id:
                 row["schedule_id"] = sch.get("id")
+            if include_queued_at:
+                row["queued_at"] = now
             insert_rows.append(row)
             touched_schedule_ids.add(int(sch["id"]))
         except Exception as exc:
             schedule_failures.append(f"#{sch.get('id')}: {exc}")
 
     created = 0
+    query_ids: list[int] = []
     if insert_rows:
-        await session.execute(
-            text(
-                f"""
-                INSERT INTO queries
-                    ({", ".join(insert_cols)})
-                VALUES ({", ".join(value_exprs)})
-                """
-            ),
+        inserted = await session.execute(
+            insert(queries_table).returning(queries_table.c.id),
             insert_rows,
         )
+        query_ids = [int(row["id"]) for row in inserted.mappings().all()]
         await session.execute(
             text(
                 """
@@ -525,6 +524,7 @@ async def run_manual_dispatch(
     return {
         "target_total": target_total,
         "queries_created": created,
+        "query_ids": query_ids,
         "run_id": run_id,
         "reason": reason,
         "schedules_enabled": schedules_enabled_total,

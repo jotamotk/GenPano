@@ -214,6 +214,7 @@ app.include_router(_picker_router, prefix="/admin/api")
 from app.api.queries import router as _queries_router  # noqa: E402
 
 app.include_router(_queries_router, prefix="/api")
+app.include_router(_queries_router, prefix="/admin/api")
 
 # Analyzer routes (Phase 9 slice 9c). admin_console served
 # /api/analyzer/* without auth; FastAPI port adds Depends(current_admin).

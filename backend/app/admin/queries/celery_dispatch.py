@@ -9,17 +9,24 @@ still created/reset, the SPA shows ``dispatched=0``.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 
 def _load_celery_app() -> Any | None:
     try:
-        import importlib
-
         importlib.import_module("celery")
-        return importlib.import_module("geo_tracker.celery_app").celery_app
     except Exception:
         return None
+    for module_name in ("geo_tracker.celery_app", "app.celery_app"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        celery_app = getattr(module, "celery_app", None)
+        if celery_app is not None:
+            return celery_app
+    return None
 
 
 def dispatch_execute_query(query_id: int) -> bool:
@@ -46,7 +53,7 @@ def dispatch_many(ids: list[int]) -> tuple[int, int]:
         return 0, 0
     celery_app = _load_celery_app()
     if celery_app is None:
-        return 0, 0
+        return 0, len(ids)
     dispatched = 0
     failed = 0
     for qid in ids:
