@@ -187,6 +187,65 @@ async def test_competitor_metrics_includes_primary_and_competitors(client, user,
 
 
 @pytest.mark.asyncio
+async def test_competitor_metrics_brand_override_uses_mention_fallback(client, user, db_session):
+    p = Project(user_id=user.id, name="Override Mentions", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    for i in range(6):
+        response_id = 6100 + i
+        db_session.add(
+            BrandMention(
+                response_id=response_id,
+                brand_id=12,
+                brand_name="Estée Lauder",
+                position_rank=1 + (i % 2),
+                sentiment_score=0.8,
+                created_at=now - timedelta(days=i % 4),
+            )
+        )
+        if i < 4:
+            db_session.add(
+                BrandMention(
+                    response_id=response_id,
+                    brand_id=99,
+                    brand_name="Clinique",
+                    position_rank=2,
+                    sentiment_score=0.5,
+                    created_at=now - timedelta(days=i % 4),
+                )
+            )
+    await db_session.commit()
+
+    metrics_resp = await client.get(
+        f"/api/v1/projects/{p.id}/competitors/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+    assert metrics_resp.status_code == 200
+    metrics_body = metrics_resp.json()
+    assert metrics_body["primary_brand_id"] == 12
+    assert metrics_body["primary"]["avg_geo_score"] > 0
+    assert metrics_body["primary"]["avg_sov"] > 0
+    assert [c["brand_id"] for c in metrics_body["competitors"]] == [99]
+    assert metrics_body["competitors"][0]["co_mention_count"] == 4
+
+    trends_resp = await client.get(
+        f"/api/v1/projects/{p.id}/competitors/trends",
+        headers=_bearer(user),
+        params={"metric": "geo_score", "brand_id": 12},
+    )
+    assert trends_resp.status_code == 200
+    trends_body = trends_resp.json()
+    primary_series = next(s for s in trends_body["series"] if s["is_primary"])
+    assert primary_series["brand_id"] == 12
+    assert primary_series["points"]
+    assert primary_series["points"][0]["value"] > 0
+
+
+@pytest.mark.asyncio
 async def test_diagnostics_derives_from_data(client, user, db_session):
     """Insert sharp drop in mention_rate → expect visibility_decline diagnostic."""
     p = Project(user_id=user.id, name="Diag", primary_brand_id=77)

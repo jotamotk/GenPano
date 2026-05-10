@@ -334,6 +334,7 @@ async def project_competitor_metrics(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> CompetitorMetricsOut:
     """Primary brand vs each pinned competitor across 4 metrics (PRD §4.6.1g)."""
     project = await service.get_project_for_user(session, user, project_id)
@@ -342,6 +343,7 @@ async def project_competitor_metrics(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 
@@ -356,6 +358,7 @@ async def project_competitor_trends(
     metric: str = Query("geo_score"),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> CompetitorTrendsOut:
     """Per-brand 30-day trend for primary + each pinned competitor.
 
@@ -369,6 +372,7 @@ async def project_competitor_trends(
         metric=metric,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 

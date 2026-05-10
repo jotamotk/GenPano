@@ -201,6 +201,52 @@ async def test_overview_brand_id_override_falsy_keeps_default(client, user, proj
     assert resp.json()["brand_id"] == 42
 
 
+@pytest.mark.asyncio
+async def test_overview_uses_brand_mentions_when_daily_rollups_missing(client, user, db_session):
+    p = Project(user_id=user.id, name="Mention Only", primary_brand_id=12, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    for i in range(4):
+        db_session.add(
+            BrandMention(
+                response_id=4100 + i,
+                brand_id=12,
+                brand_name="Estée Lauder",
+                position_rank=(i % 3) + 1,
+                sentiment_score=0.75,
+                created_at=now - timedelta(days=i),
+            )
+        )
+    for i in range(2):
+        db_session.add(
+            BrandMention(
+                response_id=4200 + i,
+                brand_id=99,
+                brand_name="Other Brand",
+                position_rank=2,
+                sentiment_score=0.2,
+                created_at=now - timedelta(days=i),
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/overview", headers=_bearer(user))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    geo_card = next(c for c in body["kpi_cards"] if c["label_en"] == "GeoScore")
+    mention_card = next(c for c in body["kpi_cards"] if c["label_en"] == "Mention Rate")
+    assert geo_card["value"] > 0
+    assert mention_card["value"] > 0
+    assert body["geo_score_30d"]
+    assert body["sov_30d"]
+    assert body["sentiment_30d"]
+
+
 class _FakeNestedTransaction:
     def __init__(self, session: "_FakeTopPromptsSession") -> None:
         self._session = session

@@ -38,6 +38,15 @@ from app.api.v1.projects._brand_dto import (
     ProductsOut,
 )
 from app.api.v1.projects._legacy_lookups import resolve_brand_names
+from app.api.v1.projects._mention_rollups import (
+    brand_mention_daily_rollups,
+    brand_mention_window_rollup,
+    discover_related_brand_ids,
+    geo_score,
+    mention_rate,
+    metric_value,
+    share_of_voice,
+)
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -247,14 +256,32 @@ async def get_competitor_metrics(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> CompetitorMetricsOut:
     """Compare primary brand + each pinned competitor across 4 metrics."""
     from_d, to_d = _resolve_window(from_date, to_date)
+    primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
 
-    competitor_stmt = select(ProjectCompetitor.brand_id).where(
-        ProjectCompetitor.project_id == project.id
-    )
-    competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+    if primary_id is None:
+        return CompetitorMetricsOut(
+            project_id=project.id,
+            primary_brand_id=None,
+            period=_period(from_d, to_d),
+            primary=None,
+            competitors=[],
+            state="empty",
+        )
+
+    if brand_id_override is not None:
+        competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+    else:
+        competitor_stmt = select(ProjectCompetitor.brand_id).where(
+            ProjectCompetitor.project_id == project.id
+        )
+        competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+        if not competitor_ids:
+            competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+    competitor_ids = [bid for bid in competitor_ids if bid is not None and bid != primary_id]
 
     async def _row_for(brand_id: int) -> CompetitorBrandRow:
         stmt = select(
@@ -286,21 +313,40 @@ async def get_competitor_metrics(
         # Co-mention count: rough heuristic — count brand_mentions with
         # both primary brand_id and this brand on the same response
         co_count = 0
-        if project.primary_brand_id and brand_id != project.primary_brand_id:
+        if primary_id and brand_id != primary_id:
             primary_resp_stmt = (
                 select(BrandMention.response_id)
-                .where(BrandMention.brand_id == project.primary_brand_id)
+                .where(
+                    and_(
+                        BrandMention.brand_id == primary_id,
+                        BrandMention.created_at >= datetime.combine(from_d, datetime.min.time()),
+                        BrandMention.created_at <= datetime.combine(to_d, datetime.max.time()),
+                    )
+                )
                 .scalar_subquery()
             )
             co_stmt = select(func.count()).where(
                 and_(
                     BrandMention.brand_id == brand_id,
                     BrandMention.response_id.in_(primary_resp_stmt),
+                    BrandMention.created_at >= datetime.combine(from_d, datetime.min.time()),
+                    BrandMention.created_at <= datetime.combine(to_d, datetime.max.time()),
                 )
             )
             co_count = int((await session.execute(co_stmt)).scalar_one() or 0)
 
         avg_geo = r[0] if r else None
+        avg_mention = r[1] if r else None
+        avg_sov = r[2] if r else None
+        avg_sentiment = r[3] if r else None
+        if not any(v is not None for v in (avg_geo, avg_mention, avg_sov, avg_sentiment)):
+            rollup = await brand_mention_window_rollup(session, brand_id, from_d, to_d)
+            if rollup.has_data:
+                avg_geo = geo_score(rollup)
+                avg_mention = mention_rate(rollup)
+                avg_sov = share_of_voice(rollup)
+                avg_sentiment = rollup.avg_sentiment_score
+
         delta = None
         if avg_geo is not None and prior_geo is not None and prior_geo != 0:
             delta = round((avg_geo - prior_geo) / prior_geo * 100, 1)
@@ -308,23 +354,19 @@ async def get_competitor_metrics(
         return CompetitorBrandRow(
             brand_id=brand_id,
             brand_name=None,  # filled in below via bulk name lookup
-            avg_geo_score=round(r[0], 2) if r and r[0] else None,
-            avg_mention_rate=round(r[1], 4) if r and r[1] else None,
-            avg_sov=round(r[2], 4) if r and r[2] else None,
-            avg_sentiment=round(r[3], 3) if r and r[3] else None,
+            avg_geo_score=round(avg_geo, 2) if avg_geo is not None else None,
+            avg_mention_rate=round(avg_mention, 4) if avg_mention is not None else None,
+            avg_sov=round(avg_sov, 4) if avg_sov is not None else None,
+            avg_sentiment=round(avg_sentiment, 3) if avg_sentiment is not None else None,
             co_mention_count=co_count,
             delta_30d_pct=delta,
         )
 
-    primary_row = (
-        await _row_for(project.primary_brand_id) if project.primary_brand_id is not None else None
-    )
+    primary_row = await _row_for(primary_id)
     comp_rows = [await _row_for(bid) for bid in competitor_ids]
 
     # Bulk brand-name lookup
-    all_ids: list[int] = []
-    if project.primary_brand_id is not None:
-        all_ids.append(project.primary_brand_id)
+    all_ids: list[int] = [primary_id]
     all_ids.extend(competitor_ids)
     name_map = await resolve_brand_names(session, all_ids)
     if primary_row is not None:
@@ -335,7 +377,7 @@ async def get_competitor_metrics(
     state = "ok" if (primary_row or comp_rows) else "empty"
     return CompetitorMetricsOut(
         project_id=project.id,
-        primary_brand_id=project.primary_brand_id,
+        primary_brand_id=primary_id,
         period=_period(from_d, to_d),
         primary=primary_row,
         competitors=comp_rows,
@@ -497,6 +539,7 @@ async def get_competitor_trends(
     metric: str = "geo_score",
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> CompetitorTrendsOut:
     """Daily 30d trend for primary brand + each pinned competitor.
 
@@ -509,11 +552,16 @@ async def get_competitor_trends(
 
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    competitor_stmt = select(ProjectCompetitor.brand_id).where(
-        ProjectCompetitor.project_id == project.id
-    )
-    competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
-    primary_id = project.primary_brand_id
+    primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id_override is not None and primary_id is not None:
+        competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+    else:
+        competitor_stmt = select(ProjectCompetitor.brand_id).where(
+            ProjectCompetitor.project_id == project.id
+        )
+        competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+        if primary_id is not None and not competitor_ids:
+            competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
 
     brand_ids = list({*competitor_ids, *([primary_id] if primary_id is not None else [])})
     if not brand_ids:
@@ -551,6 +599,19 @@ async def get_competitor_trends(
                 value=float(value) if value is not None else None,
             )
         )
+    fallback_metric = "geo_score" if metric == "geo_score" else metric
+    for bid in brand_ids:
+        if series_by_brand[bid]:
+            continue
+        rollups = await brand_mention_daily_rollups(session, bid, from_d, to_d)
+        series_by_brand[bid] = [
+            CompetitorTrendPoint(
+                date=day,
+                value=metric_value(rollup, fallback_metric),
+            )
+            for day, rollup in sorted(rollups.items())
+            if rollup.has_data
+        ]
 
     name_map = await resolve_brand_names(session, brand_ids)
     output_series = [

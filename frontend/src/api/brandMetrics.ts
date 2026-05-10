@@ -200,17 +200,23 @@ export const brandMetricsApi = {
   products(projectId: string): Promise<ProductsOut> {
     return apiClient.get<ProductsOut>(`/v1/projects/${projectId}/products`)
   },
-  competitorMetrics(projectId: string): Promise<CompetitorMetricsOut> {
+  competitorMetrics(projectId: string, brandId?: number | null): Promise<CompetitorMetricsOut> {
+    const params = new URLSearchParams()
+    if (brandId != null) params.set('brand_id', String(brandId))
+    const qs = params.toString()
     return apiClient.get<CompetitorMetricsOut>(
-      `/v1/projects/${projectId}/competitors/metrics`,
+      `/v1/projects/${projectId}/competitors/metrics${qs ? `?${qs}` : ''}`,
     )
   },
   competitorTrends(
     projectId: string,
     metric: 'geo_score' | 'mention_rate' | 'sov' | 'sentiment' | 'rank' | 'citation' = 'geo_score',
+    brandId?: number | null,
   ): Promise<CompetitorTrendsOut> {
+    const params = new URLSearchParams({ metric })
+    if (brandId != null) params.set('brand_id', String(brandId))
     return apiClient.get<CompetitorTrendsOut>(
-      `/v1/projects/${projectId}/competitors/trends?metric=${metric}`,
+      `/v1/projects/${projectId}/competitors/trends?${params.toString()}`,
     )
   },
 }

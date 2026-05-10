@@ -24,6 +24,10 @@ from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._legacy_lookups import resolve_topic_names
+from app.api.v1.projects._mention_rollups import (
+    brand_mention_daily_rollups,
+    metric_value,
+)
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
     CitationRow,
@@ -114,6 +118,21 @@ async def get_metrics(
             elif isinstance(d, str):
                 d = date.fromisoformat(d)
             points.append(MetricSeriesPoint(date=d, value=round(r[1] or 0, 4)))
+        if not points:
+            rollups = await brand_mention_daily_rollups(
+                session,
+                primary_brand_id,
+                from_d,
+                to_d,
+            )
+            points = [
+                MetricSeriesPoint(
+                    date=date.fromisoformat(day),
+                    value=metric_value(rollup, metric),
+                )
+                for day, rollup in sorted(rollups.items())
+                if rollup.has_data
+            ]
         out_series.append(MetricSeries(metric=metric, points=points))
 
     has_data = any(s.points for s in out_series)

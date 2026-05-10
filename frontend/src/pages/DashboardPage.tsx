@@ -77,10 +77,14 @@ export default function DashboardPage() {
     ['mention_rate', 'sov', 'sentiment', 'rank', 'citation'],
     brandIdOverride,
   );
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const competitorsQ = useCompetitorMetrics(
+    isLive ? liveProjectId : null,
+    brandIdOverride,
+  );
   const competitorTrendsQ = useCompetitorTrends(
     isLive ? liveProjectId : null,
     'geo_score',
+    brandIdOverride,
   );
   const diagnosticsQ = useDiagnostics(isLive ? liveProjectId : null, {
     status: 'open',
