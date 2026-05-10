@@ -130,6 +130,64 @@ jobs:
               LIMIT 20;
             " || true
 
+            echo "=== Raw text brand query probe ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, name_zh, name_en
+              FROM brands
+              WHERE id IN (1, 2, ${BRAND_ID}, 24)
+              ORDER BY id;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              WITH hits AS (
+                SELECT 'topic' AS source, t.brand_id, t.id AS object_id,
+                       NULL::integer AS query_id, NULL::integer AS response_id
+                FROM topics t
+                WHERE COALESCE(t.text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
+                   OR COALESCE(t.text, '') ILIKE '%雅诗兰黛%'
+                   OR COALESCE(t.text, '') ILIKE '%雅思兰黛%'
+                   OR COALESCE(t.text, '') ILIKE '%estee%'
+                   OR COALESCE(t.text, '') ILIKE '%lauder%'
+                UNION ALL
+                SELECT 'prompt' AS source, q.brand_id, p.id AS object_id,
+                       NULL::integer AS query_id, NULL::integer AS response_id
+                FROM prompts p
+                LEFT JOIN topics t ON t.id = p.topic_id
+                LEFT JOIN queries q ON q.prompt_id = p.id
+                WHERE COALESCE(p.text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
+                   OR COALESCE(p.text, '') ILIKE '%雅诗兰黛%'
+                   OR COALESCE(p.text, '') ILIKE '%雅思兰黛%'
+                   OR COALESCE(p.text, '') ILIKE '%estee%'
+                   OR COALESCE(p.text, '') ILIKE '%lauder%'
+                UNION ALL
+                SELECT 'query' AS source, q.brand_id, q.id AS object_id,
+                       q.id AS query_id, NULL::integer AS response_id
+                FROM queries q
+                WHERE COALESCE(q.query_text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
+                   OR COALESCE(q.query_text, '') ILIKE '%雅诗兰黛%'
+                   OR COALESCE(q.query_text, '') ILIKE '%雅思兰黛%'
+                   OR COALESCE(q.query_text, '') ILIKE '%estee%'
+                   OR COALESCE(q.query_text, '') ILIKE '%lauder%'
+                UNION ALL
+                SELECT 'response' AS source, q.brand_id, r.id AS object_id,
+                       q.id AS query_id, r.id AS response_id
+                FROM llm_responses r
+                LEFT JOIN queries q ON q.id = r.query_id
+                WHERE COALESCE(r.raw_text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
+                   OR COALESCE(r.raw_text, '') ILIKE '%雅诗兰黛%'
+                   OR COALESCE(r.raw_text, '') ILIKE '%雅思兰黛%'
+                   OR COALESCE(r.raw_text, '') ILIKE '%estee%'
+                   OR COALESCE(r.raw_text, '') ILIKE '%lauder%'
+              )
+              SELECT source,
+                     brand_id,
+                     COUNT(*) AS rows,
+                     COUNT(DISTINCT query_id) AS queries,
+                     COUNT(DISTINCT response_id) AS responses
+              FROM hits
+              GROUP BY source, brand_id
+              ORDER BY source, rows DESC, brand_id;
+            " || true
+
             echo "=== Recent nginx logs ==="
             docker compose logs --tail=220 nginx || true
 
