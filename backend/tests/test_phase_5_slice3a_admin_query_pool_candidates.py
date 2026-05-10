@@ -172,10 +172,21 @@ async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run
     captured: dict[str, object] = {}
 
     async def fake_fetch(
-        session, *, run_id, status, segment_id, profile_id, query, limit, cursor_seq, direction
+        session,
+        *,
+        run_id,
+        status,
+        segment_id,
+        profile_id,
+        brand_id,
+        query,
+        limit,
+        cursor_seq,
+        direction,
     ):
         captured["run_id"] = run_id
         captured["direction"] = direction
+        captured["brand_id"] = brand_id
         return (
             [
                 {
@@ -243,6 +254,49 @@ async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run
     # Captured fallback to latest run
     assert captured["run_id"] == run.id
     assert captured["direction"] == "next"
+    assert captured["brand_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_candidates_filters_by_brand_id(client, admin_operator, run, monkeypatch):
+    import sys
+
+    import app.api.admin.query_pool.router  # noqa: F401  ensure module loaded
+
+    qp_router = sys.modules["app.api.admin.query_pool.router"]
+    captured: dict[str, object] = {}
+
+    async def fake_fetch(session, *, run_id, brand_id, **_):
+        captured["run_id"] = run_id
+        captured["brand_id"] = brand_id
+        return (
+            [
+                {
+                    "id": "brand-candidate",
+                    "run_id": run_id,
+                    "candidate_seq": 1,
+                    "prompt_id": "p-brand",
+                    "rendered_query": "brand scoped query",
+                    "metadata_json": {"brand_id": 42, "brand_name": "Acme"},
+                    "generation_method": "llm",
+                    "candidate_status": "candidate",
+                    "created_at": _now(),
+                    "llm_usage_json": {},
+                }
+            ],
+            1,
+            False,
+        )
+
+    monkeypatch.setattr(qp_router, "_fetch_candidates_paged", fake_fetch)
+
+    resp = await client.get("/api/admin/query-pool/candidates?brand_id=42")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["rows"][0]["metadata"]["brand_id"] == 42
+    assert captured["brand_id"] == 42
 
 
 @pytest.mark.asyncio

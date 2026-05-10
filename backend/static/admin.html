@@ -5435,6 +5435,14 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                              class="w-full h-8 pl-8 pr-3 rounded-input border border-b-default bg-white text-[12px] text-ink"
                              placeholder="搜索 Prompt / Segment / Query" />
                     </div>
+                    <select x-model="queryPoolCandidateBrand" @change="loadQueryPoolCandidates()"
+                            class="h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink"
+                            title="按品牌筛选">
+                      <option value="all">全部品牌</option>
+                      <template x-for="brand in queryPoolCandidateBrands()" :key="'query-candidate-brand-' + brand.id">
+                        <option :value="String(brand.id)" x-text="brand.name"></option>
+                      </template>
+                    </select>
                     <input x-model="queryPoolCandidateSegment" @input.debounce.350ms="loadQueryPoolCandidates()"
                            class="w-[150px] h-8 rounded-input border border-b-default bg-white px-2 text-[12px] text-ink"
                            placeholder="筛选 Segment" />
@@ -11972,6 +11980,7 @@ function adminApp() {
     queryPoolCandidateDeleting: false,
     queryPoolCandidateError: '',
     queryPoolCandidateQuery: '',
+    queryPoolCandidateBrand: 'all',
     queryPoolCandidateSegment: '',
     queryPoolCandidateProfile: '',
     queryPoolCandidateStatus: '',
@@ -16682,6 +16691,16 @@ function adminApp() {
       return labels[this.queryPoolConfig.overflowPolicy] || this.queryPoolConfig.overflowPolicy;
     },
 
+    queryPoolCandidateBrands(){
+      const byId = {};
+      [...(this.topicPlanBrands || []), ...(this.promptMatrixBrands || [])].forEach(brand => {
+        const id = String(brand?.id || '').trim();
+        if (!id || !/^\d+$/.test(id) || byId[id]) return;
+        byId[id] = { id, name: brand.name || ('Brand ' + id) };
+      });
+      return Object.values(byId).sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
+    },
+
     queryPoolCandidateStatusLabel(status){
       return {
         candidate: '候选',
@@ -16735,6 +16754,7 @@ function adminApp() {
             ? this.queryPoolCandidateCursor.prev
             : null;
         const query = String(this.queryPoolCandidateQuery || '').trim();
+        const brandFilter = String(this.queryPoolCandidateBrand || '').trim();
         const segmentFilter = String(this.queryPoolCandidateSegment || '').trim();
         const profileFilter = String(this.queryPoolCandidateProfile || '').trim();
         const status = String(this.queryPoolCandidateStatus || '').trim();
@@ -16744,6 +16764,7 @@ function adminApp() {
           qp.set('direction', direction === 'prev' ? 'prev' : 'next');
         }
         if (query) qp.set('q', query);
+        if (brandFilter && brandFilter !== 'all') qp.set('brand_id', brandFilter);
         if (segmentFilter) qp.set('segment_id', segmentFilter);
         if (profileFilter) qp.set('profile_id', profileFilter);
         if (status) qp.set('status', status);
@@ -17124,6 +17145,7 @@ function adminApp() {
       this.queryPoolRunStatus = 'running';
       this.queryPoolCurrentRunId = '';
       this.queryPoolCandidateQuery = '';
+      this.queryPoolCandidateBrand = 'all';
       this.queryPoolCandidateSegment = '';
       this.queryPoolCandidateProfile = '';
       this.queryPoolCandidateStatus = '';
