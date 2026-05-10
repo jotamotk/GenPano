@@ -58,8 +58,7 @@ def _web_research_request_error_message(
     detail = str(error).strip()
     if isinstance(error, httpx.TimeoutException):
         message = (
-            f"Topic Plan brand context search timed out after {timeout_seconds}s "
-            f"({error_name})"
+            f"Topic Plan brand context search timed out after {timeout_seconds}s ({error_name})"
         )
     else:
         message = f"Topic Plan brand context search request failed ({error_name})"
