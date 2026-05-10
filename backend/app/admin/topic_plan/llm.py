@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -130,27 +130,54 @@ def _brand_name_key(value: str) -> str:
     return "".join(ch for ch in (value or "").casefold() if ch.isalnum())
 
 
+def _as_research_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, list):
+        return {"brands": value}
+    if isinstance(value, dict) and isinstance(value.get("brands"), list):
+        return value
+    return None
+
+
+def _iter_json_values(text: str) -> Iterator[Any]:
+    decoder = json.JSONDecoder()
+    index = 0
+    length = len(text)
+    while index < length:
+        while index < length and text[index] not in "{[":
+            index += 1
+        if index >= length:
+            break
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except Exception:
+            index += 1
+            continue
+        yield value
+        index += max(end, 1)
+
+
 def _load_research_json(raw: str) -> dict[str, Any] | None:
     cleaned = strip_markdown_fence(raw)
     if not cleaned:
         return None
-    if not cleaned.lstrip().startswith(("{", "[")):
-        match = re.search(r"(\{.*\}|\[.*\])", cleaned, flags=re.DOTALL)
-        if match:
-            cleaned = match.group(1)
     try:
         parsed = json.loads(cleaned)
     except Exception:
-        if repair_json is None:
-            return None
+        parsed = None
+    payload = _as_research_payload(parsed)
+    if payload is not None:
+        return payload
+    for value in _iter_json_values(cleaned):
+        payload = _as_research_payload(value)
+        if payload is not None:
+            return payload
+    if repair_json is not None:
         try:
-            parsed = json.loads(repair_json(cleaned))
+            payload = _as_research_payload(json.loads(repair_json(cleaned)))
         except Exception:
-            return None
-    if isinstance(parsed, list):
-        return {"brands": parsed}
-    if isinstance(parsed, dict):
-        return parsed
+            payload = None
+        if payload is not None:
+            return payload
     return None
 
 
@@ -203,21 +230,45 @@ def _parse_brand_research(raw: str, allowed_names: list[str]) -> list[dict[str, 
                 out[key] = value[:400]
             elif isinstance(value, list):
                 if key in {"products", "scenarios", "competitors", "audience_hypotheses"}:
-                    out[key] = [v for v in value if isinstance(v, dict)][:12]
+                    normalized_items: list[dict[str, Any]] = []
+                    for entry in value:
+                        if isinstance(entry, dict):
+                            normalized_items.append(entry)
+                        else:
+                            text = str(entry).strip()
+                            if text:
+                                normalized_items.append({"name": text[:240]})
+                    out[key] = normalized_items[:12]
                 else:
                     out[key] = [str(v).strip()[:120] for v in value if str(v).strip()][:10]
             elif isinstance(value, dict) and key == "claims":
                 out[key] = value
+        claims = item.get("claims")
+        if isinstance(claims, list):
+            out["claims"] = {"pros": [str(v).strip()[:160] for v in claims if str(v).strip()][:12]}
         source_notes = item.get("source_notes")
         if isinstance(source_notes, list):
             out["source_notes"] = [
                 {
                     "title": str(note.get("title") or "").strip()[:160],
                     "url": str(note.get("url") or "").strip()[:300],
+                    "snippet": str(note.get("snippet") or "").strip()[:300],
+                    "source_type": str(note.get("source_type") or "web_search").strip()[:40],
                 }
                 for note in source_notes
                 if isinstance(note, dict) and (note.get("title") or note.get("url"))
             ][:5]
+            if not out.get("source_notes"):
+                out["source_notes"] = [
+                    {
+                        "title": str(note).strip()[:160],
+                        "url": "",
+                        "snippet": "",
+                        "source_type": "web_search",
+                    }
+                    for note in source_notes
+                    if not isinstance(note, dict) and str(note).strip()
+                ][:5]
         cleaned.append(out)
     return cleaned[: len(allowed_names) or 5]
 
@@ -275,76 +326,42 @@ class DoubaoTopicPlanClient:
             }
             for b in brands
         ]
-        schema = {
-            "brands": [
-                {
-                    "name": "copy selected brand name exactly",
-                    "industry": "concise industry/category summary",
-                    "positioning": "concise market positioning",
-                    "official_domains": ["official domains"],
-                    "products": [
-                        {
-                            "name": "product or product line name",
-                            "category": "category",
-                            "key_features": ["features"],
-                            "use_cases": ["use cases"],
-                            "target_users": ["target users"],
-                            "price_positioning": "pricing tier if known",
-                        }
-                    ],
-                    "scenarios": [
-                        {
-                            "name": "scenario",
-                            "pain_points": ["pain points"],
-                            "decision_criteria": ["decision criteria"],
-                            "buying_stage": "awareness|comparison|shortlist|purchase",
-                        }
-                    ],
-                    "competitors": [
-                        {
-                            "name": "competitor brand",
-                            "competitor_type": "direct|adjacent",
-                            "overlap_category": "overlap category",
-                            "comparison_axes": ["comparison axes"],
-                            "relation_reason": "why comparable",
-                        }
-                    ],
-                    "audience_hypotheses": [
-                        {
-                            "segment_name": "audience segment",
-                            "needs": ["needs"],
-                            "regions": ["regions"],
-                            "buying_stage": "stage",
-                        }
-                    ],
-                    "claims": {
-                        "pros": ["advantages"],
-                        "cons": ["limitations"],
-                        "best_for": ["best-fit scenarios"],
-                        "not_fit_for": ["poor-fit scenarios"],
-                        "risks": ["risks"],
-                        "price_perception": ["price perceptions"],
-                    },
-                    "consumer_questions": ["natural consumer topic angles"],
-                    "source_notes": [{"title": "source title", "url": "source url"}],
-                }
+        selected_brand_rows: list[str] = []
+        for brand in compact_brands:
+            product_names = [
+                str(product.get("name"))
+                for product in (brand.get("products") or [])
+                if isinstance(product, dict) and product.get("name")
             ]
-        }
+            selected_brand_rows.append(
+                f"- name: {brand.get('name')}; "
+                f"industry_hint: {brand.get('industry') or industry or 'unknown'}; "
+                f"description: {brand.get('description') or 'unknown'}; "
+                f"target_market: {brand.get('target_market') or 'unknown'}; "
+                f"known_products: {', '.join(product_names)}"
+            )
+        selected_brand_lines = "\n".join(selected_brand_rows)
         prompt = (
             "Use web search to research the selected brands for Topic Plan generation. "
             "Prefer official brand pages, product/category pages, major retailers, and credible encyclopedic sources. "
-            "Return strict JSON only; do not include markdown. "
-            "Do not invent facts. Summarize consumer-facing category, product, feature, audience, and scenario signals. "
-            "The JSON must match this schema and each brands[].name must copy a selected brand name exactly.\n\n"
-            + json.dumps(
-                {
-                    "industry_hint": industry,
-                    "category_hint": category,
-                    "selected_brands": compact_brands,
-                    "output_schema": schema,
-                },
-                ensure_ascii=False,
-            )
+            "Return strict JSON only; do not include markdown or explanatory text. "
+            "Do not copy the input back. "
+            "Do not invent facts; if a field is not supported by sources, return an empty array or null. "
+            "Summarize consumer-facing category, product, feature, audience, competitor, and scenario signals.\n\n"
+            f"Industry hint: {industry or 'All industries'}\n"
+            f"Category hint: {category or 'All categories'}\n"
+            "Selected brands. Copy each output brands[].name exactly from these names:\n"
+            f"{selected_brand_lines}\n\n"
+            "Required output shape:\n"
+            "- top-level object with key brands only.\n"
+            "- brands: array. One object per selected brand.\n"
+            "- each brand object fields: name, industry, positioning, official_domains, products, scenarios, competitors, audience_hypotheses, claims, consumer_questions, source_notes.\n"
+            "- products: objects with name, category, key_features, use_cases, target_users, price_positioning.\n"
+            "- scenarios: objects with name, pain_points, decision_criteria, buying_stage.\n"
+            "- competitors: objects with name, competitor_type, overlap_category, comparison_axes, relation_reason. Use direct competitors when sources support them; otherwise use an empty array.\n"
+            "- audience_hypotheses: objects with segment_name, needs, regions, buying_stage.\n"
+            "- claims: object with pros, cons, best_for, not_fit_for, risks, price_perception arrays.\n"
+            "- source_notes: objects with title, url, snippet, source_type.\n"
         )
         body = {
             "model": model,
