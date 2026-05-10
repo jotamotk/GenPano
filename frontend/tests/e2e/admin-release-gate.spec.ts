@@ -22,6 +22,10 @@ type GateState = {
     claims: Array<Record<string, unknown>>;
   };
   promptRunStatus: 'idle' | 'completed' | 'failed';
+  topicGenerateMode: 'normal' | 'failed';
+  promptGenerateMode: 'normal' | 'run_failed';
+  queryAssembleMode: 'normal' | 'run_failed';
+  extractionBackfillMode: 'normal' | 'failed';
   deletedPromptCandidateIds: string[];
 };
 
@@ -161,6 +165,10 @@ const makeState = (): GateState => ({
     ],
   },
   promptRunStatus: 'idle',
+  topicGenerateMode: 'normal',
+  promptGenerateMode: 'normal',
+  queryAssembleMode: 'normal',
+  extractionBackfillMode: 'normal',
   deletedPromptCandidateIds: [],
 });
 
@@ -221,6 +229,26 @@ const routeAdminApi = async (page: Page, state: GateState) => {
       return;
     }
 
+    if (method === 'POST' && path.endsWith('/topic-plan/generate')) {
+      if (state.topicGenerateMode === 'failed') {
+        await fulfillJson(route, {
+          success: false,
+          code: 'llm_failed',
+          message: 'LLM call failed',
+          detail: 'search-backed topic generation timed out',
+          request_id: `req-topic-failed-${runId}`,
+        }, 502);
+        return;
+      }
+      await fulfillJson(route, {
+        success: true,
+        run_id: `topic-run-${runId}`,
+        status: 'completed',
+        summary: { estimated: 1, generated: state.topicCandidates.length },
+      });
+      return;
+    }
+
     if (method === 'GET' && path.endsWith('/topic-plan/topics')) {
       await fulfillJson(route, {
         success: true,
@@ -278,14 +306,39 @@ const routeAdminApi = async (page: Page, state: GateState) => {
     if (method === 'GET' && path.endsWith('/prompt-matrix/prompts')) {
       await fulfillJson(route, {
         success: true,
-        rows: [],
-        pagination: { page: 1, per_page: 60, total: 0, total_pages: 1 },
+        rows: [
+          {
+            raw_id: 77001,
+            id: 77001,
+            text: state.promptCandidates[0].text,
+            title: state.promptCandidates[0].text,
+            topic_id: 135,
+            topic_text: state.promptCandidates[0].topic_text,
+            intent: 'commercial',
+            language: 'zh-CN',
+            prompt_scope: 'competitive',
+            metadata: state.promptCandidates[0].tags,
+          },
+        ],
+        pagination: { page: 1, per_page: 60, total: 1, total_pages: 1 },
         stats: {},
       });
       return;
     }
 
     if (method === 'POST' && path.endsWith('/prompt-matrix/generate')) {
+      if (state.promptGenerateMode === 'run_failed') {
+        state.promptRunStatus = 'failed';
+        await fulfillJson(route, {
+          success: true,
+          run_id: `prompt-run-${runId}`,
+          status: 'running',
+          estimated_prompts: 1,
+          candidates_generated: 0,
+          summary: { accepted: 0, duplicate: 0, retry: 1, coverage: { competitive: 0 } },
+        });
+        return;
+      }
       state.promptRunStatus = 'completed';
       await fulfillJson(route, {
         success: true,
@@ -304,8 +357,10 @@ const routeAdminApi = async (page: Page, state: GateState) => {
         run: {
           id: `prompt-run-${runId}`,
           status: state.promptRunStatus === 'failed' ? 'failed' : 'completed',
+          llm_error: state.promptRunStatus === 'failed' ? 'Prompt LLM call failed after retry' : '',
+          request_id: state.promptRunStatus === 'failed' ? `req-prompt-failed-${runId}` : '',
           estimated_prompts: 1,
-          candidates_generated: state.promptCandidates.length,
+          candidates_generated: state.promptRunStatus === 'failed' ? 0 : state.promptCandidates.length,
           metrics: { accepted: state.promptCandidates.length, duplicate: 0, retry: 0, coverage: { competitive: 1 } },
         },
       });
@@ -362,6 +417,49 @@ const routeAdminApi = async (page: Page, state: GateState) => {
       return;
     }
 
+    if (method === 'POST' && path.endsWith('/admin/query-pool/assemble')) {
+      if (state.queryAssembleMode === 'run_failed') {
+        await fulfillJson(route, {
+          success: true,
+          run: {
+            id: `query-run-${runId}`,
+            status: 'failed',
+            llm_error: 'Query scope guard failed',
+            request_id: `req-query-failed-${runId}`,
+            candidates_estimated: 1,
+            candidates_assembled: 0,
+            preflight_summary: {
+              raw_candidates_estimated: 1,
+              candidate_ready: 0,
+              render_pass_rate: 0,
+              segment_coverage: 1,
+              profile_coverage: 1,
+              scheduler_intake: 'blocked',
+            },
+          },
+        });
+        return;
+      }
+      await fulfillJson(route, {
+        success: true,
+        run: {
+          id: `query-run-${runId}`,
+          status: 'completed',
+          candidates_estimated: state.queryCandidates.length,
+          candidates_assembled: state.queryCandidates.length,
+          preflight_summary: {
+            raw_candidates_estimated: state.queryCandidates.length,
+            candidate_ready: state.queryCandidates.length,
+            render_pass_rate: 1,
+            segment_coverage: 1,
+            profile_coverage: 1,
+            scheduler_intake: 'ready',
+          },
+        },
+      });
+      return;
+    }
+
     if (method === 'GET' && path.endsWith('/admin/query-pool/candidates')) {
       await fulfillJson(route, {
         success: true,
@@ -391,6 +489,16 @@ const routeAdminApi = async (page: Page, state: GateState) => {
     }
 
     if (method === 'POST' && path.endsWith('/llm-extraction/backfill')) {
+      if (state.extractionBackfillMode === 'failed') {
+        await fulfillJson(route, {
+          success: false,
+          code: 'search_context_failed',
+          message: 'Extraction backfill failed',
+          detail: 'search-backed extraction timed out',
+          request_id: `req-extraction-failed-${runId}`,
+        }, 502);
+        return;
+      }
       await fulfillJson(route, { success: true, summary: { entities_created: 1, attributes_created: 1, claims_created: 1 } });
       return;
     }
@@ -429,8 +537,8 @@ test('Admin release gate covers Topic, Prompt Matrix, Query Pool, and Extraction
 
   await page.goto('/admin/planner-prompt-matrix', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Prompt Matrix').first()).toBeVisible();
-  await page.getByRole('button', { name: '选择全部匹配' }).first().click();
-  await page.getByRole('button', { name: '生成 Prompt' }).first().click({ force: true });
+  await page.locator("button[\\@click=\"setPromptMatrixTopics(true, 'filtered')\"]").first().click();
+  await page.locator('button[\\@click="startPromptMatrixGenerate()"]').first().click({ force: true });
   const promptRow = page.getByRole('row', { name: new RegExp(`prompt-candidate-${runId}`) });
   await expect(promptRow.getByText('vs DealRoom', { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(promptRow.getByText('Axis permission audit', { exact: true })).toBeVisible();
@@ -467,5 +575,64 @@ test('Admin release gate covers Topic, Prompt Matrix, Query Pool, and Extraction
   await page.getByRole('button', { name: 'Claim' }).click();
   await expect(page.getByText('Strong audit trail for regulated deal teams.')).toBeVisible();
 
+  await errors.assertClean();
+});
+
+const clearStickyErrorPanel = async (page: Page) => {
+  await page.evaluate(() => {
+    const data = (window as unknown as { Alpine?: { $data?: (node: Element) => Record<string, unknown> } }).Alpine?.$data?.(document.body);
+    if (data) {
+      data.errorPanel = null;
+      data.errorQueue = [];
+      data.errorPanelCopied = false;
+      data.errorPanelExpanded = false;
+    }
+  });
+};
+
+test('Admin release gate surfaces Topic, Prompt, Query, and Extraction failures without crashing', async ({ page }) => {
+  const state = makeState();
+  state.topicGenerateMode = 'failed';
+  state.promptGenerateMode = 'run_failed';
+  state.queryAssembleMode = 'run_failed';
+  state.extractionBackfillMode = 'failed';
+  await installAdminDocumentRoute(page);
+  await routeAdminApi(page, state);
+  const errors = installAdminErrorGuards(page, {
+    allowedNetworkErrorUrls: [
+      /\/api\/admin\/topic-plan\/generate$/,
+      /\/admin\/api\/llm-extraction\/backfill$/,
+    ],
+  });
+
+  await page.goto('/admin/planner-topics', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Topic Plan').first()).toBeVisible();
+  await page.locator('button[\\@click="startTopicPlanGenerate()"]').click();
+
+  await expect(page.getByText('LLM call failed').first()).toBeVisible();
+  await expect(page.getByText(`req-topic-failed-${runId}`).first()).toBeVisible();
+  await clearStickyErrorPanel(page);
+
+  await page.goto('/admin/planner-prompt-matrix', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Prompt Matrix').first()).toBeVisible();
+  await page.locator("button[\\@click=\"setPromptMatrixTopics(true, 'filtered')\"]").first().click();
+  await page.locator('button[\\@click="startPromptMatrixGenerate()"]').first().click({ force: true });
+  await expect(page.getByText('Prompt LLM call failed after retry').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(`req-prompt-failed-${runId}`).first()).toBeVisible();
+  await clearStickyErrorPanel(page);
+
+  await page.goto('/admin/planner-query-pool', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Query Pool').first()).toBeVisible();
+  await page.locator("button[\\@click=\"setQueryPoolPrompts(true, 'filtered')\"]").first().click();
+  await page.locator('button[\\@click="startQueryPoolAssemble()"]').first().click();
+  await expect(page.getByText('Query scope guard failed').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(`req-query-failed-${runId}`).first()).toBeVisible();
+  await clearStickyErrorPanel(page);
+
+  await page.goto('/admin/planner-llm-extraction', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('LLM Extraction').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Backfill' }).click();
+  await expect(page.getByText('Extraction backfill failed').first()).toBeVisible();
+  await expect(page.getByText(`req-extraction-failed-${runId}`).first()).toBeVisible();
   await errors.assertClean();
 });

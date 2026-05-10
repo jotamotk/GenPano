@@ -13417,6 +13417,107 @@ function adminApp() {
       return result.message || result.title || JSON.stringify(result);
     },
 
+    showErrorFrom(err) {
+      const body = (err && err.body) || {};
+      const code = body.code || body.error || (err && err.code) || 'unknown_error';
+      const title = body.title || body.message || (err && err.message) || 'Request failed';
+      const detail = body.detail || '';
+      const status = (err && err.status) || body.status || 0;
+      const requestId = (err && err.requestId) || body.request_id || '';
+      const path = (err && err.path) || body.instance || '';
+      const timestamp = new Date().toISOString();
+      const payload = { code, title, detail, status, requestId, path, timestamp };
+      payload.copyText = this.formatErrorCopy(payload);
+      const sameAsCurrent = this.errorPanel
+        && this.errorPanel.code === payload.code
+        && (this.errorPanel.detail || '') === (payload.detail || '');
+      if (sameAsCurrent) {
+        this.errorPanel.count = (this.errorPanel.count || 1) + 1;
+        return;
+      }
+      if (this.errorPanel) {
+        this.errorQueue.push(payload);
+      } else {
+        this.errorPanel = payload;
+        this.errorPanelExpanded = false;
+        this.errorPanelCopied = false;
+      }
+    },
+
+    showTaskFailure(actionLabel, source) {
+      let detail = '';
+      let requestId = '';
+      let code = 'task_failed';
+      if (typeof source === 'string') {
+        detail = source;
+      } else if (source && typeof source === 'object') {
+        detail = source.llm_error || source.message || source.detail || '';
+        requestId = source.request_id || source.requestId || '';
+        if (source.code) code = source.code;
+      }
+      this.showErrorFrom({
+        body: {
+          code,
+          title: actionLabel + ' failed',
+          detail,
+          request_id: requestId,
+        },
+        status: 0,
+        requestId,
+      });
+    },
+
+    formatErrorCopy(e) {
+      const lines = [
+        '[' + (e.code || 'error') + '] ' + (e.title || ''),
+        'status: ' + (e.status || 0),
+        'request_id: ' + (e.requestId || '-'),
+        'time: ' + (e.timestamp || ''),
+        'path: ' + (e.path || '-'),
+      ];
+      if (e.detail) lines.push('detail: ' + e.detail);
+      return lines.join('\n');
+    },
+
+    async copyErrorPanel() {
+      if (!this.errorPanel) return;
+      const text = this.errorPanel.copyText || '';
+      let ok = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) {
+        ok = false;
+      }
+      if (!ok) {
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.setAttribute('readonly', 'readonly');
+        el.style.position = 'fixed';
+        el.style.left = '-9999px';
+        document.body.appendChild(el);
+        el.select();
+        try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+        document.body.removeChild(el);
+      }
+      if (ok) {
+        this.errorPanelCopied = true;
+        setTimeout(() => { this.errorPanelCopied = false; }, 1500);
+      }
+    },
+
+    dismissErrorPanel() {
+      this.errorPanel = null;
+      this.errorPanelCopied = false;
+      this.errorPanelExpanded = false;
+      if (this.errorQueue.length > 0) {
+        const next = this.errorQueue.shift();
+        this.errorPanel = next;
+      }
+    },
+
     llmExtractionRows(){
       if (this.llmExtractionTab === 'attributes') return this.llmExtractionAttributes || [];
       if (this.llmExtractionTab === 'claims') return this.llmExtractionClaims || [];
@@ -16865,6 +16966,11 @@ function adminApp() {
             this.queryPoolAssembling = false;
             const message = this.generationFailureMessage('Query', run.llm_error, run.preflight_summary || {});
             this.toast('Query 组装失败: ' + message);
+            this.showTaskFailure('Query assemble', {
+              detail: message,
+              request_id: run.request_id,
+              code: 'query_pool_run_failed',
+            });
           } else if (run.status === 'cancelled') {
             this.queryPoolAssembling = false;
             this.queryPoolCandidateCursor = { next: null, prev: null };
@@ -16886,6 +16992,11 @@ function adminApp() {
             this.queryPoolAssembleError = error.message || 'Query run polling failed';
             this.clearQueryPoolRunPolling();
             this.toast('Query 状态查询失败: ' + this.queryPoolAssembleError);
+            this.showTaskFailure('Query polling', {
+              detail: this.queryPoolAssembleError,
+              request_id: error.request_id || error.requestId || '',
+              code: 'query_pool_polling_failed',
+            });
           } else {
             this.queryPoolRunStatusNotice = this.queryPoolRunLoadFailures >= 2
               ? '状态读取暂时失败，正在重试；候选列表会继续刷新。'
@@ -16992,8 +17103,13 @@ function adminApp() {
         }
         if (run.status === 'failed') {
           this.queryPoolAssembling = false;
-          this.queryPoolAssembleError = run.llm_error || 'unknown_error';
+          this.queryPoolAssembleError = this.generationFailureMessage('Query', run.llm_error, run.preflight_summary || {});
           this.toast('Query 组装失败: ' + this.queryPoolAssembleError);
+          this.showTaskFailure('Query assemble', {
+            detail: this.queryPoolAssembleError,
+            request_id: run.request_id,
+            code: 'query_pool_run_failed',
+          });
           return;
         }
         if (run.id) {
@@ -17006,6 +17122,7 @@ function adminApp() {
         this.queryPoolAssembling = false;
         this.queryPoolAssembleError = error.message || 'Query 组装失败';
         this.toast(error.message || 'Query 组装失败');
+        this.showTaskFailure('Query assemble', error || this.queryPoolAssembleError);
       }
     },
 
