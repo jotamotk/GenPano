@@ -297,6 +297,24 @@ async def reset_account_fails(session: AsyncSession, *, account_id: int) -> bool
     return True
 
 
+async def update_account_daily_limit(
+    session: AsyncSession, *, account_id: int, daily_limit: int
+) -> bool:
+    """Update one account's daily capacity. Returns False if the
+    account is missing."""
+    if not await _table_exists(session, "llm_accounts"):
+        return False
+    await assert_llm_accounts_schema(session)
+    result = await session.execute(
+        text("UPDATE llm_accounts SET daily_limit = :daily_limit WHERE id = :id"),
+        {"daily_limit": daily_limit, "id": account_id},
+    )
+    if (getattr(result, "rowcount", 0) or 0) == 0:
+        return False
+    await session.commit()
+    return True
+
+
 async def delete_account(session: AsyncSession, *, account_id: int) -> bool:
     """Hard-delete an llm_accounts row. The legacy admin_console
     behaviour is destructive (no soft-delete column); preserved here.

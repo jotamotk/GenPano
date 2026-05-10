@@ -695,11 +695,42 @@ async def upsert_account_profiles(
         bindings_in = []
     if not isinstance(remove_ids_in, list):
         remove_ids_in = []
+    daily_limit_raw = payload.get("daily_limit")
+    daily_limit: int | None = None
+    if daily_limit_raw is not None:
+        try:
+            daily_limit = int(daily_limit_raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "daily_limit_invalid",
+                    "message": "daily_limit must be an integer between 0 and 10000",
+                },
+            )
+        if daily_limit < 0 or daily_limit > 10_000:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "daily_limit_invalid",
+                    "message": "daily_limit must be an integer between 0 and 10000",
+                },
+            )
 
     try:
         account = await accounts_db.fetch_account_basics(session, account_id=account_id)
         if not account:
             raise not_found("account_not_found")
+        daily_limit_changed = False
+        if daily_limit is not None and daily_limit != int(account.get("daily_limit") or 0):
+            daily_limit_changed = True
+            ok = await accounts_db.update_account_daily_limit(
+                session, account_id=account_id, daily_limit=daily_limit
+            )
+            if not ok:
+                raise not_found("account_not_found")
         upserted, removed = await accounts_db.upsert_account_profile_bindings(
             session,
             account_id=account_id,
@@ -719,13 +750,31 @@ async def upsert_account_profiles(
         severity="med",
         resource_type="llm_account",
         resource_id=str(account_id),
-        after={"upserted": upserted, "removed": removed},
+        after={
+            "upserted": upserted,
+            "removed": removed,
+            **(
+                {
+                    "daily_limit": {
+                        "before": int(account.get("daily_limit") or 0),
+                        "after": daily_limit,
+                    }
+                }
+                if daily_limit_changed
+                else {}
+            ),
+        },
         reason=str(payload.get("reason") or "update_account_profiles"),
         request=request,
     )
     return JSONResponse(
         status_code=200,
-        content={"success": True, "upserted": upserted, "removed": removed},
+        content={
+            "success": True,
+            "upserted": upserted,
+            "removed": removed,
+            **({"daily_limit": daily_limit} if daily_limit is not None else {}),
+        },
     )
 
 
