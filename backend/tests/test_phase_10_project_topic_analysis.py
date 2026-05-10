@@ -20,9 +20,18 @@ from genpano_models import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._topic_analysis_service import _not_deleted_condition
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def test_not_deleted_condition_is_postgres_boolean_safe():
+    condition = _not_deleted_condition("s")
+
+    assert "s.is_deleted = 0" not in condition
+    assert "LOWER(CAST(s.is_deleted AS TEXT))" in condition
+    assert "'false'" in condition
 
 
 def _new_id() -> str:

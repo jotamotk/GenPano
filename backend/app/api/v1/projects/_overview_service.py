@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from genpano_models import (
     BrandGroupMember,
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 
 def _row_has_values(row: object | None, names: tuple[str, ...]) -> bool:
     return row is not None and any(getattr(row, name, None) is not None for name in names)
+
+
+def _optional_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
 
 
 def _pct_delta(now: float | None, before: float | None) -> float | None:
@@ -150,32 +154,32 @@ async def _kpi_cards(
         cur_rollup = await brand_mention_window_rollup(session, brand_id, from_date, to_date)
         prior_rollup = await brand_mention_window_rollup(session, brand_id, prior_from, prior_to)
         if cur_rollup.has_data:
-            geo = geo_score(cur_rollup)
-            mention = mention_rate(cur_rollup)
-            sov = share_of_voice(cur_rollup)
-            sentiment = cur_rollup.avg_sentiment_score
+            rollup_geo = geo_score(cur_rollup)
+            rollup_mention = mention_rate(cur_rollup)
+            rollup_sov = share_of_voice(cur_rollup)
+            rollup_sentiment = cur_rollup.avg_sentiment_score
             prior_geo = geo_score(prior_rollup) if prior_rollup.has_data else None
             prior_mention = mention_rate(prior_rollup) if prior_rollup.has_data else None
             prior_sov = share_of_voice(prior_rollup) if prior_rollup.has_data else None
             prior_sentiment = prior_rollup.avg_sentiment_score if prior_rollup.has_data else None
 
-            geo_delta = _pct_delta(geo, prior_geo)
-            mention_delta = _pct_delta(mention, prior_mention)
-            sov_delta = _pct_delta(sov, prior_sov)
-            sentiment_delta = _pct_delta(sentiment, prior_sentiment)
+            geo_delta = _pct_delta(rollup_geo, prior_geo)
+            mention_delta = _pct_delta(rollup_mention, prior_mention)
+            sov_delta = _pct_delta(rollup_sov, prior_sov)
+            sentiment_delta = _pct_delta(rollup_sentiment, prior_sentiment)
 
             return [
                 KpiCard(
                     label_zh="GEO 评分",
                     label_en="GeoScore",
-                    value=round(geo or 0, 1),
+                    value=round(rollup_geo or 0, 1),
                     delta_30d_pct=geo_delta,
                     direction=_direction(geo_delta),
                 ),
                 KpiCard(
                     label_zh="提及率",
                     label_en="Mention Rate",
-                    value=round((mention or 0) * 100, 1),
+                    value=round((rollup_mention or 0) * 100, 1),
                     unit="%",
                     delta_30d_pct=mention_delta,
                     direction=_direction(mention_delta),
@@ -183,7 +187,7 @@ async def _kpi_cards(
                 KpiCard(
                     label_zh="声量份额",
                     label_en="Share of Voice",
-                    value=round((sov or 0) * 100, 1),
+                    value=round((rollup_sov or 0) * 100, 1),
                     unit="%",
                     delta_30d_pct=sov_delta,
                     direction=_direction(sov_delta),
@@ -191,39 +195,34 @@ async def _kpi_cards(
                 KpiCard(
                     label_zh="情感分",
                     label_en="Sentiment",
-                    value=round(sentiment or 0, 2),
+                    value=round(rollup_sentiment or 0, 2),
                     delta_30d_pct=sentiment_delta,
                     direction=_direction(sentiment_delta),
                 ),
             ]
 
-    current_geo = cast(float | None, cur.avg_geo if cur else None)
-    current_mention = cast(float | None, cur.avg_mention if cur else None)
-    current_sov = cast(float | None, cur.avg_sov if cur else None)
-    current_sentiment = cast(float | None, cur.avg_sentiment if cur else None)
+    geo = _optional_float(cur.avg_geo if cur else None)
+    mention = _optional_float(cur.avg_mention if cur else None)
+    sov = _optional_float(cur.avg_sov if cur else None)
+    sentiment = _optional_float(cur.avg_sentiment if cur else None)
 
-    geo_delta = _pct_delta(current_geo, cast(float | None, prior.avg_geo if prior else None))
-    mention_delta = _pct_delta(
-        current_mention, cast(float | None, prior.avg_mention if prior else None)
-    )
-    sov_delta = _pct_delta(current_sov, cast(float | None, prior.avg_sov if prior else None))
-    sentiment_delta = _pct_delta(
-        current_sentiment,
-        cast(float | None, prior.avg_sentiment if prior else None),
-    )
+    geo_delta = _pct_delta(geo, _optional_float(prior.avg_geo if prior else None))
+    mention_delta = _pct_delta(mention, _optional_float(prior.avg_mention if prior else None))
+    sov_delta = _pct_delta(sov, _optional_float(prior.avg_sov if prior else None))
+    sentiment_delta = _pct_delta(sentiment, _optional_float(prior.avg_sentiment if prior else None))
 
     return [
         KpiCard(
             label_zh="GEO 评分",
             label_en="GeoScore",
-            value=round(current_geo or 0, 1),
+            value=round(geo or 0, 1),
             delta_30d_pct=geo_delta,
             direction=_direction(geo_delta),
         ),
         KpiCard(
             label_zh="提及率",
             label_en="Mention Rate",
-            value=round((current_mention or 0) * 100, 1),
+            value=round((mention or 0) * 100, 1),
             unit="%",
             delta_30d_pct=mention_delta,
             direction=_direction(mention_delta),
@@ -231,7 +230,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="声量份额",
             label_en="Share of Voice",
-            value=round((current_sov or 0) * 100, 1),
+            value=round((sov or 0) * 100, 1),
             unit="%",
             delta_30d_pct=sov_delta,
             direction=_direction(sov_delta),
@@ -239,7 +238,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="情感分",
             label_en="Sentiment",
-            value=round(current_sentiment or 0, 2),
+            value=round(sentiment or 0, 2),
             delta_30d_pct=sentiment_delta,
             direction=_direction(sentiment_delta),
         ),
