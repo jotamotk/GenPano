@@ -25,7 +25,12 @@ def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     assert "API_BASE + '/admin/query-pool/candidates?'" in html
     assert "qp.set('all_runs', '1')" in html
     assert "qp.set('status', 'ready')" in html
+    assert "cursor" in html
+    assert "body.next_cursor" in html
     assert "selectedScheduleEditorCandidateRows()" in html
+    assert "selectedScheduleEditorTargetLlms()" in html
+    assert "scheduleEditor.target_llms" in html
+    assert "for (const targetLlm of selectedLlms)" in html
     assert "query_text: candidate.actualQueryText" in html
     assert "prompt_id: candidate.promptId" in html
     assert "brand_id: candidate.brandId" in html

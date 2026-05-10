@@ -8202,11 +8202,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <div class="grid grid-cols-2 gap-3">
             <div>
               <label class="text-[11px] font-semibold text-ink-muted uppercase">目标 LLM</label>
-              <select x-model="scheduleEditor.target_llm"
+              <div x-show="!scheduleEditor.id" class="mt-1 grid grid-cols-2 gap-1.5">
+                <template x-for="llm in scheduleEditorTargetLlmOptions()" :key="llm.value">
+                  <label class="h-8 px-2 rounded-btn border border-b-default bg-white text-[12px] flex items-center gap-2 cursor-pointer hover:bg-surface-page"
+                         :class="(scheduleEditor.target_llms || []).includes(llm.value) ? 'border-accent/50 bg-accent/5 text-accent' : 'text-ink-body'">
+                    <input type="checkbox" class="rounded border-b-default"
+                           :checked="(scheduleEditor.target_llms || []).includes(llm.value)"
+                           @change="toggleScheduleEditorTargetLlm(llm.value, $event.target.checked)" />
+                    <span x-text="llm.label"></span>
+                  </label>
+                </template>
+              </div>
+              <select x-show="scheduleEditor.id"
+                      x-model="scheduleEditor.target_llm"
                       class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                 <option value="doubao">豆包</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="chatgpt">ChatGPT</option>
+                <option value="gemini">Gemini</option>
               </select>
             </div>
             <div>
@@ -17882,6 +17895,30 @@ function adminApp() {
     scheduleEditorPrompts: [],
     scheduleEditorProfiles: [],
 
+    scheduleEditorTargetLlmOptions() {
+      return [
+        { value: 'doubao', label: '豆包' },
+        { value: 'deepseek', label: 'DeepSeek' },
+        { value: 'chatgpt', label: 'ChatGPT' },
+        { value: 'gemini', label: 'Gemini' },
+      ];
+    },
+    selectedScheduleEditorTargetLlms() {
+      const allowed = new Set(this.scheduleEditorTargetLlmOptions().map(item => item.value));
+      const values = this.scheduleEditor?.id
+        ? [this.scheduleEditor.target_llm]
+        : (this.scheduleEditor?.target_llms || []);
+      return Array.from(new Set((values || []).map(v => String(v || '').trim().toLowerCase()).filter(v => allowed.has(v))));
+    },
+    toggleScheduleEditorTargetLlm(value, selected) {
+      if (!this.scheduleEditor) return;
+      const next = new Set(this.selectedScheduleEditorTargetLlms());
+      if (selected) next.add(value);
+      else next.delete(value);
+      this.scheduleEditor.target_llms = Array.from(next);
+      this.scheduleEditor.target_llm = this.scheduleEditor.target_llms[0] || '';
+    },
+
     openScheduleEditor(s) {
       const isNew = !s;
       // Default to "now" so the first 立即触发一次 / next Beat tick actually
@@ -17894,6 +17931,7 @@ function adminApp() {
         id: null,
         query_text: '',
         target_llm: 'doubao',
+        target_llms: ['doubao'],
         profile_id: '',
         cadence_days: 1,
         next_run_local: defaultLocal,
@@ -17903,6 +17941,7 @@ function adminApp() {
         id: s.id,
         query_text: s.query_text || '',
         target_llm: s.target_llm || 'doubao',
+        target_llms: [s.target_llm || 'doubao'],
         profile_id: s.profile_id || '',
         cadence_days: s.cadence_days || 1,
         next_run_local: this._isoToLocalInput(s.next_run_at),
@@ -17984,21 +18023,29 @@ function adminApp() {
       this.scheduleEditorCandidateLoading = true;
       this.scheduleEditorCandidateError = '';
       try {
-        const qp = new URLSearchParams({ limit: '200' });
-        qp.set('all_runs', '1');
-        qp.set('status', 'ready');
         const brandId = String(e.pick_brand_id || '').trim();
         const query = String(e.pick_query_search || '').trim();
-        if (brandId) qp.set('brand_id', brandId);
-        if (query) qp.set('q', query);
-        const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials: 'same-origin' });
-        if (res.status === 401) {
-          this.isLoggedIn = false;
-          throw new Error('请先登录');
+        const rows = [];
+        let cursor = '';
+        for (let page = 0; page < 20; page += 1) {
+          const qp = new URLSearchParams({ limit: '200' });
+          qp.set('all_runs', '1');
+          qp.set('status', 'ready');
+          if (cursor) qp.set('cursor', cursor);
+          if (brandId) qp.set('brand_id', brandId);
+          if (query) qp.set('q', query);
+          const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials: 'same-origin' });
+          if (res.status === 401) {
+            this.isLoggedIn = false;
+            throw new Error('请先登录');
+          }
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok || body.success === false) throw new Error(this.scheduleEditorResponseMessage(body, 'Query 候选加载失败'));
+          rows.push(...(body.rows || []));
+          cursor = body.next_cursor || '';
+          if (!cursor) break;
         }
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选加载失败');
-        this.scheduleEditorCandidateRows = (body.rows || []).map(row => {
+        this.scheduleEditorCandidateRows = rows.map(row => {
           const metadata = row.metadata || row.metadata_json || {};
           const brandIdRaw = row.brand_id || metadata.brand_id || metadata.brandId || '';
           return {
@@ -18093,12 +18140,25 @@ function adminApp() {
       const tz = d.getTimezoneOffset() * 60000;
       return new Date(d.getTime() - tz).toISOString().slice(0, 16);
     },
+    scheduleEditorResponseMessage(body, fallback) {
+      if (!body || typeof body !== 'object') return fallback;
+      const raw = body.message || body.error || body.code || body.title || body.detail;
+      if (!raw) return fallback;
+      if (typeof raw === 'string') return raw;
+      try { return JSON.stringify(raw); }
+      catch (_) { return String(raw); }
+    },
     async saveSchedule() {
       const e = this.scheduleEditor;
       if (!e) return;
       const selectedCandidates = (e.querySource === 'pool' && !e.id) ? this.selectedScheduleEditorCandidateRows() : [];
+      const selectedLlms = this.selectedScheduleEditorTargetLlms();
       if (e.querySource === 'pool' && !e.id && selectedCandidates.length === 0) {
         this.scheduleEditorError = '请先选择 Query 候选';
+        return;
+      }
+      if (selectedLlms.length === 0) {
+        this.scheduleEditorError = '请至少选择一个 LLM';
         return;
       }
       if (!(e.querySource === 'pool' && !e.id) && !(e.query_text || '').trim()) {
@@ -18113,7 +18173,6 @@ function adminApp() {
       this.scheduleEditorError = '';
       try {
         const commonPayload = {
-          target_llm: e.target_llm,
           cadence_days: parseInt(e.cadence_days),
           enabled: !!e.enabled,
           note: e.note || null,
@@ -18126,12 +18185,42 @@ function adminApp() {
         if (e.querySource === 'pool' && !e.id) {
           let created = 0;
           for (const candidate of selectedCandidates) {
+            for (const targetLlm of selectedLlms) {
+              const payload = {
+                ...commonPayload,
+                target_llm: targetLlm,
+                query_text: candidate.actualQueryText,
+                profile_id: candidate.profileId || null,
+                prompt_id: candidate.promptId,
+                brand_id: candidate.brandId,
+              };
+              const res = await fetch(API_BASE + '/scheduler/schedules', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok || body.error) throw new Error(this.scheduleEditorResponseMessage(body, 'HTTP ' + res.status));
+              created += 1;
+            }
+          }
+          this.toast('已创建 ' + created + ' 条 Query 计划');
+          this.closeScheduleEditor();
+          await this.loadSchedules();
+          await this.loadUpcoming();
+          return;
+        }
+        if (!e.id) {
+          let created = 0;
+          for (const targetLlm of selectedLlms) {
             const payload = {
               ...commonPayload,
-              query_text: candidate.actualQueryText,
-              profile_id: candidate.profileId || null,
-              prompt_id: candidate.promptId,
-              brand_id: candidate.brandId,
+              target_llm: targetLlm,
+              query_text: e.query_text.trim(),
+              profile_id: (e.profile_id || '').trim() || null,
+              prompt_id: e.prompt_id ? parseInt(e.prompt_id) : null,
+              brand_id: e.brand_id ? parseInt(e.brand_id) : null,
             };
             const res = await fetch(API_BASE + '/scheduler/schedules', {
               method: 'POST',
@@ -18140,7 +18229,7 @@ function adminApp() {
               body: JSON.stringify(payload),
             });
             const body = await res.json().catch(() => ({}));
-            if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+            if (!res.ok || body.error) throw new Error(this.scheduleEditorResponseMessage(body, 'HTTP ' + res.status));
             created += 1;
           }
           this.toast('已创建 ' + created + ' 条 Query 计划');
@@ -18151,6 +18240,7 @@ function adminApp() {
         }
         const payload = {
           ...commonPayload,
+          target_llm: selectedLlms[0],
           query_text: e.query_text.trim(),
           profile_id: (e.profile_id || '').trim() || null,
           prompt_id: e.prompt_id ? parseInt(e.prompt_id) : null,
@@ -18167,7 +18257,7 @@ function adminApp() {
           body: JSON.stringify(payload),
         });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+        if (!res.ok || body.error) throw new Error(this.scheduleEditorResponseMessage(body, 'HTTP ' + res.status));
         this.toast(e.id ? '已更新计划 #' + e.id : '已创建 Query 计划');
         this.closeScheduleEditor();
         await this.loadSchedules();

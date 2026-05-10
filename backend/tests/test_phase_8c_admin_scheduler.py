@@ -265,6 +265,28 @@ def test_parse_schedule_create_cadence_must_be_positive():
     assert exc.value.code == "cadence_days_invalid"
 
 
+def test_parse_schedule_next_run_at_iso_string_to_datetime():
+    out = parse_schedule_payload(
+        {
+            "query_text": "x",
+            "target_llm": "doubao",
+            "next_run_at": "2026-05-10T11:51:00.000Z",
+        },
+        partial=False,
+    )
+
+    assert out["next_run_at"].isoformat() == "2026-05-10T11:51:00"
+
+
+def test_parse_schedule_next_run_at_invalid():
+    with pytest.raises(SchedulerValidationError) as exc:
+        parse_schedule_payload(
+            {"query_text": "x", "target_llm": "doubao", "next_run_at": "not-a-date"},
+            partial=False,
+        )
+    assert exc.value.code == "next_run_at_invalid"
+
+
 def test_parse_schedule_partial_returns_only_changes():
     out = parse_schedule_payload({"enabled": False}, partial=True)
     assert out == {"enabled": False}
