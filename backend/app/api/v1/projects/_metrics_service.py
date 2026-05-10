@@ -34,7 +34,9 @@ from app.api.v1.projects._topic_analysis_service import (
     _as_float,
     _as_int,
     _date_key,
+    _fact_all_mention_count,
     _fact_rows,
+    _fact_target_mention_count,
     _has_admin_chain,
     _is_non_branded_row,
 )
@@ -172,12 +174,8 @@ async def _metrics_from_admin_facts(
             },
         )
         bucket["response_ids"].add(response_id)  # type: ignore[attr-defined]
-        target_mentions = int(row.get("target_mention_count") or 0)
-        if target_mentions <= 0 and row.get("target_brand_mentioned"):
-            target_mentions = 1
-        all_mentions = int(row.get("all_mention_count") or 0)
-        if all_mentions <= 0 and target_mentions > 0:
-            all_mentions = 1
+        target_mentions = _fact_target_mention_count(row)
+        all_mentions = _fact_all_mention_count(row, target_mentions)
         bucket["target_mentions"] = int(bucket["target_mentions"] or 0) + target_mentions
         bucket["all_mentions"] = int(bucket["all_mentions"] or 0) + all_mentions
         if _is_non_branded_row(row):

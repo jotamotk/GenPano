@@ -380,6 +380,34 @@ def _false_condition() -> str:
     return "1 = 0"
 
 
+def _fact_brand_scope_matched(row: dict[str, Any]) -> bool:
+    return bool(row.get("brand_scope_matched"))
+
+
+def _fact_target_mention_count(row: dict[str, Any]) -> int:
+    mentions = int(row.get("target_mention_count") or 0)
+    if mentions <= 0 and (
+        row.get("target_brand_mentioned") or _fact_brand_scope_matched(row)
+    ):
+        return 1
+    return mentions
+
+
+def _fact_all_mention_count(
+    row: dict[str, Any],
+    target_mentions: int | None = None,
+) -> int:
+    mentions = (
+        _fact_target_mention_count(row)
+        if target_mentions is None
+        else int(target_mentions or 0)
+    )
+    total = int(row.get("all_mention_count") or 0)
+    if total <= 0 and mentions > 0:
+        return 1
+    return total
+
+
 def _engine_conditions(
     filters: AnalysisFilters,
     query_cols: set[str],
@@ -584,6 +612,7 @@ async def _fact_rows(
                 _select_col(response_cols, "r", "created_at", "response_created_at"),
             ]
 
+    brand_scope_match_select = "0 AS brand_scope_matched"
     if brand_id_override is not None and scope_brand_id is not None:
         params["topic_brand_id"] = scope_brand_id
         brand_scope_conditions: list[str] = []
@@ -616,7 +645,11 @@ async def _fact_rows(
             )
         )
         if brand_scope_conditions:
-            topic_where.append(f"({' OR '.join(brand_scope_conditions)})")
+            brand_scope_expr = f"({' OR '.join(brand_scope_conditions)})"
+            topic_where.append(brand_scope_expr)
+            brand_scope_match_select = (
+                f"CASE WHEN {brand_scope_expr} THEN 1 ELSE 0 END AS brand_scope_matched"
+            )
 
     analysis_join = ""
     analysis_selects = [
@@ -719,6 +752,7 @@ async def _fact_rows(
             {_select_col(query_cols, "q", "finished_at", "query_finished_at")},
             {_select_col(query_cols, "q", "latency_ms", "latency_ms")},
             {", ".join(response_selects)},
+            {brand_scope_match_select},
             {", ".join(analysis_selects)},
             {", ".join(mention_selects)},
             {citation_select}

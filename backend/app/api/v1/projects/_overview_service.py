@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._legacy_lookups import resolve_brand_name
 from app.api.v1.projects._mention_rollups import (
+    MentionRollup,
     brand_mention_daily_rollups,
     brand_mention_match_condition,
     brand_mention_window_rollup,
@@ -47,7 +48,9 @@ from app.api.v1.projects._topic_analysis_service import (
     _as_float,
     _as_int,
     _date_key,
+    _fact_all_mention_count,
     _fact_rows,
+    _fact_target_mention_count,
     _has_admin_chain,
     _is_non_branded_row,
 )
@@ -95,12 +98,8 @@ def _fact_geo_display(value: Any) -> float | None:
 
 
 def _fact_target_mentions(row: dict[str, Any]) -> tuple[int, int]:
-    mentions = int(row.get("target_mention_count") or 0)
-    if mentions <= 0 and row.get("target_brand_mentioned"):
-        mentions = 1
-    total = int(row.get("all_mention_count") or 0)
-    if total <= 0 and mentions > 0:
-        total = 1
+    mentions = _fact_target_mention_count(row)
+    total = _fact_all_mention_count(row, mentions)
     return mentions, total
 
 
@@ -182,6 +181,17 @@ async def _overview_from_admin_facts(
             if mentions > 0:
                 prompt_buckets[prompt_key]["sentiments"].append(sentiment)
         geo = _fact_geo_display(row.get("geo_score"))
+        if geo is None and mentions > 0:
+            geo = geo_score(
+                MentionRollup(
+                    mention_count=mentions,
+                    response_count=1,
+                    total_response_count=1,
+                    total_mention_count=total or mentions,
+                    avg_position_rank=rank,
+                    avg_sentiment_score=sentiment,
+                )
+            )
         if geo is not None:
             bucket["geo_scores"].append(geo)
 

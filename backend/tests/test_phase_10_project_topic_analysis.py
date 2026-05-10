@@ -611,6 +611,130 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
 
 
 @pytest.mark.asyncio
+async def test_brand_override_counts_text_matched_facts_without_analysis_or_mentions(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO brands (id, name, industry) VALUES
+              (2, 'Wrong Owner', 'Beauty'),
+              (12, 'Estee Lauder', 'Beauty')
+            """
+        )
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (1301, 2, 'Misfiled beauty topic', 'brand', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (1302, 1301, 'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               'commercial', 'non_branded', 'en', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (1303, 'chatgpt', 'done',
+               'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               2, 'PROF-A', 1302, :now, :now, :now, 800)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (1304, 1303, 1302,
+               'Estee Lauder Advanced Night Repair is often recommended for anti-aging routines.',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    metrics_resp = await client.get(
+        f"/api/v1/projects/{project.id}/metrics",
+        headers=_bearer(user),
+        params={
+            "brand_id": 12,
+            "series": "mention_rate,sov",
+            "prompt_scope": "non_branded",
+        },
+    )
+    assert metrics_resp.status_code == 200, metrics_resp.text
+    metrics_body = metrics_resp.json()
+    assert metrics_body["brand_id"] == 12
+    assert metrics_body["state"] == "ok"
+    by_metric = {series["metric"]: series["points"] for series in metrics_body["series"]}
+    assert by_metric["mention_rate"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["sov"][0]["value"] == pytest.approx(1.0)
+
+    overview_resp = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+    assert overview_resp.status_code == 200, overview_resp.text
+    overview_body = overview_resp.json()
+    assert overview_body["state"] == "ok"
+    assert overview_body["brand_name"] == "Estee Lauder"
+    assert overview_body["geo_score_30d"]
+    assert any(
+        card["label_en"] == "Mention Rate" and card["value"] > 0
+        for card in overview_body["kpi_cards"]
+    )
+    assert any(row["mention_count"] > 0 for row in overview_body["top_prompts"])
+
+    competitors_resp = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12, "prompt_scope": "non_branded"},
+    )
+    assert competitors_resp.status_code == 200, competitors_resp.text
+    competitors_body = competitors_resp.json()
+    assert competitors_body["primary"]["brand_id"] == 12
+    assert competitors_body["primary"]["avg_mention_rate"] == pytest.approx(1.0)
+    assert competitors_body["primary"]["avg_sov"] == pytest.approx(1.0)
+    assert competitors_body["primary"]["avg_geo_score"] > 0
+
+    trends_resp = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/trends",
+        headers=_bearer(user),
+        params={"brand_id": 12, "metric": "geo_score"},
+    )
+    assert trends_resp.status_code == 200, trends_resp.text
+    trends_body = trends_resp.json()
+    primary_series = next(series for series in trends_body["series"] if series["is_primary"])
+    assert primary_series["brand_id"] == 12
+    assert primary_series["points"]
+    assert primary_series["points"][0]["value"] > 0
+
+
+@pytest.mark.asyncio
 async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 

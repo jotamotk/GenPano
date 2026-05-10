@@ -55,7 +55,9 @@ from app.api.v1.projects._topic_analysis_service import (
     _as_float,
     _as_int,
     _date_key,
+    _fact_all_mention_count,
     _fact_rows,
+    _fact_target_mention_count,
     _has_admin_chain,
 )
 
@@ -109,12 +111,8 @@ async def _fact_primary_competitor_row(
         is_non_branded = str(row.get("prompt_scope") or "").strip().lower() == "non_branded"
         if is_non_branded:
             denominator_response_ids.add(rid)
-        mentions = int(row.get("target_mention_count") or 0)
-        if mentions <= 0 and row.get("target_brand_mentioned"):
-            mentions = 1
-        total = int(row.get("all_mention_count") or 0)
-        if total <= 0 and mentions > 0:
-            total = 1
+        mentions = _fact_target_mention_count(row)
+        total = _fact_all_mention_count(row, mentions)
         if mentions > 0:
             target_response_ids.add(rid)
             target_mentions += mentions
@@ -797,19 +795,33 @@ ALLOWED_TREND_METRICS = {
 
 def _fact_trend_value(metric: str, row: dict[str, Any]) -> float | None:
     if metric == "geo_score":
-        return _fact_geo_score(row.get("geo_score"))
+        score = _fact_geo_score(row.get("geo_score"))
+        if score is not None:
+            return score
+        mentions = _fact_target_mention_count(row)
+        if mentions <= 0:
+            return None
+        total = _fact_all_mention_count(row, mentions)
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        sentiment = _as_float(row.get("sentiment_score"))
+        return geo_score(
+            MentionRollup(
+                mention_count=mentions,
+                response_count=1,
+                total_response_count=1,
+                total_mention_count=total or mentions,
+                avg_position_rank=rank,
+                avg_sentiment_score=sentiment,
+            )
+        )
     if metric == "rank":
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         return float(rank) if rank is not None else None
     if metric == "sentiment":
         return _as_float(row.get("sentiment_score"))
     if metric in {"mention_rate", "sov"}:
-        mentions = int(row.get("target_mention_count") or 0)
-        if mentions <= 0 and row.get("target_brand_mentioned"):
-            mentions = 1
-        total = int(row.get("all_mention_count") or 0)
-        if total <= 0 and mentions > 0:
-            total = 1
+        mentions = _fact_target_mention_count(row)
+        total = _fact_all_mention_count(row, mentions)
         if metric == "mention_rate":
             return 1.0 if mentions > 0 else 0.0
         return round(mentions / total, 4) if total else None
