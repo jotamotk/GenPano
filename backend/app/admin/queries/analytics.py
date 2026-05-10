@@ -1,9 +1,9 @@
 """Brand query analytics — Phase 9 slice 9e.
 
-GET /api/admin/queries/analytics?brand_id=…&date_from=…&date_to=…&engine=…
-returns aggregated metrics derived from queries × llm_responses ×
-response_analyses × brand_mentions × prompts × topics. Designed to feed
-the C-side TopicsPage QueryActivityCard.
+GET /api/admin/queries/analytics?brand_id=...&date_from=...&date_to=...&engine=...
+returns aggregated metrics derived from queries JOIN llm_responses JOIN
+response_analyses JOIN brand_mentions JOIN prompts JOIN topics. Designed
+to feed the C-side TopicsPage QueryActivityCard.
 
 Defensive shape: every join is gated by ``_table_exists`` because the
 backend test bind (sqlite) doesn't have these tables, and production
@@ -14,7 +14,7 @@ shape-stable response.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -74,15 +74,15 @@ def _empty_result(
     }
 
 
-def _resolve_window(
-    date_from: str | None, date_to: str | None
-) -> tuple[str, str]:
+def _resolve_window(date_from: str | None, date_to: str | None) -> tuple[str, str]:
     """Validate or default to the last 30 days. Always returns two ISO
     date strings (date_from <= date_to)."""
     today = datetime.now(UTC).date()
-    df = date_from if date_from and is_iso_date(date_from) else (
-        today - timedelta(days=_DEFAULT_WINDOW_DAYS)
-    ).isoformat()
+    df = (
+        date_from
+        if date_from and is_iso_date(date_from)
+        else (today - timedelta(days=_DEFAULT_WINDOW_DAYS)).isoformat()
+    )
     dt = date_to if date_to and is_iso_date(date_to) else today.isoformat()
     if df > dt:
         df, dt = dt, df
@@ -181,17 +181,21 @@ async def fetch_query_analytics(
 
     # ── by_status ───────────────────────────────────────────────────────
     by_status_rows = (
-        await session.execute(
-            text(
-                f"""
+        (
+            await session.execute(
+                text(
+                    f"""
                 SELECT LOWER(q.status) AS status, COUNT(*) AS cnt
                 FROM queries q WHERE {base_where}
                 GROUP BY LOWER(q.status)
                 """
-            ),
-            params,
+                ),
+                params,
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     by_status: dict[str, int] = {"done": 0, "failed": 0, "pending": 0, "running": 0}
     for row in by_status_rows:
         s = (row.get("status") or "").lower()
@@ -202,9 +206,10 @@ async def fetch_query_analytics(
     by_engine: list[dict[str, Any]] = []
     if has_llm_responses and has_response_analyses and has_brand_mentions:
         rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT
                         q.target_llm AS engine,
                         COUNT(DISTINCT q.id) AS queries,
@@ -222,10 +227,13 @@ async def fetch_query_analytics(
                     GROUP BY q.target_llm
                     ORDER BY queries DESC
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         by_engine = [
             {
                 "engine": (r.get("engine") or "unknown"),
@@ -239,17 +247,21 @@ async def fetch_query_analytics(
         ]
     else:
         rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT q.target_llm AS engine, COUNT(*) AS queries
                     FROM queries q WHERE {base_where}
                     GROUP BY q.target_llm ORDER BY queries DESC
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         by_engine = [
             {
                 "engine": (r.get("engine") or "unknown"),
@@ -263,28 +275,58 @@ async def fetch_query_analytics(
         ]
 
     # ── daily_trend ─────────────────────────────────────────────────────
+    mention_select = (
+        ", COUNT(DISTINCT bm.id)::float / NULLIF(COUNT(DISTINCT q.id), 0) AS mention_rate"
+        if has_brand_mentions and has_llm_responses
+        else ""
+    )
+    sentiment_select = (
+        ", AVG(ra.sentiment_score) AS avg_sentiment"
+        if has_response_analyses and has_llm_responses
+        else ""
+    )
+    geo_select = (
+        ", AVG(ra.geo_score) AS avg_geo_score"
+        if has_response_analyses and has_llm_responses
+        else ""
+    )
+    join_responses = "LEFT JOIN llm_responses r ON r.query_id = q.id" if has_llm_responses else ""
+    join_analyses = (
+        "LEFT JOIN response_analyses ra ON ra.response_id = r.id"
+        if has_response_analyses and has_llm_responses
+        else ""
+    )
+    join_mentions = (
+        "LEFT JOIN brand_mentions bm ON bm.response_id = r.id AND bm.brand_id = q.brand_id"
+        if has_brand_mentions and has_llm_responses
+        else ""
+    )
     daily_rows = (
-        await session.execute(
-            text(
-                f"""
+        (
+            await session.execute(
+                text(
+                    f"""
                 SELECT
                     q.created_at::date AS day,
                     COUNT(DISTINCT q.id) AS queries
-                    {", COUNT(DISTINCT bm.id)::float / NULLIF(COUNT(DISTINCT q.id), 0) AS mention_rate" if has_brand_mentions and has_llm_responses else ""}
-                    {", AVG(ra.sentiment_score) AS avg_sentiment" if has_response_analyses and has_llm_responses else ""}
-                    {", AVG(ra.geo_score) AS avg_geo_score" if has_response_analyses and has_llm_responses else ""}
+                    {mention_select}
+                    {sentiment_select}
+                    {geo_select}
                 FROM queries q
-                {"LEFT JOIN llm_responses r ON r.query_id = q.id" if has_llm_responses else ""}
-                {"LEFT JOIN response_analyses ra ON ra.response_id = r.id" if has_response_analyses and has_llm_responses else ""}
-                {"LEFT JOIN brand_mentions bm ON bm.response_id = r.id AND bm.brand_id = q.brand_id" if has_brand_mentions and has_llm_responses else ""}
+                {join_responses}
+                {join_analyses}
+                {join_mentions}
                 WHERE {base_where}
                 GROUP BY q.created_at::date
                 ORDER BY q.created_at::date
                 """
-            ),
-            params,
+                ),
+                params,
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     daily_trend = [
         {
             "date": str(r["day"]),
@@ -300,31 +342,35 @@ async def fetch_query_analytics(
     by_topic: list[dict[str, Any]] = []
     if has_prompts and has_topics:
         topic_rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT
                         t.id AS topic_id,
                         t.text AS topic_text,
                         COUNT(DISTINCT q.id) AS queries
-                        {", COUNT(DISTINCT bm.id)::float / NULLIF(COUNT(DISTINCT q.id), 0) AS mention_rate" if has_brand_mentions and has_llm_responses else ""}
-                        {", AVG(ra.sentiment_score) AS avg_sentiment" if has_response_analyses and has_llm_responses else ""}
-                        {", AVG(ra.geo_score) AS avg_geo_score" if has_response_analyses and has_llm_responses else ""}
+                        {mention_select}
+                        {sentiment_select}
+                        {geo_select}
                     FROM queries q
                     JOIN prompts pr ON pr.id = q.prompt_id
                     JOIN topics t ON t.id = pr.topic_id
-                    {"LEFT JOIN llm_responses r ON r.query_id = q.id" if has_llm_responses else ""}
-                    {"LEFT JOIN response_analyses ra ON ra.response_id = r.id" if has_response_analyses and has_llm_responses else ""}
-                    {"LEFT JOIN brand_mentions bm ON bm.response_id = r.id AND bm.brand_id = q.brand_id" if has_brand_mentions and has_llm_responses else ""}
+                    {join_responses}
+                    {join_analyses}
+                    {join_mentions}
                     WHERE {base_where}
                     GROUP BY t.id, t.text
                     ORDER BY queries DESC
                     LIMIT 10
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         by_topic = [
             {
                 "topic_id": int(r["topic_id"]),
@@ -341,9 +387,10 @@ async def fetch_query_analytics(
     sentiment_distribution = {"positive": 0, "neutral": 0, "negative": 0}
     if has_brand_mentions and has_llm_responses:
         sent_rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT bm.sentiment, COUNT(*) AS cnt
                     FROM queries q
                     JOIN llm_responses r ON r.query_id = q.id
@@ -352,10 +399,13 @@ async def fetch_query_analytics(
                     WHERE {base_where}
                     GROUP BY bm.sentiment
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         for row in sent_rows:
             label = (row.get("sentiment") or "neutral").lower()
             if label in sentiment_distribution:
@@ -365,9 +415,10 @@ async def fetch_query_analytics(
     position_buckets = {"Top1": 0, "Top3": 0, "Top5": 0, "Top10": 0, "Other": 0}
     if has_brand_mentions and has_llm_responses:
         pos_rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT
                         CASE
                             WHEN bm.position_rank = 1 THEN 'Top1'
@@ -384,10 +435,13 @@ async def fetch_query_analytics(
                     WHERE {base_where} AND bm.position_rank IS NOT NULL
                     GROUP BY bucket
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         for row in pos_rows:
             bucket = row.get("bucket")
             if bucket in position_buckets:

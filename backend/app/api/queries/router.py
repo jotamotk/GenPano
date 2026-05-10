@@ -64,11 +64,11 @@ async def query_analytics(
     date_to: str | None = Query(None),
     engine: str | None = Query(None),
 ) -> Any:
-    """Brand query analytics — aggregated metrics over queries × llm_responses
-    × response_analyses × brand_mentions × prompts × topics. Powers the
-    TopicsPage QueryActivityCard. Default window: last 30 days. Empty
-    shape (zeros + empty arrays) when brand_id is missing or upstream
-    tables are unavailable."""
+    """Brand query analytics — aggregated metrics over queries JOIN
+    llm_responses JOIN response_analyses JOIN brand_mentions JOIN prompts
+    JOIN topics. Powers the TopicsPage QueryActivityCard. Default window:
+    last 30 days. Empty shape (zeros + empty arrays) when brand_id is
+    missing or upstream tables are unavailable."""
     return await fetch_query_analytics(
         session,
         brand_id=brand_id,

@@ -285,8 +285,10 @@ async def ensure_default_prompt(
 
     topic_cols = await _table_columns(session, "topics")
     prompt_cols = await _table_columns(session, "prompts")
-    if not ({"brand_id", "text", "category"}.issubset(topic_cols)
-            and {"topic_id", "text"}.issubset(prompt_cols)):
+    if not (
+        {"brand_id", "text", "category"}.issubset(topic_cols)
+        and {"topic_id", "text"}.issubset(prompt_cols)
+    ):
         return None
 
     existing = (
@@ -392,9 +394,7 @@ async def create_query(
         return None
 
     if prompt_id is None:
-        prompt_id = await ensure_default_prompt(
-            session, brand_id=brand_id, query_text=query_text
-        )
+        prompt_id = await ensure_default_prompt(session, brand_id=brand_id, query_text=query_text)
 
     row = (
         (

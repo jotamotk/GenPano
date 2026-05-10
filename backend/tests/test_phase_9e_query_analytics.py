@@ -73,16 +73,12 @@ def test_parse_create_payload_accepts_prompt_id():
 
 def test_parse_create_payload_invalid_prompt_id():
     with pytest.raises(QueryValidationError) as exc:
-        parse_create_query_payload(
-            {"target_llm": "x", "query_text": "y", "prompt_id": "weird"}
-        )
+        parse_create_query_payload({"target_llm": "x", "query_text": "y", "prompt_id": "weird"})
     assert exc.value.code == "invalid_prompt_id"
 
 
 def test_parse_create_payload_omits_prompt_id_when_blank():
-    out = parse_create_query_payload(
-        {"target_llm": "x", "query_text": "y", "prompt_id": ""}
-    )
+    out = parse_create_query_payload({"target_llm": "x", "query_text": "y", "prompt_id": ""})
     assert out["prompt_id"] is None
 
 
@@ -90,9 +86,10 @@ def test_parse_create_payload_omits_prompt_id_when_blank():
 
 
 def test_resolve_window_defaults_to_last_30():
+    from datetime import date
+
     df, dt = analytics_mod._resolve_window(None, None)
     # Both ISO date strings with df <= dt; 30-day spread.
-    from datetime import date
     assert date.fromisoformat(df) <= date.fromisoformat(dt)
     assert (date.fromisoformat(dt) - date.fromisoformat(df)).days == 30
 
@@ -104,9 +101,10 @@ def test_resolve_window_swaps_when_inverted():
 
 
 def test_resolve_window_rejects_garbage_falls_back():
+    from datetime import date
+
     df, dt = analytics_mod._resolve_window("not-a-date", "also-not")
     # Falls through to defaults — same shape as `_defaults`.
-    from datetime import date
     assert date.fromisoformat(df) <= date.fromisoformat(dt)
 
 
@@ -170,22 +168,57 @@ async def test_analytics_passes_filters_to_service(client, admin_operator, monke
     the wiring."""
     a = _queries_router_module()
     fake_payload = {
-        "filters": {"brand_id": 7, "date_from": "2026-04-01", "date_to": "2026-05-10", "engine": "chatgpt"},
+        "filters": {
+            "brand_id": 7,
+            "date_from": "2026-04-01",
+            "date_to": "2026-05-10",
+            "engine": "chatgpt",
+        },
         "totals": {"queries": 12, "responses": 10, "analyzed": 9, "mentions_target": 5},
         "by_status": {"done": 10, "failed": 1, "pending": 1, "running": 0},
-        "by_engine": [{"engine": "chatgpt", "queries": 12, "mention_rate": 0.4, "avg_sentiment": 0.2, "avg_position_rank": 2.0, "avg_geo_score": 0.7}],
-        "daily_trend": [{"date": "2026-05-01", "queries": 5, "mention_rate": 0.4, "avg_sentiment": 0.1, "avg_geo_score": 0.65}],
-        "by_topic": [{"topic_id": 1, "topic_text": "x", "queries": 5, "mention_rate": 0.4, "avg_sentiment": 0.1, "avg_geo_score": 0.65}],
+        "by_engine": [
+            {
+                "engine": "chatgpt",
+                "queries": 12,
+                "mention_rate": 0.4,
+                "avg_sentiment": 0.2,
+                "avg_position_rank": 2.0,
+                "avg_geo_score": 0.7,
+            }
+        ],
+        "daily_trend": [
+            {
+                "date": "2026-05-01",
+                "queries": 5,
+                "mention_rate": 0.4,
+                "avg_sentiment": 0.1,
+                "avg_geo_score": 0.65,
+            }
+        ],
+        "by_topic": [
+            {
+                "topic_id": 1,
+                "topic_text": "x",
+                "queries": 5,
+                "mention_rate": 0.4,
+                "avg_sentiment": 0.1,
+                "avg_geo_score": 0.65,
+            }
+        ],
         "sentiment_distribution": {"positive": 3, "neutral": 2, "negative": 1},
         "position_distribution": [
-            {"bucket": "Top1", "count": 1}, {"bucket": "Top3", "count": 2},
-            {"bucket": "Top5", "count": 1}, {"bucket": "Top10", "count": 1}, {"bucket": "Other", "count": 0},
+            {"bucket": "Top1", "count": 1},
+            {"bucket": "Top3", "count": 2},
+            {"bucket": "Top5", "count": 1},
+            {"bucket": "Top10", "count": 1},
+            {"bucket": "Other", "count": 0},
         ],
     }
     spy = AsyncMock(return_value=fake_payload)
     monkeypatch.setattr(a, "fetch_query_analytics", spy)
     resp = await client.get(
-        "/api/admin/queries/analytics?brand_id=7&date_from=2026-04-01&date_to=2026-05-10&engine=chatgpt"
+        "/api/admin/queries/analytics"
+        "?brand_id=7&date_from=2026-04-01&date_to=2026-05-10&engine=chatgpt"
     )
     assert resp.status_code == 200
     spy.assert_awaited_once()
