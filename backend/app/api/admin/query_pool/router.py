@@ -129,7 +129,7 @@ def _run_timeout_seconds() -> int:
         n = int(raw)
     except (TypeError, ValueError):
         n = 3600
-    return max(300, min(n, 14400))
+    return max(300, min(n, 604_800))
 
 
 async def _mark_stale_run(session: AsyncSession, run: QueryGenerationRun) -> bool:

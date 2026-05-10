@@ -147,7 +147,12 @@ jobs:
             ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
             ARK_MODEL=doubao-seed-2-0-pro-260215
             TOPIC_PLAN_WEB_RESEARCH_TIMEOUT_SECONDS=180
-            TOPIC_PLAN_LLM_TIMEOUT_SECONDS=180
+            TOPIC_PLAN_LLM_TIMEOUT_SECONDS=600
+            TOPIC_PLAN_RUN_TIMEOUT_SECONDS=86400
+            PROMPT_MATRIX_LLM_TIMEOUT_SECONDS=600
+            PROMPT_MATRIX_RUN_TIMEOUT_SECONDS=86400
+            QUERY_POOL_LLM_TIMEOUT_SECONDS=600
+            QUERY_POOL_RUN_TIMEOUT_SECONDS=86400
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
 

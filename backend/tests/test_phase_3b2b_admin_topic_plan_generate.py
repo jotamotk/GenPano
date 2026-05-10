@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -34,6 +35,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def test_topic_plan_run_timeout_allows_day_scale(monkeypatch):
+    from app.admin.topic_plan.db import run_timeout_seconds
+
+    monkeypatch.setenv("TOPIC_PLAN_RUN_TIMEOUT_SECONDS", "86400")
+
+    run = SimpleNamespace(request_config={"max_topics": 10_000})
+
+    assert run_timeout_seconds(run) == 86400
 
 
 def _new_id() -> str:

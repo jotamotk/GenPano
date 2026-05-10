@@ -65,6 +65,38 @@ def parse_int_list(value: str | list[Any] | None) -> list[int]:
     return result
 
 
+async def _table_exists(session: AsyncSession, name: str) -> bool:
+    """True iff ``public.<name>`` exists. False on sqlite/probe failure."""
+    try:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = :n LIMIT 1"
+                ),
+                {"n": name},
+            )
+        ).first()
+    except Exception:
+        return False
+    return row is not None
+
+
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    """Return columns of ``public.<name>``. Empty on sqlite/probe failure."""
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :n"
+            ),
+            {"n": name},
+        )
+    except Exception:
+        return set()
+    return {row[0] for row in result.all()}
+
+
 def map_dimension(raw_category: str | None) -> str:
     value = (raw_category or "").strip().lower()
     if value in ALLOWED_DIMENSIONS:
@@ -623,9 +655,9 @@ def run_to_dict(run: TopicPlanRun, *, elapsed_seconds: float | None = None) -> d
 
 def run_timeout_seconds(run: TopicPlanRun) -> int:
     request_config = run.request_config if isinstance(run.request_config, dict) else {}
-    estimated = bounded_int(request_config.get("max_topics"), 180, 1, 2000)
-    default_timeout = max(600, min(3600, estimated * 10))
-    return bounded_int(os.getenv("TOPIC_PLAN_RUN_TIMEOUT_SECONDS"), default_timeout, 120, 7200)
+    estimated = bounded_int(request_config.get("max_topics"), 180, 1, 50_000)
+    default_timeout = max(600, min(86_400, estimated * 10))
+    return bounded_int(os.getenv("TOPIC_PLAN_RUN_TIMEOUT_SECONDS"), default_timeout, 120, 604_800)
 
 
 async def mark_stale_run(session: AsyncSession, run: TopicPlanRun) -> bool:
@@ -923,23 +955,40 @@ async def topic_dependency_counts(
     counts = {int(t): {"prompt_count": 0, "query_count": 0} for t in topic_ids}
     if not topic_ids:
         return counts
-    rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                    SELECT p.topic_id,
-                           COUNT(DISTINCT p.id)::int AS prompt_count,
-                           COUNT(q.id)::int AS query_count
-                    FROM prompts p
-                    LEFT JOIN queries q ON q.prompt_id = p.id
-                    WHERE p.topic_id = ANY(:ids)
-                    GROUP BY p.topic_id
-                    """
-                ),
-                {"ids": topic_ids},
-            )
+    if not await _table_exists(session, "prompts"):
+        return counts
+    prompt_cols = await _table_columns(session, "prompts")
+    if not {"id", "topic_id"}.issubset(prompt_cols):
+        return counts
+    query_cols = await _table_columns(session, "queries") if await _table_exists(
+        session, "queries"
+    ) else set()
+    has_query_prompt_link = {"id", "prompt_id"}.issubset(query_cols)
+    if has_query_prompt_link:
+        dependency_sql = text(
+            """
+            SELECT p.topic_id,
+                   COUNT(DISTINCT p.id)::int AS prompt_count,
+                   COUNT(q.id)::int AS query_count
+            FROM prompts p
+            LEFT JOIN queries q ON q.prompt_id = p.id
+            WHERE p.topic_id = ANY(:ids)
+            GROUP BY p.topic_id
+            """
         )
+    else:
+        dependency_sql = text(
+            """
+            SELECT p.topic_id,
+                   COUNT(DISTINCT p.id)::int AS prompt_count,
+                   0::int AS query_count
+            FROM prompts p
+            WHERE p.topic_id = ANY(:ids)
+            GROUP BY p.topic_id
+            """
+        )
+    rows = (
+        (await session.execute(dependency_sql, {"ids": topic_ids}))
         .mappings()
         .all()
     )
@@ -950,6 +999,52 @@ async def topic_dependency_counts(
             "query_count": int(row.get("query_count") or 0),
         }
     return counts
+
+
+def _topic_delete_select_sql(
+    topic_cols: set[str],
+    brand_cols: set[str],
+    *,
+    can_join_brands: bool,
+) -> str:
+    brand_id_expr = "t.brand_id AS brand_id" if "brand_id" in topic_cols else "NULL::int AS brand_id"
+    text_expr = "t.text AS text" if "text" in topic_cols else "('Topic #' || t.id::text) AS text"
+    category_expr = (
+        "t.category AS category" if "category" in topic_cols else "NULL::text AS category"
+    )
+    status_expr = (
+        "COALESCE(t.status, 'active') AS status"
+        if "status" in topic_cols
+        else "'active'::text AS status"
+    )
+    brand_join = ""
+    brand_name_expr = "NULL::text AS brand_name"
+    industry_expr = "'Uncategorized'::text AS industry"
+    if can_join_brands:
+        brand_join = "LEFT JOIN brands b ON b.id = t.brand_id"
+        if "name" in brand_cols:
+            brand_name_expr = "b.name AS brand_name"
+        if "industry" in brand_cols:
+            industry_expr = "COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry"
+    return f"""
+        SELECT t.id, {brand_id_expr}, {text_expr}, {category_expr},
+               {status_expr}, {brand_name_expr}, {industry_expr}
+        FROM topics t
+        {brand_join}
+        WHERE t.id = ANY(:ids)
+        ORDER BY t.id
+        """
+
+
+def _topic_candidate_ref_clear_sql(candidate_cols: set[str]) -> str:
+    set_parts = ["approved_topic_id = NULL"]
+    if "updated_at" in candidate_cols:
+        set_parts.append("updated_at = NOW()")
+    return f"""
+        UPDATE topic_candidates
+        SET {", ".join(set_parts)}
+        WHERE approved_topic_id = ANY(:ids)
+        """
 
 
 async def delete_topic_plan_topics(
@@ -967,22 +1062,22 @@ async def delete_topic_plan_topics(
     """
     if not topic_ids:
         return {"deleted": [], "blocked": [], "missing": []}
+    if not await _table_exists(session, "topics"):
+        return {"deleted": [], "blocked": [], "missing": list(topic_ids)}
+    topic_cols = await _table_columns(session, "topics")
+    if "id" not in topic_cols:
+        return {"deleted": [], "blocked": [], "missing": list(topic_ids)}
+    brand_cols: set[str] = set()
+    can_join_brands = (
+        "brand_id" in topic_cols
+        and await _table_exists(session, "brands")
+        and "id" in (brand_cols := await _table_columns(session, "brands"))
+    )
 
     rows = (
         (
             await session.execute(
-                text(
-                    """
-                    SELECT t.id, t.brand_id, t.text, t.category,
-                           COALESCE(t.status, 'active') AS status,
-                           b.name AS brand_name,
-                           COALESCE(NULLIF(b.industry, ''), 'Uncategorized') AS industry
-                    FROM topics t
-                    LEFT JOIN brands b ON b.id = t.brand_id
-                    WHERE t.id = ANY(:ids)
-                    ORDER BY t.id
-                    """
-                ),
+                text(_topic_delete_select_sql(topic_cols, brand_cols, can_join_brands=can_join_brands)),
                 {"ids": topic_ids},
             )
         )
@@ -1015,17 +1110,13 @@ async def delete_topic_plan_topics(
 
     deleted: list[dict[str, Any]] = []
     if deletable_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE topic_candidates
-                SET approved_topic_id = NULL,
-                    updated_at = NOW()
-                WHERE approved_topic_id = ANY(:ids)
-                """
-            ),
-            {"ids": deletable_ids},
-        )
+        if await _table_exists(session, "topic_candidates"):
+            candidate_cols = await _table_columns(session, "topic_candidates")
+            if "approved_topic_id" in candidate_cols:
+                await session.execute(
+                    text(_topic_candidate_ref_clear_sql(candidate_cols)),
+                    {"ids": deletable_ids},
+                )
         result = await session.execute(
             text("DELETE FROM topics WHERE id = ANY(:ids) RETURNING id"),
             {"ids": deletable_ids},

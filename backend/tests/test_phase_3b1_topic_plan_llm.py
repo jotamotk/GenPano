@@ -377,7 +377,7 @@ async def test_generate_topics_llm_timeout_message_is_actionable(monkeypatch):
             )
         raise httpx.ReadTimeout("")
 
-    monkeypatch.setenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS", "180")
+    monkeypatch.setenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS", "600")
     monkeypatch.setenv("TOPIC_PLAN_LLM_ATTEMPTS", "1")
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
@@ -394,7 +394,7 @@ async def test_generate_topics_llm_timeout_message_is_actionable(monkeypatch):
 
     assert exc.value.code == "llm_call_failed"
     assert "ReadTimeout" in exc.value.message
-    assert "180s" in exc.value.message
+    assert "600s" in exc.value.message
     assert "chat/completions" in exc.value.message
 
 

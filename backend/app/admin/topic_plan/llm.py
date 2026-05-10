@@ -492,7 +492,7 @@ class DoubaoTopicPlanClient:
             brand_context_packs=brand_context_packs,
         )
         timeout_seconds = bounded_int(
-            os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 180, 180, 30, 360
+            os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 600, 600, 30, 3600
         )
         attempts = bounded_int(os.getenv("TOPIC_PLAN_LLM_ATTEMPTS") or 2, 2, 1, 3)
         url = self.config.base_url.rstrip("/") + "/chat/completions"
