@@ -37,49 +37,51 @@ jobs:
 
             echo "=== Brand mention identity probe ==="
             echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY}"
-            docker compose exec -T postgres psql -U genpano -d genpano <<SQL
-            SELECT id, name, name_zh, name_en, aliases
-            FROM brands
-            WHERE id = ${BRAND_ID}
-               OR LOWER(COALESCE(name, '')) LIKE LOWER('%${BRAND_QUERY}%')
-               OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%${BRAND_QUERY}%')
-               OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%${BRAND_QUERY}%')
-            ORDER BY id
-            LIMIT 20;
-
-            SELECT brand_id,
-                   brand_name,
-                   COUNT(*) AS rows,
-                   COUNT(DISTINCT response_id) AS responses,
-                   SUM(COALESCE(mention_count, 1)) AS mentions,
-                   MIN(created_at) AS first_seen,
-                   MAX(created_at) AS last_seen
-            FROM brand_mentions
-            WHERE created_at >= NOW() - INTERVAL '90 days'
-              AND (
-                brand_id = ${BRAND_ID}
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%${BRAND_QUERY}%')
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅思兰黛%')
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅诗兰黛%')
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estee%')
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estée%')
-                OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%lauder%')
-              )
-            GROUP BY brand_id, brand_name
-            ORDER BY rows DESC, responses DESC
-            LIMIT 40;
-
-            SELECT brand_id,
-                   brand_name,
-                   COUNT(*) AS rows,
-                   COUNT(DISTINCT response_id) AS responses,
-                   SUM(COALESCE(mention_count, 1)) AS mentions
-            FROM brand_mentions
-            WHERE created_at >= NOW() - INTERVAL '90 days'
-            GROUP BY brand_id, brand_name
-            ORDER BY rows DESC
-            LIMIT 25;
-SQL
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, name_zh, name_en
+              FROM brands
+              WHERE id = ${BRAND_ID}
+                 OR LOWER(COALESCE(name, '')) LIKE LOWER('%${BRAND_QUERY}%')
+                 OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%${BRAND_QUERY}%')
+                 OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%${BRAND_QUERY}%')
+              ORDER BY id
+              LIMIT 20;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT brand_id,
+                     brand_name,
+                     COUNT(*) AS rows,
+                     COUNT(DISTINCT response_id) AS responses,
+                     SUM(COALESCE(mention_count, 1)) AS mentions,
+                     MIN(created_at) AS first_seen,
+                     MAX(created_at) AS last_seen
+              FROM brand_mentions
+              WHERE created_at >= NOW() - INTERVAL '90 days'
+                AND (
+                  brand_id = ${BRAND_ID}
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%${BRAND_QUERY}%')
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅思兰黛%')
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅诗兰黛%')
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estee%')
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estée%')
+                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%lauder%')
+                )
+              GROUP BY brand_id, brand_name
+              ORDER BY rows DESC, responses DESC
+              LIMIT 40;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT brand_id,
+                     brand_name,
+                     COUNT(*) AS rows,
+                     COUNT(DISTINCT response_id) AS responses,
+                     SUM(COALESCE(mention_count, 1)) AS mentions
+              FROM brand_mentions
+              WHERE created_at >= NOW() - INTERVAL '90 days'
+              GROUP BY brand_id, brand_name
+              ORDER BY rows DESC
+              LIMIT 25;
+            " || true
 
             echo "=== Backend email env (password masked) ==="
             docker compose exec -T backend python - <<'PY'
