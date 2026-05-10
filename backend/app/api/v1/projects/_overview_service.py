@@ -365,16 +365,24 @@ async def get_brand_overview(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> BrandOverviewOut:
-    """Compose the full Brand Overview response."""
+    """Compose the full Brand Overview response.
+
+    `brand_id_override` lets callers (typically the dashboard's brand
+    picker via ?brand_id=X) view this project's panorama as if a
+    different brand were the primary. Project ownership is still
+    enforced upstream by `get_project_for_user`; the override only
+    changes which brand's metrics are pulled from `geo_score_daily`,
+    `brand_mentions`, and friends.
+    """
     today = date.today()
     to_d = to_date or today
     from_d = from_date or (to_d - timedelta(days=DEFAULT_WINDOW_DAYS - 1))
 
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return _empty_overview(project)
-
-    brand_id = project.primary_brand_id
 
     kpi_cards = await _kpi_cards(session, brand_id, from_d, to_d)
     geo_30d = await _trend(session, brand_id, from_d, to_d, "avg_geo_score")

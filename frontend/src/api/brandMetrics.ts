@@ -178,9 +178,13 @@ export const brandMetricsApi = {
   metrics(
     projectId: string,
     series: string[] = ['mention_rate', 'sov', 'rank', 'sentiment'],
+    brandId?: number | null,
   ): Promise<MetricsOut> {
-    const q = series.join(',')
-    return apiClient.get<MetricsOut>(`/v1/projects/${projectId}/metrics?series=${q}`)
+    const params = new URLSearchParams({ series: series.join(',') })
+    if (brandId != null) params.set('brand_id', String(brandId))
+    return apiClient.get<MetricsOut>(
+      `/v1/projects/${projectId}/metrics?${params.toString()}`,
+    )
   },
   sentiment(projectId: string): Promise<SentimentOut> {
     return apiClient.get<SentimentOut>(`/v1/projects/${projectId}/sentiment`)

@@ -71,12 +71,18 @@ async def get_metrics(
     from_date: date | None = None,
     to_date: date | None = None,
     engines: list[str] | None = None,
+    brand_id_override: int | None = None,
 ) -> MetricsOut:
+    """`brand_id_override` lets the dashboard brand picker swap the
+    primary brand for KPI / trend pulls without leaving the project."""
     from_d, to_d = _resolve_window(from_date, to_date)
     requested = series or ["mention_rate", "sov", "rank", "sentiment", "citation"]
     requested = [m for m in requested if m in ALLOWED_METRICS]
 
-    if project.primary_brand_id is None:
+    primary_brand_id = (
+        brand_id_override if brand_id_override is not None else project.primary_brand_id
+    )
+    if primary_brand_id is None:
         return MetricsOut(
             project_id=project.id,
             brand_id=None,
@@ -91,7 +97,7 @@ async def get_metrics(
         col = METRIC_TO_COLUMN[metric]
         stmt = select(GeoScoreDaily.date, func.avg(col)).where(
             and_(
-                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.brand_id == primary_brand_id,
                 GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
                 GeoScoreDaily.date <= datetime.combine(to_d, datetime.max.time()),
             )
@@ -113,7 +119,7 @@ async def get_metrics(
     has_data = any(s.points for s in out_series)
     return MetricsOut(
         project_id=project.id,
-        brand_id=project.primary_brand_id,
+        brand_id=primary_brand_id,
         period=_period(from_d, to_d),
         engines=engines,
         series=out_series,

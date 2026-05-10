@@ -60,7 +60,8 @@ export interface BrandOverviewOut {
 }
 
 export const brandOverviewApi = {
-  get(projectId: string): Promise<BrandOverviewOut> {
-    return apiClient.get<BrandOverviewOut>(`/v1/projects/${projectId}/overview`)
+  get(projectId: string, brandId?: number | null): Promise<BrandOverviewOut> {
+    const qs = brandId != null ? `?brand_id=${encodeURIComponent(String(brandId))}` : ''
+    return apiClient.get<BrandOverviewOut>(`/v1/projects/${projectId}/overview${qs}`)
   },
 }
