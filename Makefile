@@ -41,7 +41,7 @@ install: ## Install all dependencies (backend uv + frontend npm)
 # ─────────────────────────────────────────────────────────────────
 
 dev: ## Start backend + frontend (use Ctrl+C to stop)
-	@echo 'Starting backend (port 4000) + frontend (port 3000)...'
+	@echo 'Starting backend (port 4000) + frontend (port 5173)...'
 	@echo 'Note: worker not started here; run "make dev-worker" in another shell if needed.'
 	@( $(MAKE) dev-backend & $(MAKE) dev-frontend & wait )
 

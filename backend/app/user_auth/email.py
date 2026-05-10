@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 EmailLocale = Literal["zh-CN", "en-US"]
 _DEFAULT_LOCALE: EmailLocale = "zh-CN"
-_BASE_URL_FALLBACK = "http://localhost:3000"
+_BASE_URL_FALLBACK = "http://localhost:5173"
 _FROM_ADDRESS_DEFAULT = "GenPano <noreply@genpano.com>"
 _ALIYUN_DM_SMTP_HOST = "smtpdm.aliyun.com"
 _ALIYUN_DM_SMTP_PORT = 465
