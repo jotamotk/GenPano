@@ -83,6 +83,56 @@ jobs:
               LIMIT 25;
             " || true
 
+            echo "=== Admin fact brand probe ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, primary_brand_id, industry_id
+              FROM projects
+              WHERE primary_brand_id = ${BRAND_ID}
+                 OR LOWER(COALESCE(name, '')) LIKE LOWER('%${BRAND_QUERY}%')
+              ORDER BY name
+              LIMIT 20;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              WITH scoped_topics AS (
+                SELECT id FROM topics WHERE brand_id = ${BRAND_ID}
+              ),
+              scoped_prompts AS (
+                SELECT p.id FROM prompts p JOIN scoped_topics t ON t.id = p.topic_id
+              ),
+              scoped_queries AS (
+                SELECT q.id FROM queries q JOIN scoped_prompts p ON p.id = q.prompt_id
+              ),
+              scoped_responses AS (
+                SELECT r.id FROM llm_responses r JOIN scoped_queries q ON q.id = r.query_id
+              )
+              SELECT
+                (SELECT COUNT(*) FROM scoped_topics) AS topics,
+                (SELECT COUNT(*) FROM scoped_prompts) AS prompts,
+                (SELECT COUNT(*) FROM scoped_queries) AS queries,
+                (SELECT COUNT(*) FROM scoped_responses) AS responses,
+                (SELECT COUNT(*) FROM response_analyses ra JOIN scoped_responses r ON r.id = ra.response_id) AS analyses,
+                (SELECT COUNT(*) FROM brand_mentions bm JOIN scoped_responses r ON r.id = bm.response_id) AS response_brand_mentions;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT q.brand_id,
+                     COUNT(DISTINCT t.id) AS topics,
+                     COUNT(DISTINCT p.id) AS prompts,
+                     COUNT(DISTINCT q.id) AS queries,
+                     COUNT(DISTINCT r.id) AS responses,
+                     COUNT(DISTINCT ra.id) AS analyses
+              FROM topics t
+              LEFT JOIN prompts p ON p.topic_id = t.id
+              LEFT JOIN queries q ON q.prompt_id = p.id
+              LEFT JOIN llm_responses r ON r.query_id = q.id
+              LEFT JOIN response_analyses ra ON ra.response_id = r.id
+              GROUP BY q.brand_id
+              ORDER BY responses DESC NULLS LAST, queries DESC NULLS LAST
+              LIMIT 20;
+            " || true
+
+            echo "=== Recent nginx logs ==="
+            docker compose logs --tail=220 nginx || true
+
             echo "=== Backend email env (password masked) ==="
             docker compose exec -T backend python - <<'PY'
             import os
