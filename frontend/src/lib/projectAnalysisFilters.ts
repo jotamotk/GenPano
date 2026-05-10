@@ -3,6 +3,9 @@ export interface BrandAnalysisFiltersLike {
   to?: string
   engines?: string[]
   profileGroup?: string
+  dimensions?: string[]
+  intents?: string[]
+  promptScope?: string
 }
 
 export interface ProjectAnalysisParams {
@@ -11,6 +14,9 @@ export interface ProjectAnalysisParams {
   engine?: string
   segment_id?: string
   profile_id?: string
+  dimension?: string
+  intent?: string
+  prompt_scope?: string
 }
 
 export function toProjectAnalysisParams(
@@ -21,6 +27,9 @@ export function toProjectAnalysisParams(
   if (filters.from) params.from = filters.from
   if (filters.to) params.to = filters.to
   if (filters.engines?.length) params.engine = filters.engines.join(',')
+  if (filters.dimensions?.length) params.dimension = filters.dimensions.join(',')
+  if (filters.intents?.length) params.intent = filters.intents.join(',')
+  if (filters.promptScope) params.prompt_scope = filters.promptScope
 
   const audience = filters.profileGroup
   if (audience && audience !== 'all') {

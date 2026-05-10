@@ -51,7 +51,8 @@ class ProductsOut(BaseModel):
 
 # ── /competitors/metrics ──────────────────────────────────────────
 class CompetitorBrandRow(BaseModel):
-    brand_id: int
+    brand_id: int | None
+    brand_key: str | None = None
     brand_name: str | None
     avg_geo_score: float | None
     avg_mention_rate: float | None

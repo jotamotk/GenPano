@@ -7,7 +7,7 @@ import {
   BarChart,
   XAxis, YAxis, CartesianGrid,
 } from 'recharts';
-import { Badge, Button, Card } from '../components/ui';
+import { Badge, Button, Card, MetricLabel } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
@@ -369,11 +369,10 @@ function DiagnosticsTab({ brand, t, onDownloadPdf, highlightId, showUpsellStrip 
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand.detail.diagnostics.title')}
+            <MetricLabel helpText={t('brand.detail.diagnostics.subtitle')}>
+              {t('brand.detail.diagnostics.title')}
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-1">
-            {t('brand.detail.diagnostics.subtitle')}
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <WatchBrandButton brand={brand} showCrossIndustryHint={false} />
@@ -492,11 +491,10 @@ function ContentGapTab({ brand, t }) {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h4 className="text-sm font-semibold text-themed-primary">
-              想看看"加 N 个 Tier 2 媒体能涨多少 PANO A"?
+              <MetricLabel helpText="打开模拟器调一调；不承诺结果，只给基于当前结构的估算。">
+                想看看"加 N 个 Tier 2 媒体能涨多少 PANO A"?
+              </MetricLabel>
             </h4>
-            <p className="text-xs text-themed-secondary mt-1 leading-relaxed">
-              打开模拟器调一调 · 不承诺结果, 只给基于当前结构的估算
-            </p>
           </div>
           <Button
             variant="primary"

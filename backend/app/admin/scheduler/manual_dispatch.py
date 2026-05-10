@@ -7,9 +7,9 @@ inserts pending rows into the ``queries`` table. Returns a status dict
 the SPA shows to the operator.
 
 Design notes:
-- SAVEPOINTs (``session.begin_nested``) wrap each schedule INSERT so a
-  single bad row (profile_id type mismatch / queries.schedule_id column
-  missing on legacy DB) doesn't poison the whole dispatch.
+- Query rows are prepared in memory and inserted in one executemany call
+  so large batch plans do not spend the whole proxy timeout in per-row DB
+  round trips.
 - Manual trigger SKIPS the "(B) per-(account,profile) random prompt fill"
   loop that the daily Beat tick runs — a single user reported 94k
   pending queries from repeated manual clicks. Schedules only.
@@ -342,9 +342,9 @@ async def run_manual_dispatch(
             if is_query_engine(v) and str(v).lower() not in paused_engines
         ]
         if not target_llms:
-            fallback_llm = str(row.get("target_llm") or "").lower()
-            if is_query_engine(row.get("target_llm")) and fallback_llm not in paused_engines:
-                target_llms = [row.get("target_llm")]
+            fallback_llm = normalize_engine_name(row.get("target_llm"))
+            if is_query_engine(fallback_llm) and fallback_llm not in paused_engines:
+                target_llms = [fallback_llm]
         if row.get("plan_kind") == "batch":
             for item in _json_list(row.get("query_items_json")):
                 if not isinstance(item, dict):
@@ -363,10 +363,10 @@ async def run_manual_dispatch(
                         }
                     )
             continue
-        target_llm = str(row.get("target_llm") or "").lower()
+        target_llm = normalize_engine_name(row.get("target_llm"))
         target_allowed = schedule_item_target_llms(
             {"query_text": row.get("query_text")},
-            [row.get("target_llm")],
+            [target_llm],
         )
         if (
             is_query_engine(row.get("target_llm"))
@@ -379,14 +379,14 @@ async def run_manual_dispatch(
     schedule_failures: list[str] = []
     account_by_engine: dict[str, Any] = {}
     account_by_engine_profile: dict[tuple[str, str], Any] = {}
-    for row in rows:
-        raw = dict(row)
-        account_id = raw.get("account_id")
-        engine = normalize_engine_name(raw.get("engine"))
+    for quota_row in rows:
+        quota = dict(quota_row)
+        account_id = quota.get("account_id")
+        engine = normalize_engine_name(quota.get("engine"))
         if not account_id or not is_query_engine(engine):
             continue
         account_by_engine.setdefault(engine, account_id)
-        profile_id = raw.get("profile_id")
+        profile_id = quota.get("profile_id")
         if profile_id is not None:
             account_by_engine_profile.setdefault((engine, str(profile_id)), account_id)
 

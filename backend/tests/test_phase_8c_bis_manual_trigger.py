@@ -75,14 +75,6 @@ class _FakeResult:
         return list(self._rows)
 
 
-class _FakeSavepoint:
-    async def commit(self):
-        return None
-
-    async def rollback(self):
-        return None
-
-
 class _ManualDispatchBatchSession:
     def __init__(self):
         self.query_insert_calls = 0
@@ -191,8 +183,6 @@ class _ManualDispatchBatchSession:
                     }
                 ]
             )
-        if "SELECT a.id" in sql and "FROM llm_accounts a" in sql:
-            return _FakeResult([{"id": 11}])
         if "INSERT INTO queries" in sql:
             self.query_insert_calls += 1
             self.query_insert_rows += len(params) if isinstance(params, list) else 1
@@ -217,9 +207,6 @@ class _ManualDispatchBatchSession:
         if "INSERT INTO scheduler_runs" in sql:
             return _FakeResult([{"id": 99}])
         raise AssertionError(f"unexpected SQL: {sql}")
-
-    async def begin_nested(self):
-        return _FakeSavepoint()
 
     async def commit(self):
         self.committed = True

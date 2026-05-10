@@ -55,6 +55,9 @@ export default function QueryActivityCard({
     engine: filters.engine,
     segmentId: filters.segment_id,
     profileId: filters.profile_id,
+    dimension: filters.dimension,
+    intent: filters.intent,
+    promptScope: filters.prompt_scope,
   })
 
   if (!projectId) {
@@ -112,7 +115,9 @@ export default function QueryActivityCard({
         <Kpi
           label="Mention rate"
           value={fmtPct(kpis.mentionRate)}
-          hint={`${data?.totals?.mentions_target ?? 0} / ${data?.totals?.responses ?? 0}`}
+          hint={`${data?.totals?.mentions_target ?? 0} / ${
+            data?.totals?.mention_denominator ?? data?.totals?.responses ?? 0
+          } non-branded`}
         />
         <Kpi label="Avg sentiment" value={fmtScore(kpis.avgSentiment)} />
         <Kpi label="Avg GEO" value={fmtScore(kpis.avgGeoScore)} />

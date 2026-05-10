@@ -10,6 +10,7 @@
  */
 import React, { useMemo } from 'react';
 import Badge from '../ui/Badge';
+import { MetricLabel } from '../ui';
 
 const TIER_LABEL = {
   0: '未知',
@@ -69,13 +70,14 @@ export default function IndustryTopCitationDomains({
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[13px] font-medium text-themed-primary">
-            行业 Top {limit} 引用源
+            <MetricLabel helpText="按行业内被 AI 回答引用的次数排序，用于识别 PR 和内容合作候选源。">
+              行业 Top {limit} 引用源
+            </MetricLabel>
           </div>
           <div className="text-[11px] text-themed-muted mt-0.5">
-            按引用次数降序 · PR 着力点候选
             {primaryBrandId && (
               <>
-                {' '}· 我被引用{' '}
+                <MetricLabel helpText="Top 引用源中已经引用主品牌的来源数量。">我被引用</MetricLabel>{' '}
                 <span
                   className={
                     myAttributedCount >= limit / 2
@@ -96,10 +98,16 @@ export default function IndustryTopCitationDomains({
           <tr className="text-[11px] text-themed-muted">
             <th className="text-left py-1.5">域名</th>
             <th className="text-left py-1.5">权威</th>
-            <th className="text-right py-1.5">引用</th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="该域名在行业 AI 回答中被引用的次数。">引用</MetricLabel>
+            </th>
             <th className="py-1.5 w-20"></th>
-            <th className="text-right py-1.5">份额</th>
-            <th className="text-right py-1.5">覆盖品牌</th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="该域名引用量占 Top 引用源总量的比例。">份额</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="该域名引用覆盖到的品牌数量。">覆盖品牌</MetricLabel>
+            </th>
             <th className="text-center py-1.5">我</th>
           </tr>
         </thead>

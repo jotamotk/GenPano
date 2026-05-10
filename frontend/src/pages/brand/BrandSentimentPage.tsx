@@ -84,12 +84,11 @@ export default function BrandSentimentPage() {
   let positivePct: number;
   let negativePct: number;
   let neutralPct: number;
-  let distributionIsMock = true;
-  if (isLive && sentimentQ.data && sentimentQ.data.state !== 'empty') {
-    positivePct = Math.round(sentimentQ.data.distribution.positive_pct);
-    negativePct = Math.round(sentimentQ.data.distribution.negative_pct);
-    neutralPct = Math.round(sentimentQ.data.distribution.neutral_pct);
-    distributionIsMock = false;
+  let distributionIsMock = !isLive;
+  if (isLive) {
+    positivePct = Math.round(sentimentQ.data?.distribution.positive_pct ?? 0);
+    negativePct = Math.round(sentimentQ.data?.distribution.negative_pct ?? 0);
+    neutralPct = Math.round(sentimentQ.data?.distribution.neutral_pct ?? 0);
   } else {
     const positive = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.positive, 0);
     const negative = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.negative, 0);
@@ -112,7 +111,7 @@ export default function BrandSentimentPage() {
   // ──────────────────────────────────────────────────────────────
   const liveStackedData = adaptSentimentByEngine(engineQ.data);
   const stackedChartData =
-    isLive && liveStackedData.length > 0
+    isLive
       ? liveStackedData
       : SENTIMENT_DISTRIBUTION.map((d) => ({
           engine: d.engine,
@@ -120,13 +119,13 @@ export default function BrandSentimentPage() {
           negative: d.negative,
           neutral: d.neutral,
         }));
-  const stackedIsMock = !(isLive && liveStackedData.length > 0);
+  const stackedIsMock = !isLive;
 
   // Sentiment trend (engine lines)
   const liveTrend = adaptSentimentTrend(trendQ.data);
   const trendDataLive = liveTrend.rows.length > 0 ? liveTrend.rows : null;
-  const trendIsMock = !(isLive && trendDataLive);
-  const trendLines = trendDataLive
+  const trendIsMock = !isLive;
+  const trendLines = isLive
     ? liveTrend.engines.map((eng, idx) => ({
         key: eng,
         label: eng,
@@ -181,20 +180,15 @@ export default function BrandSentimentPage() {
     }),
   }));
   const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
-  const sentimentHeatmapRows =
-    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
-      ? liveHeatmapRows
-      : mockSentimentHeatmapRows;
-  const sentimentHeatmapIsMock = !(
-    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
-  );
+  const sentimentHeatmapRows = isLive ? liveHeatmapRows : mockSentimentHeatmapRows;
+  const sentimentHeatmapIsMock = !isLive;
 
   // ──────────────────────────────────────────────────────────────
   // Topic attribution (live → mock).
   // ──────────────────────────────────────────────────────────────
   const liveAttribution = adaptTopicAttribution(attributionQ.data);
   const topicAttribution =
-    isLive && liveAttribution.length > 0
+    isLive
       ? liveAttribution.map((a) => ({
           topicName: a.topicName,
           sampleSnippet: a.sampleSnippet ?? '',
@@ -202,14 +196,24 @@ export default function BrandSentimentPage() {
           negativeRatio: a.negativeRatio,
         }))
       : SENTIMENT_TOPIC_ATTRIBUTION || [];
-  const attributionIsMock = !(isLive && liveAttribution.length > 0);
+  const attributionIsMock = !isLive;
 
   // ──────────────────────────────────────────────────────────────
   // Filter response samples by polarity (local control)
   // ──────────────────────────────────────────────────────────────
   const liveSamples = adaptMentionSamples(samplesQ.data);
-  const samplesData = isLive && liveSamples.length > 0 ? liveSamples : SENTIMENT_DETAIL_LIST || [];
-  const samplesIsMock = !(isLive && liveSamples.length > 0);
+  const samplesData = isLive ? liveSamples : SENTIMENT_DETAIL_LIST || [];
+  const samplesIsMock = !isLive;
+  const positiveKeywords = isLive
+    ? (sentimentQ.data?.top_keywords || [])
+        .filter((kw) => kw.polarity === 'positive')
+        .map((kw) => ({ word: kw.keyword, weight: kw.count }))
+    : SENTIMENT_KEYWORDS.positive || [];
+  const negativeKeywords = isLive
+    ? (sentimentQ.data?.top_keywords || [])
+        .filter((kw) => kw.polarity === 'negative')
+        .map((kw) => ({ word: kw.keyword, weight: kw.count }))
+    : SENTIMENT_KEYWORDS.negative || [];
   const filteredResponses = samplesData.filter((item: any) => {
     if (polarity === 'all') return true;
     if (polarity === 'positive') return item.label === '正面';
@@ -297,7 +301,7 @@ export default function BrandSentimentPage() {
           </h3>
         </div>
         <TrendChart
-          data={trendDataLive ?? SENTIMENT_TREND_BY_ENGINE}
+          data={isLive ? (trendDataLive ?? []) : SENTIMENT_TREND_BY_ENGINE}
           lines={trendLines}
           height={240}
         />
@@ -363,7 +367,7 @@ export default function BrandSentimentPage() {
             <span className="text-[11px] text-themed-muted">Top 10</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(SENTIMENT_KEYWORDS.positive || []).slice(0, 10).map((kw, idx) => (
+            {positiveKeywords.slice(0, 10).map((kw, idx) => (
               <Badge key={idx} variant="green" size="sm">
                 {kw.word}
                 <span className="ml-1 opacity-70">×{kw.weight}</span>
@@ -380,7 +384,7 @@ export default function BrandSentimentPage() {
             <span className="text-[11px] text-themed-muted">Top 10</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(SENTIMENT_KEYWORDS.negative || []).slice(0, 10).map((kw, idx) => (
+            {negativeKeywords.slice(0, 10).map((kw, idx) => (
               <Badge key={idx} variant="red" size="sm">
                 {kw.word}
                 <span className="ml-1 opacity-70">×{kw.weight}</span>

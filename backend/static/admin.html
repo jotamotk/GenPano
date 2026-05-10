@@ -1958,6 +1958,24 @@
                 </tbody>
               </table>
             </div>
+            <div x-show="schedulesTotal > 0"
+                 class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted">
+              <span x-text="'Page ' + schedulePage + ' / ' + scheduleTotalPages() + ' · total ' + (schedulesTotal || 0)"></span>
+              <div class="inline-flex items-center gap-1">
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(1)">«</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(schedulePage - 1)">‹</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(schedulePage + 1)">›</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(scheduleTotalPages())">»</button>
+              </div>
+            </div>
           </div>
 
           <!-- ─── A-2.6: Upcoming N-day preview ─── -->
@@ -8124,23 +8142,6 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'custom'}"
                       @click="scheduleEditor.querySource = 'custom'">自定义文本</button>
             </div>
-            <div class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted">
-              <span x-text="'Page ' + schedulePage + ' / ' + scheduleTotalPages() + ' · total ' + (schedulesTotal || 0)"></span>
-              <div class="inline-flex items-center gap-1">
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage <= 1"
-                        @click="setSchedulePage(1)">«</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage <= 1"
-                        @click="setSchedulePage(schedulePage - 1)">‹</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage >= scheduleTotalPages()"
-                        @click="setSchedulePage(schedulePage + 1)">›</button>
-                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
-                        :disabled="schedulePage >= scheduleTotalPages()"
-                        @click="setSchedulePage(scheduleTotalPages())">»</button>
-              </div>
-            </div>
           </div>
 
           <template x-if="scheduleEditor.querySource === 'pool'">
@@ -8252,7 +8253,6 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <option value="doubao">豆包</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="chatgpt">ChatGPT</option>
-                <option value="gemini">Gemini</option>
               </select>
             </div>
             <div>
@@ -16958,6 +16958,9 @@ function adminApp() {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选状态更新失败');
         ids.forEach(id => delete this.queryPoolSelectedCandidateIds[id]);
+        if (status === 'ready' && !String(this.queryPoolCandidateStatus || '').trim()) {
+          this.queryPoolCandidateStatus = 'candidate';
+        }
         this.toast('已更新 ' + ids.length + ' 条 Query 候选为 ' + this.queryPoolCandidateStatusLabel(status));
         await this.loadQueryPoolCandidates();
       } catch (error) {
@@ -18034,7 +18037,6 @@ function adminApp() {
         { value: 'doubao', label: '豆包' },
         { value: 'deepseek', label: 'DeepSeek' },
         { value: 'chatgpt', label: 'ChatGPT' },
-        { value: 'gemini', label: 'Gemini' },
       ];
     },
     selectedScheduleEditorTargetLlms() {

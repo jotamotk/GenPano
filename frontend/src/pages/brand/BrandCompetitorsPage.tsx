@@ -24,7 +24,10 @@ import {
   adaptHeatmap,
   adaptGroupSharedDomains,
 } from '../../adapters/chartAdapters';
-import { adaptCompetitorTrendsToTrendData } from '../../adapters/dashboardAdapter';
+import {
+  adaptCompetitorMetricsToList,
+  adaptCompetitorTrendsToTrendData,
+} from '../../adapters/dashboardAdapter';
 import {
   BRANDS,
   AUTHORITY_RADAR_DATA,
@@ -60,8 +63,8 @@ export default function BrandCompetitorsPage() {
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
-  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score');
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, null, chartFilters);
+  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', null, chartFilters);
   const radarQ = useAuthorityRadar(isLive ? liveProjectId : null);
   const groupQ = useGroupSharedDomains(isLive ? liveProjectId : null);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
@@ -70,13 +73,18 @@ export default function BrandCompetitorsPage() {
     filters: chartFilters,
   });
 
+  const liveCompetitors = competitorsQ.data
+    ? adaptCompetitorMetricsToList(competitorsQ.data).competitors
+    : [];
   const competitors = useMemo(
     () =>
-      (activeProject?.competitorBrandIds || [])
-        .map((id) => BRANDS.find((b) => b.id === id))
-        .filter(Boolean)
-        .slice(0, 6),
-    [activeProject],
+      isLive
+        ? liveCompetitors
+        : (activeProject?.competitorBrandIds || [])
+            .map((id) => BRANDS.find((b) => b.id === id))
+            .filter(Boolean)
+            .slice(0, 6),
+    [activeProject, isLive, liveCompetitors],
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -117,8 +125,8 @@ export default function BrandCompetitorsPage() {
   // ②a Authority Radar — 1:1 我 vs 所选竞品 vs 行业中位
   // ──────────────────────────────────────────────────────────────
   const liveRadar = adaptAuthorityRadar(radarQ.data);
-  const radarSrc = isLive && liveRadar.length > 0 ? liveRadar : AUTHORITY_RADAR_DATA;
-  const radarIsMock = !(isLive && liveRadar.length > 0);
+  const radarSrc = isLive ? liveRadar : AUTHORITY_RADAR_DATA;
+  const radarIsMock = !isLive;
   const radarData = useMemo(
     () =>
       (radarSrc || []).map((row: any) => ({
@@ -161,26 +169,24 @@ export default function BrandCompetitorsPage() {
   }));
   const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
   const compareHeatmapRows =
-    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
+    isLive
       ? liveHeatmapRows.filter(
           (r) => r.brandId === primary.id || (focus && String(r.brandId) === String(focus.id)),
         )
       : mockCompareHeatmapRows;
-  const compareHeatmapIsMock = !(
-    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
-  );
+  const compareHeatmapIsMock = !isLive;
 
   // ──────────────────────────────────────────────────────────────
   // ②c PANO trend (我 vs focus)
   // ──────────────────────────────────────────────────────────────
   const liveTrendData =
-    isLive && trendsQ.data && trendsQ.data.series.length > 0
+    isLive && trendsQ.data
       ? adaptCompetitorTrendsToTrendData(trendsQ.data, null)
       : null;
   const trendData = useMemo(() => {
-    if (liveTrendData) {
+    if (isLive) {
       // Convert {day, panoScore, [brand_name]: score} → recharts line shape
-      return liveTrendData.map((p, i) => ({
+      return (liveTrendData || []).map((p, i) => ({
         name: p.day != null ? `D${p.day}` : `D${i + 1}`,
         ...p,
       }));
@@ -192,8 +198,8 @@ export default function BrandCompetitorsPage() {
       if (focus) point[focus.id] = focus.sparkPano?.[i] || 0;
       return point;
     });
-  }, [primary, focus, liveTrendData]);
-  const trendIsMock = !liveTrendData;
+  }, [primary, focus, liveTrendData, isLive]);
+  const trendIsMock = !isLive;
 
   const trendLines = focus
     ? liveTrendData
@@ -211,8 +217,8 @@ export default function BrandCompetitorsPage() {
   // ③ Structural context (kept but pushed below the fold)
   // ──────────────────────────────────────────────────────────────
   const liveGroup = adaptGroupSharedDomains(groupQ.data);
-  const groupSrc = isLive && liveGroup.sharedDomains.length > 0 ? liveGroup : SAME_GROUP_SHARED;
-  const groupIsMock = !(isLive && liveGroup.sharedDomains.length > 0);
+  const groupSrc = isLive ? liveGroup : SAME_GROUP_SHARED;
+  const groupIsMock = !isLive;
   const sameGroupItems =
     groupSrc?.sharedDomains?.filter((d: any) => d.domain !== `${primary.id}.com.cn`) || [];
 

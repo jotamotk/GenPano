@@ -74,23 +74,6 @@ from app.api.v1.projects._charts_service import (
     get_topic_attribution,
     get_topic_heatmap,
 )
-from app.api.v1.projects._topic_analysis_dto import (
-    ProjectSegmentsOut,
-    PromptQueriesOut,
-    QueryActivityOut,
-    QueryResponseDetailOut,
-    TopicMonitoringOut,
-    TopicPromptsOut,
-)
-from app.api.v1.projects._topic_analysis_service import (
-    AnalysisFilters,
-    get_project_segments,
-    get_prompt_queries,
-    get_query_activity,
-    get_query_response_detail,
-    get_topic_monitoring,
-    get_topic_prompts,
-)
 from app.api.v1.projects._dto import (
     CompetitorIn,
     ProjectIn,
@@ -112,6 +95,23 @@ from app.api.v1.projects._metrics_service import (
 )
 from app.api.v1.projects._overview_dto import BrandOverviewOut
 from app.api.v1.projects._overview_service import get_brand_overview
+from app.api.v1.projects._topic_analysis_dto import (
+    ProjectSegmentsOut,
+    PromptQueriesOut,
+    QueryActivityOut,
+    QueryResponseDetailOut,
+    TopicMonitoringOut,
+    TopicPromptsOut,
+)
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    get_project_segments,
+    get_prompt_queries,
+    get_query_activity,
+    get_query_response_detail,
+    get_topic_monitoring,
+    get_topic_prompts,
+)
 from app.core.errors import validation_error
 from app.core.security import _DependsDb, current_user
 
@@ -140,14 +140,22 @@ def _analysis_filters(
     engine: str | None,
     segment_id: str | None,
     profile_id: str | None,
+    dimension: str | None = None,
+    intent: str | None = None,
+    prompt_scope: str | None = None,
 ) -> AnalysisFilters:
     engines = _parse_csv(engine)
+    dimensions = _parse_csv(dimension)
+    intents = _parse_csv(intent)
     return AnalysisFilters(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         engines=tuple(engines) if engines else None,
         segment_id=segment_id or None,
         profile_id=profile_id or None,
+        dimensions=tuple(dimensions) if dimensions else None,
+        intents=tuple(intents) if intents else None,
+        prompt_scope=prompt_scope or None,
     )
 
 
@@ -277,6 +285,11 @@ async def project_metrics(
     to: str | None = Query(None),
     engine: str | None = Query(None),
     brand_id: int | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> MetricsOut:
     """Optional `brand_id` overrides the project's primary brand —
     same semantics as `/overview` (dashboard brand picker)."""
@@ -289,6 +302,16 @@ async def project_metrics(
         to_date=_parse_date(to, "to"),
         engines=_parse_csv(engine),
         brand_id_override=brand_id,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
+        ),
     )
 
 
@@ -312,6 +335,9 @@ async def project_topic_monitoring(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> TopicMonitoringOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_topic_monitoring(
@@ -323,6 +349,9 @@ async def project_topic_monitoring(
             engine=engine,
             segment_id=segment_id,
             profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
         ),
     )
 
@@ -338,6 +367,9 @@ async def project_topic_prompts(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> TopicPromptsOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_topic_prompts(
@@ -350,6 +382,9 @@ async def project_topic_prompts(
             engine=engine,
             segment_id=segment_id,
             profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
         ),
     )
 
@@ -365,6 +400,9 @@ async def project_prompt_queries(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> PromptQueriesOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_prompt_queries(
@@ -377,6 +415,9 @@ async def project_prompt_queries(
             engine=engine,
             segment_id=segment_id,
             profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
         ),
     )
 
@@ -402,6 +443,9 @@ async def project_query_activity(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> QueryActivityOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_query_activity(
@@ -413,6 +457,9 @@ async def project_query_activity(
             engine=engine,
             segment_id=segment_id,
             profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
         ),
     )
 
@@ -494,6 +541,13 @@ async def project_competitor_metrics(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> CompetitorMetricsOut:
     """Primary brand vs each pinned competitor across 4 metrics (PRD §4.6.1g)."""
     project = await service.get_project_for_user(session, user, project_id)
@@ -502,6 +556,17 @@ async def project_competitor_metrics(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
+        filters=_analysis_filters(
+            from_=from_,
+            to=to,
+            engine=engine,
+            segment_id=segment_id,
+            profile_id=profile_id,
+            dimension=dimension,
+            intent=intent,
+            prompt_scope=prompt_scope,
+        ),
     )
 
 
@@ -516,6 +581,13 @@ async def project_competitor_trends(
     metric: str = Query("geo_score"),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+    dimension: str | None = Query(None),
+    intent: str | None = Query(None),
+    prompt_scope: str | None = Query(None),
 ) -> CompetitorTrendsOut:
     """Per-brand 30-day trend for primary + each pinned competitor.
 
@@ -529,6 +601,7 @@ async def project_competitor_trends(
         metric=metric,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 

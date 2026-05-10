@@ -280,9 +280,7 @@ def parse_schedule_payload(
                         f"query_items[{index}].{field} must be an integer or null",
                     ) from error
             language = (
-                str(raw_item.get("language") or detect_query_language(query_text))
-                .strip()
-                .lower()
+                str(raw_item.get("language") or detect_query_language(query_text)).strip().lower()
             )
             item["language"] = language or "unknown"
             candidate_id = raw_item.get("candidate_id")

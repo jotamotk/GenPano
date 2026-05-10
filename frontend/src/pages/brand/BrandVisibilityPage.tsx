@@ -68,7 +68,7 @@ export default function BrandVisibilityPage() {
     'mention_rate',
     'sov',
   ], null, chartFilters);
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, null, chartFilters);
   const engineQ = useEngineMetrics(isLive ? liveProjectId : null, chartFilters);
   const positionQ = usePositionDistribution(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
@@ -90,32 +90,32 @@ export default function BrandVisibilityPage() {
   const lastSov =
     liveSparklines?.sov.length ? liveSparklines.sov[liveSparklines.sov.length - 1] : null;
 
-  const mentionRatePct = isLive && lastMention != null ? lastMention.toFixed(1) : mockMentionRatePct;
-  const sovPct = isLive && lastSov != null ? lastSov.toFixed(1) : mockSovPct;
+  const mentionRatePct = isLive ? (lastMention != null ? lastMention.toFixed(1) : '0.0') : mockMentionRatePct;
+  const sovPct = isLive ? (lastSov != null ? lastSov.toFixed(1) : '0.0') : mockSovPct;
   const mentionDelta = 2.3;
   const sovDelta = -1.1;
 
   const mentionSparkData =
-    isLive && liveSparklines?.mention.length
-      ? liveSparklines.mention.slice(-14)
+    isLive
+      ? (liveSparklines?.mention.slice(-14) ?? [])
       : MENTION_TREND_BY_ENGINE.slice(0, 14).map((d) => d.chatgpt || 0);
   const sovSparkData =
-    isLive && liveSparklines?.sov.length
-      ? liveSparklines.sov.slice(-14)
+    isLive
+      ? (liveSparklines?.sov.slice(-14) ?? [])
       : TREND_DATA.slice(0, 14).map((d) => d.mentionRate || 0);
 
   // SoV donut data
   const liveSovData = competitorsQ.data ? adaptCompetitorMetricsToSov(competitorsQ.data) : [];
   const sovData =
-    isLive && liveSovData.length > 0
+    isLive
       ? liveSovData.map((s, i) => ({ ...s, color: SOV_DATA[i % SOV_DATA.length]?.color || 'var(--color-accent)' }))
       : SOV_DATA;
-  const sovIsMock = !(isLive && liveSovData.length > 0);
+  const sovIsMock = !isLive;
 
   // Engine breakdown — live from /metrics/by-engine, fallback to mock.
   const liveEngineBreakdown = adaptEngineMetricsToBreakdown(engineQ.data);
   const engineBreakdownData =
-    isLive && liveEngineBreakdown.length > 0
+    isLive
       ? liveEngineBreakdown
       : (() => {
           const engineKeyMap: Record<string, string> = {
@@ -135,12 +135,12 @@ export default function BrandVisibilityPage() {
             };
           });
         })();
-  const engineIsMock = !(isLive && liveEngineBreakdown.length > 0);
+  const engineIsMock = !isLive;
 
   // Position distribution — live from /position-distribution, else mock.
   const livePositionData = adaptPositionDistribution(positionQ.data);
-  const positionData = isLive && livePositionData.length > 0 ? livePositionData : MENTION_POSITION_DATA;
-  const positionIsMock = !(isLive && livePositionData.length > 0);
+  const positionData = isLive ? livePositionData : MENTION_POSITION_DATA;
+  const positionIsMock = !isLive;
 
   // Heatmap — live from /topic-heatmap or fallback to deterministic mock.
   const liveHeatmapRows = adaptHeatmap(heatmapQ.data, primary.id);
@@ -175,11 +175,8 @@ export default function BrandVisibilityPage() {
       };
     }),
   }));
-  const heatmapRows =
-    isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0)
-      ? liveHeatmapRows
-      : mockHeatmapRows;
-  const heatmapIsMock = !(isLive && liveHeatmapRows.length > 0 && liveHeatmapRows.some((r) => r.values.length > 0));
+  const heatmapRows = isLive ? liveHeatmapRows : mockHeatmapRows;
+  const heatmapIsMock = !isLive;
 
   // Trend chart for PANO trend
   const trendDataLive = liveSparklines?.mention.length
@@ -190,8 +187,8 @@ export default function BrandVisibilityPage() {
         competitorScore: 0,
       }))
     : null;
-  const trendData = isLive && trendDataLive ? trendDataLive : TREND_DATA;
-  const trendIsMock = !(isLive && trendDataLive);
+  const trendData = isLive ? (trendDataLive ?? []) : TREND_DATA;
+  const trendIsMock = !isLive;
 
   return (
     <div className="space-y-3">

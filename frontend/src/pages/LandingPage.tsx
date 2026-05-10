@@ -99,8 +99,8 @@ const COPY = {
       title: '从宏观市场到单品牌，四层下钻',
       cards: [
         {
-          title: '面板 · 市场宏观视角',
-          desc: '5 KPI 一屏总览 (提及率 / SoV / 情感 / 引用份额 / 行业排名) + PanoScore Hero + 竞品四象限 + 趋势对比。',
+          title: '面板 · 品牌总览',
+          desc: '核心 KPI、PANO、竞品象限与趋势集中展示。',
           badge: '每日刷新',
         },
         {
@@ -254,11 +254,11 @@ const COPY = {
     },
     product: {
       eyebrow: 'Product',
-      title: 'From market macro down to a single brand — four-layer drilldown',
+      title: 'From brand overview to product drilldown',
       cards: [
         {
-          title: 'Dashboard · Market macro',
-          desc: '5 KPIs at a glance (Mention / SoV / Sentiment / Citation / Rank) + PanoScore hero + competitor quadrant + trend.',
+          title: 'Dashboard · Brand overview',
+          desc: 'Core KPIs, PANO, competitor quadrant, and trend in one view.',
           badge: 'Daily refresh',
         },
         {

@@ -70,31 +70,29 @@ export default function BrandCitationsPage() {
 
   // Authority share trend
   const liveAuthority = adaptAuthorityTrend(authorityTrendQ.data);
-  const authoritySeries =
-    isLive && liveAuthority.length > 0 ? liveAuthority : AUTHORITY_SHARE_SERIES;
-  const authorityIsMock = !(isLive && liveAuthority.length > 0);
+  const authoritySeries = isLive ? liveAuthority : AUTHORITY_SHARE_SERIES;
+  const authorityIsMock = !isLive;
 
   // Citation composition donut
   const liveComposition = adaptCitationComposition(compositionQ.data);
-  const compositionData =
-    isLive && liveComposition.length > 0 ? liveComposition : CITATION_SOURCE_COMPOSITION;
-  const compositionIsMock = !(isLive && liveComposition.length > 0);
+  const compositionData = isLive ? liveComposition : CITATION_SOURCE_COMPOSITION;
+  const compositionIsMock = !isLive;
 
   // Top domains: prefer /citations response.by_domain_top (already has tier).
   const liveDomains =
-    isLive && citationsQ.data && citationsQ.data.by_domain_top.length > 0
+    isLive && citationsQ.data
       ? citationsQ.data.by_domain_top.map((d, i) => ({
           domain: d.domain,
           tier: d.tier ?? (i < 3 ? 1 : i < 6 ? 2 : 3),
           count: d.count,
         }))
-      : null;
-  const topDomains = liveDomains ?? TOP_CITED_DOMAINS;
-  const topDomainsIsMock = !liveDomains;
+      : [];
+  const topDomains = isLive ? liveDomains : TOP_CITED_DOMAINS;
+  const topDomainsIsMock = !isLive;
 
   // Top cited pages: from /citations.items
   const livePages =
-    isLive && citationsQ.data && citationsQ.data.items.length > 0
+    isLive && citationsQ.data
       ? Array.from(
           citationsQ.data.items.reduce<Map<string, { url: string; title: string; tier: number; count: number }>>(
             (acc, c) => {
@@ -115,14 +113,14 @@ export default function BrandCitationsPage() {
         )
           .sort((a, b) => b.count - a.count)
           .slice(0, 6)
-      : null;
-  const topPages = livePages ?? TOP_CITED_PAGES;
-  const topPagesIsMock = !livePages;
+      : [];
+  const topPages = isLive ? livePages : TOP_CITED_PAGES;
+  const topPagesIsMock = !isLive;
 
   // Content Gap
   const liveGap = adaptContentGap(contentGapQ.data);
   const contentGapTopicsLive =
-    isLive && liveGap.topics.length > 0
+    isLive
       ? liveGap.topics.map((t, i) => ({
           topicName: t.topicName,
           mentionRate: t.mentionRate,
@@ -132,42 +130,26 @@ export default function BrandCitationsPage() {
           rank: i + 1,
         }))
       : CONTENT_GAP_TOPICS;
-  const contentGapDistLive =
-    isLive && liveGap.pageTypeDistribution.length > 0
-      ? liveGap.pageTypeDistribution
-      : CONTENT_GAP_PAGE_TYPE_DISTRIBUTION;
-  const contentGapIsMock = !(isLive && liveGap.topics.length > 0);
+  const contentGapDistLive = isLive
+    ? liveGap.pageTypeDistribution
+    : CONTENT_GAP_PAGE_TYPE_DISTRIBUTION;
+  const contentGapIsMock = !isLive;
 
   // PR Targets
   const livePr = adaptPrTargets(prTargetsQ.data);
-  const prTargets = isLive && livePr.targets.length > 0 ? livePr.targets : PR_TARGETS;
-  const prMatrix =
-    isLive && livePr.tier2Matrix.brands.length > 0 ? livePr.tier2Matrix : TIER2_COVERAGE_MATRIX;
-  const prKols = isLive && livePr.kolScorecards.length > 0 ? livePr.kolScorecards : KOL_SCORECARDS;
-  const prIsMock = !(isLive && livePr.targets.length > 0);
+  const prTargets = isLive ? livePr.targets : PR_TARGETS;
+  const prMatrix = isLive ? livePr.tier2Matrix : TIER2_COVERAGE_MATRIX;
+  const prKols = isLive ? livePr.kolScorecards : KOL_SCORECARDS;
+  const prIsMock = !isLive;
 
   // Simulator
   const liveSim = adaptSimulatorBaseline(simulatorQ.data);
   const simulatorBaseline =
-    isLive && liveSim.currentPanoA > 0
-      ? {
-          ...liveSim,
-          industryMedian: liveSim.industryMedian || SIMULATOR_BASELINE.industryMedian,
-          industryTop3Avg: liveSim.industryTop3Avg || SIMULATOR_BASELINE.industryTop3Avg,
-          tierWeights: Object.keys(liveSim.tierWeights).length
-            ? liveSim.tierWeights
-            : SIMULATOR_BASELINE.tierWeights,
-          defaultConfidence: Object.keys(liveSim.defaultConfidence).length
-            ? liveSim.defaultConfidence
-            : SIMULATOR_BASELINE.defaultConfidence,
-          currentByTier: Object.keys(liveSim.currentByTier).length
-            ? liveSim.currentByTier
-            : SIMULATOR_BASELINE.currentByTier,
-        }
+    isLive
+      ? liveSim
       : SIMULATOR_BASELINE;
-  const simulatorPresets =
-    isLive && liveSim.presets.length > 0 ? liveSim.presets : SIMULATOR_PRESETS;
-  const simulatorIsMock = !(isLive && liveSim.currentPanoA > 0);
+  const simulatorPresets = isLive ? liveSim.presets : SIMULATOR_PRESETS;
+  const simulatorIsMock = !isLive;
 
   const setSub = (next) => {
     const nextParams = new URLSearchParams(params);

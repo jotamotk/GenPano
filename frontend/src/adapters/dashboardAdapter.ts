@@ -20,6 +20,7 @@ import type { IndustryAvgGeoOut } from '../api/industries'
 export interface PrimaryBrandAdapted {
   id: string
   name: string
+  nameZh?: string
   nameEn: string
   panoScore: number
   /** decimal 0..1 */
@@ -34,8 +35,13 @@ export interface PrimaryBrandAdapted {
 export interface CompetitorAdapted {
   id: string
   name: string
+  nameZh?: string
   nameEn: string
   panoScore: number
+  /** decimal 0..1 */
+  mentionRate?: number
+  /** -1..1 */
+  sentiment?: number
   industryId: string
 }
 
@@ -90,11 +96,13 @@ export function adaptOverviewToPrimary(
   const sentiment = findKpiByLabel(overview.kpi_cards, ['情感', 'sentiment']) ?? 0
   const ranking = Math.round(findKpiByLabel(overview.kpi_cards, ['排名', 'rank']) ?? 1)
   const id = String(overview.brand_id ?? 0)
+  const name = overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`
 
   return {
     id,
-    name: overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`,
-    nameEn: '',
+    name,
+    nameZh: name,
+    nameEn: name,
     panoScore: Math.round(panoScore),
     mentionRate: mentionPct > 1 ? mentionPct / 100 : mentionPct,
     sentiment: sentiment > 1 ? sentiment / 100 : sentiment,
@@ -109,24 +117,34 @@ export function adaptCompetitorMetricsToList(
 ): { primary: PrimaryBrandAdapted | null; competitors: CompetitorAdapted[] } {
   const buildPrimary = (
     row: NonNullable<CompetitorMetricsOut['primary']>,
-  ): PrimaryBrandAdapted => ({
-    id: String(row.brand_id),
-    name: row.brand_name ?? `Brand #${row.brand_id}`,
-    nameEn: '',
-    panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-    mentionRate: row.avg_mention_rate ?? 0,
-    sentiment: row.avg_sentiment ?? 0,
-    ranking: 1,
-    industryId: '',
-  })
+  ): PrimaryBrandAdapted => {
+    const name = row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`
+    return {
+      id: String(row.brand_id ?? row.brand_key ?? name),
+      name,
+      nameZh: name,
+      nameEn: name,
+      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      mentionRate: row.avg_mention_rate ?? 0,
+      sentiment: row.avg_sentiment ?? 0,
+      ranking: 1,
+      industryId: '',
+    }
+  }
 
-  const buildComp = (row: CompetitorMetricsOut['competitors'][number]): CompetitorAdapted => ({
-    id: String(row.brand_id),
-    name: row.brand_name ?? `Brand #${row.brand_id}`,
-    nameEn: '',
-    panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-    industryId: '',
-  })
+  const buildComp = (row: CompetitorMetricsOut['competitors'][number]): CompetitorAdapted => {
+    const name = row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`
+    return {
+      id: String(row.brand_id ?? row.brand_key ?? name),
+      name,
+      nameZh: name,
+      nameEn: name,
+      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      mentionRate: row.avg_mention_rate ?? 0,
+      sentiment: row.avg_sentiment ?? 0,
+      industryId: '',
+    }
+  }
 
   return {
     primary: metrics.primary ? buildPrimary(metrics.primary) : null,
@@ -145,7 +163,7 @@ export function adaptCompetitorMetricsToSov(
   if (filtered.length === 0) return []
   const top = filtered
     .map((r) => ({
-      name: r.brand_name ?? `Brand #${r.brand_id}`,
+      name: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
       value: Math.round(((r.avg_sov ?? 0) * 100 + Number.EPSILON) * 10) / 10,
     }))
     .sort((a, b) => b.value - a.value)
@@ -167,7 +185,7 @@ export function adaptCompetitorMetricsToBubble(
   return all
     .filter((r) => r.avg_sov != null || r.avg_sentiment != null)
     .map((r) => ({
-      brand: r.brand_name ?? `Brand #${r.brand_id}`,
+      brand: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
       sov: r.avg_sov != null ? +(r.avg_sov * 100).toFixed(1) : 0,
       sentiment: r.avg_sentiment ?? 0,
       mentions: r.co_mention_count ?? 0,
@@ -323,7 +341,7 @@ export function adaptCompetitorTrendsToTrendData(
       const key =
         comp.brand_name && comp.brand_name.length > 0
           ? comp.brand_name
-          : `Brand #${comp.brand_id}`
+          : comp.brand_key ?? `Brand #${comp.brand_id ?? '?'}`
       const cp = comp.points.find((q) => q.date === date)
       row[key] = cp?.value != null ? Math.round(cp.value) : 0
     }

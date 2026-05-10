@@ -11,18 +11,27 @@ import pytest_asyncio
 from genpano_models import (
     BrandMention,
     CitationSource,
+    Profile,
     Project,
     ResponseAnalysis,
     Segment,
-    Profile,
     User,
 )
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._topic_analysis_service import _not_deleted_condition
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+
+
+def test_not_deleted_condition_is_postgres_boolean_safe():
+    condition = _not_deleted_condition("s")
+
+    assert "s.is_deleted = 0" not in condition
+    assert "LOWER(CAST(s.is_deleted AS TEXT))" in condition
+    assert "'false'" in condition
 
 
 def _new_id() -> str:
@@ -78,6 +87,7 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
         "ALTER TABLE prompts ADD COLUMN topic_id INTEGER",
         "ALTER TABLE prompts ADD COLUMN text TEXT",
         "ALTER TABLE prompts ADD COLUMN intent TEXT",
+        "ALTER TABLE prompts ADD COLUMN prompt_scope TEXT",
         "ALTER TABLE prompts ADD COLUMN language TEXT",
         "ALTER TABLE prompts ADD COLUMN status TEXT",
         "ALTER TABLE prompts ADD COLUMN created_at DATETIME",
@@ -152,7 +162,8 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
             INSERT INTO topics (id, brand_id, text, category, status, created_at)
             VALUES
               (101, 42, 'Barrier repair', 'product', 'active', :now),
-              (102, 42, 'Vitamin C', 'product', 'active', :now)
+              (102, 42, 'Vitamin C', 'product', 'active', :now),
+              (901, 900, 'Foreign brand topic', 'brand', 'active', :now)
             """
         ),
         {"now": now},
@@ -160,11 +171,13 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
     await db_session.execute(
         text(
             """
-            INSERT INTO prompts (id, topic_id, text, intent, language, status, created_at)
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
             VALUES
-              (201, 101, 'Best barrier repair cream?', 'commercial', 'en', 'active', :now),
-              (202, 101, 'How to repair sensitive skin?', 'informational', 'en', 'active', :now),
-              (203, 102, 'Best vitamin c serum?', 'commercial', 'en', 'active', :now)
+              (201, 101, 'Best barrier repair cream?', 'commercial', 'non_branded', 'en', 'active', :now),
+              (202, 101, 'How does Test Brand repair sensitive skin?', 'informational', 'branded', 'en', 'active', :now),
+              (203, 102, 'Best vitamin c serum?', 'commercial', 'non_branded', 'en', 'active', :now),
+              (901, 901, 'Foreign brand prompt?', 'commercial', 'non_branded', 'en', 'active', :now)
             """
         ),
         {"now": now},
@@ -181,7 +194,11 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
                 (302, 'doubao', 'failed', 'Best barrier repair cream?', 42, 'PROF-A', 201,
                  :d2, :d2, :d2, 3000),
                 (303, 'chatgpt', 'done', 'How to repair sensitive skin?', 42, 'PROF-A', 202,
-                 :d3, :d3, :d3, 900)
+                 :d3, :d3, :d3, 900),
+                (304, 'deepseek', 'done', 'Best barrier repair cream for redness?', 42, 'PROF-A', 201,
+                 :d1, :d1, :d1, 700),
+                (901, 'chatgpt', 'done', 'Foreign brand query?', 900, 'PROF-A', 901,
+                 :d1, :d1, :d1, 700)
             """
         ),
         {"d1": now - timedelta(days=1), "d2": now - timedelta(days=2), "d3": now},
@@ -196,7 +213,11 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
                 (401, 301, 201, 'Test Brand is a strong barrier option.', 'chatgpt',
                  'commercial', 'gpt-test', '[]', :d1),
                 (402, 303, 202, 'A gentle routine can mention Test Brand cautiously.',
-                 'chatgpt', 'informational', 'gpt-test', '[]', :d3)
+                 'chatgpt', 'informational', 'gpt-test', '[]', :d3),
+                (403, 304, 201, 'Other Brand and Null Rival are often suggested first.',
+                 'deepseek', 'commercial', 'gpt-test', '[]', :d1),
+                (901, 901, 901, 'Foreign Brand should not leak into project metrics.',
+                 'chatgpt', 'commercial', 'gpt-test', '[]', :d1)
             """
         ),
         {"d1": now - timedelta(days=1), "d3": now},
@@ -216,6 +237,20 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
                 target_brand_rank=3,
                 sentiment_score=-0.2,
                 geo_score=0.55,
+            ),
+            ResponseAnalysis(
+                response_id=403,
+                target_brand_mentioned=False,
+                target_brand_rank=None,
+                sentiment_score=0.1,
+                geo_score=0.35,
+            ),
+            ResponseAnalysis(
+                response_id=901,
+                target_brand_mentioned=True,
+                target_brand_rank=1,
+                sentiment_score=0.9,
+                geo_score=0.9,
             ),
         ]
     )
@@ -249,7 +284,33 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
         position_rank=2,
         created_at=now - timedelta(days=1),
     )
-    db_session.add_all([mention_positive, mention_negative, competitor_mention])
+    null_brand_competitor = BrandMention(
+        response_id=403,
+        brand_id=None,
+        brand_name="Null Rival",
+        sentiment="neutral",
+        sentiment_score=0.1,
+        position_rank=1,
+        created_at=now - timedelta(days=1),
+    )
+    foreign_brand_mention = BrandMention(
+        response_id=901,
+        brand_id=900,
+        brand_name="Foreign Brand",
+        sentiment="positive",
+        sentiment_score=0.9,
+        position_rank=1,
+        created_at=now - timedelta(days=1),
+    )
+    db_session.add_all(
+        [
+            mention_positive,
+            mention_negative,
+            competitor_mention,
+            null_brand_competitor,
+            foreign_brand_mention,
+        ]
+    )
     await db_session.flush()
     db_session.add(
         CitationSource(
@@ -279,18 +340,18 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
     assert body["state"] == "ok"
     assert body["summary"]["topic_count"] == 2
     assert body["summary"]["prompt_count"] == 3
-    assert body["summary"]["query_count"] == 3
-    assert body["summary"]["response_count"] == 2
+    assert body["summary"]["query_count"] == 4
+    assert body["summary"]["response_count"] == 3
     barrier = next(row for row in body["topics"] if row["topic_id"] == 101)
     assert barrier["prompt_count"] == 2
-    assert barrier["query_count"] == 3
-    assert barrier["response_count"] == 2
-    assert barrier["success_rate"] == pytest.approx(2 / 3, rel=0.01)
-    assert barrier["engine_coverage"] == ["chatgpt", "doubao"]
-    assert barrier["mention_rate"] == 1.0
-    assert barrier["sov"] == pytest.approx(2 / 3, rel=0.01)
+    assert barrier["query_count"] == 4
+    assert barrier["response_count"] == 3
+    assert barrier["success_rate"] == pytest.approx(3 / 4, rel=0.01)
+    assert barrier["engine_coverage"] == ["chatgpt", "deepseek", "doubao"]
+    assert barrier["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
+    assert barrier["sov"] == pytest.approx(2 / 4, rel=0.01)
     assert barrier["sentiment_distribution"] == {"positive": 1, "neutral": 0, "negative": 1}
-    assert barrier["citation_rate"] == pytest.approx(0.5, rel=0.01)
+    assert barrier["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
     assert {row["intent"] for row in body["intent_matrix"]} == {
         "commercial",
         "informational",
@@ -301,7 +362,7 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
         headers=_bearer(user),
     )
     assert scoped.status_code == 200, scoped.text
-    assert scoped.json()["summary"]["query_count"] == 3
+    assert scoped.json()["summary"]["query_count"] == 4
 
     empty = await client.get(
         f"/api/v1/projects/{project.id}/topics/monitoring?segment_id=SEG-MISSING",
@@ -310,6 +371,15 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
     assert empty.status_code == 200, empty.text
     assert empty.json()["state"] == "empty"
     assert empty.json()["summary"]["query_count"] == 0
+
+    prompt_scope = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring?prompt_scope=branded",
+        headers=_bearer(user),
+    )
+    assert prompt_scope.status_code == 200, prompt_scope.text
+    scoped_body = prompt_scope.json()
+    assert scoped_body["summary"]["query_count"] == 1
+    assert scoped_body["topics"][0]["mention_rate"] is None
 
 
 @pytest.mark.asyncio
@@ -332,9 +402,9 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
     )
     assert queries.status_code == 200, queries.text
     query_body = queries.json()
-    assert query_body["total"] == 2
+    assert query_body["total"] == 3
     assert {row["status"] for row in query_body["items"]} == {"done", "failed"}
-    done_query = next(row for row in query_body["items"] if row["status"] == "done")
+    done_query = next(row for row in query_body["items"] if row["query_id"] == 301)
     assert done_query["target_mentioned"] is True
     assert done_query["citation_count"] == 1
 
@@ -362,13 +432,81 @@ async def test_project_query_activity_is_project_scoped(client, db_session, user
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["totals"]["queries"] == 3
-    assert body["totals"]["responses"] == 2
-    assert body["totals"]["analyzed"] == 2
-    assert body["totals"]["mentions_target"] == 2
-    assert body["by_status"]["done"] == 2
+    assert body["totals"]["queries"] == 4
+    assert body["totals"]["responses"] == 3
+    assert body["totals"]["analyzed"] == 3
+    assert body["totals"]["mentions_target"] == 1
+    assert body["totals"]["mention_denominator"] == 2
+    assert body["by_status"]["done"] == 3
     assert body["by_status"]["failed"] == 1
     assert body["by_topic"][0]["topic_id"] == 101
+    assert body["by_topic"][0]["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
+
+
+@pytest.mark.asyncio
+async def test_project_metrics_use_filtered_admin_fact_set(client, db_session, user):
+    project = await _seed_admin_chain(db_session, user)
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/metrics"
+        "?series=mention_rate,sov"
+        "&prompt_scope=non_branded"
+        "&engine=chatgpt,deepseek",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "ok"
+    by_metric = {series["metric"]: series["points"] for series in body["series"]}
+    assert len(by_metric["mention_rate"]) == 1
+    assert by_metric["mention_rate"][0]["value"] == pytest.approx(1 / 2, rel=0.01)
+    assert len(by_metric["sov"]) == 1
+    assert by_metric["sov"][0]["value"] == pytest.approx(1 / 3, rel=0.01)
+
+    filtered = await client.get(
+        f"/api/v1/projects/{project.id}/metrics"
+        "?series=mention_rate,sov"
+        "&prompt_scope=non_branded"
+        "&engine=deepseek",
+        headers=_bearer(user),
+    )
+    assert filtered.status_code == 200, filtered.text
+    filtered_body = filtered.json()
+    filtered_metric = {
+        series["metric"]: series["points"] for series in filtered_body["series"]
+    }
+    assert filtered_metric["mention_rate"][0]["value"] == 0
+    assert filtered_metric["sov"][0]["value"] == 0
+
+
+@pytest.mark.asyncio
+async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, user):
+    project = await _seed_admin_chain(db_session, user)
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/metrics"
+        "?prompt_scope=non_branded"
+        "&engine=deepseek",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "ok"
+    assert body["primary"] is None
+    assert [row["brand_name"] for row in body["competitors"]] == ["Null Rival"]
+    assert body["competitors"][0]["avg_sov"] == 1
+
+    empty = await client.get(
+        f"/api/v1/projects/{project.id}/competitors/metrics"
+        "?prompt_scope=non_branded"
+        "&engine=missing",
+        headers=_bearer(user),
+    )
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["state"] == "empty"
+    assert empty.json()["competitors"] == []
 
 
 @pytest.mark.asyncio
@@ -401,7 +539,7 @@ async def test_chart_metric_corrections_use_admin_topic_response_chain(client, d
     barrier = next(row for row in attr_body["items"] if row["topic_id"] == 101)
     assert barrier["topic_name"] == "Barrier repair"
     assert barrier["negative_count"] == 1
-    assert barrier["negative_ratio"] == pytest.approx(0.5)
+    assert barrier["negative_ratio"] == pytest.approx(1 / 3, rel=0.01)
     assert barrier["sample_snippet"] == "cautiously"
 
     gap = await client.get(
@@ -411,7 +549,7 @@ async def test_chart_metric_corrections_use_admin_topic_response_chain(client, d
     assert gap.status_code == 200, gap.text
     gap_body = gap.json()
     barrier_gap = next(row for row in gap_body["topics"] if row["topic_id"] == 101)
-    assert barrier_gap["mention_rate"] == 1.0
-    assert barrier_gap["citation_rate"] == pytest.approx(0.5)
-    assert barrier_gap["gap_score"] == pytest.approx(0.5)
+    assert barrier_gap["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
+    assert barrier_gap["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
+    assert barrier_gap["gap_score"] == pytest.approx(1 / 6, rel=0.01)
     assert gap_body["page_type_distribution"][0]["page_type"] == "article"

@@ -36,11 +36,23 @@ def test_scheduler_schedule_list_has_brand_filter_and_pagination() -> None:
     assert "scheduleTotalPages()" in html
 
 
+def test_scheduler_schedule_pagination_is_on_query_plan_list() -> None:
+    html = _admin_html()
+    pager = "'Page ' + schedulePage + ' / ' + scheduleTotalPages()"
+
+    query_plan_start = html.index("<!-- ─── A-2.5: Query 计划")
+    modal_start = html.index("<!-- ===== QUERY SCHEDULE CREATE / EDIT MODAL =====")
+    pager_index = html.index(pager)
+
+    assert query_plan_start < pager_index < modal_start
+
+
 def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
     html = _admin_html()
     section = html[
-        html.index("async manualTriggerScheduler")
-        : html.index("async toggleSchedulerMode", html.index("async manualTriggerScheduler"))
+        html.index("async manualTriggerScheduler") : html.index(
+            "async toggleSchedulerMode", html.index("async manualTriggerScheduler")
+        )
     ]
 
     assert "payload.brand_id = parseInt(this.scheduleFilterBrandId)" in section
@@ -63,8 +75,9 @@ def test_scheduler_manual_trigger_surfaces_dispatch_result() -> None:
 def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     html = _admin_html()
     pool_section = html[
-        html.index("if (e.querySource === 'pool' && !e.id)")
-        : html.index("if (!e.id)", html.index("if (e.querySource === 'pool' && !e.id)"))
+        html.index("if (e.querySource === 'pool' && !e.id)") : html.index(
+            "if (!e.id)", html.index("if (e.querySource === 'pool' && !e.id)")
+        )
     ]
 
     assert "base.querySource = isNew ? 'pool' : 'custom';" in html
@@ -86,3 +99,20 @@ def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     assert "brand_id: batchBrandId ? parseInt(batchBrandId) : null" in pool_section
     assert "API_BASE + '/scheduler/schedules'" in pool_section
     assert "for (const targetLlm of selectedLlms)" not in pool_section
+
+
+def test_schedule_editor_llm_picker_excludes_gemini() -> None:
+    html = _admin_html()
+    options_section = html[
+        html.index("scheduleEditorTargetLlmOptions() {") : html.index(
+            "selectedScheduleEditorTargetLlms() {"
+        )
+    ]
+    edit_select_start = html.index('x-show="scheduleEditor.id"')
+    editor_section = html[edit_select_start : html.index("</select>", edit_select_start)]
+
+    assert "doubao" in options_section
+    assert "deepseek" in options_section
+    assert "chatgpt" in options_section
+    assert "gemini" not in options_section.lower()
+    assert 'option value="gemini"' not in editor_section.lower()

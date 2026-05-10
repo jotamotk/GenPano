@@ -7,7 +7,7 @@ import {
   ScatterChart, Scatter, ZAxis, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { Badge, Button, Card, MockDataBadge, InfoTooltip } from '../ui';
+import { Badge, Button, Card, MockDataBadge, InfoTooltip, MetricLabel } from '../ui';
 import { MiniSparkline } from '../charts';
 import { useLocale } from '../../contexts/LocaleContext';
 import ProfileGroupFilter, { ProfileGroupSampleWarning } from '../filters/ProfileGroupFilter';
@@ -319,11 +319,13 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
 
   return (
     <Card
-      className="p-4 cursor-pointer transition-shadow hover:shadow-card-hover"
+      className={`p-4 transition-shadow ${onClick ? 'cursor-pointer hover:shadow-card-hover' : ''}`.trim()}
       onClick={onClick}
     >
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-xs font-medium text-themed-muted">{label}</span>
+        <MetricLabel helpText={helpText} className="text-xs font-medium text-themed-muted">
+          {label}
+        </MetricLabel>
         <span className="text-[10px] uppercase tracking-wider text-themed-muted opacity-60">{fullLabel}</span>
       </div>
       <div className="flex items-end justify-between mb-2">
@@ -335,7 +337,6 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
           <MiniSparkline data={sparkData} color="var(--color-accent)" />
         </div>
       )}
-      <p className="text-[10px] text-themed-muted mt-1.5 leading-snug line-clamp-1">{helpText}</p>
     </Card>
   );
 }
@@ -525,15 +526,19 @@ function CompetitorQuadrant({ data, primaryName, t }) {
 }
 
 /* ─── PANO Trend ─── */
-function PanoTrendChart({ trendData, primaryName, competitors, t }) {
+function PanoTrendChart({ trendData, primaryName, competitors, isLive, t }) {
   const data = useMemo(() => (trendData ?? []).map((d, i) => {
-    const row = { name: `${d.day}日`, [primaryName]: d.panoScore };
+    const row = { name: `${d.day}d`, [primaryName]: d.panoScore };
     competitors.forEach((c, idx) => {
-      const base = c.panoScore;
-      row[c.name] = Math.round(base + Math.sin((i + idx * 3) / 5) * 3 + (Math.random() - 0.5) * 2);
+      if (isLive) {
+        row[c.name] = d[c.name] ?? null;
+      } else {
+        const base = c.panoScore;
+        row[c.name] = Math.round(base + Math.sin((i + idx * 3) / 5) * 3);
+      }
     });
     return row;
-  }), [trendData, primaryName, competitors]);
+  }), [trendData, primaryName, competitors, isLive]);
 
   if (!data.length) {
     return (
@@ -670,8 +675,60 @@ function CrossIndustryWarning({ visible, t }) {
 /* ─────────────────────────────────────────────────────────────
    BrandPanoramaPanel 主组件 — 整合上述区块
 ─────────────────────────────────────────────────────────────── */
+const PANEL_FALLBACK_BRAND = {
+  id: 'fallback-brand',
+  name: 'Brand',
+  nameZh: 'Brand',
+  nameEn: 'Brand',
+  primaryName: 'Brand',
+  industryId: '',
+  panoScore: 0,
+  mentionRate: 0,
+  sentiment: 0,
+  ranking: 1,
+};
+
+function finiteNumber(value, fallback = 0) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function normalizePanelBrand(brand, fallback = PANEL_FALLBACK_BRAND) {
+  const brandFields = brand || {};
+  const fallbackFields = fallback || {};
+  const merged = {
+    ...PANEL_FALLBACK_BRAND,
+    ...fallbackFields,
+    ...brandFields,
+  };
+  const displayName =
+    brandFields.nameZh ||
+    brandFields.primaryName ||
+    brandFields.name ||
+    brandFields.nameEn ||
+    fallbackFields.nameZh ||
+    fallbackFields.primaryName ||
+    fallbackFields.name ||
+    fallbackFields.nameEn ||
+    'Brand';
+
+  return {
+    ...merged,
+    id: String(merged.id || displayName),
+    name: brandFields.name || displayName,
+    nameZh: brandFields.nameZh || brandFields.primaryName || brandFields.name || displayName,
+    nameEn: brandFields.nameEn || brandFields.name || displayName,
+    primaryName: brandFields.primaryName || brandFields.nameZh || brandFields.name || displayName,
+    industryId: merged.industryId != null ? String(merged.industryId) : '',
+    panoScore: finiteNumber(merged.panoScore),
+    mentionRate: finiteNumber(merged.mentionRate),
+    sentiment: finiteNumber(merged.sentiment),
+    ranking: Math.max(1, Math.round(finiteNumber(merged.ranking, 1))),
+  };
+}
+
 export default function BrandPanoramaPanel({
-  primary,
+  primary: primaryProp,
   industry,
   competitors: competitorsProp,
   headerSlot,
@@ -692,17 +749,26 @@ export default function BrandPanoramaPanel({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, formatBrand } = useLocale();
+  const primary = useMemo(
+    () => normalizePanelBrand(primaryProp, BRANDS[1] || BRANDS[0] || PANEL_FALLBACK_BRAND),
+    [primaryProp],
+  );
 
   /* ── Competitors fallback: 若外部没传, 从 knowledge graph / 同行业取 3 个 ── */
   const competitors = useMemo(() => {
-    if (competitorsProp && competitorsProp.length) return competitorsProp.slice(0, 3);
+    const provided = (competitorsProp || [])
+      .filter(Boolean)
+      .map((brand) => normalizePanelBrand(brand, primary))
+      .slice(0, 3);
+    if (provided.length) return provided;
     const sameIndustry = BRANDS.filter((b) =>
       b.industryId === primary.industryId && b.id !== primary.id
     );
     return sameIndustry
       .sort((a, b) => b.panoScore - a.panoScore)
+      .map((brand) => normalizePanelBrand(brand, primary))
       .slice(0, 3);
-  }, [competitorsProp, primary.id, primary.industryId]);
+  }, [competitorsProp, primary]);
 
   /* ── Industry fallback: 若外部没传, 从 primary.industryId 查表 ── */
   const resolvedIndustry = useMemo(() => {
@@ -773,7 +839,9 @@ export default function BrandPanoramaPanel({
   const sovEntry         = sovData.find((s) => s.name === primary.name);
   const sovValue         = sovEntry ? sovEntry.value : 0;
   const sentimentValue   = primary.sentiment;
-  const citationShare    = 18.2;
+  const citationShare    = isLive
+    ? (sparklineOverride?.citation?.at(-1) ?? 0)
+    : 18.2;
   const industryRank     = primary.ranking;
 
   /* ── Sparklines ── (live: from /v1/projects/:id/metrics; mock: synthesized) */
@@ -800,9 +868,6 @@ export default function BrandPanoramaPanel({
         return Math.max(1, Math.round((base + jitter) * 10) / 10);
       });
 
-  const onKpiClick = () => {
-    navigate(`/brands/${primary.id}?tab=overview`);
-  };
   const onAlertClick = (d) => {
     navigate(`/brands/${primary.id}?tab=diagnostics&diagId=${d.id}`);
   };
@@ -916,7 +981,7 @@ export default function BrandPanoramaPanel({
       {/* ① 5 KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {kpis.map((k) => (
-          <KpiCard key={k.label} {...k} onClick={onKpiClick} />
+          <KpiCard key={k.label} {...k} />
         ))}
       </div>
 
@@ -950,12 +1015,18 @@ export default function BrandPanoramaPanel({
             {!isLive && <MockDataBadge />}
             <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
           </div>
-          <PanoTrendChart trendData={trendData} primaryName={primary.name} competitors={competitors} t={t} />
+          <PanoTrendChart
+            trendData={trendData}
+            primaryName={primary.name}
+            competitors={competitors}
+            isLive={isLive}
+            t={t}
+          />
         </Card>
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
             {t('dashboard.trend.kpi_summary_title')}
-            {(!isLive || !sparklineOverride) && <MockDataBadge />}
+            {!isLive && <MockDataBadge />}
           </h3>
           <KpiSparklineSummary rows={sparklineRows} />
         </Card>

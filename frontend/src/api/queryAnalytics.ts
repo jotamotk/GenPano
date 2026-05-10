@@ -13,6 +13,7 @@ export interface QueryAnalyticsTotals {
   responses: number
   analyzed: number
   mentions_target: number
+  mention_denominator?: number
 }
 
 export interface QueryAnalyticsByStatus {
@@ -34,6 +35,9 @@ export interface QueryAnalyticsByEngineRow {
 export interface QueryAnalyticsDailyRow {
   date: string
   queries: number
+  responses?: number
+  mention_denominator?: number
+  target_mentions?: number
   mention_rate: number | null
   avg_sentiment: number | null
   avg_geo_score: number | null
@@ -77,9 +81,18 @@ export interface QueryAnalyticsArgs {
   engine?: string
   segmentId?: string
   profileId?: string
+  dimension?: string
+  intent?: string
+  promptScope?: string
 }
 
-const EMPTY_TOTALS = { queries: 0, responses: 0, analyzed: 0, mentions_target: 0 }
+const EMPTY_TOTALS = {
+  queries: 0,
+  responses: 0,
+  analyzed: 0,
+  mentions_target: 0,
+  mention_denominator: 0,
+}
 
 export const queryAnalyticsApi = {
   async fetch(args: QueryAnalyticsArgs): Promise<QueryAnalyticsOut> {
@@ -89,6 +102,9 @@ export const queryAnalyticsApi = {
       engine: args.engine,
       segment_id: args.segmentId,
       profile_id: args.profileId,
+      dimension: args.dimension,
+      intent: args.intent,
+      prompt_scope: args.promptScope,
     }
     const raw = await apiClient.get<any>(
       `/v1/projects/${args.projectId}/query-activity${buildQuery(params)}`,
@@ -119,7 +135,13 @@ export const queryAnalyticsApi = {
       daily_trend: (raw.daily || []).map((row: any) => ({
         date: row.date,
         queries: row.queries ?? 0,
-        mention_rate: row.responses > 0 ? (row.target_mentions ?? 0) / row.responses : null,
+        responses: row.responses ?? 0,
+        mention_denominator: row.mention_denominator ?? row.responses ?? 0,
+        target_mentions: row.target_mentions ?? 0,
+        mention_rate:
+          (row.mention_denominator ?? row.responses) > 0
+            ? (row.target_mentions ?? 0) / (row.mention_denominator ?? row.responses)
+            : null,
         avg_sentiment: row.avg_sentiment ?? null,
         avg_geo_score: row.avg_geo_score ?? null,
       })),

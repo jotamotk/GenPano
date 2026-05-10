@@ -34,9 +34,10 @@ export function toKpis(data: QueryAnalyticsOut | undefined): QueryAnalyticsKpis 
     return { totalQueries: 0, mentionRate: null, avgSentiment: null, avgGeoScore: null }
   }
   const totalQueries = data.totals?.queries ?? 0
+  const mentionDenominator = data.totals?.mention_denominator ?? data.totals?.responses ?? 0
   const mentionRate =
-    data.totals?.responses > 0
-      ? (data.totals.mentions_target ?? 0) / data.totals.responses
+    mentionDenominator > 0
+      ? (data.totals.mentions_target ?? 0) / mentionDenominator
       : null
   const trend = data.daily_trend ?? []
   const wAvg = (key: 'avg_sentiment' | 'avg_geo_score'): number | null => {

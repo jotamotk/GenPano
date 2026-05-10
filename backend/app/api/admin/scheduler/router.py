@@ -514,9 +514,9 @@ async def scheduler_manual_trigger(
     note = str(payload.get("note") or "manual via UI").strip()
     brand_id: int | None = None
     brand_raw = payload.get("brand_id")
-    if brand_raw not in (None, ""):
+    if brand_raw is not None and brand_raw != "":
         try:
-            brand_id = int(brand_raw)
+            brand_id = int(str(brand_raw))
         except (TypeError, ValueError):
             return JSONResponse(
                 status_code=400,

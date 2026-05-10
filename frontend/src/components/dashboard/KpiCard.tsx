@@ -1,4 +1,4 @@
-import { Card, Badge } from '../ui';
+import { Card, Badge, MetricLabel } from '../ui';
 import { MiniSparkline } from '../charts';
 
 /**
@@ -20,6 +20,7 @@ export default function KpiCard({
   value,
   delta,
   deltaLabel = '',
+  helpText,
   sparkData = [],
   sparkColor = 'var(--color-accent)',
   subMetrics = [],
@@ -44,7 +45,9 @@ export default function KpiCard({
     >
       {/* Top row: label + delta pill */}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm text-themed-muted font-medium">{label}</span>
+        <MetricLabel helpText={helpText} className="text-sm text-themed-muted font-medium">
+          {label}
+        </MetricLabel>
         {delta !== undefined && (
           <Badge variant={deltaVariant} size="sm">
             {deltaText} {deltaLabel}

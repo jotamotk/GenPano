@@ -156,7 +156,8 @@ export interface ProductsOut {
 }
 
 export interface CompetitorBrandRow {
-  brand_id: number
+  brand_id: number | null
+  brand_key?: string | null
   brand_name: string | null
   avg_geo_score: number | null
   avg_mention_rate: number | null
@@ -208,17 +209,27 @@ export const brandMetricsApi = {
   products(projectId: string): Promise<ProductsOut> {
     return apiClient.get<ProductsOut>(`/v1/projects/${projectId}/products`)
   },
-  competitorMetrics(projectId: string): Promise<CompetitorMetricsOut> {
+  competitorMetrics(
+    projectId: string,
+    brandId?: number | null,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<CompetitorMetricsOut> {
+    const params: Record<string, unknown> = { ...filters }
+    if (brandId != null) params.brand_id = String(brandId)
     return apiClient.get<CompetitorMetricsOut>(
-      `/v1/projects/${projectId}/competitors/metrics`,
+      `/v1/projects/${projectId}/competitors/metrics${buildQuery(params)}`,
     )
   },
   competitorTrends(
     projectId: string,
     metric: 'geo_score' | 'mention_rate' | 'sov' | 'sentiment' | 'rank' | 'citation' = 'geo_score',
+    brandId?: number | null,
+    filters: ProjectAnalysisParams = {},
   ): Promise<CompetitorTrendsOut> {
+    const params: Record<string, unknown> = { ...filters, metric }
+    if (brandId != null) params.brand_id = String(brandId)
     return apiClient.get<CompetitorTrendsOut>(
-      `/v1/projects/${projectId}/competitors/trends?metric=${metric}`,
+      `/v1/projects/${projectId}/competitors/trends${buildQuery(params)}`,
     )
   },
 }
@@ -229,7 +240,8 @@ export interface CompetitorTrendPoint {
 }
 
 export interface CompetitorTrendSeries {
-  brand_id: number
+  brand_id: number | null
+  brand_key?: string | null
   brand_name: string | null
   is_primary: boolean
   points: CompetitorTrendPoint[]
