@@ -152,8 +152,20 @@ export default function DashboardPage() {
      Live mode prefers backend-derived; fall back to mock to keep the
      panel from crashing if Project is misconfigured. */
   const project = activeProject;
+  const defaultPrimary = BRANDS[1] || BRANDS[0] || {
+    id: 'fallback-brand',
+    name: 'Brand',
+    nameZh: 'Brand',
+    nameEn: 'Brand',
+    industryId: '',
+    panoScore: 0,
+    mentionRate: 0,
+    sentiment: 0,
+    ranking: 1,
+  };
   const mockPrimary =
-    BRANDS.find((b) => b.id === project?.primaryBrandId) || BRANDS[1];
+    BRANDS.find((b) => String(b.id) === String(project?.primaryBrandId)) ||
+    defaultPrimary;
   const mockIndustry =
     INDUSTRIES.find((ind) => ind.id === project?.industryId) || null;
   const mockCompetitors = (project?.competitorBrandIds || [])
@@ -169,6 +181,8 @@ export default function DashboardPage() {
       ? {
           ...mockPrimary,
           ...adapted.primary,
+          nameZh: adapted.primary.nameZh || adapted.primary.name,
+          nameEn: adapted.primary.nameEn || adapted.primary.name,
         }
       : mockPrimary;
 

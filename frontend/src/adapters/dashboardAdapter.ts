@@ -20,6 +20,7 @@ import type { IndustryAvgGeoOut } from '../api/industries'
 export interface PrimaryBrandAdapted {
   id: string
   name: string
+  nameZh?: string
   nameEn: string
   panoScore: number
   /** decimal 0..1 */
@@ -34,6 +35,7 @@ export interface PrimaryBrandAdapted {
 export interface CompetitorAdapted {
   id: string
   name: string
+  nameZh?: string
   nameEn: string
   panoScore: number
   industryId: string
@@ -90,11 +92,13 @@ export function adaptOverviewToPrimary(
   const sentiment = findKpiByLabel(overview.kpi_cards, ['情感', 'sentiment']) ?? 0
   const ranking = Math.round(findKpiByLabel(overview.kpi_cards, ['排名', 'rank']) ?? 1)
   const id = String(overview.brand_id ?? 0)
+  const name = overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`
 
   return {
     id,
-    name: overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`,
-    nameEn: '',
+    name,
+    nameZh: name,
+    nameEn: name,
     panoScore: Math.round(panoScore),
     mentionRate: mentionPct > 1 ? mentionPct / 100 : mentionPct,
     sentiment: sentiment > 1 ? sentiment / 100 : sentiment,
@@ -109,24 +113,32 @@ export function adaptCompetitorMetricsToList(
 ): { primary: PrimaryBrandAdapted | null; competitors: CompetitorAdapted[] } {
   const buildPrimary = (
     row: NonNullable<CompetitorMetricsOut['primary']>,
-  ): PrimaryBrandAdapted => ({
-    id: String(row.brand_id),
-    name: row.brand_name ?? `Brand #${row.brand_id}`,
-    nameEn: '',
-    panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-    mentionRate: row.avg_mention_rate ?? 0,
-    sentiment: row.avg_sentiment ?? 0,
-    ranking: 1,
-    industryId: '',
-  })
+  ): PrimaryBrandAdapted => {
+    const name = row.brand_name ?? `Brand #${row.brand_id}`
+    return {
+      id: String(row.brand_id),
+      name,
+      nameZh: name,
+      nameEn: name,
+      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      mentionRate: row.avg_mention_rate ?? 0,
+      sentiment: row.avg_sentiment ?? 0,
+      ranking: 1,
+      industryId: '',
+    }
+  }
 
-  const buildComp = (row: CompetitorMetricsOut['competitors'][number]): CompetitorAdapted => ({
-    id: String(row.brand_id),
-    name: row.brand_name ?? `Brand #${row.brand_id}`,
-    nameEn: '',
-    panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-    industryId: '',
-  })
+  const buildComp = (row: CompetitorMetricsOut['competitors'][number]): CompetitorAdapted => {
+    const name = row.brand_name ?? `Brand #${row.brand_id}`
+    return {
+      id: String(row.brand_id),
+      name,
+      nameZh: name,
+      nameEn: name,
+      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      industryId: '',
+    }
+  }
 
   return {
     primary: metrics.primary ? buildPrimary(metrics.primary) : null,
