@@ -5422,12 +5422,20 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   </div>
                   <div class="flex items-center justify-end gap-2 flex-wrap">
                     <template x-if="selectedQueryPoolCandidateIds().length > 0">
-                      <button @click="deleteSelectedQueryPoolCandidates()" :disabled="queryPoolCandidateDeleting"
-                              class="h-8 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
-                              title="批量删除 Query 候选">
-                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                        <span x-text="'删除 ' + selectedQueryPoolCandidateIds().length + ' 条'"></span>
-                      </button>
+                      <div class="flex items-center gap-2">
+                        <button @click="reviewSelectedQueryPoolCandidates('ready')" :disabled="queryPoolCandidateReviewing"
+                                class="h-8 px-3 rounded-btn border border-success/30 bg-success/5 text-success text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                                title="批量设为 ready">
+                          <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                          <span x-text="'设为 ready ' + selectedQueryPoolCandidateIds().length + ' 条'"></span>
+                        </button>
+                        <button @click="deleteSelectedQueryPoolCandidates()" :disabled="queryPoolCandidateDeleting"
+                                class="h-8 px-3 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                                title="批量删除 Query 候选">
+                          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                          <span x-text="'删除 ' + selectedQueryPoolCandidateIds().length + ' 条'"></span>
+                        </button>
+                      </div>
                     </template>
                     <div class="relative w-[240px]">
                       <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"></i>
@@ -5507,6 +5515,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         </div>
                         <div class="flex items-center gap-2">
                           <span class="inline-flex items-center px-2 h-5 rounded-badge bg-accent/10 text-accent text-[10px] font-semibold" x-text="queryPoolCandidateStatusLabel(q.candidateStatus)"></span>
+                          <button x-show="q.candidateStatus !== 'ready'"
+                                  @click.stop="reviewQueryPoolCandidate(q, 'ready')" :disabled="queryPoolCandidateReviewing"
+                                  class="w-7 h-7 inline-flex items-center justify-center rounded-btn border border-b-default text-ink-muted hover:text-success hover:border-success/30 disabled:opacity-50"
+                                  title="设为 ready">
+                            <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                          </button>
                           <button @click.stop="deleteQueryPoolCandidate(q)" :disabled="queryPoolCandidateDeleting"
                                   class="w-7 h-7 inline-flex items-center justify-center rounded-btn border border-b-default text-ink-muted hover:text-danger hover:border-danger/30 disabled:opacity-50"
                                   title="删除 Query 候选">
@@ -11978,6 +11992,7 @@ function adminApp() {
     queryPoolCandidateRows: [],
     queryPoolCandidateLoading: false,
     queryPoolCandidateDeleting: false,
+    queryPoolCandidateReviewing: false,
     queryPoolCandidateError: '',
     queryPoolCandidateQuery: '',
     queryPoolCandidateBrand: 'all',
@@ -16773,6 +16788,7 @@ function adminApp() {
         if (profileFilter) qp.set('profile_id', profileFilter);
         if (status) qp.set('status', status);
         if (this.queryPoolCurrentRunId) qp.set('run_id', this.queryPoolCurrentRunId);
+        else qp.set('all_runs', '1');
         const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials:'same-origin' });
         if (res.status === 401) {
           this.isLoggedIn = false;
@@ -16861,6 +16877,49 @@ function adminApp() {
         else delete next[row.id];
       });
       this.queryPoolSelectedCandidateIds = next;
+    },
+
+    async performReviewQueryPoolCandidates(candidateIds, status, reason = 'query_pool_candidate_review'){
+      const ids = Array.from(new Set((candidateIds || []).filter(Boolean)));
+      if (!ids.length) return;
+      this.queryPoolCandidateReviewing = true;
+      try {
+        const url = ids.length === 1
+          ? '/api/admin/query-pool/candidates/' + encodeURIComponent(ids[0]) + '/review'
+          : '/api/admin/query-pool/candidates/bulk-review';
+        const payload = ids.length === 1
+          ? { status, reason }
+          : { candidate_ids: ids, status, reason };
+        const res = await fetch(url, {
+          method: 'POST',
+          credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选状态更新失败');
+        ids.forEach(id => delete this.queryPoolSelectedCandidateIds[id]);
+        this.toast('已更新 ' + ids.length + ' 条 Query 候选为 ' + this.queryPoolCandidateStatusLabel(status));
+        await this.loadQueryPoolCandidates();
+      } catch (error) {
+        this.toast(error.message || 'Query 候选状态更新失败');
+      } finally {
+        this.queryPoolCandidateReviewing = false;
+      }
+    },
+
+    reviewQueryPoolCandidate(candidate, status){
+      if (!candidate || !candidate.id) return;
+      return this.performReviewQueryPoolCandidates([candidate.id], status);
+    },
+
+    reviewSelectedQueryPoolCandidates(status){
+      const ids = this.selectedQueryPoolCandidateIds();
+      if (!ids.length) {
+        this.toast('请先选择 Query 候选');
+        return;
+      }
+      return this.performReviewQueryPoolCandidates(ids, status);
     },
 
     async performDeleteQueryPoolCandidates(candidateIds, reason){
@@ -17925,7 +17984,8 @@ function adminApp() {
       this.scheduleEditorCandidateLoading = true;
       this.scheduleEditorCandidateError = '';
       try {
-        const qp = new URLSearchParams({ limit: '100' });
+        const qp = new URLSearchParams({ limit: '200' });
+        qp.set('all_runs', '1');
         qp.set('status', 'ready');
         const brandId = String(e.pick_brand_id || '').trim();
         const query = String(e.pick_query_search || '').trim();

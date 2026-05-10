@@ -26,7 +26,19 @@ def test_query_pool_candidates_can_filter_by_brand() -> None:
     assert 'x-model="queryPoolCandidateBrand"' in html
     assert "queryPoolCandidateBrands()" in html
     assert "qp.set('brand_id', brandFilter)" in html
+    assert "qp.set('all_runs', '1')" in html
     assert "this.queryPoolCandidateBrand = 'all'" in html
+
+
+def test_query_pool_candidates_can_be_marked_ready() -> None:
+    html = _admin_html()
+
+    assert "queryPoolCandidateReviewing: false" in html
+    assert "reviewSelectedQueryPoolCandidates('ready')" in html
+    assert "reviewQueryPoolCandidate(q, 'ready')" in html
+    assert "performReviewQueryPoolCandidates" in html
+    assert "/api/admin/query-pool/candidates/bulk-review" in html
+    assert "q.candidateStatus !== 'ready'" in html
 
 
 def test_query_pool_prompt_selection_uses_raw_prompt_id() -> None:
