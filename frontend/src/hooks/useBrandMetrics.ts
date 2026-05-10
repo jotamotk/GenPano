@@ -17,6 +17,9 @@ const filterKey = (filters: ProjectAnalysisParams = {}) =>
     filters.engine ?? '',
     filters.segment_id ?? '',
     filters.profile_id ?? '',
+    filters.dimension ?? '',
+    filters.intent ?? '',
+    filters.prompt_scope ?? '',
   ].join('|')
 
 export function useBrandMetrics(
@@ -91,10 +94,21 @@ export function useBrandProducts(projectId: string | null | undefined) {
 export function useCompetitorMetrics(
   projectId: string | null | undefined,
   brandIdOverride?: number | null,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['brand', 'competitor-metrics', projectId, brandIdOverride ?? null],
-    queryFn: () => brandMetricsApi.competitorMetrics(projectId as string, brandIdOverride),
+    queryKey: [
+      'brand',
+      'competitor-metrics',
+      projectId,
+      brandIdOverride ?? null,
+      filterKey(filters),
+    ],
+    queryFn: () => brandMetricsApi.competitorMetrics(
+      projectId as string,
+      brandIdOverride,
+      filters,
+    ),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,
@@ -111,13 +125,22 @@ export function useCompetitorTrends(
     | 'rank'
     | 'citation' = 'geo_score',
   brandIdOverride?: number | null,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['brand', 'competitor-trends', projectId, metric, brandIdOverride ?? null],
+    queryKey: [
+      'brand',
+      'competitor-trends',
+      projectId,
+      metric,
+      brandIdOverride ?? null,
+      filterKey(filters),
+    ],
     queryFn: () => brandMetricsApi.competitorTrends(
       projectId as string,
       metric,
       brandIdOverride,
+      filters,
     ),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,

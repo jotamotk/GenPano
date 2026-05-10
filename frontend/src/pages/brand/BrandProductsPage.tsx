@@ -56,7 +56,7 @@ export default function BrandProductsPage() {
   }, [primary.id, primary.name, primary.nameEn]);
 
   const liveProducts = useMemo(() => {
-    if (!isLive || !productsQ.data || productsQ.data.items.length === 0) return null;
+    if (!isLive || !productsQ.data) return null;
     return productsQ.data.items.map((p) => ({
       id: p.product_id,
       primaryName: p.product_name,
@@ -75,8 +75,8 @@ export default function BrandProductsPage() {
       panoScore: p.avg_geo_score,
     }));
   }, [isLive, productsQ.data, primary]);
-  const products = liveProducts ?? mockProducts;
-  const productsIsMock = !liveProducts;
+  const products = isLive ? (liveProducts ?? []) : mockProducts;
+  const productsIsMock = !isLive;
 
   // ─── ① BCG data ─────────────────────────────────────────────
   const bcgData = useMemo(() => {
@@ -95,7 +95,7 @@ export default function BrandProductsPage() {
   // ─── ⑤ product relations ────────────────────────────────────
   const liveRelations = adaptProductRelations(relationsQ.data);
   const productRelations = useMemo(() => {
-    if (isLive && liveRelations.length > 0) {
+    if (isLive) {
       return liveRelations.map((r) => ({
         productA: r.productA,
         productB: r.productB,
@@ -109,7 +109,7 @@ export default function BrandProductsPage() {
       (r) => productIds.includes(r.productA) && productIds.includes(r.productB),
     );
   }, [products, isLive, liveRelations]);
-  const relationsIsMock = !(isLive && liveRelations.length > 0);
+  const relationsIsMock = !isLive;
 
   const handleBubbleClick = (item) =>
     navigate(`/brand/products/${item.productId}?brandId=${primary.id}`);

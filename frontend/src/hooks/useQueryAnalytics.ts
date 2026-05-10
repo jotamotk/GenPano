@@ -8,7 +8,17 @@ import {
 import { isLiveProjectId } from '../lib/liveProject'
 
 export function useQueryAnalytics(args: QueryAnalyticsArgs) {
-  const { projectId, dateFrom, dateTo, engine, segmentId, profileId } = args
+  const {
+    projectId,
+    dateFrom,
+    dateTo,
+    engine,
+    segmentId,
+    profileId,
+    dimension,
+    intent,
+    promptScope,
+  } = args
   return useQuery<QueryAnalyticsOut>({
     queryKey: [
       'projects',
@@ -19,6 +29,9 @@ export function useQueryAnalytics(args: QueryAnalyticsArgs) {
       engine,
       segmentId,
       profileId,
+      dimension,
+      intent,
+      promptScope,
     ],
     queryFn: () => queryAnalyticsApi.fetch(args),
     enabled: isLiveProjectId(projectId),

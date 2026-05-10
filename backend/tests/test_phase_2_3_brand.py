@@ -336,6 +336,52 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
 
 
 @pytest.mark.asyncio
+async def test_competitor_metrics_uses_response_extracted_brand_entities(
+    client, user, db_session
+):
+    p = Project(user_id=user.id, name="Response Entity SoV", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    rows = [
+        (7101, 42, "Primary", 0.8),
+        (7101, 99, "Clinique", 0.5),
+        (7101, None, "Null Rival", 0.2),
+        (7102, 42, "Primary", 0.7),
+        (7102, 99, "Clinique", 0.4),
+        (7103, None, "Null Rival", 0.1),
+    ]
+    for response_id, brand_id, brand_name, sentiment in rows:
+        db_session.add(
+            BrandMention(
+                response_id=response_id,
+                brand_id=brand_id,
+                brand_name=brand_name,
+                sentiment_score=sentiment,
+                created_at=now,
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{p.id}/competitors/metrics",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "ok"
+    assert body["primary"]["brand_id"] == 42
+    assert body["primary"]["avg_sov"] == pytest.approx(2 / 6, rel=0.01)
+    names = {row["brand_name"]: row for row in body["competitors"]}
+    assert names["Clinique"]["avg_sov"] == pytest.approx(2 / 6, rel=0.01)
+    assert names["Null Rival"]["brand_id"] is None
+    assert names["Null Rival"]["avg_sov"] == pytest.approx(2 / 6, rel=0.01)
+
+
+@pytest.mark.asyncio
 async def test_diagnostics_derives_from_data(client, user, db_session):
     """Insert sharp drop in mention_rate → expect visibility_decline diagnostic."""
     p = Project(user_id=user.id, name="Diag", primary_brand_id=77)

@@ -707,6 +707,7 @@ async def get_topic_attribution(
                 "positive": 0,
                 "neutral": 0,
                 "negative": 0,
+                "responses": 0,
                 "sample": None,
             }
         rid = row.get("response_id")
@@ -714,6 +715,7 @@ async def get_topic_attribution(
             continue
         seen_responses.add(int(rid))
         bucket = by_topic[tid]
+        bucket["responses"] += 1
         bucket["positive"] += int(row.get("positive_mentions") or 0)
         bucket["neutral"] += int(row.get("neutral_mentions") or 0)
         bucket["negative"] += int(row.get("negative_mentions") or 0)
@@ -722,7 +724,7 @@ async def get_topic_attribution(
 
     admin_items: list[TopicAttributionRow] = []
     for tid, bucket in by_topic.items():
-        total = int(bucket["positive"] + bucket["neutral"] + bucket["negative"])
+        total = int(bucket["responses"])
         negative = int(bucket["negative"])
         if total <= 0 or negative <= 0:
             continue

@@ -526,15 +526,19 @@ function CompetitorQuadrant({ data, primaryName, t }) {
 }
 
 /* ─── PANO Trend ─── */
-function PanoTrendChart({ trendData, primaryName, competitors, t }) {
+function PanoTrendChart({ trendData, primaryName, competitors, isLive, t }) {
   const data = useMemo(() => (trendData ?? []).map((d, i) => {
-    const row = { name: `${d.day}日`, [primaryName]: d.panoScore };
+    const row = { name: `${d.day}d`, [primaryName]: d.panoScore };
     competitors.forEach((c, idx) => {
-      const base = c.panoScore;
-      row[c.name] = Math.round(base + Math.sin((i + idx * 3) / 5) * 3 + (Math.random() - 0.5) * 2);
+      if (isLive) {
+        row[c.name] = d[c.name] ?? null;
+      } else {
+        const base = c.panoScore;
+        row[c.name] = Math.round(base + Math.sin((i + idx * 3) / 5) * 3);
+      }
     });
     return row;
-  }), [trendData, primaryName, competitors]);
+  }), [trendData, primaryName, competitors, isLive]);
 
   if (!data.length) {
     return (
@@ -835,7 +839,9 @@ export default function BrandPanoramaPanel({
   const sovEntry         = sovData.find((s) => s.name === primary.name);
   const sovValue         = sovEntry ? sovEntry.value : 0;
   const sentimentValue   = primary.sentiment;
-  const citationShare    = 18.2;
+  const citationShare    = isLive
+    ? (sparklineOverride?.citation?.at(-1) ?? 0)
+    : 18.2;
   const industryRank     = primary.ranking;
 
   /* ── Sparklines ── (live: from /v1/projects/:id/metrics; mock: synthesized) */
@@ -1009,12 +1015,18 @@ export default function BrandPanoramaPanel({
             {!isLive && <MockDataBadge />}
             <CrossIndustryWarning visible={hasCrossIndustryCompetitors} t={t} />
           </div>
-          <PanoTrendChart trendData={trendData} primaryName={primary.name} competitors={competitors} t={t} />
+          <PanoTrendChart
+            trendData={trendData}
+            primaryName={primary.name}
+            competitors={competitors}
+            isLive={isLive}
+            t={t}
+          />
         </Card>
         <Card className="p-4">
           <h3 className="text-sm font-semibold text-themed-primary mb-3 flex items-center gap-2">
             {t('dashboard.trend.kpi_summary_title')}
-            {(!isLive || !sparklineOverride) && <MockDataBadge />}
+            {!isLive && <MockDataBadge />}
           </h3>
           <KpiSparklineSummary rows={sparklineRows} />
         </Card>

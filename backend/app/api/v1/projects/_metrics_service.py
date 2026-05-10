@@ -6,6 +6,7 @@ Each service function is callable independently from MCP tools + Reports
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TypedDict
 
@@ -27,6 +28,15 @@ from app.api.v1.projects._legacy_lookups import resolve_topic_names
 from app.api.v1.projects._mention_rollups import (
     brand_mention_daily_rollups,
     metric_value,
+)
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    _as_float,
+    _as_int,
+    _date_key,
+    _fact_rows,
+    _has_admin_chain,
+    _is_non_branded_row,
 )
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
@@ -66,6 +76,133 @@ def _resolve_window(from_date: date | None, to_date: date | None) -> tuple[date,
     return from_d, to_d
 
 
+def _metric_filters(
+    filters: AnalysisFilters | None,
+    *,
+    from_d: date,
+    to_d: date,
+    engines: list[str] | None,
+) -> AnalysisFilters:
+    base = filters or AnalysisFilters()
+    engine_tuple = base.engines
+    if engine_tuple is None and engines:
+        engine_tuple = tuple(engines)
+    return replace(
+        base,
+        from_date=base.from_date or from_d,
+        to_date=base.to_date or to_d,
+        engines=engine_tuple,
+    )
+
+
+def _fact_metric_value(metric: str, bucket: dict[str, object]) -> float | None:
+    if metric == "mention_rate":
+        denominator = len(bucket["mention_denominator_response_ids"])  # type: ignore[arg-type]
+        if denominator <= 0:
+            return None
+        return round(
+            len(bucket["target_mention_response_ids"]) / denominator, 4,  # type: ignore[arg-type]
+        )
+    if metric == "sov":
+        all_mentions = int(bucket["all_mentions"] or 0)
+        if all_mentions <= 0:
+            return None
+        return round(float(bucket["target_mentions"] or 0) / all_mentions, 4)
+    if metric == "rank":
+        ranks = bucket["ranks"]  # type: ignore[assignment]
+        if not ranks:
+            return None
+        return round(sum(ranks) / len(ranks), 4)
+    if metric == "sentiment":
+        scores = bucket["sentiment_scores"]  # type: ignore[assignment]
+        if not scores:
+            return None
+        return round(sum(scores) / len(scores), 4)
+    if metric == "citation":
+        response_count = len(bucket["response_ids"])  # type: ignore[arg-type]
+        if response_count <= 0:
+            return None
+        return round(float(bucket["citation_count"] or 0) / response_count, 4)
+    return None
+
+
+async def _metrics_from_admin_facts(
+    session: AsyncSession,
+    project: Project,
+    *,
+    requested: list[str],
+    from_d: date,
+    to_d: date,
+    filters: AnalysisFilters,
+) -> MetricsOut:
+    rows = await _fact_rows(session, project, filters=filters)
+    buckets: dict[str, dict[str, object]] = {}
+    seen_response_ids: set[int] = set()
+
+    for row in rows:
+        response_id = _as_int(row.get("response_id"))
+        if response_id is None or response_id in seen_response_ids:
+            continue
+        seen_response_ids.add(response_id)
+        day = _date_key(
+            row.get("response_created_at")
+            or row.get("query_finished_at")
+            or row.get("query_created_at")
+        )
+        if day is None:
+            continue
+        bucket = buckets.setdefault(
+            day,
+            {
+                "response_ids": set(),
+                "mention_denominator_response_ids": set(),
+                "target_mention_response_ids": set(),
+                "target_mentions": 0,
+                "all_mentions": 0,
+                "ranks": [],
+                "sentiment_scores": [],
+                "citation_count": 0,
+            },
+        )
+        bucket["response_ids"].add(response_id)  # type: ignore[attr-defined]
+        target_mentions = int(row.get("target_mention_count") or 0)
+        all_mentions = int(row.get("all_mention_count") or 0)
+        bucket["target_mentions"] = int(bucket["target_mentions"] or 0) + target_mentions
+        bucket["all_mentions"] = int(bucket["all_mentions"] or 0) + all_mentions
+        if _is_non_branded_row(row):
+            bucket["mention_denominator_response_ids"].add(response_id)  # type: ignore[attr-defined]
+            if target_mentions > 0:
+                bucket["target_mention_response_ids"].add(response_id)  # type: ignore[attr-defined]
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        if rank is not None:
+            bucket["ranks"].append(float(rank))  # type: ignore[attr-defined]
+        sentiment = _as_float(row.get("sentiment_score"))
+        if sentiment is not None:
+            bucket["sentiment_scores"].append(sentiment)  # type: ignore[attr-defined]
+        bucket["citation_count"] = int(bucket["citation_count"] or 0) + int(
+            row.get("citation_count") or 0
+        )
+
+    out_series: list[MetricSeries] = []
+    for metric in requested:
+        points: list[MetricSeriesPoint] = []
+        for day in sorted(buckets):
+            value = _fact_metric_value(metric, buckets[day])
+            if value is None:
+                continue
+            points.append(MetricSeriesPoint(date=date.fromisoformat(day), value=value))
+        out_series.append(MetricSeries(metric=metric, points=points))
+
+    return MetricsOut(
+        project_id=project.id,
+        brand_id=project.primary_brand_id,
+        period=_period(from_d, to_d),
+        engines=list(filters.engines) if filters.engines else None,
+        series=out_series,
+        state="ok" if any(series.points for series in out_series) else "empty",
+    )
+
+
 # ─── /metrics ──────────────────────────────────────────────────────
 async def get_metrics(
     session: AsyncSession,
@@ -76,6 +213,7 @@ async def get_metrics(
     to_date: date | None = None,
     engines: list[str] | None = None,
     brand_id_override: int | None = None,
+    filters: AnalysisFilters | None = None,
 ) -> MetricsOut:
     """`brand_id_override` lets the dashboard brand picker swap the
     primary brand for KPI / trend pulls without leaving the project."""
@@ -94,6 +232,25 @@ async def get_metrics(
             engines=engines,
             series=[MetricSeries(metric=m, points=[]) for m in requested],
             state="empty",
+        )
+
+    analysis_filters = _metric_filters(
+        filters,
+        from_d=from_d,
+        to_d=to_d,
+        engines=engines,
+    )
+    if (
+        brand_id_override is None
+        or brand_id_override == project.primary_brand_id
+    ) and await _has_admin_chain(session):
+        return await _metrics_from_admin_facts(
+            session,
+            project,
+            requested=requested,
+            from_d=from_d,
+            to_d=to_d,
+            filters=analysis_filters,
         )
 
     out_series: list[MetricSeries] = []

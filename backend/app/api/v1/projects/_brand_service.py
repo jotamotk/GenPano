@@ -39,6 +39,7 @@ from app.api.v1.projects._brand_dto import (
 )
 from app.api.v1.projects._legacy_lookups import resolve_brand_names
 from app.api.v1.projects._mention_rollups import (
+    MentionRollup,
     brand_mention_daily_rollups,
     brand_mention_match_condition,
     brand_mention_window_rollup,
@@ -48,6 +49,7 @@ from app.api.v1.projects._mention_rollups import (
     metric_value,
     share_of_voice,
 )
+from app.api.v1.projects._topic_analysis_service import AnalysisFilters, _fact_rows, _has_admin_chain
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -61,6 +63,142 @@ def _resolve_window(from_date: date | None, to_date: date | None) -> tuple[date,
 
 def _period(from_d: date, to_d: date) -> dict[str, str]:
     return {"from": from_d.isoformat(), "to": to_d.isoformat()}
+
+
+def _brand_entity_key(brand_id: int | None, brand_name: str | None) -> str:
+    if brand_id is not None:
+        return f"id:{brand_id}"
+    name = (brand_name or "unknown").strip().casefold()
+    return f"name:{name}"
+
+
+async def _response_entity_competitor_metrics(
+    session: AsyncSession,
+    project: Project,
+    primary_id: int,
+    from_d: date,
+    to_d: date,
+    filters: AnalysisFilters | None = None,
+) -> tuple[CompetitorBrandRow | None, list[CompetitorBrandRow], str] | None:
+    """Build SoV from response-level brand_mentions, including name-only rivals."""
+
+    from_dt = datetime.combine(from_d, datetime.min.time())
+    to_dt = datetime.combine(to_d, datetime.max.time())
+
+    fact_rows = await _fact_rows(
+        session,
+        project,
+        filters=filters or AnalysisFilters(from_date=from_d, to_date=to_d),
+    )
+    scoped_response_ids = {
+        int(row["response_id"]) for row in fact_rows if row.get("response_id") is not None
+    }
+    if await _has_admin_chain(session) and not scoped_response_ids:
+        return None, [], "empty"
+
+    conditions = [BrandMention.created_at >= from_dt, BrandMention.created_at <= to_dt]
+    if scoped_response_ids:
+        conditions.append(BrandMention.response_id.in_(scoped_response_ids))
+
+    rows = (
+        await session.execute(
+            select(
+                BrandMention.response_id,
+                BrandMention.brand_id,
+                BrandMention.brand_name,
+                BrandMention.mention_count,
+                BrandMention.position_rank,
+                BrandMention.sentiment_score,
+            ).where(and_(*conditions))
+        )
+    ).all()
+    if not rows:
+        return None
+
+    buckets: dict[str, dict[str, Any]] = {}
+    total_mentions = 0
+    all_response_ids: set[int] = set()
+    primary_response_ids: set[int] = set()
+    for response_id, brand_id, brand_name, mention_count, position_rank, sentiment_score in rows:
+        rid = int(response_id)
+        bid = int(brand_id) if brand_id is not None else None
+        amount = int(mention_count or 1)
+        key = _brand_entity_key(bid, brand_name)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "brand_key": key,
+                "brand_id": bid,
+                "brand_name": brand_name,
+                "mention_count": 0,
+                "response_ids": set(),
+                "position_ranks": [],
+                "sentiments": [],
+            },
+        )
+        bucket["mention_count"] += amount
+        bucket["response_ids"].add(rid)
+        if position_rank is not None:
+            bucket["position_ranks"].append(float(position_rank))
+        if sentiment_score is not None:
+            bucket["sentiments"].append(float(sentiment_score))
+        total_mentions += amount
+        all_response_ids.add(rid)
+        if bid == primary_id:
+            primary_response_ids.add(rid)
+
+    if total_mentions <= 0 or not buckets:
+        return None
+
+    brand_ids = [b["brand_id"] for b in buckets.values() if b["brand_id"] is not None]
+    name_map = await resolve_brand_names(session, brand_ids)
+    total_responses = len(all_response_ids) or 1
+
+    def make_row(bucket: dict[str, Any]) -> CompetitorBrandRow:
+        response_count = len(bucket["response_ids"])
+        mention_count = int(bucket["mention_count"])
+        avg_rank = (
+            sum(bucket["position_ranks"]) / len(bucket["position_ranks"])
+            if bucket["position_ranks"]
+            else None
+        )
+        avg_sentiment = (
+            sum(bucket["sentiments"]) / len(bucket["sentiments"]) if bucket["sentiments"] else None
+        )
+        rollup = MentionRollup(
+            mention_count=mention_count,
+            response_count=response_count,
+            total_response_count=total_responses,
+            total_mention_count=total_mentions,
+            avg_position_rank=avg_rank,
+            avg_sentiment_score=avg_sentiment,
+        )
+        bid = bucket["brand_id"]
+        co_count = 0
+        if bid != primary_id:
+            co_count = len(set(bucket["response_ids"]) & primary_response_ids)
+        return CompetitorBrandRow(
+            brand_id=bid,
+            brand_key=bucket["brand_key"],
+            brand_name=(name_map.get(bid) or bucket["brand_name"]) if bid is not None else bucket["brand_name"],
+            avg_geo_score=geo_score(rollup),
+            avg_mention_rate=round(mention_rate(rollup), 4),
+            avg_sov=round(share_of_voice(rollup), 4),
+            avg_sentiment=round(float(avg_sentiment), 3) if avg_sentiment is not None else None,
+            co_mention_count=co_count,
+            delta_30d_pct=None,
+        )
+
+    primary = buckets.get(_brand_entity_key(primary_id, None))
+    primary_row = make_row(primary) if primary is not None else None
+    competitors = [
+        make_row(bucket)
+        for key, bucket in buckets.items()
+        if key != _brand_entity_key(primary_id, None)
+    ]
+    competitors.sort(key=lambda row: (-(row.avg_sov or 0), row.brand_name or row.brand_key or ""))
+    state = "partial" if primary_row and not competitors else "ok"
+    return primary_row, competitors, state
 
 
 # ─── /products ─────────────────────────────────────────────────────
@@ -258,6 +396,7 @@ async def get_competitor_metrics(
     from_date: date | None = None,
     to_date: date | None = None,
     brand_id_override: int | None = None,
+    filters: AnalysisFilters | None = None,
 ) -> CompetitorMetricsOut:
     """Compare primary brand + each pinned competitor across 4 metrics."""
     from_d, to_d = _resolve_window(from_date, to_date)
@@ -271,6 +410,25 @@ async def get_competitor_metrics(
             primary=None,
             competitors=[],
             state="empty",
+        )
+
+    response_entities = await _response_entity_competitor_metrics(
+        session,
+        project,
+        primary_id,
+        from_d,
+        to_d,
+        filters or AnalysisFilters(from_date=from_d, to_date=to_d),
+    )
+    if response_entities is not None:
+        primary_row, competitor_rows, entity_state = response_entities
+        return CompetitorMetricsOut(
+            project_id=project.id,
+            primary_brand_id=primary_id,
+            period=_period(from_d, to_d),
+            primary=primary_row,
+            competitors=competitor_rows,
+            state=entity_state,
         )
 
     if brand_id_override is not None:
@@ -356,6 +514,7 @@ async def get_competitor_metrics(
 
         return CompetitorBrandRow(
             brand_id=brand_id,
+            brand_key=_brand_entity_key(brand_id, None),
             brand_name=None,  # filled in below via bulk name lookup
             avg_geo_score=round(avg_geo, 2) if avg_geo is not None else None,
             avg_mention_rate=round(avg_mention, 4) if avg_mention is not None else None,

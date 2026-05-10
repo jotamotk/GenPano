@@ -211,6 +211,7 @@ class QueryActivityDailyRow(BaseModel):
     queries: int = 0
     responses: int = 0
     target_mentions: int = 0
+    mention_denominator: int = 0
 
 
 class QueryActivityOut(BaseModel):

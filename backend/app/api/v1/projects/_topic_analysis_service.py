@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -49,6 +50,9 @@ class AnalysisFilters:
     engines: tuple[str, ...] | None = None
     segment_id: str | None = None
     profile_id: str | None = None
+    dimensions: tuple[str, ...] | None = None
+    intents: tuple[str, ...] | None = None
+    prompt_scope: str | None = None
 
     @property
     def explicit(self) -> bool:
@@ -59,6 +63,9 @@ class AnalysisFilters:
                 bool(self.engines),
                 bool(self.segment_id),
                 bool(self.profile_id),
+                bool(self.dimensions),
+                bool(self.intents),
+                bool(self.prompt_scope),
             ]
         )
 
@@ -132,6 +139,52 @@ def _pct(numerator: int | float, denominator: int | float, digits: int = 4) -> f
     if not denominator:
         return None
     return round(float(numerator) / float(denominator), digits)
+
+
+def _normalize_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    norm = str(value).strip().lower().replace("-", "_")
+    return norm or None
+
+
+def _coerce_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _prompt_scope_from_row(row: dict[str, Any]) -> str:
+    raw = row.get("prompt_scope")
+    if raw is None:
+        tags = _coerce_json(row.get("prompt_tags"))
+        raw = tags.get("prompt_scope") or tags.get("promptScope")
+    return _normalize_key(raw) or "non_branded"
+
+
+def _is_non_branded_row(row: dict[str, Any]) -> bool:
+    return _prompt_scope_from_row(row) == "non_branded"
+
+
+def _row_matches_analysis_filters(row: dict[str, Any], filters: AnalysisFilters) -> bool:
+    if filters.dimensions:
+        allowed = {_normalize_key(v) for v in filters.dimensions}
+        if _normalize_key(row.get("topic_dimension")) not in allowed:
+            return False
+    if filters.intents:
+        allowed = {_normalize_key(v) for v in filters.intents}
+        if _normalize_key(row.get("prompt_intent")) not in allowed:
+            return False
+    if filters.prompt_scope:
+        if _prompt_scope_from_row(row) != _normalize_key(filters.prompt_scope):
+            return False
+    return True
 
 
 def _safe_ident(name: str) -> str:
@@ -227,6 +280,22 @@ def _prompt_text_expr(cols: set[str]) -> str:
         return "p.text"
     if "prompt_text" in cols:
         return "p.prompt_text"
+    return "NULL"
+
+
+def _prompt_scope_expr(cols: set[str]) -> str:
+    if "prompt_scope" in cols:
+        return "p.prompt_scope"
+    if "promptScope" in cols:
+        return 'p."promptScope"'
+    return "NULL"
+
+
+def _prompt_tags_expr(cols: set[str]) -> str:
+    if "tags" in cols:
+        return "p.tags"
+    if "metadata" in cols:
+        return "p.metadata"
     return "NULL"
 
 
@@ -385,6 +454,7 @@ async def _fact_rows(
     has_analysis = await legacy_table_exists(session, "response_analyses")
     has_mentions = await legacy_table_exists(session, "brand_mentions")
     has_citations = await legacy_table_exists(session, "citation_sources")
+    mention_cols = await legacy_table_columns(session, "brand_mentions") if has_mentions else set()
 
     params: dict[str, Any] = {}
     topic_where: list[str] = []
@@ -470,11 +540,13 @@ async def _fact_rows(
         "NULL AS negative_sample_snippet",
     ]
     if has_mentions and response_join and primary is not None:
+        mention_amount = "COALESCE(bm.mention_count, 1)" if "mention_count" in mention_cols else "1"
         mention_selects = [
-            "(SELECT COUNT(*) FROM brand_mentions bm "
+            f"(SELECT COALESCE(SUM({mention_amount}), 0) FROM brand_mentions bm "
             "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
             "AS target_mention_count",
-            "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id) "
+            f"(SELECT COALESCE(SUM({mention_amount}), 0) FROM brand_mentions bm "
+            "WHERE bm.response_id = r.id) "
             "AS all_mention_count",
             "(SELECT MIN(bm.position_rank) FROM brand_mentions bm "
             "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
@@ -525,6 +597,8 @@ async def _fact_rows(
             p.id AS prompt_id,
             {_prompt_text_expr(prompt_cols)} AS prompt_text,
             {_select_col(prompt_cols, "p", "intent", "prompt_intent")},
+            {_prompt_scope_expr(prompt_cols)} AS prompt_scope,
+            {_prompt_tags_expr(prompt_cols)} AS prompt_tags,
             {_select_col(prompt_cols, "p", "language", "prompt_language")},
             {_select_col(prompt_cols, "p", "status", "prompt_status")},
             q.id AS query_id,
@@ -550,7 +624,10 @@ async def _fact_rows(
         """
     )
     rows = (await session.execute(sql, params)).mappings().all()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    if filters.dimensions or filters.intents or filters.prompt_scope:
+        out = [row for row in out if _row_matches_analysis_filters(row, filters)]
+    return out
 
 
 def _topic_aggregates(
@@ -582,6 +659,8 @@ def _topic_aggregates(
                 "engines": set(),
                 "target_mentions": 0,
                 "all_mentions": 0,
+                "mention_denominator_response_ids": set(),
+                "target_mention_response_ids": set(),
                 "citation_count": 0,
                 "ranks": [],
                 "geo_scores": [],
@@ -622,6 +701,10 @@ def _topic_aggregates(
             all_mentions = int(row.get("all_mention_count") or 0)
             bucket["target_mentions"] += target_mentions
             bucket["all_mentions"] += all_mentions
+            if _is_non_branded_row(row):
+                bucket["mention_denominator_response_ids"].add(rid)
+                if target_mentions > 0:
+                    bucket["target_mention_response_ids"].add(rid)
             bucket["citation_count"] += int(row.get("citation_count") or 0)
             rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
             if rank is not None:
@@ -674,6 +757,8 @@ def _topic_aggregates(
         target_mentions = int(bucket["target_mentions"])
         all_mentions = int(bucket["all_mentions"])
         citations = int(bucket["citation_count"])
+        mention_denominator = len(bucket["mention_denominator_response_ids"])
+        target_mention_responses = len(bucket["target_mention_response_ids"])
         items.append(
             TopicMonitoringRow(
                 topic_id=tid,
@@ -685,7 +770,7 @@ def _topic_aggregates(
                 response_count=response_count,
                 success_rate=_pct(bucket["success_count"], query_count),
                 engine_coverage=sorted(bucket["engines"]),
-                mention_rate=_pct(target_mentions, response_count),
+                mention_rate=_pct(target_mention_responses, mention_denominator),
                 sov=_pct(target_mentions, all_mentions),
                 avg_rank=_mean(bucket["ranks"]),
                 avg_geo_score=_mean(bucket["geo_scores"]),
@@ -780,6 +865,8 @@ async def get_topic_prompts(
                 "success_count": 0,
                 "engines": set(),
                 "target_mentions": 0,
+                "mention_denominator_response_ids": set(),
+                "target_mention_response_ids": set(),
                 "citations": 0,
                 "ranks": [],
                 "geo_scores": [],
@@ -805,7 +892,12 @@ async def get_topic_prompts(
         rid = _as_int(row.get("response_id"))
         if rid is not None and rid not in bucket["responses"]:
             bucket["responses"].add(rid)
-            bucket["target_mentions"] += int(row.get("target_mention_count") or 0)
+            target_mentions = int(row.get("target_mention_count") or 0)
+            bucket["target_mentions"] += target_mentions
+            if _is_non_branded_row(row):
+                bucket["mention_denominator_response_ids"].add(rid)
+                if target_mentions > 0:
+                    bucket["target_mention_response_ids"].add(rid)
             bucket["citations"] += int(row.get("citation_count") or 0)
             rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
             if rank is not None:
@@ -829,7 +921,10 @@ async def get_topic_prompts(
             response_count=len(b["responses"]),
             success_rate=_pct(b["success_count"], len(b["query_ids"])),
             engine_coverage=sorted(b["engines"]),
-            mention_rate=_pct(b["target_mentions"], len(b["responses"])),
+            mention_rate=_pct(
+                len(b["target_mention_response_ids"]),
+                len(b["mention_denominator_response_ids"]),
+            ),
             avg_rank=_mean(b["ranks"]),
             avg_geo_score=_mean(b["geo_scores"]),
             citation_rate=_pct(b["citations"], len(b["responses"])),
@@ -1152,7 +1247,13 @@ async def get_query_activity(
             project_id=project.id,
             brand_id=None,
             period=_period(from_d, to_d),
-            totals={"queries": 0, "responses": 0, "analyzed": 0, "mentions_target": 0},
+            totals={
+                "queries": 0,
+                "responses": 0,
+                "analyzed": 0,
+                "mentions_target": 0,
+                "mention_denominator": 0,
+            },
             state="empty",
         )
     effective_filters = filters
@@ -1163,6 +1264,9 @@ async def get_query_activity(
             engines=filters.engines,
             segment_id=filters.segment_id,
             profile_id=filters.profile_id,
+            dimensions=filters.dimensions,
+            intents=filters.intents,
+            prompt_scope=filters.prompt_scope,
         )
     rows = await _fact_rows(session, project, filters=effective_filters)
 
@@ -1170,15 +1274,22 @@ async def get_query_activity(
     response_ids: set[int] = set()
     analysis_ids: set[int] = set()
     mention_response_ids: set[int] = set()
+    mention_denominator_response_ids: set[int] = set()
     status_counts: Counter[str] = Counter()
     sentiment = {"positive": 0, "neutral": 0, "negative": 0}
     positions = {"Top1": 0, "Top3": 0, "Top5": 0, "Top10": 0, "Other": 0}
     engine_bucket: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"queries": set(), "responses": set(), "mentions": 0, "geo": []}
+        lambda: {
+            "queries": set(),
+            "responses": set(),
+            "mention_denominator": set(),
+            "target_mention_responses": set(),
+            "geo": [],
+        }
     )
     topic_bucket: OrderedDict[int, dict[str, Any]] = OrderedDict()
     daily_bucket: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"queries": 0, "responses": 0, "target_mentions": 0}
+        lambda: {"queries": 0, "responses": 0, "target_mentions": 0, "mention_denominator": 0}
     )
 
     seen_response_metrics: set[int] = set()
@@ -1201,7 +1312,8 @@ async def get_query_activity(
                 "topic_name": row.get("topic_name") or f"topic-{tid}",
                 "queries": set(),
                 "responses": set(),
-                "mentions": 0,
+                "mention_denominator": set(),
+                "target_mention_responses": set(),
             }
         if tid is not None:
             topic_bucket[tid]["queries"].add(qid)
@@ -1222,11 +1334,17 @@ async def get_query_activity(
         if aid is not None:
             analysis_ids.add(aid)
         target_mentions = int(row.get("target_mention_count") or 0)
-        if target_mentions:
+        is_non_branded = _is_non_branded_row(row)
+        if is_non_branded:
+            mention_denominator_response_ids.add(rid)
+            engine_bucket[engine]["mention_denominator"].add(rid)
+            if tid is not None:
+                topic_bucket[tid]["mention_denominator"].add(rid)
+        if target_mentions and is_non_branded:
             mention_response_ids.add(rid)
-        engine_bucket[engine]["mentions"] += target_mentions
-        if tid is not None:
-            topic_bucket[tid]["mentions"] += target_mentions
+            engine_bucket[engine]["target_mention_responses"].add(rid)
+            if tid is not None:
+                topic_bucket[tid]["target_mention_responses"].add(rid)
         geo = _as_float(row.get("geo_score"))
         if geo is not None:
             engine_bucket[engine]["geo"].append(geo)
@@ -1238,14 +1356,20 @@ async def get_query_activity(
             positions[bucket] += 1
         if day:
             daily_bucket[day]["responses"] += 1
-            daily_bucket[day]["target_mentions"] += target_mentions
+            if is_non_branded:
+                daily_bucket[day]["mention_denominator"] += 1
+                if target_mentions:
+                    daily_bucket[day]["target_mentions"] += 1
 
     by_engine = [
         QueryActivityEngineRow(
             engine=engine,
             query_count=len(values["queries"]),
             response_count=len(values["responses"]),
-            mention_rate=_pct(values["mentions"], len(values["responses"])),
+            mention_rate=_pct(
+                len(values["target_mention_responses"]),
+                len(values["mention_denominator"]),
+            ),
             avg_geo_score=_mean(values["geo"]),
         )
         for engine, values in sorted(engine_bucket.items())
@@ -1256,7 +1380,10 @@ async def get_query_activity(
             topic_name=values["topic_name"],
             query_count=len(values["queries"]),
             response_count=len(values["responses"]),
-            mention_rate=_pct(values["mentions"], len(values["responses"])),
+            mention_rate=_pct(
+                len(values["target_mention_responses"]),
+                len(values["mention_denominator"]),
+            ),
         )
         for tid, values in topic_bucket.items()
         if values["queries"]
@@ -1268,6 +1395,7 @@ async def get_query_activity(
             queries=values["queries"],
             responses=values["responses"],
             target_mentions=values["target_mentions"],
+            mention_denominator=values["mention_denominator"],
         )
         for day, values in sorted(daily_bucket.items())
     ]
@@ -1280,6 +1408,7 @@ async def get_query_activity(
             "responses": len(response_ids),
             "analyzed": len(analysis_ids),
             "mentions_target": len(mention_response_ids),
+            "mention_denominator": len(mention_denominator_response_ids),
         },
         by_status=dict(status_counts),
         by_engine=by_engine,

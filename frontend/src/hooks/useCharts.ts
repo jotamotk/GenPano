@@ -19,6 +19,9 @@ const filterKey = (filters: ProjectAnalysisParams = {}) =>
     filters.engine ?? '',
     filters.segment_id ?? '',
     filters.profile_id ?? '',
+    filters.dimension ?? '',
+    filters.intent ?? '',
+    filters.prompt_scope ?? '',
   ].join('|')
 
 export function useEngineMetrics(

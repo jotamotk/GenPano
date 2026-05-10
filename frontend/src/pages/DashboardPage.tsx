@@ -27,6 +27,22 @@ import {
   adaptMetricsToSparklines,
   adaptIndustryAvgGeo,
 } from '../adapters/dashboardAdapter';
+import type { ProjectAnalysisParams } from '../lib/projectAnalysisFilters';
+
+function isoOffset(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function engineId(raw: string) {
+  const value = raw.trim().toLowerCase();
+  if (!value) return '';
+  if (value.includes('豆包') || value.includes('doubao')) return 'doubao';
+  if (value.includes('deepseek')) return 'deepseek';
+  if (value.includes('chatgpt') || value.includes('chat')) return 'chatgpt';
+  return value;
+}
 
 /* ─────────────────────────────────────────────────────────────
    DashboardPage ("我的品牌") — PRD §4.6.1a 市场宏观视角
@@ -69,6 +85,32 @@ export default function DashboardPage() {
   const brandIdParam = searchParams.get('brandId');
   const brandIdOverride =
     brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null;
+  const analysisFilters = useMemo<ProjectAnalysisParams>(() => {
+    const range = searchParams.get('range') || '30d';
+    const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const profileGroup = searchParams.get('profileGroup') || 'all';
+    const engines = (searchParams.get('engines') || '')
+      .split(',')
+      .map(engineId)
+      .filter(Boolean);
+    const next: ProjectAnalysisParams = {
+      from: isoOffset(days),
+      to: new Date().toISOString().slice(0, 10),
+    };
+    if (engines.length) next.engine = engines.join(',');
+    if (profileGroup && profileGroup !== 'all') {
+      if (profileGroup.startsWith('profile:')) {
+        next.profile_id = profileGroup.slice('profile:'.length);
+      } else {
+        next.segment_id = profileGroup;
+      }
+    }
+    const dimension = searchParams.get('dimension');
+    const intent = searchParams.get('intent');
+    if (dimension) next.dimension = dimension;
+    if (intent) next.intent = intent;
+    return next;
+  }, [searchParams]);
 
   /* ── Live data hooks (gated on isLive — mock-only sessions skip) ── */
   const overviewQ = useBrandOverview(isLive ? liveProjectId : null, brandIdOverride);
@@ -76,15 +118,18 @@ export default function DashboardPage() {
     isLive ? liveProjectId : null,
     ['mention_rate', 'sov', 'sentiment', 'rank', 'citation'],
     brandIdOverride,
+    analysisFilters,
   );
   const competitorsQ = useCompetitorMetrics(
     isLive ? liveProjectId : null,
     brandIdOverride,
+    analysisFilters,
   );
   const competitorTrendsQ = useCompetitorTrends(
     isLive ? liveProjectId : null,
     'geo_score',
     brandIdOverride,
+    analysisFilters,
   );
   const diagnosticsQ = useDiagnostics(isLive ? liveProjectId : null, {
     status: 'open',
@@ -176,26 +221,41 @@ export default function DashboardPage() {
   // Augment backend primary with id/industryId so panel competitor
   // fallback by industry still works in live mode (if industry id matches
   // mock), without losing the live KPIs.
+  const liveEmptyPrimary = {
+    ...defaultPrimary,
+    id: String(activeProject?.primaryBrandId || liveProjectId || 'live-brand'),
+    name: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    nameZh: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    nameEn: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    panoScore: 0,
+    mentionRate: 0,
+    sentiment: 0,
+    ranking: 1,
+  };
   const primaryForPanel =
     adapted?.primary
       ? {
-          ...mockPrimary,
+          ...liveEmptyPrimary,
           ...adapted.primary,
           nameZh: adapted.primary.nameZh || adapted.primary.name,
           nameEn: adapted.primary.nameEn || adapted.primary.name,
         }
-      : mockPrimary;
+      : isLive
+        ? liveEmptyPrimary
+        : mockPrimary;
 
   // Live competitors come from /competitors/metrics; if backend returned
   // any rows, use them. Otherwise fall back to mock pinned competitors.
   const competitorsForPanel =
     adapted && adapted.competitors.length > 0
       ? adapted.competitors.map((c) => ({
-          ...mockPrimary,
+          ...liveEmptyPrimary,
           ...c,
           industryId: primaryForPanel.industryId,
         }))
-      : mockCompetitors;
+      : isLive
+        ? []
+        : mockCompetitors;
 
   const header = (
     <div className="flex items-center justify-between flex-wrap gap-3">
