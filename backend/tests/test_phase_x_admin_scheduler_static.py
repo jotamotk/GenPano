@@ -23,6 +23,7 @@ def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     assert "base.querySource = isNew ? 'pool' : 'custom';" in html
     assert "async loadScheduleEditorCandidates" in html
     assert "API_BASE + '/admin/query-pool/candidates?'" in html
+    assert "qp.set('all_runs', '1')" in html
     assert "qp.set('status', 'ready')" in html
     assert "selectedScheduleEditorCandidateRows()" in html
     assert "query_text: candidate.actualQueryText" in html

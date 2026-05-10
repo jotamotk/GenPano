@@ -639,7 +639,7 @@ def _list_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
 async def _fetch_candidates_paged(
     session: AsyncSession,
     *,
-    run_id: str,
+    run_id: str | None,
     status: str | None,
     segment_id: str | None,
     profile_id: str | None,
@@ -650,8 +650,11 @@ async def _fetch_candidates_paged(
     direction: str,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Paged candidate query with prompt + topic + segment + profile JOINs."""
-    where: list[str] = ["q.run_id = :run_id"]
-    params: dict[str, Any] = {"run_id": run_id}
+    where: list[str] = []
+    params: dict[str, Any] = {}
+    if run_id:
+        where.append("q.run_id = :run_id")
+        params["run_id"] = run_id
     query_candidate_cols = await _legacy_table_columns(session, "query_generation_candidates")
     query_metadata_available = "metadata_json" in query_candidate_cols
     prompt_cols = await _legacy_table_columns(session, "prompts")
@@ -723,7 +726,7 @@ async def _fetch_candidates_paged(
         params["like"] = f"%{query}%"
 
     # approx_total ignores cursor
-    where_clause = " AND ".join(where)
+    where_clause = " AND ".join(where) if where else "TRUE"
     count_sql = text(
         f"SELECT COUNT(*) AS cnt FROM query_generation_candidates q WHERE {where_clause}"
     )
@@ -820,6 +823,7 @@ async def list_candidates(
     profile_alias: str | None = Query(None, alias="profile"),
     brand_id: int | None = Query(None, ge=1),
     q: str | None = Query(None),
+    all_runs: bool = Query(False),
     limit: int = Query(100, ge=1, le=200),
     cursor: str | None = Query(None),
     direction: str = Query("next"),
@@ -845,9 +849,9 @@ async def list_candidates(
     except ValueError as exc:
         raise validation_error("cursor", "invalid_cursor") from exc
 
-    if not rid:
+    if not rid and not all_runs:
         rid = await _latest_run_id(session)
-    if not rid:
+    if not rid and not all_runs:
         return {
             "success": True,
             "rows": [],

@@ -300,6 +300,49 @@ async def test_list_candidates_filters_by_brand_id(client, admin_operator, run, 
 
 
 @pytest.mark.asyncio
+async def test_list_candidates_all_runs_skips_latest_run_default(
+    client, admin_operator, run, monkeypatch
+):
+    import sys
+
+    import app.api.admin.query_pool.router  # noqa: F401  ensure module loaded
+
+    qp_router = sys.modules["app.api.admin.query_pool.router"]
+    captured: dict[str, object] = {}
+
+    async def fake_fetch(session, *, run_id, brand_id, **_):
+        captured["run_id"] = run_id
+        captured["brand_id"] = brand_id
+        return (
+            [
+                {
+                    "id": "brand-candidate",
+                    "run_id": "older-run",
+                    "candidate_seq": 1,
+                    "prompt_id": "p-brand",
+                    "rendered_query": "brand scoped query",
+                    "metadata_json": {"brand_id": 42, "brand_name": "Acme"},
+                    "generation_method": "llm",
+                    "candidate_status": "candidate",
+                    "created_at": _now(),
+                    "llm_usage_json": {},
+                }
+            ],
+            1,
+            False,
+        )
+
+    monkeypatch.setattr(qp_router, "_fetch_candidates_paged", fake_fetch)
+
+    resp = await client.get("/api/admin/query-pool/candidates?brand_id=42&all_runs=1")
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert captured["run_id"] is None
+    assert captured["brand_id"] == 42
+
+
+@pytest.mark.asyncio
 async def test_list_candidates_next_cursor_when_has_more(client, admin_operator, run, monkeypatch):
     """has_more=True + next direction → next_cursor encodes last seq."""
     import sys
