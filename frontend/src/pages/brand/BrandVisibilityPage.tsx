@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { DonutChart, TrendChart, HorizontalBar } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -196,11 +196,10 @@ export default function BrandVisibilityPage() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-xl font-brand font-bold text-themed-primary">
-            {t('brand_visibility.page_title')}
+            <MetricLabel helpText={t('brand_visibility.page_subtitle', { brand: primary.name })}>
+              {t('brand_visibility.page_title')}
+            </MetricLabel>
           </h2>
-          <p className="text-xs text-themed-muted mt-0.5">
-            {t('brand_visibility.page_subtitle', { brand: primary.name })}
-          </p>
         </div>
         <Badge variant="accent" size="sm">{t('brand_visibility.primary_badge')}</Badge>
       </div>
@@ -215,6 +214,7 @@ export default function BrandVisibilityPage() {
           value={`${mentionRatePct}%`}
           delta={mentionDelta}
           deltaLabel="vs 7d"
+          helpText={t('dashboard.kpi.mention_rate_help')}
           sparkData={mentionSparkData}
           sparkColor="var(--color-accent)"
         />
@@ -223,6 +223,7 @@ export default function BrandVisibilityPage() {
           value={`${sovPct}%`}
           delta={sovDelta}
           deltaLabel="vs 7d"
+          helpText={t('dashboard.kpi.sov_help')}
           sparkData={sovSparkData}
           sparkColor="var(--color-chart-7)"
         />

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -219,11 +219,10 @@ export default function BrandSentimentPage() {
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-2xl font-brand font-bold text-themed-primary">
-            {t('brand_sentiment.page_title')}
+            <MetricLabel helpText={t('brand_sentiment.page_subtitle', { brand: primary.name })}>
+              {t('brand_sentiment.page_title')}
+            </MetricLabel>
           </h2>
-          <p className="text-sm text-themed-muted mt-0.5">
-            {t('brand_sentiment.page_subtitle', { brand: primary.name })}
-          </p>
         </div>
       </div>
 

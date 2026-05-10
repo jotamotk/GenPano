@@ -11,6 +11,7 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { rankDispersion } from '../../lib/industry/statistics';
+import { MetricLabel } from '../ui';
 
 const FIELDS = [
   { key: 'panoScore', label: '综合' },
@@ -77,10 +78,9 @@ export default function IndustryMultiMetricMatrix({
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[13px] font-medium text-themed-primary">
-            多指标交叉排名矩阵
-          </div>
-          <div className="text-[11px] text-themed-muted mt-0.5">
-            点击列头切换排序 · σ 高 = 综合稳但单项有短板
+            <MetricLabel helpText="按 PANO、SoV、引用和情感四个口径比较品牌排名。">
+              多指标交叉排名矩阵
+            </MetricLabel>
           </div>
         </div>
         <div className="text-[11px] text-themed-muted">Top {rows.length}</div>
@@ -97,14 +97,18 @@ export default function IndustryMultiMetricMatrix({
                   className="text-center font-normal pb-2 px-1 cursor-pointer hover:text-themed-primary"
                   onClick={() => setSortKey(f.key)}
                 >
-                  {f.label} {sortKey === f.key ? '↓' : ''}
+                  <MetricLabel helpText={`${f.label} 口径下的行业排名。`}>
+                    {f.label} {sortKey === f.key ? '↓' : ''}
+                  </MetricLabel>
                 </th>
               ))}
               <th
                 className="text-center font-normal pb-2 pl-1 cursor-pointer hover:text-themed-primary"
                 onClick={() => setSortKey('sigma')}
               >
-                σ 离散度 {sortKey === 'sigma' ? '↓' : ''}
+                <MetricLabel helpText="多个指标排名的标准差；数值越高说明单项表现越不均衡。">
+                  σ 离散度 {sortKey === 'sigma' ? '↓' : ''}
+                </MetricLabel>
               </th>
             </tr>
           </thead>

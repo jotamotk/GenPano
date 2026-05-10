@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, Button, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, Button, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { TrendChart, DonutChart } from '../../components/charts';
 import ContentGapPanel from '../../components/citation/ContentGapPanel';
 import PrTargetsPanel from '../../components/citation/PrTargetsPanel';
@@ -186,11 +186,10 @@ export default function BrandCitationsPage() {
       {/* Page header */}
       <header>
         <h2 className="text-2xl font-brand font-bold text-themed-primary">
-          {t('brand_citations.page_title')}
+          <MetricLabel helpText={t('brand_citations.page_subtitle', { brand: primary.name })}>
+            {t('brand_citations.page_title')}
+          </MetricLabel>
         </h2>
-        <p className="text-sm text-themed-muted mt-0.5">
-          {t('brand_citations.page_subtitle', { brand: primary.name })}
-        </p>
       </header>
 
       {/* Shared filter bar */}
@@ -452,11 +451,10 @@ function AuthoritySimulator({ baseline, presets }) {
       <Card className="p-4">
         <div className="mb-3">
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand_citations.simulator_presets') || '快速场景'}
+            <MetricLabel helpText={t('brand_citations.simulator_presets_hint')}>
+              {t('brand_citations.simulator_presets') || '快速场景'}
+            </MetricLabel>
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_citations.simulator_presets_hint') || '选择典型场景快速设置'}
-          </span>
         </div>
         <div className="flex flex-wrap gap-2">
           {presets.map((preset) => (
@@ -481,11 +479,10 @@ function AuthoritySimulator({ baseline, presets }) {
       <Card className="p-4">
         <div className="mb-3">
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('brand_citations.simulator_adjust_deltas') || '调整各层增长'}
+            <MetricLabel helpText={t('brand_citations.simulator_adjust_hint')}>
+              {t('brand_citations.simulator_adjust_deltas') || '调整各层增长'}
+            </MetricLabel>
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_citations.simulator_adjust_hint') || '拖动滑块调整各权威层的新增引用数'}
-          </span>
         </div>
         <div className="space-y-4">
           {tiers.map((tier, i) => (
@@ -522,19 +519,31 @@ function AuthoritySimulator({ baseline, presets }) {
       <Card className="p-4 border-l-4" style={{ borderLeftColor: panoStatus.color }}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div>
-            <p className="text-[10px] text-themed-muted mb-1">当前 PANO</p>
+            <p className="text-[10px] text-themed-muted mb-1">
+              <MetricLabel helpText={t('brand_citations.simulator_current_pano_help')}>
+                当前 PANO
+              </MetricLabel>
+            </p>
             <p className="text-3xl font-bold tabular-nums text-themed-primary leading-none">
               {baseline.currentPanoA}
             </p>
           </div>
           <div>
-            <p className="text-[10px] text-themed-muted mb-1">预估 PANO</p>
+            <p className="text-[10px] text-themed-muted mb-1">
+              <MetricLabel helpText={t('brand_citations.simulator_estimated_pano_help')}>
+                预估 PANO
+              </MetricLabel>
+            </p>
             <p className="text-3xl font-bold tabular-nums text-themed-primary leading-none">
               {calculated.newPanoA.toFixed(1)}
             </p>
           </div>
           <div>
-            <p className="text-[10px] text-themed-muted mb-1">变化</p>
+            <p className="text-[10px] text-themed-muted mb-1">
+              <MetricLabel helpText={t('brand_citations.simulator_delta_help')}>
+                变化
+              </MetricLabel>
+            </p>
             <p
               className="text-3xl font-bold tabular-nums leading-none"
               style={{ color: panoStatus.color }}

@@ -39,16 +39,19 @@ export default function InfoTooltip({
       tabIndex={0}
       role="button"
       aria-label={label}
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
     >
       <svg
-        width="12"
-        height="12"
+        width="14"
+        height="14"
         viewBox="0 0 12 12"
         fill="none"
         aria-hidden="true"
-        className="text-themed-muted hover:text-themed-primary transition-colors"
+        className="shrink-0 text-themed-secondary hover:text-themed-primary transition-colors"
       >
-        <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1" fill="none" />
+        <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.25" fill="none" />
         <circle cx="6" cy="3.4" r="0.7" fill="currentColor" />
         <rect x="5.4" y="5" width="1.2" height="4" rx="0.6" fill="currentColor" />
       </svg>

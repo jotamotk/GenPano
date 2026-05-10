@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   Radar, Legend, Tooltip,
 } from 'recharts';
-import { Card, Badge } from '../ui';
+import { Card, Badge, MetricLabel } from '../ui';
 
 /* ─────────────────────────────────────────────────────────────
    AuthorityRadarChart — PRD §4.2.7.D v1.1 竞品解构 (5 Tier 雷达)
@@ -32,8 +32,9 @@ export default function AuthorityRadarChart({
     <Card className={`p-5 ${className}`}>
       <div className="mb-4 flex items-baseline justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-themed-primary">{title}</h3>
-          <p className="text-xs text-themed-muted mt-0.5">{subtitle}</p>
+          <h3 className="text-sm font-semibold text-themed-primary">
+            <MetricLabel helpText={subtitle}>{title}</MetricLabel>
+          </h3>
         </div>
         {tier2Gap < 0 && (
           <Badge variant="orange" size="sm">

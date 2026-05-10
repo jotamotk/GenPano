@@ -18,6 +18,7 @@ import {
   useCompetitorMetrics,
 } from '../../hooks/useBrandMetrics'
 import { isLiveProjectId } from '../../hooks/useBrandOverview'
+import { MetricLabel } from '../ui'
 
 type Variant =
   | 'visibility'
@@ -31,6 +32,7 @@ interface Card {
   label: string
   value: string | number
   unit?: string
+  helpText?: string
 }
 
 function avg(arr: number[]): number {
@@ -84,20 +86,24 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     cards = [
       {
         label: '提及率 30d',
+        helpText: '基于品类通用问题计算，排除直接询问品牌的问题（non-brand 口径），取 30 天平均。',
         value: (avg(series('mention_rate')) * 100).toFixed(2),
         unit: '%',
       },
       {
         label: 'SoV 30d',
+        helpText: '已提到任一品牌的回答中，主品牌占有的声量份额，取 30 天平均。',
         value: (avg(series('sov')) * 100).toFixed(2),
         unit: '%',
       },
       {
         label: '平均排名 30d',
+        helpText: '主品牌在相关回答或品牌对比集合中的平均排名，数值越小越靠前。',
         value: avg(series('rank')).toFixed(1),
       },
       {
         label: '情感分 30d',
+        helpText: '主品牌相关回答的情感加权平均，范围通常为 [-1, 1]。',
         value: avg(series('sentiment')).toFixed(2),
       },
     ]
@@ -111,21 +117,25 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     cards = [
       {
         label: '正面占比',
+        helpText: '主品牌相关回答中被判定为正面情感的比例。',
         value: s.distribution.positive_pct.toFixed(1),
         unit: '%',
       },
       {
         label: '负面占比',
+        helpText: '主品牌相关回答中被判定为负面情感的比例。',
         value: s.distribution.negative_pct.toFixed(1),
         unit: '%',
       },
       {
         label: '中性占比',
+        helpText: '主品牌相关回答中被判定为中性情感的比例。',
         value: s.distribution.neutral_pct.toFixed(1),
         unit: '%',
       },
       {
         label: '平均情感分',
+        helpText: '主品牌相关回答的平均情感分，范围通常为 [-1, 1]。',
         value: s.distribution.avg_sentiment_score.toFixed(2),
       },
     ]
@@ -144,9 +154,10 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     cards = [
       { label: '已追踪', value: tracked },
       { label: '已忽略', value: t.items.filter((it) => it.state === 'ignored').length },
-      { label: '总提及', value: totalMentions },
+      { label: '总提及', helpText: '当前话题集合内主品牌被提到的总次数。', value: totalMentions },
       {
         label: '平均情感',
+        helpText: '当前话题集合内主品牌相关回答的平均情感分。',
         value: avg(avgSent).toFixed(2),
       },
     ]
@@ -166,10 +177,11 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     )[0]
     cards = [
       { label: '产品数', value: p.total },
-      { label: '总提及', value: totalMentions },
+      { label: '总提及', helpText: '当前产品集合被 AI 回答提到的总次数。', value: totalMentions },
       { label: 'Top 产品', value: topProduct ? topProduct.product_name : '—' },
       {
         label: '平均胜率',
+        helpText: '产品在相关比较或推荐场景中胜出的平均比例。',
         value: winRates.length ? (avg(winRates) * 100).toFixed(1) : '—',
         unit: winRates.length ? '%' : undefined,
       },
@@ -188,10 +200,12 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     cards = [
       {
         label: '主品牌 GEO 分',
+        helpText: '主品牌在当前竞品集合中的综合 AI 可见度得分。',
         value: myScore == null ? '—' : myScore.toFixed(1),
       },
       {
         label: 'Top 竞品 GEO',
+        helpText: '当前竞品集合中 GEO 分最高竞品的综合 AI 可见度得分。',
         value:
           topCompetitor?.avg_geo_score == null
             ? '—'
@@ -203,6 +217,7 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
       },
       {
         label: '差距',
+        helpText: 'Top 竞品 GEO 分与主品牌 GEO 分的差值。',
         value:
           myScore != null && topCompetitor?.avg_geo_score != null
             ? (topCompetitor.avg_geo_score - myScore).toFixed(1)
@@ -219,14 +234,15 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
     endpointLabel = `/v1/projects/${c.project_id.slice(0, 8)}…/citations`
     const topDomain = c.by_domain_top[0]
     cards = [
-      { label: '引用总数', value: c.total },
-      { label: '独立域名数', value: c.by_domain_top.length },
+      { label: '引用总数', helpText: '主品牌相关回答中被引用来源的总次数。', value: c.total },
+      { label: '独立域名数', helpText: '主品牌相关回答中出现过的唯一引用域名数量。', value: c.by_domain_top.length },
       {
         label: 'Top 域名',
         value: topDomain ? topDomain.domain : '—',
       },
       {
         label: 'Top 域名占比',
+        helpText: '引用次数最高域名在全部引用中的占比。',
         value:
           topDomain && c.total > 0
             ? ((topDomain.count / c.total) * 100).toFixed(1)
@@ -270,7 +286,9 @@ export default function BrandSubpageLiveBanner({ variant }: { variant: Variant }
             style={{ background: 'var(--color-bg-card, #fff)' }}
           >
             <div className="text-[11px] uppercase tracking-wider text-themed-muted mb-1">
-              {card.label}
+              <MetricLabel helpText={card.helpText}>
+                {card.label}
+              </MetricLabel>
             </div>
             <div className="flex items-baseline gap-1">
               <span className="text-xl font-bold tabular-nums text-themed-primary">

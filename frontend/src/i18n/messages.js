@@ -246,6 +246,8 @@ export const MESSAGES = {
       col_trend: '趋势',
       col_ranking: '排名',
       col_sov: 'SoV',
+      trend_help: '最近周期内该产品指标的变化方向和幅度。',
+      ranking_help: '当前产品在同品牌产品组合中的相对位置。',
       no_data: '暂无产品数据',
     },
     brand_citations: {
@@ -280,6 +282,9 @@ export const MESSAGES = {
       simulator_adjust_deltas: '调整各层增长',
       simulator_adjust_hint: '拖动滑块调整各权威层的新增引用数',
       simulator_cta_hint: '了解如何通过内容策略、外联 PR、平台合作等方式实现增长',
+      simulator_current_pano_help: '模拟前的当前 PANO A 基线。',
+      simulator_estimated_pano_help: '按当前 Tier 引用增量和置信度估算后的 PANO A。',
+      simulator_delta_help: '预估 PANO 与当前 PANO 的差值。',
     },
     product: {
       relation_competes: '竞品',
@@ -510,7 +515,8 @@ export const MESSAGES = {
       },
     },
     dashboard: {
-      page_subtitle: '市场宏观视角 · 主品牌 vs 竞品 vs 行业',
+      page_subtitle: '品牌总览',
+      page_help: '汇总主品牌表现、竞品对比和行业基线。',
       /* NOTE: 旧 `hierarchy_note` 已删除 (2026-04-16, PRD §4.6.0a / §6c) —
          原文是页面职责边界描述, 属开发者约束, 不得对用户呈现.
          页面边界改由 KPI 卡 + 告警条的 "查看品牌详情 →" 交互引导自然传达. */
@@ -719,13 +725,14 @@ export const MESSAGES = {
       breadcrumb_industry: '行业',
       breadcrumb_category: '品类',
       pano_card_title: '产品 PANO',
+      pano_help: '衡量该产品在 AI 回答中的可见度、情感、引用和权威表现的综合分。',
       sov_label: 'SoV',
       sentiment_label: '情感',
       citation_label: '引用',
       context_title: '推荐语境分类',
       context_subtitle: '该产品被 AI 提及时的典型场景 (Response 挖掘)',
       relations_title: '产品关系视图',
-      relations_subtitle: 'MVP: 文字列表, Phase 2: AntV G6 force simulation',
+      relations_subtitle: '产品之间的竞争、替代、搭配、升级和平替关系。',
       relations_empty: '暂无关系数据',
       prompt_hits_title: 'Prompt 命中 Top 20',
       prompt_hits_subtitle: '按命中次数降序',
@@ -1286,6 +1293,8 @@ export const MESSAGES = {
       col_trend: 'Trend',
       col_ranking: 'Ranking',
       col_sov: 'SoV',
+      trend_help: 'Direction and magnitude of this product metric over the latest period.',
+      ranking_help: 'Relative position within the current brand product portfolio.',
       no_data: 'No product data',
     },
     brand_citations: {
@@ -1320,6 +1329,9 @@ export const MESSAGES = {
       simulator_adjust_deltas: 'Adjust tier deltas',
       simulator_adjust_hint: 'Drag sliders to set new citation gains per tier',
       simulator_cta_hint: 'Learn how to grow via content strategy, PR outreach, and platform partnerships',
+      simulator_current_pano_help: 'Current PANO A baseline before simulation.',
+      simulator_estimated_pano_help: 'Estimated PANO A after applying tier citation deltas and confidence.',
+      simulator_delta_help: 'Difference between estimated PANO and current PANO.',
     },
     product: {
       relation_competes: 'Competes',
@@ -1551,7 +1563,8 @@ export const MESSAGES = {
       },
     },
     dashboard: {
-      page_subtitle: 'Market overview · me vs competitors vs industry',
+      page_subtitle: 'Brand overview',
+      page_help: 'Summarizes primary-brand performance, competitor comparison, and industry baselines.',
       /* NOTE: legacy `hierarchy_note` removed (2026-04-16, PRD §4.6.0a / §6c) —
          "the dashboard only answers X / deep-dives live in Y" is a developer-facing
          scope note, not user copy. Page boundaries are now expressed via the
@@ -1764,13 +1777,14 @@ export const MESSAGES = {
       breadcrumb_industry: 'Industry',
       breadcrumb_category: 'Category',
       pano_card_title: 'Product PANO',
+      pano_help: 'Composite score for this product across AI visibility, sentiment, citations, and authority.',
       sov_label: 'SoV',
       sentiment_label: 'Sentiment',
       citation_label: 'Citations',
       context_title: 'Recommendation context',
       context_subtitle: 'Typical scenarios where this product is mentioned (from Response mining)',
       relations_title: 'Product relations',
-      relations_subtitle: 'MVP: list view, Phase 2: AntV G6 force simulation',
+      relations_subtitle: 'Competition, substitute, pairing, upgrade, and budget-alternative relationships between products.',
       relations_empty: 'No relation data',
       prompt_hits_title: 'Prompt hits Top 20',
       prompt_hits_subtitle: 'Sorted by hit count, descending',

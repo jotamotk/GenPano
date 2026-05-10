@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge, InfoTooltip } from '../../components/ui';
+import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
 import { TrendChart } from '../../components/charts';
 import BrandTopicHeatmap from '../../components/charts/BrandTopicHeatmap';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
@@ -233,11 +233,10 @@ export default function BrandCompetitorsPage() {
       {/* Page header */}
       <div>
         <h2 className="text-xl font-brand font-bold text-themed-primary">
-          {t('brand_competitors.page_title')}
+          <MetricLabel helpText={t('brand_competitors.page_subtitle', { brand: primary.name })}>
+            {t('brand_competitors.page_title')}
+          </MetricLabel>
         </h2>
-        <p className="text-xs text-themed-muted mt-0.5">
-          {t('brand_competitors.page_subtitle', { brand: primary.name })}
-        </p>
       </div>
 
       {/* Shared filter bar */}

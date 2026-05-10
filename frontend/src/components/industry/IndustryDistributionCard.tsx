@@ -18,6 +18,7 @@
  * Harness §G.3: 禁 inline percentile 计算, 使用 lib/industry/statistics.js
  */
 import React from 'react';
+import { MetricLabel } from '../ui';
 
 export default function IndustryDistributionCard({
   label,
@@ -31,7 +32,9 @@ export default function IndustryDistributionCard({
   if (!stats) {
     return (
       <div className="t-card p-3 space-y-2">
-        <div className="text-[13px] font-medium text-themed-primary">{label}</div>
+        <div className="text-[13px] font-medium text-themed-primary">
+          <MetricLabel helpText="该指标在当前行业品牌样本中的分布。">{label}</MetricLabel>
+        </div>
         <div className="text-xs text-themed-muted">暂无样本</div>
       </div>
     );
@@ -70,10 +73,16 @@ export default function IndustryDistributionCard({
     <div className="t-card p-3 space-y-3">
       {/* Header: label + P50 text */}
       <div className="flex items-baseline justify-between">
-        <div className="text-[13px] font-medium text-themed-primary">{label}</div>
+        <div className="text-[13px] font-medium text-themed-primary">
+          <MetricLabel helpText="该指标在当前行业品牌样本中的 IQR 分布；三角标记为主品牌位置。">
+            {label}
+          </MetricLabel>
+        </div>
         <div className="text-xs text-themed-muted tabular-nums">
-          中位数 {formatValue(p50)}
-          {unit}
+          <MetricLabel helpText="行业样本品牌在该指标上的中位数。">
+            中位数 {formatValue(p50)}
+            {unit}
+          </MetricLabel>
         </div>
       </div>
 

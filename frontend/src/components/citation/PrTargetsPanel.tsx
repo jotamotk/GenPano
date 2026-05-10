@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Card, Badge, Button } from '../ui';
+import { Card, Badge, Button, MetricLabel } from '../ui';
 
 /* ─────────────────────────────────────────────────────────────
    PrTargetsPanel — PRD §4.2.7.C 外联 PR 候选清单 + Tier2 矩阵 + KOL 评分卡
@@ -41,11 +41,10 @@ function PrCandidatesTable({ targets }) {
       <div className="px-5 py-3 border-b border-themed-subtle flex items-center justify-between flex-wrap gap-3">
         <div>
           <h3 className="text-sm font-semibold text-themed-primary">
-            值得考察的外联域名 Top {rows.length}
+            <MetricLabel helpText='按"权威 × 竞品覆盖 × 近 30 天趋势"打分，用于发稿、合作或授权的投入决策。'>
+              值得考察的外联域名 Top {rows.length}
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-0.5">
-            按"权威 × 竞品覆盖 × 近 30 天趋势"打分 · 用于发稿/合作/授权的投入决策
-          </p>
         </div>
         <label className="flex items-center gap-2 text-xs text-themed-muted cursor-pointer">
           <input
@@ -64,10 +63,18 @@ function PrCandidatesTable({ targets }) {
             <tr>
               <th className="text-left py-2.5 px-5 text-xs font-medium text-themed-muted">域名</th>
               <th className="text-left py-2.5 px-4 text-xs font-medium text-themed-muted">层级</th>
-              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">竞品覆盖</th>
-              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">30 天被引</th>
-              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">趋势</th>
-              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">PR 分</th>
+              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                <MetricLabel helpText="该域名近周期覆盖的竞品数量。">竞品覆盖</MetricLabel>
+              </th>
+              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                <MetricLabel helpText="近 30 天该域名在 AI 回答中被引用的次数。">30 天被引</MetricLabel>
+              </th>
+              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                <MetricLabel helpText="近 30 天引用量相对前期的变化幅度。">趋势</MetricLabel>
+              </th>
+              <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                <MetricLabel helpText="综合权威层级、竞品覆盖、趋势和自身覆盖状态计算的 PR 候选优先级。">PR 分</MetricLabel>
+              </th>
               <th className="text-left py-2.5 px-4 text-xs font-medium text-themed-muted">你当前</th>
             </tr>
           </thead>
@@ -164,11 +171,10 @@ function Tier2CoverageMatrix({ matrix }) {
     <Card className="p-5">
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-themed-primary">
-          Tier 2 权威媒体覆盖矩阵
+          <MetricLabel helpText="对比主品牌与竞品在 Tier 2 权威媒体域名上的引用覆盖。">
+            Tier 2 权威媒体覆盖矩阵
+          </MetricLabel>
         </h3>
-        <p className="text-xs text-themed-muted mt-0.5">
-          同样是 Tier 2, 竞品都上了哪几家, 你缺哪几家
-        </p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -224,11 +230,10 @@ function KolScorecards({ kols }) {
     <Card className="p-5">
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-themed-primary">
-          KOL 多样性评分
+          <MetricLabel helpText="Shannon 多样性 = 该 KOL 近 90 天提到的品牌分散程度；低多样性可能表示竞品独家合作。">
+            KOL 多样性评分
+          </MetricLabel>
         </h3>
-        <p className="text-xs text-themed-muted mt-0.5">
-          Shannon 多样性 = 该 KOL 近 90 天提到的品牌分散程度 · 低多样性可能是竞品独家合作
-        </p>
       </div>
       <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         {kols.map((k) => {

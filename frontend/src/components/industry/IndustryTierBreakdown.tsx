@@ -5,6 +5,7 @@
  * 卡片高度按档内合计 SoV 等比; Tier 1 大字高亮, Tier 4 浅灰底.
  */
 import React, { useMemo } from 'react';
+import { MetricLabel } from '../ui';
 
 const TIERS = [
   { key: 't1', label: 'Top 3 · S 级头部', range: [1, 3] },
@@ -49,10 +50,9 @@ export default function IndustryTierBreakdown({ brands = [] }) {
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[13px] font-medium text-themed-primary">
-            Tier 分层 Breakdown
-          </div>
-          <div className="text-[11px] text-themed-muted mt-0.5">
-            卡片高度反映档内合计 SoV, 看 "头部吃多少 / 腰部有多厚"
+            <MetricLabel helpText="按 PANO 排名将行业品牌分为头部、腰部、挑战者和尾部。">
+              Tier 分层 Breakdown
+            </MetricLabel>
           </div>
         </div>
         <div className="text-[11px] text-themed-muted tabular-nums">
@@ -107,8 +107,12 @@ export default function IndustryTierBreakdown({ brands = [] }) {
                 className="text-[11px] space-y-0.5 mt-2"
                 style={{ color: fg, opacity: 0.85 }}
               >
-                <div>PANO 均值 {t.avgPano}</div>
-                <div>合计 SoV {t.totalSov}%</div>
+                <div>
+                  <MetricLabel helpText="该分层内品牌的 PANO Score 平均值。">PANO 均值</MetricLabel> {t.avgPano}
+                </div>
+                <div>
+                  <MetricLabel helpText="该分层内品牌的 SoV 合计。">合计 SoV</MetricLabel> {t.totalSov}%
+                </div>
                 {t.leaders.length > 0 && (
                   <div className="truncate">{t.leaders.join(' / ')}</div>
                 )}

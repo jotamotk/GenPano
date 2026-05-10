@@ -5,6 +5,7 @@
  * 近 30d Response 总数. 作为行业总览的"门面"告诉用户"这个行业多大"。
  */
 import React from 'react';
+import { MetricLabel } from '../ui';
 
 function formatCompact(n) {
   if (n == null) return '—';
@@ -31,11 +32,10 @@ export default function IndustryHero({
     <div className="flex items-baseline justify-between gap-4 pb-4 border-b border-themed-subtle">
       <div>
         <h1 className="text-xl font-semibold text-themed-primary">
-          {industryName || '行业总览'}
+          <MetricLabel helpText="覆盖行业内品牌分布、集团版图和领导者识别。">
+            {industryName || '行业总览'}
+          </MetricLabel>
         </h1>
-        <p className="text-xs text-themed-muted mt-1">
-          行业宏观横向视角 · 品牌分布 · 集团版图 · 领导者识别
-        </p>
       </div>
       <div className="flex gap-6">
         {stats.map((s) => (
@@ -44,7 +44,11 @@ export default function IndustryHero({
               {s.compact ? formatCompact(s.value) : (s.value ?? '—')}
               {s.suffix}
             </div>
-            <div className="text-[11px] text-themed-muted mt-0.5">{s.label}</div>
+            <div className="text-[11px] text-themed-muted mt-0.5">
+              <MetricLabel helpText={`${s.label}，用于描述当前行业样本覆盖规模。`}>
+                {s.label}
+              </MetricLabel>
+            </div>
           </div>
         ))}
       </div>

@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { Card } from '../ui';
+import { Card, MetricLabel } from '../ui';
 
 /* ─────────────────────────────────────────────────────────────
    AuthorityShareTimeSeries — PRD §4.2.7.A 归因方法时序堆叠图
@@ -43,15 +43,18 @@ export default function AuthorityShareTimeSeries({
         <div className="mb-4 flex items-baseline justify-between gap-4 flex-wrap">
           <div>
             {title && (
-              <h3 className="text-sm font-semibold text-themed-primary">{title}</h3>
-            )}
-            {subtitle && (
-              <p className="text-xs text-themed-muted mt-1">{subtitle}</p>
+              <h3 className="text-sm font-semibold text-themed-primary">
+                <MetricLabel helpText={subtitle}>{title}</MetricLabel>
+              </h3>
             )}
           </div>
           {data.length >= 2 && (
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-themed-muted">官方域占比变化</span>
+              <span className="text-themed-muted">
+                <MetricLabel helpText="当前周期末与周期初的官方域归因占比差值。">
+                  官方域占比变化
+                </MetricLabel>
+              </span>
               <span
                 className="font-semibold tabular-nums"
                 style={{

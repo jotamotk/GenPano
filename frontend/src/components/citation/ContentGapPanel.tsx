@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
 } from 'recharts';
-import { Card, Badge } from '../ui';
+import { Card, Badge, MetricLabel } from '../ui';
 
 /* ─────────────────────────────────────────────────────────────
    ContentGapPanel — PRD §4.2.7.B 内容策略: 反向 "被提及 − 被归因" 缺口
@@ -39,14 +39,15 @@ export default function ContentGapPanel({
         <div className="px-5 py-3 border-b border-themed-subtle flex items-baseline justify-between">
           <div>
             <h3 className="text-sm font-semibold text-themed-primary">
-              内容缺口 Top {topN.length}
+              <MetricLabel helpText="这些话题里主品牌被提到很多，但 AI 很少把它们归因到官方或合作内容上。">
+                内容缺口 Top {topN.length}
+              </MetricLabel>
             </h3>
-            <p className="text-xs text-themed-muted mt-0.5">
-              这些话题里主品牌被提到很多, 但 AI 很少把它们归因到官方或合作内容上
-            </p>
           </div>
           <Badge variant="default" size="sm">
-            缺口占比 = (被提及 − 被归因) / 被提及
+            <MetricLabel helpText="缺口占比 = (被提及 - 被归因) / 被提及">
+              缺口占比
+            </MetricLabel>
           </Badge>
         </div>
         <div className="overflow-x-auto">
@@ -55,10 +56,18 @@ export default function ContentGapPanel({
               <tr>
                 <th className="text-left py-2.5 px-5 text-xs font-medium text-themed-muted">话题</th>
                 <th className="text-left py-2.5 px-4 text-xs font-medium text-themed-muted">品类路径</th>
-                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">相关回答数</th>
-                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">被提及</th>
-                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">被归因</th>
-                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">缺口占比</th>
+                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                  <MetricLabel helpText="该话题下进入分析范围的 AI 回答数量。">相关回答数</MetricLabel>
+                </th>
+                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                  <MetricLabel helpText="相关回答中提到主品牌的次数。">被提及</MetricLabel>
+                </th>
+                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                  <MetricLabel helpText="相关回答中把内容或引用归因到主品牌官方或合作资产的次数。">被归因</MetricLabel>
+                </th>
+                <th className="text-right py-2.5 px-4 text-xs font-medium text-themed-muted">
+                  <MetricLabel helpText="缺口占比 = (被提及 - 被归因) / 被提及。">缺口占比</MetricLabel>
+                </th>
                 <th className="text-left py-2.5 px-4 text-xs font-medium text-themed-muted">Top 竞品</th>
                 <th className="text-left py-2.5 px-4 text-xs font-medium text-themed-muted">主要页面类型</th>
               </tr>
@@ -110,11 +119,10 @@ export default function ContentGapPanel({
         <div className="mb-4 flex items-baseline justify-between gap-4 flex-wrap">
           <div>
             <h3 className="text-sm font-semibold text-themed-primary">
-              页面类型分布对比
+              <MetricLabel helpText="AI 给出的引用链接落在什么类型的页面，用于比较主品牌、行业中位和 Top 竞品的内容资产结构。">
+                页面类型分布对比
+              </MetricLabel>
             </h3>
-            <p className="text-xs text-themed-muted mt-0.5">
-              AI 给出的引用链接落在什么类型的页面 — 看看你卡在哪一类, 竞品又靠哪一类
-            </p>
           </div>
         </div>
         <ResponsiveContainer width="100%" height={260}>

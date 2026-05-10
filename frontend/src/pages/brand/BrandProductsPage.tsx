@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
-import { Card, Badge, MockDataBadge } from '../../components/ui';
+import { Card, Badge, MockDataBadge, MetricLabel } from '../../components/ui';
 import { MiniSparkline, CompetitorQuadrantChart } from '../../components/charts';
 import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilterBar';
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
@@ -145,12 +145,11 @@ export default function BrandProductsPage() {
       {/* Page title */}
       <div>
         <h2 className="text-xl font-brand font-bold text-themed-primary flex items-center gap-2">
-          {t('brand_products.page_title', '产品组合')}
+          <MetricLabel helpText={t('brand_products.page_subtitle', { brand: primary.name, count: products.length })}>
+            {t('brand_products.page_title', '产品组合')}
+          </MetricLabel>
           {productsIsMock && <MockDataBadge />}
         </h2>
-        <p className="text-xs text-themed-muted mt-0.5">
-          {t('brand_products.page_subtitle', { brand: primary.name, count: products.length })}
-        </p>
       </div>
 
       {/* Filter bar */}
@@ -160,11 +159,10 @@ export default function BrandProductsPage() {
       <Card className="p-3">
         <div className="flex items-baseline justify-between mb-1">
           <h3 className="text-[13px] font-semibold text-themed-primary">
-            {t('brand_products.section_bcg', 'BCG 矩阵')}
+            <MetricLabel helpText={t('brand_products.section_bcg_hint')}>
+              {t('brand_products.section_bcg', 'BCG 矩阵')}
+            </MetricLabel>
           </h3>
-          <span className="text-[11px] text-themed-muted">
-            {t('brand_products.section_bcg_hint', '产品在提及率 × 增长趋势中的位置')}
-          </span>
         </div>
         {bcgData.length > 0 ? (
           <div className="mt-2">
@@ -199,11 +197,10 @@ export default function BrandProductsPage() {
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-2">
             <h3 className="text-[13px] font-semibold text-themed-primary">
-              {t('brand_products.section_trends', '产品趋势')}
+              <MetricLabel helpText={t('brand_products.section_trends_hint')}>
+                {t('brand_products.section_trends', '产品趋势')}
+              </MetricLabel>
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_products.section_trends_hint', '各产品 SoV 和情感表现')}
-            </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {products.slice(0, 9).map((p) => {
@@ -240,7 +237,9 @@ export default function BrandProductsPage() {
                   )}
                   <div className="flex items-center justify-between text-[10px] text-themed-muted">
                     <span>
-                      {t('brand_products.sentiment_label', '情感')}: {Math.round((p.sentiment || 0) * 100)}%
+                      <MetricLabel helpText={t('dashboard.kpi.sentiment_help')}>
+                        {t('brand_products.sentiment_label', '情感')}
+                      </MetricLabel>: {Math.round((p.sentiment || 0) * 100)}%
                     </span>
                     <span className={p.trend >= 0 ? 'text-themed-success' : 'text-themed-danger'}>
                       {p.trend >= 0 ? '▲' : '▼'} {Math.abs(Math.round(p.trend * 100))}%
@@ -272,19 +271,29 @@ export default function BrandProductsPage() {
                     {t('brand_products.col_category', '品类')}
                   </th>
                   <th className="py-2 px-3 text-right text-[10px] uppercase tracking-wider text-themed-muted">
-                    {t('brand_products.col_mention', '提及率')}
+                    <MetricLabel helpText={t('dashboard.kpi.mention_rate_help')}>
+                      {t('brand_products.col_mention', '提及率')}
+                    </MetricLabel>
                   </th>
                   <th className="py-2 px-3 text-right text-[10px] uppercase tracking-wider text-themed-muted">
-                    {t('brand_products.col_sov', 'SoV')}
+                    <MetricLabel helpText={t('dashboard.kpi.sov_help')}>
+                      {t('brand_products.col_sov', 'SoV')}
+                    </MetricLabel>
                   </th>
                   <th className="py-2 px-3 text-right text-[10px] uppercase tracking-wider text-themed-muted">
-                    {t('brand_products.col_sentiment', '情感')}
+                    <MetricLabel helpText={t('dashboard.kpi.sentiment_help')}>
+                      {t('brand_products.col_sentiment', '情感')}
+                    </MetricLabel>
                   </th>
                   <th className="py-2 px-3 text-right text-[10px] uppercase tracking-wider text-themed-muted">
-                    {t('brand_products.col_trend', '趋势')}
+                    <MetricLabel helpText={t('brand_products.trend_help')}>
+                      {t('brand_products.col_trend', '趋势')}
+                    </MetricLabel>
                   </th>
                   <th className="py-2 px-3 text-right text-[10px] uppercase tracking-wider text-themed-muted">
-                    {t('brand_products.col_ranking', '排名')}
+                    <MetricLabel helpText={t('brand_products.ranking_help')}>
+                      {t('brand_products.col_ranking', '排名')}
+                    </MetricLabel>
                   </th>
                 </tr>
               </thead>
@@ -333,12 +342,11 @@ export default function BrandProductsPage() {
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-2">
             <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
-              {t('brand_products.section_relations', '产品关系')}
+              <MetricLabel helpText={t('brand_products.section_relations_hint')}>
+                {t('brand_products.section_relations', '产品关系')}
+              </MetricLabel>
               {relationsIsMock && <MockDataBadge />}
             </h3>
-            <span className="text-[11px] text-themed-muted">
-              {t('brand_products.section_relations_hint', '产品间的竞争、替代、搭配关系')}
-            </span>
           </div>
           <div className="space-y-1.5">
             {productRelations.map((rel, idx) => {
