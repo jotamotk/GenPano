@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
 from app.admin.queries import db as queries_db
+from app.admin.queries.analytics import fetch_query_analytics
 from app.admin.queries.celery_dispatch import dispatch_execute_query, dispatch_many
 from app.admin.queries.lib import (
     QueryValidationError,
@@ -52,6 +53,29 @@ async def stats(
     session: AsyncSession = _DependsDb,
 ) -> Any:
     return await queries_db.fetch_status_stats(session)
+
+
+@router.get("/admin/queries/analytics", response_model=None)
+async def query_analytics(
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+    brand_id: int | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    engine: str | None = Query(None),
+) -> Any:
+    """Brand query analytics — aggregated metrics over queries JOIN
+    llm_responses JOIN response_analyses JOIN brand_mentions JOIN prompts
+    JOIN topics. Powers the TopicsPage QueryActivityCard. Default window:
+    last 30 days. Empty shape (zeros + empty arrays) when brand_id is
+    missing or upstream tables are unavailable."""
+    return await fetch_query_analytics(
+        session,
+        brand_id=brand_id,
+        date_from=date_from,
+        date_to=date_to,
+        engine=engine,
+    )
 
 
 @router.get("/queries", response_model=None)
@@ -125,6 +149,7 @@ async def create_query(
         target_llm=normalized["target_llm"],
         query_text=normalized["query_text"],
         brand_id=normalized["brand_id"],
+        prompt_id=normalized.get("prompt_id"),
     )
     if query_id is None:
         return JSONResponse(
