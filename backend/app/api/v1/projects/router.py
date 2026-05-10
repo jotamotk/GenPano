@@ -216,10 +216,17 @@ async def project_overview(
     project_id: str,
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
+    brand_id: int | None = Query(None),
 ) -> BrandOverviewOut:
-    """Brand Overview composite — KPI cards + 30d trends + top prompts."""
+    """Brand Overview composite — KPI cards + 30d trends + top prompts.
+
+    Optional `brand_id` overrides the project's primary brand for the
+    duration of this request — feeds the dashboard's brand picker
+    (cross-industry brand viewing). Project ownership is still
+    enforced; the override only swaps which brand's metrics are pulled.
+    """
     project = await service.get_project_for_user(session, user, project_id)
-    return await get_brand_overview(session, project)
+    return await get_brand_overview(session, project, brand_id_override=brand_id)
 
 
 # ── Phase 2.2 ────────────────────────────────────────────────────
@@ -234,7 +241,10 @@ async def project_metrics(
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
     engine: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> MetricsOut:
+    """Optional `brand_id` overrides the project's primary brand —
+    same semantics as `/overview` (dashboard brand picker)."""
     project = await service.get_project_for_user(session, user, project_id)
     return await get_metrics(
         session,
@@ -243,6 +253,7 @@ async def project_metrics(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         engines=_parse_csv(engine),
+        brand_id_override=brand_id,
     )
 
 

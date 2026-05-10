@@ -12,10 +12,11 @@ import { isLiveProjectId } from './useBrandOverview'
 export function useBrandMetrics(
   projectId: string | null | undefined,
   series: string[] = ['mention_rate', 'sov', 'rank', 'sentiment'],
+  brandIdOverride?: number | null,
 ) {
   return useQuery({
-    queryKey: ['brand', 'metrics', projectId, series.join(',')],
-    queryFn: () => brandMetricsApi.metrics(projectId as string, series),
+    queryKey: ['brand', 'metrics', projectId, series.join(','), brandIdOverride ?? null],
+    queryFn: () => brandMetricsApi.metrics(projectId as string, series, brandIdOverride),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,

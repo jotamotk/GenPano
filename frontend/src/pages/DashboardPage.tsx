@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
@@ -49,6 +49,7 @@ export default function DashboardPage() {
   const { t } = useLocale();
   const { projects, activeProject } = useProject();
   const { data: liveProjects } = useProjects();
+  const [searchParams] = useSearchParams();
 
   /* ── PRD §4.1.1d E1: Zero-Project early-return (MANDATORY) ──
      Skip the empty state when the user has at least one real project
@@ -61,15 +62,21 @@ export default function DashboardPage() {
     liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
   const isLive = isLiveProjectId(liveProjectId);
 
+  /* ?brandId=X URL param lets the BrandPicker (sidebar) view this
+     dashboard for a different brand than the project's primary, e.g.
+     viewing 雅诗兰黛's panorama from a sports-shoes project. The
+     backend resolves the override against the same project context. */
+  const brandIdParam = searchParams.get('brandId');
+  const brandIdOverride =
+    brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null;
+
   /* ── Live data hooks (gated on isLive — mock-only sessions skip) ── */
-  const overviewQ = useBrandOverview(isLive ? liveProjectId : null);
-  const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
-    'mention_rate',
-    'sov',
-    'sentiment',
-    'rank',
-    'citation',
-  ]);
+  const overviewQ = useBrandOverview(isLive ? liveProjectId : null, brandIdOverride);
+  const metricsQ = useBrandMetrics(
+    isLive ? liveProjectId : null,
+    ['mention_rate', 'sov', 'sentiment', 'rank', 'citation'],
+    brandIdOverride,
+  );
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
   const competitorTrendsQ = useCompetitorTrends(
     isLive ? liveProjectId : null,

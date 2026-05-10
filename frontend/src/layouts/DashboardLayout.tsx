@@ -7,6 +7,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useUnreadAlertCount } from '../hooks/useAlerts';
 import UserMenu from '../components/UserMenu';
+import BrandPicker from '../components/sidebar/BrandPicker';
 
 /* Banner shown when the user is signed in but has zero live Project rows.
    Triggered after they click Skip on /onboarding — invites them back to
@@ -336,28 +337,11 @@ function BrandSidebar({ t, onNavigate, currentPath, activeProject, search }) {
 
   return (
     <>
-      {/* BrandPicker slot — real Radix Popover implemented in T2'.
-          For now render current brand label (from Project) with chevron affordance. */}
+      {/* BrandPicker — popover lets the user switch projects (each = primary
+          brand), pick a competitor (URL ?brandId override), or search any
+          brand across industries. See `components/sidebar/BrandPicker.tsx`. */}
       <div className="px-4 pt-5 pb-3 border-b border-themed-card">
-        <button
-          type="button"
-          className="w-full flex items-center justify-between h-10 pl-2 pr-3 rounded-pill bg-themed-subtle hover:border-themed-strong transition-colors"
-          style={{
-            background: 'var(--color-bg-subtle-2)',
-            border: '0.5px solid var(--color-accent-alpha-27)',
-          }}
-          aria-label={t('brand_picker.aria')}
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 bg-themed-gradient-accent">
-              {activeProject?.primaryBrandName?.[0] || activeProject?.name?.[0] || 'B'}
-            </div>
-            <span className="text-sm font-brand font-semibold text-themed-primary truncate">
-              {activeProject?.primaryBrandName || activeProject?.name || t('brand_picker.empty')}
-            </span>
-          </div>
-          <span className="text-themed-muted shrink-0">{icons.chevron}</span>
-        </button>
+        <BrandPicker ariaLabel={t('brand_picker.aria')} />
       </div>
 
       {/* Nav */}

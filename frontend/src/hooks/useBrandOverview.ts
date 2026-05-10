@@ -16,10 +16,13 @@ export function isLiveProjectId(id: string | null | undefined): boolean {
   return !!id && UUID_RE.test(id)
 }
 
-export function useBrandOverview(projectId: string | null | undefined) {
+export function useBrandOverview(
+  projectId: string | null | undefined,
+  brandIdOverride?: number | null,
+) {
   return useQuery({
-    queryKey: ['brand', 'overview', projectId],
-    queryFn: () => brandOverviewApi.get(projectId as string),
+    queryKey: ['brand', 'overview', projectId, brandIdOverride ?? null],
+    queryFn: () => brandOverviewApi.get(projectId as string, brandIdOverride),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
     retry: false,

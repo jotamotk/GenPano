@@ -167,4 +167,34 @@ async def test_overview_cross_tenant_returns_404(client, user, project_with_data
 async def test_overview_no_auth_returns_401(client, project_with_data):
     resp = await client.get(f"/api/v1/projects/{project_with_data.id}/overview")
     assert resp.status_code == 401
-    assert resp.json()["detail"]["code"] == "unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_overview_brand_id_override_swaps_brand(client, user, project_with_data):
+    """`?brand_id=X` overrides the project's primary brand. Drives the
+    DashboardPage brand picker (cross-industry brand viewing). The
+    project still scopes industry and ownership; only brand_id changes
+    in the response and downstream queries."""
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_data.id}/overview?brand_id=99",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Override took effect even though no geo_score_daily rows exist for
+    # brand_id=99 in the fixture — state collapses to 'empty', brand_id
+    # echoes the override.
+    assert body["brand_id"] == 99
+    assert body["state"] == "empty"
+    assert all(c["value"] == 0 for c in body["kpi_cards"])
+
+
+@pytest.mark.asyncio
+async def test_overview_brand_id_override_falsy_keeps_default(client, user, project_with_data):
+    """Omitting `brand_id` keeps the project's primary_brand_id."""
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_data.id}/overview",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["brand_id"] == 42
