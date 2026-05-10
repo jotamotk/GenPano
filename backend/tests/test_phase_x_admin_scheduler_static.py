@@ -39,8 +39,9 @@ def test_scheduler_schedule_list_has_brand_filter_and_pagination() -> None:
 def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
     html = _admin_html()
     section = html[
-        html.index("async manualTriggerScheduler")
-        : html.index("async toggleSchedulerMode", html.index("async manualTriggerScheduler"))
+        html.index("async manualTriggerScheduler") : html.index(
+            "async toggleSchedulerMode", html.index("async manualTriggerScheduler")
+        )
     ]
 
     assert "payload.brand_id = parseInt(this.scheduleFilterBrandId)" in section
@@ -50,8 +51,9 @@ def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
 def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     html = _admin_html()
     pool_section = html[
-        html.index("if (e.querySource === 'pool' && !e.id)")
-        : html.index("if (!e.id)", html.index("if (e.querySource === 'pool' && !e.id)"))
+        html.index("if (e.querySource === 'pool' && !e.id)") : html.index(
+            "if (!e.id)", html.index("if (e.querySource === 'pool' && !e.id)")
+        )
     ]
 
     assert "base.querySource = isNew ? 'pool' : 'custom';" in html

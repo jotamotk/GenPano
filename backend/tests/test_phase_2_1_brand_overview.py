@@ -248,10 +248,10 @@ async def test_overview_uses_brand_mentions_when_daily_rollups_missing(client, u
 
 
 class _FakeNestedTransaction:
-    def __init__(self, session: "_FakeTopPromptsSession") -> None:
+    def __init__(self, session: _FakeTopPromptsSession) -> None:
         self._session = session
 
-    async def __aenter__(self) -> "_FakeNestedTransaction":
+    async def __aenter__(self) -> _FakeNestedTransaction:
         self._session.savepoints += 1
         self._session.in_savepoint = True
         return self

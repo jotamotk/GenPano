@@ -474,8 +474,7 @@ async def list_query_schedules(
         """
     )
     rows = [
-        _row_to_schedule(dict(r))
-        for r in (await session.execute(sql, params)).mappings().all()
+        _row_to_schedule(dict(r)) for r in (await session.execute(sql, params)).mappings().all()
     ]
     if not is_paginated:
         return rows

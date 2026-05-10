@@ -194,7 +194,13 @@ async def legacy_table_columns(session: AsyncSession, name: str) -> set[str]:
         return set()
 
 
-def _select_col(cols: set[str], alias: str, column: str, out_name: str, default: str = "NULL") -> str:
+def _select_col(
+    cols: set[str],
+    alias: str,
+    column: str,
+    out_name: str,
+    default: str = "NULL",
+) -> str:
     return f"{alias}.{column} AS {out_name}" if column in cols else f"{default} AS {out_name}"
 
 
@@ -466,13 +472,16 @@ async def _fact_rows(
             "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
             "AS min_position_rank",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'positive') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'positive') "
             "AS positive_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
             "AS neutral_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
             "AS negative_mentions",
             "(SELECT bm.context_snippet FROM brand_mentions bm WHERE bm.response_id = r.id "
             "AND bm.brand_id = :primary_brand_id "
@@ -585,8 +594,10 @@ def _topic_aggregates(
             engine = row.get("target_llm") or row.get("response_target_llm")
             if engine:
                 bucket["engines"].add(str(engine))
-            last = row.get("query_finished_at") or row.get("response_created_at") or row.get(
-                "query_created_at"
+            last = (
+                row.get("query_finished_at")
+                or row.get("response_created_at")
+                or row.get("query_created_at")
             )
             if last is not None and (
                 bucket["last_collected"] is None or str(last) > str(bucket["last_collected"])
@@ -636,7 +647,7 @@ def _topic_aggregates(
         topic_order = [tid for tid in topic_order if len(topics[tid]["query_ids"]) > 0]
 
     items: list[TopicMonitoringRow] = []
-    summary_sets = {
+    summary_sets: dict[str, set[int]] = {
         "topics": set(),
         "prompts": set(),
         "queries": set(),
@@ -698,8 +709,7 @@ def _topic_aggregates(
             response_count=len(v["response_ids"]),
         )
         for v in matrix.values()
-        if v["topic_id"] in allowed_topics
-        and (not filters.explicit or len(v["query_ids"]) > 0)
+        if v["topic_id"] in allowed_topics and (not filters.explicit or len(v["query_ids"]) > 0)
     ]
     intent_rows.sort(key=lambda r: (r.topic_id or 0, r.intent))
 
@@ -775,8 +785,10 @@ async def get_topic_prompts(
                 bucket["success_count"] += 1
             if row.get("target_llm"):
                 bucket["engines"].add(str(row["target_llm"]))
-            last = row.get("query_finished_at") or row.get("response_created_at") or row.get(
-                "query_created_at"
+            last = (
+                row.get("query_finished_at")
+                or row.get("response_created_at")
+                or row.get("query_created_at")
             )
             if last is not None and (
                 bucket["last_collected"] is None or str(last) > str(bucket["last_collected"])
@@ -881,7 +893,6 @@ async def get_query_response_detail(
 
     query_cols = await legacy_table_columns(session, "queries")
     prompt_cols = await legacy_table_columns(session, "prompts")
-    topic_cols = await legacy_table_columns(session, "topics")
     response_cols = await legacy_table_columns(session, "llm_responses")
     if "id" not in query_cols:
         raise not_found("query not found")
@@ -900,9 +911,10 @@ async def get_query_response_detail(
     )
     topic_id_select = "t.id AS topic_id" if topic_join else "NULL AS topic_id"
     query_row = (
-        await session.execute(
-            text(
-                f"""
+        (
+            await session.execute(
+                text(
+                    f"""
                 SELECT
                     q.id AS query_id,
                     {_select_col(query_cols, "q", "prompt_id", "prompt_id")},
@@ -921,10 +933,13 @@ async def get_query_response_detail(
                 WHERE {" AND ".join(where)}
                 LIMIT 1
                 """
-            ),
-            params,
+                ),
+                params,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if not query_row:
         raise not_found("query not found")
     q = dict(query_row)
@@ -941,9 +956,10 @@ async def get_query_response_detail(
             params["prompt_id"] = int(q["prompt_id"])
         if response_where:
             rrow = (
-                await session.execute(
-                    text(
-                        f"""
+                (
+                    await session.execute(
+                        text(
+                            f"""
                         SELECT
                             r.id AS response_id,
                             {_select_col(response_cols, "r", "query_id", "query_id")},
@@ -959,10 +975,13 @@ async def get_query_response_detail(
                         ORDER BY r.id DESC
                         LIMIT 1
                         """
-                    ),
-                    params,
+                        ),
+                        params,
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             if rrow:
                 r = dict(rrow)
                 response_id = int(r["response_id"])
@@ -980,9 +999,10 @@ async def get_query_response_detail(
 
     if response_id is not None and await legacy_table_exists(session, "response_analyses"):
         arow = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT id, target_brand_mentioned, target_brand_rank,
                            target_brand_sentiment, visibility_score, sentiment_score,
                            sov_score, citation_score, geo_score, analyzed_at
@@ -990,10 +1010,13 @@ async def get_query_response_detail(
                     WHERE response_id = :response_id
                     LIMIT 1
                     """
-                ),
-                {"response_id": response_id},
+                    ),
+                    {"response_id": response_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if arow:
             a = dict(arow)
             analysis = ResponseAnalysisDetail(
@@ -1014,9 +1037,10 @@ async def get_query_response_detail(
     brand_mentions: list[BrandMentionDetail] = []
     if response_id is not None and await legacy_table_exists(session, "brand_mentions"):
         mrows = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT id, response_id, brand_id, brand_name, product_name, is_target,
                            position_rank, sentiment, sentiment_score, context_snippet,
                            mention_count, created_at
@@ -1024,10 +1048,13 @@ async def get_query_response_detail(
                     WHERE response_id = :response_id
                     ORDER BY COALESCE(position_rank, 9999), id
                     """
-                ),
-                {"response_id": response_id},
+                    ),
+                    {"response_id": response_id},
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         brand_mentions = [
             BrandMentionDetail(
                 mention_id=int(m["id"]),
@@ -1049,19 +1076,23 @@ async def get_query_response_detail(
     citations: list[CitationDetail] = []
     if response_id is not None and await legacy_table_exists(session, "citation_sources"):
         crows = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT id, response_id, mention_id, url, domain, title,
                            citation_index, source_type, created_at
                     FROM citation_sources
                     WHERE response_id = :response_id
                     ORDER BY COALESCE(citation_index, 9999), id
                     """
-                ),
-                {"response_id": response_id},
+                    ),
+                    {"response_id": response_id},
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         citations = [
             CitationDetail(
                 citation_id=int(c["id"]),
@@ -1308,9 +1339,10 @@ async def get_project_segments(
         ]
 
     rows = (
-        await session.execute(
-            text(
-                f"""
+        (
+            await session.execute(
+                text(
+                    f"""
                 SELECT
                     s.id AS segment_id,
                     {_select_col(segment_cols, "s", "code", "segment_code")},
@@ -1323,10 +1355,13 @@ async def get_project_segments(
                 WHERE {" AND ".join(where)}
                 ORDER BY s.name, s.id
                 """
-            ),
-            params,
+                ),
+                params,
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     segments: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for row in rows:
