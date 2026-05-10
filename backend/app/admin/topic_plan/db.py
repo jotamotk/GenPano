@@ -757,6 +757,7 @@ def topic_plan_brand_batches(
     controlled by ``TOPIC_PLAN_LLM_BRANDS_PER_REQUEST`` (default 1, max 5).
     """
     batch_size = bounded_int(os.getenv("TOPIC_PLAN_LLM_BRANDS_PER_REQUEST"), 1, 1, 5)
+    topics_per_request = bounded_int(os.getenv("TOPIC_PLAN_LLM_TOPICS_PER_REQUEST"), 20, 1, 50)
     gaps_by_brand: dict[int, list[dict[str, Any]]] = {}
     for gap in gaps or []:
         try:
@@ -778,7 +779,11 @@ def topic_plan_brand_batches(
         ]
         gap_count = sum(bounded_int(g.get("count"), 1, 1, max_per_brand) for g in batch_gaps)
         batch_cap = min(max_topics, max_per_brand * max(len(batch_brands), 1), max(gap_count, 1))
-        yield batch_brands, batch_gaps, batch_cap
+        remaining = batch_cap
+        while remaining > 0:
+            chunk_cap = min(remaining, topics_per_request)
+            yield batch_brands, batch_gaps, chunk_cap
+            remaining -= chunk_cap
 
 
 async def is_run_cancelled(session: AsyncSession, run_id: str) -> bool:
@@ -1047,10 +1052,35 @@ def _topic_candidate_ref_clear_sql(candidate_cols: set[str]) -> str:
         """
 
 
+def _topic_prompt_unlink_sql(prompt_cols: set[str]) -> str:
+    set_parts = ["topic_id = NULL"]
+    if "updated_at" in prompt_cols:
+        set_parts.append("updated_at = NOW()")
+    return f"""
+        UPDATE prompts
+        SET {", ".join(set_parts)}
+        WHERE topic_id = ANY(:ids)
+        """
+
+
+async def _unlink_topic_prompts(session: AsyncSession, topic_ids: list[int]) -> int:
+    if not topic_ids or not await _table_exists(session, "prompts"):
+        return 0
+    prompt_cols = await _table_columns(session, "prompts")
+    if "topic_id" not in prompt_cols:
+        return 0
+    result = await session.execute(text(_topic_prompt_unlink_sql(prompt_cols)), {"ids": topic_ids})
+    rowcount = getattr(result, "rowcount", None)
+    try:
+        return max(0, int(rowcount or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 async def delete_topic_plan_topics(
     session: AsyncSession, topic_ids: list[int]
 ) -> dict[str, list[Any]]:
-    """Delete topics by id with FK-aware blocking.
+    """Delete topics by id and unlink downstream prompt references.
 
     Returns ``{deleted: [...], blocked: [...], missing: [...]}``:
     - ``deleted``: topics that had no prompts/queries and were removed
@@ -1093,27 +1123,11 @@ async def delete_topic_plan_topics(
     deps = await topic_dependency_counts(session, list(found_ids))
 
     blocked: list[dict[str, Any]] = []
-    deletable_ids: list[int] = []
-    for row in rows:
-        topic_id = int(row["id"])
-        dep = deps.get(topic_id, {"prompt_count": 0, "query_count": 0})
-        if dep["prompt_count"] > 0 or dep["query_count"] > 0:
-            blocked.append(
-                {
-                    "id": f"T-{topic_id}",
-                    "raw_id": topic_id,
-                    "title": row.get("text"),
-                    "brand": row.get("brand_name"),
-                    "prompt_count": dep["prompt_count"],
-                    "query_count": dep["query_count"],
-                    "reason": "has_downstream_dependencies",
-                }
-            )
-        else:
-            deletable_ids.append(topic_id)
+    deletable_ids = [int(row["id"]) for row in rows]
 
     deleted: list[dict[str, Any]] = []
     if deletable_ids:
+        await _unlink_topic_prompts(session, deletable_ids)
         if await _table_exists(session, "topic_candidates"):
             candidate_cols = await _table_columns(session, "topic_candidates")
             if "approved_topic_id" in candidate_cols:
@@ -1133,6 +1147,9 @@ async def delete_topic_plan_topics(
                 "title": row.get("text"),
                 "brand": row.get("brand_name"),
                 "industry": row.get("industry"),
+                "prompt_count": deps.get(int(row["id"]), {}).get("prompt_count", 0),
+                "query_count": deps.get(int(row["id"]), {}).get("query_count", 0),
+                "unlinked_prompt_count": deps.get(int(row["id"]), {}).get("prompt_count", 0),
             }
             for row in rows
             if int(row["id"]) in deleted_ids
