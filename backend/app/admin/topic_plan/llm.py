@@ -76,6 +76,25 @@ def _web_research_request_error_message(
     )
 
 
+def _topic_generation_request_error_message(
+    error: httpx.RequestError,
+    *,
+    timeout_seconds: int,
+) -> str:
+    error_name = error.__class__.__name__
+    detail = str(error).strip()
+    if isinstance(error, httpx.TimeoutException):
+        message = (
+            f"Doubao 2 topic generation chat/completions timed out after {timeout_seconds}s "
+            f"({error_name})"
+        )
+    else:
+        message = f"Doubao 2 topic generation chat/completions request failed ({error_name})"
+    if detail:
+        message += f": {detail}"
+    return message + ". Verify Ark chat/completions network access and model availability."
+
+
 def _search_status_is_retryable(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -473,8 +492,9 @@ class DoubaoTopicPlanClient:
             brand_context_packs=brand_context_packs,
         )
         timeout_seconds = bounded_int(
-            os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 90, 90, 30, 240
+            os.getenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS") or 180, 180, 30, 360
         )
+        attempts = bounded_int(os.getenv("TOPIC_PLAN_LLM_ATTEMPTS") or 2, 2, 1, 3)
         url = self.config.base_url.rstrip("/") + "/chat/completions"
         body = {
             "model": self.config.model,
@@ -485,20 +505,43 @@ class DoubaoTopicPlanClient:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                response = await client.post(url, json=body, headers=headers)
-        except httpx.RequestError as error:
-            raise TopicPlanLLMError(
-                "llm_call_failed", f"Doubao 2 topic generation failed: {error}"
-            ) from error
+        response: httpx.Response | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    response = await client.post(url, json=body, headers=headers)
+            except httpx.RequestError as error:
+                detail = _topic_generation_request_error_message(
+                    error,
+                    timeout_seconds=timeout_seconds,
+                )
+                if attempt < attempts:
+                    logger.warning(
+                        "%s Retrying Doubao 2 topic generation (%s/%s).",
+                        detail,
+                        attempt + 1,
+                        attempts,
+                    )
+                    continue
+                raise TopicPlanLLMError("llm_call_failed", detail) from error
 
-        if response.status_code != 200:
-            raise TopicPlanLLMError(
-                "llm_call_failed",
-                f"Doubao 2 returned HTTP {response.status_code}: "
-                + _response_text_snippet(response),
+            if response.status_code == 200:
+                break
+            detail = f"Doubao 2 returned HTTP {response.status_code}: " + _response_text_snippet(
+                response
             )
+            if attempt < attempts and _search_status_is_retryable(response.status_code):
+                logger.warning(
+                    "%s Retrying Doubao 2 topic generation (%s/%s).",
+                    detail,
+                    attempt + 1,
+                    attempts,
+                )
+                continue
+            raise TopicPlanLLMError("llm_call_failed", detail)
+
+        if response is None:
+            raise TopicPlanLLMError("llm_call_failed", "Doubao 2 topic generation did not run")
         data = response.json()
         choices = data.get("choices") or []
         if not choices:

@@ -363,6 +363,96 @@ async def test_generate_topics_empty_choices(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_topics_llm_timeout_message_is_actionable(monkeypatch):
+    async def fake_post(self, url, json=None, headers=None):
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output_text": (
+                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                    )
+                },
+            )
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setenv("TOPIC_PLAN_LLM_TIMEOUT_SECONDS", "180")
+    monkeypatch.setenv("TOPIC_PLAN_LLM_ATTEMPTS", "1")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    client = DoubaoTopicPlanClient(config=_config())
+    with pytest.raises(TopicPlanLLMError) as exc:
+        await client.generate_topics(
+            industry="x",
+            category="y",
+            brands=[{"name": "NIKE"}],
+            coverage_gaps=[],
+            max_topics=1,
+            existing_topics=[],
+        )
+
+    assert exc.value.code == "llm_call_failed"
+    assert "ReadTimeout" in exc.value.message
+    assert "180s" in exc.value.message
+    assert "chat/completions" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_generate_topics_retries_transient_llm_request_error(monkeypatch):
+    posted_urls = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        posted_urls.append(url)
+        if url.endswith("/responses"):
+            return httpx.Response(
+                200,
+                json={
+                    "output_text": (
+                        '{"brands":[{"name":"NIKE","industry":"sportswear",'
+                        '"source_notes":[{"title":"Official","url":"https://nike.example"}]}]}'
+                    )
+                },
+            )
+        if len([item for item in posted_urls if item.endswith("/chat/completions")]) == 1:
+            raise httpx.ConnectError("reset")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"topics":[{"title":"NIKE running shoes for beginners",'
+                                '"brand":"NIKE","dimension":"product","reason":"r",'
+                                '"confidence":0.9,"coverage_gap":"NIKE:product"}]}'
+                            )
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            },
+        )
+
+    monkeypatch.setenv("TOPIC_PLAN_LLM_ATTEMPTS", "2")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    client = DoubaoTopicPlanClient(config=_config())
+    topics, meta = await client.generate_topics(
+        industry="x",
+        category="y",
+        brands=[{"name": "NIKE"}],
+        coverage_gaps=[],
+        max_topics=1,
+        existing_topics=[],
+    )
+
+    assert len([item for item in posted_urls if item.endswith("/chat/completions")]) == 2
+    assert len(topics) == 1
+    assert meta["usage"]["total_tokens"] == 10
+
+
+@pytest.mark.asyncio
 async def test_generate_topics_malformed_json_payload(monkeypatch):
     async def fake_post(self, url, json=None, headers=None):
         if url.endswith("/responses"):
