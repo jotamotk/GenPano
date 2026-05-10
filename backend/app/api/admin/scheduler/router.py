@@ -305,7 +305,33 @@ async def schedules_list(
         "true",
         "yes",
     )
-    return await scheduler_db.list_query_schedules(session, enabled_only=enabled_only)
+    brand_id: int | None = None
+    brand_raw = request.query_params.get("brand_id")
+    if brand_raw not in (None, ""):
+        try:
+            brand_id = int(str(brand_raw))
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"error": "brand_id must be an integer"})
+        if brand_id < 1:
+            return JSONResponse(status_code=400, content={"error": "brand_id must be >= 1"})
+    page: int | None = None
+    per_page: int | None = None
+    if "page" in request.query_params or "per_page" in request.query_params:
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+            per_page = min(200, max(1, int(request.query_params.get("per_page") or 50)))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "page and per_page must be integers"},
+            )
+    return await scheduler_db.list_query_schedules(
+        session,
+        enabled_only=enabled_only,
+        brand_id=brand_id,
+        page=page,
+        per_page=per_page,
+    )
 
 
 @router.post("/scheduler/schedules", response_model=None)
@@ -329,8 +355,12 @@ async def schedule_create(
     if row is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "query_schedules table is not available"},
+            content={
+                "error": "query_schedules table or batch columns are not available",
+                "code": "query_schedules_unavailable",
+            },
         )
+    target_llms = normalized.get("target_llms") or [normalized["target_llm"]]
     await emit_audit(
         session,
         operator=operator,
@@ -340,6 +370,9 @@ async def schedule_create(
         resource_id=str(row["id"]),
         after={
             "target_llm": normalized["target_llm"],
+            "target_llms": target_llms,
+            "plan_kind": normalized.get("plan_kind", "single"),
+            "item_count": normalized.get("item_count", 1),
             "cadence_days": normalized.get("cadence_days"),
             "enabled": normalized.get("enabled", True),
             "brand_id": normalized.get("brand_id"),
@@ -478,9 +511,37 @@ async def scheduler_manual_trigger(
                 content={"error": "cap must be an integer or null"},
             )
     note = str(payload.get("note") or "manual via UI").strip()
+    brand_id: int | None = None
+    brand_raw = payload.get("brand_id")
+    if brand_raw not in (None, ""):
+        try:
+            brand_id = int(brand_raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "brand_id must be an integer or null"},
+            )
+        if brand_id < 1:
+            return JSONResponse(status_code=400, content={"error": "brand_id must be >= 1"})
+    limit_raw = payload.get("limit", 50)
+    try:
+        schedule_limit = int(limit_raw or 50)
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "limit must be an integer"})
+    if schedule_limit < 1 or schedule_limit > 5000:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "limit must be between 1 and 5000"},
+        )
 
     try:
-        result = await run_manual_dispatch(session, cap_override=cap_int, note=note)
+        result = await run_manual_dispatch(
+            session,
+            cap_override=cap_int,
+            note=note,
+            brand_id=brand_id,
+            schedule_limit=schedule_limit,
+        )
     except RuntimeError as error:
         if str(error) == "scheduler_tables_unavailable":
             return JSONResponse(
@@ -513,6 +574,8 @@ async def scheduler_manual_trigger(
             "target_total": int(result.get("target_total") or 0),
             "schedules_dispatchable": int(result.get("schedules_dispatchable") or 0),
             "cap_override": cap_int,
+            "brand_id": brand_id,
+            "schedule_limit": schedule_limit,
             "reason": result.get("reason"),
             "schedule_failures_count": len(result.get("schedule_failures") or []),
         },
