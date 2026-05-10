@@ -34,3 +34,20 @@ def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     assert "query_text: candidate.actualQueryText" in html
     assert "prompt_id: candidate.promptId" in html
     assert "brand_id: candidate.brandId" in html
+
+
+def test_schedule_editor_llm_picker_excludes_gemini() -> None:
+    html = _admin_html()
+    options_section = html[
+        html.index("scheduleEditorTargetLlmOptions() {") : html.index(
+            "selectedScheduleEditorTargetLlms() {"
+        )
+    ]
+    edit_select_start = html.index('x-show="scheduleEditor.id"')
+    editor_section = html[edit_select_start : html.index("</select>", edit_select_start)]
+
+    assert "doubao" in options_section
+    assert "deepseek" in options_section
+    assert "chatgpt" in options_section
+    assert "gemini" not in options_section.lower()
+    assert 'option value="gemini"' not in editor_section.lower()
