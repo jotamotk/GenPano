@@ -8,6 +8,7 @@ import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
+import { resolveLiveProjectId } from '../lib/liveProject';
 import {
   useBrandMetrics,
   useCompetitorMetrics,
@@ -58,8 +59,7 @@ export default function DashboardPage() {
     return <DashboardEmptyState />;
   }
 
-  const liveProjectId =
-    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
 
   /* ?brandId=X URL param lets the BrandPicker (sidebar) view this

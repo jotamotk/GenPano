@@ -12,6 +12,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import KpiCard from '../../components/dashboard/KpiCard';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 import { useBrandMetrics, useCompetitorMetrics } from '../../hooks/useBrandMetrics';
 import {
   useEngineMetrics,
@@ -58,7 +59,7 @@ export default function BrandVisibilityPage() {
 
   // ── Live data hooks (gated on UUID project id) ──
   const { data: liveProjects } = useProjects();
-  const liveProjectId = liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
 
   const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [

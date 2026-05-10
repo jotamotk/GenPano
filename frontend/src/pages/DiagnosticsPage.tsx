@@ -11,8 +11,10 @@ import { useMemo, useState } from 'react';
 import { Card } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
 import { DIAGNOSTICS } from '../data/mock';
+import { useProject } from '../contexts/ProjectContext';
 import { useProjects } from '../hooks/useProjects';
 import { useDiagnostics, toMockShape } from '../hooks/useDiagnostics';
+import { resolveLiveProjectId } from '../lib/liveProject';
 
 const SEVERITY_META = [
   { id: 'P0', label: '紧急', borderClass: 'border-l-red-500', textClass: 'text-themed-danger' },
@@ -33,12 +35,12 @@ export default function DiagnosticsPage() {
   const [filterType, setFilterType] = useState('all');
   const [showLeadForm, setShowLeadForm] = useState(false);
   const [leadDiagId, setLeadDiagId] = useState(null);
+  const { activeProject } = useProject();
 
   // Live data: when the user has a real backend project, prefer those
   // diagnostics. Mock fallback when project list is empty.
   const { data: liveProjects } = useProjects();
-  const liveProjectId =
-    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const { data: liveDiag } = useDiagnostics(liveProjectId, { limit: 200 });
   const liveItems = liveDiag?.items ?? [];
   const useLive = liveItems.length > 0;

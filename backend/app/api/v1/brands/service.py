@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.brands._dto import BrandSearchHit
+from app.api.v1.projects._legacy_lookups import brand_display_expr, brand_table_columns
 
 
 async def search_brands(
@@ -33,31 +34,33 @@ async def search_brands(
     pattern = f"%{q_norm.lower()}%"
     capped = max(1, min(limit, 50))
 
-    # Aliases is a JSONB array of alternate names (Chinese / English / typos).
-    # Probe schema once so the query stays portable across SQLite (test bind,
-    # no JSONB) and Postgres (prod). Falls back to name-only matching on
-    # SQLite or when the column is absent.
-    has_aliases = False
-    try:
-        col_row = (
-            await session.execute(
-                text(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = 'brands' "
-                    "AND column_name = 'aliases' LIMIT 1"
-                )
-            )
-        ).first()
-        has_aliases = col_row is not None
-    except Exception:
-        has_aliases = False
+    cols = await brand_table_columns(session)
+    display_expr = brand_display_expr(cols)
+    if display_expr is None:
+        return []
 
+    name_clauses = [
+        f"LOWER(COALESCE({col}, '')) LIKE :pattern"
+        for col in ("name_zh", "name_en", "name", "primary_name")
+        if col in cols
+    ]
+    if not name_clauses:
+        return []
+
+    dialect_name = ""
+    try:
+        dialect_name = session.get_bind().dialect.name
+    except Exception:
+        dialect_name = ""
+
+    # Aliases is JSONB in production Postgres; skip it on SQLite test binds.
     aliases_clause = (
         " OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(aliases, '[]'::jsonb)) AS a "
         "WHERE LOWER(a) LIKE :pattern)"
-        if has_aliases
+        if "aliases" in cols and dialect_name == "postgresql"
         else ""
     )
+    industry_expr = "industry" if "industry" in cols else "NULL"
 
     try:
         result = await session.execute(
@@ -65,13 +68,11 @@ async def search_brands(
                 f"""
                 SELECT
                     id,
-                    COALESCE(NULLIF(name_zh, ''), NULLIF(name_en, ''), name) AS display_name,
-                    industry
+                    {display_expr} AS display_name,
+                    {industry_expr} AS industry
                 FROM brands
                 WHERE
-                    LOWER(COALESCE(name_zh, '')) LIKE :pattern
-                    OR LOWER(COALESCE(name_en, '')) LIKE :pattern
-                    OR LOWER(COALESCE(name, '')) LIKE :pattern
+                    {" OR ".join(name_clauses)}
                     {aliases_clause}
                 ORDER BY display_name
                 LIMIT :lim
