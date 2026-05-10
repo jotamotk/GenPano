@@ -204,6 +204,14 @@ def _select_col(
     return f"{alias}.{column} AS {out_name}" if column in cols else f"{default} AS {out_name}"
 
 
+def _not_deleted_condition(alias: str) -> str:
+    """Portable soft-delete predicate for bool, int, and text columns."""
+    return (
+        f"({alias}.is_deleted IS NULL "
+        f"OR LOWER(CAST({alias}.is_deleted AS TEXT)) IN ('false', '0', 'f', 'no', 'n'))"
+    )
+
+
 def _topic_name_expr(cols: set[str]) -> str:
     if "text" in cols:
         return "t.text"
@@ -1300,10 +1308,7 @@ async def get_project_segments(
     where = ["1 = 1"]
     params: dict[str, Any] = {}
     if "is_deleted" in segment_cols:
-        where.append(
-            "(s.is_deleted IS NULL OR s.is_deleted = 0 "
-            "OR LOWER(CAST(s.is_deleted AS TEXT)) = 'false')"
-        )
+        where.append(_not_deleted_condition("s"))
     if project.primary_brand_id is not None and "brand_id" in segment_cols:
         where.append("(s.brand_id IS NULL OR CAST(s.brand_id AS TEXT) = :brand_id)")
         params["brand_id"] = str(project.primary_brand_id)
@@ -1320,10 +1325,7 @@ async def get_project_segments(
     if {"id", "segment_id", "name"}.issubset(profile_cols):
         profile_conditions = ["CAST(p.segment_id AS TEXT) = CAST(s.id AS TEXT)"]
         if "is_deleted" in profile_cols:
-            profile_conditions.append(
-                "(p.is_deleted IS NULL OR p.is_deleted = 0 "
-                "OR LOWER(CAST(p.is_deleted AS TEXT)) = 'false')"
-            )
+            profile_conditions.append(_not_deleted_condition("p"))
         if project.primary_brand_id is not None and "brand_id" in profile_cols:
             profile_conditions.append(
                 "(p.brand_id IS NULL OR CAST(p.brand_id AS TEXT) = :brand_id)"
