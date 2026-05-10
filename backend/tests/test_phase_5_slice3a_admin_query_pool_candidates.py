@@ -189,6 +189,70 @@ async def test_list_candidates_all_runs_without_filters_uses_true_where(
 
 
 @pytest.mark.asyncio
+async def test_list_candidates_all_runs_cursor_keeps_duplicate_candidate_seq(
+    client, admin_operator, run, db_session: AsyncSession
+):
+    """all_runs=1 must not skip rows when candidate_seq repeats across runs."""
+    second_run = QueryGenerationRun(
+        id=_new_id(),
+        admin_id=admin_operator.id,
+        status="completed",
+        request_config={},
+        prompt_ids=["p1"],
+        segment_ids_selected=["s1"],
+        profiles_per_prompt=1,
+        candidates_estimated=1,
+        candidates_assembled=1,
+        started_at=_now() - timedelta(seconds=10),
+        completed_at=_now(),
+    )
+    first_candidate = QueryGenerationCandidate(
+        id="00000000-0000-0000-0000-000000000001",
+        run_id=run.id,
+        candidate_seq=1,
+        prompt_id="1",
+        segment_id="s1",
+        profile_id="prof1",
+        rendered_query="first duplicate seq",
+        render_hash="hash-duplicate-seq-1",
+        generation_method="llm",
+        candidate_status="ready",
+    )
+    second_candidate = QueryGenerationCandidate(
+        id="00000000-0000-0000-0000-000000000002",
+        run_id=second_run.id,
+        candidate_seq=1,
+        prompt_id="1",
+        segment_id="s1",
+        profile_id="prof2",
+        rendered_query="second duplicate seq",
+        render_hash="hash-duplicate-seq-2",
+        generation_method="llm",
+        candidate_status="ready",
+    )
+    db_session.add_all([second_run, first_candidate, second_candidate])
+    await db_session.commit()
+
+    first_resp = await client.get(
+        "/api/admin/query-pool/candidates?all_runs=1&status=ready&limit=1"
+    )
+
+    assert first_resp.status_code == 200
+    first_body = first_resp.json()
+    assert [row["id"] for row in first_body["rows"]] == [first_candidate.id]
+    assert first_body["next_cursor"]
+
+    second_resp = await client.get(
+        "/api/admin/query-pool/candidates"
+        f"?all_runs=1&status=ready&limit=1&cursor={first_body['next_cursor']}"
+    )
+
+    assert second_resp.status_code == 200
+    second_body = second_resp.json()
+    assert [row["id"] for row in second_body["rows"]] == [second_candidate.id]
+
+
+@pytest.mark.asyncio
 async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run, monkeypatch):
     """When run_id is omitted, falls back to most-recent run."""
     import sys
@@ -210,11 +274,13 @@ async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run
         query,
         limit,
         cursor_seq,
+        cursor_id,
         direction,
     ):
         captured["run_id"] = run_id
         captured["direction"] = direction
         captured["brand_id"] = brand_id
+        captured["cursor_id"] = cursor_id
         return (
             [
                 {
@@ -407,7 +473,7 @@ async def test_list_candidates_next_cursor_when_has_more(client, admin_operator,
     # decode it back — should be candidate_seq 3 (the last row)
     from app.api.admin.query_pool.router import _decode_cursor
 
-    assert _decode_cursor(body["next_cursor"]) == 3
+    assert _decode_cursor(body["next_cursor"])[0] == 3
 
 
 @pytest.mark.asyncio
@@ -435,10 +501,10 @@ async def test_list_candidates_via_legacy_alias(client, admin_operator, run, mon
 def test_encode_decode_cursor_round_trip():
     from app.api.admin.query_pool.router import _decode_cursor, _encode_cursor
 
-    encoded = _encode_cursor(42)
+    encoded = _encode_cursor(42, "candidate-42")
     assert encoded is not None
     assert "=" not in encoded  # urlsafe + stripped padding
-    assert _decode_cursor(encoded) == 42
+    assert _decode_cursor(encoded) == (42, "candidate-42")
 
 
 def test_encode_cursor_none_passthrough():
@@ -450,8 +516,8 @@ def test_encode_cursor_none_passthrough():
 def test_decode_cursor_empty_returns_none():
     from app.api.admin.query_pool.router import _decode_cursor
 
-    assert _decode_cursor(None) is None
-    assert _decode_cursor("") is None
+    assert _decode_cursor(None) == (None, None)
+    assert _decode_cursor("") == (None, None)
 
 
 def test_decode_cursor_invalid_raises_value_error():

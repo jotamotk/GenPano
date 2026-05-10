@@ -530,22 +530,24 @@ def _json_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _encode_cursor(candidate_seq: int | None) -> str | None:
+def _encode_cursor(candidate_seq: int | None, candidate_id: str | None = None) -> str | None:
     if candidate_seq is None:
         return None
-    payload = json.dumps(
-        {"candidate_seq": int(candidate_seq)}, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+    data: dict[str, Any] = {"candidate_seq": int(candidate_seq)}
+    if candidate_id:
+        data["id"] = str(candidate_id)
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: str | None) -> int | None:
+def _decode_cursor(cursor: str | None) -> tuple[int | None, str | None]:
     if not cursor:
-        return None
+        return None, None
     try:
         padded = cursor + ("=" * (-len(cursor) % 4))
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        return int(payload["candidate_seq"])
+        candidate_id = payload.get("id")
+        return int(payload["candidate_seq"]), str(candidate_id) if candidate_id else None
     except Exception as exc:
         raise ValueError("invalid_cursor") from exc
 
@@ -647,6 +649,7 @@ async def _fetch_candidates_paged(
     query: str | None,
     limit: int,
     cursor_seq: int | None,
+    cursor_id: str | None,
     direction: str,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Paged candidate query with prompt + topic + segment + profile JOINs."""
@@ -736,8 +739,15 @@ async def _fetch_candidates_paged(
     page_params = dict(params)
     if cursor_seq is not None:
         cmp = "<" if direction == "prev" else ">"
-        page_where.append(f"q.candidate_seq {cmp} :cursor_seq")
         page_params["cursor_seq"] = cursor_seq
+        if cursor_id:
+            page_where.append(
+                f"(q.candidate_seq {cmp} :cursor_seq "
+                f"OR (q.candidate_seq = :cursor_seq AND q.id {cmp} :cursor_id))"
+            )
+            page_params["cursor_id"] = cursor_id
+        else:
+            page_where.append(f"q.candidate_seq {cmp} :cursor_seq")
     page_where_clause = " AND ".join(page_where) if page_where else "TRUE"
     order = "DESC" if direction == "prev" else "ASC"
     page_params["limit"] = limit + 1
@@ -800,7 +810,7 @@ async def _fetch_candidates_paged(
         {segment_join}
         {profile_join}
         WHERE {page_where_clause}
-        ORDER BY q.candidate_seq {order}
+        ORDER BY q.candidate_seq {order}, q.id {order}
         LIMIT :limit
         """
     )
@@ -846,7 +856,7 @@ async def list_candidates(
     rid = (run_id or "").strip() or None
 
     try:
-        cursor_seq = _decode_cursor(cursor)
+        cursor_seq, cursor_id = _decode_cursor(cursor)
     except ValueError as exc:
         raise validation_error("cursor", "invalid_cursor") from exc
 
@@ -871,6 +881,7 @@ async def list_candidates(
         query=qq,
         limit=limit,
         cursor_seq=cursor_seq,
+        cursor_id=cursor_id,
         direction=direction,
     )
     rows = [_list_candidate_row(r) for r in raw_rows]
@@ -884,12 +895,14 @@ async def list_candidates(
         }
     first_seq = rows[0]["candidate_seq"]
     last_seq = rows[-1]["candidate_seq"]
+    first_id = rows[0]["id"]
+    last_id = rows[-1]["id"]
     if direction == "prev":
-        prev_cursor = _encode_cursor(first_seq) if has_more else None
-        next_cursor = _encode_cursor(last_seq)
+        prev_cursor = _encode_cursor(first_seq, first_id) if has_more else None
+        next_cursor = _encode_cursor(last_seq, last_id)
     else:
-        prev_cursor = _encode_cursor(first_seq) if cursor_seq is not None else None
-        next_cursor = _encode_cursor(last_seq) if has_more else None
+        prev_cursor = _encode_cursor(first_seq, first_id) if cursor_seq is not None else None
+        next_cursor = _encode_cursor(last_seq, last_id) if has_more else None
     return {
         "success": True,
         "rows": rows,
