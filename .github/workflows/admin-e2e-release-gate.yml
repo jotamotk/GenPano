@@ -8,10 +8,14 @@ on:
         required: true
         type: string
       real_generation:
-        description: "Run the optional real search-backed LLM small sample"
+        description: "Run the real Topic -> Prompt Matrix -> Query Pool -> Extraction business flow"
         required: false
         default: false
         type: boolean
+      brand_id:
+        description: "Dedicated staging brand id for real-generation E2E. Required when real_generation is true."
+        required: false
+        type: string
 
 jobs:
   staging-admin-e2e:
@@ -42,7 +46,8 @@ jobs:
       - name: Staging Admin release gate
         env:
           ADMIN_E2E_STAGING: "1"
-          ADMIN_E2E_REAL_GENERATE: ${{ inputs.real_generation && '1' || '0' }}
+          ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
+          ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
           ADMIN_E2E_EMAIL: ${{ secrets.ADMIN_E2E_EMAIL }}
           ADMIN_E2E_PASSWORD: ${{ secrets.ADMIN_E2E_PASSWORD }}
           E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}

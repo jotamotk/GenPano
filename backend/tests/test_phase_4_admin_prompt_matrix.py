@@ -651,9 +651,8 @@ async def test_review_reject_updates_status_and_audits(
 
 @pytest.mark.asyncio
 async def test_review_approve_updates_status(client, admin_operator, db_session: AsyncSession):
-    """Prompt Matrix approve does NOT cross to a `prompts` insert (unlike
-    topic_plan); it just flips status. SPA's "promote to prompt" is a
-    separate Phase 5 (query_pool) flow."""
+    """Prompt Matrix approve flips status even when no legacy prompts table
+    is available in the sqlite harness."""
     cand = _candidate()
     db_session.add(cand)
     await db_session.commit()
@@ -665,6 +664,35 @@ async def test_review_approve_updates_status(client, admin_operator, db_session:
     assert resp.status_code == 200
     body = resp.json()
     assert body["candidate"]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_review_approve_promotes_candidate_to_prompt(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    import importlib
+
+    router_mod = importlib.import_module("app.api.admin.prompt_matrix.router")
+
+    cand = _candidate(text="Which NIKE trail shoe works for rainy commutes?")
+    db_session.add(cand)
+    await db_session.commit()
+
+    async def _fake_promote(session, candidate):
+        assert candidate.id == cand.id
+        return 12345
+
+    monkeypatch.setattr(router_mod.pm_db, "promote_candidate_to_prompt", _fake_promote)
+
+    resp = await client.post(
+        f"/api/admin/prompt-matrix/candidates/{cand.id}/review",
+        json={"status": "approved"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["candidate"]["status"] == "approved"
+    assert body["candidate"]["approved_prompt_id"] == 12345
 
 
 @pytest.mark.asyncio

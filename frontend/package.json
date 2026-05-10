@@ -11,7 +11,7 @@
     "test:integration": "vitest --run --project integration",
     "test:e2e": "playwright test",
     "test:e2e:admin": "playwright test --project=chromium-desktop tests/e2e/admin-release-gate.spec.ts tests/e2e/admin-prompt-matrix-competitive.spec.ts tests/e2e/admin-segment-llm-flow.spec.ts",
-    "test:e2e:admin:staging": "playwright test --project=chromium-desktop tests/e2e/admin-staging-smoke.spec.ts",
+    "test:e2e:admin:staging": "playwright test --project=chromium-desktop tests/e2e/admin-staging-smoke.spec.ts tests/e2e/admin-real-business-flow.spec.ts",
     "test:visual": "playwright test --project visual",
     "test:visual:update": "playwright test --project visual --update-snapshots",
     "check:harness": "node ../scripts/ci-check.mjs",
