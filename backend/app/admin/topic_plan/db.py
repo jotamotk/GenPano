@@ -960,9 +960,11 @@ async def topic_dependency_counts(
     prompt_cols = await _table_columns(session, "prompts")
     if not {"id", "topic_id"}.issubset(prompt_cols):
         return counts
-    query_cols = await _table_columns(session, "queries") if await _table_exists(
-        session, "queries"
-    ) else set()
+    query_cols = (
+        await _table_columns(session, "queries")
+        if await _table_exists(session, "queries")
+        else set()
+    )
     has_query_prompt_link = {"id", "prompt_id"}.issubset(query_cols)
     if has_query_prompt_link:
         dependency_sql = text(
@@ -987,11 +989,7 @@ async def topic_dependency_counts(
             GROUP BY p.topic_id
             """
         )
-    rows = (
-        (await session.execute(dependency_sql, {"ids": topic_ids}))
-        .mappings()
-        .all()
-    )
+    rows = (await session.execute(dependency_sql, {"ids": topic_ids})).mappings().all()
     for row in rows:
         topic_id = int(row["topic_id"])
         counts[topic_id] = {
@@ -1007,7 +1005,9 @@ def _topic_delete_select_sql(
     *,
     can_join_brands: bool,
 ) -> str:
-    brand_id_expr = "t.brand_id AS brand_id" if "brand_id" in topic_cols else "NULL::int AS brand_id"
+    brand_id_expr = (
+        "t.brand_id AS brand_id" if "brand_id" in topic_cols else "NULL::int AS brand_id"
+    )
     text_expr = "t.text AS text" if "text" in topic_cols else "('Topic #' || t.id::text) AS text"
     category_expr = (
         "t.category AS category" if "category" in topic_cols else "NULL::text AS category"
@@ -1077,7 +1077,11 @@ async def delete_topic_plan_topics(
     rows = (
         (
             await session.execute(
-                text(_topic_delete_select_sql(topic_cols, brand_cols, can_join_brands=can_join_brands)),
+                text(
+                    _topic_delete_select_sql(
+                        topic_cols, brand_cols, can_join_brands=can_join_brands
+                    )
+                ),
                 {"ids": topic_ids},
             )
         )
