@@ -154,6 +154,8 @@ app.include_router(meta_router, prefix=V1_PREFIX)
 app.include_router(reports_public_router, prefix="/reports/public")
 app.include_router(admin_router, prefix="/api/admin")
 app.include_router(admin_auth_router, prefix="/api/admin/auth")
+app.include_router(admin_router, prefix="/admin/api/admin")
+app.include_router(admin_auth_router, prefix="/admin/api/admin/auth")
 
 # Legacy alias for the Query Pool sub-router. admin_console served the
 # same Query Pool endpoints both at /api/admin/query-pool/* and at the
@@ -195,6 +197,7 @@ app.include_router(_accounts_router, prefix="/api/accounts")
 from app.api.admin.scheduler import router as _scheduler_router  # noqa: E402
 
 app.include_router(_scheduler_router, prefix="/api")
+app.include_router(_scheduler_router, prefix="/admin/api")
 
 # Topics + Prompts read-only pickers (Phase 8 slice 8d). admin_console
 # served /api/topics and /api/prompts without auth; the FastAPI port adds
@@ -203,6 +206,7 @@ app.include_router(_scheduler_router, prefix="/api")
 from app.api.picker import router as _picker_router  # noqa: E402
 
 app.include_router(_picker_router, prefix="/api")
+app.include_router(_picker_router, prefix="/admin/api")
 
 # Queries + stats read-only routes (Phase 9 slice 9a). admin_console
 # served /api/stats and /api/queries without auth; FastAPI port adds
@@ -223,6 +227,7 @@ app.include_router(_analyzer_router, prefix="/api")
 from app.api.profiles_legacy import router as _profiles_legacy_router  # noqa: E402
 
 app.include_router(_profiles_legacy_router, prefix="/api")
+app.include_router(_profiles_legacy_router, prefix="/admin/api")
 
 # Misc legacy routes (Phase 9 slice 9f) — sms_register / task_status /
 # html_files / html / screenshot / backfill_citations / queries/by-day.

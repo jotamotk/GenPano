@@ -8073,7 +8073,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
 <!-- ===== QUERY SCHEDULE CREATE / EDIT MODAL ===== -->
 <div x-show="scheduleEditor" x-cloak x-transition.opacity class="fixed inset-0 z-40 bg-ink/40" @click="closeScheduleEditor()"></div>
 <div x-show="scheduleEditor" x-cloak class="fixed inset-0 z-50 flex items-start justify-center pt-20 pointer-events-none">
-  <div class="w-[560px] rounded-card-lg bg-surface border border-b-card shadow-elevated pointer-events-auto"
+  <div class="w-[920px] max-w-[calc(100vw-32px)] rounded-card-lg bg-surface border border-b-card shadow-elevated pointer-events-auto"
        @click.stop>
     <template x-if="scheduleEditor">
       <div>
@@ -8089,63 +8089,63 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <div>
             <label class="text-[11px] font-semibold text-ink-muted uppercase">Query 来源</label>
             <div class="flex items-center gap-1 p-1 mt-1 rounded-btn-lg bg-surface-page border border-b-card w-fit">
-              <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'pick'}"
-                      @click="scheduleEditor.querySource = 'pick'; loadScheduleEditorBrands()">从已有 Prompt 选</button>
+              <button x-show="!scheduleEditor.id" class="seg-tab" :class="{active: scheduleEditor.querySource === 'pool'}"
+                      @click="scheduleEditor.querySource = 'pool'; loadScheduleEditorBrands(); loadScheduleEditorCandidates()">从 Query Pool 选</button>
               <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'custom'}"
                       @click="scheduleEditor.querySource = 'custom'">自定义文本</button>
             </div>
           </div>
 
-          <template x-if="scheduleEditor.querySource === 'pick'">
+          <template x-if="scheduleEditor.querySource === 'pool'">
             <div class="space-y-2 rounded-card bg-surface-page border border-b-card p-3">
-              <div class="grid grid-cols-2 gap-2">
-                <div>
-                  <label class="text-[10px] font-semibold text-ink-muted uppercase">品牌</label>
+              <div class="grid grid-cols-[220px_1fr_auto] gap-2 items-end">
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">品牌筛选</span>
                   <select x-model="scheduleEditor.pick_brand_id"
-                          @change="scheduleEditor.pick_topic_id=''; scheduleEditor.pick_prompt_id=''; loadScheduleEditorTopics(); loadScheduleEditorPrompts()"
-                          class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
+                          @change="loadScheduleEditorCandidates()"
+                          class="w-full h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
                     <option value="">— 全部品牌 —</option>
                     <template x-for="b in scheduleEditorBrands" :key="b.id">
                       <option :value="b.id" x-text="b.name"></option>
                     </template>
                   </select>
-                </div>
-                <div>
-                  <label class="text-[10px] font-semibold text-ink-muted uppercase">Topic</label>
-                  <select x-model="scheduleEditor.pick_topic_id"
-                          @change="scheduleEditor.pick_prompt_id=''; loadScheduleEditorPrompts()"
-                          class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px] bg-white">
-                    <option value="" x-text="'— 全部 Topic' + (scheduleEditorTopics.length ? ' (' + scheduleEditorTopics.length + ')' : '') + ' —'"></option>
-                    <template x-for="t in scheduleEditorTopics" :key="t.id">
-                      <option :value="t.id" x-text="t.text"></option>
-                    </template>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label class="text-[10px] font-semibold text-ink-muted uppercase">
-                  Prompt <span class="font-normal normal-case text-ink-muted/80" x-text="'(' + scheduleEditorPrompts.length + ' 条可选)'"></span>
                 </label>
-                <input type="text" x-model="scheduleEditor.pick_prompt_search"
-                       placeholder="搜索 prompt 文本…"
-                       class="w-full mt-1 h-8 px-2 rounded-btn border border-b-default text-[12px]" />
-                <div class="mt-1 max-h-40 overflow-y-auto rounded-btn border border-b-default bg-white divide-y divide-b-card/40">
-                  <div x-show="filteredScheduleEditorPrompts.length === 0" class="px-3 py-2 text-[11px] text-ink-muted">
-                    <span x-show="!scheduleEditor.pick_brand_id">请先选品牌</span>
-                    <span x-show="scheduleEditor.pick_brand_id && scheduleEditorPrompts.length === 0">无 prompt</span>
-                    <span x-show="scheduleEditor.pick_brand_id && scheduleEditorPrompts.length > 0 && filteredScheduleEditorPrompts.length === 0">无匹配的 prompt</span>
-                  </div>
-                  <template x-for="p in filteredScheduleEditorPrompts" :key="p.id">
-                    <div @click="pickScheduleEditorPrompt(p)"
-                         class="px-3 py-2 text-[11.5px] cursor-pointer hover:bg-surface-page"
-                         :class="String(scheduleEditor.pick_prompt_id) === String(p.id) ? 'bg-accent/10' : ''">
-                      <div class="text-ink truncate" x-text="p.text"></div>
-                      <div class="text-[10px] text-ink-muted truncate" x-text="p.topic_text ? ('Topic: ' + p.topic_text) : ''"></div>
-                    </div>
-                  </template>
+                <label class="space-y-1">
+                  <span class="text-[10px] font-semibold text-ink-muted uppercase">搜索 Query</span>
+                  <input type="text" x-model="scheduleEditor.pick_query_search"
+                         @input.debounce.350ms="loadScheduleEditorCandidates()"
+                         placeholder="搜索 Query / Prompt / Segment / Profile"
+                         class="w-full h-8 px-2 rounded-btn border border-b-default text-[12px]" />
+                </label>
+                <span class="h-8 inline-flex items-center px-3 rounded-badge bg-accent/10 text-accent text-[11px] font-semibold"
+                      x-text="'已选 ' + selectedScheduleEditorCandidateRows().length + ' 条'"></span>
+              </div>
+              <div class="rounded-card border border-b-default bg-white overflow-hidden">
+                <div class="px-3 py-2 border-b border-b-card bg-surface-page flex items-center justify-between">
+                  <label class="inline-flex items-center gap-2 text-[11px] font-semibold text-ink-body">
+                    <input type="checkbox" class="rounded border-b-default"
+                           :checked="scheduleEditorCandidatePageAllSelected()"
+                           @change="setScheduleEditorCandidatePageSelection($event.target.checked)" />
+                    本页全选
+                  </label>
+                  <button class="h-7 px-2.5 rounded-btn border border-b-default bg-white text-[11px] font-semibold text-ink-body hover:bg-surface-page"
+                          @click="clearScheduleEditorCandidateSelection()">清空选择</button>
                 </div>
-                <div x-show="scheduleEditor.query_text" class="mt-2 text-[11px] text-ink-muted">
-                  当前选中: <span class="font-mono" x-text="scheduleEditor.query_text"></span>
+                <div class="max-h-72 overflow-y-auto divide-y divide-b-card/40">
+                  <template x-for="candidate in scheduleEditorCandidateRows" :key="candidate.id">
+                    <label class="px-3 py-2.5 flex items-start gap-3 cursor-pointer hover:bg-surface-page">
+                      <input type="checkbox" class="mt-1 rounded border-b-default"
+                             :checked="isScheduleEditorCandidateSelected(candidate.id)"
+                             @change="toggleScheduleEditorCandidate(candidate, $event.target.checked)" />
+                      <div class="min-w-0 flex-1">
+                        <div class="text-[12.5px] font-semibold text-ink leading-snug" x-text="candidate.actualQueryText"></div>
+                        <div class="mt-1 text-[10.5px] text-ink-muted truncate" x-text="scheduleEditorCandidateMeta(candidate)"></div>
+                      </div>
+                    </label>
+                  </template>
+                  <div x-show="scheduleEditorCandidateLoading" class="px-3 py-6 text-center text-[12px] text-ink-muted">加载 Query 候选...</div>
+                  <div x-show="!scheduleEditorCandidateLoading && scheduleEditorCandidateError" class="px-3 py-6 text-center text-[12px] text-danger" x-text="scheduleEditorCandidateError"></div>
+                  <div x-show="!scheduleEditorCandidateLoading && !scheduleEditorCandidateError && scheduleEditorCandidateRows.length === 0" class="px-3 py-6 text-center text-[12px] text-ink-muted">没有 ready Query 候选</div>
                 </div>
               </div>
             </div>
@@ -8161,7 +8161,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           </template>
 
           <!-- Profile picker (replaces the old plain text input) -->
-          <div>
+          <div x-show="scheduleEditor.querySource === 'custom'">
             <label class="text-[11px] font-semibold text-ink-muted uppercase">Profile (可选)</label>
             <input type="text" x-model="scheduleEditor.profile_search"
                    @focus="loadScheduleEditorProfiles()"
@@ -12093,6 +12093,10 @@ function adminApp() {
     scheduleEditor: null,           // open/closed state + form fields
     scheduleEditorSaving: false,
     scheduleEditorError: '',
+    scheduleEditorCandidateRows: [],
+    scheduleEditorCandidateSelection: {},
+    scheduleEditorCandidateLoading: false,
+    scheduleEditorCandidateError: '',
 
     // (Daily tab state was removed in Module A — its work is now done by the
     // Attempt 列表 tab with a date filter on /api/queries.)
@@ -17849,28 +17853,32 @@ function adminApp() {
         brand_id: s.brand_id || null,
       };
       // Picker state: pre-fill profile_search if editing
-      base.querySource = (base.prompt_id || base.brand_id) ? 'pick' : (base.query_text ? 'custom' : 'pick');
+      base.querySource = isNew ? 'pool' : 'custom';
       base.pick_brand_id = base.brand_id || '';
       base.pick_topic_id = '';
       base.pick_prompt_id = base.prompt_id || '';
       base.pick_prompt_search = '';
+      base.pick_query_search = '';
       base.profile_search = base.profile_id || '';
       base.profile_picker_open = false;
       this.scheduleEditor = base;
       this.scheduleEditorError = '';
       this.scheduleEditorTopics = [];
       this.scheduleEditorPrompts = [];
+      this.scheduleEditorCandidateRows = [];
+      this.scheduleEditorCandidateSelection = {};
+      this.scheduleEditorCandidateError = '';
       this.loadScheduleEditorBrands();
-      if (base.pick_brand_id) {
-        this.loadScheduleEditorTopics();
-        this.loadScheduleEditorPrompts();
-      }
+      if (isNew) this.loadScheduleEditorCandidates();
       this.loadScheduleEditorProfiles();
       this.$nextTick(() => lucide.createIcons());
     },
     closeScheduleEditor() {
       this.scheduleEditor = null;
       this.scheduleEditorError = '';
+      this.scheduleEditorCandidateRows = [];
+      this.scheduleEditorCandidateSelection = {};
+      this.scheduleEditorCandidateError = '';
     },
     async loadScheduleEditorBrands() {
       // Reuses the existing brand list endpoint loaded by attempts page
@@ -17911,6 +17919,86 @@ function adminApp() {
         this.scheduleEditorPrompts = [];
       }
     },
+    async loadScheduleEditorCandidates() {
+      const e = this.scheduleEditor;
+      if (!e || e.querySource !== 'pool') return;
+      this.scheduleEditorCandidateLoading = true;
+      this.scheduleEditorCandidateError = '';
+      try {
+        const qp = new URLSearchParams({ limit: '100' });
+        qp.set('status', 'ready');
+        const brandId = String(e.pick_brand_id || '').trim();
+        const query = String(e.pick_query_search || '').trim();
+        if (brandId) qp.set('brand_id', brandId);
+        if (query) qp.set('q', query);
+        const res = await fetch(API_BASE + '/admin/query-pool/candidates?' + qp.toString(), { credentials: 'same-origin' });
+        if (res.status === 401) {
+          this.isLoggedIn = false;
+          throw new Error('请先登录');
+        }
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选加载失败');
+        this.scheduleEditorCandidateRows = (body.rows || []).map(row => {
+          const metadata = row.metadata || row.metadata_json || {};
+          const brandIdRaw = row.brand_id || metadata.brand_id || metadata.brandId || '';
+          return {
+            id: String(row.id || ''),
+            actualQueryText: row.rendered_query || row.actualQueryText || '',
+            promptId: row.prompt_id || metadata.prompt_id || null,
+            brandId: brandIdRaw || null,
+            brandName: row.brand_name || metadata.brand_name || metadata.brandName || '',
+            topicId: row.topic_id || '',
+            topicText: row.topic_text || '',
+            segmentId: row.segment_id || '',
+            profileId: row.profile_id || '',
+            profileName: row.profile_name || '',
+            metadata,
+          };
+        }).filter(candidate => candidate.id && candidate.actualQueryText);
+      } catch (error) {
+        this.scheduleEditorCandidateRows = [];
+        this.scheduleEditorCandidateError = error.message || 'Query 候选加载失败';
+      } finally {
+        this.scheduleEditorCandidateLoading = false;
+        this.$nextTick(() => lucide.createIcons());
+      }
+    },
+    scheduleEditorCandidateMeta(candidate) {
+      const parts = [];
+      if (candidate.brandName || candidate.brandId) parts.push(candidate.brandName || ('Brand ' + candidate.brandId));
+      if (candidate.topicText || candidate.topicId) parts.push('Topic: ' + (candidate.topicText || candidate.topicId));
+      if (candidate.segmentId) parts.push('Segment: ' + candidate.segmentId);
+      if (candidate.profileName || candidate.profileId) parts.push('Profile: ' + (candidate.profileName || candidate.profileId));
+      return parts.join(' · ');
+    },
+    isScheduleEditorCandidateSelected(candidateId) {
+      return Boolean((this.scheduleEditorCandidateSelection || {})[candidateId]);
+    },
+    toggleScheduleEditorCandidate(candidate, selected) {
+      if (!candidate || !candidate.id) return;
+      const next = { ...(this.scheduleEditorCandidateSelection || {}) };
+      if (selected) next[candidate.id] = candidate;
+      else delete next[candidate.id];
+      this.scheduleEditorCandidateSelection = next;
+    },
+    selectedScheduleEditorCandidateRows() {
+      return Object.values(this.scheduleEditorCandidateSelection || {});
+    },
+    scheduleEditorCandidatePageAllSelected() {
+      const rows = this.scheduleEditorCandidateRows || [];
+      return rows.length > 0 && rows.every(candidate => this.isScheduleEditorCandidateSelected(candidate.id));
+    },
+    setScheduleEditorCandidatePageSelection(selected) {
+      const next = { ...(this.scheduleEditorCandidateSelection || {}) };
+      (this.scheduleEditorCandidateRows || []).forEach(candidate => {
+        if (selected) next[candidate.id] = candidate;
+        else delete next[candidate.id];
+      });
+      this.scheduleEditorCandidateSelection = next;
+    },
+    clearScheduleEditorCandidateSelection() {
+      this.scheduleEditorCandidateSelection = {};
+    },
     pickScheduleEditorPrompt(p) {
       if (!this.scheduleEditor) return;
       this.scheduleEditor.pick_prompt_id = p.id;
@@ -17948,7 +18036,12 @@ function adminApp() {
     async saveSchedule() {
       const e = this.scheduleEditor;
       if (!e) return;
-      if (!(e.query_text || '').trim()) {
+      const selectedCandidates = (e.querySource === 'pool' && !e.id) ? this.selectedScheduleEditorCandidateRows() : [];
+      if (e.querySource === 'pool' && !e.id && selectedCandidates.length === 0) {
+        this.scheduleEditorError = '请先选择 Query 候选';
+        return;
+      }
+      if (!(e.querySource === 'pool' && !e.id) && !(e.query_text || '').trim()) {
         this.scheduleEditorError = 'Query 文本不能为空';
         return;
       }
@@ -17959,23 +18052,50 @@ function adminApp() {
       this.scheduleEditorSaving = true;
       this.scheduleEditorError = '';
       try {
-        const payload = {
-          query_text: e.query_text.trim(),
+        const commonPayload = {
           target_llm: e.target_llm,
-          profile_id: (e.profile_id || '').trim() || null,
           cadence_days: parseInt(e.cadence_days),
           enabled: !!e.enabled,
           note: e.note || null,
-          // Carry the prompt_id when picked from the cascade so the
-          // schedule traces back to its source prompt for analytics.
-          prompt_id: (e.querySource === 'pick' && e.pick_prompt_id) ? parseInt(e.pick_prompt_id) : null,
-          brand_id:  (e.querySource === 'pick' && e.pick_brand_id)  ? parseInt(e.pick_brand_id)  : null,
         };
         if (e.next_run_local) {
           // datetime-local lacks tz; treat it as local and convert to ISO
           const d = new Date(e.next_run_local);
-          if (!isNaN(d)) payload.next_run_at = d.toISOString();
+          if (!isNaN(d)) commonPayload.next_run_at = d.toISOString();
         }
+        if (e.querySource === 'pool' && !e.id) {
+          let created = 0;
+          for (const candidate of selectedCandidates) {
+            const payload = {
+              ...commonPayload,
+              query_text: candidate.actualQueryText,
+              profile_id: candidate.profileId || null,
+              prompt_id: candidate.promptId,
+              brand_id: candidate.brandId,
+            };
+            const res = await fetch(API_BASE + '/scheduler/schedules', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok || body.error) throw new Error(body.error || ('HTTP ' + res.status));
+            created += 1;
+          }
+          this.toast('已创建 ' + created + ' 条 Query 计划');
+          this.closeScheduleEditor();
+          await this.loadSchedules();
+          await this.loadUpcoming();
+          return;
+        }
+        const payload = {
+          ...commonPayload,
+          query_text: e.query_text.trim(),
+          profile_id: (e.profile_id || '').trim() || null,
+          prompt_id: e.prompt_id ? parseInt(e.prompt_id) : null,
+          brand_id: e.brand_id ? parseInt(e.brand_id) : null,
+        };
         const url = e.id
           ? API_BASE + '/scheduler/schedules/' + e.id
           : API_BASE + '/scheduler/schedules';
