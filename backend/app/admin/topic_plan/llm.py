@@ -11,9 +11,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
+
+try:
+    from json_repair import repair_json
+except Exception:  # pragma: no cover - optional dependency
+    repair_json = None
 
 from app.admin.brand_context import assemble_brand_context_pack
 from app.admin.topic_plan.lib import (
@@ -70,6 +76,10 @@ def _web_research_request_error_message(
     )
 
 
+def _search_status_is_retryable(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+
 def _responses_output_text(data: dict[str, Any]) -> str:
     direct = data.get("output_text")
     if isinstance(direct, str):
@@ -93,26 +103,65 @@ def _responses_output_text(data: dict[str, Any]) -> str:
     return "\n".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
 
 
+def _text_snippet(text: str, *, limit: int = 500) -> str:
+    return " ".join((text or "").split())[:limit]
+
+
+def _brand_name_key(value: str) -> str:
+    return "".join(ch for ch in (value or "").casefold() if ch.isalnum())
+
+
+def _load_research_json(raw: str) -> dict[str, Any] | None:
+    cleaned = strip_markdown_fence(raw)
+    if not cleaned:
+        return None
+    if not cleaned.lstrip().startswith(("{", "[")):
+        match = re.search(r"(\{.*\}|\[.*\])", cleaned, flags=re.DOTALL)
+        if match:
+            cleaned = match.group(1)
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        if repair_json is None:
+            return None
+        try:
+            parsed = json.loads(repair_json(cleaned))
+        except Exception:
+            return None
+    if isinstance(parsed, list):
+        return {"brands": parsed}
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
 def _parse_brand_research(raw: str, allowed_names: list[str]) -> list[dict[str, Any]]:
     if not raw:
         return []
-    try:
-        data = json.loads(strip_markdown_fence(raw))
-    except Exception:
+    data = _load_research_json(raw)
+    if data is None:
         logger.warning("topic_plan web research returned non-json payload")
         return []
     items = data.get("brands") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
     allowed = {name for name in allowed_names if name}
+    allowed_by_casefold = {name.casefold(): name for name in allowed}
+    allowed_by_key = {_brand_name_key(name): name for name in allowed}
     cleaned: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
-        if allowed and name not in allowed:
+        canonical_name = (
+            name
+            if name in allowed
+            else allowed_by_casefold.get(name.casefold())
+            or allowed_by_key.get(_brand_name_key(name))
+        )
+        if allowed and not canonical_name:
             continue
-        out: dict[str, Any] = {"name": name}
+        out: dict[str, Any] = {"name": canonical_name or name}
         for key in (
             "industry",
             "positioning",
@@ -186,6 +235,7 @@ class DoubaoTopicPlanClient:
             20,
             240,
         )
+        attempts = bounded_int(os.getenv("TOPIC_PLAN_WEB_RESEARCH_ATTEMPTS") or 2, 2, 1, 3)
         model = os.getenv("TOPIC_PLAN_WEB_RESEARCH_MODEL") or self.config.model
         url = self.config.base_url.rstrip("/") + "/responses"
         compact_brands = [
@@ -286,57 +336,107 @@ class DoubaoTopicPlanClient:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                response = await client.post(url, json=body, headers=headers)
-        except httpx.RequestError as error:
-            detail = _web_research_request_error_message(
-                error,
-                timeout_seconds=timeout_seconds,
-            )
-            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
-                raise TopicPlanLLMError(
-                    "brand_context_search_failed",
+        require_research = _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True)
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    response = await client.post(url, json=body, headers=headers)
+            except httpx.RequestError as error:
+                detail = _web_research_request_error_message(
+                    error,
+                    timeout_seconds=timeout_seconds,
+                )
+                if attempt < attempts and not isinstance(error, httpx.TimeoutException):
+                    logger.warning(
+                        "%s Retrying Topic Plan brand context search (%s/%s).",
+                        detail,
+                        attempt + 1,
+                        attempts,
+                    )
+                    continue
+                if require_research:
+                    raise TopicPlanLLMError(
+                        "brand_context_search_failed",
+                        detail,
+                    ) from error
+                logger.warning(detail)
+                return []
+            if response.status_code != 200:
+                detail = (
+                    f"Topic Plan brand context search returned HTTP {response.status_code}: "
+                    + _response_text_snippet(response, limit=400)
+                )
+                if attempt < attempts and _search_status_is_retryable(response.status_code):
+                    logger.warning(
+                        "%s Retrying Topic Plan brand context search (%s/%s).",
+                        detail,
+                        attempt + 1,
+                        attempts,
+                    )
+                    continue
+                if require_research:
+                    raise TopicPlanLLMError("brand_context_search_failed", detail)
+                logger.warning(detail)
+                return []
+            try:
+                data = response.json()
+            except Exception as error:
+                detail = "Topic Plan brand context search returned invalid JSON"
+                if attempt < attempts:
+                    logger.warning(
+                        "%s. Retrying Topic Plan brand context search (%s/%s).",
+                        detail,
+                        attempt + 1,
+                        attempts,
+                    )
+                    continue
+                if require_research:
+                    raise TopicPlanLLMError("brand_context_search_failed", detail) from error
+                return []
+            raw_output = _responses_output_text(data)
+            result = _parse_brand_research(raw_output, allowed_names)
+            if result:
+                if require_research:
+                    returned_names = {
+                        _brand_name_key(str(item.get("name") or "")) for item in result
+                    }
+                    missing_names = [
+                        name
+                        for name in allowed_names
+                        if _brand_name_key(name) not in returned_names
+                    ]
+                    if missing_names:
+                        detail = (
+                            "Topic Plan brand context search missed selected brands: "
+                            + ", ".join(missing_names[:5])
+                        )
+                        if attempt < attempts:
+                            logger.warning(
+                                "%s. Retrying Topic Plan brand context search (%s/%s).",
+                                detail,
+                                attempt + 1,
+                                attempts,
+                            )
+                            continue
+                        raise TopicPlanLLMError("brand_context_search_failed", detail)
+                return result
+            detail = "Topic Plan brand context search returned no usable brand context"
+            snippet = _text_snippet(raw_output, limit=300)
+            if snippet:
+                detail += f": {snippet}"
+            if attempt < attempts:
+                logger.warning(
+                    "%s. Retrying Topic Plan brand context search (%s/%s).",
                     detail,
-                ) from error
-            logger.warning(detail)
-            return []
-        if response.status_code != 200:
-            detail = (
-                f"Topic Plan brand context search returned HTTP {response.status_code}: "
-                + _response_text_snippet(response, limit=400)
-            )
-            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
+                    attempt + 1,
+                    attempts,
+                )
+                continue
+            if require_research:
                 raise TopicPlanLLMError("brand_context_search_failed", detail)
             logger.warning(detail)
             return []
-        try:
-            data = response.json()
-        except Exception as error:
-            if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
-                raise TopicPlanLLMError(
-                    "brand_context_search_failed",
-                    "Topic Plan brand context search returned invalid JSON",
-                ) from error
-            return []
-        result = _parse_brand_research(_responses_output_text(data), allowed_names)
-        if not result and _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
-            raise TopicPlanLLMError(
-                "brand_context_search_failed",
-                "Topic Plan brand context search returned no usable brand context",
-            )
-        if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
-            returned_names = {str(item.get("name") or "").strip().casefold() for item in result}
-            missing_names = [
-                name for name in allowed_names if name.strip().casefold() not in returned_names
-            ]
-            if missing_names:
-                raise TopicPlanLLMError(
-                    "brand_context_search_failed",
-                    "Topic Plan brand context search missed selected brands: "
-                    + ", ".join(missing_names[:5]),
-                )
-        return result
+        return []
 
     async def generate_topics(
         self,
