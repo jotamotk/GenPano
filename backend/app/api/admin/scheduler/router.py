@@ -30,6 +30,7 @@ from genpano_models import AdminUser
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.audit import emit_audit
+from app.admin.queries.celery_dispatch import dispatch_many
 from app.admin.scheduler import db as scheduler_db
 from app.admin.scheduler.lib import (
     SchedulerValidationError,
@@ -562,6 +563,17 @@ async def scheduler_manual_trigger(
             content={"success": False, "error": str(error)[:300]},
         )
 
+    query_ids = [
+        int(qid)
+        for qid in (result.get("query_ids") or [])
+        if str(qid).strip().isdigit()
+    ]
+    dispatched = 0
+    dispatch_failed = 0
+    if query_ids:
+        dispatched, dispatch_failed = dispatch_many(query_ids)
+    result = {**result, "dispatched": dispatched, "dispatch_failed": dispatch_failed}
+
     await emit_audit(
         session,
         operator=operator,
@@ -578,6 +590,8 @@ async def scheduler_manual_trigger(
             "schedule_limit": schedule_limit,
             "reason": result.get("reason"),
             "schedule_failures_count": len(result.get("schedule_failures") or []),
+            "dispatched": dispatched,
+            "dispatch_failed": dispatch_failed,
         },
         reason=note,
         request=request,

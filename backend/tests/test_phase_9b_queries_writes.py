@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
@@ -57,6 +58,12 @@ def _queries_router_module():
     import app.api.queries.router  # noqa: F401
 
     return sys.modules["app.api.queries.router"]
+
+
+def _queries_dispatch_module():
+    import app.admin.queries.celery_dispatch  # noqa: F401
+
+    return sys.modules["app.admin.queries.celery_dispatch"]
 
 
 def _patch_writes(monkeypatch, **overrides):
@@ -157,6 +164,37 @@ def test_parse_cleanup_args_normalized():
     assert out["dry_run"] is True
 
 
+# ── celery dispatch shim ─────────────────────────────────────
+
+
+def test_batch_dispatch_uses_backend_celery_app_when_geo_tracker_app_module_is_absent(
+    monkeypatch,
+):
+    dispatch = _queries_dispatch_module()
+    sent: list[tuple[str, list[int], str | None]] = []
+
+    class FakeCelery:
+        def send_task(self, name, *, args=None, queue=None):
+            sent.append((name, args or [], queue))
+
+    real_import_module = dispatch.importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "geo_tracker.celery_app":
+            raise ModuleNotFoundError(name)
+        if name == "app.celery_app":
+            return types.SimpleNamespace(celery_app=FakeCelery())
+        return real_import_module(name)
+
+    monkeypatch.setattr(dispatch.importlib, "import_module", fake_import_module)
+
+    assert dispatch.dispatch_many([10, 11]) == (2, 0)
+    assert sent == [
+        ("geo_tracker.tasks.celery_tasks.execute_query", [10], "celery"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [11], "celery"),
+    ]
+
+
 # ── auth gate ───────────────────────────────────────────────
 
 
@@ -175,6 +213,12 @@ async def test_retry_unauth_401(client):
 @pytest.mark.asyncio
 async def test_batch_trigger_unauth_401(client):
     resp = await client.post("/api/queries/batch_trigger", json={"ids": [1]})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_batch_trigger_admin_api_alias_unauth_401(client):
+    resp = await client.post("/admin/api/queries/batch_trigger", json={"ids": [1]})
     assert resp.status_code == 401
 
 

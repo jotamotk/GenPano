@@ -47,6 +47,19 @@ def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
     assert "limit: this.scheduleFilterBrandId ? 2000 : 50" in section
 
 
+def test_scheduler_manual_trigger_surfaces_dispatch_result() -> None:
+    html = _admin_html()
+    section = html[
+        html.index("async manualTriggerScheduler")
+        : html.index("async toggleSchedulerMode", html.index("async manualTriggerScheduler"))
+    ]
+
+    assert "body.dispatched" in section
+    assert "body.dispatch_failed" in section
+    assert "派发成功" in section
+    assert "派发失败" in section
+
+
 def test_schedule_editor_creates_plans_from_query_pool_candidates() -> None:
     html = _admin_html()
     pool_section = html[
