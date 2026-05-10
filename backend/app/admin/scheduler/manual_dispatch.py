@@ -339,7 +339,7 @@ async def run_manual_dispatch(
         if not target_llms:
             fallback_llm = str(row.get("target_llm") or "").lower()
             if is_query_engine(row.get("target_llm")) and fallback_llm not in paused_engines:
-                target_llms = [row.get("target_llm")]
+                target_llms = [fallback_llm]
         if row.get("plan_kind") == "batch":
             for item in _json_list(row.get("query_items_json")):
                 if not isinstance(item, dict):
@@ -361,7 +361,7 @@ async def run_manual_dispatch(
         target_llm = str(row.get("target_llm") or "").lower()
         target_allowed = schedule_item_target_llms(
             {"query_text": row.get("query_text")},
-            [row.get("target_llm")],
+            [target_llm],
         )
         if (
             is_query_engine(row.get("target_llm"))

@@ -57,6 +57,22 @@ def _row_has_values(row: object | None, names: tuple[str, ...]) -> bool:
     return row is not None and any(getattr(row, name, None) is not None for name in names)
 
 
+def _pct_delta(now: float | None, before: float | None) -> float | None:
+    if now is None or before is None or before == 0:
+        return None
+    return round((now - before) / before * 100, 1)
+
+
+def _direction(delta: float | None) -> str | None:
+    if delta is None:
+        return None
+    if delta > 0.5:
+        return "up"
+    if delta < -0.5:
+        return "down"
+    return "flat"
+
+
 def _empty_overview(project: Project) -> BrandOverviewOut:
     today = date.today()
     return BrandOverviewOut(
@@ -143,20 +159,6 @@ async def _kpi_cards(
             prior_sov = share_of_voice(prior_rollup) if prior_rollup.has_data else None
             prior_sentiment = prior_rollup.avg_sentiment_score if prior_rollup.has_data else None
 
-            def _pct_delta(now: float | None, before: float | None) -> float | None:
-                if now is None or before is None or before == 0:
-                    return None
-                return round((now - before) / before * 100, 1)
-
-            def _direction(delta: float | None) -> str | None:
-                if delta is None:
-                    return None
-                if delta > 0.5:
-                    return "up"
-                if delta < -0.5:
-                    return "down"
-                return "flat"
-
             geo_delta = _pct_delta(geo, prior_geo)
             mention_delta = _pct_delta(mention, prior_mention)
             sov_delta = _pct_delta(sov, prior_sov)
@@ -195,42 +197,33 @@ async def _kpi_cards(
                 ),
             ]
 
-    def _pct_delta(now: float | None, before: float | None) -> float | None:
-        if now is None or before is None or before == 0:
-            return None
-        return round((now - before) / before * 100, 1)
+    current_geo = cast(float | None, cur.avg_geo if cur else None)
+    current_mention = cast(float | None, cur.avg_mention if cur else None)
+    current_sov = cast(float | None, cur.avg_sov if cur else None)
+    current_sentiment = cast(float | None, cur.avg_sentiment if cur else None)
 
-    def _direction(delta: float | None) -> str | None:
-        if delta is None:
-            return None
-        if delta > 0.5:
-            return "up"
-        if delta < -0.5:
-            return "down"
-        return "flat"
-
-    geo = cur.avg_geo if cur else None
-    mention = cur.avg_mention if cur else None
-    sov = cur.avg_sov if cur else None
-    sentiment = cur.avg_sentiment if cur else None
-
-    geo_delta = _pct_delta(geo, prior.avg_geo if prior else None)
-    mention_delta = _pct_delta(mention, prior.avg_mention if prior else None)
-    sov_delta = _pct_delta(sov, prior.avg_sov if prior else None)
-    sentiment_delta = _pct_delta(sentiment, prior.avg_sentiment if prior else None)
+    geo_delta = _pct_delta(current_geo, cast(float | None, prior.avg_geo if prior else None))
+    mention_delta = _pct_delta(
+        current_mention, cast(float | None, prior.avg_mention if prior else None)
+    )
+    sov_delta = _pct_delta(current_sov, cast(float | None, prior.avg_sov if prior else None))
+    sentiment_delta = _pct_delta(
+        current_sentiment,
+        cast(float | None, prior.avg_sentiment if prior else None),
+    )
 
     return [
         KpiCard(
             label_zh="GEO 评分",
             label_en="GeoScore",
-            value=round(geo or 0, 1),
+            value=round(current_geo or 0, 1),
             delta_30d_pct=geo_delta,
             direction=_direction(geo_delta),
         ),
         KpiCard(
             label_zh="提及率",
             label_en="Mention Rate",
-            value=round((mention or 0) * 100, 1),
+            value=round((current_mention or 0) * 100, 1),
             unit="%",
             delta_30d_pct=mention_delta,
             direction=_direction(mention_delta),
@@ -238,7 +231,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="声量份额",
             label_en="Share of Voice",
-            value=round((sov or 0) * 100, 1),
+            value=round((current_sov or 0) * 100, 1),
             unit="%",
             delta_30d_pct=sov_delta,
             direction=_direction(sov_delta),
@@ -246,7 +239,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="情感分",
             label_en="Sentiment",
-            value=round(sentiment or 0, 2),
+            value=round(current_sentiment or 0, 2),
             delta_30d_pct=sentiment_delta,
             direction=_direction(sentiment_delta),
         ),

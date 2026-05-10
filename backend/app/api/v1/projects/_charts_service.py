@@ -221,7 +221,7 @@ async def get_engine_metrics(
         .group_by(GeoScoreDaily.target_llm)
         .order_by(GeoScoreDaily.target_llm)
     )
-    rows = (await session.execute(stmt)).all()
+    metric_rows = (await session.execute(stmt)).all()
     items = [
         EngineMetricRow(
             engine=r[0] or "(unknown)",
@@ -230,7 +230,7 @@ async def get_engine_metrics(
             citation_rate=round(float(r[3]), 4) if r[3] is not None else None,
             sentiment=round(float(r[4]), 3) if r[4] is not None else None,
         )
-        for r in rows
+        for r in metric_rows
     ]
     return EngineMetricsOut(
         project_id=project.id,
@@ -321,30 +321,30 @@ async def get_position_distribution(
         )
         .group_by(BrandMention.position_rank)
     )
-    rows = (await session.execute(stmt)).all()
-    buckets: OrderedDict[str, int] = OrderedDict(
+    position_rows = (await session.execute(stmt)).all()
+    position_buckets: OrderedDict[str, int] = OrderedDict(
         [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
     )
     total = 0
-    for r in rows:
+    for r in position_rows:
         rank = r[0]
         cnt = int(r[1] or 0)
         total += cnt
         if rank is None:
-            buckets["Unmentioned"] += cnt
+            position_buckets["Unmentioned"] += cnt
         elif rank == 1:
-            buckets["Top1"] += cnt
+            position_buckets["Top1"] += cnt
         elif rank <= 3:
-            buckets["Top3"] += cnt
+            position_buckets["Top3"] += cnt
         elif rank <= 5:
-            buckets["Top5"] += cnt
+            position_buckets["Top5"] += cnt
         elif rank <= 10:
-            buckets["Top10"] += cnt
+            position_buckets["Top10"] += cnt
         else:
-            buckets["11+"] += cnt
+            position_buckets["11+"] += cnt
     items = [
         PositionBucketRow(bucket=k, count=v, pct=round((v / total * 100) if total else 0.0, 2))
-        for k, v in buckets.items()
+        for k, v in position_buckets.items()
     ]
     return PositionDistributionOut(
         project_id=project.id,
@@ -528,19 +528,19 @@ async def get_sentiment_by_engine(
             ),
             {"bid": project.primary_brand_id, "f": f, "t": t},
         )
-        rows = result.all()
+        sentiment_rows = result.all()
     except Exception:
-        rows = []
+        sentiment_rows = []
 
-    bucket: dict[str, dict[str, int]] = defaultdict(
+    sentiment_bucket: dict[str, dict[str, int]] = defaultdict(
         lambda: {"positive": 0, "neutral": 0, "negative": 0}
     )
-    for r in rows:
+    for r in sentiment_rows:
         engine = r[0] or "unknown"
         sent = r[1] or "neutral"
         cnt = int(r[2] or 0)
-        if sent in bucket[engine]:
-            bucket[engine][sent] += cnt
+        if sent in sentiment_bucket[engine]:
+            sentiment_bucket[engine][sent] += cnt
 
     items = [
         SentimentByEngineRow(
@@ -549,7 +549,7 @@ async def get_sentiment_by_engine(
             neutral=v["neutral"],
             negative=v["negative"],
         )
-        for engine, v in sorted(bucket.items())
+        for engine, v in sorted(sentiment_bucket.items())
     ]
     return SentimentByEngineOut(
         project_id=project.id,
@@ -645,16 +645,16 @@ async def get_sentiment_trend_by_engine(
         .group_by(GeoScoreDaily.date, GeoScoreDaily.target_llm)
         .order_by(GeoScoreDaily.date)
     )
-    rows = (await session.execute(stmt)).all()
+    trend_rows = (await session.execute(stmt)).all()
 
     by_date: dict[str, dict[str, float | None]] = OrderedDict()
-    engines_seen: set[str] = set()
-    for d, eng, v in rows:
-        d_iso = d.date().isoformat() if isinstance(d, datetime) else str(d)[:10]
-        engines_seen.add(eng or "unknown")
+    trend_engines_seen: set[str] = set()
+    for d, eng, v in trend_rows:
+        d_iso = str(d)[:10]
+        trend_engines_seen.add(eng or "unknown")
         by_date.setdefault(d_iso, {})[eng or "unknown"] = float(v) if v is not None else None
 
-    engines = sorted(engines_seen)
+    engines = sorted(trend_engines_seen)
     items = [
         SentimentTrendByEngineRow(date=d_iso, by_engine={e: by_date[d_iso].get(e) for e in engines})
         for d_iso in by_date
@@ -960,17 +960,17 @@ async def get_authority_trend(
         .group_by("d", DomainAuthority.tier)
         .order_by("d")
     )
-    rows = (await session.execute(stmt)).all()
+    authority_rows = (await session.execute(stmt)).all()
 
-    by_day: dict[str, dict[int | None, int]] = OrderedDict()
-    for d, tier, cnt in rows:
+    authority_by_day: dict[str, dict[int | None, int]] = OrderedDict()
+    for d, tier, cnt in authority_rows:
         d_iso = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
-        by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
+        authority_by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
 
-    points: list[AuthorityTrendPoint] = []
-    for d_iso, tier_map in by_day.items():
+    authority_points: list[AuthorityTrendPoint] = []
+    for d_iso, tier_map in authority_by_day.items():
         total = sum(tier_map.values()) or 1
-        points.append(
+        authority_points.append(
             AuthorityTrendPoint(
                 date=d_iso,
                 tier1_pct=round(tier_map.get(1, 0) / total * 100, 1),
@@ -983,8 +983,8 @@ async def get_authority_trend(
     return AuthorityTrendOut(
         project_id=project.id,
         period=_period(from_d, to_d),
-        points=points,
-        state="ok" if points else "empty",
+        points=authority_points,
+        state="ok" if authority_points else "empty",
     )
 
 
@@ -1243,7 +1243,7 @@ async def get_content_gap(
     )
     brand_citation_rate = float((await session.execute(cite_stmt)).scalar_one_or_none() or 0)
 
-    topics: list[ContentGapTopicRow] = []
+    gap_topics: list[ContentGapTopicRow] = []
     for r in topic_rows:
         tid = int(r[0])
         mr = float(r[1] or 0)
@@ -1251,7 +1251,7 @@ async def get_content_gap(
         gap = round(mr - approx_citation, 4)
         if gap <= 0:
             continue
-        topics.append(
+        gap_topics.append(
             ContentGapTopicRow(
                 topic_id=tid,
                 topic_name=name_map.get(tid) or f"topic-{tid}",
@@ -1261,7 +1261,7 @@ async def get_content_gap(
                 suggestion="增加权威媒体/官方域引用, 弥补 citation gap",
             )
         )
-        if len(topics) >= limit:
+        if len(gap_topics) >= limit:
             break
 
     # Page type distribution from citation_sources.source_type.
@@ -1292,9 +1292,9 @@ async def get_content_gap(
 
     return ContentGapOut(
         project_id=project.id,
-        topics=topics,
+        topics=gap_topics,
         page_type_distribution=page_types,
-        state="ok" if topics else "empty",
+        state="ok" if gap_topics else "empty",
     )
 
 

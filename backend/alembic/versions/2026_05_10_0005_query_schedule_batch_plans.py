@@ -1,7 +1,7 @@
 """Query schedule batch plans.
 
 Revision ID: 20260510_schedule_batch_plans
-Revises: 20260510_backfill_links
+Revises: 20260510_promote_mentions
 Create Date: 2026-05-10
 """
 
@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20260510_schedule_batch_plans"
-down_revision: str | Sequence[str] | None = "20260510_backfill_links"
+down_revision: str | Sequence[str] | None = "20260510_promote_mentions"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

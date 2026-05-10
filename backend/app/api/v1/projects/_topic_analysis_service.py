@@ -647,7 +647,7 @@ def _topic_aggregates(
         topic_order = [tid for tid in topic_order if len(topics[tid]["query_ids"]) > 0]
 
     items: list[TopicMonitoringRow] = []
-    summary_sets = {
+    summary_sets: dict[str, set[int]] = {
         "topics": set(),
         "prompts": set(),
         "queries": set(),
