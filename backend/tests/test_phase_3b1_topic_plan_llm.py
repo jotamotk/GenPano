@@ -38,6 +38,30 @@ def test_parse_brand_research_matches_brand_names_case_and_space_insensitively()
     assert rows[0]["industry"] == "VDR"
 
 
+def test_parse_brand_research_ignores_echoed_input_and_keeps_string_lists():
+    rows = _parse_brand_research(
+        (
+            '{"industry_hint":"All industries","selected_brands":[{"name":"bestCoffer"}],'
+            '"output_schema":{"brands":[]}}\n'
+            '{"brands":[{"name":"bestCoffer","industry":"VDR",'
+            '"products":["bestCoffer VDR"],'
+            '"scenarios":["M&A due diligence"],'
+            '"competitors":["Datasite"],'
+            '"claims":["secure document sharing"],'
+            '"source_notes":["bestCoffer official site"]}]}'
+        ),
+        ["bestCoffer"],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == "bestCoffer"
+    assert rows[0]["products"][0]["name"] == "bestCoffer VDR"
+    assert rows[0]["scenarios"][0]["name"] == "M&A due diligence"
+    assert rows[0]["competitors"][0]["name"] == "Datasite"
+    assert rows[0]["claims"]["pros"] == ["secure document sharing"]
+    assert rows[0]["source_notes"][0]["title"] == "bestCoffer official site"
+
+
 @pytest.mark.asyncio
 async def test_generate_topics_happy_path(monkeypatch):
     posted = []
@@ -103,6 +127,8 @@ async def test_generate_topics_happy_path(monkeypatch):
     assert meta["usage"]["total_tokens"] == 46
     assert meta["brand_context_packs"]["NIKE"]["products"][0]["name"] == "Pegasus"
     assert posted[0]["url"] == "https://example.invalid/v3/responses"
+    assert "selected_brands" not in posted[0]["body"]["input"][0]["content"]
+    assert "output_schema" not in posted[0]["body"]["input"][0]["content"]
     assert posted[1]["url"] == "https://example.invalid/v3/chat/completions"
     assert posted[1]["headers"]["Authorization"] == "Bearer test-key"
     assert posted[1]["body"]["model"] == "doubao-2"
