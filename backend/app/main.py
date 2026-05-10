@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.admin.auth import router as admin_auth_router
+from app.api.admin.llm_extraction import router as admin_llm_extraction_router
 from app.api.v1._meta.router import router as meta_router
 from app.api.v1.alerts.router import prefs_router as notifications_router
 from app.api.v1.alerts.router import router as alerts_router
@@ -164,6 +165,7 @@ app.include_router(admin_auth_router, prefix="/api/admin/auth")
 from app.api.admin.query_pool import router as _query_pool_router  # noqa: E402
 
 app.include_router(_query_pool_router, prefix="/admin/api/v1/pipeline/query-pool")
+app.include_router(admin_llm_extraction_router, prefix="/admin/api/llm-extraction")
 
 # Legacy alias for the Segments router. admin_console served Segments at
 # the un-prefixed /api/segments/* path; admin.html still calls the same.

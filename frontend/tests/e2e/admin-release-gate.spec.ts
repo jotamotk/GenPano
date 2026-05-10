@@ -616,6 +616,7 @@ test('Admin release gate surfaces Topic, Prompt, Query, and Extraction failures 
   const errors = installAdminErrorGuards(page, {
     allowedNetworkErrorUrls: [
       /\/api\/admin\/topic-plan\/generate$/,
+      /\/api\/admin\/llm-extraction\/backfill$/,
       /\/admin\/api\/llm-extraction\/backfill$/,
     ],
   });
