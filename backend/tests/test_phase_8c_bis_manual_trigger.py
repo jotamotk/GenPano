@@ -11,7 +11,6 @@ via prod smoke tests (see PR description).
 
 from __future__ import annotations
 
-import inspect
 import os
 import sys
 import uuid
@@ -62,12 +61,171 @@ def _scheduler_router_module():
     return sys.modules["app.api.admin.scheduler.router"]
 
 
-def test_manual_dispatch_account_profile_null_check_casts_profile_bind_param():
+class _FakeResult:
+    def __init__(self, rows=None):
+        self._rows = list(rows or [])
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def all(self):
+        return list(self._rows)
+
+
+class _ManualDispatchBatchSession:
+    def __init__(self):
+        self.query_insert_calls = 0
+        self.query_insert_rows = 0
+        self.inserted_query_rows = []
+        self.schedule_update_calls = 0
+        self.committed = False
+        self.batch_columns = [
+            "id",
+            "query_text",
+            "profile_id",
+            "target_llm",
+            "cadence_days",
+            "brand_id",
+            "prompt_id",
+            "plan_kind",
+            "target_llms_json",
+            "query_items_json",
+            "item_count",
+        ]
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        params = params or {}
+        if "information_schema.tables" in sql:
+            return _FakeResult([(1,)])
+        if "information_schema.columns" in sql:
+            table = params.get("n")
+            if table == "query_schedules":
+                return _FakeResult([(name,) for name in self.batch_columns])
+            return _FakeResult([])
+        if "FROM scheduler_config" in sql:
+            return _FakeResult(
+                [
+                    {
+                        "id": 1,
+                        "mode": "auto",
+                        "daily_time": "09:00",
+                        "timezone": "Asia/Shanghai",
+                        "temp_global_cap": None,
+                        "engine_caps": {},
+                        "retry_max": 3,
+                        "paused_engines": [],
+                    }
+                ]
+            )
+        if "COALESCE(apm.profile_id" in sql:
+            return _FakeResult(
+                [
+                    {
+                        "account_id": 11,
+                        "engine": "chatgpt",
+                        "account_cap": 100,
+                        "profile_id": "101",
+                        "quota": 100,
+                    },
+                    {
+                        "account_id": 12,
+                        "engine": "gemini",
+                        "account_cap": 100,
+                        "profile_id": "101",
+                        "quota": 100,
+                    },
+                ]
+            )
+        if "SELECT COUNT(*) AS n FROM query_schedules" in sql:
+            return _FakeResult([{"n": 1}])
+        if "FROM query_schedules qs" in sql and "ORDER BY next_run_at" in sql:
+            return _FakeResult(
+                [
+                    {
+                        "id": 7,
+                        "query_text": "Query Pool batch (3 queries)",
+                        "profile_id": None,
+                        "target_llm": "chatgpt",
+                        "cadence_days": 1,
+                        "brand_id": 42,
+                        "prompt_id": None,
+                        "plan_kind": "batch",
+                        "target_llms_json": ["chatgpt", "gemini"],
+                        "query_items_json": [
+                            {
+                                "query_text": "best running shoes",
+                                "profile_id": "101",
+                                "brand_id": 42,
+                                "prompt_id": 1001,
+                                "language": "en",
+                            },
+                            {
+                                "query_text": "best walking shoes",
+                                "profile_id": "101",
+                                "brand_id": 42,
+                                "prompt_id": 1002,
+                                "language": "en",
+                            },
+                            {
+                                "query_text": "best trail shoes",
+                                "profile_id": "101",
+                                "brand_id": 42,
+                                "prompt_id": 1003,
+                                "language": "en",
+                            },
+                        ],
+                        "item_count": 3,
+                    }
+                ]
+            )
+        if "INSERT INTO queries" in sql:
+            self.query_insert_calls += 1
+            self.query_insert_rows += len(params) if isinstance(params, list) else 1
+            if isinstance(params, list):
+                self.inserted_query_rows.extend(params)
+            else:
+                self.inserted_query_rows.append(params)
+            return _FakeResult([])
+        if "UPDATE query_schedules" in sql:
+            self.schedule_update_calls += 1
+            return _FakeResult([])
+        if "INSERT INTO scheduler_runs" in sql:
+            return _FakeResult([{"id": 99}])
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    async def commit(self):
+        self.committed = True
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_batch_plan_uses_bulk_writes_to_avoid_proxy_timeout():
     from app.admin.scheduler.manual_dispatch import run_manual_dispatch
 
-    source = inspect.getsource(run_manual_dispatch)
+    session = _ManualDispatchBatchSession()
 
-    assert "CAST(:pid_null AS TEXT) IS NULL" in source
+    result = await run_manual_dispatch(
+        session,
+        note="manual bulk test",
+        brand_id=42,
+        schedule_limit=50,
+    )
+
+    assert result["queries_created"] == 6
+    assert result["run_id"] == 99
+    assert session.query_insert_rows == 6
+    assert session.query_insert_calls == 1
+    assert session.schedule_update_calls == 1
+    assert {row["profile_id"] for row in session.inserted_query_rows} == {101}
+    assert {row["target_llm"] for row in session.inserted_query_rows} == {"chatgpt", "gemini"}
+    assert {(row["target_llm"], row["account_id"]) for row in session.inserted_query_rows} == {
+        ("chatgpt", 11),
+        ("gemini", 12),
+    }
+    assert session.committed is True
 
 
 # ── auth gate ───────────────────────────────────────────────

@@ -7,9 +7,9 @@ inserts pending rows into the ``queries`` table. Returns a status dict
 the SPA shows to the operator.
 
 Design notes:
-- SAVEPOINTs (``session.begin_nested``) wrap each schedule INSERT so a
-  single bad row (profile_id type mismatch / queries.schedule_id column
-  missing on legacy DB) doesn't poison the whole dispatch.
+- Query rows are prepared in memory and inserted in one executemany call
+  so large batch plans do not spend the whole proxy timeout in per-row DB
+  round trips.
 - Manual trigger SKIPS the "(B) per-(account,profile) random prompt fill"
   loop that the daily Beat tick runs — a single user reported 94k
   pending queries from repeated manual clicks. Schedules only.
@@ -372,125 +372,115 @@ async def run_manual_dispatch(
 
     # ── (A) consume due query_schedules ─────────────────────────────
     schedule_failures: list[str] = []
-    created = 0
+    account_by_engine: dict[str, Any] = {}
+    account_by_engine_profile: dict[tuple[str, str], Any] = {}
+    for quota_row in rows:
+        quota = dict(quota_row)
+        account_id = quota.get("account_id")
+        engine = normalize_engine_name(quota.get("engine"))
+        if not account_id or not is_query_engine(engine):
+            continue
+        account_by_engine.setdefault(engine, account_id)
+        profile_id = quota.get("profile_id")
+        if profile_id is not None:
+            account_by_engine_profile.setdefault((engine, str(profile_id)), account_id)
+
+    query_cols = await _table_columns(session, "queries")
+    include_schedule_id = "schedule_id" in query_cols
+    insert_cols = [
+        "prompt_id",
+        "profile_id",
+        "brand_id",
+        "account_id",
+        "query_text",
+        "target_llm",
+        "status",
+    ]
+    value_exprs = [
+        ":prompt_id",
+        ":profile_id",
+        ":brand_id",
+        ":account_id",
+        ":query_text",
+        ":target_llm",
+        "'pending'",
+    ]
+    if include_schedule_id:
+        insert_cols.append("schedule_id")
+        value_exprs.append(":schedule_id")
+    insert_cols.append("created_at")
+    value_exprs.append("NOW()")
+
+    insert_rows: list[dict[str, Any]] = []
+    touched_schedule_ids: set[int] = set()
     for sch in due_schedules:
-        # SAVEPOINT per schedule so a single broken row doesn't poison
-        # the whole dispatch (mirrors admin_console line 10283).
-        savepoint = await session.begin_nested()
         try:
-            account_row = (
-                (
-                    await session.execute(
-                        text(
-                            """
-                        SELECT a.id
-                        FROM llm_accounts a
-                        LEFT JOIN account_profile_map apm
-                               ON apm.account_id = a.id
-                              AND apm.profile_id = :pid
-                        WHERE a.llm_name = :engine
-                          AND a.status = 'active'
-                          AND a.cookies_json IS NOT NULL
-                          AND a.cookies_json != ''
-                          AND (CAST(:pid_null AS TEXT) IS NULL
-                               OR apm.profile_id IS NOT NULL
-                               OR a.profile_id::text = :pid)
-                        ORDER BY (apm.profile_id IS NOT NULL) DESC,
-                                 a.last_used_at NULLS FIRST,
-                                 a.id
-                        LIMIT 1
-                        """
-                        ),
-                        {
-                            "pid": sch.get("profile_id"),
-                            "engine": sch.get("target_llm"),
-                            "pid_null": sch.get("profile_id"),
-                        },
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            account_id = (dict(account_row) if account_row else {}).get("id")
+            query_text = str(sch.get("query_text") or "").strip()
+            target_llm = normalize_engine_name(sch.get("target_llm"))
+            if not query_text:
+                raise ValueError("query_text is required")
+            if not is_query_engine(target_llm):
+                raise ValueError("target_llm is not dispatchable")
 
             # queries.profile_id may be INTEGER (geo_tracker schema) — coerce
             # when possible, drop to NULL otherwise.
             pid_for_queries: Any = sch.get("profile_id")
+            profile_key: str | None = None
             if pid_for_queries is not None:
+                profile_key = str(pid_for_queries)
                 try:
                     pid_for_queries = int(pid_for_queries)
                 except (TypeError, ValueError):
                     pid_for_queries = None
 
-            try:
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO queries
-                            (prompt_id, profile_id, brand_id, account_id,
-                             query_text, target_llm, status, schedule_id,
-                             created_at)
-                        VALUES (:prompt_id, :profile_id, :brand_id, :account_id,
-                                :query_text, :target_llm, 'pending',
-                                :schedule_id, NOW())
-                        """
-                    ),
-                    {
-                        "prompt_id": sch.get("prompt_id"),
-                        "profile_id": pid_for_queries,
-                        "brand_id": sch.get("brand_id"),
-                        "account_id": account_id,
-                        "query_text": sch["query_text"],
-                        "target_llm": sch["target_llm"],
-                        "schedule_id": sch["id"],
-                    },
-                )
-            except Exception:
-                # schedule_id column missing OR profile_id type mismatch we
-                # couldn't coerce. Roll back the savepoint, then INSERT
-                # without schedule_id + with profile_id=NULL (safest).
-                await savepoint.rollback()
-                savepoint = await session.begin_nested()
-                await session.execute(
-                    text(
-                        """
-                        INSERT INTO queries
-                            (prompt_id, profile_id, brand_id, account_id,
-                             query_text, target_llm, status, created_at)
-                        VALUES (:prompt_id, NULL, :brand_id, :account_id,
-                                :query_text, :target_llm, 'pending', NOW())
-                        """
-                    ),
-                    {
-                        "prompt_id": sch.get("prompt_id"),
-                        "brand_id": sch.get("brand_id"),
-                        "account_id": account_id,
-                        "query_text": sch["query_text"],
-                        "target_llm": sch["target_llm"],
-                    },
-                )
-
-            await session.execute(
-                text(
-                    """
-                    UPDATE query_schedules
-                       SET last_run_at = NOW(),
-                           next_run_at = NOW() + (cadence_days || ' days')::interval,
-                           updated_at = NOW()
-                     WHERE id = :id
-                    """
-                ),
-                {"id": sch["id"]},
+            account_id = (
+                account_by_engine_profile.get((target_llm, profile_key))
+                if profile_key is not None
+                else None
             )
-            await savepoint.commit()
-            created += 1
+            if account_id is None:
+                account_id = account_by_engine.get(target_llm)
+
+            row = {
+                "prompt_id": sch.get("prompt_id"),
+                "profile_id": pid_for_queries,
+                "brand_id": sch.get("brand_id"),
+                "account_id": account_id,
+                "query_text": query_text,
+                "target_llm": target_llm,
+            }
+            if include_schedule_id:
+                row["schedule_id"] = sch.get("id")
+            insert_rows.append(row)
+            touched_schedule_ids.add(int(sch["id"]))
         except Exception as exc:
-            try:
-                await savepoint.rollback()
-            except Exception:
-                pass
             schedule_failures.append(f"#{sch.get('id')}: {exc}")
-            continue
+
+    created = 0
+    if insert_rows:
+        await session.execute(
+            text(
+                f"""
+                INSERT INTO queries
+                    ({", ".join(insert_cols)})
+                VALUES ({", ".join(value_exprs)})
+                """
+            ),
+            insert_rows,
+        )
+        await session.execute(
+            text(
+                """
+                UPDATE query_schedules
+                   SET last_run_at = NOW(),
+                       next_run_at = NOW() + (cadence_days || ' days')::interval,
+                       updated_at = NOW()
+                 WHERE id = ANY(:ids)
+                """
+            ),
+            {"ids": sorted(touched_schedule_ids)},
+        )
+        created = len(insert_rows)
 
     # Manual trigger skips the (B) random-fill loop on purpose. The
     # Beat task (geo_tracker.tasks.scheduler) keeps the original
