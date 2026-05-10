@@ -1,0 +1,110 @@
+name: Brand Search Diagnostics
+
+# Triggered manually from the Actions tab. Reads prod state to diagnose
+# why /api/v1/brands/search returns empty for keywords the operator
+# expects to match. Read-only — no writes, no email, no destructive ops.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'Keyword to test against the brand search SQL (Chinese ok)'
+        required: true
+        default: '雅诗兰黛'
+
+jobs:
+  brand-search:
+    name: Inspect brands table + run sample queries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run read-only DB + log probes
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          QUERY: ${{ inputs.query }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: QUERY
+          script: |
+            set -euo pipefail
+            cd /opt/genpano
+
+            echo "=== Compose state (sanity) ==="
+            docker compose ps backend postgres
+
+            echo "=== brands table cardinality ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT COUNT(*) AS total_brands FROM brands;
+            "
+
+            echo "=== Column presence (name_zh/name_en/aliases) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT column_name, data_type
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='brands'
+                AND column_name IN ('name','name_zh','name_en','industry','aliases')
+              ORDER BY column_name;
+            "
+
+            echo "=== Sample 30 brand rows (most recent ids) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, name_zh, name_en, industry
+              FROM brands ORDER BY id DESC LIMIT 30;
+            "
+
+            echo "=== Aliases shape audit (catches malformed JSONB) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                COUNT(*) FILTER (WHERE aliases IS NULL) AS null_count,
+                COUNT(*) FILTER (WHERE jsonb_typeof(aliases) = 'array') AS array_count,
+                COUNT(*) FILTER (WHERE aliases IS NOT NULL AND jsonb_typeof(aliases) <> 'array') AS bad_count
+              FROM brands;
+            "
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, name_zh, jsonb_typeof(aliases) AS shape
+              FROM brands
+              WHERE aliases IS NOT NULL AND jsonb_typeof(aliases) <> 'array'
+              LIMIT 10;
+            "
+
+            echo "=== Brands matching the search keyword (name-only) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, name, name_zh, name_en, industry
+              FROM brands
+              WHERE LOWER(COALESCE(name_zh,'')) LIKE LOWER('%${QUERY}%')
+                 OR LOWER(COALESCE(name_en,'')) LIKE LOWER('%${QUERY}%')
+                 OR LOWER(COALESCE(name,''))    LIKE LOWER('%${QUERY}%')
+              LIMIT 20;
+            "
+
+            echo "=== Brands matching via aliases JSONB ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT b.id, b.name, b.name_zh, a.alias
+              FROM brands b,
+                   LATERAL jsonb_array_elements_text(
+                     CASE WHEN jsonb_typeof(b.aliases)='array'
+                          THEN b.aliases ELSE '[]'::jsonb END
+                   ) AS a(alias)
+              WHERE LOWER(a.alias) LIKE LOWER('%${QUERY}%')
+              LIMIT 20;
+            "
+
+            echo "=== brand_mentions long tail (brands referenced in LLM responses but NOT in brands table) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT bm.brand_name, COUNT(*) AS mentions
+              FROM brand_mentions bm
+              LEFT JOIN brands b
+                ON b.id = bm.brand_id
+                OR LOWER(COALESCE(b.name,''))    = LOWER(bm.brand_name)
+                OR LOWER(COALESCE(b.name_zh,'')) = LOWER(bm.brand_name)
+                OR LOWER(COALESCE(b.name_en,'')) = LOWER(bm.brand_name)
+              WHERE b.id IS NULL
+              GROUP BY bm.brand_name
+              ORDER BY mentions DESC
+              LIMIT 20;
+            " || true
+
+            echo "=== Recent backend logs (look for search_brands warnings) ==="
+            docker compose logs --tail=200 backend 2>&1 | grep -iE "search_brands|brand|/v1/brands/search" | tail -60 || true
