@@ -50,6 +50,124 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :name"
+            ),
+            {"name": name},
+        )
+    except Exception:
+        return set()
+    return {str(row[0]) for row in result.all()}
+
+
+async def promote_candidate_to_prompt(
+    session: AsyncSession,
+    candidate: PromptCandidate,
+) -> int | None:
+    """Promote an approved Prompt Matrix candidate into active ``prompts``.
+
+    The backend ORM intentionally treats ``prompts`` as an upstream stub, so
+    production writes use schema-introspected raw SQL. Test sqlite harnesses
+    have no information_schema; in that case this is a no-op so legacy route
+    tests remain focused on candidate review behavior.
+    """
+    columns = await _table_columns(session, "prompts")
+    if not {"id", "text"}.issubset(columns):
+        return None
+
+    prompt_text = str(candidate.text or "").strip()
+    if not prompt_text:
+        return None
+
+    duplicate_where = ["p.text = :text"]
+    duplicate_params: dict[str, Any] = {"text": prompt_text}
+    if "topic_id" in columns and candidate.topic_id is not None:
+        duplicate_where.append("p.topic_id = :topic_id")
+        duplicate_params["topic_id"] = int(candidate.topic_id)
+    if "status" in columns:
+        duplicate_where.append("COALESCE(p.status, 'active') = 'active'")
+    existing = (
+        await session.execute(
+            text(
+                "SELECT p.id FROM prompts p "
+                f"WHERE {' AND '.join(duplicate_where)} "
+                "ORDER BY p.id LIMIT 1"
+            ),
+            duplicate_params,
+        )
+    ).first()
+    if existing:
+        try:
+            return int(existing[0])
+        except (TypeError, ValueError):
+            return None
+
+    tags = dict(candidate.tags or {})
+    tags.setdefault("source", "prompt_matrix")
+    tags.setdefault("prompt_candidate_id", candidate.id)
+    if candidate.run_id:
+        tags.setdefault("prompt_generation_run_id", candidate.run_id)
+    if candidate.brand_id is not None:
+        tags.setdefault("brand_id", candidate.brand_id)
+    if candidate.brand_name:
+        tags.setdefault("brand_name", candidate.brand_name)
+
+    fields: dict[str, Any] = {
+        "text": prompt_text,
+        "topic_id": int(candidate.topic_id) if candidate.topic_id is not None else None,
+        "intent": candidate.intent,
+        "language": candidate.language,
+        "template_strategy": candidate.template_strategy,
+        "template_version": candidate.template_version,
+        "status": "active",
+        "generated_by": "prompt_matrix",
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    if "tags" in columns:
+        fields["tags"] = json.dumps(tags, ensure_ascii=False, default=str)
+
+    insert_columns: list[str] = []
+    value_exprs: list[str] = []
+    params: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key not in columns:
+            continue
+        insert_columns.append(key)
+        params[key] = value
+        value_exprs.append("CAST(:tags AS jsonb)" if key == "tags" else f":{key}")
+    if "text" not in insert_columns:
+        return None
+
+    try:
+        inserted = (
+            await session.execute(
+                text(
+                    f"INSERT INTO prompts ({', '.join(insert_columns)}) "
+                    f"VALUES ({', '.join(value_exprs)}) "
+                    "RETURNING id"
+                ),
+                params,
+            )
+        ).first()
+    except Exception as exc:
+        raise PromptMatrixError(
+            "prompt_promotion_failed",
+            f"Prompt promotion failed: {exc}",
+        ) from exc
+
+    if not inserted:
+        return None
+    try:
+        return int(inserted[0])
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # brands
 # ---------------------------------------------------------------------------

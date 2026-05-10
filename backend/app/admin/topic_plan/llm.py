@@ -49,6 +49,27 @@ def _response_text_snippet(response: httpx.Response, *, limit: int = 800) -> str
     return text[:limit]
 
 
+def _web_research_request_error_message(
+    error: httpx.RequestError,
+    *,
+    timeout_seconds: int,
+) -> str:
+    error_name = error.__class__.__name__
+    detail = str(error).strip()
+    if isinstance(error, httpx.TimeoutException):
+        message = (
+            f"Topic Plan brand context search timed out after {timeout_seconds}s ({error_name})"
+        )
+    else:
+        message = f"Topic Plan brand context search request failed ({error_name})"
+    if detail:
+        message += f": {detail}"
+    return (
+        message
+        + ". Verify Ark network access, TOPIC_PLAN_WEB_RESEARCH_MODEL, and Volcengine Web Search entitlement."
+    )
+
+
 def _responses_output_text(data: dict[str, Any]) -> str:
     direct = data.get("output_text")
     if isinstance(direct, str):
@@ -160,10 +181,10 @@ class DoubaoTopicPlanClient:
             return []
 
         timeout_seconds = bounded_int(
-            os.getenv("TOPIC_PLAN_WEB_RESEARCH_TIMEOUT_SECONDS") or 60,
-            60,
+            os.getenv("TOPIC_PLAN_WEB_RESEARCH_TIMEOUT_SECONDS") or 120,
+            120,
             20,
-            180,
+            240,
         )
         model = os.getenv("TOPIC_PLAN_WEB_RESEARCH_MODEL") or self.config.model
         url = self.config.base_url.rstrip("/") + "/responses"
@@ -269,12 +290,16 @@ class DoubaoTopicPlanClient:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(url, json=body, headers=headers)
         except httpx.RequestError as error:
+            detail = _web_research_request_error_message(
+                error,
+                timeout_seconds=timeout_seconds,
+            )
             if _env_bool("TOPIC_PLAN_REQUIRE_WEB_RESEARCH", True):
                 raise TopicPlanLLMError(
                     "brand_context_search_failed",
-                    "Topic Plan brand context search failed: " + str(error),
+                    detail,
                 ) from error
-            logger.warning("topic_plan web research request failed: %s", error)
+            logger.warning(detail)
             return []
         if response.status_code != 200:
             detail = (

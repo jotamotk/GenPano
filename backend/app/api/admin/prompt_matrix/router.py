@@ -205,6 +205,10 @@ async def _review_one(
     candidate.reviewed_at = _now()
     candidate.review_reason = reason
     candidate.updated_at = _now()
+    if new_status == "approved":
+        approved_prompt_id = await pm_db.promote_candidate_to_prompt(session, candidate)
+        if approved_prompt_id is not None:
+            candidate.approved_prompt_id = approved_prompt_id
     await session.commit()
     await session.refresh(candidate)
 
