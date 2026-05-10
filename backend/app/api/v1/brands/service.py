@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from genpano_models import Project
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.brands._dto import BrandSearchHit
+
+logger = logging.getLogger(__name__)
 
 
 async def search_brands(
@@ -52,36 +56,7 @@ async def search_brands(
     except Exception:
         has_aliases = False
 
-    aliases_clause = (
-        " OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(aliases, '[]'::jsonb)) AS a "
-        "WHERE LOWER(a) LIKE :pattern)"
-        if has_aliases
-        else ""
-    )
-
-    try:
-        result = await session.execute(
-            text(
-                f"""
-                SELECT
-                    id,
-                    COALESCE(NULLIF(name_zh, ''), NULLIF(name_en, ''), name) AS display_name,
-                    industry
-                FROM brands
-                WHERE
-                    LOWER(COALESCE(name_zh, '')) LIKE :pattern
-                    OR LOWER(COALESCE(name_en, '')) LIKE :pattern
-                    OR LOWER(COALESCE(name, '')) LIKE :pattern
-                    {aliases_clause}
-                ORDER BY display_name
-                LIMIT :lim
-                """
-            ),
-            {"pattern": pattern, "lim": capped},
-        )
-        rows = result.all()
-    except Exception:
-        return []
+    rows = await _query_brands(session, pattern=pattern, lim=capped, with_aliases=has_aliases)
 
     monitored: set[int] = set()
     if user_id:
@@ -107,3 +82,57 @@ async def search_brands(
             )
         )
     return hits
+
+
+async def _query_brands(
+    session: AsyncSession,
+    *,
+    pattern: str,
+    lim: int,
+    with_aliases: bool,
+) -> list[tuple[int, str, str | None]]:
+    """Run the brand-search SELECT, falling back to name-only when the
+    aliases JSONB sub-clause errors out (e.g. some row has a non-array
+    aliases value, which would fail jsonb_array_elements_text). All
+    failures are logged so the silent-empty-result mode that bit us in
+    PR #438 is observable in prod logs.
+    """
+    aliases_clause = (
+        " OR EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+        "COALESCE(aliases, '[]'::jsonb)) AS a WHERE LOWER(a) LIKE :pattern)"
+        if with_aliases
+        else ""
+    )
+    name_only_select = """
+        SELECT
+            id,
+            COALESCE(NULLIF(name_zh, ''), NULLIF(name_en, ''), name) AS display_name,
+            industry
+        FROM brands
+        WHERE
+            LOWER(COALESCE(name_zh, '')) LIKE :pattern
+            OR LOWER(COALESCE(name_en, '')) LIKE :pattern
+            OR LOWER(COALESCE(name, '')) LIKE :pattern
+    """
+    sql = text(f"{name_only_select} {aliases_clause} ORDER BY display_name LIMIT :lim")
+    try:
+        rows = (await session.execute(sql, {"pattern": pattern, "lim": lim})).all()
+        return [(int(r[0]), str(r[1]) if r[1] is not None else "", r[2]) for r in rows]
+    except Exception:
+        logger.exception(
+            "search_brands: primary query failed (with_aliases=%s); will retry without aliases",
+            with_aliases,
+        )
+    if not with_aliases:
+        return []
+    try:
+        rows = (
+            await session.execute(
+                text(f"{name_only_select} ORDER BY display_name LIMIT :lim"),
+                {"pattern": pattern, "lim": lim},
+            )
+        ).all()
+        return [(int(r[0]), str(r[1]) if r[1] is not None else "", r[2]) for r in rows]
+    except Exception:
+        logger.exception("search_brands: name-only fallback also failed; returning []")
+        return []
