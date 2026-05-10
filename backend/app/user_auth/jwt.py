@@ -10,6 +10,8 @@ from typing import Any
 from jose import JWTError, jwt  # type: ignore[import-untyped]
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError  # type: ignore[import-untyped]
 
+from app.core.config import get_settings
+
 USER_ACCESS_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "genpano"
@@ -38,7 +40,7 @@ class UserAccessTokenPayload:
 
 
 def _load_secret() -> str:
-    raw = os.environ.get("USER_JWT_SECRET")
+    raw = os.environ.get("USER_JWT_SECRET") or get_settings().user_jwt_secret
     if raw is None or len(raw.encode("utf-8")) < _MIN_SECRET_BYTES:
         raise UserJwtSecretMissingError(
             f"USER_JWT_SECRET must be set and >= {_MIN_SECRET_BYTES} bytes"
