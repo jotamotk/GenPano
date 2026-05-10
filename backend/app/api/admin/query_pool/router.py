@@ -738,6 +738,7 @@ async def _fetch_candidates_paged(
         cmp = "<" if direction == "prev" else ">"
         page_where.append(f"q.candidate_seq {cmp} :cursor_seq")
         page_params["cursor_seq"] = cursor_seq
+    page_where_clause = " AND ".join(page_where) if page_where else "TRUE"
     order = "DESC" if direction == "prev" else "ASC"
     page_params["limit"] = limit + 1
     prompt_join = (
@@ -798,7 +799,7 @@ async def _fetch_candidates_paged(
         {topic_join}
         {segment_join}
         {profile_join}
-        WHERE {" AND ".join(page_where)}
+        WHERE {page_where_clause}
         ORDER BY q.candidate_seq {order}
         LIMIT :limit
         """

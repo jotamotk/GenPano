@@ -161,6 +161,34 @@ async def test_list_candidates_real_sql_tolerates_prompt_stub(
 
 
 @pytest.mark.asyncio
+async def test_list_candidates_all_runs_without_filters_uses_true_where(
+    client, admin_operator, run, db_session: AsyncSession
+):
+    candidate = QueryGenerationCandidate(
+        id=_new_id(),
+        run_id=run.id,
+        candidate_seq=1,
+        prompt_id="1",
+        segment_id="s1",
+        profile_id="prof1",
+        rendered_query="Rendered query",
+        render_hash="hash-all-runs-no-filter",
+        generation_method="llm",
+        candidate_status="candidate",
+    )
+    db_session.add(candidate)
+    await db_session.commit()
+
+    resp = await client.get("/api/admin/query-pool/candidates?all_runs=1")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["approx_total"] >= 1
+    assert [row["id"] for row in body["rows"]] == [candidate.id]
+
+
+@pytest.mark.asyncio
 async def test_list_candidates_happy_uses_latest_run(client, admin_operator, run, monkeypatch):
     """When run_id is omitted, falls back to most-recent run."""
     import sys
