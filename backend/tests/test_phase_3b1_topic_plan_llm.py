@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from app.admin.topic_plan.lib import DoubaoConfig, TopicPlanLLMError
-from app.admin.topic_plan.llm import DoubaoTopicPlanClient
+from app.admin.topic_plan.llm import DoubaoTopicPlanClient, _parse_brand_research
 
 
 def _config() -> DoubaoConfig:
@@ -22,6 +22,20 @@ def _config() -> DoubaoConfig:
         base_url="https://example.invalid/v3",
         model="doubao-2",
     )
+
+
+def test_parse_brand_research_matches_brand_names_case_and_space_insensitively():
+    rows = _parse_brand_research(
+        (
+            '{"brands":[{"name":"Best Coffer","industry":"VDR",'
+            '"source_notes":[{"title":"Official","url":"https://bestcoffer.example"}]}]}'
+        ),
+        ["bestCoffer"],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["name"] == "bestCoffer"
+    assert rows[0]["industry"] == "VDR"
 
 
 @pytest.mark.asyncio
@@ -133,7 +147,7 @@ async def test_generate_topics_missing_brand_search_context_raises(monkeypatch):
 
     assert exc.value.code == "brand_context_search_failed"
     assert "Adidas" in exc.value.message
-    assert len(posted) == 1
+    assert len(posted) == 2
 
 
 @pytest.mark.asyncio
@@ -284,6 +298,38 @@ async def test_generate_topics_search_timeout_message_is_actionable(monkeypatch)
     assert "ReadTimeout" in exc.value.message
     assert "90s" in exc.value.message
     assert "Web Search" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_research_brand_context_retries_unusable_search_output(monkeypatch):
+    posted = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        posted.append({"url": url, "body": json})
+        if len(posted) == 1:
+            return httpx.Response(200, json={"output_text": "I found the brand, but no JSON."})
+        return httpx.Response(
+            200,
+            json={
+                "output_text": (
+                    '{"brands":[{"name":"BestCoffer","industry":"VDR",'
+                    '"source_notes":[{"title":"Official","url":"https://bestcoffer.example"}]}]}'
+                )
+            },
+        )
+
+    monkeypatch.setenv("TOPIC_PLAN_WEB_RESEARCH_ATTEMPTS", "2")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    client = DoubaoTopicPlanClient(config=_config())
+    rows = await client.research_brand_context(
+        industry="data security",
+        category="vdr",
+        brands=[{"name": "bestCoffer"}],
+    )
+
+    assert len(posted) == 2
+    assert rows[0]["name"] == "bestCoffer"
 
 
 @pytest.mark.asyncio
