@@ -23,6 +23,7 @@ export interface LoginResponse {
     provider?: string
     emailVerified?: boolean
     locale?: 'zh-CN' | 'en-US'
+    needsOnboarding?: boolean
   }
 }
 
@@ -42,6 +43,7 @@ export interface MeResponse {
   emailVerified?: boolean
   locale?: 'zh-CN' | 'en-US'
   createdAt: string
+  needsOnboarding?: boolean
 }
 
 export interface LookupResponse {

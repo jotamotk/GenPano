@@ -27,6 +27,11 @@ class UserDto(_BaseDto):
     email_verified: bool
     locale: EmailLocale
     created_at: datetime
+    # True when the user has zero non-deleted Project rows. Used by the SPA's
+    # RequireOnboarded guard to push first-time users to /onboarding before
+    # they hit /dashboard. Computed fresh on every /me / login response so
+    # deleting the only project re-arms the guard.
+    needs_onboarding: bool = False
 
 
 class LoginResponse(_BaseDto):

@@ -950,11 +950,31 @@ export const MESSAGES = {
         },
       },
     },
-    /* ─── PRD §4.1.1b Onboarding: 可跳过的行业选择 ─── */
+    /* ─── PRD §4.1.1b Onboarding: 可跳过的品牌选择 ─── */
     onboarding: {
       skip: {
-        cta: '跳过，稍后再选',
-        hint: '稍后可在工作台随时选择行业',
+        cta: '跳过，先逛逛',
+        hint: '稍后可在仪表盘顶部 banner 里返回设置品牌',
+      },
+      brand: {
+        title: '设置你要监测的品牌',
+        subtitle: '我们已为大量品牌预先采集了 AI 引擎数据，搜索品牌名或域名即可立即查看真实数据',
+        search: {
+          placeholder: '搜索品牌名（例如：Nike、耐克、apple）',
+        },
+        loading: '搜索中…',
+        not_found: '未在已爬取的品牌库中找到匹配项',
+        search_failed: '搜索失败，请检查网络后重试',
+        already_monitoring: '已在监测',
+        duplicate_confirm: '你已经在监测 {brand}，仍要新建一个监测吗？',
+        create_failed: '创建失败，请重试',
+      },
+    },
+    dashboard: {
+      onboarding_banner: {
+        title: '你还没设置监测品牌',
+        body: '当前展示的是行业平均数据。设置品牌后将显示该品牌的实时 AI 表现。',
+        cta: '现在设置',
       },
     },
     /* ─── PRD §4.1.1d E4: Gated 页面顶部 Banner ───
@@ -1966,11 +1986,33 @@ export const MESSAGES = {
         },
       },
     },
-    /* ─── PRD §4.1.1b Onboarding: skippable industry picker ─── */
+    /* ─── PRD §4.1.1b Onboarding: skippable brand picker ─── */
     onboarding: {
       skip: {
-        cta: 'Skip for now',
-        hint: 'You can pick an industry any time from the workspace.',
+        cta: 'Skip — explore first',
+        hint: 'You can come back from the dashboard banner any time.',
+      },
+      brand: {
+        title: 'Pick the brand you want to monitor',
+        subtitle:
+          'We pre-collect AI engine signals for a wide catalog of brands — search by name or domain to see live data right away.',
+        search: {
+          placeholder: 'Search brand name (e.g. Nike, Apple, nike.com)',
+        },
+        loading: 'Searching…',
+        not_found: "We couldn't find that brand in our catalog yet",
+        search_failed: 'Search failed — check your connection and retry',
+        already_monitoring: 'Already monitoring',
+        duplicate_confirm:
+          'You already monitor {brand}. Create another project for it anyway?',
+        create_failed: 'Could not create the project. Please retry.',
+      },
+    },
+    dashboard: {
+      onboarding_banner: {
+        title: "You haven't set a brand yet",
+        body: "You're seeing industry-wide demo data. Pick a brand to unlock live AI visibility for it.",
+        cta: 'Set it up',
       },
     },
     /* ─── PRD §4.1.1d E4: gated-page top banner ─── */
