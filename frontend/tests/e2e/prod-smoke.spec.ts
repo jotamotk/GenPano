@@ -217,18 +217,47 @@ test.describe('Prod smoke — REAL auth business flow', () => {
   })
 
   test('SPA: brand search dropdown works against real /v1/brands/search', async ({ page, request }) => {
-    const { needsOnboarding } = await realLogin(page, request)
-    test.skip(!needsOnboarding, 'Test account already onboarded; skipping search flow')
+    // Onboarding page is reachable even when the user already has a
+    // Project — we only stop short of clicking a brand to avoid
+    // accidentally creating a duplicate project on the prod account.
+    await realLogin(page, request)
     await page.goto(`${BASE}/onboarding`)
+    await expect(page.getByTestId('brand-search-input')).toBeVisible({ timeout: 10_000 })
     await page.getByTestId('brand-search-input').fill('Nike')
-    // Real backend may return 0 or N results depending on catalog. Just
-    // verify the network call lands and the input doesn't crash.
-    await page.waitForTimeout(800) // allow debounce + RTT
-    // Either we see at least one hit OR the empty-state — but no error.
-    const hasHits = await page.getByTestId('brand-search-results').locator('button').count()
-    if (hasHits === 0) {
+    await page.waitForTimeout(800) // 300ms debounce + RTT
+    const hits = page.getByTestId('brand-search-results').locator('button')
+    const count = await hits.count()
+    if (count === 0) {
       await expect(page.getByTestId('brand-search-empty')).toBeVisible({ timeout: 5_000 })
+    } else {
+      // Each hit must show its brand name; the data-testid pattern
+      // includes the brand id so we can read it back.
+      const firstAttr = await hits.first().getAttribute('data-testid')
+      expect(firstAttr).toMatch(/^brand-search-hit-\d+$/)
     }
+  })
+
+  test('SPA: banner reminder navigates back to /onboarding', async ({ page, request }) => {
+    // Force the soft-skip flag + needsOnboarding=true via mock so we
+    // can observe the banner CTA flow on the deployed SPA without
+    // depending on the real account's project state.
+    await realLogin(page, request)
+    await page.route('**/api/auth/me', async (route) => {
+      const realResp = await route.fetch()
+      const json = await realResp.json()
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ...json, needsOnboarding: true }),
+      })
+    })
+    await page.addInitScript(() =>
+      window.sessionStorage.setItem('genpano_onboarding_skipped', '1'),
+    )
+    await page.goto(`${BASE}/brand/overview`)
+    await expect(page.getByTestId('onboarding-banner')).toBeVisible({ timeout: 10_000 })
+    await page.getByTestId('onboarding-banner-cta').click()
+    await expect(page).toHaveURL(/\/onboarding$/, { timeout: 10_000 })
   })
 })
 
