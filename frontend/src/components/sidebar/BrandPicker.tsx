@@ -233,8 +233,19 @@ export default function BrandPicker({ ariaLabel, onAfterSelect }: BrandPickerPro
         <div
           role="dialog"
           aria-label="切换品牌"
-          className="absolute left-0 right-0 mt-2 z-50 rounded-lg border border-themed-card shadow-lg overflow-hidden"
-          style={{ background: 'var(--color-surface, #fff)', maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}
+          /* Anchored to the trigger button (left:0) but stretches RIGHT
+             past the sidebar so brand names + section labels don't get
+             clipped by the narrow sidebar column. ~360px is wide enough
+             for full-width Chinese brand names + industry hint. */
+          className="absolute left-0 mt-2 z-50 rounded-lg border border-themed-card shadow-lg overflow-hidden"
+          style={{
+            background: 'var(--color-surface, #fff)',
+            width: 360,
+            maxWidth: 'calc(100vw - 32px)',
+            maxHeight: '70vh',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
         >
           {/* Search */}
           <div className="px-3 py-2.5 border-b border-themed-card">
@@ -252,21 +263,34 @@ export default function BrandPicker({ ariaLabel, onAfterSelect }: BrandPickerPro
           </div>
 
           <div className="overflow-y-auto" style={{ maxHeight: 'calc(70vh - 60px)' }}>
-            {/* Search results — only visible while searching */}
+            {/* Search results — only visible while searching. We surface
+                error and "no match" exclusively, never both, so the
+                502/empty-result case isn't visually noisy. */}
             {search.trim().length >= 2 && (
               <Section label="搜索结果">
                 {searching && (
-                  <div className="px-3 py-2 text-xs text-themed-muted">搜索中…</div>
+                  <div className="px-4 py-2 text-xs text-themed-muted">搜索中…</div>
                 )}
-                {searchError && (
-                  <div className="px-3 py-2 text-xs text-themed-danger">{searchError}</div>
-                )}
-                {!searching && searchResults && searchResults.length === 0 && (
-                  <div className="px-3 py-2 text-xs text-themed-muted">
-                    无匹配品牌
+                {!searching && searchError && (
+                  <div className="px-4 py-2 text-xs text-themed-danger">
+                    {searchError === 'Bad Gateway'
+                      ? '后台暂时不可用，请稍后重试'
+                      : searchError}
                   </div>
                 )}
-                {searchResults?.map((hit) => (
+                {!searching && !searchError && searchResults && searchResults.length === 0 && (
+                  <div className="px-4 py-2 text-xs text-themed-muted leading-relaxed">
+                    没有找到匹配的品牌。请检查拼写（例如 雅<b>诗</b>兰黛 而不是 雅<b>思</b>兰黛），或<button
+                      type="button"
+                      className="text-themed-accent underline"
+                      onClick={() => {
+                        navigate('/onboarding');
+                        close();
+                      }}
+                    >前往「添加品牌」</button>
+                  </div>
+                )}
+                {!searching && !searchError && searchResults?.map((hit) => (
                   <Row
                     key={hit.brandId}
                     name={hit.brandName}
