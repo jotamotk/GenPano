@@ -12,6 +12,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityRadar,
@@ -53,6 +54,7 @@ export default function BrandCompetitorsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
@@ -65,6 +67,7 @@ export default function BrandCompetitorsPage() {
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'mention_rate',
     topN: 8,
+    filters: chartFilters,
   });
 
   const competitors = useMemo(

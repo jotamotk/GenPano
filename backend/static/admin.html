@@ -1887,9 +1887,25 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="text-[11px] text-ink-muted">
-                  共 <span class="font-semibold text-ink" x-text="schedules.length"></span> ·
+                  共 <span class="font-semibold text-ink" x-text="schedulesTotal || schedules.length"></span> ·
                   启用 <span class="font-semibold text-success" x-text="schedules.filter(s => s.enabled).length"></span>
                 </span>
+                <select x-model="scheduleFilterBrandId"
+                        @change="schedulePage = 1; loadSchedules()"
+                        class="h-8 w-[170px] px-2 rounded-btn border border-b-default bg-surface text-[12px] text-ink-body">
+                  <option value="">All brands</option>
+                  <template x-for="b in scheduleEditorBrands" :key="'schedule-filter-brand-' + b.id">
+                    <option :value="b.id" x-text="b.name"></option>
+                  </template>
+                </select>
+                <select x-model.number="schedulePerPage"
+                        @change="schedulePage = 1; loadSchedules()"
+                        class="h-8 w-[88px] px-2 rounded-btn border border-b-default bg-surface text-[12px] text-ink-body">
+                  <option :value="25">25 / page</option>
+                  <option :value="50">50 / page</option>
+                  <option :value="100">100 / page</option>
+                  <option :value="200">200 / page</option>
+                </select>
                 <button class="h-8 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12px] font-medium"
                         @click="loadSchedules(); loadUpcoming()">刷新</button>
                 <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
@@ -1919,8 +1935,8 @@
                   <template x-for="s in schedules" :key="s.id">
                     <tr class="border-b border-b-card/50 hover:bg-surface-page transition-colors"
                         :class="!s.enabled ? 'opacity-60' : ''">
-                      <td class="py-2.5 px-4 text-ink-body truncate max-w-[420px]" :title="s.query_text" x-text="s.query_text"></td>
-                      <td class="py-2.5 px-4 text-ink-body" x-text="s.target_llm"></td>
+                      <td class="py-2.5 px-4 text-ink-body truncate max-w-[420px]" :title="s.query_text" x-text="scheduleQueryLabel(s)"></td>
+                      <td class="py-2.5 px-4 text-ink-body" x-text="scheduleLlmLabel(s)"></td>
                       <td class="py-2.5 px-4 font-mono text-[11px] text-ink-muted truncate" :title="s.profile_id" x-text="s.profile_id || '— 自动 —'"></td>
                       <td class="py-2.5 px-4 text-right tabular-nums" x-text="s.cadence_days + ' 天'"></td>
                       <td class="py-2.5 px-4 font-mono text-[11px] text-ink-muted" x-text="formatScheduleTs(s.next_run_at)"></td>
@@ -8108,6 +8124,23 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <button class="seg-tab" :class="{active: scheduleEditor.querySource === 'custom'}"
                       @click="scheduleEditor.querySource = 'custom'">自定义文本</button>
             </div>
+            <div class="px-5 py-3 border-t border-b-card flex items-center justify-between text-[11px] text-ink-muted">
+              <span x-text="'Page ' + schedulePage + ' / ' + scheduleTotalPages() + ' · total ' + (schedulesTotal || 0)"></span>
+              <div class="inline-flex items-center gap-1">
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(1)">«</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage <= 1"
+                        @click="setSchedulePage(schedulePage - 1)">‹</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(schedulePage + 1)">›</button>
+                <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                        :disabled="schedulePage >= scheduleTotalPages()"
+                        @click="setSchedulePage(scheduleTotalPages())">»</button>
+              </div>
+            </div>
           </div>
 
           <template x-if="scheduleEditor.querySource === 'pool'">
@@ -9188,6 +9221,13 @@ const API_BASE = (() => {
   if (ADMIN_BASE_PATH === '/admin') return '/admin/api';
   return APP_BASE_PATH + '/api';
 })();
+
+function formatAdminErrorDetail(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); }
+  catch (_) { return String(value); }
+}
 
 // Global fetch wrapper — every admin API failure surfaces a copyable
 // diagnostic block via the sticky error panel, even if the call site uses
@@ -10613,10 +10653,11 @@ function segmentCrudPanel() {
      * The panel surfaces request_id + a copy-to-clipboard block so users
      * can attach the diagnostic to a support ticket without screenshots. */
     showErrorFrom(err) {
-      const body = (err && err.body) || {};
+      const rawBody = (err && err.body) || {};
+      const body = rawBody.detail && typeof rawBody.detail === 'object' ? rawBody.detail : rawBody;
       const code = body.code || body.error || (err && err.code) || 'unknown_error';
       const title = body.title || body.message || (err && err.message) || '请求失败';
-      const detail = body.detail || '';
+      const detail = formatAdminErrorDetail(body.detail);
       const status = (err && err.status) || body.status || 0;
       const requestId = (err && err.requestId) || body.request_id || '';
       const path = (err && err.path) || body.instance || '';
@@ -12114,6 +12155,10 @@ function adminApp() {
 
     // ─── Query 计划 (recurring plans) ──────────────────────────────────
     schedules: [],
+    schedulesTotal: 0,
+    schedulePage: 1,
+    schedulePerPage: 50,
+    scheduleFilterBrandId: '',
     upcoming: { days: [] },
     upcomingDays: 7,
     upcomingLoading: false,
@@ -13470,10 +13515,11 @@ function adminApp() {
     },
 
     showErrorFrom(err) {
-      const body = (err && err.body) || {};
+      const rawBody = (err && err.body) || {};
+      const body = rawBody.detail && typeof rawBody.detail === 'object' ? rawBody.detail : rawBody;
       const code = body.code || body.error || (err && err.code) || 'unknown_error';
       const title = body.title || body.message || (err && err.message) || 'Request failed';
-      const detail = body.detail || '';
+      const detail = formatAdminErrorDetail(body.detail);
       const status = (err && err.status) || body.status || 0;
       const requestId = (err && err.requestId) || body.request_id || '';
       const path = (err && err.path) || body.instance || '';
@@ -17834,6 +17880,7 @@ function adminApp() {
         this.loadSchedulerConfig(),
         this.loadSchedulerToday(),
         this.loadSchedulerRuns(),
+        this.loadScheduleEditorBrands(),
         this.loadSchedules(),
         this.loadUpcoming(),
       ]);
@@ -17843,32 +17890,110 @@ function adminApp() {
     // ─── Query 计划 CRUD ──────────────────────────────────────────────
     async loadSchedules() {
       try {
-        const res = await fetch(API_BASE + '/scheduler/schedules', { credentials: 'same-origin' });
+        const params = new URLSearchParams({
+          page: String(this.schedulePage || 1),
+          per_page: String(this.schedulePerPage || 50),
+        });
+        if (this.scheduleFilterBrandId) params.set('brand_id', this.scheduleFilterBrandId);
+        const res = await fetch(API_BASE + '/scheduler/schedules?' + params.toString(), { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        this.schedules = Array.isArray(data) ? data : [];
+        if (Array.isArray(data)) {
+          this.schedules = data;
+          this.schedulesTotal = data.length;
+        } else {
+          this.schedules = Array.isArray(data.rows) ? data.rows : [];
+          this.schedulesTotal = Number(data.total || this.schedules.length || 0);
+          this.schedulePage = Number(data.page || this.schedulePage || 1);
+          this.schedulePerPage = Number(data.per_page || this.schedulePerPage || 50);
+        }
       } catch (e) {
         this.toast('加载 Query 计划失败: ' + (e.message || e));
         this.schedules = [];
+        this.schedulesTotal = 0;
       }
+    },
+    scheduleTotalPages() {
+      const per = Number(this.schedulePerPage || 50) || 50;
+      return Math.max(1, Math.ceil((Number(this.schedulesTotal || 0) || 0) / per));
+    },
+    async setSchedulePage(page) {
+      const next = Math.min(this.scheduleTotalPages(), Math.max(1, Number(page || 1)));
+      if (next === this.schedulePage) return;
+      this.schedulePage = next;
+      await this.loadSchedules();
+    },
+    normalizeSchedulerUpcoming(data) {
+      const source = data && typeof data === 'object' ? data : {};
+      const byDate = source.by_date && typeof source.by_date === 'object' && !Array.isArray(source.by_date)
+        ? source.by_date
+        : {};
+      const rawDays = Array.isArray(source.days)
+        ? source.days
+        : Object.keys(byDate).sort().map(date => ({ date, fires: byDate[date] }));
+      const days = rawDays.map(day => {
+        const rawDay = day && typeof day === 'object' ? day : {};
+        const date = String(rawDay.date || rawDay.day || rawDay.date_iso || '').trim();
+        const rawFires = Array.isArray(rawDay.fires)
+          ? rawDay.fires
+          : Array.isArray(rawDay.items)
+            ? rawDay.items
+            : Array.isArray(rawDay.schedules)
+              ? rawDay.schedules
+              : [];
+        const fires = rawFires.map(fire => {
+          const row = fire && typeof fire === 'object' ? { ...fire } : {};
+          const fireAt = row.fire_at || row.fires_at || row.next_run_at || '';
+          return {
+            ...row,
+            schedule_id: row.schedule_id ?? row.id ?? '',
+            fire_at: fireAt,
+            fires_at: row.fires_at || fireAt,
+          };
+        }).sort((a, b) => String(a.fire_at || '').localeCompare(String(b.fire_at || '')));
+        const hasCount = rawDay.count !== null && rawDay.count !== undefined && rawDay.count !== '';
+        const count = hasCount && Number.isFinite(Number(rawDay.count)) ? Number(rawDay.count) : fires.length;
+        return { ...rawDay, date, fires, count };
+      }).filter(day => day.date);
+      return { ...source, days };
     },
     async loadUpcoming() {
       this.upcomingLoading = true;
       try {
-        const res = await fetch(API_BASE + '/scheduler/upcoming?days=' + (this.upcomingDays || 7),
-                                { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const url = API_BASE + '/scheduler/upcoming?days=' + (this.upcomingDays || 7);
+        const res = await fetch(url,
+                                { credentials: 'same-origin', silentError: true });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const err = new Error(data.message || data.error || data.title || ('HTTP ' + res.status));
+          err.body = data;
+          err.status = res.status;
+          err.path = url;
+          throw err;
+        }
+        const upcoming = this.normalizeSchedulerUpcoming(data);
         // Pre-expand the first 3 non-empty days so the page shows useful info.
         let openCount = 0;
-        (data.days || []).forEach(d => {
+        (upcoming.days || []).forEach(d => {
           d._expanded = (openCount < 3 && d.count > 0);
           if (d._expanded) openCount++;
         });
-        this.upcoming = data || { days: [] };
+        this.upcoming = upcoming;
         this.$nextTick(() => lucide.createIcons());
       } catch (e) {
-        this.toast('加载未来计划失败: ' + (e.message || e));
+        const body = (e && e.body && typeof e.body === 'object') ? e.body : {};
+        const message = body.detail || body.message || body.error || (e && e.message) || String(e);
+        this.showErrorFrom({
+          body: {
+            ...body,
+            code: body.code || body.error || 'scheduler_upcoming_load_failed',
+            title: '加载未来计划失败',
+            detail: String(message || '未知错误'),
+          },
+          status: (e && e.status) || body.status || 0,
+          requestId: (e && e.requestId) || body.request_id || '',
+          path: (e && e.path) || (API_BASE + '/scheduler/upcoming'),
+        });
         this.upcoming = { days: [] };
       } finally {
         this.upcomingLoading = false;
@@ -17890,6 +18015,15 @@ function adminApp() {
       const labels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
       const d = new Date(dateStr + 'T00:00:00');
       return isNaN(d) ? '' : labels[d.getDay()];
+    },
+    scheduleQueryLabel(s) {
+      if (!s) return '';
+      if (s.plan_kind === 'batch') return (s.item_count || 0) + ' queries';
+      return s.query_text || '';
+    },
+    scheduleLlmLabel(s) {
+      const llms = Array.isArray(s?.target_llms) && s.target_llms.length ? s.target_llms : [s?.target_llm].filter(Boolean);
+      return llms.join(', ');
     },
     // Cache for the schedule editor's cascade picker
     scheduleEditorBrands: [],
@@ -18092,6 +18226,12 @@ function adminApp() {
     selectedScheduleEditorCandidateRows() {
       return Object.values(this.scheduleEditorCandidateSelection || {});
     },
+    scheduleEditorQueryLanguage(text) {
+      const value = String(text || '');
+      if (/[\u4e00-\u9fff]/.test(value)) return 'zh';
+      if (/[A-Za-z]/.test(value)) return 'en';
+      return 'unknown';
+    },
     scheduleEditorCandidatePageAllSelected() {
       const rows = this.scheduleEditorCandidateRows || [];
       return rows.length > 0 && rows.every(candidate => this.isScheduleEditorCandidateSelected(candidate.id));
@@ -18184,29 +18324,33 @@ function adminApp() {
           if (!isNaN(d)) commonPayload.next_run_at = d.toISOString();
         }
         if (e.querySource === 'pool' && !e.id) {
-          let created = 0;
-          for (const candidate of selectedCandidates) {
-            for (const targetLlm of selectedLlms) {
-              const payload = {
-                ...commonPayload,
-                target_llm: targetLlm,
-                query_text: candidate.actualQueryText,
-                profile_id: candidate.profileId || null,
-                prompt_id: candidate.promptId,
-                brand_id: candidate.brandId,
-              };
-              const res = await fetch(API_BASE + '/scheduler/schedules', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-              });
-              const body = await res.json().catch(() => ({}));
-              if (!res.ok || body.error) throw new Error(this.scheduleEditorResponseMessage(body, 'HTTP ' + res.status));
-              created += 1;
-            }
-          }
-          this.toast('已创建 ' + created + ' 条 Query 计划');
+          const queryItems = selectedCandidates.map(candidate => ({
+            candidate_id: candidate.id,
+            query_text: candidate.actualQueryText,
+            profile_id: candidate.profileId || null,
+            prompt_id: candidate.promptId,
+            brand_id: candidate.brandId,
+            language: this.scheduleEditorQueryLanguage(candidate.actualQueryText),
+          }));
+          const selectedBrandIds = Array.from(new Set(queryItems.map(item => item.brand_id).filter(Boolean).map(String)));
+          const batchBrandId = e.pick_brand_id || (selectedBrandIds.length === 1 ? selectedBrandIds[0] : '');
+          const payload = {
+            ...commonPayload,
+            target_llm: selectedLlms[0],
+            target_llms: selectedLlms,
+            query_text: 'Query Pool batch (' + queryItems.length + ' queries)',
+            query_items: queryItems,
+            brand_id: batchBrandId ? parseInt(batchBrandId) : null,
+          };
+          const res = await fetch(API_BASE + '/scheduler/schedules', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok || body.error) throw new Error(this.scheduleEditorResponseMessage(body, 'HTTP ' + res.status));
+          this.toast('已创建 1 个 Query 计划（' + queryItems.length + ' queries）');
           this.closeScheduleEditor();
           await this.loadSchedules();
           await this.loadUpcoming();
@@ -18452,11 +18596,16 @@ function adminApp() {
       this.schedulerSaveErr = '';
       this.schedulerSaveMsg = '';
       try {
+        const payload = {
+          note: this.scheduleFilterBrandId ? 'manual via UI brand filter' : 'manual via UI',
+          limit: this.scheduleFilterBrandId ? 2000 : 50,
+        };
+        if (this.scheduleFilterBrandId) payload.brand_id = parseInt(this.scheduleFilterBrandId);
         const res = await fetch(API_BASE + '/scheduler/manual_trigger', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ note: 'manual via UI' }),
+          body: JSON.stringify(payload),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));

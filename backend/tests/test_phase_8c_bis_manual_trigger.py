@@ -11,6 +11,7 @@ via prod smoke tests (see PR description).
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import uuid
@@ -59,6 +60,14 @@ def _scheduler_router_module():
     import app.api.admin.scheduler.router  # noqa: F401
 
     return sys.modules["app.api.admin.scheduler.router"]
+
+
+def test_manual_dispatch_account_profile_null_check_casts_profile_bind_param():
+    from app.admin.scheduler.manual_dispatch import run_manual_dispatch
+
+    source = inspect.getsource(run_manual_dispatch)
+
+    assert "CAST(:pid_null AS TEXT) IS NULL" in source
 
 
 # ── auth gate ───────────────────────────────────────────────
@@ -143,13 +152,17 @@ async def test_manual_trigger_success_audit_high(
     monkeypatch.setattr(a, "run_manual_dispatch", AsyncMock(return_value=fake_result))
     resp = await client.post(
         "/api/admin/scheduler/manual_trigger",
-        json={"cap": 50, "note": "smoke test"},
+        json={"cap": 50, "note": "smoke test", "brand_id": 42, "limit": 1200},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
     assert body["queries_created"] == 3
     assert body["run_id"] == 42
+    a.run_manual_dispatch.assert_awaited_once()
+    dispatch_kwargs = a.run_manual_dispatch.await_args.kwargs
+    assert dispatch_kwargs["brand_id"] == 42
+    assert dispatch_kwargs["schedule_limit"] == 1200
     audit = list(
         (
             await db_session.execute(
@@ -164,6 +177,8 @@ async def test_manual_trigger_success_audit_high(
     after = audit[0].after or {}
     assert after.get("queries_created") == 3
     assert after.get("cap_override") == 50
+    assert after.get("brand_id") == 42
+    assert after.get("schedule_limit") == 1200
     assert after.get("reason") == "ok"
 
 

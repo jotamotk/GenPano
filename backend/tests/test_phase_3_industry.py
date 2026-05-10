@@ -12,6 +12,7 @@ from genpano_models import (
     BrandMention,
     GeoScoreDaily,
     IndustryBenchmarkDaily,
+    IndustryTopicDaily,
     User,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +84,17 @@ async def industry_data(db_session: AsyncSession) -> str:
                     total_queries=100,
                 )
             )
+    db_session.add(
+        IndustryTopicDaily(
+            industry_id=1,
+            category="snacks",
+            topic_id=9001,
+            date=datetime.combine(today, datetime.min.time()),
+            mention_count=25,
+            unique_brand_count=5,
+            hot_score=0.91,
+        )
+    )
     # brand_mentions for events_30d + topics
     for i in range(15):
         db_session.add(
@@ -166,6 +178,8 @@ async def test_industry_topics(client, user, industry_data):
     body = resp.json()
     assert body["state"] == "ok"
     assert len(body["items"]) >= 1
+    assert body["items"][0]["topic_id"] == 9001
+    assert body["items"][0]["topic_name"] != "brand-50"
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandCitations } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityTrend,
@@ -54,15 +55,16 @@ export default function BrandCitationsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
-  const citationsQ = useBrandCitations(isLive ? liveProjectId : null, 50);
-  const authorityTrendQ = useAuthorityTrend(isLive ? liveProjectId : null);
-  const compositionQ = useCitationComposition(isLive ? liveProjectId : null);
-  const contentGapQ = useContentGap(isLive ? liveProjectId : null, 12);
+  const citationsQ = useBrandCitations(isLive ? liveProjectId : null, 50, chartFilters);
+  const authorityTrendQ = useAuthorityTrend(isLive ? liveProjectId : null, chartFilters);
+  const compositionQ = useCitationComposition(isLive ? liveProjectId : null, chartFilters);
+  const contentGapQ = useContentGap(isLive ? liveProjectId : null, 12, chartFilters);
   const prTargetsQ = usePrTargets(isLive ? liveProjectId : null);
   const simulatorQ = useSimulatorBaseline(isLive ? liveProjectId : null);
 

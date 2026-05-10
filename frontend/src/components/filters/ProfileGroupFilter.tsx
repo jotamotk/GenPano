@@ -20,7 +20,7 @@
  * Companion: <ProfileGroupSampleWarning> renders the yellow degradation
  * banner when sampleCount < threshold, per PRD §4.2.3a "聚合语义".
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   PROFILE_GROUPS,
@@ -29,6 +29,10 @@ import {
   hasEnoughSamplesInGroup,
 } from '../../data/mock';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useProject } from '../../contexts/ProjectContext';
+import { useProjects } from '../../hooks/useProjects';
+import { useProjectSegments } from '../../hooks/useTopicAnalysis';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 
 const QUERY_KEY = 'profileGroup';
 const DEFAULT_GROUP_ID = 'all';
@@ -41,8 +45,27 @@ const DEFAULT_GROUP_ID = 'all';
 ─────────────────────────────────────────────────────────────── */
 export function useProfileGroupFilter() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { activeProject } = useProject();
+  const { data: liveProjects } = useProjects();
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
+  const segmentsQ = useProjectSegments(liveProjectId);
+  const groups = useMemo(() => {
+    const liveSegments = segmentsQ.data?.items || [];
+    if (!liveSegments.length) return PROFILE_GROUPS;
+    return [
+      PROFILE_GROUPS[0],
+      ...liveSegments.map((segment) => ({
+        id: segment.segment_id,
+        nameZh: segment.name,
+        nameEn: segment.name,
+        description: `${segment.active_profile_count} profiles`,
+        descriptionEn: `${segment.active_profile_count} profiles`,
+        sampleCount: segment.active_profile_count,
+      })),
+    ];
+  }, [segmentsQ.data?.items]);
   const id = searchParams.get(QUERY_KEY) || DEFAULT_GROUP_ID;
-  const group = PROFILE_GROUPS.find((g) => g.id === id) || PROFILE_GROUPS[0];
+  const group = groups.find((g) => g.id === id) || groups[0];
 
   const setGroupId = (nextId) => {
     const next = new URLSearchParams(searchParams);
@@ -54,11 +77,16 @@ export function useProfileGroupFilter() {
     setSearchParams(next, { replace: false });
   };
 
-  const sampleCount = getProfileGroupSampleCount(group.id);
-  const sufficient = hasEnoughSamplesInGroup(group.id);
+  const sampleCount =
+    typeof group.sampleCount === 'number' ? group.sampleCount : getProfileGroupSampleCount(group.id);
+  const sufficient =
+    segmentsQ.data?.items?.length
+      ? group.id === DEFAULT_GROUP_ID || sampleCount >= PROFILE_GROUP_SAMPLE_THRESHOLD
+      : hasEnoughSamplesInGroup(group.id);
 
   return {
     group,
+    groups,
     groupId: group.id,
     setGroupId,
     sampleCount,
@@ -73,7 +101,7 @@ export function useProfileGroupFilter() {
 ─────────────────────────────────────────────────────────────── */
 export default function ProfileGroupFilter({ className = '' }) {
   const { t, formatProfileGroup, locale } = useLocale();
-  const { group, setGroupId } = useProfileGroupFilter();
+  const { group, groups, setGroupId } = useProfileGroupFilter();
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
 
@@ -161,9 +189,12 @@ export default function ProfileGroupFilter({ className = '' }) {
           }}
         >
           <div className="max-h-72 overflow-y-auto py-1">
-            {PROFILE_GROUPS.map((g) => {
+            {groups.map((g) => {
               const isSelected = g.id === group.id;
-              const enough = hasEnoughSamplesInGroup(g.id);
+              const enough =
+                typeof g.sampleCount === 'number'
+                  ? g.id === DEFAULT_GROUP_ID || g.sampleCount >= PROFILE_GROUP_SAMPLE_THRESHOLD
+                  : hasEnoughSamplesInGroup(g.id);
               const desc = locale === 'zh-CN' ? g.description : g.descriptionEn;
               return (
                 <button

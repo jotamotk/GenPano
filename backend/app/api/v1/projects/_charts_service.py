@@ -74,6 +74,13 @@ from app.api.v1.projects._legacy_lookups import (
     resolve_brand_names,
     resolve_topic_names,
 )
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    _fact_rows,
+    get_topic_monitoring,
+    legacy_table_columns,
+    legacy_table_exists,
+)
 
 DEFAULT_WINDOW_DAYS = 30
 
@@ -96,6 +103,32 @@ def _dt_range(from_d: date, to_d: date) -> tuple[datetime, datetime]:
     )
 
 
+def _admin_filters(
+    from_d: date,
+    to_d: date,
+    *,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
+) -> AnalysisFilters:
+    return AnalysisFilters(
+        from_date=from_d,
+        to_date=to_d,
+        engines=tuple(engines) if engines else None,
+        segment_id=segment_id,
+        profile_id=profile_id,
+    )
+
+
+def _needs_admin_filter(
+    *,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
+) -> bool:
+    return bool(engines or segment_id or profile_id)
+
+
 # ── /metrics/by-engine ──────────────────────────────────────────────
 async def get_engine_metrics(
     session: AsyncSession,
@@ -103,6 +136,9 @@ async def get_engine_metrics(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> EngineMetricsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
@@ -110,6 +146,66 @@ async def get_engine_metrics(
             project_id=project.id, period=_period(from_d, to_d), items=[], state="empty"
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        bucket: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "responses": set(),
+                "target_mentions": 0,
+                "all_mentions": 0,
+                "citations": 0,
+                "sentiment": [],
+            }
+        )
+        seen: set[int] = set()
+        for row in rows:
+            rid = row.get("response_id")
+            if rid is None or int(rid) in seen:
+                continue
+            seen.add(int(rid))
+            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+            bucket[engine]["responses"].add(int(rid))
+            bucket[engine]["target_mentions"] += int(row.get("target_mention_count") or 0)
+            bucket[engine]["all_mentions"] += int(row.get("all_mention_count") or 0)
+            bucket[engine]["citations"] += int(row.get("citation_count") or 0)
+            if row.get("sentiment_score") is not None:
+                bucket[engine]["sentiment"].append(float(row["sentiment_score"]))
+        items = [
+            EngineMetricRow(
+                engine=engine,
+                mention_rate=round(
+                    values["target_mentions"] / len(values["responses"]), 4
+                )
+                if values["responses"]
+                else None,
+                sov=round(values["target_mentions"] / values["all_mentions"], 4)
+                if values["all_mentions"]
+                else None,
+                citation_rate=round(values["citations"] / len(values["responses"]), 4)
+                if values["responses"]
+                else None,
+                sentiment=round(sum(values["sentiment"]) / len(values["sentiment"]), 3)
+                if values["sentiment"]
+                else None,
+            )
+            for engine, values in sorted(bucket.items())
+        ]
+        return EngineMetricsOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=items,
+            state="ok" if items else "empty",
+        )
     stmt = (
         select(
             GeoScoreDaily.target_llm,
@@ -155,6 +251,9 @@ async def get_position_distribution(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> PositionDistributionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
@@ -166,6 +265,55 @@ async def get_position_distribution(
             state="empty",
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        buckets: OrderedDict[str, int] = OrderedDict(
+            [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
+        )
+        seen: set[int] = set()
+        for row in rows:
+            rid = row.get("response_id")
+            if rid is None or int(rid) in seen:
+                continue
+            seen.add(int(rid))
+            rank = row.get("min_position_rank") or row.get("target_brand_rank")
+            if rank is None:
+                buckets["Unmentioned"] += 1
+            elif int(rank) == 1:
+                buckets["Top1"] += 1
+            elif int(rank) <= 3:
+                buckets["Top3"] += 1
+            elif int(rank) <= 5:
+                buckets["Top5"] += 1
+            elif int(rank) <= 10:
+                buckets["Top10"] += 1
+            else:
+                buckets["11+"] += 1
+        total = sum(buckets.values())
+        return PositionDistributionOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=[
+                PositionBucketRow(
+                    bucket=k,
+                    count=v,
+                    pct=round((v / total * 100) if total else 0.0, 2),
+                )
+                for k, v in buckets.items()
+            ],
+            total_mentions=total,
+            state="ok" if total else "empty",
+        )
     stmt = (
         select(BrandMention.position_rank, func.count())
         .where(
@@ -317,6 +465,9 @@ async def get_sentiment_by_engine(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> SentimentByEngineOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
@@ -324,6 +475,46 @@ async def get_sentiment_by_engine(
             project_id=project.id, period=_period(from_d, to_d), items=[], state="empty"
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        bucket: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"positive": 0, "neutral": 0, "negative": 0}
+        )
+        seen: set[int] = set()
+        for row in rows:
+            rid = row.get("response_id")
+            if rid is None or int(rid) in seen:
+                continue
+            seen.add(int(rid))
+            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+            bucket[engine]["positive"] += int(row.get("positive_mentions") or 0)
+            bucket[engine]["neutral"] += int(row.get("neutral_mentions") or 0)
+            bucket[engine]["negative"] += int(row.get("negative_mentions") or 0)
+        items = [
+            SentimentByEngineRow(
+                engine=engine,
+                positive=v["positive"],
+                neutral=v["neutral"],
+                negative=v["negative"],
+            )
+            for engine, v in sorted(bucket.items())
+        ]
+        return SentimentByEngineOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=items,
+            state="ok" if items else "empty",
+        )
     # JOIN brand_mentions → llm_responses to get target_llm. SQLite tests fall
     # back to "all" engine bucket if join unavailable.
     try:
@@ -379,6 +570,9 @@ async def get_sentiment_trend_by_engine(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> SentimentTrendByEngineOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
@@ -390,6 +584,54 @@ async def get_sentiment_trend_by_engine(
             state="empty",
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        by_day_engine: dict[str, dict[str, list[float]]] = OrderedDict()
+        engines_seen: set[str] = set()
+        seen: set[int] = set()
+        for row in rows:
+            rid = row.get("response_id")
+            if rid is None or int(rid) in seen or row.get("sentiment_score") is None:
+                continue
+            seen.add(int(rid))
+            day = str(row.get("query_created_at") or row.get("response_created_at") or "")[:10]
+            if not day:
+                continue
+            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+            engines_seen.add(engine)
+            by_day_engine.setdefault(day, defaultdict(list))[engine].append(
+                float(row["sentiment_score"])
+            )
+        engine_list = sorted(engines_seen)
+        items = [
+            SentimentTrendByEngineRow(
+                date=day,
+                by_engine={
+                    engine: round(sum(values.get(engine, [])) / len(values.get(engine, [])), 4)
+                    if values.get(engine)
+                    else None
+                    for engine in engine_list
+                },
+            )
+            for day, values in by_day_engine.items()
+        ]
+        return SentimentTrendByEngineOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            engines=engine_list,
+            items=items,
+            state="ok" if items else "empty",
+        )
     stmt = (
         select(
             GeoScoreDaily.date,
@@ -437,6 +679,9 @@ async def get_topic_attribution(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
     limit: int = 10,
 ) -> TopicAttributionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
@@ -444,6 +689,64 @@ async def get_topic_attribution(
     if primary is None:
         return TopicAttributionOut(project_id=project.id, items=[], state="empty")
     f, t = _dt_range(from_d, to_d)
+
+    admin_filters = AnalysisFilters(
+        from_date=from_d,
+        to_date=to_d,
+        engines=tuple(engines) if engines else None,
+        segment_id=segment_id,
+        profile_id=profile_id,
+    )
+    admin_rows = await _fact_rows(session, project, filters=admin_filters)
+    by_topic: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    seen_responses: set[int] = set()
+    for row in admin_rows:
+        tid = row.get("topic_id")
+        if tid is None:
+            continue
+        tid = int(tid)
+        if tid not in by_topic:
+            by_topic[tid] = {
+                "name": row.get("topic_name") or f"topic-{tid}",
+                "positive": 0,
+                "neutral": 0,
+                "negative": 0,
+                "sample": None,
+            }
+        rid = row.get("response_id")
+        if rid is None or int(rid) in seen_responses:
+            continue
+        seen_responses.add(int(rid))
+        bucket = by_topic[tid]
+        bucket["positive"] += int(row.get("positive_mentions") or 0)
+        bucket["neutral"] += int(row.get("neutral_mentions") or 0)
+        bucket["negative"] += int(row.get("negative_mentions") or 0)
+        if bucket["sample"] is None and row.get("negative_sample_snippet"):
+            bucket["sample"] = row.get("negative_sample_snippet")
+
+    admin_items: list[TopicAttributionRow] = []
+    for tid, bucket in by_topic.items():
+        total = int(bucket["positive"] + bucket["neutral"] + bucket["negative"])
+        negative = int(bucket["negative"])
+        if total <= 0 or negative <= 0:
+            continue
+        admin_items.append(
+            TopicAttributionRow(
+                topic_id=tid,
+                topic_name=bucket["name"],
+                negative_count=negative,
+                negative_ratio=round(negative / total, 3),
+                sample_snippet=bucket["sample"],
+            )
+        )
+    admin_items.sort(key=lambda item: (-item.negative_ratio, -item.negative_count, item.topic_id))
+    if admin_items or admin_rows:
+        return TopicAttributionOut(
+            project_id=project.id,
+            items=admin_items[:limit],
+            state="ok" if admin_items else "empty",
+        )
+
     stmt = (
         select(
             TopicScoreDaily.topic_id,
@@ -568,6 +871,9 @@ async def get_authority_trend(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> AuthorityTrendOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     primary = project.primary_brand_id
@@ -576,6 +882,67 @@ async def get_authority_trend(
             project_id=project.id, period=_period(from_d, to_d), points=[], state="empty"
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        fact_rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        response_ids = sorted(
+            {int(r["response_id"]) for r in fact_rows if r.get("response_id") is not None}
+        )
+        if not response_ids:
+            return AuthorityTrendOut(
+                project_id=project.id, period=_period(from_d, to_d), points=[], state="empty"
+            )
+        stmt = (
+            select(
+                func.date(CitationSource.created_at).label("d"),
+                DomainAuthority.tier,
+                func.count().label("cnt"),
+            )
+            .select_from(CitationSource)
+            .outerjoin(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
+            .where(
+                and_(
+                    CitationSource.response_id.in_(response_ids),
+                    or_(CitationSource.mention_id.is_(None), BrandMention.brand_id == primary),
+                )
+            )
+            .group_by("d", DomainAuthority.tier)
+            .order_by("d")
+        )
+        rows = (await session.execute(stmt)).all()
+        by_day: dict[str, dict[int | None, int]] = OrderedDict()
+        for d, tier, cnt in rows:
+            d_iso = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
+            by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
+        points = []
+        for d_iso, tier_map in by_day.items():
+            total = sum(tier_map.values()) or 1
+            points.append(
+                AuthorityTrendPoint(
+                    date=d_iso,
+                    tier1_pct=round(tier_map.get(1, 0) / total * 100, 1),
+                    tier2_pct=round(tier_map.get(2, 0) / total * 100, 1),
+                    tier3_pct=round(tier_map.get(3, 0) / total * 100, 1),
+                    tier4_pct=round(tier_map.get(4, 0) / total * 100, 1),
+                    untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
+                )
+            )
+        return AuthorityTrendOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            points=points,
+            state="ok" if points else "empty",
+        )
     # Per-day count of citations grouped by tier.
     stmt = (
         select(
@@ -632,6 +999,9 @@ async def get_citation_composition(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
 ) -> CitationCompositionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     primary = project.primary_brand_id
@@ -640,6 +1010,69 @@ async def get_citation_composition(
             project_id=project.id, period=_period(from_d, to_d), segments=[], total=0, state="empty"
         )
     f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        fact_rows = await _fact_rows(
+            session,
+            project,
+            filters=_admin_filters(
+                from_d,
+                to_d,
+                engines=engines,
+                segment_id=segment_id,
+                profile_id=profile_id,
+            ),
+        )
+        response_ids = sorted(
+            {int(r["response_id"]) for r in fact_rows if r.get("response_id") is not None}
+        )
+        if not response_ids:
+            return CitationCompositionOut(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                segments=[],
+                total=0,
+                state="empty",
+            )
+        stmt = (
+            select(DomainAuthority.tier, func.count())
+            .select_from(CitationSource)
+            .outerjoin(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
+            .where(
+                and_(
+                    CitationSource.response_id.in_(response_ids),
+                    CitationSource.domain.isnot(None),
+                    or_(CitationSource.mention_id.is_(None), BrandMention.brand_id == primary),
+                )
+            )
+            .group_by(DomainAuthority.tier)
+        )
+        rows = (await session.execute(stmt)).all()
+        total = sum(int(r[1] or 0) for r in rows)
+        label_for = {
+            1: "Tier 1",
+            2: "Tier 2",
+            3: "Tier 3",
+            4: "Tier 4",
+            None: "Untiered",
+        }
+        by_tier = {r[0]: int(r[1] or 0) for r in rows}
+        return CitationCompositionOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            segments=[
+                CitationCompositionRow(
+                    label=label_for[tier],
+                    tier=tier,
+                    count=count,
+                    pct=round(count / total * 100, 1) if total else 0.0,
+                )
+                for tier in (1, 2, 3, 4, None)
+                if (count := by_tier.get(tier, 0)) or tier is not None
+            ],
+            total=total,
+            state="ok" if total else "empty",
+        )
     stmt = (
         select(DomainAuthority.tier, func.count())
         .select_from(CitationSource)
@@ -695,6 +1128,9 @@ async def get_content_gap(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
     limit: int = 12,
 ) -> ContentGapOut:
     from_d, to_d = _resolve_window(from_date, to_date)
@@ -707,6 +1143,72 @@ async def get_content_gap(
             state="empty",
         )
     f, t = _dt_range(from_d, to_d)
+
+    admin_filters = AnalysisFilters(
+        from_date=from_d,
+        to_date=to_d,
+        engines=tuple(engines) if engines else None,
+        segment_id=segment_id,
+        profile_id=profile_id,
+    )
+    monitoring = await get_topic_monitoring(session, project, filters=admin_filters)
+    if monitoring.topics:
+        topics: list[ContentGapTopicRow] = []
+        for row in monitoring.topics:
+            mention_rate = float(row.mention_rate or 0)
+            citation_rate = float(row.citation_rate or 0)
+            gap = round(mention_rate - citation_rate, 4)
+            if gap <= 0:
+                continue
+            topics.append(
+                ContentGapTopicRow(
+                    topic_id=row.topic_id,
+                    topic_name=row.topic_name,
+                    mention_rate=round(mention_rate, 4),
+                    citation_rate=round(citation_rate, 4),
+                    gap_score=gap,
+                    suggestion="Increase authoritative/owned citations for this topic.",
+                )
+            )
+            if len(topics) >= limit:
+                break
+
+        admin_rows = await _fact_rows(session, project, filters=admin_filters)
+        response_ids = sorted(
+            {int(r["response_id"]) for r in admin_rows if r.get("response_id") is not None}
+        )
+        page_types: list[ContentGapPageTypeRow] = []
+        if response_ids:
+            pt_stmt = (
+                select(CitationSource.source_type, func.count())
+                .select_from(CitationSource)
+                .outerjoin(BrandMention, BrandMention.id == CitationSource.mention_id)
+                .where(
+                    and_(
+                        CitationSource.response_id.in_(response_ids),
+                        or_(CitationSource.mention_id.is_(None), BrandMention.brand_id == primary),
+                    )
+                )
+                .group_by(CitationSource.source_type)
+                .order_by(desc(func.count()))
+            )
+            pt_rows = (await session.execute(pt_stmt)).all()
+            pt_total = sum(int(r[1] or 0) for r in pt_rows) or 1
+            page_types = [
+                ContentGapPageTypeRow(
+                    page_type=r[0] or "other",
+                    count=int(r[1] or 0),
+                    pct=round(int(r[1] or 0) / pt_total * 100, 1),
+                )
+                for r in pt_rows
+            ]
+        return ContentGapOut(
+            project_id=project.id,
+            topics=topics,
+            page_type_distribution=page_types,
+            state="ok" if topics else "empty",
+        )
+
     # Topics where mention_rate > industry median but citation_rate is low.
     stmt = (
         select(

@@ -13,6 +13,7 @@ import KpiCard from '../../components/dashboard/KpiCard';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandMetrics, useCompetitorMetrics } from '../../hooks/useBrandMetrics';
 import {
   useEngineMetrics,
@@ -56,6 +57,7 @@ export default function BrandVisibilityPage() {
   // import itself triggers the C10 harness grep, and reading filters lets us wire
   // downstream fetches (kept as placeholder here, ready for real backend).
   const { filters } = useBrandAnalysisFilters();
+  const chartFilters = toProjectAnalysisParams(filters);
 
   // ── Live data hooks (gated on UUID project id) ──
   const { data: liveProjects } = useProjects();
@@ -65,13 +67,14 @@ export default function BrandVisibilityPage() {
   const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
     'mention_rate',
     'sov',
-  ]);
+  ], null, chartFilters);
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
-  const engineQ = useEngineMetrics(isLive ? liveProjectId : null);
-  const positionQ = usePositionDistribution(isLive ? liveProjectId : null);
+  const engineQ = useEngineMetrics(isLive ? liveProjectId : null, chartFilters);
+  const positionQ = usePositionDistribution(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'mention_rate',
     topN: 8,
+    filters: chartFilters,
   });
 
   // §4.6-IA-v2.N / C11: mentionRate is stored as decimal 0-1.

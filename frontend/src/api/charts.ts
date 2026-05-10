@@ -12,6 +12,7 @@
  */
 
 import { apiClient } from '../lib/apiClient'
+import { ProjectAnalysisParams, buildQuery } from '../lib/projectAnalysisFilters'
 
 // ── /metrics/by-engine ──────────────────────────────────────────────
 export interface EngineMetricRow {
@@ -299,61 +300,100 @@ export interface ProductRelationsOut {
 
 // ── API client ──────────────────────────────────────────────────────
 export const projectChartsApi = {
-  engineMetrics(projectId: string): Promise<EngineMetricsOut> {
-    return apiClient.get<EngineMetricsOut>(`/v1/projects/${projectId}/metrics/by-engine`)
+  engineMetrics(projectId: string, filters: ProjectAnalysisParams = {}): Promise<EngineMetricsOut> {
+    return apiClient.get<EngineMetricsOut>(
+      `/v1/projects/${projectId}/metrics/by-engine${buildQuery(filters)}`,
+    )
   },
-  positionDistribution(projectId: string): Promise<PositionDistributionOut> {
+  positionDistribution(
+    projectId: string,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<PositionDistributionOut> {
     return apiClient.get<PositionDistributionOut>(
-      `/v1/projects/${projectId}/position-distribution`,
+      `/v1/projects/${projectId}/position-distribution${buildQuery(filters)}`,
     )
   },
   topicHeatmap(
     projectId: string,
-    opts: { metric?: 'mention_rate' | 'sentiment'; compareWith?: number[]; topN?: number } = {},
+    opts: {
+      metric?: 'mention_rate' | 'sentiment'
+      compareWith?: number[]
+      topN?: number
+      filters?: ProjectAnalysisParams
+    } = {},
   ): Promise<TopicHeatmapOut> {
-    const q: string[] = []
-    if (opts.metric) q.push(`metric=${opts.metric}`)
-    if (opts.compareWith?.length) q.push(`compare_with=${opts.compareWith.join(',')}`)
-    if (opts.topN) q.push(`top_n=${opts.topN}`)
-    const qs = q.length ? `?${q.join('&')}` : ''
-    return apiClient.get<TopicHeatmapOut>(`/v1/projects/${projectId}/topic-heatmap${qs}`)
-  },
-  sentimentByEngine(projectId: string): Promise<SentimentByEngineOut> {
-    return apiClient.get<SentimentByEngineOut>(`/v1/projects/${projectId}/sentiment/by-engine`)
-  },
-  sentimentTrendByEngine(projectId: string): Promise<SentimentTrendByEngineOut> {
-    return apiClient.get<SentimentTrendByEngineOut>(
-      `/v1/projects/${projectId}/sentiment/trend-by-engine`,
+    return apiClient.get<TopicHeatmapOut>(
+      `/v1/projects/${projectId}/topic-heatmap${buildQuery({
+        ...(opts.filters || {}),
+        metric: opts.metric,
+        compare_with: opts.compareWith?.join(','),
+        top_n: opts.topN,
+      })}`,
     )
   },
-  topicAttribution(projectId: string, limit = 10): Promise<TopicAttributionOut> {
+  sentimentByEngine(
+    projectId: string,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<SentimentByEngineOut> {
+    return apiClient.get<SentimentByEngineOut>(
+      `/v1/projects/${projectId}/sentiment/by-engine${buildQuery(filters)}`,
+    )
+  },
+  sentimentTrendByEngine(
+    projectId: string,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<SentimentTrendByEngineOut> {
+    return apiClient.get<SentimentTrendByEngineOut>(
+      `/v1/projects/${projectId}/sentiment/trend-by-engine${buildQuery(filters)}`,
+    )
+  },
+  topicAttribution(
+    projectId: string,
+    limit = 10,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<TopicAttributionOut> {
     return apiClient.get<TopicAttributionOut>(
-      `/v1/projects/${projectId}/sentiment/topic-attribution?limit=${limit}`,
+      `/v1/projects/${projectId}/sentiment/topic-attribution${buildQuery({
+        ...filters,
+        limit,
+      })}`,
     )
   },
   mentionSamples(
     projectId: string,
-    opts: { polarity?: string; limit?: number } = {},
+    opts: { polarity?: string; limit?: number; filters?: ProjectAnalysisParams } = {},
   ): Promise<MentionSamplesOut> {
-    const q: string[] = []
-    if (opts.polarity) q.push(`polarity=${opts.polarity}`)
-    if (opts.limit) q.push(`limit=${opts.limit}`)
-    const qs = q.length ? `?${q.join('&')}` : ''
-    return apiClient.get<MentionSamplesOut>(`/v1/projects/${projectId}/mention-samples${qs}`)
+    return apiClient.get<MentionSamplesOut>(
+      `/v1/projects/${projectId}/mention-samples${buildQuery({
+        ...(opts.filters || {}),
+        polarity: opts.polarity,
+        limit: opts.limit,
+      })}`,
+    )
   },
-  authorityTrend(projectId: string): Promise<AuthorityTrendOut> {
+  authorityTrend(projectId: string, filters: ProjectAnalysisParams = {}): Promise<AuthorityTrendOut> {
     return apiClient.get<AuthorityTrendOut>(
-      `/v1/projects/${projectId}/citations/authority-trend`,
+      `/v1/projects/${projectId}/citations/authority-trend${buildQuery(filters)}`,
     )
   },
-  citationComposition(projectId: string): Promise<CitationCompositionOut> {
+  citationComposition(
+    projectId: string,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<CitationCompositionOut> {
     return apiClient.get<CitationCompositionOut>(
-      `/v1/projects/${projectId}/citations/composition`,
+      `/v1/projects/${projectId}/citations/composition${buildQuery(filters)}`,
     )
   },
-  contentGap(projectId: string, limit = 12): Promise<ContentGapOut> {
+  contentGap(
+    projectId: string,
+    limit = 12,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<ContentGapOut> {
     return apiClient.get<ContentGapOut>(
-      `/v1/projects/${projectId}/citations/content-gap?limit=${limit}`,
+      `/v1/projects/${projectId}/citations/content-gap${buildQuery({
+        ...filters,
+        limit,
+      })}`,
     )
   },
   prTargets(projectId: string): Promise<PrTargetsOut> {

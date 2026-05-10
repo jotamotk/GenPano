@@ -36,6 +36,7 @@ from app.admin.scheduler.lib import (
     normalize_paused_engines,
     parse_config_payload,
     parse_schedule_payload,
+    schedule_item_target_llms,
 )
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -242,6 +243,50 @@ def test_parse_schedule_create_required():
     with pytest.raises(SchedulerValidationError) as exc:
         parse_schedule_payload({"target_llm": "doubao"}, partial=False)
     assert exc.value.code == "query_text_required"
+
+
+def test_parse_schedule_create_batch_plan():
+    out = parse_schedule_payload(
+        {
+            "target_llms": [" Doubao ", "deepseek", "chatgpt", "doubao"],
+            "query_items": [
+                {
+                    "query_text": "中文 Query",
+                    "profile_id": "SEG-1-P1",
+                    "prompt_id": "42",
+                    "brand_id": "7",
+                    "language": "zh",
+                },
+                {
+                    "query_text": "English query",
+                    "profile_id": "",
+                    "language": "en",
+                },
+            ],
+            "cadence_days": 2,
+        },
+        partial=False,
+    )
+
+    assert out["plan_kind"] == "batch"
+    assert out["query_text"] == "Query Pool batch (2 queries)"
+    assert out["target_llm"] == "doubao"
+    assert out["target_llms"] == ["doubao", "deepseek", "chatgpt"]
+    assert out["item_count"] == 2
+    assert out["query_items"][0]["prompt_id"] == 42
+    assert out["query_items"][0]["brand_id"] == 7
+    assert out["query_items"][1]["profile_id"] is None
+
+
+def test_schedule_item_target_llms_skip_english_for_cn_engines():
+    assert schedule_item_target_llms(
+        {"query_text": "Is bestCoffer accurate?", "language": "en"},
+        ["doubao", "deepseek", "chatgpt"],
+    ) == ["chatgpt"]
+    assert schedule_item_target_llms(
+        {"query_text": "bestCoffer 准确率怎么样?", "language": "zh"},
+        ["doubao", "deepseek", "chatgpt"],
+    ) == ["doubao", "deepseek", "chatgpt"]
 
 
 def test_parse_schedule_create_target_llm_required():
@@ -632,6 +677,26 @@ async def test_schedules_list(client, admin_operator, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_schedules_list_paginated_brand_filter(client, admin_operator, monkeypatch):
+    _patch_db(
+        monkeypatch,
+        schedules={"rows": [_schedule_row(7)], "total": 61, "page": 2, "per_page": 25},
+    )
+    a = _scheduler_router_module()
+
+    resp = await client.get("/api/admin/scheduler/schedules?brand_id=42&page=2&per_page=25")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rows"][0]["id"] == 7
+    assert body["total"] == 61
+    kwargs = a.scheduler_db.list_query_schedules.await_args.kwargs
+    assert kwargs["brand_id"] == 42
+    assert kwargs["page"] == 2
+    assert kwargs["per_page"] == 25
+
+
+@pytest.mark.asyncio
 async def test_schedule_create_validation_400(client, admin_operator, monkeypatch):
     _patch_db(monkeypatch)
     resp = await client.post("/api/admin/scheduler/schedules", json={})
@@ -662,6 +727,59 @@ async def test_schedule_create_success_audit_med(
     )
     assert audit[0].severity == "med"
     assert audit[0].after.get("target_llm") == "doubao"
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_batch_plan_success_audit_med(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    row = {
+        **_schedule_row(501),
+        "query_text": "Query Pool batch (2 queries)",
+        "target_llm": "doubao",
+        "plan_kind": "batch",
+        "target_llms": ["doubao", "chatgpt"],
+        "query_items": [
+            {"query_text": "中文 Query", "profile_id": "P1", "language": "zh"},
+            {"query_text": "English query", "profile_id": None, "language": "en"},
+        ],
+        "item_count": 2,
+    }
+    _patch_db(monkeypatch, create_schedule=row)
+    a = _scheduler_router_module()
+
+    resp = await client.post(
+        "/api/admin/scheduler/schedules",
+        json={
+            "target_llms": ["doubao", "chatgpt"],
+            "query_items": [
+                {"query_text": "中文 Query", "profile_id": "P1", "language": "zh"},
+                {"query_text": "English query", "language": "en"},
+            ],
+            "cadence_days": 3,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == 501
+    assert body["item_count"] == 2
+    create_payload = a.scheduler_db.create_query_schedule.await_args.kwargs["payload"]
+    assert create_payload["plan_kind"] == "batch"
+    assert create_payload["target_llms"] == ["doubao", "chatgpt"]
+    assert len(create_payload["query_items"]) == 2
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "create_query_schedule")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit[0].severity == "med"
+    assert audit[0].after.get("target_llms") == ["doubao", "chatgpt"]
+    assert audit[0].after.get("item_count") == 2
 
 
 @pytest.mark.asyncio

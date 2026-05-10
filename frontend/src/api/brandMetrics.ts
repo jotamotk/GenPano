@@ -8,6 +8,7 @@
  */
 
 import { apiClient } from '../lib/apiClient'
+import { ProjectAnalysisParams, buildQuery } from '../lib/projectAnalysisFilters'
 
 export interface MetricSeriesPoint {
   date: string
@@ -179,19 +180,26 @@ export const brandMetricsApi = {
     projectId: string,
     series: string[] = ['mention_rate', 'sov', 'rank', 'sentiment'],
     brandId?: number | null,
+    filters: ProjectAnalysisParams = {},
   ): Promise<MetricsOut> {
-    const params = new URLSearchParams({ series: series.join(',') })
-    if (brandId != null) params.set('brand_id', String(brandId))
+    const params: Record<string, unknown> = { ...filters, series: series.join(',') }
+    if (brandId != null) params.brand_id = String(brandId)
     return apiClient.get<MetricsOut>(
-      `/v1/projects/${projectId}/metrics?${params.toString()}`,
+      `/v1/projects/${projectId}/metrics${buildQuery(params)}`,
     )
   },
-  sentiment(projectId: string): Promise<SentimentOut> {
-    return apiClient.get<SentimentOut>(`/v1/projects/${projectId}/sentiment`)
+  sentiment(projectId: string, filters: ProjectAnalysisParams = {}): Promise<SentimentOut> {
+    return apiClient.get<SentimentOut>(
+      `/v1/projects/${projectId}/sentiment${buildQuery(filters)}`,
+    )
   },
-  citations(projectId: string, pageSize = 50): Promise<CitationsOut> {
+  citations(
+    projectId: string,
+    pageSize = 50,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<CitationsOut> {
     return apiClient.get<CitationsOut>(
-      `/v1/projects/${projectId}/citations?page_size=${pageSize}`,
+      `/v1/projects/${projectId}/citations${buildQuery({ ...filters, page_size: pageSize })}`,
     )
   },
   topics(projectId: string): Promise<TopicsOut> {

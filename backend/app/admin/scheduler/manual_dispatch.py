@@ -30,6 +30,7 @@ from app.admin.scheduler.lib import (
     normalize_engine_caps,
     normalize_engine_name,
     normalize_paused_engines,
+    schedule_item_target_llms,
 )
 
 
@@ -47,6 +48,70 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     except Exception:
         return False
     return row is not None
+
+
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :n"
+                ),
+                {"n": name},
+            )
+        ).all()
+    except Exception:
+        return set()
+    return {str(row[0]) for row in rows}
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+async def _schedule_brand_filter(
+    session: AsyncSession,
+    *,
+    alias: str,
+    has_batch_cols: bool,
+    brand_id: int | None,
+    params: dict[str, Any],
+) -> str | None:
+    if brand_id is None:
+        return None
+    params["brand_id"] = int(brand_id)
+    parts = [f"{alias}.brand_id = :brand_id"]
+    if has_batch_cols:
+        params["brand_item_json"] = json.dumps([{"brand_id": int(brand_id)}])
+        parts.append(f"{alias}.query_items_json @> CAST(:brand_item_json AS jsonb)")
+    prompt_cols = await _table_columns(session, "prompts")
+    topic_cols = await _table_columns(session, "topics")
+    if (
+        {"id", "topic_id"}.issubset(prompt_cols)
+        and {"id", "brand_id"}.issubset(topic_cols)
+        and await _table_exists(session, "prompts")
+        and await _table_exists(session, "topics")
+    ):
+        parts.append(
+            "EXISTS ("
+            "SELECT 1 FROM prompts pr_brand "
+            "JOIN topics t_brand ON t_brand.id = pr_brand.topic_id "
+            f"WHERE CAST(pr_brand.id AS TEXT) = CAST({alias}.prompt_id AS TEXT) "
+            "AND CAST(t_brand.brand_id AS TEXT) = CAST(:brand_id AS TEXT)"
+            ")"
+        )
+    return "(" + " OR ".join(parts) + ")"
 
 
 async def _ensure_scheduler_config(session: AsyncSession) -> dict[str, Any]:
@@ -98,7 +163,12 @@ async def _ensure_scheduler_config(session: AsyncSession) -> dict[str, Any]:
 
 
 async def run_manual_dispatch(
-    session: AsyncSession, *, cap_override: int | None = None, note: str = "manual via UI"
+    session: AsyncSession,
+    *,
+    cap_override: int | None = None,
+    note: str = "manual via UI",
+    brand_id: int | None = None,
+    schedule_limit: int = 50,
 ) -> dict[str, Any]:
     """Inline copy of geo_tracker.tasks.scheduler.run_daily_dispatch
     (manual-trigger variant — schedules only, no random fill).
@@ -193,11 +263,38 @@ async def run_manual_dispatch(
             for q in quotas:
                 q["quota"] = max(1, round(int(q.get("quota") or 0) * scale))
 
+    schedule_cols = await _table_columns(session, "query_schedules")
+    has_batch_cols = {
+        "plan_kind",
+        "target_llms_json",
+        "query_items_json",
+        "item_count",
+    }.issubset(schedule_cols)
+    plan_cols = (
+        "plan_kind, target_llms_json, query_items_json, item_count"
+        if has_batch_cols
+        else "'single' AS plan_kind, '[]' AS target_llms_json, "
+        "'[]' AS query_items_json, 1 AS item_count"
+    )
+    schedule_params: dict[str, Any] = {}
+    schedule_where_parts = ["qs.enabled = TRUE"]
+    brand_filter = await _schedule_brand_filter(
+        session,
+        alias="qs",
+        has_batch_cols=has_batch_cols,
+        brand_id=brand_id,
+        params=schedule_params,
+    )
+    if brand_filter:
+        schedule_where_parts.append(brand_filter)
+    schedule_where = " AND ".join(schedule_where_parts)
+
     # ── total enabled schedules (independent of paused filter) ───────
     schedules_enabled_row = (
         (
             await session.execute(
-                text("SELECT COUNT(*) AS n FROM query_schedules WHERE enabled = TRUE")
+                text(f"SELECT COUNT(*) AS n FROM query_schedules qs WHERE {schedule_where}"),
+                schedule_params,
             )
         )
         .mappings()
@@ -209,30 +306,69 @@ async def run_manual_dispatch(
 
     # Fetch enabled schedules (ignore next_run_at — manual trigger fires
     # everything). LIMIT 50 keeps work bounded against proxy timeouts.
-    paused_json = json.dumps([str(e).lower() for e in paused_engines])
+    schedule_limit = min(5000, max(1, int(schedule_limit or 50)))
+    due_params = dict(schedule_params)
+    due_params["limit"] = schedule_limit
     due_rows = (
         (
             await session.execute(
                 text(
-                    """
+                    f"""
                 SELECT id, query_text, profile_id, target_llm, cadence_days,
-                       brand_id, prompt_id
-                FROM query_schedules
-                WHERE enabled = TRUE
-                  AND target_llm NOT IN (
-                      SELECT jsonb_array_elements_text(CAST(:paused AS jsonb))
-                  )
+                       brand_id, prompt_id, {plan_cols}
+                FROM query_schedules qs
+                WHERE {schedule_where}
                 ORDER BY next_run_at ASC, id ASC
-                LIMIT 50
+                LIMIT :limit
                 """
                 ),
-                {"paused": paused_json},
+                due_params,
             )
         )
         .mappings()
         .all()
     )
-    due_schedules = [dict(r) for r in due_rows if is_query_engine(r.get("target_llm"))]
+    due_schedules: list[dict[str, Any]] = []
+    for raw in due_rows:
+        row = dict(raw)
+        target_llms = [
+            str(v)
+            for v in _json_list(row.get("target_llms_json"))
+            if is_query_engine(v) and str(v).lower() not in paused_engines
+        ]
+        if not target_llms:
+            fallback_llm = str(row.get("target_llm") or "").lower()
+            if is_query_engine(row.get("target_llm")) and fallback_llm not in paused_engines:
+                target_llms = [row.get("target_llm")]
+        if row.get("plan_kind") == "batch":
+            for item in _json_list(row.get("query_items_json")):
+                if not isinstance(item, dict):
+                    continue
+                for target_llm in schedule_item_target_llms(item, target_llms):
+                    if not is_query_engine(target_llm):
+                        continue
+                    due_schedules.append(
+                        {
+                            **row,
+                            "query_text": item.get("query_text"),
+                            "profile_id": item.get("profile_id"),
+                            "brand_id": item.get("brand_id"),
+                            "prompt_id": item.get("prompt_id"),
+                            "target_llm": target_llm,
+                        }
+                    )
+            continue
+        target_llm = str(row.get("target_llm") or "").lower()
+        target_allowed = schedule_item_target_llms(
+            {"query_text": row.get("query_text")},
+            [row.get("target_llm")],
+        )
+        if (
+            is_query_engine(row.get("target_llm"))
+            and target_llm not in paused_engines
+            and target_allowed
+        ):
+            due_schedules.append(row)
 
     # ── (A) consume due query_schedules ─────────────────────────────
     schedule_failures: list[str] = []
@@ -256,7 +392,7 @@ async def run_manual_dispatch(
                           AND a.status = 'active'
                           AND a.cookies_json IS NOT NULL
                           AND a.cookies_json != ''
-                          AND (:pid_null IS NULL
+                          AND (CAST(:pid_null AS TEXT) IS NULL
                                OR apm.profile_id IS NOT NULL
                                OR a.profile_id::text = :pid)
                         ORDER BY (apm.profile_id IS NOT NULL) DESC,
@@ -403,6 +539,8 @@ async def run_manual_dispatch(
         "reason": reason,
         "schedules_enabled": schedules_enabled_total,
         "schedules_dispatchable": len(due_schedules),
+        "brand_id": brand_id,
+        "schedule_limit": schedule_limit,
         "paused_engines": paused_engines,
         "quotas_total": sum(int(q.get("quota") or 0) for q in quotas),
         "schedule_failures": schedule_failures,

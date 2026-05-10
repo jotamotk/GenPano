@@ -57,6 +57,70 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     return row is not None
 
 
+async def _table_columns(session: AsyncSession, name: str) -> set[str]:
+    try:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :n"
+                ),
+                {"n": name},
+            )
+        ).all()
+    except Exception:
+        return set()
+    return {str(row[0]) for row in rows}
+
+
+async def _schedule_brand_filter(
+    session: AsyncSession,
+    *,
+    alias: str,
+    has_batch_cols: bool,
+    brand_id: int | None,
+    params: dict[str, Any],
+) -> str | None:
+    if brand_id is None:
+        return None
+    params["brand_id"] = int(brand_id)
+    parts = [f"{alias}.brand_id = :brand_id"]
+    if has_batch_cols:
+        params["brand_item_json"] = json.dumps([{"brand_id": int(brand_id)}])
+        parts.append(f"{alias}.query_items_json @> CAST(:brand_item_json AS jsonb)")
+    prompt_cols = await _table_columns(session, "prompts")
+    topic_cols = await _table_columns(session, "topics")
+    if (
+        {"id", "topic_id"}.issubset(prompt_cols)
+        and {"id", "brand_id"}.issubset(topic_cols)
+        and await _table_exists(session, "prompts")
+        and await _table_exists(session, "topics")
+    ):
+        parts.append(
+            "EXISTS ("
+            "SELECT 1 FROM prompts pr_brand "
+            "JOIN topics t_brand ON t_brand.id = pr_brand.topic_id "
+            f"WHERE CAST(pr_brand.id AS TEXT) = CAST({alias}.prompt_id AS TEXT) "
+            "AND CAST(t_brand.brand_id AS TEXT) = CAST(:brand_id AS TEXT)"
+            ")"
+        )
+    return "(" + " OR ".join(parts) + ")"
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
 # ── scheduler_config ────────────────────────────────────────
 
 
@@ -327,11 +391,21 @@ async def fetch_today_dispatch(session: AsyncSession) -> dict[str, Any]:
 
 
 def _row_to_schedule(row: dict[str, Any]) -> dict[str, Any]:
+    target_llms = _json_list(row.get("target_llms_json") or row.get("target_llms"))
+    query_items = _json_list(row.get("query_items_json") or row.get("query_items"))
+    target_llms = [str(v) for v in target_llms if str(v or "").strip()]
+    item_count = row.get("item_count")
+    if item_count is None:
+        item_count = len(query_items) if query_items else 1
     return {
         "id": row.get("id"),
         "query_text": row.get("query_text"),
         "profile_id": row.get("profile_id"),
         "target_llm": row.get("target_llm"),
+        "target_llms": target_llms or ([row.get("target_llm")] if row.get("target_llm") else []),
+        "plan_kind": row.get("plan_kind") or "single",
+        "query_items": query_items,
+        "item_count": int(item_count or 0),
         "cadence_days": int(row.get("cadence_days") or 1),
         "next_run_at": _isoformat(row.get("next_run_at")),
         "last_run_at": _isoformat(row.get("last_run_at")),
@@ -345,33 +419,95 @@ def _row_to_schedule(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def list_query_schedules(
-    session: AsyncSession, *, enabled_only: bool = False
-) -> list[dict[str, Any]]:
+    session: AsyncSession,
+    *,
+    enabled_only: bool = False,
+    brand_id: int | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
     if not await _table_exists(session, "query_schedules"):
+        if page is not None or per_page is not None:
+            return {"rows": [], "total": 0, "page": int(page or 1), "per_page": int(per_page or 50)}
         return []
-    where = "WHERE enabled = TRUE" if enabled_only else ""
+    cols = await _table_columns(session, "query_schedules")
+    has_batch_cols = {"plan_kind", "target_llms_json", "query_items_json", "item_count"}.issubset(
+        cols
+    )
+    plan_cols = (
+        "plan_kind, target_llms_json, query_items_json, item_count"
+        if has_batch_cols
+        else "'single' AS plan_kind, '[]' AS target_llms_json, "
+        "'[]' AS query_items_json, 1 AS item_count"
+    )
+    params: dict[str, Any] = {}
+    where_parts: list[str] = []
+    if enabled_only:
+        where_parts.append("qs.enabled = TRUE")
+    brand_filter = await _schedule_brand_filter(
+        session,
+        alias="qs",
+        has_batch_cols=has_batch_cols,
+        brand_id=brand_id,
+        params=params,
+    )
+    if brand_filter:
+        where_parts.append(brand_filter)
+    where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+    limit_clause = ""
+    is_paginated = page is not None or per_page is not None
+    page_number = max(1, int(page or 1))
+    per_page_number = min(200, max(1, int(per_page or 50)))
+    if is_paginated:
+        params["limit"] = per_page_number
+        params["offset"] = (page_number - 1) * per_page_number
+        limit_clause = "LIMIT :limit OFFSET :offset"
     sql = text(
         f"""
         SELECT id, query_text, profile_id, target_llm, cadence_days,
                next_run_at, last_run_at, enabled, note, brand_id,
-               prompt_id, created_at, updated_at
-        FROM query_schedules
+               prompt_id, created_at, updated_at, {plan_cols}
+        FROM query_schedules qs
         {where}
         ORDER BY enabled DESC, next_run_at ASC, id DESC
+        {limit_clause}
         """
     )
-    rows = (await session.execute(sql)).mappings().all()
-    return [_row_to_schedule(dict(r)) for r in rows]
+    rows = [
+        _row_to_schedule(dict(r))
+        for r in (await session.execute(sql, params)).mappings().all()
+    ]
+    if not is_paginated:
+        return rows
+    total = int(
+        (
+            await session.execute(
+                text(f"SELECT COUNT(*) AS n FROM query_schedules qs {where}"), params
+            )
+        ).scalar()
+        or 0
+    )
+    return {"rows": rows, "total": total, "page": page_number, "per_page": per_page_number}
 
 
 async def get_query_schedule(session: AsyncSession, schedule_id: int) -> dict[str, Any] | None:
     if not await _table_exists(session, "query_schedules"):
         return None
+    cols = await _table_columns(session, "query_schedules")
+    has_batch_cols = {"plan_kind", "target_llms_json", "query_items_json", "item_count"}.issubset(
+        cols
+    )
+    plan_cols = (
+        "plan_kind, target_llms_json, query_items_json, item_count"
+        if has_batch_cols
+        else "'single' AS plan_kind, '[]' AS target_llms_json, "
+        "'[]' AS query_items_json, 1 AS item_count"
+    )
     sql = text(
-        """
+        f"""
         SELECT id, query_text, profile_id, target_llm, cadence_days,
                next_run_at, last_run_at, enabled, note, brand_id,
-               prompt_id, created_at, updated_at
+               prompt_id, created_at, updated_at, {plan_cols}
         FROM query_schedules WHERE id = :id
         """
     )
@@ -386,45 +522,94 @@ async def create_query_schedule(
 ) -> dict[str, Any] | None:
     if not await _table_exists(session, "query_schedules"):
         return None
+    cols = await _table_columns(session, "query_schedules")
+    has_batch_cols = {"plan_kind", "target_llms_json", "query_items_json", "item_count"}.issubset(
+        cols
+    )
+    if payload.get("plan_kind") == "batch" and not has_batch_cols:
+        return None
     next_run = payload.get("next_run_at")
     if next_run is None:
         next_run = dt.datetime.utcnow().isoformat()
-    sql = text(
-        """
-        INSERT INTO query_schedules
-            (query_text, profile_id, target_llm, cadence_days,
-             next_run_at, enabled, note, brand_id, prompt_id)
-        VALUES (:query_text, :profile_id, :target_llm, :cadence_days,
-                :next_run_at, :enabled, :note, :brand_id, :prompt_id)
-        RETURNING id, query_text, profile_id, target_llm, cadence_days,
-                  next_run_at, last_run_at, enabled, note, brand_id,
-                  prompt_id, created_at, updated_at
-        """
-    )
-    row = (
-        (
-            await session.execute(
-                sql,
-                {
-                    "query_text": payload["query_text"],
-                    "profile_id": payload.get("profile_id"),
-                    "target_llm": payload["target_llm"],
-                    "cadence_days": payload.get("cadence_days", 1),
-                    "next_run_at": next_run,
-                    "enabled": payload.get("enabled", True),
-                    "note": payload.get("note"),
-                    "brand_id": payload.get("brand_id"),
-                    "prompt_id": payload.get("prompt_id"),
-                },
-            )
+    insert_cols = [
+        "query_text",
+        "profile_id",
+        "target_llm",
+        "cadence_days",
+        "next_run_at",
+        "enabled",
+        "note",
+        "brand_id",
+        "prompt_id",
+    ]
+    value_exprs = [
+        ":query_text",
+        ":profile_id",
+        ":target_llm",
+        ":cadence_days",
+        ":next_run_at",
+        ":enabled",
+        ":note",
+        ":brand_id",
+        ":prompt_id",
+    ]
+    returning_cols = [
+        "id",
+        "query_text",
+        "profile_id",
+        "target_llm",
+        "cadence_days",
+        "next_run_at",
+        "last_run_at",
+        "enabled",
+        "note",
+        "brand_id",
+        "prompt_id",
+        "created_at",
+        "updated_at",
+    ]
+    params = {
+        "query_text": payload["query_text"],
+        "profile_id": payload.get("profile_id"),
+        "target_llm": payload["target_llm"],
+        "cadence_days": payload.get("cadence_days", 1),
+        "next_run_at": next_run,
+        "enabled": payload.get("enabled", True),
+        "note": payload.get("note"),
+        "brand_id": payload.get("brand_id"),
+        "prompt_id": payload.get("prompt_id"),
+    }
+    if has_batch_cols:
+        insert_cols.extend(["plan_kind", "target_llms_json", "query_items_json", "item_count"])
+        value_exprs.extend(
+            [
+                ":plan_kind",
+                "CAST(:target_llms_json AS jsonb)",
+                "CAST(:query_items_json AS jsonb)",
+                ":item_count",
+            ]
         )
-        .mappings()
-        .first()
+        returning_cols.extend(["plan_kind", "target_llms_json", "query_items_json", "item_count"])
+        params.update(
+            {
+                "plan_kind": payload.get("plan_kind") or "single",
+                "target_llms_json": json.dumps(payload.get("target_llms") or []),
+                "query_items_json": json.dumps(payload.get("query_items") or []),
+                "item_count": payload.get("item_count") or 1,
+            }
+        )
+    sql = text(
+        f"""
+        INSERT INTO query_schedules
+            ({", ".join(insert_cols)})
+        VALUES ({", ".join(value_exprs)})
+        RETURNING {", ".join(returning_cols)}
+        """
     )
+    row = (await session.execute(sql, params)).mappings().first()
     if not row:
         return None
     out = _row_to_schedule(dict(row))
-    await session.commit()
     return out
 
 
@@ -468,7 +653,6 @@ async def update_query_schedule(
         await session.rollback()
         return None
     out = _row_to_schedule(dict(row))
-    await session.commit()
     return out
 
 
@@ -481,7 +665,6 @@ async def delete_query_schedule(session: AsyncSession, schedule_id: int) -> bool
     if (getattr(result, "rowcount", 0) or 0) == 0:
         await session.rollback()
         return False
-    await session.commit()
     return True
 
 
@@ -496,10 +679,20 @@ async def upcoming_schedule_fires(
     generate_series equivalent that handles per-row intervals."""
     if not await _table_exists(session, "query_schedules"):
         return {}
+    cols = await _table_columns(session, "query_schedules")
+    has_batch_cols = {"plan_kind", "target_llms_json", "query_items_json", "item_count"}.issubset(
+        cols
+    )
+    plan_cols = (
+        "plan_kind, target_llms_json, query_items_json, item_count"
+        if has_batch_cols
+        else "'single' AS plan_kind, '[]' AS target_llms_json, "
+        "'[]' AS query_items_json, 1 AS item_count"
+    )
     sql = text(
-        """
+        f"""
         SELECT id, query_text, profile_id, target_llm, cadence_days,
-               next_run_at, last_run_at, enabled, note
+               next_run_at, last_run_at, enabled, note, {plan_cols}
         FROM query_schedules
         WHERE enabled = TRUE
         ORDER BY next_run_at ASC
@@ -529,6 +722,9 @@ async def upcoming_schedule_fires(
                     "query_text": r.get("query_text"),
                     "profile_id": r.get("profile_id"),
                     "target_llm": r.get("target_llm"),
+                    "target_llms": _json_list(r.get("target_llms_json")),
+                    "plan_kind": r.get("plan_kind") or "single",
+                    "item_count": int(r.get("item_count") or 1),
                     "cadence_days": cadence,
                     "fires_at": cursor.isoformat(),
                 }

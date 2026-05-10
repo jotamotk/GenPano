@@ -24,6 +24,7 @@ from typing import Any
 # Mirror admin_console constants byte-for-byte.
 SCHEDULER_MODES = ("auto", "manual", "paused")
 ALLOWED_LLM_ENGINES = frozenset({"doubao", "deepseek", "chatgpt", "gemini"})
+CN_QUERY_ENGINES = frozenset({"doubao", "deepseek"})
 SCHEDULER_EXCLUDED_ENGINE_SUFFIXES = ("_hots",)
 LLM_DEFAULT_GEO: dict[str, str] = {
     "doubao": "CN",
@@ -83,6 +84,41 @@ def account_engine_geo(value: Any) -> str | None:
     if not value:
         return None
     return LLM_DEFAULT_GEO.get(str(value).lower())
+
+
+def detect_query_language(text: Any) -> str:
+    value = str(text or "")
+    if re.search(r"[\u4e00-\u9fff]", value):
+        return "zh"
+    if re.search(r"[A-Za-z]", value):
+        return "en"
+    return "unknown"
+
+
+def _normalize_target_llms(values: Any) -> list[str]:
+    raw_values = values if isinstance(values, list) else [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        engine = normalize_engine_name(value)
+        if not engine:
+            continue
+        if engine not in ALLOWED_LLM_ENGINES:
+            raise SchedulerValidationError(
+                "target_llm_invalid",
+                f"target_llm must be one of {sorted(ALLOWED_LLM_ENGINES)}",
+            )
+        if engine not in seen:
+            out.append(engine)
+            seen.add(engine)
+    return out
+
+
+def schedule_item_target_llms(item: dict[str, Any], target_llms: list[str]) -> list[str]:
+    language = str(item.get("language") or detect_query_language(item.get("query_text"))).lower()
+    if language.startswith("en"):
+        return [engine for engine in target_llms if engine not in CN_QUERY_ENGINES]
+    return list(target_llms)
 
 
 def normalize_paused_engines(values: Any) -> list[str]:
@@ -213,21 +249,76 @@ def parse_schedule_payload(
     where missing keys mean "leave as-is"."""
     payload = payload or {}
     out: dict[str, Any] = {}
+    query_items_raw = payload.get("query_items")
+    is_batch = isinstance(query_items_raw, list) and len(query_items_raw) > 0
 
-    if "query_text" in payload or not partial:
+    if is_batch:
+        items: list[dict[str, Any]] = []
+        for index, raw_item in enumerate(query_items_raw or []):
+            if not isinstance(raw_item, dict):
+                raise SchedulerValidationError(
+                    "query_items_invalid", "query_items must contain objects"
+                )
+            query_text = str(raw_item.get("query_text") or "").strip()
+            if not query_text:
+                raise SchedulerValidationError(
+                    "query_item_text_required",
+                    f"query_items[{index}].query_text is required",
+                )
+            item: dict[str, Any] = {"query_text": query_text}
+            profile_id = raw_item.get("profile_id")
+            item["profile_id"] = (
+                profile_id.strip() if isinstance(profile_id, str) and profile_id.strip() else None
+            )
+            for field in ("prompt_id", "brand_id"):
+                value = raw_item.get(field)
+                try:
+                    item[field] = int(value) if value is not None and value != "" else None
+                except (TypeError, ValueError) as error:
+                    raise SchedulerValidationError(
+                        f"{field}_invalid",
+                        f"query_items[{index}].{field} must be an integer or null",
+                    ) from error
+            language = (
+                str(raw_item.get("language") or detect_query_language(query_text))
+                .strip()
+                .lower()
+            )
+            item["language"] = language or "unknown"
+            candidate_id = raw_item.get("candidate_id")
+            if candidate_id is not None and str(candidate_id).strip():
+                item["candidate_id"] = str(candidate_id).strip()
+            items.append(item)
+        out["plan_kind"] = "batch"
+        out["query_items"] = items
+        out["item_count"] = len(items)
+        target_llms = _normalize_target_llms(
+            payload.get("target_llms") or payload.get("target_llm")
+        )
+        if not target_llms:
+            raise SchedulerValidationError(
+                "target_llm_invalid",
+                f"target_llm must be one of {sorted(ALLOWED_LLM_ENGINES)}",
+            )
+        out["target_llms"] = target_llms
+        out["target_llm"] = target_llms[0]
+        out["query_text"] = str(payload.get("query_text") or "").strip() or (
+            f"Query Pool batch ({len(items)} queries)"
+        )
+    elif "query_text" in payload or not partial:
         qt = str(payload.get("query_text") or "").strip()
         if not qt:
             raise SchedulerValidationError("query_text_required", "query_text is required")
         out["query_text"] = qt
 
-    if "target_llm" in payload or not partial:
-        llm = normalize_engine_name(payload.get("target_llm"))
-        if llm not in ALLOWED_LLM_ENGINES:
+    if not is_batch and ("target_llm" in payload or not partial):
+        llms = _normalize_target_llms(payload.get("target_llm"))
+        if not llms:
             raise SchedulerValidationError(
                 "target_llm_invalid",
                 f"target_llm must be one of {sorted(ALLOWED_LLM_ENGINES)}",
             )
-        out["target_llm"] = llm
+        out["target_llm"] = llms[0]
 
     if "profile_id" in payload:
         pid = payload.get("profile_id")
@@ -278,16 +369,19 @@ def parse_schedule_payload(
 
 __all__ = [
     "ALLOWED_LLM_ENGINES",
+    "CN_QUERY_ENGINES",
     "DAILY_TIME_PATTERN",
     "LLM_DEFAULT_GEO",
     "SCHEDULER_EXCLUDED_ENGINE_SUFFIXES",
     "SCHEDULER_MODES",
     "SchedulerValidationError",
     "account_engine_geo",
+    "detect_query_language",
     "is_query_engine",
     "normalize_engine_caps",
     "normalize_engine_name",
     "normalize_paused_engines",
     "parse_config_payload",
     "parse_schedule_payload",
+    "schedule_item_target_llms",
 ]
