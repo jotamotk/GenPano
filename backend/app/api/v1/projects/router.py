@@ -74,23 +74,6 @@ from app.api.v1.projects._charts_service import (
     get_topic_attribution,
     get_topic_heatmap,
 )
-from app.api.v1.projects._topic_analysis_dto import (
-    ProjectSegmentsOut,
-    PromptQueriesOut,
-    QueryActivityOut,
-    QueryResponseDetailOut,
-    TopicMonitoringOut,
-    TopicPromptsOut,
-)
-from app.api.v1.projects._topic_analysis_service import (
-    AnalysisFilters,
-    get_project_segments,
-    get_prompt_queries,
-    get_query_activity,
-    get_query_response_detail,
-    get_topic_monitoring,
-    get_topic_prompts,
-)
 from app.api.v1.projects._dto import (
     CompetitorIn,
     ProjectIn,
@@ -112,6 +95,23 @@ from app.api.v1.projects._metrics_service import (
 )
 from app.api.v1.projects._overview_dto import BrandOverviewOut
 from app.api.v1.projects._overview_service import get_brand_overview
+from app.api.v1.projects._topic_analysis_dto import (
+    ProjectSegmentsOut,
+    PromptQueriesOut,
+    QueryActivityOut,
+    QueryResponseDetailOut,
+    TopicMonitoringOut,
+    TopicPromptsOut,
+)
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    get_project_segments,
+    get_prompt_queries,
+    get_query_activity,
+    get_query_response_detail,
+    get_topic_monitoring,
+    get_topic_prompts,
+)
 from app.core.errors import validation_error
 from app.core.security import _DependsDb, current_user
 
