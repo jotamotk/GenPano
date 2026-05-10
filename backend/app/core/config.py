@@ -15,6 +15,10 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         validation_alias=AliasChoices("GENPANO_REDIS_URL", "REDIS_URL"),
     )
+    user_jwt_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("USER_JWT_SECRET", "JWT_SECRET"),
+    )
 
 
 @lru_cache

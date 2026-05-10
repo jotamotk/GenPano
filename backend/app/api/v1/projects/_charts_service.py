@@ -650,7 +650,7 @@ async def get_sentiment_trend_by_engine(
     by_date: dict[str, dict[str, float | None]] = OrderedDict()
     sentiment_engines_seen: set[str] = set()
     for d, eng, v in sentiment_rows:
-        d_iso = d.date().isoformat() if isinstance(d, datetime) else str(d)[:10]
+        d_iso = str(d)[:10]
         sentiment_engines_seen.add(eng or "unknown")
         by_date.setdefault(d_iso, {})[eng or "unknown"] = float(v) if v is not None else None
 
