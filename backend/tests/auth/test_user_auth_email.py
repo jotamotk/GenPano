@@ -3,7 +3,7 @@ from __future__ import annotations
 from email.message import EmailMessage
 from typing import ClassVar
 
-from app.user_auth.email import send_verification_email
+from app.user_auth.email import build_verification_email, send_verification_email
 
 
 class FakeSmtpSsl:
@@ -66,6 +66,16 @@ def test_email_noops_without_provider_credentials(monkeypatch) -> None:
     result = send_verification_email(to="person@example.com", token="abc123")
 
     assert result.delivered is False
+
+
+def test_default_frontend_base_url_matches_local_vite_port(monkeypatch) -> None:
+    monkeypatch.delenv("USER_BASE_URL", raising=False)
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+
+    content = build_verification_email(token="abc123", locale="en-US")
+
+    assert "http://localhost:5173/setup?token=abc123" in content.text
 
 
 def test_preview_provider_writes_email_files(monkeypatch, tmp_path) -> None:

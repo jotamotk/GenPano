@@ -14,7 +14,7 @@
 
 | 环境 | 配置 |
 |------|------|
-| 前端 | `http://localhost:3000` (Vite dev server) |
+| 前端 | `http://localhost:5173` (Vite dev server) |
 | 后端 | `http://localhost:4000` (Express) |
 | 邮件 | 本地 `EMAIL_PROVIDER=noop` 验证 token 入库; 生产/联调用 `EMAIL_PROVIDER=aliyun_dm` + 阿里云 DM SMTP |
 | 浏览器 | Chrome (latest), Firefox, Safari, Edge |

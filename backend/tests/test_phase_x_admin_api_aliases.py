@@ -10,6 +10,8 @@ import pytest
         "/admin/api/prompts",
         "/admin/api/profiles/lite",
         "/admin/api/scheduler/schedules",
+        "/admin/api/llm-extraction/candidates?status=pending",
+        "/admin/api/admin/query-pool/candidates?limit=1",
     ],
 )
 async def test_admin_api_aliases_do_not_fall_through_to_spa_shell(client, path: str) -> None:

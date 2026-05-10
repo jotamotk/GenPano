@@ -77,7 +77,7 @@ def _index(items: list[tuple[str, str, Path]]) -> str:
 
 
 def main() -> None:
-    os.environ.setdefault("USER_BASE_URL", "http://127.0.0.1:3000")
+    os.environ.setdefault("USER_BASE_URL", "http://127.0.0.1:5173")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     samples = [

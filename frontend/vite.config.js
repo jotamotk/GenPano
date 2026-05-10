@@ -18,7 +18,8 @@ export default defineConfig({
   base: basePath,
   plugins: [react()],
   server: {
-    port: 3000,
+    port: 5173,
+    strictPort: true,
     open: true,
     // /api/*        - main FastAPI backend on :4000
     // /admin*       - Admin SPA + APIs on the same FastAPI backend (:4000).
