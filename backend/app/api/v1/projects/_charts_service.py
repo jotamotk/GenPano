@@ -181,9 +181,7 @@ async def get_engine_metrics(
         items = [
             EngineMetricRow(
                 engine=engine,
-                mention_rate=round(
-                    values["target_mentions"] / len(values["responses"]), 4
-                )
+                mention_rate=round(values["target_mentions"] / len(values["responses"]), 4)
                 if values["responses"]
                 else None,
                 sov=round(values["target_mentions"] / values["all_mentions"], 4)

@@ -277,8 +277,7 @@ async def _trend(
     rows = (await session.execute(stmt)).all()
     if rows:
         return [
-            TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1] or 0, 4))
-            for r in rows
+            TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1] or 0, 4)) for r in rows
         ]
 
     fallback_metric = {

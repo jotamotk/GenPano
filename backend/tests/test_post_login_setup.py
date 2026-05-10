@@ -111,11 +111,7 @@ async def seeded_name_only_brands(db_session: AsyncSession) -> None:
     ):
         await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col}"))
     await db_session.execute(
-        text(
-            "INSERT INTO brands (id, name, industry) VALUES "
-            "(:id1, :n1, :i1),"
-            "(:id2, :n2, :i2)"
-        ),
+        text("INSERT INTO brands (id, name, industry) VALUES (:id1, :n1, :i1),(:id2, :n2, :i2)"),
         {
             "id1": 12,
             "n1": "雅诗兰黛",
