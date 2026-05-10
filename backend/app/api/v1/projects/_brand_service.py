@@ -40,6 +40,7 @@ from app.api.v1.projects._brand_dto import (
 from app.api.v1.projects._legacy_lookups import resolve_brand_names
 from app.api.v1.projects._mention_rollups import (
     brand_mention_daily_rollups,
+    brand_mention_match_condition,
     brand_mention_window_rollup,
     discover_related_brand_ids,
     geo_score,
@@ -314,11 +315,13 @@ async def get_competitor_metrics(
         # both primary brand_id and this brand on the same response
         co_count = 0
         if primary_id and brand_id != primary_id:
+            primary_filter = await brand_mention_match_condition(session, primary_id)
+            brand_filter = await brand_mention_match_condition(session, brand_id)
             primary_resp_stmt = (
                 select(BrandMention.response_id)
                 .where(
                     and_(
-                        BrandMention.brand_id == primary_id,
+                        primary_filter,
                         BrandMention.created_at >= datetime.combine(from_d, datetime.min.time()),
                         BrandMention.created_at <= datetime.combine(to_d, datetime.max.time()),
                     )
@@ -327,7 +330,7 @@ async def get_competitor_metrics(
             )
             co_stmt = select(func.count()).where(
                 and_(
-                    BrandMention.brand_id == brand_id,
+                    brand_filter,
                     BrandMention.response_id.in_(primary_resp_stmt),
                     BrandMention.created_at >= datetime.combine(from_d, datetime.min.time()),
                     BrandMention.created_at <= datetime.combine(to_d, datetime.max.time()),

@@ -17,6 +17,7 @@ from genpano_models import (
     ResponseAnalysis,
     User,
 )
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.user_auth.jwt import sign_user_access_token
@@ -243,6 +244,95 @@ async def test_competitor_metrics_brand_override_uses_mention_fallback(client, u
     assert primary_series["brand_id"] == 12
     assert primary_series["points"]
     assert primary_series["points"][0]["value"] > 0
+
+
+@pytest.mark.asyncio
+async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user, db_session):
+    for col in ("name_zh TEXT", "name_en TEXT", "name TEXT"):
+        await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col}"))
+    await db_session.execute(
+        text(
+            "INSERT INTO brands (id, name_zh, name_en, name) "
+            "VALUES (12, '雅诗兰黛', 'Estee Lauder', 'Estee Lauder')"
+        )
+    )
+
+    p = Project(user_id=user.id, name="Name Matched Brand", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    for i in range(6):
+        response_id = 7100 + i
+        db_session.add(
+            BrandMention(
+                response_id=response_id,
+                brand_id=None,
+                brand_name="雅诗兰黛",
+                position_rank=1,
+                sentiment="positive",
+                sentiment_score=0.85,
+                created_at=now - timedelta(days=i % 5),
+            )
+        )
+        if i < 3:
+            db_session.add(
+                BrandMention(
+                    response_id=response_id,
+                    brand_id=99,
+                    brand_name="Clinique",
+                    position_rank=3,
+                    sentiment="neutral",
+                    sentiment_score=0.55,
+                    created_at=now - timedelta(days=i % 5),
+                )
+            )
+    await db_session.commit()
+
+    overview_resp = await client.get(
+        f"/api/v1/projects/{p.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+    assert overview_resp.status_code == 200
+    overview_body = overview_resp.json()
+    assert overview_body["brand_id"] == 12
+    assert overview_body["brand_name"] == "雅诗兰黛"
+    assert overview_body["state"] == "ok"
+    assert any(card["value"] > 0 for card in overview_body["kpi_cards"])
+
+    metrics_resp = await client.get(
+        f"/api/v1/projects/{p.id}/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12, "series": "mention_rate,sov,sentiment"},
+    )
+    assert metrics_resp.status_code == 200
+    metrics_body = metrics_resp.json()
+    assert metrics_body["state"] == "ok"
+    assert all(series["points"] for series in metrics_body["series"])
+
+    competitors_resp = await client.get(
+        f"/api/v1/projects/{p.id}/competitors/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+    assert competitors_resp.status_code == 200
+    competitors_body = competitors_resp.json()
+    assert competitors_body["primary_brand_id"] == 12
+    assert competitors_body["primary"]["avg_sov"] > 0
+    assert [c["brand_id"] for c in competitors_body["competitors"]] == [99]
+    assert competitors_body["competitors"][0]["co_mention_count"] == 3
+
+    trends_resp = await client.get(
+        f"/api/v1/projects/{p.id}/competitors/trends",
+        headers=_bearer(user),
+        params={"brand_id": 12, "metric": "geo_score"},
+    )
+    assert trends_resp.status_code == 200
+    trends_body = trends_resp.json()
+    primary_series = next(s for s in trends_body["series"] if s["is_primary"])
+    assert primary_series["points"]
 
 
 @pytest.mark.asyncio

@@ -290,7 +290,9 @@ class _FakeTopPromptsSession:
             raise RuntimeError("legacy prompt join failed")
         if self.aborted:
             raise RuntimeError("current transaction is aborted")
-        return _FakeRows([(42, 5, 2.4, 0.7)])
+        if self.calls in (2, 3):
+            return _FakeRows([])
+        return _FakeRows([(5, 2.4, 0.7)])
 
 
 @pytest.mark.asyncio

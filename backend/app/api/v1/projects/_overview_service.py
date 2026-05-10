@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects._legacy_lookups import resolve_brand_name
 from app.api.v1.projects._mention_rollups import (
     brand_mention_daily_rollups,
+    brand_mention_match_condition,
     brand_mention_window_rollup,
     geo_score,
     mention_rate,
@@ -400,21 +401,20 @@ async def _top_prompts(
         )
 
     # Fallback: brand-level aggregation when llm_responses/prompts unavailable.
+    brand_filter = await brand_mention_match_condition(session, brand_id)
     stmt = (
         select(
-            BrandMention.brand_id,
             func.count(BrandMention.id).label("cnt"),
             func.avg(BrandMention.position_rank).label("avg_rank"),
             func.avg(BrandMention.sentiment_score).label("avg_sent"),
         )
         .where(
             and_(
-                BrandMention.brand_id == brand_id,
+                brand_filter,
                 BrandMention.created_at >= datetime.combine(from_date, datetime.min.time()),
                 BrandMention.created_at <= datetime.combine(to_date, datetime.max.time()),
             )
         )
-        .group_by(BrandMention.brand_id)
         .order_by(func.count(BrandMention.id).desc())
         .limit(limit)
     )
@@ -430,12 +430,13 @@ async def _top_prompts(
     return [
         TopPromptRow(
             prompt_id=None,
-            prompt_text=f"(aggregated prompts for brand #{r[0]})",
-            mention_count=int(r[1] or 0),
-            avg_position_rank=round(r[2] or 0, 2) if r[2] is not None else None,
-            avg_sentiment_score=round(r[3] or 0, 2) if r[3] is not None else None,
+            prompt_text=f"(aggregated prompts for brand #{brand_id})",
+            mention_count=int(r[0] or 0),
+            avg_position_rank=round(r[1] or 0, 2) if r[1] is not None else None,
+            avg_sentiment_score=round(r[2] or 0, 2) if r[2] is not None else None,
         )
         for r in rows
+        if int(r[0] or 0) > 0
     ]
 
 
