@@ -166,6 +166,7 @@ from app.api.admin.query_pool import router as _query_pool_router  # noqa: E402
 
 app.include_router(_query_pool_router, prefix="/admin/api/v1/pipeline/query-pool")
 app.include_router(admin_llm_extraction_router, prefix="/admin/api/llm-extraction")
+app.include_router(admin_llm_extraction_router, prefix="/api/llm-extraction")
 
 # Legacy alias for the Segments router. admin_console served Segments at
 # the un-prefixed /api/segments/* path; admin.html still calls the same.

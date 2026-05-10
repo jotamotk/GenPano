@@ -191,10 +191,18 @@ async def test_backfill_from_context_snapshot_creates_reviewable_candidates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/api/llm-extraction/candidates?status=pending",
+        "/api/llm-extraction/candidates?status=pending",
+    ],
+)
 async def test_llm_extraction_admin_api_alias_lists_candidates(
     client,
     admin_operator: AdminUser,
     db_session: AsyncSession,
+    path: str,
 ) -> None:
     candidate = LLMEntityCandidate(
         id=_new_id(),
@@ -211,7 +219,7 @@ async def test_llm_extraction_admin_api_alias_lists_candidates(
     db_session.add(candidate)
     await db_session.commit()
 
-    resp = await client.get("/admin/api/llm-extraction/candidates?status=pending")
+    resp = await client.get(path)
 
     assert resp.status_code == 200
     body = resp.json()
