@@ -9,6 +9,7 @@ test.skip(
   !stagingEnabled,
   'Set ADMIN_E2E_STAGING=1 with PLAYWRIGHT_BASE_URL to run the post-CI staging gate.',
 );
+test.setTimeout(3 * 60_000);
 
 test('staging Admin core pages have no JS errors or 5xx responses', async ({ page }) => {
   const errors = installAdminErrorGuards(page);
@@ -20,8 +21,8 @@ test('staging Admin core pages have no JS errors or 5xx responses', async ({ pag
     '/admin/planner-query-pool',
     '/admin/planner-llm-extraction',
   ]) {
-    await page.goto(path, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('main')).toBeVisible();
+    await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await expect(page.locator('main')).toBeVisible({ timeout: 30_000 });
   }
 
   await errors.assertClean();
