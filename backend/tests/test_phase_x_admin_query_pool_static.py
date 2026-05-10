@@ -41,6 +41,13 @@ def test_query_pool_candidates_can_be_marked_ready() -> None:
     assert "q.candidateStatus !== 'ready'" in html
 
 
+def test_query_pool_ready_from_all_status_refocuses_remaining_candidates() -> None:
+    html = _admin_html()
+
+    assert "status === 'ready' && !String(this.queryPoolCandidateStatus || '').trim()" in html
+    assert "this.queryPoolCandidateStatus = 'candidate';" in html
+
+
 def test_query_pool_prompt_selection_uses_raw_prompt_id() -> None:
     html = _admin_html()
 

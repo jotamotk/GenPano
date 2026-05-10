@@ -1,0 +1,164 @@
+name: Brand Search Diagnostics
+
+# Read-only prod probes to figure out why /api/v1/brands/search returns
+# empty. Auto-runs once when the workflow file lands on main; can also
+# be re-triggered manually for any keyword.
+#
+# Output is captured in the runner log AND posted back as a comment on
+# PR #440 so the operator can read it without needing GitHub Actions
+# log scrollback.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'Keyword to search for'
+        required: true
+        default: '雅诗兰黛'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/brand-search-diagnostics.yml'
+
+jobs:
+  brand-search:
+    name: Inspect brands table + run sample queries
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write          # for PR comment (PRs are issues)
+      pull-requests: write
+    env:
+      QUERY: ${{ inputs.query || '雅诗兰黛' }}
+
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run diagnostic probes on prod
+        id: probe
+        run: |
+          set +e
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "QUERY='$QUERY' bash -s" <<'REMOTE' | tee /tmp/probe.txt
+          set +e
+          cd /opt/genpano
+
+          echo "=== Compose state ==="
+          docker compose ps backend postgres
+
+          echo
+          echo "=== brands table cardinality ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT COUNT(*) AS total_brands FROM brands;
+          "
+
+          echo "=== Column presence ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='brands'
+              AND column_name IN ('name','name_zh','name_en','industry','aliases')
+            ORDER BY column_name;
+          "
+
+          echo "=== Sample 30 most-recent brand rows ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT id, name, name_zh, name_en, industry
+            FROM brands ORDER BY id DESC LIMIT 30;
+          "
+
+          echo "=== Aliases shape audit ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT
+              COUNT(*) FILTER (WHERE aliases IS NULL) AS null_count,
+              COUNT(*) FILTER (WHERE jsonb_typeof(aliases) = 'array') AS array_count,
+              COUNT(*) FILTER (WHERE aliases IS NOT NULL AND jsonb_typeof(aliases) <> 'array') AS bad_count
+            FROM brands;
+          "
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT id, name, name_zh, jsonb_typeof(aliases) AS shape
+            FROM brands
+            WHERE aliases IS NOT NULL AND jsonb_typeof(aliases) <> 'array'
+            LIMIT 10;
+          "
+
+          echo "=== Name-only matches for keyword: $QUERY ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT id, name, name_zh, name_en, industry
+            FROM brands
+            WHERE LOWER(COALESCE(name_zh,'')) LIKE LOWER('%${QUERY}%')
+               OR LOWER(COALESCE(name_en,'')) LIKE LOWER('%${QUERY}%')
+               OR LOWER(COALESCE(name,''))    LIKE LOWER('%${QUERY}%')
+            LIMIT 20;
+          "
+
+          echo "=== Aliases JSONB matches for keyword: $QUERY ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT b.id, b.name, b.name_zh, a.alias
+            FROM brands b,
+                 LATERAL jsonb_array_elements_text(
+                   CASE WHEN jsonb_typeof(b.aliases)='array'
+                        THEN b.aliases ELSE '[]'::jsonb END
+                 ) AS a(alias)
+            WHERE LOWER(a.alias) LIKE LOWER('%${QUERY}%')
+            LIMIT 20;
+          "
+
+          echo "=== brand_mentions long-tail (mentioned but NOT in brands) ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -c "
+            SELECT bm.brand_name, COUNT(*) AS mentions
+            FROM brand_mentions bm
+            LEFT JOIN brands b
+              ON b.id = bm.brand_id
+              OR LOWER(COALESCE(b.name,''))    = LOWER(bm.brand_name)
+              OR LOWER(COALESCE(b.name_zh,'')) = LOWER(bm.brand_name)
+              OR LOWER(COALESCE(b.name_en,'')) = LOWER(bm.brand_name)
+            WHERE b.id IS NULL
+            GROUP BY bm.brand_name
+            ORDER BY mentions DESC
+            LIMIT 20;
+          "
+
+          echo "=== Recent backend logs filtered for brand search ==="
+          docker compose logs --tail=300 backend 2>&1 \
+            | grep -iE 'search_brands|/v1/brands/search' \
+            | tail -80
+          REMOTE
+
+      - name: Build PR comment
+        if: always()
+        run: |
+          {
+            echo "## 🔎 Brand Search Diagnostics — \`$QUERY\`"
+            echo ""
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            echo "- Run: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo ""
+            echo "<details><summary>Raw probe output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI / trim to keep comment under GitHub's 64KB limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/probe.txt | head -c 50000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/comment.md
+          echo "--- Comment preview ---"
+          cat /tmp/comment.md
+
+      - name: Post comment on PR #440
+        if: always()
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: 440
+          body-path: /tmp/comment.md

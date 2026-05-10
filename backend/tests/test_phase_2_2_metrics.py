@@ -163,6 +163,55 @@ async def test_metrics_subset_series(client, user, project_with_full_data):
 
 
 @pytest.mark.asyncio
+async def test_metrics_uses_brand_mentions_when_daily_rollups_missing(client, user, db_session):
+    p = Project(user_id=user.id, name="Mention Metrics", primary_brand_id=12, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    for i in range(5):
+        db_session.add(
+            BrandMention(
+                response_id=5100 + i,
+                brand_id=12,
+                brand_name="Estée Lauder",
+                position_rank=(i % 4) + 1,
+                sentiment_score=0.8,
+                created_at=now - timedelta(days=i % 3),
+            )
+        )
+    for i in range(3):
+        db_session.add(
+            BrandMention(
+                response_id=5200 + i,
+                brand_id=77,
+                brand_name="Other Brand",
+                position_rank=3,
+                sentiment_score=0.1,
+                created_at=now - timedelta(days=i % 3),
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{p.id}/metrics",
+        headers=_bearer(user),
+        params={"series": "mention_rate,sov,sentiment,rank,citation"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    by_metric = {s["metric"]: s["points"] for s in body["series"]}
+    assert by_metric["mention_rate"]
+    assert by_metric["sov"]
+    assert by_metric["sentiment"]
+    assert by_metric["rank"]
+    assert by_metric["mention_rate"][0]["value"] > 0
+
+
+@pytest.mark.asyncio
 async def test_metrics_invalid_date_returns_422(client, user, project_with_full_data):
     resp = await client.get(
         f"/api/v1/projects/{project_with_full_data.id}/metrics",

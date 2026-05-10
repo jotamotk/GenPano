@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Button } from '../components/ui';
+import { Button, MetricLabel } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
@@ -77,10 +77,14 @@ export default function DashboardPage() {
     ['mention_rate', 'sov', 'sentiment', 'rank', 'citation'],
     brandIdOverride,
   );
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null);
+  const competitorsQ = useCompetitorMetrics(
+    isLive ? liveProjectId : null,
+    brandIdOverride,
+  );
   const competitorTrendsQ = useCompetitorTrends(
     isLive ? liveProjectId : null,
     'geo_score',
+    brandIdOverride,
   );
   const diagnosticsQ = useDiagnostics(isLive ? liveProjectId : null, {
     status: 'open',
@@ -182,7 +186,9 @@ export default function DashboardPage() {
   const header = (
     <div className="flex items-center justify-between flex-wrap gap-3">
       <div className="flex items-baseline gap-3">
-        <span className="text-sm text-themed-muted">{t('dashboard.page_subtitle')}</span>
+        <MetricLabel helpText={t('dashboard.page_help')} className="text-sm text-themed-muted font-medium">
+          {t('dashboard.page_subtitle')}
+        </MetricLabel>
       </div>
       <div className="flex items-center gap-2">
         <Button variant="secondary" size="sm" onClick={() => navigate('/project-settings')}>

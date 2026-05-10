@@ -17,6 +17,7 @@ collections []  + KPI cards with 0 / null deltas.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import cast
 
@@ -32,6 +33,14 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._legacy_lookups import resolve_brand_name
+from app.api.v1.projects._mention_rollups import (
+    brand_mention_daily_rollups,
+    brand_mention_window_rollup,
+    geo_score,
+    mention_rate,
+    metric_value,
+    share_of_voice,
+)
 from app.api.v1.projects._overview_dto import (
     BrandOverviewOut,
     GroupSharedDomainRow,
@@ -41,6 +50,11 @@ from app.api.v1.projects._overview_dto import (
 )
 
 DEFAULT_WINDOW_DAYS = 30
+logger = logging.getLogger(__name__)
+
+
+def _row_has_values(row: object | None, names: tuple[str, ...]) -> bool:
+    return row is not None and any(getattr(row, name, None) is not None for name in names)
 
 
 def _empty_overview(project: Project) -> BrandOverviewOut:
@@ -115,6 +129,71 @@ async def _kpi_cards(
         )
     )
     prior = (await session.execute(stmt_prior)).one_or_none()
+
+    if not _row_has_values(cur, ("avg_geo", "avg_mention", "avg_sov", "avg_sentiment")):
+        cur_rollup = await brand_mention_window_rollup(session, brand_id, from_date, to_date)
+        prior_rollup = await brand_mention_window_rollup(session, brand_id, prior_from, prior_to)
+        if cur_rollup.has_data:
+            geo = geo_score(cur_rollup)
+            mention = mention_rate(cur_rollup)
+            sov = share_of_voice(cur_rollup)
+            sentiment = cur_rollup.avg_sentiment_score
+            prior_geo = geo_score(prior_rollup) if prior_rollup.has_data else None
+            prior_mention = mention_rate(prior_rollup) if prior_rollup.has_data else None
+            prior_sov = share_of_voice(prior_rollup) if prior_rollup.has_data else None
+            prior_sentiment = prior_rollup.avg_sentiment_score if prior_rollup.has_data else None
+
+            def _pct_delta(now: float | None, before: float | None) -> float | None:
+                if now is None or before is None or before == 0:
+                    return None
+                return round((now - before) / before * 100, 1)
+
+            def _direction(delta: float | None) -> str | None:
+                if delta is None:
+                    return None
+                if delta > 0.5:
+                    return "up"
+                if delta < -0.5:
+                    return "down"
+                return "flat"
+
+            geo_delta = _pct_delta(geo, prior_geo)
+            mention_delta = _pct_delta(mention, prior_mention)
+            sov_delta = _pct_delta(sov, prior_sov)
+            sentiment_delta = _pct_delta(sentiment, prior_sentiment)
+
+            return [
+                KpiCard(
+                    label_zh="GEO 评分",
+                    label_en="GeoScore",
+                    value=round(geo or 0, 1),
+                    delta_30d_pct=geo_delta,
+                    direction=_direction(geo_delta),
+                ),
+                KpiCard(
+                    label_zh="提及率",
+                    label_en="Mention Rate",
+                    value=round((mention or 0) * 100, 1),
+                    unit="%",
+                    delta_30d_pct=mention_delta,
+                    direction=_direction(mention_delta),
+                ),
+                KpiCard(
+                    label_zh="声量份额",
+                    label_en="Share of Voice",
+                    value=round((sov or 0) * 100, 1),
+                    unit="%",
+                    delta_30d_pct=sov_delta,
+                    direction=_direction(sov_delta),
+                ),
+                KpiCard(
+                    label_zh="情感分",
+                    label_en="Sentiment",
+                    value=round(sentiment or 0, 2),
+                    delta_30d_pct=sentiment_delta,
+                    direction=_direction(sentiment_delta),
+                ),
+            ]
 
     def _pct_delta(now: float | None, before: float | None) -> float | None:
         if now is None or before is None or before == 0:
@@ -196,7 +275,28 @@ async def _trend(
         .order_by(GeoScoreDaily.date)
     )
     rows = (await session.execute(stmt)).all()
-    return [TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1] or 0, 4)) for r in rows]
+    if rows:
+        return [
+            TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1] or 0, 4))
+            for r in rows
+        ]
+
+    fallback_metric = {
+        "avg_geo_score": "geo_score",
+        "avg_sov": "sov",
+        "mention_rate": "mention_rate",
+        "avg_sentiment": "sentiment",
+        "avg_position_rank": "rank",
+        "citation_rate": "citation",
+    }.get(column)
+    if fallback_metric is None:
+        return []
+    rollups = await brand_mention_daily_rollups(session, brand_id, from_date, to_date)
+    return [
+        TrendPoint(date=date.fromisoformat(day), value=metric_value(rollup, fallback_metric))
+        for day, rollup in sorted(rollups.items())
+        if rollup.has_data
+    ]
 
 
 async def _sentiment_trend(
@@ -210,6 +310,14 @@ async def _sentiment_trend(
     Uses date_trunc('day', analyzed_at) to bucket; works for both
     Postgres and SQLite (via func.date()).
     """
+    rollups = await brand_mention_daily_rollups(session, brand_id, from_date, to_date)
+    if rollups:
+        return [
+            TrendPoint(date=date.fromisoformat(day), value=metric_value(rollup, "sentiment"))
+            for day, rollup in sorted(rollups.items())
+            if rollup.has_data
+        ]
+
     bucket = func.date(ResponseAnalysis.analyzed_at)
     stmt = (
         select(bucket, func.avg(ResponseAnalysis.sentiment_score))
@@ -253,32 +361,33 @@ async def _top_prompts(
     from sqlalchemy import text as _text
 
     try:
-        result = await session.execute(
-            _text(
-                """
-                SELECT p.id,
-                       p.text,
-                       COUNT(bm.id)::int AS cnt,
-                       AVG(bm.position_rank) AS avg_rank,
-                       AVG(bm.sentiment_score) AS avg_sent
-                FROM brand_mentions bm
-                JOIN llm_responses r ON r.id = bm.response_id
-                JOIN prompts p ON p.id = r.prompt_id
-                WHERE bm.brand_id = :bid
-                  AND bm.created_at >= :from_d
-                  AND bm.created_at <= :to_d
-                GROUP BY p.id, p.text
-                ORDER BY cnt DESC
-                LIMIT :lim
-                """
-            ),
-            {
-                "bid": brand_id,
-                "from_d": datetime.combine(from_date, datetime.min.time()),
-                "to_d": datetime.combine(to_date, datetime.max.time()),
-                "lim": limit,
-            },
-        )
+        async with session.begin_nested():
+            result = await session.execute(
+                _text(
+                    """
+                    SELECT p.id,
+                           p.text,
+                           COUNT(bm.id)::int AS cnt,
+                           AVG(bm.position_rank) AS avg_rank,
+                           AVG(bm.sentiment_score) AS avg_sent
+                    FROM brand_mentions bm
+                    JOIN llm_responses r ON r.id = bm.response_id
+                    JOIN prompts p ON p.id = r.prompt_id
+                    WHERE bm.brand_id = :bid
+                      AND bm.created_at >= :from_d
+                      AND bm.created_at <= :to_d
+                    GROUP BY p.id, p.text
+                    ORDER BY cnt DESC
+                    LIMIT :lim
+                    """
+                ),
+                {
+                    "bid": brand_id,
+                    "from_d": datetime.combine(from_date, datetime.min.time()),
+                    "to_d": datetime.combine(to_date, datetime.max.time()),
+                    "lim": limit,
+                },
+            )
         rows = result.all()
         if rows:
             return [
@@ -291,8 +400,13 @@ async def _top_prompts(
                 )
                 for r in rows
             ]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "Brand overview top prompts join failed; falling back to brand aggregate "
+            "(brand_id=%s, error=%s)",
+            brand_id,
+            exc.__class__.__name__,
+        )
 
     # Fallback: brand-level aggregation when llm_responses/prompts unavailable.
     stmt = (
@@ -313,7 +427,15 @@ async def _top_prompts(
         .order_by(func.count(BrandMention.id).desc())
         .limit(limit)
     )
-    rows = (await session.execute(stmt)).all()
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.exception(
+            "Brand overview top prompts fallback failed; returning empty top_prompts",
+            extra={"brand_id": brand_id},
+        )
+        return []
     return [
         TopPromptRow(
             prompt_id=None,

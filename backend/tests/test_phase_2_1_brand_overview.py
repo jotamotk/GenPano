@@ -11,6 +11,7 @@ import pytest_asyncio
 from genpano_models import BrandMention, GeoScoreDaily, Project, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects import _overview_service
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -198,3 +199,114 @@ async def test_overview_brand_id_override_falsy_keeps_default(client, user, proj
     )
     assert resp.status_code == 200
     assert resp.json()["brand_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_overview_uses_brand_mentions_when_daily_rollups_missing(client, user, db_session):
+    p = Project(user_id=user.id, name="Mention Only", primary_brand_id=12, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    now = datetime.now()
+    for i in range(4):
+        db_session.add(
+            BrandMention(
+                response_id=4100 + i,
+                brand_id=12,
+                brand_name="Estée Lauder",
+                position_rank=(i % 3) + 1,
+                sentiment_score=0.75,
+                created_at=now - timedelta(days=i),
+            )
+        )
+    for i in range(2):
+        db_session.add(
+            BrandMention(
+                response_id=4200 + i,
+                brand_id=99,
+                brand_name="Other Brand",
+                position_rank=2,
+                sentiment_score=0.2,
+                created_at=now - timedelta(days=i),
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/overview", headers=_bearer(user))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "ok"
+    geo_card = next(c for c in body["kpi_cards"] if c["label_en"] == "GeoScore")
+    mention_card = next(c for c in body["kpi_cards"] if c["label_en"] == "Mention Rate")
+    assert geo_card["value"] > 0
+    assert mention_card["value"] > 0
+    assert body["geo_score_30d"]
+    assert body["sov_30d"]
+    assert body["sentiment_30d"]
+
+
+class _FakeNestedTransaction:
+    def __init__(self, session: "_FakeTopPromptsSession") -> None:
+        self._session = session
+
+    async def __aenter__(self) -> "_FakeNestedTransaction":
+        self._session.savepoints += 1
+        self._session.in_savepoint = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self._session.savepoint_rollbacks += 1
+        self._session.in_savepoint = False
+        return False
+
+
+class _FakeRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeTopPromptsSession:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.in_savepoint = False
+        self.aborted = False
+        self.savepoints = 0
+        self.savepoint_rollbacks = 0
+
+    def begin_nested(self) -> _FakeNestedTransaction:
+        return _FakeNestedTransaction(self)
+
+    async def execute(self, statement, params=None):
+        self.calls += 1
+        if self.calls == 1:
+            if not self.in_savepoint:
+                self.aborted = True
+            raise RuntimeError("legacy prompt join failed")
+        if self.aborted:
+            raise RuntimeError("current transaction is aborted")
+        return _FakeRows([(42, 5, 2.4, 0.7)])
+
+
+@pytest.mark.asyncio
+async def test_top_prompts_raw_join_failure_keeps_fallback_transaction_usable():
+    session = _FakeTopPromptsSession()
+    today = datetime.now().date()
+
+    rows = await _overview_service._top_prompts(
+        session,
+        42,
+        today - timedelta(days=29),
+        today,
+    )
+
+    assert len(rows) == 1
+    assert rows[0].prompt_id is None
+    assert rows[0].mention_count == 5
+    assert session.savepoints == 2
+    assert session.savepoint_rollbacks == 1

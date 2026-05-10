@@ -6,7 +6,7 @@
  * Returns null otherwise — mock-only sessions / non-numeric productIds
  * see no banner.
  */
-import { Badge, Card } from '../ui'
+import { Badge, Card, MetricLabel } from '../ui'
 import { useProjects } from '../../hooks/useProjects'
 import { useBrandProducts } from '../../hooks/useBrandMetrics'
 import { isLiveProjectId } from '../../hooks/useBrandOverview'
@@ -60,6 +60,7 @@ export default function ProductDetailLiveBanner({
         <div className="flex items-center gap-4 flex-wrap">
           <KpiCell
             label="GEO 分"
+            helpText="产品在 AI 回答中的综合可见度/推荐表现得分。"
             value={
               product.avg_geo_score != null
                 ? product.avg_geo_score.toFixed(1)
@@ -68,10 +69,12 @@ export default function ProductDetailLiveBanner({
           />
           <KpiCell
             label="提及"
+            helpText="当前窗口内该产品被 AI 回答提到的次数。"
             value={product.mention_count.toString()}
           />
           <KpiCell
             label="平均排名"
+            helpText="该产品在相关回答或推荐列表中的平均出现位置，数值越小越靠前。"
             value={
               product.avg_position_rank != null
                 ? `#${product.avg_position_rank.toFixed(1)}`
@@ -80,6 +83,7 @@ export default function ProductDetailLiveBanner({
           />
           <KpiCell
             label="胜率"
+            helpText="该产品在相关比较或推荐场景中胜出的比例。"
             value={
               product.win_rate != null
                 ? `${(product.win_rate * 100).toFixed(1)}%`
@@ -92,11 +96,21 @@ export default function ProductDetailLiveBanner({
   )
 }
 
-function KpiCell({ label, value }: { label: string; value: string }) {
+function KpiCell({
+  label,
+  value,
+  helpText,
+}: {
+  label: string
+  value: string
+  helpText?: string
+}) {
   return (
     <div className="text-right">
       <p className="text-[10px] uppercase tracking-wider text-themed-muted">
-        {label}
+        <MetricLabel helpText={helpText} className="justify-end">
+          {label}
+        </MetricLabel>
       </p>
       <p className="text-sm font-semibold tabular-nums text-themed-primary">
         {value}

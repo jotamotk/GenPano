@@ -8252,7 +8252,6 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 <option value="doubao">豆包</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="chatgpt">ChatGPT</option>
-                <option value="gemini">Gemini</option>
               </select>
             </div>
             <div>
@@ -16958,6 +16957,9 @@ function adminApp() {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.message || body.error || 'Query 候选状态更新失败');
         ids.forEach(id => delete this.queryPoolSelectedCandidateIds[id]);
+        if (status === 'ready' && !String(this.queryPoolCandidateStatus || '').trim()) {
+          this.queryPoolCandidateStatus = 'candidate';
+        }
         this.toast('已更新 ' + ids.length + ' 条 Query 候选为 ' + this.queryPoolCandidateStatusLabel(status));
         await this.loadQueryPoolCandidates();
       } catch (error) {
@@ -18034,7 +18036,6 @@ function adminApp() {
         { value: 'doubao', label: '豆包' },
         { value: 'deepseek', label: 'DeepSeek' },
         { value: 'chatgpt', label: 'ChatGPT' },
-        { value: 'gemini', label: 'Gemini' },
       ];
     },
     selectedScheduleEditorTargetLlms() {

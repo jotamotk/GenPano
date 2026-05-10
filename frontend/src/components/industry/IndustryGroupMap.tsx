@@ -10,6 +10,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { aggregateByGroup } from '../../lib/industry/statistics';
+import { MetricLabel } from '../ui';
 
 function sentimentColor(s) {
   if (s >= 0.75) return 'var(--color-success)';
@@ -33,10 +34,9 @@ export default function IndustryGroupMap({
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
         <div className="text-[13px] font-medium text-themed-primary">
-          集团版图 · Top {limit}
-        </div>
-        <div className="text-[11px] text-themed-muted">
-          按合计 SoV 降序 · 集团维度竞争格局
+          <MetricLabel helpText="按母集团聚合行业品牌，观察集团维度的合计 SoV 和头部品牌。">
+            集团版图 · Top {limit}
+          </MetricLabel>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -67,7 +67,9 @@ export default function IndustryGroupMap({
                   <div className="text-lg font-semibold text-themed-primary tabular-nums">
                     {g.totalSov}%
                   </div>
-                  <div className="text-[10px] text-themed-muted">合计 SoV</div>
+                  <div className="text-[10px] text-themed-muted">
+                    <MetricLabel helpText="该集团旗下品牌在行业中的 SoV 合计。">合计 SoV</MetricLabel>
+                  </div>
                 </div>
               </div>
 

@@ -15,6 +15,7 @@
 
 import { useProjects } from '../../hooks/useProjects'
 import { useBrandOverview, isLiveProjectId } from '../../hooks/useBrandOverview'
+import { MetricLabel } from '../ui'
 
 const DIRECTION_ICON: Record<string, string> = {
   up: '↑',
@@ -82,7 +83,9 @@ export default function BrandOverviewLiveBanner() {
               style={{ background: 'var(--color-bg-card, #fff)' }}
             >
               <div className="text-[11px] uppercase tracking-wider text-themed-muted mb-1">
-                {card.label_zh}
+                <MetricLabel helpText={getKpiHelpText(card.label_zh)}>
+                  {card.label_zh}
+                </MetricLabel>
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-xl font-bold tabular-nums text-themed-primary">
@@ -112,4 +115,23 @@ export default function BrandOverviewLiveBanner() {
       )}
     </div>
   )
+}
+
+function getKpiHelpText(label: string): string {
+  if (label.includes('提及')) {
+    return '基于品类通用问题计算，排除直接询问品牌的问题（non-brand 口径）。'
+  }
+  if (label.includes('SoV')) {
+    return '已提到任一品牌的回答中，主品牌占有的声量份额。'
+  }
+  if (label.includes('情感')) {
+    return '主品牌相关回答的情感加权平均，范围通常为 [-1, 1]。'
+  }
+  if (label.includes('引用')) {
+    return '主品牌相关回答中引用来源的覆盖或占比表现。'
+  }
+  if (label.includes('PANO') || label.includes('GEO')) {
+    return '综合衡量品牌在 AI 回答中的可见度、情感、引用和权威表现。'
+  }
+  return '当前项目 30 天窗口内的实时指标。'
 }

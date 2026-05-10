@@ -11,6 +11,7 @@
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { rankingByEngine } from '../../lib/industry/statistics';
+import { MetricLabel } from '../ui';
 
 const ENGINES = [
   { key: 'chatgpt', label: 'ChatGPT' },
@@ -66,10 +67,9 @@ export default function IndustryEngineRankingMatrix({
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[13px] font-medium text-themed-primary">
-            引擎分位矩阵
-          </div>
-          <div className="text-[11px] text-themed-muted mt-0.5">
-            同一品牌在不同 AI 引擎上的排名差异 · 色深 = 排位靠前
+            <MetricLabel helpText="比较同一品牌在不同 AI 引擎上的行业排名差异。">
+              引擎分位矩阵
+            </MetricLabel>
           </div>
         </div>
         <div className="text-[11px] text-themed-muted">Top {rows.length}</div>
@@ -86,14 +86,18 @@ export default function IndustryEngineRankingMatrix({
                   className="text-center font-normal pb-2 px-1"
                   style={{ minWidth: 72 }}
                 >
+                <MetricLabel helpText={`${e.label} 中的品牌行业排名。`}>
                   {e.label}
+                </MetricLabel>
                 </th>
               ))}
               <th
                 className="text-center font-normal pb-2 pl-1"
                 style={{ minWidth: 80 }}
               >
-                ΔMax
+                <MetricLabel helpText="三个引擎排名中的最大差值，越大表示引擎间波动越明显。">
+                  ΔMax
+                </MetricLabel>
               </th>
             </tr>
           </thead>
