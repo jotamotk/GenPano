@@ -12,6 +12,7 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, TrendingUp, TrendingDown } from 'lucide-react';
 import { rankDispersion, rankingDelta30d } from '../../lib/industry/statistics';
+import { MetricLabel } from '../ui';
 
 const KPI_FIELDS = ['panoScore', 'sov', 'citationShare', 'sentiment'];
 const KPI_LABELS = {
@@ -56,29 +57,34 @@ export default function IndustryRankingHero({
     <div className="flex items-start justify-between gap-4 pb-3 border-b border-themed-subtle">
       <div className="flex-1">
         <h1 className="text-xl font-semibold text-themed-primary">
-          {industryName || '行业排行榜'}
+          <MetricLabel helpText="按综合分、SoV、引用、情感、引擎分位和赛道分层观察行业排名。">
+            {industryName || '行业排行榜'}
+          </MetricLabel>
         </h1>
-        <p className="text-xs text-themed-muted mt-1">
-          多口径交叉深挖 · Tier 分层 · 30d 异动 · 引擎分位 · 赛道分层
-        </p>
         <div className="flex gap-6 mt-3">
           <div>
             <div className="text-xl font-semibold text-themed-primary tabular-nums">
               {stats.brandCount}
             </div>
-            <div className="text-[11px] text-themed-muted mt-0.5">覆盖品牌</div>
+            <div className="text-[11px] text-themed-muted mt-0.5">
+              <MetricLabel helpText="进入当前行业排名样本的品牌数量。">覆盖品牌</MetricLabel>
+            </div>
           </div>
           <div>
             <div className="text-xl font-semibold text-themed-primary tabular-nums">
               {stats.groupCount}
             </div>
-            <div className="text-[11px] text-themed-muted mt-0.5">覆盖集团</div>
+            <div className="text-[11px] text-themed-muted mt-0.5">
+              <MetricLabel helpText="进入当前行业排名样本的母集团数量。">覆盖集团</MetricLabel>
+            </div>
           </div>
           <div>
             <div className="text-xl font-semibold text-themed-primary tabular-nums">
               {Math.round(stats.avgPano)}
             </div>
-            <div className="text-[11px] text-themed-muted mt-0.5">平均 PANO</div>
+            <div className="text-[11px] text-themed-muted mt-0.5">
+              <MetricLabel helpText="当前行业样本品牌的 PANO Score 平均值。">平均 PANO</MetricLabel>
+            </div>
           </div>
         </div>
       </div>
@@ -103,7 +109,9 @@ export default function IndustryRankingHero({
                   {myPosition.ranks[f] != null ? `#${myPosition.ranks[f]}` : '—'}
                 </div>
                 <div className="text-[10px] text-themed-muted mt-0.5">
-                  {KPI_LABELS[f]}
+                  <MetricLabel helpText={`主品牌在行业内的${KPI_LABELS[f]}排名。`}>
+                    {KPI_LABELS[f]}
+                  </MetricLabel>
                 </div>
               </div>
             ))}

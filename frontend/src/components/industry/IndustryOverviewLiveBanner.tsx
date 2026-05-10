@@ -8,6 +8,7 @@
  */
 
 import { useIndustryOverview } from '../../hooks/useIndustries'
+import { MetricLabel } from '../ui'
 
 export default function IndustryOverviewLiveBanner({
   industryId,
@@ -62,7 +63,9 @@ export default function IndustryOverviewLiveBanner({
             style={{ background: 'var(--color-bg-card, #fff)' }}
           >
             <div className="text-[11px] uppercase tracking-wider text-themed-muted mb-1">
-              {card.label_zh}
+              <MetricLabel helpText={getIndustryKpiHelpText(card.label_zh)}>
+                {card.label_zh}
+              </MetricLabel>
             </div>
             <div className="flex items-baseline gap-1">
               <span className="text-xl font-bold tabular-nums text-themed-primary">
@@ -79,7 +82,9 @@ export default function IndustryOverviewLiveBanner({
       {overview.top_brands.length > 0 && (
         <div className="border-t border-themed pt-3">
           <div className="text-[10px] font-semibold text-themed-muted uppercase tracking-wider mb-2">
-            Top 10 品牌（30d 平均 GEO 分）
+            <MetricLabel helpText="按最近 30 天平均 GEO 分排序的行业品牌榜单。">
+              Top 10 品牌（30d 平均 GEO 分）
+            </MetricLabel>
           </div>
           <div className="grid grid-cols-2 gap-2">
             {overview.top_brands.slice(0, 10).map((b) => (
@@ -109,4 +114,20 @@ export default function IndustryOverviewLiveBanner({
       )}
     </div>
   )
+}
+
+function getIndustryKpiHelpText(label: string): string {
+  if (label.includes('品牌')) {
+    return '当前行业样本中覆盖到的品牌数量。'
+  }
+  if (label.includes('PANO') || label.includes('GEO')) {
+    return '行业品牌在 AI 回答中的综合可见度得分。'
+  }
+  if (label.includes('提及')) {
+    return '基于品类通用问题计算，排除直接询问品牌的问题（non-brand 口径）。'
+  }
+  if (label.includes('SoV')) {
+    return '已提到任一品牌的回答中，各品牌占有的声量份额。'
+  }
+  return '当前行业 30 天窗口内的实时指标。'
 }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Badge } from '../ui';
+import { Card, Badge, MetricLabel } from '../ui';
 
 /* ─────────────────────────────────────────────────────────────
    SameGroupAndAcquisition — PRD §4.2.7.D v1.1
@@ -20,11 +20,10 @@ function SameGroupCard({ data }) {
       <div className="mb-3 flex items-baseline justify-between gap-4 flex-wrap">
         <div>
           <h3 className="text-sm font-semibold text-themed-primary">
-            同集团共享资产
+            <MetricLabel helpText={`集团: ${data.group}；同集团品牌共享引用比例 ${(data.sharedRatio * 100).toFixed(0)}%。`}>
+              同集团共享资产
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-0.5">
-            集团: {data.group} · 同集团品牌共享引用比例 {(data.sharedRatio * 100).toFixed(0)}%
-          </p>
         </div>
         <Badge variant="accent" size="sm">
           共享 {externalShared.length} 个兄弟官域
@@ -73,11 +72,10 @@ function AcquisitionStream({ events }) {
     <Card className="p-5">
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-themed-primary">
-          新获得的权威来源 · 近 30 天
+          <MetricLabel helpText="Tier 1+2 域名首次把你引到 AI 回答里，每一条都是权威背书的新增量。">
+            新获得的权威来源 · 近 30 天
+          </MetricLabel>
         </h3>
-        <p className="text-xs text-themed-muted mt-0.5">
-          Tier 1+2 域名首次把你引到 AI 回答里 — 每一条都是权威背书的新增量
-        </p>
       </div>
       <ol className="relative border-l-2 border-themed-subtle pl-5 space-y-4">
         {events.map((ev) => (

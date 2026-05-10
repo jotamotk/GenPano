@@ -8,7 +8,7 @@
  * authoritative GEO score / SoV / sentiment / co-mention count for
  * the current 30-day window. Returns null otherwise.
  */
-import { Badge, Card } from '../ui'
+import { Badge, Card, MetricLabel } from '../ui'
 import { useProjects } from '../../hooks/useProjects'
 import { useCompetitorMetrics } from '../../hooks/useBrandMetrics'
 import { isLiveProjectId } from '../../hooks/useBrandOverview'
@@ -64,12 +64,54 @@ export default function BrandsListLiveBanner() {
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-wider text-themed-muted">
                 <th className="py-1.5 pr-3">品牌</th>
-                <th className="py-1.5 pr-3 text-right">GEO 分</th>
-                <th className="py-1.5 pr-3 text-right">提及率</th>
-                <th className="py-1.5 pr-3 text-right">SoV</th>
-                <th className="py-1.5 pr-3 text-right">情感</th>
-                <th className="py-1.5 pr-3 text-right">共现次数</th>
-                <th className="py-1.5 pr-3 text-right">30d Δ%</th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="品牌在当前 30 天窗口内的综合 AI 可见度得分。"
+                    className="justify-end"
+                  >
+                    GEO 分
+                  </MetricLabel>
+                </th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="基于品类通用问题计算，排除直接询问品牌的问题（non-brand 口径）。"
+                    className="justify-end"
+                  >
+                    提及率
+                  </MetricLabel>
+                </th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="已提到任一品牌的回答中，该品牌占有的声量份额。"
+                    className="justify-end"
+                  >
+                    SoV
+                  </MetricLabel>
+                </th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="品牌相关回答的情感加权平均，范围通常为 [-1, 1]。"
+                    className="justify-end"
+                  >
+                    情感
+                  </MetricLabel>
+                </th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="主品牌与该竞品在同一回答中共同出现的次数。"
+                    className="justify-end"
+                  >
+                    共现次数
+                  </MetricLabel>
+                </th>
+                <th className="py-1.5 pr-3 text-right">
+                  <MetricLabel
+                    helpText="当前 30 天窗口相对上一周期的变化百分比。"
+                    className="justify-end"
+                  >
+                    30d Δ%
+                  </MetricLabel>
+                </th>
               </tr>
             </thead>
             <tbody>

@@ -9,6 +9,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { MetricLabel } from '../ui';
 
 const SORT_KEYS = [
   { key: 'panoScore',     label: 'PANO',    format: (v) => Math.round(v) },
@@ -65,12 +66,24 @@ export default function IndustryLeaderboardTable({
           <tr className="text-[11px] text-themed-muted">
             <th className="text-left py-1.5 w-8">#</th>
             <th className="text-left py-1.5">品牌</th>
-            <th className="text-right py-1.5">PANO</th>
-            <th className="text-right py-1.5">提及率</th>
-            <th className="text-right py-1.5">SoV</th>
-            <th className="text-right py-1.5">情感</th>
-            <th className="text-right py-1.5">引用</th>
-            <th className="text-right py-1.5">Δ30d</th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="品牌在 AI 回答中的综合表现分。">PANO</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="基于品类通用问题计算，排除直接询问品牌的问题。">提及率</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="在已命中任一品牌的回答中，该品牌占有的声量份额。">SoV</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="品牌相关回答的情感加权平均。">情感</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="品牌相关回答中的引用份额。">引用</MetricLabel>
+            </th>
+            <th className="text-right py-1.5">
+              <MetricLabel helpText="近 30 天该品牌排名或分数的变化。">Δ30d</MetricLabel>
+            </th>
           </tr>
         </thead>
         <tbody>

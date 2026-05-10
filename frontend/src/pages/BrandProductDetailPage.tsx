@@ -4,7 +4,7 @@ import {
   ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from 'recharts';
-import { Badge, Card } from '../components/ui';
+import { Badge, Card, MetricLabel } from '../components/ui';
 import { useLocale } from '../contexts/LocaleContext';
 import {
   BRANDS, PRODUCTS, INDUSTRIES, CATEGORIES,
@@ -164,23 +164,39 @@ export default function BrandProductDetailPage() {
 
           <div className="grid grid-cols-4 gap-6">
             <div>
-              <p className="text-[11px] text-themed-muted">{t('product_detail.pano_card_title')}</p>
+              <p className="text-[11px] text-themed-muted">
+                <MetricLabel helpText={t('product_detail.pano_help')}>
+                  {t('product_detail.pano_card_title')}
+                </MetricLabel>
+              </p>
               <p className="text-2xl font-bold tabular-nums text-themed-primary">{product.panoScore}</p>
             </div>
             <div>
-              <p className="text-[11px] text-themed-muted">{t('product_detail.sov_label')}</p>
+              <p className="text-[11px] text-themed-muted">
+                <MetricLabel helpText={t('dashboard.kpi.sov_help')}>
+                  {t('product_detail.sov_label')}
+                </MetricLabel>
+              </p>
               <p className="text-2xl font-bold tabular-nums text-themed-primary">
                 {formatNumber(product.sov, { maximumFractionDigits: 1 })}%
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-themed-muted">{t('product_detail.sentiment_label')}</p>
+              <p className="text-[11px] text-themed-muted">
+                <MetricLabel helpText={t('dashboard.kpi.sentiment_help')}>
+                  {t('product_detail.sentiment_label')}
+                </MetricLabel>
+              </p>
               <p className="text-2xl font-bold tabular-nums text-themed-primary">
                 {formatNumber(0.72 + (product.panoScore - 70) * 0.004, { maximumFractionDigits: 2 })}
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-themed-muted">{t('product_detail.citation_label')}</p>
+              <p className="text-[11px] text-themed-muted">
+                <MetricLabel helpText={t('dashboard.kpi.citation_share_help')}>
+                  {t('product_detail.citation_label')}
+                </MetricLabel>
+              </p>
               <p className="text-2xl font-bold tabular-nums text-themed-primary">
                 {Math.round(product.panoScore * 0.7)}
               </p>
@@ -193,11 +209,10 @@ export default function BrandProductDetailPage() {
       <div className="grid grid-cols-12 gap-6">
         <Card className="col-span-7 p-5">
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('product_detail.context_title')}
+            <MetricLabel helpText={t('product_detail.context_subtitle')}>
+              {t('product_detail.context_title')}
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-1 mb-4">
-            {t('product_detail.context_subtitle')}
-          </p>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={contexts} layout="vertical" margin={{ top: 4, right: 16, bottom: 4, left: 16 }}>
               <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" horizontal={false} />
@@ -235,11 +250,10 @@ export default function BrandProductDetailPage() {
 
         <Card className="col-span-5 p-5">
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('product_detail.relations_title')}
+            <MetricLabel helpText={t('product_detail.relations_subtitle')}>
+              {t('product_detail.relations_title')}
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-1 mb-4">
-            {t('product_detail.relations_subtitle')}
-          </p>
           {relations.length === 0 ? (
             <p className="text-xs text-themed-muted py-6 text-center">
               {t('product_detail.relations_empty')}
@@ -288,11 +302,10 @@ export default function BrandProductDetailPage() {
       <Card className="p-0 overflow-hidden">
         <div className="px-5 py-3 border-b border-themed-subtle">
           <h3 className="text-sm font-semibold text-themed-primary">
-            {t('product_detail.prompt_hits_title')}
+            <MetricLabel helpText={t('product_detail.prompt_hits_subtitle')}>
+              {t('product_detail.prompt_hits_title')}
+            </MetricLabel>
           </h3>
-          <p className="text-xs text-themed-muted mt-1">
-            {t('product_detail.prompt_hits_subtitle')}
-          </p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full t-table">

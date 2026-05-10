@@ -7,7 +7,7 @@ import {
   ScatterChart, Scatter, ZAxis, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { Badge, Button, Card, MockDataBadge, InfoTooltip } from '../ui';
+import { Badge, Button, Card, MockDataBadge, InfoTooltip, MetricLabel } from '../ui';
 import { MiniSparkline } from '../charts';
 import { useLocale } from '../../contexts/LocaleContext';
 import ProfileGroupFilter, { ProfileGroupSampleWarning } from '../filters/ProfileGroupFilter';
@@ -319,11 +319,13 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
 
   return (
     <Card
-      className="p-4 cursor-pointer transition-shadow hover:shadow-card-hover"
+      className={`p-4 transition-shadow ${onClick ? 'cursor-pointer hover:shadow-card-hover' : ''}`.trim()}
       onClick={onClick}
     >
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="text-xs font-medium text-themed-muted">{label}</span>
+        <MetricLabel helpText={helpText} className="text-xs font-medium text-themed-muted">
+          {label}
+        </MetricLabel>
         <span className="text-[10px] uppercase tracking-wider text-themed-muted opacity-60">{fullLabel}</span>
       </div>
       <div className="flex items-end justify-between mb-2">
@@ -335,7 +337,6 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
           <MiniSparkline data={sparkData} color="var(--color-accent)" />
         </div>
       )}
-      <p className="text-[10px] text-themed-muted mt-1.5 leading-snug line-clamp-1">{helpText}</p>
     </Card>
   );
 }
@@ -800,9 +801,6 @@ export default function BrandPanoramaPanel({
         return Math.max(1, Math.round((base + jitter) * 10) / 10);
       });
 
-  const onKpiClick = () => {
-    navigate(`/brands/${primary.id}?tab=overview`);
-  };
   const onAlertClick = (d) => {
     navigate(`/brands/${primary.id}?tab=diagnostics&diagId=${d.id}`);
   };
@@ -916,7 +914,7 @@ export default function BrandPanoramaPanel({
       {/* ① 5 KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {kpis.map((k) => (
-          <KpiCard key={k.label} {...k} onClick={onKpiClick} />
+          <KpiCard key={k.label} {...k} />
         ))}
       </div>
 

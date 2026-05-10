@@ -14,6 +14,7 @@ import {
   useIndustryTopics,
   useIndustryKg,
 } from '../../hooks/useIndustries'
+import { MetricLabel } from '../ui'
 
 type Variant = 'ranking' | 'topics' | 'kg'
 
@@ -21,6 +22,7 @@ interface Card {
   label: string
   value: string | number
   unit?: string
+  helpText?: string
 }
 
 export default function IndustrySubpageLiveBanner({
@@ -52,17 +54,19 @@ export default function IndustrySubpageLiveBanner({
     const top = r.items[0]
     const median = r.items[Math.floor(r.items.length / 2)]
     cards = [
-      { label: '品牌总数', value: r.total },
+      { label: '品牌总数', helpText: '当前行业样本中覆盖到的品牌数量。', value: r.total },
       {
         label: 'Top 1',
         value: top ? top.brand_name ?? `brand-${top.brand_id}` : '—',
       },
       {
         label: 'Top GEO',
+        helpText: '行业榜单第一名品牌的综合 AI 可见度得分。',
         value: top?.avg_geo_score == null ? '—' : top.avg_geo_score.toFixed(1),
       },
       {
         label: '中位 GEO',
+        helpText: '行业样本中处于中位位置品牌的综合 AI 可见度得分。',
         value:
           median?.avg_geo_score == null ? '—' : median.avg_geo_score.toFixed(1),
       },
@@ -77,11 +81,12 @@ export default function IndustrySubpageLiveBanner({
     const top = t.items[0]
     const totalMentions = t.items.reduce((s, it) => s + (it.mention_count || 0), 0)
     cards = [
-      { label: '话题总数', value: t.total },
-      { label: '总提及数', value: totalMentions },
+      { label: '话题总数', helpText: '当前行业话题集合中的话题数量。', value: t.total },
+      { label: '总提及数', helpText: '当前行业话题集合内的总提及次数。', value: totalMentions },
       { label: 'Top 1', value: top ? top.topic_name : '—' },
       {
         label: 'Top 提及',
+        helpText: '提及次数最高话题在当前窗口内的提及次数。',
         value: top ? top.mention_count : '—',
       },
     ]
@@ -96,11 +101,12 @@ export default function IndustrySubpageLiveBanner({
     title = `知识图谱 — 行业 ${k.industry_id}`
     endpointLabel = `/v1/industries/${k.industry_id}/kg`
     cards = [
-      { label: '节点数', value: k.nodes.length },
-      { label: '边数', value: k.edges.length },
-      { label: '品牌节点', value: brandNodes },
+      { label: '节点数', helpText: '当前行业知识图谱中的节点总数。', value: k.nodes.length },
+      { label: '边数', helpText: '当前行业知识图谱中的关系边总数。', value: k.edges.length },
+      { label: '品牌节点', helpText: '知识图谱中类型为品牌的节点数量。', value: brandNodes },
       {
         label: productNodes > 0 ? '产品节点' : 'COMPETES_WITH',
+        helpText: productNodes > 0 ? '知识图谱中类型为产品的节点数量。' : '品牌之间竞争关系的边数量。',
         value: productNodes > 0 ? productNodes : competeEdges,
       },
     ]
@@ -140,7 +146,9 @@ export default function IndustrySubpageLiveBanner({
             style={{ background: 'var(--color-bg-card, #fff)' }}
           >
             <div className="text-[11px] uppercase tracking-wider text-themed-muted mb-1">
-              {card.label}
+              <MetricLabel helpText={card.helpText}>
+                {card.label}
+              </MetricLabel>
             </div>
             <div className="flex items-baseline gap-1">
               <span className="text-xl font-bold tabular-nums text-themed-primary">
