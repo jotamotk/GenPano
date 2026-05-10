@@ -78,8 +78,6 @@ from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
     _fact_rows,
     get_topic_monitoring,
-    legacy_table_columns,
-    legacy_table_exists,
 )
 
 DEFAULT_WINDOW_DAYS = 30

@@ -194,7 +194,13 @@ async def legacy_table_columns(session: AsyncSession, name: str) -> set[str]:
         return set()
 
 
-def _select_col(cols: set[str], alias: str, column: str, out_name: str, default: str = "NULL") -> str:
+def _select_col(
+    cols: set[str],
+    alias: str,
+    column: str,
+    out_name: str,
+    default: str = "NULL",
+) -> str:
     return f"{alias}.{column} AS {out_name}" if column in cols else f"{default} AS {out_name}"
 
 
@@ -466,13 +472,16 @@ async def _fact_rows(
             "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
             "AS min_position_rank",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'positive') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'positive') "
             "AS positive_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
             "AS neutral_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
+            "AND bm.brand_id = :primary_brand_id "
+            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
             "AS negative_mentions",
             "(SELECT bm.context_snippet FROM brand_mentions bm WHERE bm.response_id = r.id "
             "AND bm.brand_id = :primary_brand_id "
@@ -881,7 +890,6 @@ async def get_query_response_detail(
 
     query_cols = await legacy_table_columns(session, "queries")
     prompt_cols = await legacy_table_columns(session, "prompts")
-    topic_cols = await legacy_table_columns(session, "topics")
     response_cols = await legacy_table_columns(session, "llm_responses")
     if "id" not in query_cols:
         raise not_found("query not found")

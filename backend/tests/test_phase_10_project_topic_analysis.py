@@ -11,10 +11,10 @@ import pytest_asyncio
 from genpano_models import (
     BrandMention,
     CitationSource,
+    Profile,
     Project,
     ResponseAnalysis,
     Segment,
-    Profile,
     User,
 )
 from sqlalchemy import text
