@@ -17,6 +17,7 @@ Public:
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from typing import Any
 
@@ -45,6 +46,32 @@ class SchedulerValidationError(Exception):
 
 def normalize_engine_name(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _parse_next_run_at(value: Any) -> dt.datetime | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif isinstance(value, dt.date):
+        parsed = dt.datetime.combine(value, dt.time.min)
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = dt.datetime.fromisoformat(raw)
+        except ValueError as error:
+            raise SchedulerValidationError(
+                "next_run_at_invalid", "next_run_at must be an ISO datetime"
+            ) from error
+    else:
+        raise SchedulerValidationError("next_run_at_invalid", "next_run_at must be an ISO datetime")
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.UTC).replace(tzinfo=None)
+    return parsed
 
 
 def is_query_engine(value: Any) -> bool:
@@ -219,8 +246,7 @@ def parse_schedule_payload(
         out["cadence_days"] = cd
 
     if "next_run_at" in payload:
-        v = payload.get("next_run_at")
-        out["next_run_at"] = None if v in ("", None) else str(v)
+        out["next_run_at"] = _parse_next_run_at(payload.get("next_run_at"))
 
     if "enabled" in payload:
         out["enabled"] = bool(payload.get("enabled"))
