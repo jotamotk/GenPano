@@ -10,7 +10,7 @@ celery[redis]>=5.3
 redis>=5.0
 
 # 浏览器 & 反指纹
-camoufox[geoip]>=0.4   # 反指纹浏览器，内置 Playwright + GeoIP
+camoufox>=0.4          # 反指纹浏览器，手动设置 locale，避免构建期下载 GeoIP
 playwright>=1.58
 
 # 验证码
