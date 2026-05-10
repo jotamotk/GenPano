@@ -188,6 +188,18 @@ def test_prompt_scope_helpers_normalize_legacy_alias_and_competitive_type():
     assert "competitive_type" in unexpected_type.value.message
 
 
+def test_competitive_signal_accepts_chinese_metric_comparison_sentence():
+    from app.admin.prompt_matrix.lib import prompt_text_has_competitive_signal
+
+    prompt = (
+        "跨境企业涉密文档翻译用\uff0cbestCoffer和腾讯云翻译企业安全版哪个数据加密等级更高\uff1f"
+    )
+    assert prompt_text_has_competitive_signal(prompt)
+    assert prompt_text_has_competitive_signal(
+        "bestCoffer 与腾讯云翻译企业安全版哪家更适合跨境涉密文档翻译\uff1f"
+    )
+
+
 def test_prompt_generation_slots_start_with_reviewable_non_branded_coverage():
     from app.admin.prompt_matrix.lib import build_prompt_generation_slots
 
