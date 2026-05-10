@@ -759,10 +759,22 @@ COMPETITIVE_SIGNAL_TERMS = (
     "榜单",
 )
 
+COMPETITIVE_SIGNAL_PATTERNS = (
+    re.compile(
+        r"(哪个|哪一个|哪家|哪款|哪种|哪类|谁).{0,40}"
+        r"(更|适合|值得|安全|可靠|合规|划算|便宜|好|强|高|低|快|稳)"
+    ),
+    re.compile(r"(和|与|跟|同|及|vs\.?|versus).{0,40}(哪个|哪一个|哪家|哪款|哪种|哪类|谁)"),
+    re.compile(r"(更高|更强|更安全|更可靠|更合规|更适合|更值得|更划算|更便宜|更稳定)"),
+)
+
 
 def prompt_text_has_competitive_signal(text: str) -> bool:
-    lowered = f" {str(text or '').casefold()} "
-    return any(signal.casefold() in lowered for signal in COMPETITIVE_SIGNAL_TERMS)
+    raw_text = str(text or "")
+    lowered = f" {raw_text.casefold()} "
+    return any(signal.casefold() in lowered for signal in COMPETITIVE_SIGNAL_TERMS) or any(
+        pattern.search(raw_text) for pattern in COMPETITIVE_SIGNAL_PATTERNS
+    )
 
 
 def prompt_text_mentions_competitor(text: str, competitor_name: Any) -> bool:

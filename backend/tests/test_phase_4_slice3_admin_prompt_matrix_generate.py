@@ -639,6 +639,88 @@ async def test_generate_sync_blocks_competitive_prompt_missing_topic_brand(
 
 
 @pytest.mark.asyncio
+async def test_generate_sync_accepts_chinese_competitive_metric_comparison(
+    client, admin_operator, db_session: AsyncSession, monkeypatch
+):
+    monkeypatch.setenv("PROMPT_MATRIX_SYNC_GENERATE", "1")
+    topic = _topic(raw_id=24, brand_id=24, brand="bestCoffer")
+    topic["title"] = "跨境企业涉密文档翻译"
+    topic["industry"] = "数据安全"
+    topic["industry_id"] = "data_security"
+    topic["brand_context_pack"] = {
+        "brand": {"name": "bestCoffer", "industry": "数据安全"},
+        "products": [{"name": "bestCoffer VDR", "category": "涉密文档协作"}],
+        "scenarios": [{"name": "跨境企业涉密文档翻译"}],
+        "competitors": [{"name": "腾讯云翻译企业安全版", "comparison_axes": ["数据加密等级"]}],
+        "audience_hypotheses": [],
+        "claims": {},
+        "source_notes": [],
+    }
+    _patch_db(
+        monkeypatch,
+        fetch_topic_rows_by_ids=AsyncMock(return_value=[topic]),
+        fetch_brand_rows=AsyncMock(
+            return_value=[
+                {"id": 24, "name": "bestCoffer", "industry_id": "data_security", "aliases": []},
+                {
+                    "id": 25,
+                    "name": "腾讯云翻译企业安全版",
+                    "industry_id": "cloud",
+                    "aliases": ["腾讯云翻译"],
+                },
+            ]
+        ),
+        fetch_existing_prompt_texts=AsyncMock(return_value=[]),
+    )
+    prompt_text = (
+        "跨境企业涉密文档翻译用\uff0cbestCoffer和腾讯云翻译企业安全版哪个数据加密等级更高\uff1f"
+    )
+    _patch_client(
+        monkeypatch,
+        [
+            (
+                [
+                    _llm_prompt(
+                        prompt_text,
+                        topic_id=24,
+                        language="zh-CN",
+                        prompt_scope="competitive",
+                        competitive_type="direct_comparison",
+                        tags_extra={
+                            "competitor_name": "腾讯云翻译企业安全版",
+                            "competitor_brand_id": 25,
+                            "scenario_axis": "跨境企业涉密文档翻译",
+                            "comparison_axis": "数据加密等级",
+                        },
+                    )
+                ],
+                {"model": "doubao-test", "usage": {}},
+            )
+        ],
+    )
+
+    resp = await client.post(
+        "/api/admin/prompt-matrix/generate",
+        json={"topic_ids": [24], "max_prompts": 1, "max_per_topic": 1},
+    )
+
+    assert resp.status_code == 200, resp.text
+    run_id = resp.json()["run_id"]
+    run = (
+        await db_session.execute(
+            select(PromptGenerationRun).where(PromptGenerationRun.id == run_id)
+        )
+    ).scalar_one()
+    assert run.metrics_json["accepted"] == 1
+    assert run.metrics_json["reviewable_blocked"] == 0
+    candidate = (
+        await db_session.execute(select(PromptCandidate).where(PromptCandidate.run_id == run_id))
+    ).scalar_one()
+    assert candidate.tags.get("quality_gate_status") is None
+    assert candidate.tags["competitor_name"] == "腾讯云翻译企业安全版"
+
+
+@pytest.mark.asyncio
 async def test_generate_sync_persists_discovered_competitors_in_run_config(
     client, admin_operator, db_session: AsyncSession, monkeypatch
 ):
