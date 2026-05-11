@@ -103,10 +103,11 @@ LLM_CONFIG: dict[str, dict] = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea.input-area, textarea, [class*='chat-input']",
-        "submit_selector":  "button[data-testid='chat_input_send_button']",
-        "response_selector":"[class*='receive-message'] [class*='content'], .bot-message .content, [class*='message-content']",
-        "wait_for_done":    "button[data-testid='chat_input_send_button']:not([disabled])",
+        # 2026 版 UI 不再使用 data-testid；改用稳定 id / class
+        "input_selector":   "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), textarea.semi-input-textarea:not([aria-hidden='true']), textarea.input-area, textarea:not([aria-hidden='true']), [class*='chat-input']",
+        "submit_selector":  "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[id='flow-end-msg-send'], button[data-testid='chat_input_send_button']",
+        "response_selector":".flow-markdown-body, [class*='receive-message'] [class*='content'], .bot-message .content, [class*='message-content']",
+        "wait_for_done":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[data-testid='chat_input_send_button']:not([disabled])",
         "response_timeout": 90_000,
         "requires_login":   True,
         "cookies_env":      "DOUBAO_COOKIES_JSON",

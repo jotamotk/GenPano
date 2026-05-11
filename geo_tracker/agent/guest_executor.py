@@ -148,11 +148,15 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
-        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 Tailwind/业务 class name：
-        #   .send-btn-wrapper（空输入时 wrapper 被加 !hidden）
-        #   button[class*='send-msg-btn']（disabled 态 class: bg-g-send-msg-btn-disabled-bg）
-        "submit_button":    "button[class*='send-msg-btn']:not([disabled]), .send-btn-wrapper:not([class*='\\!hidden']) button, button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
+        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 id / class：
+        #   #input-engine-container 包裹整个输入区
+        #   textarea.semi-input-textarea 是实际输入框（Semi Design）
+        #   页面上还有一个 aria-hidden 的隐藏 textarea 用于自动撑高，需排除
+        "input_selector":   "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), textarea.semi-input-textarea:not([aria-hidden='true']), textarea:not([aria-hidden='true']), [contenteditable='true']",
+        # 发送按钮的稳定标识：id="flow-end-msg-send"；旧版用 testid，新版 UI 已不再使用
+        # 禁用态通过 aria-disabled / data-disabled 属性表达，HTML disabled 属性并未设置，
+        # 因此 :not([disabled]) 不能区分禁用态——必须显式排除这两个属性。
+        "submit_button":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[id='flow-end-msg-send'], .send-btn-wrapper button:not([aria-disabled='true']):not([data-disabled='true']), button[class*='send-msg-btn']:not([aria-disabled='true']):not([data-disabled='true']):not([disabled]), button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
         "submit_key":       "Enter",
         # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
         "response_selector": ".flow-markdown-body, [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
@@ -1043,41 +1047,84 @@ class GuestQueryExecutor:
             # 模拟人类打字速度（50-120ms/字符）
             await page.keyboard.type(query_text, delay=random.randint(50, 120))
 
+            # 豆包等 React 受控 textarea：keyboard.type 偶尔不触发 React state 更新，
+            # 导致 send 按钮保持禁用态、点击 no-op。这里校验实际值，若不一致则用
+            # native value setter + input 事件强制刷新 React tracker。
+            try:
+                actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
+            except Exception:
+                actual = None
+            if actual is not None and actual.strip() != query_text.strip():
+                logger.warning(
+                    f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
+                    "改用 JS 注入并触发 React input 事件"
+                )
+                try:
+                    await input_el.evaluate(
+                        """
+                        (el, text) => {
+                            const proto = el instanceof HTMLTextAreaElement
+                                ? HTMLTextAreaElement.prototype
+                                : HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                            setter.call(el, text);
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        """,
+                        query_text,
+                    )
+                    await page.wait_for_timeout(200)
+                except Exception as e:
+                    logger.debug(f"[{llm_name}] JS 注入文字失败: {e}")
+
         # 模拟人类"思考"后再提交
         await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
         async def _find_submit_button_js():
-            """豆包新 UI 无 testid，通过稳定 class + 位置 + 图标找 send 按钮。"""
+            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。"""
             return await page.evaluate_handle(
                 """
                 () => {
+                    const isEnabled = (b) => {
+                        if (!b) return false;
+                        if (b.disabled) return false;
+                        if (b.getAttribute('data-disabled') === 'true') return false;
+                        if (b.getAttribute('aria-disabled') === 'true') return false;
+                        const cls = b.className || '';
+                        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
+                        return true;
+                    };
+
+                    // 最优先：稳定的 id（线上 DOM 验证）
+                    const byId = document.getElementById('flow-end-msg-send');
+                    if (byId && isEnabled(byId)) return byId;
+
                     const all = [...document.querySelectorAll('button, [role="button"]')];
 
-                    // 最优先：按 class 匹配（稳定的 Tailwind/业务类名）
+                    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
                     const byClass = all.find(b => {
-                        if (b.disabled || b.getAttribute('data-disabled') === 'true') return false;
+                        if (!isEnabled(b)) return false;
                         const cls = b.className || '';
                         if (typeof cls !== 'string') return false;
-                        // disabled 态会是 bg-g-send-msg-btn-disabled-bg，跳过
-                        if (/send-msg-btn-disabled-bg/.test(cls)) return false;
                         return /send-msg-btn/.test(cls);
                     });
                     if (byClass) return byClass;
 
-                    // 其次：.send-btn-wrapper（不含 !hidden）内的 button
+                    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
                     const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
                     for (const w of wrappers) {
                         const wcls = w.className || '';
                         if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
                         const b = w.querySelector('button');
-                        if (b && !b.disabled && b.getAttribute('data-disabled') !== 'true') return b;
+                        if (isEnabled(b)) return b;
                     }
 
                     // 然后：aria-label / title 含 send/发送
                     const byAria = all.find(b => {
-                        if (b.disabled) return false;
+                        if (!isEnabled(b)) return false;
                         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
                         const title = (b.getAttribute('title') || '').toLowerCase();
                         return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
@@ -1086,13 +1133,13 @@ class GuestQueryExecutor:
 
                     // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
                     const input = document.querySelector(
-                        'textarea, [contenteditable="true"]'
+                        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
                     );
                     if (!input) return null;
                     const ir = input.getBoundingClientRect();
                     let best = null, bestDist = Infinity;
                     for (const b of all) {
-                        if (b.disabled || b.getAttribute('data-disabled') === 'true') continue;
+                        if (!isEnabled(b)) continue;
                         const r = b.getBoundingClientRect();
                         if (r.width === 0 || r.height === 0) continue;
                         const txt = (b.textContent || '').trim();
@@ -1115,11 +1162,25 @@ class GuestQueryExecutor:
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
                 try:
                     btn = await page.query_selector(btn_sel)
-                    if btn and await btn.is_visible():
-                        await btn.click()
-                        submitted = True
-                        logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
-                        break
+                    if not btn or not await btn.is_visible():
+                        continue
+                    # 二次校验：豆包等使用 aria-disabled / data-disabled / class 表达禁用态，
+                    # CSS :not([disabled]) 抓不到，会误点禁用按钮变成 no-op，导致后面 JS 兜底被跳过。
+                    is_disabled = await btn.evaluate(
+                        """
+                        b => b.disabled
+                          || b.getAttribute('aria-disabled') === 'true'
+                          || b.getAttribute('data-disabled') === 'true'
+                          || /send-msg-btn-disabled-bg/.test(b.className || '')
+                        """
+                    )
+                    if is_disabled:
+                        logger.debug(f"[{llm_name}] 跳过禁用按钮: {btn_sel}")
+                        continue
+                    await btn.click()
+                    submitted = True
+                    logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
+                    break
                 except Exception:
                     continue
         if not submitted and llm_name == "doubao":
@@ -1145,9 +1206,11 @@ class GuestQueryExecutor:
                     (queryText) => {
                         // 1) 存在 send_message testid（老 UI）
                         if (document.querySelector('[data-testid="send_message"]')) return true;
-                        // 2) 输入框被清空（发送后 doubao 会清空）
+                        // 2) 输入框被清空（发送后 doubao 会清空），排除自动撑高用的隐藏 textarea
                         const inp = document.querySelector(
-                            'textarea[data-testid="chat_input_input"], textarea, [contenteditable="true"]'
+                            '#input-engine-container textarea.semi-input-textarea:not([aria-hidden="true"]), '
+                            + 'textarea.semi-input-textarea:not([aria-hidden="true"]), '
+                            + 'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
                         );
                         if (inp) {
                             const v = (inp.value !== undefined ? inp.value : inp.textContent) || '';
@@ -1183,14 +1246,29 @@ class GuestQueryExecutor:
             else:
                 logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
                 try:
-                    input_retry = await page.query_selector(
-                        "[data-testid='chat_input_input'], textarea, [contenteditable='true']"
-                    )
-                    if input_retry:
-                        await input_retry.click(force=True)
-                        await page.wait_for_timeout(300)
-                    await page.keyboard.press("Enter")
-                    logger.info(f"[{llm_name}] 重试 Enter 提交")
+                    # 先再点一次发送按钮（id 是稳定标识），失败再退化到 Enter
+                    clicked_again = False
+                    try:
+                        retry_handle = await _find_submit_button_js()
+                        retry_el = retry_handle.as_element() if retry_handle else None
+                        if retry_el:
+                            await retry_el.click()
+                            clicked_again = True
+                            logger.info(f"[{llm_name}] 重试通过 JS 兜底按钮提交")
+                    except Exception as e:
+                        logger.debug(f"[{llm_name}] 重试 JS 兜底按钮失败: {e}")
+
+                    if not clicked_again:
+                        input_retry = await page.query_selector(
+                            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea:not([aria-hidden='true']), [contenteditable='true']"
+                        )
+                        if input_retry:
+                            await input_retry.click(force=True)
+                            await page.wait_for_timeout(300)
+                        await page.keyboard.press("Enter")
+                        logger.info(f"[{llm_name}] 重试 Enter 提交")
                     for _ in range(10):
                         if await _submit_confirmed():
                             confirmed = True

@@ -853,8 +853,10 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             if visible:
                 logger.warning("[doubao] 登录 modal 仍然可见")
 
-        # 检查聊天输入框（登录后应该可用）
+        # 检查聊天输入框（登录后应该可用）。2026 新版 UI 已无 testid，改用稳定 id/class
         chat_input = await page.query_selector(
+            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
+            "textarea.semi-input-textarea:not([aria-hidden='true']), "
             "[data-testid='chat_input_input']"
         )
         if chat_input:
@@ -862,7 +864,7 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             return True
 
         # fallback: 检查 textarea
-        textarea = await page.query_selector("textarea")
+        textarea = await page.query_selector("textarea:not([aria-hidden='true'])")
         if textarea:
             logger.info("[doubao] 登录成功（textarea 可用）")
             return True
@@ -880,6 +882,8 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         await page.wait_for_timeout(3000)
 
         chat_input = await page.query_selector(
+            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
+            "textarea.semi-input-textarea:not([aria-hidden='true']), "
             "[data-testid='chat_input_input']"
         )
         if chat_input:
