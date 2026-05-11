@@ -158,11 +158,12 @@ jobs:
               shift
               local cid
               cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              # Prevent compose from draining the SSH RUNBOOK heredoc stdin; SQL heredocs stay explicit.
               if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
-                docker compose exec -T "$service" "$@"
+                docker compose exec -T "$service" "$@" </dev/null
               else
                 echo "Service '$service' is not running; using deployed image via docker compose run --rm -T." >&2
-                docker compose run --rm -T "$service" "$@"
+                docker compose run --rm -T "$service" "$@" </dev/null
               fi
             }
 
