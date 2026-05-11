@@ -1,0 +1,97 @@
+name: AI Lead Epic
+description: Track one user request from PRD through Agent tasks and merge
+title: "[Epic] "
+labels:
+  - type:epic
+  - agent:lead
+  - status:briefing
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for one user request. The AI Lead owns this issue and links all child Agent task issues and PRs.
+  - type: textarea
+    id: user-need
+    attributes:
+      label: User Need
+      description: Capture the user's goal in their terms, including exact routes, symptoms, payloads, or screenshots when available.
+      placeholder: "The user needs..."
+    validations:
+      required: true
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current State
+      description: What is true today in product, code, deployment, or CI/CD?
+      placeholder: "Current behavior, known implementation, live URL, failing request, etc."
+    validations:
+      required: true
+  - type: textarea
+    id: prd-source
+    attributes:
+      label: PRD Source
+      description: Link PRD docs and stable requirement IDs. Add IDs before child issues are marked ready.
+      value: |
+        - PRD:
+        - Requirement IDs:
+          - PRD-AREA-FEATURE-001
+    validations:
+      required: true
+  - type: textarea
+    id: frontend-visualization
+    attributes:
+      label: Frontend Visualization Plan
+      description: Define the first real frontend page or state that will visualize the requirement.
+      value: |
+        - Visualization issue:
+        - Page/route:
+        - Confirmation needed from user:
+    validations:
+      required: true
+  - type: textarea
+    id: child-issues
+    attributes:
+      label: Child Agent Issues
+      description: Link all child Agent task issues and their owners.
+      value: |
+        | Issue | Owner Agent | Purpose | Status |
+        | --- | --- | --- | --- |
+        |  |  |  |  |
+    validations:
+      required: false
+  - type: textarea
+    id: success-criteria
+    attributes:
+      label: Success Criteria
+      description: What must be true before AI Lead can recommend merge?
+      value: |
+        - [ ] Page direction confirmed
+        - [ ] PRD requirement IDs linked
+        - [ ] Agent task issues complete
+        - [ ] Required PRs reviewed
+        - [ ] CI/CD understood
+        - [ ] Live Playwright E2E planned or completed
+    validations:
+      required: true
+  - type: textarea
+    id: merge-plan
+    attributes:
+      label: Merge Plan
+      description: AI Lead updates this when child PRs are ready.
+      value: |
+        | PR | Depends On | CI | Risk | Merge Order |
+        | --- | --- | --- | --- | --- |
+        |  |  |  |  |  |
+    validations:
+      required: false
+  - type: textarea
+    id: live-verification
+    attributes:
+      label: Live Verification
+      description: Required production-facing validation after merge.
+      value: |
+        - Target: http://116.62.36.173/
+        - Playwright scenario:
+        - Evidence:
+    validations:
+      required: true

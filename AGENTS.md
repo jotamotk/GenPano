@@ -2,6 +2,89 @@
 
 These rules are the first stop for Codex-style agents working in this repo.
 
+## AI Lead Multi-Agent Workflow
+
+Genpano work is coordinated through GitHub. Treat GitHub issues, pull requests,
+review comments, and CI/CD runs as the durable collaboration state. Chat is only
+for discussion and clarification; it does not replace issue, PR, or review
+state.
+
+### AI Lead Role
+
+- The AI Lead does not write business code. Do not use the Lead role to modify
+  frontend, backend, worker, test, script, migration, or CI implementation
+  files.
+- The AI Lead may maintain coordination artifacts: PRDs, GitHub issues, PR
+  review comments, merge plans, verification plans, and workflow docs.
+- The AI Lead owns requirement clarification, PRD linkage, issue decomposition,
+  Agent assignment, PR review orchestration, CI/CD diagnosis, merge sequencing,
+  and online Playwright E2E verification planning.
+- If the user asks for implementation while the current role is AI Lead, the
+  Lead must create or update Agent task issues instead of editing code directly.
+
+### Required Flow
+
+1. One user request becomes one Epic issue.
+2. The Epic issue links stable PRD requirement IDs and all child Agent task
+   issues.
+3. When a user-facing experience is involved, create a Frontend Visualization
+   issue first. Frontend is the prototype; do not use detached mockups as the
+   source of truth.
+4. After the page direction and PRD are confirmed, split implementation into
+   scoped Agent task issues.
+5. Each Agent task issue maps to exactly one owner Agent, one branch, and one
+   PR.
+6. Worker PRs start as draft PRs. The Worker marks them ready only after the
+   issue's verification checklist is complete.
+7. Worker Agents do not merge. The AI Lead prepares a merge plan; merge only
+   after the user explicitly says `pr，merge`.
+8. After deployed functionality is merged, verify the live product with
+   Playwright E2E against `http://116.62.36.173/`.
+
+### Agent Roles
+
+- `ai-lead-agent`: no business code; owns PRD, issue decomposition, scheduling,
+  reviews, CI/CD diagnosis, merge plans, and live verification planning.
+- `frontend-visualization-agent`: turns requirements into real frontend pages.
+  It may change pages, components, styling, and lightweight frontend-only empty
+  states or mock data. It must not change backend, database, worker, or CI/CD
+  behavior.
+- `frontend-integration-agent`: connects confirmed frontend pages to real APIs,
+  state, error handling, and frontend tests. It must not change backend API
+  contracts without a separate Backend API issue.
+- `backend-api-agent`: owns FastAPI API behavior, auth, aggregation, and backend
+  tests. For Admin work, it must preserve the `backend/static/admin.html` shell
+  and `/admin/api/*` boundary.
+- `pipeline-data-agent`: owns scheduler, worker, adapter, data repair, and
+  migration work. It must include targeted tests and a rollback note.
+- `qa-e2e-agent`: verifies behavior only. It owns local smoke checks,
+  Playwright, and live E2E; it must not implement business behavior.
+- `release-ci-agent`: owns GitHub Actions, deploy logs, and server diagnostics.
+  It must not fold business fixes into CI work without a new Agent task issue.
+- `review-agent`: reviews only. It prioritizes bugs, regressions, missing tests,
+  and release risk, with file and line references.
+
+### Issue, PR, and PRD Contract
+
+- Issues are the task context entrypoint, not the full context store. They must
+  link to PRD docs, code paths, related issues or PRs, screenshots, and online
+  repro details when relevant.
+- PRDs are the requirement source of truth. Every actionable PRD requirement
+  must have a stable ID such as `PRD-ADM-SCHED-001`.
+- Agent task issues must include: Goal, Owner Agent, Allowed Scope, Forbidden
+  Scope, PRD Source, PRD Slice, Acceptance Criteria, Verification,
+  Dependencies, and Handoff.
+- PRs must include: Linked Issue, Agent Role, Summary, Scope, Verification,
+  Risks, Handoff, and PRD Coverage.
+- Use `Refs #123` before final acceptance. Use `Closes #123` only when the PR is
+  approved for merge.
+- Issue text describes intent; code describes reality. If they conflict, the
+  Agent must stop and comment on the issue for AI Lead decision.
+- If a PRD changes, the AI Lead must update related issues' PRD Source and
+  Acceptance Mapping and comment with the impact.
+
+See `docs/AI_LEAD_WORKFLOW.md` for the full operating procedure and templates.
+
 ## Admin Surface Rule
 
 Decision recorded on 2026-05-02:
