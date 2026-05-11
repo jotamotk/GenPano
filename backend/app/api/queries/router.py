@@ -161,7 +161,7 @@ async def create_query(
             },
         )
 
-    dispatched = dispatch_execute_query(query_id)
+    dispatched = dispatch_execute_query(query_id, normalized["target_llm"])
     await emit_audit(
         session,
         operator=operator,
@@ -204,7 +204,7 @@ async def retry_query(
     if detail is None:
         raise not_found("Query not found")
 
-    dispatched = dispatch_execute_query(query_id)
+    dispatched = dispatch_execute_query(query_id, detail.get("target_llm"))
     await emit_audit(
         session,
         operator=operator,
@@ -245,7 +245,9 @@ async def batch_trigger(
     except QueryValidationError as error:
         return _validation_400(error)
 
-    matched, ids, refused = await queries_db.batch_trigger_queries(session, payload=normalized)
+    matched, dispatch_items, refused = await queries_db.batch_trigger_queries(
+        session, payload=normalized
+    )
     if refused:
         return JSONResponse(
             status_code=400,
@@ -263,10 +265,10 @@ async def batch_trigger(
         return JSONResponse(
             status_code=200, content={"success": True, "count": matched, "dry_run": True}
         )
-    if not ids:
+    if not dispatch_items:
         return JSONResponse(status_code=200, content={"success": True, "count": 0, "dispatched": 0})
 
-    dispatched, dispatch_failed = dispatch_many(ids)
+    dispatched, dispatch_failed = dispatch_many(dispatch_items)
     await emit_audit(
         session,
         operator=operator,
@@ -275,7 +277,7 @@ async def batch_trigger(
         resource_type="query",
         after={
             "matched": matched,
-            "ids_count": len(ids),
+            "ids_count": len(dispatch_items),
             "dispatched": dispatched,
             "dispatch_failed": dispatch_failed,
             "reason": normalized.get("reason"),
@@ -290,7 +292,7 @@ async def batch_trigger(
         status_code=200,
         content={
             "success": True,
-            "count": len(ids),
+            "count": len(dispatch_items),
             "dispatched": dispatched,
             "dispatch_failed": dispatch_failed,
         },

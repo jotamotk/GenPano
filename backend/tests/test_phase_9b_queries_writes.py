@@ -195,6 +195,53 @@ def test_batch_dispatch_uses_backend_celery_app_when_geo_tracker_app_module_is_a
     ]
 
 
+def test_dispatch_execute_query_routes_to_engine_specific_queue(monkeypatch):
+    dispatch = _queries_dispatch_module()
+    sent: list[tuple[str, list[int], str | None]] = []
+
+    class FakeCelery:
+        def send_task(self, name, *, args=None, queue=None):
+            sent.append((name, args or [], queue))
+
+    monkeypatch.setattr(dispatch, "_load_celery_app", lambda: FakeCelery())
+
+    assert dispatch.dispatch_execute_query(10, "chatgpt") is True
+    assert dispatch.dispatch_execute_query(11, "doubao") is True
+    assert dispatch.dispatch_execute_query(12, "deepseek") is True
+
+    assert sent == [
+        ("geo_tracker.tasks.celery_tasks.execute_query", [10], "llm_chatgpt"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [11], "llm_doubao"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [12], "llm_deepseek"),
+    ]
+
+
+def test_dispatch_many_routes_dispatch_items_by_target_llm(monkeypatch):
+    dispatch = _queries_dispatch_module()
+    sent: list[tuple[str, list[int], str | None]] = []
+
+    class FakeCelery:
+        def send_task(self, name, *, args=None, queue=None):
+            sent.append((name, args or [], queue))
+
+    monkeypatch.setattr(dispatch, "_load_celery_app", lambda: FakeCelery())
+
+    items = [
+        {"id": 20, "target_llm": "chatgpt"},
+        {"id": 21, "target_llm": "doubao"},
+        {"id": 22, "target_llm": "deepseek"},
+        {"id": 23, "target_llm": "unknown"},
+    ]
+
+    assert dispatch.dispatch_many(items) == (4, 0)
+    assert sent == [
+        ("geo_tracker.tasks.celery_tasks.execute_query", [20], "llm_chatgpt"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [21], "llm_doubao"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [22], "llm_deepseek"),
+        ("geo_tracker.tasks.celery_tasks.execute_query", [23], "celery"),
+    ]
+
+
 # ── auth gate ───────────────────────────────────────────────
 
 
@@ -276,6 +323,20 @@ async def test_create_audit_med(client, admin_operator, monkeypatch, db_session:
     assert audit[0].after.get("target_llm") == "doubao"
 
 
+@pytest.mark.asyncio
+async def test_create_dispatches_to_target_engine_queue(client, admin_operator, monkeypatch):
+    _patch_writes(monkeypatch, create_query=99)
+    a = _queries_router_module()
+
+    resp = await client.post(
+        "/api/queries",
+        json={"target_llm": "doubao", "query_text": "hello", "brand_id": 7},
+    )
+
+    assert resp.status_code == 200
+    a.dispatch_execute_query.assert_called_once_with(99, "doubao")
+
+
 # ── retry / batch / cleanup / mark_failed ───────────────────
 
 
@@ -305,6 +366,22 @@ async def test_retry_audit_med(client, admin_operator, monkeypatch, db_session: 
 
 
 @pytest.mark.asyncio
+async def test_retry_dispatches_to_original_target_engine_queue(
+    client, admin_operator, monkeypatch
+):
+    _patch_writes(
+        monkeypatch,
+        retry_query={"id": 1, "target_llm": "chatgpt", "query_text": "x", "brand_id": None},
+    )
+    a = _queries_router_module()
+
+    resp = await client.post("/api/queries/1/retry", json={"reason": "manual qa"})
+
+    assert resp.status_code == 200
+    a.dispatch_execute_query.assert_called_once_with(1, "chatgpt")
+
+
+@pytest.mark.asyncio
 async def test_batch_trigger_dry_run(client, admin_operator, monkeypatch):
     _patch_writes(monkeypatch, batch=(15, [], False))
     resp = await client.post("/api/queries/batch_trigger", json={"ids": [1, 2, 3], "dry_run": True})
@@ -323,7 +400,12 @@ async def test_batch_trigger_refused_when_over_cap(client, admin_operator, monke
 async def test_batch_trigger_audit_high(
     client, admin_operator, monkeypatch, db_session: AsyncSession
 ):
-    _patch_writes(monkeypatch, batch=(3, [10, 11, 12], False))
+    dispatch_items = [
+        {"id": 10, "target_llm": "chatgpt"},
+        {"id": 11, "target_llm": "doubao"},
+        {"id": 12, "target_llm": "deepseek"},
+    ]
+    _patch_writes(monkeypatch, batch=(3, dispatch_items, False))
     a = _queries_router_module()
     a.dispatch_many.return_value = (3, 0)
     resp = await client.post("/api/queries/batch_trigger", json={"ids": [10, 11, 12]})
@@ -331,6 +413,7 @@ async def test_batch_trigger_audit_high(
     body = resp.json()
     assert body["count"] == 3
     assert body["dispatched"] == 3
+    a.dispatch_many.assert_called_once_with(dispatch_items)
     audit = list(
         (
             await db_session.execute(

@@ -474,9 +474,9 @@ async def batch_trigger_queries(
     session: AsyncSession,
     *,
     payload: dict[str, Any],
-) -> tuple[int, list[int], bool]:
-    """Bulk reset matching queries to pending and return their ids for
-    celery dispatch. Returns ``(matched_total, dispatched_ids, refused)``
+) -> tuple[int, list[dict[str, Any]], bool]:
+    """Bulk reset matching queries to pending and return dispatch items for
+    celery dispatch. Returns ``(matched_total, dispatch_items, refused)``
     where ``refused`` is True when the matched count exceeds the
     operator-specified ``max`` cap (caller surfaces 400)."""
     if not await _table_exists(session, "queries"):
@@ -548,7 +548,7 @@ async def batch_trigger_queries(
                     latency_ms = NULL,
                     retry_reason = :reason
                 WHERE {where_clause}
-                RETURNING id
+                RETURNING id, target_llm
                 """
                 ),
                 update_params,
@@ -557,9 +557,9 @@ async def batch_trigger_queries(
         .mappings()
         .all()
     )
-    ids = [int(r["id"]) for r in rows]
+    dispatch_items = [{"id": int(r["id"]), "target_llm": r.get("target_llm")} for r in rows]
     await session.commit()
-    return total, ids, False
+    return total, dispatch_items, False
 
 
 async def cleanup_queries(
