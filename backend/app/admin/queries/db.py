@@ -557,10 +557,7 @@ async def batch_trigger_queries(
         .mappings()
         .all()
     )
-    dispatch_items = [
-        {"id": int(r["id"]), "target_llm": r.get("target_llm")}
-        for r in rows
-    ]
+    dispatch_items = [{"id": int(r["id"]), "target_llm": r.get("target_llm")} for r in rows]
     await session.commit()
     return total, dispatch_items, False
 

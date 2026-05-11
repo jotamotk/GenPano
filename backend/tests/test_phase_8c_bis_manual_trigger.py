@@ -368,9 +368,7 @@ async def test_manual_trigger_success_audit_high(
 
 
 @pytest.mark.asyncio
-async def test_manual_trigger_dispatches_with_engine_targets(
-    client, admin_operator, monkeypatch
-):
+async def test_manual_trigger_dispatches_with_engine_targets(client, admin_operator, monkeypatch):
     a = _scheduler_router_module()
     dispatch_items = [
         {"id": 101, "target_llm": "chatgpt"},
