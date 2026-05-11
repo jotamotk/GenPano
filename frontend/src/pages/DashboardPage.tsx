@@ -238,6 +238,7 @@ export default function DashboardPage() {
         ? adaptCompetitorTrendsToTrendData(
             competitorTrendsQ.data,
             overviewQ.data ?? null,
+            metricsQ.data ?? null,
           )
         : overviewQ.data
           ? adaptOverviewToTrend(overviewQ.data)

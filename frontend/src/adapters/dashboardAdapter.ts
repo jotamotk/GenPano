@@ -23,6 +23,7 @@ import {
   normalizeSentimentRaw,
   type AnalyticsContractMetadata,
   type ContractListItem,
+  type MetricContractFields,
 } from '../api/analyticsContract'
 import type { DiagnosticOut } from '../api/diagnostics'
 import type { IndustryAvgGeoOut } from '../api/industries'
@@ -83,6 +84,43 @@ export interface DiagnosticAdapted {
 }
 
 type ContractKpiCard = BrandOverviewOut['kpi_cards'][number]
+
+function findMetricDefinition(
+  definitions: CompetitorMetricsOut['metric_definitions'] | undefined,
+  keys: string[],
+): MetricContractFields | null {
+  if (!definitions) return null
+  const wanted = new Set(keys.map((key) => key.toLowerCase()))
+  for (const [key, definition] of Object.entries(definitions)) {
+    const metricKey = String(definition?.metric_key || '').toLowerCase()
+    if (wanted.has(key.toLowerCase()) || (metricKey && wanted.has(metricKey))) {
+      return definition
+    }
+  }
+  return null
+}
+
+function normalizeCompetitorMentionRate(
+  metrics: CompetitorMetricsOut,
+  value: unknown,
+): number {
+  const definition = findMetricDefinition(
+    metrics.metric_definitions,
+    ['avg_mention_rate', 'mention_rate'],
+  )
+  return normalizeRatioLike(value, definition?.value_scale, definition?.unit)
+}
+
+function normalizeCompetitorSentiment(
+  metrics: CompetitorMetricsOut,
+  value: unknown,
+): number {
+  const definition = findMetricDefinition(
+    metrics.metric_definitions,
+    ['avg_sentiment', 'sentiment'],
+  )
+  return normalizeSentimentRaw(value, definition?.value_scale, definition?.unit)
+}
 
 function labelText(card: ContractKpiCard): string {
   return `${card.label_zh || ''} ${card.label_en || ''}`.toLowerCase()
@@ -190,8 +228,8 @@ export function adaptCompetitorMetricsToList(
       nameZh: name,
       nameEn: name,
       panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-      mentionRate: row.avg_mention_rate ?? 0,
-      sentiment: row.avg_sentiment ?? 0,
+      mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
+      sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
       ranking: 1,
       industryId: '',
     }
@@ -205,8 +243,8 @@ export function adaptCompetitorMetricsToList(
       nameZh: name,
       nameEn: name,
       panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
-      mentionRate: row.avg_mention_rate ?? 0,
-      sentiment: row.avg_sentiment ?? 0,
+      mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
+      sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
       industryId: '',
     }
   }
@@ -253,7 +291,7 @@ export function adaptCompetitorMetricsToBubble(
     .map((r) => ({
       brand: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
       sov: r.avg_sov != null ? +(r.avg_sov * 100).toFixed(1) : 0,
-      sentiment: r.avg_sentiment ?? 0,
+      sentiment: normalizeCompetitorSentiment(metrics, r.avg_sentiment),
       mentions: r.co_mention_count ?? 0,
     }))
 }
@@ -525,15 +563,27 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
 export interface TrendRowAdapted {
   day: number
   panoScore: number
-  mentionRate: number
+  mentionRate: number | null
   sentiment: number
   // dynamic competitor brand scores keyed by brand_name
-  [brand: string]: number | string
+  [brand: string]: number | string | null
+}
+
+function metricSeriesPercentValue(
+  metrics: MetricsOut | null | undefined,
+  metric: MetricsOut['series'][number]['metric'],
+  date: string,
+): number | null {
+  const series = metrics?.series?.find((item) => item.metric === metric)
+  const point = series?.points.find((item) => item.date === date)
+  if (point?.value == null) return null
+  return formatRatioLikeForPercent(point.value, series?.value_scale, series?.unit)
 }
 
 export function adaptCompetitorTrendsToTrendData(
   trends: CompetitorTrendsOut,
   overviewTrend: BrandOverviewOut | null,
+  metricsTrend: MetricsOut | null = null,
 ): TrendRowAdapted[] {
   // Find primary series
   const primarySeries = trends.series.find((s) => s.is_primary)
@@ -552,7 +602,7 @@ export function adaptCompetitorTrendsToTrendData(
     const row: TrendRowAdapted = {
       day: idx + 1,
       panoScore: 0,
-      mentionRate: 0,
+      mentionRate: metricSeriesPercentValue(metricsTrend, 'mention_rate', date),
       sentiment: 0,
     }
     // Primary panoScore
@@ -563,10 +613,8 @@ export function adaptCompetitorTrendsToTrendData(
       const p = overviewTrend.geo_score_30d.find((q) => q.date === date)
       row.panoScore = p?.value != null ? Math.round(p.value) : 0
     }
-    // mentionRate / sentiment from overview's other series
+    // mentionRate comes from /metrics; overview SoV is a separate contract field.
     if (overviewTrend) {
-      const sov = overviewTrend.sov_30d.find((q) => q.date === date)
-      row.mentionRate = sov?.value != null ? +(sov.value * 100).toFixed(1) : 0
       const sent = overviewTrend.sentiment_30d.find((q) => q.date === date)
       row.sentiment = sent?.value ?? 0
     }

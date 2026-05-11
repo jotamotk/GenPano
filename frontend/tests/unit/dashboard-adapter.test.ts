@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import {
   adaptMetricsToSparklines,
+  adaptCompetitorMetricsToBubble,
   adaptCompetitorMetricsToList,
+  adaptCompetitorTrendsToTrendData,
   adaptOverviewToPrimary,
   adaptOverviewToTrend,
   buildAnalyticsContractNotice,
 } from '../../src/adapters/dashboardAdapter'
 import type { BrandOverviewOut } from '../../src/api/brandOverview'
-import type { CompetitorMetricsOut, MetricsOut } from '../../src/api/brandMetrics'
+import type { CompetitorMetricsOut, CompetitorTrendsOut, MetricsOut } from '../../src/api/brandMetrics'
 
 const emptyOverview: BrandOverviewOut = {
   project_id: 'project-1',
@@ -176,6 +178,54 @@ describe('dashboard adapter', () => {
     })
   })
 
+  it('normalizes competitor avg_sentiment score_0_100 metadata before list and bubble use', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      primary_brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'ok',
+      metric_definitions: {
+        avg_sentiment: {
+          metric_key: 'avg_sentiment',
+          unit: 'score',
+          value_scale: 'score_0_100',
+        },
+      },
+      primary: {
+        brand_id: 12,
+        brand_key: 'estee_lauder',
+        brand_name: 'Estee Lauder',
+        avg_geo_score: 80,
+        avg_mention_rate: 0.162,
+        avg_sov: 0.384,
+        avg_sentiment: 64,
+        co_mention_count: 9,
+        delta_30d_pct: null,
+      },
+      competitors: [
+        {
+          brand_id: 34,
+          brand_key: 'lancome',
+          brand_name: 'Lancome',
+          avg_geo_score: 73,
+          avg_mention_rate: 0.141,
+          avg_sov: 0.284,
+          avg_sentiment: 72,
+          co_mention_count: 7,
+          delta_30d_pct: null,
+        },
+      ],
+    } as CompetitorMetricsOut
+
+    const list = adaptCompetitorMetricsToList(metrics)
+    const bubble = adaptCompetitorMetricsToBubble(metrics)
+
+    expect(list.primary?.sentiment).toBeCloseTo(0.64)
+    expect(list.competitors[0]?.sentiment).toBeCloseTo(0.72)
+    expect(bubble[0]?.sentiment).toBeCloseTo(0.64)
+    expect(bubble[1]?.sentiment).toBeCloseTo(0.72)
+  })
+
   it('does not reuse SoV trend values as mention-rate trend truth', () => {
     const overview = {
       ...emptyOverview,
@@ -189,6 +239,62 @@ describe('dashboard adapter', () => {
 
     expect(adaptOverviewToTrend(overview)).toEqual([
       { day: 1, panoScore: 80, mentionRate: 0, sentiment: 0.72 },
+    ])
+  })
+
+  it('uses /metrics mention_rate for competitor trend rows and never rebuilds it from SoV', () => {
+    const overview = {
+      ...emptyOverview,
+      brand_id: 12,
+      brand_name: 'Estee Lauder',
+      state: 'ok',
+      sov_30d: [{ date: '2026-05-11', value: 0.384 }],
+      sentiment_30d: [{ date: '2026-05-11', value: 0.72 }],
+    } as BrandOverviewOut
+    const trends = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      metric: 'geo_score',
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'ok',
+      series: [
+        {
+          brand_id: 12,
+          brand_key: 'estee_lauder',
+          brand_name: 'Estee Lauder',
+          is_primary: true,
+          points: [{ date: '2026-05-11', value: 80 }],
+        },
+        {
+          brand_id: 34,
+          brand_key: 'lancome',
+          brand_name: 'Lancome',
+          is_primary: false,
+          points: [{ date: '2026-05-11', value: 73 }],
+        },
+      ],
+    } as CompetitorTrendsOut
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      engines: null,
+      state: 'ok',
+      series: [
+        {
+          metric: 'mention_rate',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          denominator_label: 'eligible non-brand/category responses',
+          points: [{ date: '2026-05-11', value: 0.162 }],
+        },
+      ],
+    } as MetricsOut
+
+    expect(adaptCompetitorTrendsToTrendData(trends, overview, metrics)).toEqual([
+      { day: 1, panoScore: 80, mentionRate: 16.2, sentiment: 0.72, Lancome: 73 },
+    ])
+    expect(adaptCompetitorTrendsToTrendData(trends, overview)).toEqual([
+      { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72, Lancome: 73 },
     ])
   })
 
