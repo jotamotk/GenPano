@@ -30,9 +30,20 @@ const accountRows = [
     daily_limit: 10,
     updated_at: '2026-05-12T08:20:00Z',
   },
+  {
+    id: 103,
+    llm_name: 'deepseek',
+    phone_number: 'quota-real-api-alias@example.test',
+    status: 'active',
+    cookie_count: 2,
+    consecutive_fails: 0,
+    daily_used: 7,
+    daily_limit: 10,
+    updated_at: '2026-05-12T08:25:00Z',
+  },
 ];
 
-const routeQuotaApis = async (page: Page) => {
+const routeQuotaApis = async (page: Page, accounts = accountRows) => {
   await page.route(/.*\/(?:api|admin\/api)(?:\/.*)?/, async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -86,7 +97,7 @@ const routeQuotaApis = async (page: Page) => {
     }
 
     if (method === 'GET' && path.endsWith('/accounts')) {
-      await fulfillJson(route, accountRows);
+      await fulfillJson(route, accounts);
       return;
     }
 
@@ -125,10 +136,26 @@ test('Admin Tracker and Account Pool explain daily quota exhaustion without muta
 
   await expect(page.getByRole('columnheader', { name: '今日配额' })).toBeVisible();
   await expect(page.getByText('20 / 20')).toBeVisible();
+  await expect(page.getByText('7 / 10')).toBeVisible();
+  await expect(page.getByText('剩余 3')).toBeVisible();
   await expect(page.getByText('剩余 0').first()).toBeVisible();
   await expect(page.getByRole('button', { name: '高风险重置' }).first()).toBeVisible();
   await expect(page.getByText('仅在审计确认后使用；正式退款/修正语义见 #519')).toBeVisible();
 
   expect(mutations, 'visualization pass must not call mutating Admin APIs').toEqual([]);
+  await errors.assertClean();
+});
+
+test('Admin Tracker treats a successfully loaded empty account pool as zero quota', async ({ page }) => {
+  await installAdminDocumentRoute(page);
+  await routeQuotaApis(page, []);
+  const errors = installAdminErrorGuards(page);
+
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('account_daily_limit_exhausted').first()).toBeVisible();
+  await expect(page.getByText('活跃账号 0 个，今日剩余额度 0')).toBeVisible();
+  await expect(page.getByText('账号池配额未加载')).toHaveCount(0);
+
   await errors.assertClean();
 });

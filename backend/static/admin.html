@@ -13246,6 +13246,7 @@ function adminApp() {
 
     // ====== B4 Account Pool (backed by /api/accounts) ======
     accountsLoading: false,
+    accountsLoaded: false,
     accountsError: null,
     accountPoolEngines: [],
     accountPoolList: [],
@@ -13406,10 +13407,12 @@ function adminApp() {
         if (rows && rows.error) throw new Error(rows.error);
         this.accountPoolList = (rows || []).map(mapAccountRowToCard);
         this.accountPoolEngines = summarizeAccountPool(this.accountPoolList);
+        this.accountsLoaded = true;
         // Fetch the binding counts so the new 绑定Profiles column populates
         // without an N+1 round-trip per account row.
         this.loadAccountProfileCounts();
       } catch (e) {
+        this.accountsLoaded = false;
         this.accountsError = String(e.message || e);
         this.toast('加载账号池失败: ' + this.accountsError);
       } finally {
@@ -13445,19 +13448,21 @@ function adminApp() {
         return label === engineLabel || key === engineLabel;
       });
       const activeAccounts = accounts.filter(a => a.status === 'active');
-      return activeAccounts.reduce((memo, a) => {
+      const quota = activeAccounts.reduce((memo, a) => {
         memo.active += 1;
         memo.used += Number(a.dailyUsed || 0);
         memo.limit += Number(a.dailyLimit || 0);
         memo.remaining += Number(a.remaining || 0);
         return memo;
       }, {
-        loaded: allAccounts.length > 0,
+        loaded: false,
         active: 0,
         used: 0,
         limit: 0,
         remaining: 0,
       });
+      quota.loaded = this.accountsLoaded;
+      return quota;
     },
     accountQuotaExplanation(att) {
       const quota = this.accountQuotaStatusForEngine(att?.engine);
