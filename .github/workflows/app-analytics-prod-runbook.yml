@@ -320,6 +320,27 @@ jobs:
             FROM scoped s
             LEFT JOIN brand_mentions bm ON bm.response_id = s.response_id;
 
+            \echo '--- source response date distribution ---'
+            WITH scoped AS (
+              SELECT
+                r.id AS response_id,
+                r.collected_at
+              FROM llm_responses r
+              JOIN queries q ON q.id = r.query_id
+              WHERE q.brand_id = :source_brand_id
+            )
+            SELECT
+              collected_at::date AS response_date,
+              COUNT(*) AS source_responses,
+              COUNT(DISTINCT bm.response_id) FILTER (WHERE bm.brand_id = :brand_id) AS canonical_mention_responses,
+              COUNT(bm.id) FILTER (WHERE bm.brand_id = :brand_id) AS canonical_mention_rows,
+              MIN(collected_at) AS first_collected_at,
+              MAX(collected_at) AS last_collected_at
+            FROM scoped s
+            LEFT JOIN brand_mentions bm ON bm.response_id = s.response_id
+            GROUP BY collected_at::date
+            ORDER BY response_date NULLS LAST;
+
             \echo '--- aggregate table counters ---'
             SELECT
               'geo_score_daily' AS table_name,
