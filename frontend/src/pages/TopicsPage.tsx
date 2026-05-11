@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { Badge, Button, Card } from '../components/ui'
 import BrandAnalysisFilterBar from '../components/filters/BrandAnalysisFilterBar'
@@ -14,7 +15,10 @@ import {
   useTopicPrompts,
 } from '../hooks/useTopicAnalysis'
 import { resolveLiveProjectId } from '../lib/liveProject'
-import { toProjectAnalysisParams } from '../lib/projectAnalysisFilters'
+import {
+  ProjectAnalysisParams,
+  toProjectAnalysisParams,
+} from '../lib/projectAnalysisFilters'
 
 const INTENT_LABELS: Record<string, string> = {
   informational: 'Informational',
@@ -35,6 +39,17 @@ const DIMENSION_VARIANTS: Record<string, string> = {
   brand: 'blue',
   category: 'green',
   scenario: 'orange',
+}
+
+function analysisParamsWithBrand(
+  filters: any,
+  brandIdOverride: number | null,
+): ProjectAnalysisParams {
+  const params = toProjectAnalysisParams(filters)
+  if (brandIdOverride != null) {
+    params.brand_id = brandIdOverride
+  }
+  return params
 }
 
 function Breadcrumb({ items, onNavigate }: { items: any[]; onNavigate: (view: string) => void }) {
@@ -67,14 +82,19 @@ function EmptyState({ text }: { text: string }) {
 function TopicsView({
   projectId,
   filters,
+  brandIdOverride,
   onSelectTopic,
 }: {
   projectId: string | null
   filters: any
+  brandIdOverride: number | null
   onSelectTopic: (topic: any) => void
 }) {
   const [search, setSearch] = useState('')
-  const analysisParams = toProjectAnalysisParams(filters)
+  const analysisParams = useMemo(
+    () => analysisParamsWithBrand(filters, brandIdOverride),
+    [brandIdOverride, filters],
+  )
   const monitoringQ = useTopicMonitoring(projectId, analysisParams)
   const rows = monitoringQ.data?.topics || []
   const intentRows = monitoringQ.data?.intent_matrix || []
@@ -219,14 +239,20 @@ function PromptsView({
   projectId,
   topic,
   filters,
+  brandIdOverride,
   onSelectPrompt,
 }: {
   projectId: string | null
   topic: any
   filters: any
+  brandIdOverride: number | null
   onSelectPrompt: (prompt: any) => void
 }) {
-  const promptsQ = useTopicPrompts(projectId, topic?.topic_id, toProjectAnalysisParams(filters))
+  const analysisParams = useMemo(
+    () => analysisParamsWithBrand(filters, brandIdOverride),
+    [brandIdOverride, filters],
+  )
+  const promptsQ = useTopicPrompts(projectId, topic?.topic_id, analysisParams)
   const prompts = promptsQ.data?.items || []
 
   return (
@@ -317,15 +343,21 @@ function QueriesView({
   topic,
   prompt,
   filters,
+  brandIdOverride,
   onSelectQuery,
 }: {
   projectId: string | null
   topic: any
   prompt: any
   filters: any
+  brandIdOverride: number | null
   onSelectQuery: (query: any) => void
 }) {
-  const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, toProjectAnalysisParams(filters))
+  const analysisParams = useMemo(
+    () => analysisParamsWithBrand(filters, brandIdOverride),
+    [brandIdOverride, filters],
+  )
+  const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, analysisParams)
   const queries = queriesQ.data?.items || []
 
   return (
@@ -393,8 +425,20 @@ function QueriesView({
   )
 }
 
-function ResponseView({ projectId, query }: { projectId: string | null; query: any }) {
-  const detailQ = useQueryResponse(projectId, query?.query_id)
+function ResponseView({
+  projectId,
+  query,
+  brandIdOverride,
+}: {
+  projectId: string | null
+  query: any
+  brandIdOverride: number | null
+}) {
+  const responseParams = useMemo<ProjectAnalysisParams>(
+    () => (brandIdOverride != null ? { brand_id: brandIdOverride } : {}),
+    [brandIdOverride],
+  )
+  const detailQ = useQueryResponse(projectId, query?.query_id, responseParams)
   const detail = detailQ.data
   const response = detail?.response as any
   const mentions = detail?.brand_mentions || []
@@ -506,7 +550,11 @@ export default function TopicsPage() {
   const { activeProject } = useProject()
   const { data: liveProjects } = useProjects()
   const { filters } = useBrandAnalysisFilters()
+  const [searchParams] = useSearchParams()
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject)
+  const brandIdParam = searchParams.get('brandId')
+  const brandIdOverride =
+    brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null
 
   const goTo = {
     topics: () => {
@@ -569,6 +617,7 @@ export default function TopicsPage() {
         <TopicsView
           projectId={liveProjectId}
           filters={filters}
+          brandIdOverride={brandIdOverride}
           onSelectTopic={(topic) => goTo.prompts(topic)}
         />
       )}
@@ -577,6 +626,7 @@ export default function TopicsPage() {
           projectId={liveProjectId}
           topic={selectedTopic}
           filters={filters}
+          brandIdOverride={brandIdOverride}
           onSelectPrompt={(prompt) => goTo.queries(prompt)}
         />
       )}
@@ -586,11 +636,16 @@ export default function TopicsPage() {
           topic={selectedTopic}
           prompt={selectedPrompt}
           filters={filters}
+          brandIdOverride={brandIdOverride}
           onSelectQuery={(query) => goTo.response(query)}
         />
       )}
       {view === 'response' && selectedQuery && (
-        <ResponseView projectId={liveProjectId} query={selectedQuery} />
+        <ResponseView
+          projectId={liveProjectId}
+          query={selectedQuery}
+          brandIdOverride={brandIdOverride}
+        />
       )}
     </div>
   )

@@ -534,10 +534,23 @@ async def _has_admin_chain(session: AsyncSession) -> bool:
     )
 
 
-def _empty_monitoring(project: Project, state: str = "empty") -> TopicMonitoringOut:
+def _effective_brand_id(project: Project, brand_id_override: int | None = None) -> int | None:
+    return (
+        int(brand_id_override)
+        if brand_id_override is not None
+        else (_as_int(project.primary_brand_id) if project.primary_brand_id is not None else None)
+    )
+
+
+def _empty_monitoring(
+    project: Project,
+    state: str = "empty",
+    *,
+    brand_id: int | None = None,
+) -> TopicMonitoringOut:
     return TopicMonitoringOut(
         project_id=project.id,
-        brand_id=project.primary_brand_id,
+        brand_id=brand_id if brand_id is not None else project.primary_brand_id,
         summary=TopicMonitoringSummary(),
         topics=[],
         intent_matrix=[],
@@ -1019,20 +1032,22 @@ async def get_topic_monitoring(
     project: Project,
     *,
     filters: AnalysisFilters,
+    brand_id_override: int | None = None,
 ) -> TopicMonitoringOut:
-    if project.primary_brand_id is None:
-        return _empty_monitoring(project)
-    rows = await _fact_rows(session, project, filters=filters)
-    brand_names = await resolve_brand_names(session, [project.primary_brand_id])
+    brand_id = _effective_brand_id(project, brand_id_override)
+    if brand_id is None:
+        return _empty_monitoring(project, brand_id=brand_id)
+    rows = await _fact_rows(session, project, filters=filters, brand_id_override=brand_id)
+    brand_names = await resolve_brand_names(session, [brand_id])
     topics, summary, intent_matrix = _topic_aggregates(
         rows,
         project=project,
         filters=filters,
-        associated_brand=brand_names.get(project.primary_brand_id),
+        associated_brand=brand_names.get(brand_id),
     )
     return TopicMonitoringOut(
         project_id=project.id,
-        brand_id=project.primary_brand_id,
+        brand_id=brand_id,
         summary=summary,
         topics=topics,
         intent_matrix=intent_matrix,
@@ -1046,8 +1061,20 @@ async def get_topic_prompts(
     *,
     topic_id: int,
     filters: AnalysisFilters,
+    brand_id_override: int | None = None,
 ) -> TopicPromptsOut:
-    rows = await _fact_rows(session, project, filters=filters, topic_id=topic_id)
+    brand_id = _effective_brand_id(project, brand_id_override)
+    rows = (
+        await _fact_rows(
+            session,
+            project,
+            filters=filters,
+            topic_id=topic_id,
+            brand_id_override=brand_id,
+        )
+        if brand_id is not None
+        else []
+    )
     by_prompt: OrderedDict[int, dict[str, Any]] = OrderedDict()
     for row in rows:
         pid = _as_int(row.get("prompt_id"))
@@ -1148,8 +1175,20 @@ async def get_prompt_queries(
     *,
     prompt_id: int,
     filters: AnalysisFilters,
+    brand_id_override: int | None = None,
 ) -> PromptQueriesOut:
-    rows = await _fact_rows(session, project, filters=filters, prompt_id=prompt_id)
+    brand_id = _effective_brand_id(project, brand_id_override)
+    rows = (
+        await _fact_rows(
+            session,
+            project,
+            filters=filters,
+            prompt_id=prompt_id,
+            brand_id_override=brand_id,
+        )
+        if brand_id is not None
+        else []
+    )
     by_query: OrderedDict[int, dict[str, Any]] = OrderedDict()
     for row in rows:
         qid = _as_int(row.get("query_id"))
@@ -1191,6 +1230,7 @@ async def get_query_response_detail(
     project: Project,
     *,
     query_id: int,
+    brand_id_override: int | None = None,
 ) -> QueryResponseDetailOut:
     if not await _has_admin_chain(session):
         raise not_found("query not found")
@@ -1245,11 +1285,15 @@ async def get_query_response_detail(
         raise not_found("query not found")
     q = dict(query_row)
     prompt_scope_id = _as_int(q.get("prompt_id"))
+    brand_id = _effective_brand_id(project, brand_id_override)
+    if brand_id is None:
+        raise not_found("query not found")
     scoped_rows = await _fact_rows(
         session,
         project,
         filters=AnalysisFilters(),
         prompt_id=prompt_scope_id,
+        brand_id_override=brand_id,
     )
     if not any(_as_int(row.get("query_id")) == int(query_id) for row in scoped_rows):
         raise not_found("query not found")
@@ -1447,9 +1491,11 @@ async def get_query_activity(
     project: Project,
     *,
     filters: AnalysisFilters,
+    brand_id_override: int | None = None,
 ) -> QueryActivityOut:
     from_d, to_d = _resolve_window(filters)
-    if project.primary_brand_id is None:
+    brand_id = _effective_brand_id(project, brand_id_override)
+    if brand_id is None:
         return QueryActivityOut(
             project_id=project.id,
             brand_id=None,
@@ -1475,7 +1521,12 @@ async def get_query_activity(
             intents=filters.intents,
             prompt_scope=filters.prompt_scope,
         )
-    rows = await _fact_rows(session, project, filters=effective_filters)
+    rows = await _fact_rows(
+        session,
+        project,
+        filters=effective_filters,
+        brand_id_override=brand_id,
+    )
 
     query_ids: set[int] = set()
     response_ids: set[int] = set()
@@ -1608,7 +1659,7 @@ async def get_query_activity(
     ]
     return QueryActivityOut(
         project_id=project.id,
-        brand_id=project.primary_brand_id,
+        brand_id=brand_id,
         period=_period(from_d, to_d),
         totals={
             "queries": len(query_ids),
@@ -1630,6 +1681,8 @@ async def get_query_activity(
 async def get_project_segments(
     session: AsyncSession,
     project: Project,
+    *,
+    brand_id_override: int | None = None,
 ) -> ProjectSegmentsOut:
     if not await legacy_table_exists(session, "segments"):
         return ProjectSegmentsOut(project_id=project.id, items=[], total=0, state="empty")
@@ -1643,11 +1696,12 @@ async def get_project_segments(
 
     where = ["1 = 1"]
     params: dict[str, Any] = {}
+    brand_id = _effective_brand_id(project, brand_id_override)
     if "is_deleted" in segment_cols:
         where.append(_not_deleted_condition("s"))
-    if project.primary_brand_id is not None and "brand_id" in segment_cols:
+    if brand_id is not None and "brand_id" in segment_cols:
         where.append("(s.brand_id IS NULL OR CAST(s.brand_id AS TEXT) = :brand_id)")
-        params["brand_id"] = str(project.primary_brand_id)
+        params["brand_id"] = str(brand_id)
 
     profile_join = ""
     profile_selects = [
@@ -1662,7 +1716,7 @@ async def get_project_segments(
         profile_conditions = ["CAST(p.segment_id AS TEXT) = CAST(s.id AS TEXT)"]
         if "is_deleted" in profile_cols:
             profile_conditions.append(_not_deleted_condition("p"))
-        if project.primary_brand_id is not None and "brand_id" in profile_cols:
+        if brand_id is not None and "brand_id" in profile_cols:
             profile_conditions.append(
                 "(p.brand_id IS NULL OR CAST(p.brand_id AS TEXT) = :brand_id)"
             )

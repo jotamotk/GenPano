@@ -165,13 +165,19 @@ export const topicAnalysisApi = {
     )
   },
 
-  response(projectId: string, queryId: number): Promise<QueryResponseDetailOut> {
+  response(
+    projectId: string,
+    queryId: number,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<QueryResponseDetailOut> {
     return apiClient.get<QueryResponseDetailOut>(
-      `/v1/projects/${projectId}/queries/${queryId}/response`,
+      `/v1/projects/${projectId}/queries/${queryId}/response${buildQuery(filters)}`,
     )
   },
 
-  segments(projectId: string): Promise<ProjectSegmentsOut> {
-    return apiClient.get<ProjectSegmentsOut>(`/v1/projects/${projectId}/segments`)
+  segments(projectId: string, filters: ProjectAnalysisParams = {}): Promise<ProjectSegmentsOut> {
+    return apiClient.get<ProjectSegmentsOut>(
+      `/v1/projects/${projectId}/segments${buildQuery(filters)}`,
+    )
   },
 }

@@ -531,6 +531,131 @@ async def test_topic_monitoring_uses_project_primary_text_match_when_fact_brand_
 
 
 @pytest.mark.asyncio
+async def test_topic_monitoring_brand_id_override_reads_selected_brand_chain(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text("INSERT INTO brands (id, name, industry) VALUES (12, 'Estee Lauder', 'Beauty')")
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (2401, 12, 'Estee Lauder anti-aging', 'brand', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (2402, 2401, 'Is Estee Lauder Advanced Night Repair worth it?',
+               'commercial', 'non_branded', 'en', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (2403, 'chatgpt', 'done',
+               'Is Estee Lauder Advanced Night Repair worth it?',
+               12, 'PROF-A', 2402, :now, :now, :now, 700)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (2404, 2403, 2402,
+               'Estee Lauder Advanced Night Repair is frequently recommended.',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    db_session.add(
+        BrandMention(
+            response_id=2404,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            sentiment="positive",
+            sentiment_score=0.7,
+            position_rank=1,
+            created_at=now,
+        )
+    )
+    db_session.add(
+        ResponseAnalysis(
+            response_id=2404,
+            target_brand_mentioned=True,
+            target_brand_rank=1,
+            sentiment_score=0.7,
+            geo_score=0.8,
+        )
+    )
+    await db_session.commit()
+
+    monitoring = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring?brand_id=12",
+        headers=_bearer(user),
+    )
+
+    assert monitoring.status_code == 200, monitoring.text
+    body = monitoring.json()
+    assert body["brand_id"] == 12
+    assert body["summary"]["topic_count"] == 1
+    assert body["summary"]["prompt_count"] == 1
+    assert body["summary"]["query_count"] == 1
+    assert body["summary"]["response_count"] == 1
+    assert [row["topic_id"] for row in body["topics"]] == [2401]
+    assert body["topics"][0]["associated_brand"] == "Estee Lauder"
+
+    prompts = await client.get(
+        f"/api/v1/projects/{project.id}/topics/2401/prompts?brand_id=12",
+        headers=_bearer(user),
+    )
+    assert prompts.status_code == 200, prompts.text
+    assert prompts.json()["total"] == 1
+
+    queries = await client.get(
+        f"/api/v1/projects/{project.id}/prompts/2402/queries?brand_id=12",
+        headers=_bearer(user),
+    )
+    assert queries.status_code == 200, queries.text
+    assert queries.json()["total"] == 1
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/queries/2403/response?brand_id=12",
+        headers=_bearer(user),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["response"]["raw_text"].startswith("Estee Lauder")
+
+    activity = await client.get(
+        f"/api/v1/projects/{project.id}/query-activity?brand_id=12",
+        headers=_bearer(user),
+    )
+    assert activity.status_code == 200, activity.text
+    assert activity.json()["brand_id"] == 12
+    assert activity.json()["totals"]["queries"] == 1
+
+
+@pytest.mark.asyncio
 async def test_project_query_activity_is_project_scoped(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 
