@@ -34,6 +34,7 @@ from geo_tracker.agent.clash_api import (
 )
 from geo_tracker.agent.response_validation import invalid_response_reason
 from geo_tracker.db.models import LLMResponse, Query, QueryStatus
+from geo_tracker.tasks.query_failure import classify_execution_failure
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,7 @@ class GuestQueryExecutor:
         """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self.account_cookies = account_cookies
+        self.last_error_reason: str | None = None
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -230,10 +232,12 @@ class GuestQueryExecutor:
         Returns:
             LLMResponse 对象，如果失败返回 None
         """
+        self.last_error_reason = None
         llm = query.target_llm
         config = GUEST_LLM_CONFIG.get(llm)
         if not config:
             logger.error(f"Unknown LLM: {llm}")
+            self.last_error_reason = "unknown_llm"
             return None
 
         use_proxy = self.proxy_url and llm not in DOMESTIC_LLMS
@@ -251,6 +255,7 @@ class GuestQueryExecutor:
                     CLASH_API_URL, CLASH_PROXY_GROUP, exclude=failed_nodes
                 )
                 if not new_node:
+                    self.last_error_reason = self.last_error_reason or "proxy_unavailable"
                     logger.error(f"[{llm}] 没有更多可用代理节点，放弃重试")
                     break
                 logger.info(f"[{llm}] 第 {attempt + 1} 次重试，已切换到节点: {new_node}")
@@ -266,6 +271,7 @@ class GuestQueryExecutor:
                 logger.warning(f"[{llm}] 节点 {current} 失败，加入黑名单 (已排除 {len(failed_nodes)} 个)")
 
         logger.error(f"[{llm}] 所有重试均失败")
+        self.last_error_reason = self.last_error_reason or "proxy_unavailable"
         return None
 
     async def _execute_once(
@@ -673,6 +679,7 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 页面最终标题: {title}")
             except Exception as e:
                 logger.error(f"[{llm}] 页面加载失败: {e}")
+                self.last_error_reason = "page_load_failed"
                 if page_obj:
                     try:
                         await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
@@ -685,6 +692,7 @@ class GuestQueryExecutor:
             login_domains = config.get("login_redirect_domains", [])
             if any(d in current_url for d in login_domains):
                 logger.warning(f"[{llm}] 页面加载后仍在登录页: {current_url}，cookies/token 已失效")
+                self.last_error_reason = "cookies_expired"
                 await _save_screenshot(page_obj, query.id, f"{llm}_login_after_load")
                 if self.account_cookies:
                     return None  # 让上层标记 cookies_expired
@@ -715,6 +723,7 @@ class GuestQueryExecutor:
 
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
+                self.last_error_reason = "no_input"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
                     try:
@@ -730,6 +739,7 @@ class GuestQueryExecutor:
             resp_text, resp_html, citations = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
 
             if resp_text:
+                self.last_error_reason = None
                 screenshot_path = await _save_screenshot(page_obj, query.id, llm)
                 return LLMResponse(
                     query_id=query.id,
@@ -743,12 +753,14 @@ class GuestQueryExecutor:
                 )
             else:
                 logger.error(f"[{llm}] 未能获取响应")
+                self.last_error_reason = "no_response"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
                 return None
 
         except Exception as e:
             logger.exception(f"[{llm}] 执行异常: {e}")
+            self.last_error_reason = classify_execution_failure(e)
             if page_obj:
                 try:
                     await _save_screenshot(page_obj, query.id, f"{llm}_exception")

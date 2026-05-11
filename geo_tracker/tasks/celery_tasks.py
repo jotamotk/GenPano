@@ -15,6 +15,7 @@ import os
 
 from celery import Celery
 from celery.schedules import crontab
+from billiard.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import delete as sa_delete, select
 
 from geo_tracker.agent.browser_lifecycle import (
@@ -39,6 +40,10 @@ from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
+from geo_tracker.tasks.query_failure import (
+    _empty_response_failure_reason,
+    _should_report_account_failure,
+)
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 
 logger = logging.getLogger(__name__)
@@ -172,6 +177,35 @@ async def _cleanup_previous_response(db, query_id: int) -> None:
     await db.execute(
         sa_delete(LLMResponse).where(LLMResponse.query_id == query_id)
     )
+
+
+async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) -> None:
+    engine = create_task_engine()
+    try:
+        async with get_task_async_session(engine) as db:
+            result = await db.execute(select(Query).where(Query.id == query_id))
+            query = result.scalar_one_or_none()
+            if query is None or query.status == QueryStatus.DONE.value:
+                return
+            mark_query_finished(
+                query,
+                status=QueryStatus.FAILED.value,
+                started_at=query.started_at,
+                reason=reason,
+            )
+            await db.commit()
+    finally:
+        await engine.dispose()
+
+
+def _mark_query_failed_after_task_abort(query_id: int, reason: str) -> None:
+    cleanup_loop = asyncio.new_event_loop()
+    try:
+        cleanup_loop.run_until_complete(
+            _mark_query_failed_after_task_abort_async(query_id, reason)
+        )
+    finally:
+        cleanup_loop.close()
 
 
 @app.task(bind=True, max_retries=2)
@@ -318,7 +352,11 @@ def execute_query(self, query_id: int) -> dict:
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
                 else:
                     resp_len = len(response.raw_text) if response else 0
-                    failure_reason = "cookies_expired" if response is None else "response_too_short"
+                    failure_reason = _empty_response_failure_reason(
+                        response,
+                        executor=guest_executor,
+                        account_cookies=account_cookies,
+                    )
                     mark_query_finished(
                         query,
                         status=QueryStatus.FAILED.value,
@@ -326,7 +364,11 @@ def execute_query(self, query_id: int) -> dict:
                         reason=failure_reason,
                     )
                     # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
-                    if account_id and pool:
+                    if (
+                        account_id
+                        and pool
+                        and _should_report_account_failure(failure_reason)
+                    ):
                         await pool.report_failure(account_id, reason=failure_reason)
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
@@ -366,7 +408,7 @@ def execute_query(self, query_id: int) -> dict:
                         f"after rollback: {commit_err}"
                     )
                 # 账号失败上报走独立 try，避免把主状态写回再次打断
-                if account_id and pool:
+                if account_id and pool and _should_report_account_failure("exception"):
                     try:
                         await pool.report_failure(account_id, reason="exception")
                     except Exception as pool_err:
@@ -378,6 +420,21 @@ def execute_query(self, query_id: int) -> dict:
     try:
         result = loop.run_until_complete(_run())
         return result
+    except SoftTimeLimitExceeded:
+        logger.exception("execute_query %s exceeded soft time limit", query_id)
+        try:
+            _mark_query_failed_after_task_abort(query_id, "soft_time_limit")
+        except Exception as cleanup_exc:
+            logger.error(
+                "execute_query %s failed to mark soft-timeout failure: %s",
+                query_id,
+                cleanup_exc,
+            )
+        return {
+            "query_id": query_id,
+            "status": "failed",
+            "reason": "soft_time_limit",
+        }
     except Exception as exc:
         logger.exception(f"execute_query {query_id} raised: {exc}")
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
