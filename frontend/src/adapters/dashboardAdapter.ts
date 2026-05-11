@@ -89,14 +89,17 @@ function findKpiByLabel(
 
 export function adaptOverviewToPrimary(
   overview: BrandOverviewOut,
-): PrimaryBrandAdapted {
+): PrimaryBrandAdapted | null {
+  if (overview.brand_id == null && !overview.brand_name?.trim()) {
+    return null
+  }
   const panoScore = findKpiByLabel(overview.kpi_cards, ['GEO', 'PANO', 'pano_score']) ?? 0
   const mentionPct = findKpiByLabel(overview.kpi_cards, ['提及率', 'mention']) ?? 0
   const sovPct = findKpiByLabel(overview.kpi_cards, ['声量', 'SoV', 'sov']) ?? 0
   const sentiment = findKpiByLabel(overview.kpi_cards, ['情感', 'sentiment']) ?? 0
   const ranking = Math.round(findKpiByLabel(overview.kpi_cards, ['排名', 'rank']) ?? 1)
-  const id = String(overview.brand_id ?? 0)
-  const name = overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`
+  const id = String(overview.brand_id ?? overview.brand_name)
+  const name = overview.brand_name ?? `Brand #${overview.brand_id}`
 
   return {
     id,

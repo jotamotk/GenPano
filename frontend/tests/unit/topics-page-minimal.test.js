@@ -17,5 +17,7 @@ describe('Topics page minimal monitoring surface', () => {
     expect(source).not.toContain('<th className="text-right">Avg GEO</th>');
     expect(source).not.toContain('Success rate');
     expect(source).not.toContain('Topic x Intent');
+    expect(source).not.toContain('QueryActivityCard');
+    expect(source).not.toContain('Query activity');
   });
 });

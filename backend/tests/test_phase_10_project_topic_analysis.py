@@ -842,6 +842,130 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
 
 
 @pytest.mark.asyncio
+async def test_topic_fact_set_scopes_by_response_brand_mentions_when_fk_and_text_do_not_match(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    project.primary_brand_id = 12
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO brands (id, name, industry) VALUES
+              (2, 'Wrong Owner', 'Beauty'),
+              (12, 'Estee Lauder', 'Beauty')
+            """
+        )
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (1501, 2, 'Night repair routine', 'product', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (1502, 1501, 'Which anti-aging serum is suitable for dry skin?',
+               'commercial', 'non_branded', 'en', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (1503, 'chatgpt', 'done', 'anti-aging serum for dry skin',
+               2, 'PROF-A', 1502, :now, :now, :now, 800)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (1504, 1503, 1502,
+               'A repair serum is frequently recommended for dry skin routines.',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    db_session.add(
+        ResponseAnalysis(
+            response_id=1504,
+            target_brand_mentioned=False,
+            target_brand_rank=None,
+            sentiment_score=0.4,
+            geo_score=0.7,
+        )
+    )
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=1504,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                sentiment="positive",
+                sentiment_score=0.4,
+                position_rank=1,
+                created_at=now,
+            ),
+            BrandMention(
+                response_id=1504,
+                brand_id=None,
+                brand_name="Lancome",
+                sentiment="neutral",
+                sentiment_score=0,
+                position_rank=2,
+                created_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    monitoring = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+
+    assert monitoring.status_code == 200, monitoring.text
+    monitoring_body = monitoring.json()
+    assert monitoring_body["state"] == "ok"
+    assert monitoring_body["summary"]["topic_count"] == 1
+    assert monitoring_body["summary"]["prompt_count"] == 1
+    assert monitoring_body["summary"]["query_count"] == 1
+    assert monitoring_body["summary"]["response_count"] == 1
+    topic = monitoring_body["topics"][0]
+    assert topic["topic_id"] == 1501
+    assert topic["associated_brand"] == "Estee Lauder"
+    assert topic["mention_rate"] == pytest.approx(1.0)
+    assert topic["sov"] == pytest.approx(0.5)
+
+    activity = await client.get(
+        f"/api/v1/projects/{project.id}/query-activity",
+        headers=_bearer(user),
+    )
+    assert activity.status_code == 200, activity.text
+    assert activity.json()["totals"]["queries"] == 1
+    assert activity.json()["totals"]["mentions_target"] == 1
+
+
+@pytest.mark.asyncio
 async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 
