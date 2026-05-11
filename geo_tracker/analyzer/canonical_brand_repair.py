@@ -123,36 +123,27 @@ async def repair_canonical_brand_mentions(
         ).scalar_one_or_none()
         if existing is not None:
             stats["mentions_existing"] += 1
-            if not dry_run:
-                await _annotate_analysis(
-                    session,
-                    response=response,
-                    query=query,
-                    brand=brand,
-                    hits=hits,
-                    create_partial=create_partial_analysis,
-                )
             continue
 
         stats["mentions_inserted"] += 1
         if dry_run:
             continue
 
-        session.add(
-            BrandMention(
-                response_id=response.id,
-                brand_id=brand.id,
-                brand_name=brand.name,
-                is_target=(query.brand_id == brand.id),
-                position_type="mentioned_only",
-                position_rank=None,
-                detail_level="passing",
-                sentiment="neutral",
-                sentiment_score=0.0,
-                context_snippet=hits[0].snippet,
-                mention_count=sum(hit.count for hit in hits),
-            )
+        mention = BrandMention(
+            response_id=response.id,
+            brand_id=brand.id,
+            brand_name=brand.name,
+            is_target=(query.brand_id == brand.id),
+            position_type="mentioned_only",
+            position_rank=None,
+            detail_level="passing",
+            sentiment="neutral",
+            sentiment_score=0.0,
+            context_snippet=hits[0].snippet,
+            mention_count=sum(hit.count for hit in hits),
         )
+        session.add(mention)
+        await session.flush()
         await _annotate_analysis(
             session,
             response=response,
@@ -160,6 +151,7 @@ async def repair_canonical_brand_mentions(
             brand=brand,
             hits=hits,
             create_partial=create_partial_analysis,
+            inserted_mention_id=mention.id,
         )
 
     if not dry_run:
@@ -175,6 +167,7 @@ async def _annotate_analysis(
     brand: Brand,
     hits: list[AliasHit],
     create_partial: bool,
+    inserted_mention_id: int,
 ) -> None:
     analysis = (
         await session.execute(
@@ -201,10 +194,16 @@ async def _annotate_analysis(
 
     raw = _coerce_dict(analysis.raw_analysis_json)
     repairs = list(raw.get("canonical_alias_repairs") or [])
-    if not any(item.get("brand_id") == brand.id for item in repairs if isinstance(item, dict)):
+    if not any(
+        item.get("inserted_mention_id") == inserted_mention_id
+        for item in repairs
+        if isinstance(item, dict)
+    ):
         repairs.append(
             {
                 "source": REPAIR_SOURCE,
+                "inserted_by_repair": True,
+                "inserted_mention_id": inserted_mention_id,
                 "state": "partial",
                 "brand_id": brand.id,
                 "brand_name": brand.name,

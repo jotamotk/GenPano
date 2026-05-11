@@ -450,6 +450,7 @@ async def run_canonical_brand_repair(
     date_to: str | None,
     source_brand_id: int | None,
     aliases: list[str] | None,
+    competitive_brand_ids: list[int] | None,
     write: bool,
     aggregate: bool,
 ) -> None:
@@ -481,7 +482,11 @@ async def run_canonical_brand_repair(
             )
             if write and aggregate:
                 if date_str:
-                    agg_stats = await Aggregator(session).aggregate_daily(start_at, brand_id)
+                    agg_stats = await Aggregator(session).aggregate_daily(
+                        start_at,
+                        brand_id,
+                        competitive_brand_ids=set(competitive_brand_ids or []),
+                    )
                     logger.info("canonical brand aggregate stats=%s", agg_stats)
                 else:
                     logger.warning(
@@ -545,6 +550,13 @@ def main():
     p_repair.add_argument("--source-brand-id", type=int, help="Optional owner brand filter")
     p_repair.add_argument("--alias", action="append", default=[], help="Extra alias term")
     p_repair.add_argument(
+        "--competitive-brand-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Project competitive brand ID for SoV denominator; repeatable.",
+    )
+    p_repair.add_argument(
         "--write",
         action="store_true",
         help="Apply writes. Omit for dry-run.",
@@ -572,6 +584,7 @@ def main():
                 date_to=args.date_to,
                 source_brand_id=args.source_brand_id,
                 aliases=args.alias,
+                competitive_brand_ids=args.competitive_brand_id,
                 write=args.write,
                 aggregate=args.aggregate,
             )

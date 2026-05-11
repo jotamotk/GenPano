@@ -132,6 +132,63 @@ async def _seed_cross_brand_fixture(session: AsyncSession) -> datetime:
     return day
 
 
+async def _add_response(
+    session: AsyncSession,
+    *,
+    query_id: int,
+    response_id: int,
+    prompt_id: int,
+    brand_id: int,
+    raw_text: str,
+    intent: str = "non_brand",
+    topic_category: str = "品类",
+    minutes: int = 0,
+) -> datetime:
+    day = datetime(2026, 5, 10, 10, 30) + timedelta(minutes=minutes)
+    topic = Topic(
+        id=2000 + query_id,
+        brand_id=brand_id,
+        text=f"topic-{query_id}",
+        category=topic_category,
+    )
+    prompt = Prompt(
+        id=prompt_id,
+        topic_id=topic.id,
+        text=f"prompt-{query_id}",
+        intent=intent,
+        language="zh",
+    )
+    query = Query(
+        id=query_id,
+        prompt_id=prompt_id,
+        brand_id=brand_id,
+        query_text=f"query-{query_id}",
+        target_llm="doubao",
+        status=QueryStatus.DONE.value,
+        created_at=day,
+    )
+    response = LLMResponse(
+        id=response_id,
+        query_id=query_id,
+        raw_text=raw_text,
+        citations_json=[],
+        response_time_ms=1000,
+        collected_at=day,
+        analysis_status=AnalysisStatus.DONE.value,
+    )
+    analysis = ResponseAnalysis(
+        response_id=response_id,
+        dimension_industry="beauty",
+        dimension_category=topic_category,
+        target_brand_mentioned=False,
+        total_brands_mentioned=0,
+        raw_analysis_json={"source": "owner-brand-analysis"},
+    )
+    session.add_all([topic, prompt, query, response, analysis])
+    await session.commit()
+    return day
+
+
 @pytest.mark.asyncio
 async def test_repair_dry_run_reports_without_writing(session: AsyncSession):
     day = await _seed_cross_brand_fixture(session)
@@ -151,6 +208,44 @@ async def test_repair_dry_run_reports_without_writing(session: AsyncSession):
         await session.execute(select(BrandMention).where(BrandMention.brand_id == 12))
     ).scalars().all()
     assert mentions == []
+
+
+@pytest.mark.asyncio
+async def test_repair_does_not_mark_preexisting_canonical_mentions_for_rollback(
+    session: AsyncSession,
+):
+    day = await _seed_cross_brand_fixture(session)
+    session.add(
+        BrandMention(
+            response_id=200,
+            brand_id=12,
+            brand_name="雅诗兰黛",
+            is_target=False,
+            position_type="mentioned_only",
+            sentiment="neutral",
+            sentiment_score=0.0,
+            mention_count=1,
+        )
+    )
+    await session.commit()
+
+    stats = await repair_canonical_brand_mentions(
+        session,
+        brand_id=12,
+        start_at=day.replace(hour=0, minute=0, second=0),
+        end_at=day.replace(hour=23, minute=59, second=59),
+        source_brand_id=2,
+        dry_run=False,
+    )
+
+    assert stats["mentions_existing"] == 1
+    assert stats["mentions_inserted"] == 0
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 200)
+        )
+    ).scalar_one()
+    assert "canonical_alias_repairs" not in (analysis.raw_analysis_json or {})
 
 
 @pytest.mark.asyncio
@@ -179,6 +274,15 @@ async def test_repair_inserts_canonical_mention_without_reassigning_owner(
     assert mention.is_target is False
     assert mention.mention_count == 1
     assert "雅诗兰黛" in (mention.context_snippet or "")
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 200)
+        )
+    ).scalar_one()
+    marker = analysis.raw_analysis_json["canonical_alias_repairs"][0]
+    assert marker["source"] == "canonical_alias_repair_v1"
+    assert marker["inserted_by_repair"] is True
+    assert marker["inserted_mention_id"] == mention.id
 
     owner_query = await session.get(Query, 100)
     assert owner_query is not None
@@ -212,7 +316,11 @@ async def test_aggregator_builds_canonical_brand_aggregates_from_cross_brand_men
     )
     await session.commit()
 
-    stats = await Aggregator(session).aggregate_daily(day, brand_id=12)
+    stats = await Aggregator(session).aggregate_daily(
+        day,
+        brand_id=12,
+        competitive_brand_ids={12},
+    )
 
     assert stats["geo_score_daily"] == 2
     assert stats["topic_score"] == 1
@@ -246,3 +354,94 @@ async def test_aggregator_builds_canonical_brand_aggregates_from_cross_brand_men
     owner_query = await session.get(Query, 100)
     assert owner_query is not None
     assert owner_query.brand_id == 2
+
+
+@pytest.mark.asyncio
+async def test_aggregator_uses_prd_denominators_for_mention_rate_and_sov(
+    session: AsyncSession,
+):
+    day = await _seed_cross_brand_fixture(session)
+    await _add_response(
+        session,
+        query_id=102,
+        response_id=202,
+        prompt_id=32,
+        brand_id=2,
+        raw_text="兰蔻适合想看竞品的人群。",
+        minutes=2,
+    )
+    await _add_response(
+        session,
+        query_id=103,
+        response_id=203,
+        prompt_id=33,
+        brand_id=2,
+        raw_text="无关品牌也可能被提到。",
+        minutes=3,
+    )
+    await _add_response(
+        session,
+        query_id=104,
+        response_id=204,
+        prompt_id=34,
+        brand_id=2,
+        raw_text="品牌向问题里也出现雅诗兰黛，但不能进入默认提及率。",
+        intent="brand",
+        topic_category="品牌",
+        minutes=4,
+    )
+
+    await repair_canonical_brand_mentions(
+        session,
+        brand_id=12,
+        start_at=day.replace(hour=0, minute=0, second=0),
+        end_at=day.replace(hour=23, minute=59, second=59),
+        source_brand_id=2,
+        dry_run=False,
+    )
+    session.add_all(
+        [
+            BrandMention(
+                response_id=202,
+                brand_id=77,
+                brand_name="兰蔻",
+                is_target=False,
+                position_type="mentioned_only",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                mention_count=1,
+            ),
+            BrandMention(
+                response_id=203,
+                brand_id=99,
+                brand_name="无关品牌",
+                is_target=False,
+                position_type="mentioned_only",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                mention_count=1,
+            ),
+        ]
+    )
+    await session.commit()
+
+    await Aggregator(session).aggregate_daily(
+        day,
+        brand_id=12,
+        competitive_brand_ids={12, 77},
+    )
+
+    geo = (
+        await session.execute(
+            select(GEOScoreDaily).where(
+                GEOScoreDaily.brand_id == 12,
+                GEOScoreDaily.target_llm.is_(None),
+                GEOScoreDaily.intent.is_(None),
+                GEOScoreDaily.language.is_(None),
+            )
+        )
+    ).scalar_one()
+    assert geo.total_queries == 4
+    assert geo.mention_count == 1
+    assert geo.mention_rate == pytest.approx(0.25)
+    assert geo.avg_sov == pytest.approx(0.5)
