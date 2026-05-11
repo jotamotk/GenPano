@@ -4,6 +4,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
+
 from geo_tracker.db.models import AccountStatus, LLMAccount
 from geo_tracker.pool.account_pool import AccountPool
 
@@ -50,6 +52,42 @@ def is_account_executable_for_query(
         and _cooldown_allows(account, now)
         and _within_daily_limit(account)
     )
+
+
+def account_unavailable_reason_from_accounts(
+    accounts: list[LLMAccount],
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Classify why an engine has no executable account."""
+    now = now or _utcnow_naive()
+    if not accounts:
+        return "account_pool_empty"
+
+    active = [account for account in accounts if account.status == AccountStatus.ACTIVE.value]
+    if not active:
+        return "account_no_active"
+
+    with_cookies = [account for account in active if _has_cookies(account)]
+    if not with_cookies:
+        return "account_no_cookies"
+
+    not_cooling = [account for account in with_cookies if _cooldown_allows(account, now)]
+    if not not_cooling:
+        return "account_cooling_down"
+
+    if not any(_within_daily_limit(account) for account in not_cooling):
+        return "account_daily_limit_exhausted"
+
+    return "no_account_available"
+
+
+async def diagnose_account_unavailable(
+    db: Any,
+    target_llm: str,
+) -> str:
+    result = await db.execute(select(LLMAccount).where(LLMAccount.llm_name == target_llm))
+    return account_unavailable_reason_from_accounts(list(result.scalars().all()))
 
 
 async def _claim_account(db: Any, account: LLMAccount, *, now: datetime) -> None:

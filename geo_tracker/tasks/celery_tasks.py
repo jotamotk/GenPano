@@ -40,7 +40,10 @@ from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
-from geo_tracker.tasks.account_assignment import acquire_query_account
+from geo_tracker.tasks.account_assignment import (
+    acquire_query_account,
+    diagnose_account_unavailable,
+)
 from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
     _should_report_account_failure,
@@ -258,21 +261,33 @@ def execute_query(self, query_id: int) -> dict:
                 )
             elif requires_login:
                 # 必须登录但无可用账号 → 标记 FAILED（不再设回 pending 避免无限循环）
+                failure_reason = await diagnose_account_unavailable(db, query.target_llm)
                 mark_query_finished(
                     query,
                     status=QueryStatus.FAILED.value,
                     started_at=started_at,
-                    reason="no_account_available",
+                    reason=failure_reason,
                 )
                 await db.commit()
                 logger.warning(
                     f"Query {query_id}: {query.target_llm} requires login "
-                    f"but no account available, marking FAILED"
+                    f"but no account available ({failure_reason}), marking FAILED"
                 )
                 # 生产事故 2026-04-27 SMS 浪费根因修复:
                 # 原代码无锁直接 enqueue, 同时间窗多个 query 失败会喷多个 auto_login,
                 # 每个都向鲁班要新手机号 (~1元/条). 加分布式锁 + 失败 cooldown.
-                if await should_enqueue_new_account(query.target_llm):
+                auto_register_reasons = {
+                    "account_pool_empty",
+                    "account_no_active",
+                    "account_no_cookies",
+                    "no_account_available",
+                }
+                auto_register_engines = {"doubao", "deepseek"}
+                if (
+                    query.target_llm in auto_register_engines
+                    and failure_reason in auto_register_reasons
+                    and await should_enqueue_new_account(query.target_llm)
+                ):
                     auto_login.apply_async(
                         kwargs={"platform": query.target_llm, "new_account": True},
                         queue="account_login",
@@ -280,7 +295,7 @@ def execute_query(self, query_id: int) -> dict:
                 return {
                     "query_id": query_id,
                     "status": "failed",
-                    "reason": "no_account_available",
+                    "reason": failure_reason,
                 }
             else:
                 # 不需要登录（guest 可用），无 cookie 也继续
