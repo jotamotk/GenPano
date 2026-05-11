@@ -4,6 +4,7 @@ Canonical product and implementation references:
 
 - `ACTIVE_SURFACES.md`
 - `PRD.md`
+- `PRD_APP_ANALYTICS_CORRECTION.md`
 - `PRD_CODEX_READY.md`
 - `DEVELOPMENT_PLAN.md`
 - `ADMIN_PRD.md`

@@ -257,6 +257,15 @@ Project 至少需要：
 
 指标口径应从 `docs/PRD.md`、`docs/DATA_MODEL.md`、`docs/ADAPTER_CONTRACT.md` 继承。若已有运行代码和 PRD 口径冲突，先写差异说明。
 
+### 6.2.1 App analytics correction
+
+`docs/PRD_APP_ANALYTICS_CORRECTION.md` is the P0 source of truth for Brand Mode
+analytics correctness. App analytics values must not use silent fallback,
+frontend mock truth, proxy formulas, target-only denominators, hard-coded
+deltas, or synthetic competitor/topic/trend rows. Missing upstream evidence must
+surface as `partial`, `empty`, or `error` with `missing_inputs`,
+`evidence_counts`, and formula context.
+
 ### 6.3 API 要求
 
 后续产品数据 API 至少覆盖：
