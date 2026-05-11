@@ -6520,8 +6520,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         </td>
                         <td class="px-3 py-2.5">
                           <div class="flex items-center gap-1">
-                            <button class="h-6 px-2 rounded-btn text-[10px] font-medium border border-accent/30 text-accent bg-white hover:bg-accent/5"
-                                    @click="retryAttempt(att)">重试</button>
+                            <button class="h-6 px-2 rounded-btn text-[10px] font-medium border border-accent/30 text-accent bg-white hover:bg-accent/5 disabled:opacity-60 disabled:cursor-wait"
+                                    :disabled="isAttemptRetrying(att.queryDbId)"
+                                    @click="retryAttempt(att)"
+                                    x-text="isAttemptRetrying(att.queryDbId) ? '等待中' : '重试'"></button>
                             <button @click="openDebugDrawer(att)"
                                     class="h-6 px-2 rounded-btn text-[10px] font-medium border border-b-default text-ink-muted bg-white hover:bg-surface-page">详情</button>
                           </div>
@@ -7954,8 +7956,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         </template>
         <!-- Actions -->
         <div class="flex items-center gap-2 pt-2">
-          <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90"
-                  @click="retryAttempt(debugDrawer); debugDrawer=null">重试此 Query</button>
+          <button class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-60 disabled:cursor-wait"
+                  :disabled="debugDrawer && isAttemptRetrying(debugDrawer.queryDbId)"
+                  @click="retryAttempt(debugDrawer)"
+                  x-text="debugDrawer && isAttemptRetrying(debugDrawer.queryDbId) ? '等待刷新' : '重试此 Query'"></button>
           <button class="h-8 px-3 rounded-btn border border-b-default text-ink-body text-[12px] hover:bg-surface-page"
                   @click="debugDrawer=null">关闭</button>
         </div>
@@ -8613,7 +8617,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         <!-- Actions -->
         <div class="flex items-center gap-2 pt-4 border-t border-b-card">
           <template x-if="attemptDrawer.status==='failed' || attemptDrawer.status==='waiting_manual'">
-            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90">手动重试</button>
+            <button class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-60 disabled:cursor-wait"
+                    :disabled="attemptDrawer && isAttemptRetrying(attemptDrawer.queryDbId)"
+                    @click="retryAttempt(attemptDrawer)"
+                    x-text="attemptDrawer && isAttemptRetrying(attemptDrawer.queryDbId) ? '等待刷新' : '手动重试'"></button>
           </template>
           <template x-if="attemptDrawer.status==='failed' || attemptDrawer.status==='waiting_manual'">
             <button class="h-9 px-4 rounded-btn border border-warning/30 text-warning text-[13px] font-medium bg-white hover:bg-warning/5">送 DLQ</button>
@@ -12664,6 +12671,9 @@ function adminApp() {
     // Selection map: { [queryDbId]: true }. Only covers current page (cleared on page/filter change).
     selectedAttemptIds: {},
     batchTriggering: false,
+    retryingAttemptIds: {},
+    retryPollTimers: {},
+    retryPollTokens: {},
     availableBrands: [],
     availableTopics: [],
     availablePrompts: [],
@@ -12962,19 +12972,172 @@ function adminApp() {
       }
     },
 
+    isAttemptRetrying(queryDbId) {
+      const id = Number(queryDbId);
+      return Number.isFinite(id) && !!this.retryingAttemptIds[id];
+    },
+
+    setAttemptRetrying(queryDbId, value) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      const next = Object.assign({}, this.retryingAttemptIds || {});
+      if (value) next[id] = true;
+      else delete next[id];
+      this.retryingAttemptIds = next;
+    },
+
+    findAttemptByQueryId(queryDbId) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return null;
+      return (this.executionAttempts || []).find(att => Number(att.queryDbId) === id) || null;
+    },
+
+    updateOpenAttemptViews(latest) {
+      if (!latest || latest.queryDbId == null) return;
+      const id = Number(latest.queryDbId);
+      if (this.debugDrawer && Number(this.debugDrawer.queryDbId) === id) {
+        this.debugDrawer = Object.assign({}, this.debugDrawer, latest);
+      }
+      if (this.attemptDrawer && Number(this.attemptDrawer.queryDbId) === id) {
+        this.attemptDrawer = Object.assign({}, this.attemptDrawer, latest);
+      }
+    },
+
+    markAttemptRetryAccepted(queryDbId) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      const queuedAt = new Date().toISOString();
+      const patch = (att) => {
+        if (!att || Number(att.queryDbId) !== id) return att;
+        return Object.assign({}, att, {
+          attemptNum: Math.max(1, Number(att.attemptNum) || 1) + 1,
+          status: 'pending',
+          errorCode: 'manual retry from admin',
+          retryReason: 'manual retry from admin',
+          queuedAt,
+          startedAt: null,
+          completedAt: null,
+          startedAtRaw: null,
+          finishedAtRaw: null,
+          latencyMs: null,
+          responseTime: 0,
+          responseText: null,
+          citations: null,
+          hasHtml: false,
+        });
+      };
+      this.executionAttempts = (this.executionAttempts || []).map(patch);
+      if (this.debugDrawer && Number(this.debugDrawer.queryDbId) === id) this.debugDrawer = patch(this.debugDrawer);
+      if (this.attemptDrawer && Number(this.attemptDrawer.queryDbId) === id) this.attemptDrawer = patch(this.attemptDrawer);
+    },
+
+    async fetchAttemptByQueryId(queryDbId) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return null;
+      const qp = new URLSearchParams();
+      qp.set('limit', '1');
+      qp.set('offset', '0');
+      qp.set('count', '0');
+      qp.set('id', String(id));
+      const res = await fetch(API_BASE + '/queries?' + qp.toString(), { credentials: 'same-origin' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((body && body.error) || ('HTTP ' + res.status));
+      const rows = Array.isArray(body) ? body : (body.rows || []);
+      return rows[0] ? mapQueryRowToAttempt(rows[0]) : null;
+    },
+
+    async refreshAttemptView(queryDbId) {
+      await this.loadAttempts();
+      let latest = this.findAttemptByQueryId(queryDbId);
+      if (!latest) latest = await this.fetchAttemptByQueryId(queryDbId);
+      if (latest) this.updateOpenAttemptViews(latest);
+      return latest;
+    },
+
+    stopRetryStatusWatch(queryDbId) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      if (this.retryPollTimers && this.retryPollTimers[id]) {
+        clearTimeout(this.retryPollTimers[id]);
+      }
+      const timers = Object.assign({}, this.retryPollTimers || {});
+      delete timers[id];
+      this.retryPollTimers = timers;
+      const tokens = Object.assign({}, this.retryPollTokens || {});
+      delete tokens[id];
+      this.retryPollTokens = tokens;
+      this.setAttemptRetrying(id, false);
+    },
+
+    startRetryStatusWatch(queryDbId) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      if (this.retryPollTimers && this.retryPollTimers[id]) {
+        clearTimeout(this.retryPollTimers[id]);
+      }
+      const token = Number((this.retryPollTokens || {})[id] || 0) + 1;
+      this.retryPollTokens = Object.assign({}, this.retryPollTokens || {}, { [id]: token });
+      let polls = 0;
+      const terminalStatuses = new Set(['success', 'failed', 'dlq', 'waiting_manual']);
+      const schedule = (delayMs) => {
+        const timers = Object.assign({}, this.retryPollTimers || {});
+        timers[id] = setTimeout(poll, delayMs);
+        this.retryPollTimers = timers;
+      };
+      const poll = async () => {
+        if (!this.retryPollTokens || this.retryPollTokens[id] !== token) return;
+        polls += 1;
+        let latest = null;
+        try {
+          latest = await this.refreshAttemptView(id);
+        } catch (_) {
+          latest = null;
+        }
+        if (latest && terminalStatuses.has(latest.status)) {
+          this.stopRetryStatusWatch(id);
+          return;
+        }
+        if (polls >= 6) {
+          this.stopRetryStatusWatch(id);
+          return;
+        }
+        schedule(polls < 2 ? 1200 : 2500);
+      };
+      schedule(1200);
+    },
+
     async retryAttempt(att) {
+      const queryDbId = Number(att && att.queryDbId);
+      if (!Number.isFinite(queryDbId) || queryDbId <= 0) {
+        this.toast('重试失败: 缺少 query id');
+        return;
+      }
+      this.stopRetryStatusWatch(queryDbId);
+      this.setAttemptRetrying(queryDbId, true);
       try {
-        const res = await fetch(API_BASE + '/queries/' + att.queryDbId + '/retry', {
+        const res = await fetch(API_BASE + '/queries/' + queryDbId + '/retry', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason: 'manual retry from admin' }),
         });
-        const body = await res.json();
-        if (!body.success) throw new Error(body.error || '重试失败');
-        this.toast('已入队 retry · query #' + att.queryDbId);
-        await this.loadAttempts();
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || !body.success) throw new Error((body && body.error) || ('HTTP ' + res.status));
+        const dispatched = body.dispatched !== false;
+        this.markAttemptRetryAccepted(queryDbId);
+        this.toast((dispatched ? '已提交重试，已重新派发' : '已重置但未派发') + ' · query #' + queryDbId);
+        try {
+          await this.refreshAttemptView(queryDbId);
+        } catch (_) {
+          // loadAttempts already surfaces refresh failures; keep the accepted retry state visible.
+        }
+        if (dispatched) {
+          this.startRetryStatusWatch(queryDbId);
+        } else {
+          this.stopRetryStatusWatch(queryDbId);
+        }
       } catch (e) {
+        this.stopRetryStatusWatch(queryDbId);
         this.toast('重试失败: ' + (e.message || e));
       }
     },
