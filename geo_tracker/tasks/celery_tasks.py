@@ -40,6 +40,7 @@ from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
+from geo_tracker.tasks.account_assignment import acquire_query_account
 from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
     _should_report_account_failure,
@@ -245,7 +246,7 @@ def execute_query(self, query_id: int) -> dict:
             requires_login = llm_config.get("requires_login", True)
 
             pool = AccountPool(db)
-            account = await pool.acquire(query.target_llm)
+            account = await acquire_query_account(db, query, pool=pool)
             if account and account.cookies_json:
                 account_cookies = account.cookies_json
                 account_id = account.id

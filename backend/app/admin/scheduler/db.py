@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy import text
@@ -316,6 +317,55 @@ async def bulk_delete_scheduler_runs(
 # ── /scheduler/today ─────────────────────────────────────────
 
 
+def _stale_running_seconds() -> int:
+    raw = os.getenv("QUERY_STALE_RUNNING_SECONDS")
+    try:
+        value = int(raw) if raw is not None else 660
+    except (TypeError, ValueError):
+        return 660
+    return max(60, value)
+
+
+async def reconcile_stale_running_queries(
+    session: AsyncSession,
+    *,
+    max_age_seconds: int | None = None,
+) -> int:
+    """Mark old running query rows failed before showing progress counters."""
+    if not await _table_exists(session, "queries"):
+        return 0
+    seconds = max(60, int(max_age_seconds or _stale_running_seconds()))
+    result = await session.execute(
+        text(
+            """
+            UPDATE queries
+               SET status = 'failed',
+                   finished_at = NOW(),
+                   retry_reason = 'stale_running',
+                   latency_ms = CASE
+                       WHEN started_at IS NULL THEN latency_ms
+                       ELSE GREATEST(
+                           0,
+                           FLOOR(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000)::int
+                       )
+                   END
+             WHERE LOWER(status) = 'running'
+               AND COALESCE(started_at, executed_at, queued_at, created_at)
+                   < NOW() - (CAST(:seconds AS text) || ' seconds')::interval
+            RETURNING id
+            """
+        ),
+        {"seconds": seconds},
+    )
+    rows = result.mappings().all() if hasattr(result, "mappings") else []
+    changed = len(rows)
+    if changed == 0:
+        changed = max(0, int(getattr(result, "rowcount", 0) or 0))
+    if changed:
+        await session.commit()
+    return changed
+
+
 async def fetch_today_dispatch(session: AsyncSession) -> dict[str, Any]:
     """Live progress for today's dispatch grouped by engine."""
     if not await _table_exists(session, "queries"):
@@ -323,6 +373,9 @@ async def fetch_today_dispatch(session: AsyncSession) -> dict[str, Any]:
             "engines": [],
             "total": {"target": 0, "done": 0, "failed": 0, "running": 0, "pending": 0},
         }
+    stale = await reconcile_stale_running_queries(session)
+    if stale:
+        logger.info("Marked %s stale running queries failed before scheduler/today", stale)
     rows = (
         (
             await session.execute(
@@ -743,6 +796,7 @@ __all__ = [
     "get_query_schedule",
     "list_query_schedules",
     "list_scheduler_runs",
+    "reconcile_stale_running_queries",
     "upcoming_schedule_fires",
     "update_query_schedule",
     "update_scheduler_config",
