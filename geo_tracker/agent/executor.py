@@ -43,11 +43,13 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 LLM_CONFIG: dict[str, dict] = {
     "chatgpt": {
         "url":              "https://chat.openai.com",
-        "input_selector":   "#prompt-textarea",
-        "submit_selector":  "button[data-testid='send-button']",
+        # #prompt-textarea 现在是 ProseMirror contenteditable div
+        "input_selector":   "#prompt-textarea, div[contenteditable='true'][role='textbox']",
+        # data-testid 偶尔变；优先稳定的 aria-label + class
+        "submit_selector":  "button[aria-label='Send prompt'], button[data-testid='send-button'], button.composer-submit-button-color[aria-label*='Send'], #composer-submit-button",
         "response_selector":"[data-message-author-role='assistant'] .markdown",
         # 流式输出完成信号：停止按钮消失 + 发送按钮重新可用
-        "wait_for_done":    "button[data-testid='send-button']:not([disabled])",
+        "wait_for_done":    "button[aria-label='Send prompt']:not([disabled]), button[data-testid='send-button']:not([disabled])",
         # 额外等待：流式光标消失
         "stream_cursor_selector": ".result-streaming",
         "response_timeout": 90_000,

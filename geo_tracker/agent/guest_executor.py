@@ -91,7 +91,13 @@ def _load_cookies_from_env(env_var: str) -> list:
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
-        "input_selector":   "#prompt-textarea, [data-testid='prompt-textarea'], textarea, [role='textbox']",
+        # #prompt-textarea 是 ProseMirror contenteditable div，不是 textarea
+        "input_selector":   "#prompt-textarea, div[contenteditable='true'][role='textbox'], [data-testid='prompt-textarea'], textarea, [role='textbox']",
+        # 走 JS 注入路径（contenteditable=True 会启用 execCommand/paste/innerHTML 三段兜底）
+        "contenteditable":  True,
+        # 发送按钮：composer-submit-button-color 是稳定 class，aria-label="Send prompt" 是文案
+        # 排除语音按钮（aria-label 含 Voice/dictation）
+        "submit_button":    "button[aria-label='Send prompt'], button[data-testid='send-button'], button.composer-submit-button-color[aria-label*='Send'], #composer-submit-button",
         "submit_key":       "Enter",
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
@@ -1241,15 +1247,29 @@ class GuestQueryExecutor:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
-        # 验证提交成功：豆包 testid 已删除，改用 textarea 清空 + 出现新消息块判断
+        # 验证提交成功：依据各 LLM 的稳定标记判断"用户消息已上屏"
+        # 共用标记 + 各 LLM 特化（豆包: send-msg-bubble-bg；chatgpt: [data-message-author-role="user"]）
         async def _submit_confirmed() -> bool:
             try:
                 return await page.evaluate(
                     r"""
-                    (queryText) => {
-                        // 1) 存在 send_message testid（老 UI）
+                    ([queryText, llmName]) => {
+                        // 1) ChatGPT: 出现 user 消息气泡
+                        if (llmName === 'chatgpt') {
+                            const userMsgs = document.querySelectorAll(
+                                '[data-message-author-role="user"]'
+                            );
+                            const needle = queryText.slice(0, 30).trim();
+                            for (const el of userMsgs) {
+                                if ((el.textContent || '').includes(needle)) return true;
+                            }
+                            // URL 从 / 变成 /c/{id} 也算
+                            if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                            return false;
+                        }
+                        // 2) Doubao: 老 UI send_message testid
                         if (document.querySelector('[data-testid="send_message"]')) return true;
-                        // 2) 输入框被清空（发送后 doubao 会清空），排除自动撑高用的隐藏 textarea
+                        // 3) Doubao: 输入框被清空（发送后会清空），排除隐藏 textarea
                         const inp = document.querySelector(
                             '#input-engine-container textarea.semi-input-textarea:not([aria-hidden="true"]), '
                             + 'textarea.semi-input-textarea:not([aria-hidden="true"]), '
@@ -1259,8 +1279,8 @@ class GuestQueryExecutor:
                             const v = (inp.value !== undefined ? inp.value : inp.textContent) || '';
                             if (v.trim().length === 0 && queryText.length > 0) return true;
                         }
-                        // 3) 页面某个气泡类元素包含 query 文本
-                        //    豆包 2026 稳定 class: send-msg-bubble-bg（用户消息气泡）
+                        // 4) Doubao 2026 稳定 class: send-msg-bubble-bg（用户消息气泡），
+                        //    以及其他用户消息相关 class（兜底）
                         const candidates = document.querySelectorAll(
                             '[class*="send-msg-bubble-bg"], [class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"], [class*="message-list"]'
                         );
@@ -1271,12 +1291,12 @@ class GuestQueryExecutor:
                         return false;
                     }
                     """,
-                    query_text,
+                    [query_text, llm_name],
                 )
             except Exception:
                 return False
 
-        if llm_name == "doubao":
+        if llm_name in ("doubao", "chatgpt"):
             confirmed = False
             for _ in range(10):  # 最多 ~5s 轮询
                 if await _submit_confirmed():
@@ -1460,7 +1480,49 @@ class GuestQueryExecutor:
                 except Exception:
                     continue
 
-            if not resp_text:
+            # 在做 <p>/<li>/main 兜底之前，先确认用户消息真的上屏了——
+            # 否则可能爬到首页 UI（比如 ChatGPT "What are you working on?" 文案）
+            user_msg_present = False
+            try:
+                user_msg_present = await page.evaluate(
+                    r"""
+                    ([queryText, llmName]) => {
+                        const needle = queryText.slice(0, 30).trim();
+                        if (!needle) return true;  // 空 query 不做校验
+                        // 通用：所有 LLM 都用的 user message marker
+                        const sels = [
+                            '[data-message-author-role="user"]',
+                            '[class*="send-msg-bubble-bg"]',  // doubao
+                            '[class*="user-message"]',
+                            '[class*="send-message"]',
+                            '[class*="message-item"]',
+                            '[class*="chat-item"]',
+                        ];
+                        for (const sel of sels) {
+                            const els = document.querySelectorAll(sel);
+                            for (const el of els) {
+                                if ((el.textContent || '').includes(needle)) return true;
+                            }
+                        }
+                        // 进入 /c/{id} 路径也算（chatgpt 等）
+                        if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                        return false;
+                    }
+                    """,
+                    [query_text, llm_name],
+                )
+            except Exception:
+                user_msg_present = False
+
+            if not resp_text and not user_msg_present:
+                # 没有响应也没有用户消息气泡 = 提交根本没成功，禁止抽取首页 UI
+                logger.warning(
+                    f"[{llm_name}] 未检测到用户消息气泡，提交可能未成功——"
+                    "跳过通用兜底抽取，避免误抓首页内容"
+                )
+                await _save_html(page, -1, f"{llm_name}_submit_failed_no_user_msg")
+
+            if not resp_text and user_msg_present:
                 # fallback 1：拼接所有 <p> 标签文本
                 logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
                 await _save_html(page, -1, f"{llm_name}_extract_fail")
@@ -1509,10 +1571,19 @@ class GuestQueryExecutor:
             if not resp_text:
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
 
-            # 豆包：检测是否误抓了首页内容（而非真正的 AI 响应）
-            if llm_name == "doubao" and resp_text:
-                homepage_indicators = ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"]
-                matched_indicators = [kw for kw in homepage_indicators if kw in resp_text]
+            # 检测是否误抓了首页内容（而非真正的 AI 响应）
+            homepage_indicators_by_llm = {
+                "doubao": ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"],
+                "chatgpt": [
+                    "What are you working on?",
+                    "How can I help you today?",
+                    "Examples", "Capabilities", "Limitations",
+                    "Stay logged out", "Log in", "Sign up",
+                ],
+            }
+            indicators = homepage_indicators_by_llm.get(llm_name, [])
+            if indicators and resp_text:
+                matched_indicators = [kw for kw in indicators if kw in resp_text]
                 if len(matched_indicators) >= 2:
                     logger.warning(
                         f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
