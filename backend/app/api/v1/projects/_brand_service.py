@@ -23,6 +23,15 @@ from genpano_models import (
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import (
+    MetricDefinition,
+    build_contract_context,
+    context_update,
+    metric_definition,
+    metric_definitions,
+    ratio_decimal,
+    score_0_100,
+)
 from app.api.v1.projects._brand_dto import (
     CompetitorBrandRow,
     CompetitorMetricsOut,
@@ -87,6 +96,38 @@ def _fact_geo_score(value: object) -> float | None:
     if score is None:
         return None
     return round(score * 100, 2) if 0 <= score <= 1 else round(score, 2)
+
+
+def _normalize_competitor_row(row: CompetitorBrandRow | None) -> CompetitorBrandRow | None:
+    if row is None:
+        return None
+    return row.model_copy(
+        update={
+            "avg_geo_score": score_0_100(row.avg_geo_score),
+            "avg_mention_rate": ratio_decimal(row.avg_mention_rate),
+            "avg_sov": ratio_decimal(row.avg_sov),
+        }
+    )
+
+
+def _normalize_competitor_rows(rows: list[CompetitorBrandRow]) -> list[CompetitorBrandRow]:
+    return [
+        normalized for row in rows if (normalized := _normalize_competitor_row(row)) is not None
+    ]
+
+
+def _normalize_trend_metric(metric: str, value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    if metric in {"mention_rate", "sov", "citation"}:
+        return ratio_decimal(value)
+    if metric == "geo_score":
+        return score_0_100(value)
+    return round(float(value), 4)
+
+
+def _competitor_metric_definitions() -> dict[str, MetricDefinition]:
+    return metric_definitions(["avg_geo_score", "avg_mention_rate", "avg_sov", "avg_sentiment"])
 
 
 async def _fact_primary_competitor_row(
@@ -501,16 +542,31 @@ async def get_competitor_metrics(
     """Compare primary brand + each pinned competitor across 4 metrics."""
     from_d, to_d = _resolve_window(from_date, to_date)
     primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    has_effective_override = (
+        brand_id_override is not None and brand_id_override != project.primary_brand_id
+    )
 
     if primary_id is None:
-        return CompetitorMetricsOut(
+        out = CompetitorMetricsOut(
             project_id=project.id,
             primary_brand_id=None,
             period=_period(from_d, to_d),
             primary=None,
             competitors=[],
             state="empty",
+            metric_definitions=_competitor_metric_definitions(),
         )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=None,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=False,
+            base_state="empty",
+            base_state_reason="no_primary_brand",
+        )
+        return out.model_copy(update=context_update(context))
 
     response_entities = await _response_entity_competitor_metrics(
         session,
@@ -522,16 +578,31 @@ async def get_competitor_metrics(
     )
     if response_entities is not None:
         primary_row, competitor_rows, entity_state = response_entities
-        return CompetitorMetricsOut(
+        primary_row = _normalize_competitor_row(primary_row)
+        competitor_rows = _normalize_competitor_rows(competitor_rows)
+        has_data = primary_row is not None or bool(competitor_rows)
+        out = CompetitorMetricsOut(
             project_id=project.id,
             primary_brand_id=primary_id,
             period=_period(from_d, to_d),
             primary=primary_row,
             competitors=competitor_rows,
             state=entity_state,
+            metric_definitions=_competitor_metric_definitions(),
         )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=primary_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state=entity_state,
+            base_state_reason="partial_competitor_data" if entity_state == "partial" else None,
+        )
+        return out.model_copy(update=context_update(context))
 
-    if brand_id_override is not None:
+    if has_effective_override:
         competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
     else:
         competitor_stmt = select(ProjectCompetitor.brand_id).where(
@@ -636,16 +707,29 @@ async def get_competitor_metrics(
     for c in comp_rows:
         if c.brand_id is not None:
             c.brand_name = name_map.get(c.brand_id)
+    primary_row = _normalize_competitor_row(primary_row)
+    comp_rows = _normalize_competitor_rows(comp_rows)
 
     state = "ok" if (primary_row or comp_rows) else "empty"
-    return CompetitorMetricsOut(
+    out = CompetitorMetricsOut(
         project_id=project.id,
         primary_brand_id=primary_id,
         period=_period(from_d, to_d),
         primary=primary_row,
         competitors=comp_rows,
         state=state,
+        metric_definitions=_competitor_metric_definitions(),
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=primary_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=state != "empty",
+        base_state=state,
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /diagnostics ──────────────────────────────────────────────────
@@ -901,6 +985,9 @@ async def get_competitor_trends(
     from_d, to_d = _resolve_window(from_date, to_date)
 
     primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    has_effective_override = (
+        brand_id_override is not None and brand_id_override != project.primary_brand_id
+    )
     if primary_id is not None and await _has_admin_chain(session):
         fact_series = await _fact_primary_trend_series(
             session,
@@ -912,14 +999,25 @@ async def get_competitor_trends(
             brand_id_override=brand_id_override,
         )
         if fact_series is not None:
-            return CompetitorTrendsOut(
+            out = CompetitorTrendsOut(
                 project_id=project.id,
                 metric=metric,
                 period=_period(from_d, to_d),
                 series=[fact_series],
                 state="ok",
+                metric_definition=metric_definition(metric),
             )
-    if brand_id_override is not None and primary_id is not None:
+            context = await build_contract_context(
+                session,
+                project,
+                brand_id=primary_id,
+                from_date=from_d,
+                to_date=to_d,
+                has_data=True,
+                base_state="ok",
+            )
+            return out.model_copy(update=context_update(context))
+    if has_effective_override and primary_id is not None:
         competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
     else:
         competitor_stmt = select(ProjectCompetitor.brand_id).where(
@@ -931,13 +1029,25 @@ async def get_competitor_trends(
 
     brand_ids = list({*competitor_ids, *([primary_id] if primary_id is not None else [])})
     if not brand_ids:
-        return CompetitorTrendsOut(
+        out = CompetitorTrendsOut(
             project_id=project.id,
             metric=metric,
             period=_period(from_d, to_d),
             series=[],
             state="empty",
+            metric_definition=metric_definition(metric),
         )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=primary_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=False,
+            base_state="empty",
+            base_state_reason="no_primary_brand",
+        )
+        return out.model_copy(update=context_update(context))
 
     stmt = (
         select(
@@ -962,7 +1072,7 @@ async def get_competitor_trends(
         series_by_brand[brand_id].append(
             CompetitorTrendPoint(
                 date=dt.date().isoformat() if hasattr(dt, "date") else str(dt),
-                value=float(value) if value is not None else None,
+                value=_normalize_trend_metric(metric, value),
             )
         )
     fallback_metric = "geo_score" if metric == "geo_score" else metric
@@ -973,7 +1083,7 @@ async def get_competitor_trends(
         series_by_brand[bid] = [
             CompetitorTrendPoint(
                 date=day,
-                value=metric_value(rollup, fallback_metric),
+                value=_normalize_trend_metric(metric, metric_value(rollup, fallback_metric)),
             )
             for day, rollup in sorted(rollups.items())
             if rollup.has_data
@@ -989,10 +1099,23 @@ async def get_competitor_trends(
         )
         for bid in brand_ids
     ]
-    return CompetitorTrendsOut(
+    state = "ok" if any(s.points for s in output_series) else "empty"
+    definition_key = "avg_sentiment" if metric == "sentiment" and rows else metric
+    out = CompetitorTrendsOut(
         project_id=project.id,
         metric=metric,
         period=_period(from_d, to_d),
         series=output_series,
-        state="ok" if any(s.points for s in output_series) else "empty",
+        state=state,
+        metric_definition=metric_definition(definition_key),
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=primary_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=state != "empty",
+        base_state=state,
+    )
+    return out.model_copy(update=context_update(context))

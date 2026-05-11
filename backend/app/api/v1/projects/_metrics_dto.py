@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.api.v1.projects._analytics_contract import (
+    DataFreshness,
+    FormulaDiagnostics,
+    IdentityDiagnostics,
+    ProjectScope,
+    ValueRange,
+)
 
 
 # ── /metrics ──────────────────────────────────────────────────────
@@ -16,6 +24,16 @@ class MetricSeriesPoint(BaseModel):
 class MetricSeries(BaseModel):
     metric: str  # 'mention_rate' | 'sov' | 'rank' | 'sentiment' | 'citation'
     points: list[MetricSeriesPoint]
+    unit: str | None = None
+    value_scale: str | None = None
+    value_range: ValueRange | None = None
+    denominator_label: str | None = None
+    numerator_label: str | None = None
+    source: str | None = None
+    formula_status: str | None = None
+    state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
 
 
 class MetricsOut(BaseModel):
@@ -25,6 +43,18 @@ class MetricsOut(BaseModel):
     engines: list[str] | None
     series: list[MetricSeries]
     state: str = "ok"
+    state_reason: str = "data_available"
+    state_detail: str | None = None
+    project_scope: ProjectScope | None = None
+    brand_aliases: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    invalid_fields: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    request_id: str | None = None
+    data_freshness: DataFreshness = Field(default_factory=DataFreshness)
 
 
 # ── /topics ───────────────────────────────────────────────────────

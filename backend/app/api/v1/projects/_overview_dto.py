@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.api.v1.projects._analytics_contract import (
+    DataFreshness,
+    FormulaDiagnostics,
+    IdentityDiagnostics,
+    MetricValue,
+    ProjectScope,
+    ValueRange,
+)
 
 
 class KpiCard(BaseModel):
@@ -14,8 +23,15 @@ class KpiCard(BaseModel):
 
     label_zh: str
     label_en: str
+    metric_key: str | None = None
     value: float | int
     unit: str | None = None
+    value_scale: str | None = None
+    value_range: ValueRange | None = None
+    denominator_label: str | None = None
+    numerator_label: str | None = None
+    source: str | None = None
+    formula_status: str | None = None
     delta_30d_pct: float | None = None
     direction: str | None = None  # 'up' | 'down' | 'flat'
 
@@ -61,3 +77,16 @@ class BrandOverviewOut(BaseModel):
     top_prompts: list[TopPromptRow]
     same_group_shared_domains: list[GroupSharedDomainRow]
     state: str = "ok"  # 'ok' | 'empty' | 'partial'
+    state_reason: str = "data_available"
+    state_detail: str | None = None
+    project_scope: ProjectScope | None = None
+    brand_aliases: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    invalid_fields: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    score_components: dict[str, MetricValue] = Field(default_factory=dict)
+    request_id: str | None = None
+    data_freshness: DataFreshness = Field(default_factory=DataFreshness)
