@@ -1,0 +1,168 @@
+name: App Analytics Readonly Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "App project UUID"
+        required: true
+        default: "95d43022-a5c8-5944-b6d6-34b29faa18b5"
+      brand_id:
+        description: "Primary brand id"
+        required: true
+        default: "12"
+      competitor_brand_ids:
+        description: "CSV competitor brand ids"
+        required: false
+        default: "2"
+      date_from:
+        description: "Evidence window start date"
+        required: false
+        default: "2026-04-24"
+      date_to:
+        description: "Evidence window end date"
+        required: false
+        default: "2026-05-11"
+      base_url:
+        description: "Live App base URL"
+        required: true
+        default: "http://116.62.36.173"
+
+concurrency:
+  group: app-analytics-readonly-evidence
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: Capture App analytics evidence
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      PROJECT_ID: ${{ inputs.project_id }}
+      BRAND_ID: ${{ inputs.brand_id }}
+      COMPETITOR_BRAND_IDS: ${{ inputs.competitor_brand_ids }}
+      DATE_FROM: ${{ inputs.date_from }}
+      DATE_TO: ${{ inputs.date_to }}
+      BASE_URL: ${{ inputs.base_url }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      APP_ANALYTICS_BEARER_TOKEN: ${{ secrets.APP_ANALYTICS_BEARER_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mask token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
+            echo "::add-mask::${APP_ANALYTICS_BEARER_TOKEN}"
+          fi
+
+      - name: Secret preflight
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_ready=true
+          for secret_name in SERVER_HOST SERVER_USER SERVER_SSH_KEY; do
+            if [ -z "${!secret_name}" ]; then
+              echo "::notice::Missing required secret for DB probe: ${secret_name}"
+              db_ready=false
+            fi
+          done
+          if [ -z "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
+            echo "::notice::Missing optional secret for authenticated API GET probes: APP_ANALYTICS_BEARER_TOKEN"
+            api_ready=false
+          else
+            api_ready=true
+          fi
+          echo "db_ready=${db_ready}" >> "${GITHUB_OUTPUT}"
+          echo "api_ready=${api_ready}" >> "${GITHUB_OUTPUT}"
+          python backend/scripts/app_analytics_readonly_evidence.py secrets-report \
+            SERVER_HOST SERVER_USER SERVER_SSH_KEY APP_ANALYTICS_BEARER_TOKEN
+          {
+            echo "### App analytics evidence preflight"
+            echo "- DB probe secrets present: ${db_ready}"
+            echo "- API token present: ${api_ready}"
+            echo "- Project: ${PROJECT_ID}"
+            echo "- Brand: ${BRAND_ID}"
+            echo "- Competitors: ${COMPETITOR_BRAND_IDS:-<empty>}"
+            echo "- Window: ${DATE_FROM:-<empty>} to ${DATE_TO:-<empty>}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Generate SELECT SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/app_analytics_readonly_evidence.py db-sql \
+            --project-id "${PROJECT_ID}" \
+            --brand-id "${BRAND_ID}" \
+            --competitor-brand-ids "${COMPETITOR_BRAND_IDS}" \
+            --date-from "${DATE_FROM}" \
+            --date-to "${DATE_TO}" \
+            > "${RUNNER_TEMP}/app_analytics_readonly_evidence.sql"
+          sed -n '1,40p' "${RUNNER_TEMP}/app_analytics_readonly_evidence.sql"
+
+      - name: Run DB SELECT probes
+        if: steps.preflight.outputs.db_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "${RUNNER_TEMP}/server_key"
+          printf '%s\n' "${SERVER_SSH_KEY}" > "${RUNNER_TEMP}/server_key"
+          {
+            echo "### Runtime container evidence"
+            ssh -i "${RUNNER_TEMP}/server_key" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "cd /opt/genpano && docker compose ps && docker compose ps -q | xargs -r docker inspect --format '{{.Name}} image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}} restart_count={{.RestartCount}}'"
+            echo
+            echo "### SELECT probe evidence"
+            ssh -i "${RUNNER_TEMP}/server_key" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "cd /opt/genpano && docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X" \
+              < "${RUNNER_TEMP}/app_analytics_readonly_evidence.sql"
+          } | tee "${RUNNER_TEMP}/app_analytics_readonly_evidence_db.log"
+
+      - name: Record DB probe blocker
+        if: steps.preflight.outputs.db_ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### DB SELECT probes"
+            echo "Blocked by missing secret(s). See preflight notices for exact names."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run authenticated GET probes
+        if: steps.preflight.outputs.api_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/app_analytics_readonly_evidence.py api-probes \
+            --project-id "${PROJECT_ID}" \
+            --brand-id "${BRAND_ID}" \
+            --competitor-brand-ids "${COMPETITOR_BRAND_IDS}" \
+            --date-from "${DATE_FROM}" \
+            --date-to "${DATE_TO}" \
+            --base-url "${BASE_URL}" \
+            --bearer-token-env APP_ANALYTICS_BEARER_TOKEN \
+            | tee "${RUNNER_TEMP}/app_analytics_readonly_evidence_api.jsonl"
+
+      - name: Record API probe blocker
+        if: steps.preflight.outputs.api_ready != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Authenticated App API GET probes"
+            echo "Blocked by missing secret: APP_ANALYTICS_BEARER_TOKEN."
+          } >> "${GITHUB_STEP_SUMMARY}"
