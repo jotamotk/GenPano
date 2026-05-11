@@ -81,14 +81,15 @@ export default function BrandSentimentPage() {
   // ──────────────────────────────────────────────────────────────
   // Sentiment distribution — prefer live, fallback to mock aggregate.
   // ──────────────────────────────────────────────────────────────
-  let positivePct: number;
-  let negativePct: number;
-  let neutralPct: number;
+  let positivePct: number | null;
+  let negativePct: number | null;
+  let neutralPct: number | null;
   let distributionIsMock = !isLive;
   if (isLive) {
-    positivePct = Math.round(sentimentQ.data?.distribution.positive_pct ?? 0);
-    negativePct = Math.round(sentimentQ.data?.distribution.negative_pct ?? 0);
-    neutralPct = Math.round(sentimentQ.data?.distribution.neutral_pct ?? 0);
+    const distribution = sentimentQ.data?.state === 'ok' ? sentimentQ.data.distribution : null;
+    positivePct = distribution ? Math.round(distribution.positive_pct) : null;
+    negativePct = distribution ? Math.round(distribution.negative_pct) : null;
+    neutralPct = distribution ? Math.round(distribution.neutral_pct) : null;
   } else {
     const positive = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.positive, 0);
     const negative = SENTIMENT_DISTRIBUTION.reduce((sum, d) => sum + d.negative, 0);
@@ -104,7 +105,7 @@ export default function BrandSentimentPage() {
     { name: '正面', value: positivePct, color: 'var(--color-chart-7)' },
     { name: '中性', value: neutralPct, color: 'var(--color-chart-line-grid)' },
     { name: '负面', value: negativePct, color: 'var(--color-danger)' },
-  ];
+  ].filter((segment) => segment.value != null);
 
   // ──────────────────────────────────────────────────────────────
   // Engine stacked bar — prefer live, fallback to mock.

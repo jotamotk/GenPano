@@ -42,21 +42,21 @@ import type {
 // ── Engine breakdown bar (BrandVisibilityPage) ──────────────────────
 export interface EngineBreakdownBar {
   engine: string
-  mentionRate: number
-  sov: number
-  citationShare: number
+  mentionRate: number | null
+  sov: number | null
+  citationShare: number | null
 }
 
 export function adaptEngineMetricsToBreakdown(
   out: EngineMetricsOut | undefined,
 ): EngineBreakdownBar[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.items)) return []
   return out.items.map((row) => ({
     engine: row.engine,
-    mentionRate: row.mention_rate != null ? +(row.mention_rate * 100).toFixed(1) : 0,
-    sov: row.sov != null ? +(row.sov * 100).toFixed(1) : 0,
+    mentionRate: row.mention_rate != null ? +(row.mention_rate * 100).toFixed(1) : null,
+    sov: row.sov != null ? +(row.sov * 100).toFixed(1) : null,
     citationShare:
-      row.citation_rate != null ? +(row.citation_rate * 100).toFixed(1) : 0,
+      row.citation_rate != null ? +(row.citation_rate * 100).toFixed(1) : null,
   }))
 }
 
@@ -69,7 +69,7 @@ export interface PositionBarRow {
 export function adaptPositionDistribution(
   out: PositionDistributionOut | undefined,
 ): PositionBarRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.items)) return []
   return out.items.map((it) => ({ name: it.bucket, value: it.pct }))
 }
 
@@ -80,7 +80,7 @@ export interface FrontendHeatmapRow {
   values: {
     topicId: string
     topicLabel: string
-    value: number
+    value: number | null
     sample: number
   }[]
 }
@@ -89,14 +89,14 @@ export function adaptHeatmap(
   out: TopicHeatmapOut | undefined,
   primaryBrandId: number | string | null,
 ): FrontendHeatmapRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.rows)) return []
   return out.rows.map((r: ApiHeatmapRow) => ({
     brandId: r.brand_id,
     brandName: r.brand_name ?? `#${r.brand_id}`,
-    values: r.values.map((c) => ({
+    values: (r.values ?? []).map((c) => ({
       topicId: String(c.topic_id),
       topicLabel: c.topic_label,
-      value: c.value ?? 0,
+      value: c.value,
       sample: c.sample,
     })),
   }))
@@ -113,7 +113,7 @@ export interface SentimentStackBarRow {
 export function adaptSentimentByEngine(
   out: SentimentByEngineOut | undefined,
 ): SentimentStackBarRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.items)) return []
   return out.items.map((it) => ({
     engine: it.engine,
     positive: it.positive,
@@ -125,19 +125,21 @@ export function adaptSentimentByEngine(
 // ── Sentiment trend (TrendChart) ────────────────────────────────────
 export interface SentimentTrendRow {
   name: string
-  [engine: string]: string | number
+  [engine: string]: string | number | null
 }
 
 export function adaptSentimentTrend(
   out: SentimentTrendByEngineOut | undefined,
 ): { rows: SentimentTrendRow[]; engines: string[] } {
-  if (!out) return { rows: [], engines: [] }
+  if (!out || !Array.isArray(out.items) || !Array.isArray(out.engines)) {
+    return { rows: [], engines: [] }
+  }
   return {
     engines: out.engines,
     rows: out.items.map((p) => {
       const r: SentimentTrendRow = { name: p.date.slice(5) }
       for (const eng of out.engines) {
-        r[eng] = p.by_engine[eng] != null ? +(p.by_engine[eng]! * 100).toFixed(1) : 0
+        r[eng] = p.by_engine[eng] != null ? +(p.by_engine[eng]! * 100).toFixed(1) : null
       }
       return r
     }),
@@ -155,7 +157,7 @@ export interface SentimentTopicAttributionRow {
 export function adaptTopicAttribution(
   out: TopicAttributionOut | undefined,
 ): SentimentTopicAttributionRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.items)) return []
   return out.items.map((r) => ({
     topicName: r.topic_name,
     negativeCount: r.negative_count,
@@ -176,7 +178,7 @@ export interface SentimentSampleRow {
 export function adaptMentionSamples(
   out: MentionSamplesOut | undefined,
 ): SentimentSampleRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.items)) return []
   return out.items.map((m) => ({
     label: m.label,
     topic: m.topic ?? '—',
@@ -197,7 +199,7 @@ export interface AuthorityShareSeriesRow {
 export function adaptAuthorityTrend(
   out: AuthorityTrendOut | undefined,
 ): AuthorityShareSeriesRow[] {
-  if (!out) return []
+  if (!out || out.state !== 'ok' || !Array.isArray(out.points)) return []
   return out.points.map((p) => ({
     date: p.date,
     // Tier1 = official, Tier2 = authoritative media (co-occurrence proxy),
@@ -228,7 +230,7 @@ const TIER_COLORS = [
 export function adaptCitationComposition(
   out: CitationCompositionOut | undefined,
 ): DonutSegment[] {
-  if (!out) return []
+  if (!out || out.state !== 'ok' || !Array.isArray(out.segments)) return []
   return out.segments.map((s, i) => ({
     name: s.label,
     value: +s.pct.toFixed(1),
@@ -249,7 +251,7 @@ export function adaptContentGap(out: ContentGapOut | undefined): {
   topics: ContentGapTopicMockShape[]
   pageTypeDistribution: { type: string; count: number; pct: number }[]
 } {
-  if (!out)
+  if (!out || out.state !== 'ok' || !Array.isArray(out.topics))
     return { topics: [], pageTypeDistribution: [] }
   return {
     topics: out.topics.map((t) => ({
@@ -259,7 +261,7 @@ export function adaptContentGap(out: ContentGapOut | undefined): {
       gap: t.gap_score,
       suggestion: t.suggestion,
     })),
-    pageTypeDistribution: out.page_type_distribution.map((d) => ({
+    pageTypeDistribution: (out.page_type_distribution ?? []).map((d) => ({
       type: d.page_type,
       count: d.count,
       pct: d.pct,
@@ -270,11 +272,10 @@ export function adaptContentGap(out: ContentGapOut | undefined): {
 // ── PR targets / Tier2 matrix ───────────────────────────────────────
 //
 // The live `/citations/pr-targets` endpoint returns a slimmer shape than the
-// existing `PrTargetsPanel` mock (which expects PR-score / citations30d /
-// trending / KOL-diversity etc.). We fill required fields with sensible
-// derivations from the live data so the component renders without crashing.
+// existing `PrTargetsPanel` mock. Keep unavailable formula fields null so the
+// UI can render them as missing instead of inventing production scores.
 export function adaptPrTargets(out: PrTargetsOut | undefined) {
-  if (!out)
+  if (!out || out.state !== 'ok' || !Array.isArray(out.targets))
     return {
       targets: [],
       kolScorecards: [],
@@ -285,17 +286,15 @@ export function adaptPrTargets(out: PrTargetsOut | undefined) {
     }
   return {
     targets: out.targets.map((t, i) => {
-      const total = t.we_count + t.competitors_count || 1
-      const prScore = +(((t.gap || 0) / total) * 0.5 + 0.5).toFixed(3)
       return {
         rank: i + 1,
         domain: t.domain,
         tier: t.tier,
-        authorityTier: t.tier ?? 0,
-        authorityConfidence: t.tier != null ? 1 - (t.tier - 1) * 0.15 : 0,
+        authorityTier: t.tier,
+        authorityConfidence: null,
         citations30d: t.we_count + t.competitors_count,
-        trending30dPct: t.gap > 0 ? Math.min(100, t.gap * 5) : 0,
-        prScore,
+        trending30dPct: null,
+        prScore: null,
         attributedToMeCount: t.we_count,
         weCount: t.we_count,
         competitorsCount: t.competitors_count,
@@ -303,22 +302,22 @@ export function adaptPrTargets(out: PrTargetsOut | undefined) {
         suggestion: t.suggestion,
       }
     }),
-    kolScorecards: out.kol_scorecards.map((k, i) => ({
+    kolScorecards: (out.kol_scorecards ?? []).map((k, i) => ({
       id: `kol-${i}`,
+      domain: k.name,
       name: k.name,
       platform: k.platform,
       audienceScore: k.audience_score,
       qualityScore: k.quality_score,
       risk: k.risk,
-      // Fields the existing mock-driven scorecard component reads:
-      authorityConfidence: (k.audience_score ?? 50) / 100,
-      avgCitationsPerWeek: Math.round(((k.audience_score ?? 50) / 100) * 8),
-      diversity: 2.0 + ((k.quality_score ?? 60) / 100) * 0.8,
-      brandDiversity90d: ['brand-a', 'brand-b', 'brand-c'],
+      authorityConfidence: k.audience_score == null ? null : k.audience_score / 100,
+      avgCitationsPerWeek: null,
+      diversity: null,
+      brandDiversity90d: [],
     })),
     tier2Matrix: {
-      domains: out.tier2_matrix.domains,
-      brands: out.tier2_matrix.brands.map((b) => ({
+      domains: out.tier2_matrix?.domains ?? [],
+      brands: (out.tier2_matrix?.brands ?? []).map((b) => ({
         brandId: b.brand_id,
         label: b.label,
         counts: b.counts,
@@ -342,19 +341,19 @@ export function adaptSimulatorBaseline(out: SimulatorBaselineOut | undefined) {
   const currentByTier: Record<number, number> = {}
   const tierWeights: Record<number, number> = {}
   const defaultConfidence: Record<number, number> = {}
-  for (const t of out.tiers) {
+  for (const t of out.tiers ?? []) {
     currentByTier[t.tier] = t.current_count
     tierWeights[t.tier] = t.weight
     defaultConfidence[t.tier] = t.confidence
   }
   return {
     currentPanoA: out.current_pano,
-    industryMedian: out.industry_median ?? 0,
-    industryTop3Avg: out.industry_top3_avg ?? 0,
+    industryMedian: out.industry_median ?? null,
+    industryTop3Avg: out.industry_top3_avg ?? null,
     currentByTier,
     tierWeights,
     defaultConfidence,
-    presets: out.presets.map((p) => ({
+    presets: (out.presets ?? []).map((p) => ({
       id: String(p.id),
       label: String(p.label),
       deltaByTier: Object.fromEntries(
@@ -375,7 +374,7 @@ export interface AuthorityRadarMockRow {
 export function adaptAuthorityRadar(
   out: AuthorityRadarOut | undefined,
 ): AuthorityRadarMockRow[] {
-  if (!out) return []
+  if (!out || !Array.isArray(out.rows)) return []
   return out.rows.map((r) => ({
     tier: r.tier,
     me: r.me,
@@ -399,7 +398,7 @@ export function adaptGroupSharedDomains(out: GroupSharedDomainsOut | undefined) 
   return {
     group: out.group_name,
     sharedRatio: out.shared_ratio,
-    sharedDomains: out.items.map((i) => ({
+    sharedDomains: (out.items ?? []).map((i) => ({
       domain: i.domain,
       tier: i.tier,
       sharedWith: i.sister_brand_names,
@@ -409,7 +408,7 @@ export function adaptGroupSharedDomains(out: GroupSharedDomainsOut | undefined) 
 
 // ── Product relations ───────────────────────────────────────────────
 export function adaptProductRelations(out: ProductRelationsOut | undefined) {
-  if (!out) return [] as { productA: number; productB: number; type: string; confidence: number }[]
+  if (!out || !Array.isArray(out.items)) return [] as { productA: number; productB: number; type: string; confidence: number }[]
   return out.items.map((r) => ({
     productA: r.product_a_id,
     productAName: r.product_a_name,

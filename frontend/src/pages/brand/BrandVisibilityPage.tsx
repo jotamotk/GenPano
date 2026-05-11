@@ -90,10 +90,10 @@ export default function BrandVisibilityPage() {
   const lastSov =
     liveSparklines?.sov.length ? liveSparklines.sov[liveSparklines.sov.length - 1] : null;
 
-  const mentionRatePct = isLive ? (lastMention != null ? lastMention.toFixed(1) : '0.0') : mockMentionRatePct;
-  const sovPct = isLive ? (lastSov != null ? lastSov.toFixed(1) : '0.0') : mockSovPct;
-  const mentionDelta = 2.3;
-  const sovDelta = -1.1;
+  const mentionRateText = isLive ? (lastMention != null ? `${lastMention.toFixed(1)}%` : '—') : `${mockMentionRatePct}%`;
+  const sovText = isLive ? (lastSov != null ? `${lastSov.toFixed(1)}%` : '—') : `${mockSovPct}%`;
+  const mentionDelta = isLive ? undefined : 2.3;
+  const sovDelta = isLive ? undefined : -1.1;
 
   const mentionSparkData =
     isLive
@@ -183,8 +183,8 @@ export default function BrandVisibilityPage() {
     ? liveSparklines.mention.map((v, idx) => ({
         name: `D${idx + 1}`,
         mentionRate: v,
-        panoScore: liveSparklines.sentiment[idx] ?? 0,
-        competitorScore: 0,
+        panoScore: null,
+        competitorScore: null,
       }))
     : null;
   const trendData = isLive ? (trendDataLive ?? []) : TREND_DATA;
@@ -211,7 +211,7 @@ export default function BrandVisibilityPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <KpiCard
           label={t('brand_visibility.kpi_mention')}
-          value={`${mentionRatePct}%`}
+          value={mentionRateText}
           delta={mentionDelta}
           deltaLabel="vs 7d"
           helpText={t('dashboard.kpi.mention_rate_help')}
@@ -220,7 +220,7 @@ export default function BrandVisibilityPage() {
         />
         <KpiCard
           label={t('brand_visibility.kpi_sov')}
-          value={`${sovPct}%`}
+          value={sovText}
           delta={sovDelta}
           deltaLabel="vs 7d"
           helpText={t('dashboard.kpi.sov_help')}
@@ -263,7 +263,7 @@ export default function BrandVisibilityPage() {
                   borderRadius: 'var(--radius-btn)',
                   fontSize: 12,
                 }}
-                formatter={(v) => `${Math.round(v)}%`}
+                formatter={(v) => v == null ? '—' : `${Math.round(Number(v))}%`}
               />
               <Legend wrapperStyle={{ fontSize: 11, color: 'var(--color-text-muted)' }} iconType="square" />
               <Bar dataKey="mentionRate" fill="var(--color-accent)" name={t('brand_visibility.mention_rate')} radius={[3, 3, 0, 0]} />

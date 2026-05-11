@@ -79,6 +79,12 @@ function EmptyState({ text }: { text: string }) {
   return <div className="text-center text-[12px] text-themed-muted py-12">{text}</div>
 }
 
+function formatEvidenceCount(value: unknown) {
+  if (value === null || value === undefined || value === '') return '--'
+  const next = Number(value)
+  return Number.isFinite(next) ? next : '--'
+}
+
 function TopicsView({
   projectId,
   filters,
@@ -148,25 +154,25 @@ function TopicsView({
         <Card className="p-4">
           <div className="text-xs text-themed-muted mb-1">Topics</div>
           <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {summary?.topic_count ?? 0}
+            {formatEvidenceCount(summary?.topic_count)}
           </div>
         </Card>
         <Card className="p-4">
           <div className="text-xs text-themed-muted mb-1">Prompts</div>
           <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {summary?.prompt_count ?? 0}
+            {formatEvidenceCount(summary?.prompt_count)}
           </div>
         </Card>
         <Card className="p-4">
           <div className="text-xs text-themed-muted mb-1">Queries</div>
           <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {summary?.query_count ?? 0}
+            {formatEvidenceCount(summary?.query_count)}
           </div>
         </Card>
         <Card className="p-4">
           <div className="text-xs text-themed-muted mb-1">Responses</div>
           <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {summary?.response_count ?? 0}
+            {formatEvidenceCount(summary?.response_count)}
           </div>
         </Card>
       </div>

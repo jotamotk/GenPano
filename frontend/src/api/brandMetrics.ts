@@ -17,7 +17,7 @@ import type {
 
 export interface MetricSeriesPoint {
   date: string
-  value: number
+  value: number | null
 }
 
 export interface MetricSeries extends MetricContractFields {

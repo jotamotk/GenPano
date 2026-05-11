@@ -4,8 +4,10 @@ import {
   adaptMetricsToSparklines,
   adaptCompetitorMetricsToBubble,
   adaptCompetitorMetricsToList,
+  adaptCompetitorMetricsToSov,
   adaptCompetitorTrendsToTrendData,
   adaptOverviewToPrimary,
+  adaptOverviewToSov,
   adaptOverviewToTrend,
   buildAnalyticsContractNotice,
 } from '../../src/adapters/dashboardAdapter'
@@ -48,7 +50,7 @@ describe('dashboard adapter', () => {
           unit: 'percent',
           value_scale: 'percent',
           denominator_label: 'eligible non-brand/category responses',
-          formula_status: 'formula_pending_upstream',
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -60,7 +62,7 @@ describe('dashboard adapter', () => {
           unit: 'percent',
           value_scale: 'percent',
           denominator_label: 'competitive-set brand-mentioned responses',
-          formula_status: 'formula_pending_upstream',
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -105,12 +107,12 @@ describe('dashboard adapter', () => {
     expect(primary?.ranking).toBe(3)
   })
 
-  it('normalizes sentiment defensively when final API metadata is absent', () => {
+  it('normalizes sentiment defensively when final API metadata is absent on ok payloads', () => {
     const overview = {
       ...emptyOverview,
       brand_id: 12,
       brand_name: 'Estee Lauder',
-      state: 'partial',
+      state: 'ok',
       kpi_cards: [
         {
           metric_key: 'sentiment',
@@ -125,6 +127,69 @@ describe('dashboard adapter', () => {
     } as unknown as BrandOverviewOut
 
     expect(adaptOverviewToPrimary(overview)?.sentiment).toBeCloseTo(0.72)
+  })
+
+  it('does not render non-ok formula KPI values as normal production metrics', () => {
+    const overview = {
+      ...emptyOverview,
+      brand_id: 12,
+      brand_name: 'Estee Lauder',
+      state: 'partial',
+      state_reason: 'brand_mentions.competitive_set_missing',
+      kpi_cards: [
+        {
+          metric_key: 'mention_rate',
+          label_zh: 'Mention',
+          label_en: 'Mention',
+          value: 100,
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'formula_pending_upstream',
+          delta_30d_pct: 9.9,
+          direction: 'up',
+        },
+        {
+          metric_key: 'rank',
+          label_zh: 'Rank',
+          label_en: 'Rank',
+          value: 1,
+          unit: 'rank',
+          value_scale: 'ordinal',
+          formula_status: 'rank_evidence_missing',
+          delta_30d_pct: null,
+          direction: null,
+        },
+      ],
+    } as unknown as BrandOverviewOut
+
+    const primary = adaptOverviewToPrimary(overview)
+
+    expect(primary?.mentionRate).toBeNull()
+    expect(primary?.ranking).toBeNull()
+  })
+
+  it('does not synthesize SoV slices or Others from a single overview KPI card', () => {
+    const overview = {
+      ...emptyOverview,
+      brand_id: 12,
+      brand_name: 'Estee Lauder',
+      state: 'ok',
+      kpi_cards: [
+        {
+          metric_key: 'sov',
+          label_zh: 'SoV',
+          label_en: 'Share of Voice',
+          value: 38.4,
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+          delta_30d_pct: null,
+          direction: null,
+        },
+      ],
+    } as unknown as BrandOverviewOut
+
+    expect(adaptOverviewToSov(overview)).toEqual([])
   })
 
   it('formats decimal ratio series once as percent and leaves percent series unchanged', () => {
@@ -238,8 +303,39 @@ describe('dashboard adapter', () => {
     } as BrandOverviewOut
 
     expect(adaptOverviewToTrend(overview)).toEqual([
-      { day: 1, panoScore: 80, mentionRate: 0, sentiment: 0.72 },
+      { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72 },
     ])
+  })
+
+  it('drops non-ok metric series instead of turning pending formulas into sparklines', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      engines: null,
+      state: 'ok',
+      series: [
+        {
+          metric: 'mention_rate',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          formula_status: 'formula_pending_upstream',
+          points: [{ date: '2026-05-11', value: 1 }],
+        },
+        {
+          metric: 'sov',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          formula_status: 'ok',
+          points: [{ date: '2026-05-11', value: null }],
+        },
+      ],
+    } as unknown as MetricsOut
+
+    expect(adaptMetricsToSparklines(metrics)).toMatchObject({
+      mention: [],
+      sov: [],
+    })
   })
 
   it('uses /metrics mention_rate for competitor trend rows and never rebuilds it from SoV', () => {
@@ -295,6 +391,31 @@ describe('dashboard adapter', () => {
     ])
     expect(adaptCompetitorTrendsToTrendData(trends, overview)).toEqual([
       { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72, Lancome: 73 },
+    ])
+  })
+
+  it('does not append frontend Others slices to backend competitor SoV rows', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      primary_brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'ok',
+      primary: {
+        brand_id: 12,
+        brand_key: 'estee_lauder',
+        brand_name: 'Estee Lauder',
+        avg_geo_score: 80,
+        avg_mention_rate: 0.162,
+        avg_sov: 0.384,
+        avg_sentiment: 0.64,
+        co_mention_count: 9,
+        delta_30d_pct: null,
+      },
+      competitors: [],
+    } as CompetitorMetricsOut
+
+    expect(adaptCompetitorMetricsToSov(metrics)).toEqual([
+      { name: 'Estee Lauder', value: 38.4 },
     ])
   })
 

@@ -3,9 +3,8 @@
  * BrandPanoramaPanel's existing chart sub-components consume.
  *
  * Strategy: keep the rich PRD viz components untouched; only inject
- * backend-derived data via optional override props. When backend hasn't
- * generated data yet, the panel falls back to its existing mock arrays
- * so the visual is never blank.
+ * backend-derived data via optional override props. In live mode, missing
+ * backend evidence stays empty/null instead of borrowing mock truth.
  */
 
 import type { BrandOverviewOut } from '../api/brandOverview'
@@ -16,11 +15,15 @@ import type {
 } from '../api/brandMetrics'
 import {
   asFiniteNumber,
+  asContractMetricNumber,
+  canUseContractMetricValue,
   contractItemLabel,
   formatRatioLikeForPercent,
-  normalizeRatioLike,
-  normalizeScore0To100,
-  normalizeSentimentRaw,
+  formatRatioLikeForPercentOrNull,
+  isOkAnalyticsState,
+  normalizeRatioLikeOrNull,
+  normalizeScore0To100OrNull,
+  normalizeSentimentRawOrNull,
   type AnalyticsContractMetadata,
   type ContractListItem,
   type MetricContractFields,
@@ -33,12 +36,12 @@ export interface PrimaryBrandAdapted {
   name: string
   nameZh?: string
   nameEn: string
-  panoScore: number
+  panoScore: number | null
   /** decimal 0..1 */
-  mentionRate: number
+  mentionRate: number | null
   /** -1..1 */
-  sentiment: number
-  ranking: number
+  sentiment: number | null
+  ranking: number | null
   industryId: string
   change?: string
 }
@@ -48,11 +51,13 @@ export interface CompetitorAdapted {
   name: string
   nameZh?: string
   nameEn: string
-  panoScore: number
+  panoScore: number | null
   /** decimal 0..1 */
-  mentionRate?: number
+  mentionRate?: number | null
+  /** percent 0..100 */
+  sov?: number | null
   /** -1..1 */
-  sentiment?: number
+  sentiment?: number | null
   industryId: string
 }
 
@@ -70,9 +75,9 @@ export interface BubbleEntry {
 
 export interface TrendPoint {
   day: number
-  panoScore: number
-  mentionRate: number
-  sentiment: number
+  panoScore: number | null
+  mentionRate: number | null
+  sentiment: number | null
 }
 
 export interface DiagnosticAdapted {
@@ -103,23 +108,25 @@ function findMetricDefinition(
 function normalizeCompetitorMentionRate(
   metrics: CompetitorMetricsOut,
   value: unknown,
-): number {
+): number | null {
+  if (!isOkAnalyticsState(metrics.state)) return null
   const definition = findMetricDefinition(
     metrics.metric_definitions,
     ['avg_mention_rate', 'mention_rate'],
   )
-  return normalizeRatioLike(value, definition?.value_scale, definition?.unit)
+  return normalizeRatioLikeOrNull(value, definition?.value_scale, definition?.unit)
 }
 
 function normalizeCompetitorSentiment(
   metrics: CompetitorMetricsOut,
   value: unknown,
-): number {
+): number | null {
+  if (!isOkAnalyticsState(metrics.state)) return null
   const definition = findMetricDefinition(
     metrics.metric_definitions,
     ['avg_sentiment', 'sentiment'],
   )
-  return normalizeSentimentRaw(value, definition?.value_scale, definition?.unit)
+  return normalizeSentimentRawOrNull(value, definition?.value_scale, definition?.unit)
 }
 
 function labelText(card: ContractKpiCard): string {
@@ -145,14 +152,17 @@ function findKpiCard(
   return null
 }
 
-function kpiNumber(card: ContractKpiCard | null): number | null {
-  return card ? asFiniteNumber(card.value) : null
+function kpiNumber(card: ContractKpiCard | null, state?: BrandOverviewOut['state']): number | null {
+  return card ? asContractMetricNumber(card.value, state, card) : null
 }
 
 export function adaptOverviewToPrimary(
   overview: BrandOverviewOut,
 ): PrimaryBrandAdapted | null {
   if (overview.brand_id == null && !overview.brand_name?.trim()) {
+    return null
+  }
+  if (!Array.isArray(overview.kpi_cards)) {
     return null
   }
   const panoCard = findKpiCard(
@@ -183,36 +193,31 @@ export function adaptOverviewToPrimary(
     name,
     nameZh: name,
     nameEn: name,
-    panoScore: normalizeScore0To100(kpiNumber(panoCard), panoCard?.value_scale),
-    mentionRate: normalizeRatioLike(
-      kpiNumber(mentionCard),
+    panoScore: normalizeScore0To100OrNull(
+      kpiNumber(panoCard, overview.state),
+      panoCard?.value_scale,
+    ),
+    mentionRate: normalizeRatioLikeOrNull(
+      kpiNumber(mentionCard, overview.state),
       mentionCard?.value_scale,
       mentionCard?.unit,
     ),
-    sentiment: normalizeSentimentRaw(
-      kpiNumber(sentimentCard),
+    sentiment: normalizeSentimentRawOrNull(
+      kpiNumber(sentimentCard, overview.state),
       sentimentCard?.value_scale,
       sentimentCard?.unit,
     ),
-    ranking: Math.max(1, Math.round(kpiNumber(rankCard) ?? 1)),
+    ranking: kpiNumber(rankCard, overview.state) == null
+      ? null
+      : Math.max(1, Math.round(kpiNumber(rankCard, overview.state) as number)),
     industryId: String(overview.industry_id ?? ''),
     change: undefined,
   }
 }
 
 export function adaptOverviewToSov(overview: BrandOverviewOut): SovEntry[] {
-  const sovCard = findKpiCard(
-    overview.kpi_cards,
-    ['sov', 'avg_sov'],
-    ['sov', 'share of voice', '声量'],
-  )
-  if (!sovCard) return []
-  const value = formatRatioLikeForPercent(sovCard.value, sovCard.value_scale, sovCard.unit)
-  if (value <= 0) return []
-  const name = overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`
-  const rows: SovEntry[] = [{ name, value }]
-  if (value < 99) rows.push({ name: 'Others', value: Math.max(0, +(100 - value).toFixed(1)) })
-  return rows
+  void overview
+  return []
 }
 
 export function adaptCompetitorMetricsToList(
@@ -227,10 +232,15 @@ export function adaptCompetitorMetricsToList(
       name,
       nameZh: name,
       nameEn: name,
-      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      panoScore: isOkAnalyticsState(metrics.state) && row.avg_geo_score != null
+        ? Math.round(row.avg_geo_score)
+        : null,
       mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
+      sov: isOkAnalyticsState(metrics.state) && row.avg_sov != null
+        ? Math.round(((row.avg_sov <= 1 ? row.avg_sov * 100 : row.avg_sov) + Number.EPSILON) * 10) / 10
+        : null,
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
-      ranking: 1,
+      ranking: null,
       industryId: '',
     }
   }
@@ -242,8 +252,13 @@ export function adaptCompetitorMetricsToList(
       name,
       nameZh: name,
       nameEn: name,
-      panoScore: row.avg_geo_score != null ? Math.round(row.avg_geo_score) : 0,
+      panoScore: isOkAnalyticsState(metrics.state) && row.avg_geo_score != null
+        ? Math.round(row.avg_geo_score)
+        : null,
       mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
+      sov: isOkAnalyticsState(metrics.state) && row.avg_sov != null
+        ? Math.round(((row.avg_sov <= 1 ? row.avg_sov * 100 : row.avg_sov) + Number.EPSILON) * 10) / 10
+        : null,
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
       industryId: '',
     }
@@ -259,6 +274,7 @@ export function adaptCompetitorMetricsToList(
 export function adaptCompetitorMetricsToSov(
   metrics: CompetitorMetricsOut,
 ): SovEntry[] {
+  if (!isOkAnalyticsState(metrics.state)) return []
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
@@ -268,30 +284,27 @@ export function adaptCompetitorMetricsToSov(
   const top = filtered
     .map((r) => ({
       name: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
-      value: Math.round(((r.avg_sov ?? 0) * 100 + Number.EPSILON) * 10) / 10,
+      value: Math.round(((r.avg_sov! <= 1 ? r.avg_sov! * 100 : r.avg_sov!) + Number.EPSILON) * 10) / 10,
     }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 6)
-  const totalShown = top.reduce((acc, x) => acc + x.value, 0)
-  if (totalShown < 99) {
-    top.push({ name: '其他', value: Math.max(0, +(100 - totalShown).toFixed(1)) })
-  }
   return top
 }
 
 export function adaptCompetitorMetricsToBubble(
   metrics: CompetitorMetricsOut,
 ): BubbleEntry[] {
+  if (!isOkAnalyticsState(metrics.state)) return []
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
   return all
-    .filter((r) => r.avg_sov != null || r.avg_sentiment != null)
+    .filter((r) => r.avg_sov != null && r.avg_sentiment != null)
     .map((r) => ({
       brand: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
-      sov: r.avg_sov != null ? +(r.avg_sov * 100).toFixed(1) : 0,
-      sentiment: normalizeCompetitorSentiment(metrics, r.avg_sentiment),
+      sov: +(r.avg_sov as number * 100).toFixed(1),
+      sentiment: normalizeCompetitorSentiment(metrics, r.avg_sentiment) as number,
       mentions: r.co_mention_count ?? 0,
     }))
 }
@@ -300,10 +313,13 @@ export function adaptOverviewToTrend(
   overview: BrandOverviewOut,
 ): TrendPoint[] {
   // Merge geo / sov / sentiment series by date into one row per day
+  const geoSeries = Array.isArray(overview.geo_score_30d) ? overview.geo_score_30d : []
+  const sovSeries = Array.isArray(overview.sov_30d) ? overview.sov_30d : []
+  const sentimentSeries = Array.isArray(overview.sentiment_30d) ? overview.sentiment_30d : []
   const dates = new Set<string>()
-  for (const p of overview.geo_score_30d) dates.add(p.date)
-  for (const p of overview.sov_30d) dates.add(p.date)
-  for (const p of overview.sentiment_30d) dates.add(p.date)
+  for (const p of geoSeries) dates.add(p.date)
+  for (const p of sovSeries) dates.add(p.date)
+  for (const p of sentimentSeries) dates.add(p.date)
   const sorted = Array.from(dates).sort()
   const lookup = (
     arr: { date: string; value: number }[],
@@ -314,14 +330,13 @@ export function adaptOverviewToTrend(
   }
   return sorted.map((d, idx) => {
     const day = idx + 1
-    const geo = lookup(overview.geo_score_30d, d) ?? 0
-    const sov = lookup(overview.sov_30d, d) ?? 0
-    const sent = lookup(overview.sentiment_30d, d) ?? 0
+    const geo = lookup(geoSeries, d)
+    const sent = lookup(sentimentSeries, d)
     return {
       day,
-      panoScore: Math.round(geo),
+      panoScore: geo == null ? null : Math.round(geo),
       // Mention rate is supplied by /metrics. Do not reuse SoV as a proxy.
-      mentionRate: 0,
+      mentionRate: null,
       sentiment: sent,
     }
   })
@@ -525,7 +540,7 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
     citation: [],
     rank: [],
   }
-  if (!metrics?.series) return empty
+  if (!Array.isArray(metrics?.series)) return empty
 
   const find = (name: string) => metrics.series.find((s) => s.metric === name)
 
@@ -535,17 +550,27 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
   const citation = find('citation')
   const rank = find('rank')
   const percentPoints = (series: MetricsOut['series'][number] | undefined) =>
-    series ? series.points.map((p) => formatRatioLikeForPercent(p.value, series.value_scale, series.unit)) : []
+    series && Array.isArray(series.points) && canUseContractMetricValue(metrics.state, series)
+      ? series.points
+          .map((p) => formatRatioLikeForPercentOrNull(p.value, series.value_scale, series.unit))
+          .filter((value): value is number => value != null)
+      : []
   const rawPoints = (series: MetricsOut['series'][number] | undefined) =>
-    series ? series.points.map((p) => +(p.value ?? 0).toFixed(1)) : []
+    series && Array.isArray(series.points) && canUseContractMetricValue(metrics.state, series)
+      ? series.points
+          .map((p) => asFiniteNumber(p.value))
+          .filter((value): value is number => value != null)
+          .map((value) => +value.toFixed(1))
+      : []
 
   return {
     mention: percentPoints(mention),
     sov: percentPoints(sov),
-    sentiment: sentiment
-      ? sentiment.points.map((p) => +(
-          normalizeSentimentRaw(p.value, sentiment.value_scale, sentiment.unit) * 100
-        ).toFixed(1))
+    sentiment: sentiment && Array.isArray(sentiment.points) && canUseContractMetricValue(metrics.state, sentiment)
+      ? sentiment.points
+          .map((p) => normalizeSentimentRawOrNull(p.value, sentiment.value_scale, sentiment.unit))
+          .filter((value): value is number => value != null)
+          .map((value) => +(value * 100).toFixed(1))
       : [],
     citation: percentPoints(citation),
     rank: rawPoints(rank),
@@ -562,9 +587,9 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
 
 export interface TrendRowAdapted {
   day: number
-  panoScore: number
+  panoScore: number | null
   mentionRate: number | null
-  sentiment: number
+  sentiment: number | null
   // dynamic competitor brand scores keyed by brand_name
   [brand: string]: number | string | null
 }
@@ -574,8 +599,10 @@ function metricSeriesPercentValue(
   metric: MetricsOut['series'][number]['metric'],
   date: string,
 ): number | null {
+  if (!Array.isArray(metrics?.series)) return null
   const series = metrics?.series?.find((item) => item.metric === metric)
-  const point = series?.points.find((item) => item.date === date)
+  if (series && !canUseContractMetricValue(metrics?.state, series)) return null
+  const point = Array.isArray(series?.points) ? series?.points.find((item) => item.date === date) : null
   if (point?.value == null) return null
   return formatRatioLikeForPercent(point.value, series?.value_scale, series?.unit)
 }
@@ -585,6 +612,8 @@ export function adaptCompetitorTrendsToTrendData(
   overviewTrend: BrandOverviewOut | null,
   metricsTrend: MetricsOut | null = null,
 ): TrendRowAdapted[] {
+  if (!isOkAnalyticsState(trends.state)) return []
+  if (!Array.isArray(trends.series)) return []
   // Find primary series
   const primarySeries = trends.series.find((s) => s.is_primary)
   const competitorSeries = trends.series.filter((s) => !s.is_primary)
@@ -601,22 +630,22 @@ export function adaptCompetitorTrendsToTrendData(
   return dateList.map((date, idx) => {
     const row: TrendRowAdapted = {
       day: idx + 1,
-      panoScore: 0,
+      panoScore: null,
       mentionRate: metricSeriesPercentValue(metricsTrend, 'mention_rate', date),
-      sentiment: 0,
+      sentiment: null,
     }
     // Primary panoScore
     if (primarySeries) {
       const p = primarySeries.points.find((q) => q.date === date)
-      row.panoScore = p?.value != null ? Math.round(p.value) : 0
+      row.panoScore = p?.value != null ? Math.round(p.value) : null
     } else if (overviewTrend) {
       const p = overviewTrend.geo_score_30d.find((q) => q.date === date)
-      row.panoScore = p?.value != null ? Math.round(p.value) : 0
+      row.panoScore = p?.value != null ? Math.round(p.value) : null
     }
     // mentionRate comes from /metrics; overview SoV is a separate contract field.
     if (overviewTrend) {
       const sent = overviewTrend.sentiment_30d.find((q) => q.date === date)
-      row.sentiment = sent?.value ?? 0
+      row.sentiment = sent?.value ?? null
     }
     // Per-competitor scores keyed by brand name (or fallback id)
     for (const comp of competitorSeries) {
@@ -625,7 +654,7 @@ export function adaptCompetitorTrendsToTrendData(
           ? comp.brand_name
           : comp.brand_key ?? `Brand #${comp.brand_id ?? '?'}`
       const cp = comp.points.find((q) => q.date === date)
-      row[key] = cp?.value != null ? Math.round(cp.value) : 0
+      row[key] = cp?.value != null ? Math.round(cp.value) : null
     }
     return row
   })

@@ -26,6 +26,25 @@ const TIER_COLOR = {
   4: 'default',
 };
 
+function formatMaybeNumber(value, digits = 0) {
+  if (value === null || value === undefined || value === '') return '--';
+  const next = Number(value);
+  return Number.isFinite(next) ? next.toFixed(digits) : '--';
+}
+
+function formatMaybeSignedPercent(value) {
+  if (value === null || value === undefined || value === '') return '--';
+  const next = Number(value);
+  if (!Number.isFinite(next)) return '--';
+  return `${next >= 0 ? '+' : ''}${next}%`;
+}
+
+function formatMaybePercentValue(value) {
+  if (value === null || value === undefined || value === '') return '--';
+  const next = Number(value);
+  return Number.isFinite(next) ? `${next.toFixed(0)}%` : '--';
+}
+
 /* ─────── ① PR 候选表 ─────── */
 function PrCandidatesTable({ targets }) {
   const [excludeCovered, setExcludeCovered] = useState(true);
@@ -91,8 +110,8 @@ function PrCandidatesTable({ targets }) {
                   <span className="text-[11px] text-themed-muted">{r.siteType}</span>
                 </td>
                 <td className="py-2.5 px-4">
-                  <Badge variant={TIER_COLOR[r.authorityTier]} size="sm">
-                    T{r.authorityTier} {TIER_LABEL[r.authorityTier]}
+                  <Badge variant={TIER_COLOR[r.authorityTier] ?? 'default'} size="sm">
+                    T{r.authorityTier ?? '?'} {TIER_LABEL[r.authorityTier] ?? TIER_LABEL[0]}
                   </Badge>
                 </td>
                 <td className="py-2.5 px-4 text-right">
@@ -114,20 +133,21 @@ function PrCandidatesTable({ targets }) {
                     className="text-xs font-medium tabular-nums"
                     style={{
                       color:
-                        r.trending30dPct >= 25
+                        r.trending30dPct == null
+                          ? 'var(--color-text-muted)'
+                          : r.trending30dPct >= 25
                           ? 'var(--color-success)'
                           : r.trending30dPct >= 10
                           ? 'var(--color-accent)'
                           : 'var(--color-text-muted)',
                     }}
                   >
-                    {r.trending30dPct >= 0 ? '+' : ''}
-                    {r.trending30dPct}%
+                    {formatMaybeSignedPercent(r.trending30dPct)}
                   </span>
                 </td>
                 <td className="py-2.5 px-4 text-right">
                   <span className="text-sm font-semibold tabular-nums text-themed-primary">
-                    {r.prScore.toFixed(3)}
+                    {formatMaybeNumber(r.prScore, 3)}
                   </span>
                 </td>
                 <td className="py-2.5 px-4 text-xs text-themed-muted">
@@ -221,6 +241,7 @@ function KolScorecards({ kols }) {
   if (!kols?.length) return null;
   // Shannon entropy max ≈ log2(N); 多样性越高越像"独立声音", 越低越像"竞品独家"
   const divLevel = (d) => {
+    if (d == null) return { label: '暂无证据', color: 'var(--color-text-muted)', variant: 'default' };
     if (d >= 2.6) return { label: '高多样性', color: 'var(--color-success)', variant: 'accent' };
     if (d >= 2.0) return { label: '中多样性', color: 'var(--color-accent)', variant: 'accent' };
     return { label: '低多样性 · 可能竞品独家', color: 'var(--color-warning)', variant: 'orange' };
@@ -253,7 +274,7 @@ function KolScorecards({ kols }) {
                     {k.domain}
                   </div>
                   <div className="text-[11px] text-themed-muted tabular-nums">
-                    权威置信 {(k.authorityConfidence * 100).toFixed(0)}% · 周均 {k.avgCitationsPerWeek}
+                    权威置信 {formatMaybePercentValue(k.authorityConfidence == null ? null : k.authorityConfidence * 100)} · 周均 {formatMaybeNumber(k.avgCitationsPerWeek, 0)}
                   </div>
                 </div>
                 <Badge variant={lvl.variant} size="sm">
@@ -262,11 +283,13 @@ function KolScorecards({ kols }) {
               </div>
               <div className="mt-3 flex items-baseline gap-2">
                 <span className="text-2xl font-bold tabular-nums text-themed-primary">
-                  {k.diversity.toFixed(2)}
+                  {formatMaybeNumber(k.diversity, 2)}
                 </span>
-                <span className="text-[11px] text-themed-muted">
-                  / log₂({k.brandDiversity90d.length}) ≈ {Math.log2(Math.max(2, k.brandDiversity90d.length)).toFixed(2)}
-                </span>
+                {k.brandDiversity90d?.length > 0 && (
+                  <span className="text-[11px] text-themed-muted">
+                    / log₂({k.brandDiversity90d.length}) ≈ {Math.log2(Math.max(2, k.brandDiversity90d.length)).toFixed(2)}
+                  </span>
+                )}
               </div>
               <div className="mt-3 flex flex-wrap gap-1">
                 {k.brandDiversity90d.slice(0, 6).map((b) => (

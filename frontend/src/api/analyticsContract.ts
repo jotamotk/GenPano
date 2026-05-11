@@ -82,8 +82,41 @@ function round1(value: number): number {
 }
 
 export function asFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
   const next = Number(value)
   return Number.isFinite(next) ? next : null
+}
+
+export function isOkAnalyticsState(state: AnalyticsState | null | undefined): boolean {
+  const normalized = lower(state)
+  return normalized === 'ok'
+}
+
+export function isOkFormulaStatus(status: string | null | undefined): boolean {
+  const normalized = lower(status)
+  if (!normalized) return true
+  return normalized === 'ok' ||
+    normalized === 'valid' ||
+    normalized === 'ready' ||
+    normalized === 'complete' ||
+    normalized === 'computed' ||
+    normalized === 'formula_ok'
+}
+
+export function canUseContractMetricValue(
+  state: AnalyticsState | null | undefined,
+  fields: MetricContractFields | null | undefined,
+): boolean {
+  return isOkAnalyticsState(state) && isOkFormulaStatus(fields?.formula_status)
+}
+
+export function asContractMetricNumber(
+  value: unknown,
+  state: AnalyticsState | null | undefined,
+  fields: MetricContractFields | null | undefined,
+): number | null {
+  if (!canUseContractMetricValue(state, fields)) return null
+  return asFiniteNumber(value)
 }
 
 export function formatRatioLikeForPercent(
@@ -93,6 +126,20 @@ export function formatRatioLikeForPercent(
 ): number {
   const raw = asFiniteNumber(value)
   if (raw == null) return 0
+  const scale = lower(valueScale)
+  const normalizedUnit = lower(unit)
+  if (scale === 'percent' || normalizedUnit === 'percent') return round1(raw)
+  if (scale === 'decimal' || normalizedUnit === 'ratio') return round1(raw * 100)
+  return round1(Math.abs(raw) <= 1 ? raw * 100 : raw)
+}
+
+export function formatRatioLikeForPercentOrNull(
+  value: unknown,
+  valueScale?: string | null,
+  unit?: string | null,
+): number | null {
+  const raw = asFiniteNumber(value)
+  if (raw == null) return null
   const scale = lower(valueScale)
   const normalizedUnit = lower(unit)
   if (scale === 'percent' || normalizedUnit === 'percent') return round1(raw)
@@ -114,12 +161,37 @@ export function normalizeRatioLike(
   return Math.abs(raw) > 1 ? raw / 100 : raw
 }
 
+export function normalizeRatioLikeOrNull(
+  value: unknown,
+  valueScale?: string | null,
+  unit?: string | null,
+): number | null {
+  const raw = asFiniteNumber(value)
+  if (raw == null) return null
+  const scale = lower(valueScale)
+  const normalizedUnit = lower(unit)
+  if (scale === 'percent' || normalizedUnit === 'percent') return raw / 100
+  if (scale === 'decimal' || normalizedUnit === 'ratio') return raw
+  return Math.abs(raw) > 1 ? raw / 100 : raw
+}
+
 export function normalizeScore0To100(
   value: unknown,
   valueScale?: string | null,
 ): number {
   const raw = asFiniteNumber(value)
   if (raw == null) return 0
+  const scale = lower(valueScale)
+  if (scale === 'decimal') return Math.round(raw * 100)
+  return Math.round(Math.abs(raw) <= 1 ? raw * 100 : raw)
+}
+
+export function normalizeScore0To100OrNull(
+  value: unknown,
+  valueScale?: string | null,
+): number | null {
+  const raw = asFiniteNumber(value)
+  if (raw == null) return null
   const scale = lower(valueScale)
   if (scale === 'decimal') return Math.round(raw * 100)
   return Math.round(Math.abs(raw) <= 1 ? raw * 100 : raw)
@@ -132,6 +204,22 @@ export function normalizeSentimentRaw(
 ): number {
   const raw = asFiniteNumber(value)
   if (raw == null) return 0
+  const scale = lower(valueScale)
+  const normalizedUnit = lower(unit)
+  if (scale === 'percent' || normalizedUnit === 'percent' || scale === 'score_0_100') {
+    return raw / 100
+  }
+  if (!scale && !normalizedUnit && Math.abs(raw) > 1) return raw / 100
+  return raw
+}
+
+export function normalizeSentimentRawOrNull(
+  value: unknown,
+  valueScale?: string | null,
+  unit?: string | null,
+): number | null {
+  const raw = asFiniteNumber(value)
+  if (raw == null) return null
   const scale = lower(valueScale)
   const normalizedUnit = lower(unit)
   if (scale === 'percent' || normalizedUnit === 'percent' || scale === 'score_0_100') {

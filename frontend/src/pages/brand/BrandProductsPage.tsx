@@ -18,6 +18,38 @@ import {
   PRODUCT_RELATIONS,
 } from '../../data/mock';
 
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function formatPercentDecimal(value) {
+  const next = finiteNumberOrNull(value);
+  return next == null ? '--' : `${(next * 100).toFixed(1)}%`;
+}
+
+function formatPercentValue(value) {
+  const next = finiteNumberOrNull(value);
+  return next == null ? '--' : `${next.toFixed(1)}%`;
+}
+
+function formatSentiment(value) {
+  const next = finiteNumberOrNull(value);
+  return next == null ? '--' : `${Math.round(next * 100)}%`;
+}
+
+function formatTrend(value) {
+  const next = finiteNumberOrNull(value);
+  return next == null ? '--' : `${next >= 0 ? '+' : ''}${Math.round(next * 100)}%`;
+}
+
+function trendTone(value) {
+  const next = finiteNumberOrNull(value);
+  if (next == null) return 'text-themed-muted';
+  return next >= 0 ? 'text-themed-success' : 'text-themed-danger';
+}
+
 /* ─────────────────────────────────────────────────────────────
    BrandProductsPage — /brand/products (§4.6-IA-v2.C.2.2e)
    ─────────────────────────────────────────────────────────────
@@ -56,7 +88,7 @@ export default function BrandProductsPage() {
   }, [primary.id, primary.name, primary.nameEn]);
 
   const liveProducts = useMemo(() => {
-    if (!isLive || !productsQ.data) return null;
+    if (!isLive || !productsQ.data || productsQ.data.state !== 'ok') return null;
     return productsQ.data.items.map((p) => ({
       id: p.product_id,
       primaryName: p.product_name,
@@ -65,14 +97,14 @@ export default function BrandProductsPage() {
       brandId: p.brand_id ?? primary.id,
       category: p.category,
       categoryName: p.category,
-      mentionRate: p.mention_rate ?? 0,
-      mentionCount: p.mention_count,
-      sov: p.sov ?? 0,
-      sentiment: p.avg_sentiment ?? 0,
-      ranking: p.ranking,
-      trend: p.trend_30d ?? 0,
+      mentionRate: p.mention_rate ?? null,
+      mentionCount: p.mention_count ?? null,
+      sov: p.sov ?? null,
+      sentiment: p.avg_sentiment ?? null,
+      ranking: p.ranking ?? null,
+      trend: p.trend_30d ?? null,
       sparkData: p.sparkline ?? [],
-      panoScore: p.avg_geo_score,
+      panoScore: p.avg_geo_score ?? null,
     }));
   }, [isLive, productsQ.data, primary]);
   const products = isLive ? (liveProducts ?? []) : mockProducts;
@@ -82,15 +114,23 @@ export default function BrandProductsPage() {
   const bcgData = useMemo(() => {
     if (!products.length) return [];
     const primaryProductId = products[0]?.id;
-    return products.map((p: any) => ({
+    const rows = products.map((p: any) => ({
       name: p.primaryName,
-      x: p.mentionRate || 0,
-      y: p.trend || 0,
-      z: p.mentionCount || 100,
+      x: finiteNumberOrNull(p.mentionRate),
+      y: finiteNumberOrNull(p.trend),
+      z: finiteNumberOrNull(p.mentionCount),
       isPrimary: p.id === primaryProductId,
       productId: p.id,
     }));
-  }, [products]);
+    return isLive
+      ? rows.filter((row) => row.x != null && row.y != null && row.z != null)
+      : rows.map((row) => ({
+          ...row,
+          x: row.x ?? 0,
+          y: row.y ?? 0,
+          z: row.z ?? 100,
+        }));
+  }, [products, isLive]);
 
   // ─── ⑤ product relations ────────────────────────────────────
   const liveRelations = adaptProductRelations(relationsQ.data);
@@ -204,8 +244,12 @@ export default function BrandProductsPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {products.slice(0, 9).map((p) => {
-              const delta = (p.sov || 0) - ((products[0]?.sov || 0) * 0.9);
-              const isDelta = Math.abs(delta) > 0.5;
+              const sovValue = finiteNumberOrNull(p.sov);
+              const leadingSov = finiteNumberOrNull(products[0]?.sov);
+              const delta = !isLive && sovValue != null && leadingSov != null
+                ? sovValue - (leadingSov * 0.9)
+                : null;
+              const isDelta = delta != null && Math.abs(delta) > 0.5;
               return (
                 <Card
                   key={p.id}
@@ -222,12 +266,12 @@ export default function BrandProductsPage() {
                       </p>
                     </div>
                     <Badge variant={isDelta && delta > 0 ? 'green' : 'gray'} size="sm">
-                      {isDelta ? (delta > 0 ? '+' : '') + delta.toFixed(1) : '—'}
+                      {isDelta ? (delta > 0 ? '+' : '') + delta.toFixed(1) : '--'}
                     </Badge>
                   </div>
                   <div className="mb-1.5">
                     <p className="text-lg font-brand font-bold text-themed-primary tabular-nums leading-none">
-                      {(p.sov || 0).toFixed(1)}%
+                      {formatPercentValue(p.sov)}
                     </p>
                   </div>
                   {p.sparkData && p.sparkData.length > 0 && (
@@ -239,10 +283,10 @@ export default function BrandProductsPage() {
                     <span>
                       <MetricLabel helpText={t('dashboard.kpi.sentiment_help')}>
                         {t('brand_products.sentiment_label', '情感')}
-                      </MetricLabel>: {Math.round((p.sentiment || 0) * 100)}%
+                      </MetricLabel>: {formatSentiment(p.sentiment)}
                     </span>
-                    <span className={p.trend >= 0 ? 'text-themed-success' : 'text-themed-danger'}>
-                      {p.trend >= 0 ? '▲' : '▼'} {Math.abs(Math.round(p.trend * 100))}%
+                    <span className={trendTone(p.trend)}>
+                      {formatTrend(p.trend)}
                     </span>
                   </div>
                 </Card>
@@ -310,24 +354,24 @@ export default function BrandProductsPage() {
                       {p.primaryName}
                     </td>
                     <td className="py-2 px-3 text-themed-muted text-sm">
-                      {p.categoryName || p.category || '—'}
+                      {p.categoryName || p.category || '--'}
                     </td>
                     <td className="py-2 px-3 text-right text-sm tabular-nums">
-                      {((p.mentionRate || 0) * 100).toFixed(1)}%
+                      {formatPercentDecimal(p.mentionRate)}
                     </td>
                     <td className="py-2 px-3 text-right text-sm tabular-nums">
-                      {(p.sov || 0).toFixed(1)}%
+                      {formatPercentValue(p.sov)}
                     </td>
                     <td className="py-2 px-3 text-right text-sm tabular-nums">
-                      {Math.round((p.sentiment || 0) * 100)}%
+                      {formatSentiment(p.sentiment)}
                     </td>
                     <td className="py-2 px-3 text-right text-sm">
-                      <span className={p.trend >= 0 ? 'text-themed-success' : 'text-themed-danger'}>
-                        {p.trend >= 0 ? '▲' : '▼'} {Math.abs(Math.round(p.trend * 100))}%
+                      <span className={trendTone(p.trend)}>
+                        {formatTrend(p.trend)}
                       </span>
                     </td>
                     <td className="py-2 px-3 text-right text-themed-muted text-sm">
-                      #{p.ranking || '—'}
+                      {p.ranking == null ? '--' : `#${p.ranking}`}
                     </td>
                   </tr>
                 ))}
