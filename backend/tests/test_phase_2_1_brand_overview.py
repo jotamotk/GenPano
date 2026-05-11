@@ -126,7 +126,8 @@ async def test_overview_with_data(client, user, project_with_data):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["brand_id"] == 42
     assert body["industry_id"] == 1
     # 30d window has 30 data points
@@ -135,9 +136,8 @@ async def test_overview_with_data(client, user, project_with_data):
     # KPI cards have non-zero values
     geo_card = next(c for c in body["kpi_cards"] if c["label_en"] == "GeoScore")
     assert geo_card["value"] > 0
-    # Top prompts populated
-    assert len(body["top_prompts"]) >= 1
-    assert body["top_prompts"][0]["mention_count"] >= 1
+    # Prompt linkage is missing in this fixture, so the API does not synthesize prompt rows.
+    assert body["top_prompts"] == []
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_overview_brand_id_override_swaps_brand(client, user, project_with
     # echoes the override.
     assert body["brand_id"] == 99
     assert body["state"] == "empty"
-    assert all(c["value"] == 0 for c in body["kpi_cards"])
+    assert all(c["value"] is None for c in body["kpi_cards"])
 
 
 @pytest.mark.asyncio
@@ -202,7 +202,9 @@ async def test_overview_brand_id_override_falsy_keeps_default(client, user, proj
 
 
 @pytest.mark.asyncio
-async def test_overview_uses_brand_mentions_when_daily_rollups_missing(client, user, db_session):
+async def test_overview_marks_brand_mentions_partial_when_daily_rollups_missing(
+    client, user, db_session
+):
     p = Project(user_id=user.id, name="Mention Only", primary_brand_id=12, industry_id=1)
     db_session.add(p)
     await db_session.commit()
@@ -237,14 +239,16 @@ async def test_overview_uses_brand_mentions_when_daily_rollups_missing(client, u
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "missing_required_inputs"
+    assert "eligible_response_denominator" in body["missing_inputs"]
     geo_card = next(c for c in body["kpi_cards"] if c["label_en"] == "GeoScore")
     mention_card = next(c for c in body["kpi_cards"] if c["label_en"] == "Mention Rate")
-    assert geo_card["value"] > 0
-    assert mention_card["value"] > 0
-    assert body["geo_score_30d"]
-    assert body["sov_30d"]
-    assert body["sentiment_30d"]
+    assert geo_card["value"] is None
+    assert mention_card["value"] is None
+    assert body["geo_score_30d"] == []
+    assert body["sov_30d"] == []
+    assert body["evidence_counts"]["brand_mention_count"] == 4
 
 
 class _FakeNestedTransaction:
@@ -296,7 +300,7 @@ class _FakeTopPromptsSession:
 
 
 @pytest.mark.asyncio
-async def test_top_prompts_raw_join_failure_keeps_fallback_transaction_usable():
+async def test_top_prompts_raw_join_failure_returns_empty_without_aggregate_substitution():
     session = _FakeTopPromptsSession()
     today = datetime.now().date()
 
@@ -307,8 +311,6 @@ async def test_top_prompts_raw_join_failure_keeps_fallback_transaction_usable():
         today,
     )
 
-    assert len(rows) == 1
-    assert rows[0].prompt_id is None
-    assert rows[0].mention_count == 5
-    assert session.savepoints == 2
+    assert rows == []
+    assert session.savepoints == 1
     assert session.savepoint_rollbacks == 1

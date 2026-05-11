@@ -139,10 +139,20 @@ async def test_overview_contract_exposes_units_evidence_and_percent_scale(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
-    assert body["state_reason"] == "data_available"
-    assert body["formula_diagnostics"]["status"] == "formula_pending_upstream"
-    assert "upstream_formula_provenance" in body["missing_sources"]
+    assert body["state"] == "partial"
+    assert body["state_reason"] in {
+        "formula_pending_upstream",
+        "missing_formula_inputs",
+    }
+    assert body["formula_status"] in {
+        "formula_pending_upstream",
+        "missing_required_inputs",
+    }
+    assert body["formula_diagnostics"]["status"] in {
+        "formula_pending_upstream",
+        "missing_required_inputs",
+    }
+    assert "brand_mentions.competitive_set" in body["missing_sources"]
     assert body["project_scope"] == {
         "exists": True,
         "project_id": p.id,
@@ -266,8 +276,12 @@ async def test_metrics_contract_uses_decimal_values_and_distinct_denominators(
     assert "eligible" in by_metric["mention_rate"]["denominator_label"]
     assert "competitive" in by_metric["sov"]["denominator_label"]
     assert by_metric["mention_rate"]["denominator_label"] != by_metric["sov"]["denominator_label"]
-    assert body["state_reason"] == "data_available"
-    assert body["formula_diagnostics"]["status"] == "formula_pending_upstream"
+    assert body["state"] == "partial"
+    assert body["state_reason"] == "formula_pending_upstream"
+    assert body["formula_diagnostics"]["status"] in {
+        "formula_pending_upstream",
+        "missing_required_inputs",
+    }
 
 
 @pytest.mark.asyncio
@@ -380,7 +394,8 @@ async def test_competitor_chart_endpoints_expose_contract_metadata(
 
     assert metrics.status_code == 200
     metrics_body = metrics.json()
-    assert metrics_body["state_reason"] == "data_available"
+    assert metrics_body["state"] == "partial"
+    assert metrics_body["state_reason"] == "formula_pending_upstream"
     assert metrics_body["metric_definitions"]["avg_sov"]["unit"] == "ratio"
     assert metrics_body["metric_definitions"]["avg_sov"]["value_scale"] == "decimal"
     assert (

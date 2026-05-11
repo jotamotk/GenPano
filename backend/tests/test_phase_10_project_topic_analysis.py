@@ -691,7 +691,8 @@ async def test_project_metrics_use_filtered_admin_fact_set(client, db_session, u
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     by_metric = {series["metric"]: series["points"] for series in body["series"]}
     assert len(by_metric["mention_rate"]) == 1
     assert by_metric["mention_rate"][0]["value"] == pytest.approx(1 / 2, rel=0.01)
@@ -798,10 +799,14 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
     assert metrics_resp.status_code == 200, metrics_resp.text
     metrics_body = metrics_resp.json()
     assert metrics_body["brand_id"] == 12
-    assert metrics_body["state"] == "ok"
+    assert metrics_body["state"] == "partial"
+    assert metrics_body["formula_status"] in {
+        "missing_required_inputs",
+        "formula_pending_upstream",
+    }
     by_metric = {series["metric"]: series["points"] for series in metrics_body["series"]}
-    assert by_metric["mention_rate"][0]["value"] == pytest.approx(1.0)
-    assert by_metric["sov"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["mention_rate"][0]["value"] == pytest.approx(0.0)
+    assert by_metric["sov"] == []
     assert by_metric["rank"][0]["value"] == pytest.approx(1.0)
     assert by_metric["sentiment"][0]["value"] == pytest.approx(0.88)
 
@@ -813,7 +818,11 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
     assert overview_resp.status_code == 200, overview_resp.text
     overview_body = overview_resp.json()
     assert overview_body["brand_name"] == "雅诗兰黛"
-    assert overview_body["state"] == "ok"
+    assert overview_body["state"] == "partial"
+    assert overview_body["formula_status"] in {
+        "missing_required_inputs",
+        "formula_pending_upstream",
+    }
     assert overview_body["geo_score_30d"]
     assert any(card["value"] > 0 for card in overview_body["kpi_cards"])
 
@@ -920,10 +929,14 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
     assert metrics_resp.status_code == 200, metrics_resp.text
     metrics_body = metrics_resp.json()
     assert metrics_body["brand_id"] == 12
-    assert metrics_body["state"] == "ok"
+    assert metrics_body["state"] == "partial"
+    assert metrics_body["formula_status"] in {
+        "missing_required_inputs",
+        "formula_pending_upstream",
+    }
     by_metric = {series["metric"]: series["points"] for series in metrics_body["series"]}
-    assert by_metric["mention_rate"][0]["value"] == pytest.approx(1.0)
-    assert by_metric["sov"][0]["value"] == pytest.approx(1.0)
+    assert by_metric["mention_rate"][0]["value"] == pytest.approx(0.0)
+    assert by_metric["sov"] == []
 
     overview_resp = await client.get(
         f"/api/v1/projects/{project.id}/overview",
@@ -932,14 +945,15 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
     )
     assert overview_resp.status_code == 200, overview_resp.text
     overview_body = overview_resp.json()
-    assert overview_body["state"] == "ok"
+    assert overview_body["state"] == "partial"
+    assert overview_body["formula_status"] in {
+        "missing_required_inputs",
+        "formula_pending_upstream",
+    }
     assert overview_body["brand_name"] == "Estee Lauder"
-    assert overview_body["geo_score_30d"]
-    assert any(
-        card["label_en"] == "Mention Rate" and card["value"] > 0
-        for card in overview_body["kpi_cards"]
-    )
-    assert any(row["mention_count"] > 0 for row in overview_body["top_prompts"])
+    assert overview_body["geo_score_30d"] == []
+    assert not any((card["value"] or 0) > 0 for card in overview_body["kpi_cards"])
+    assert not any(row["mention_count"] > 0 for row in overview_body["top_prompts"])
 
     competitors_resp = await client.get(
         f"/api/v1/projects/{project.id}/competitors/metrics",
@@ -949,9 +963,9 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
     assert competitors_resp.status_code == 200, competitors_resp.text
     competitors_body = competitors_resp.json()
     assert competitors_body["primary"]["brand_id"] == 12
-    assert competitors_body["primary"]["avg_mention_rate"] == pytest.approx(1.0)
-    assert competitors_body["primary"]["avg_sov"] == pytest.approx(1.0)
-    assert competitors_body["primary"]["avg_geo_score"] > 0
+    assert competitors_body["primary"]["avg_mention_rate"] == pytest.approx(0.0)
+    assert competitors_body["primary"]["avg_sov"] is None
+    assert competitors_body["primary"]["avg_geo_score"] is None
 
     trends_resp = await client.get(
         f"/api/v1/projects/{project.id}/competitors/trends",
@@ -962,8 +976,7 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
     trends_body = trends_resp.json()
     primary_series = next(series for series in trends_body["series"] if series["is_primary"])
     assert primary_series["brand_id"] == 12
-    assert primary_series["points"]
-    assert primary_series["points"][0]["value"] > 0
+    assert primary_series["points"] == []
 
 
 @pytest.mark.asyncio
@@ -1103,10 +1116,11 @@ async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, u
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["primary"] is None
     assert [row["brand_name"] for row in body["competitors"]] == ["Null Rival"]
-    assert body["competitors"][0]["avg_sov"] == 1
+    assert body["competitors"][0]["avg_sov"] is None
 
     empty = await client.get(
         f"/api/v1/projects/{project.id}/competitors/metrics"
@@ -1115,8 +1129,9 @@ async def test_competitor_metrics_apply_admin_fact_filters(client, db_session, u
         headers=_bearer(user),
     )
     assert empty.status_code == 200, empty.text
-    assert empty.json()["state"] == "empty"
-    assert empty.json()["competitors"] == []
+    empty_body = empty.json()
+    assert empty_body["state"] == "partial"
+    assert empty_body["competitors"] == []
 
 
 @pytest.mark.asyncio
@@ -1333,6 +1348,7 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     )
     assert products.status_code == 200, products.text
     products_body = products.json()
-    assert products_body["state"] == "empty"
-    assert products_body["state_reason"] == "product_aggregates_pending"
+    assert products_body["state"] == "partial"
+    assert products_body["state_reason"] == "missing_formula_inputs"
+    assert "product_score_daily" in products_body["missing_inputs"]
     assert products_body["evidence_count"] >= 1

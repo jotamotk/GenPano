@@ -27,12 +27,12 @@ from genpano_models import (
     BrandMention,
     GeoScoreDaily,
     Project,
-    ResponseAnalysis,
 )
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
+    FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_PENDING_STATUS,
     MetricValue,
     ValueRange,
@@ -44,14 +44,7 @@ from app.api.v1.projects._analytics_contract import (
 )
 from app.api.v1.projects._legacy_lookups import resolve_brand_name
 from app.api.v1.projects._mention_rollups import (
-    MentionRollup,
-    brand_mention_daily_rollups,
     brand_mention_match_condition,
-    brand_mention_window_rollup,
-    geo_score,
-    mention_rate,
-    metric_value,
-    share_of_voice,
 )
 from app.api.v1.projects._overview_dto import (
     BrandOverviewOut,
@@ -81,10 +74,6 @@ AdminOverviewFacts = tuple[
     list[TrendPoint],
     list[TopPromptRow],
 ]
-
-
-def _row_has_values(row: object | None, names: tuple[str, ...]) -> bool:
-    return row is not None and any(getattr(row, name, None) is not None for name in names)
 
 
 def _optional_float(value: Any) -> float | None:
@@ -140,10 +129,15 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
             display_percent=metric_key in {"mention_rate", "sov"},
         )
         value = card.value
-        if metric_key in {"mention_rate", "sov"}:
-            value = percent_display(float(value or 0))
-        elif metric_key in {"geo_score", "avg_sentiment"}:
-            value = score_0_100(float(value or 0)) or 0
+        if value is not None and metric_key in {"mention_rate", "sov"}:
+            value = percent_display(float(value))
+        elif value is not None and metric_key in {"geo_score", "avg_sentiment"}:
+            value = score_0_100(float(value))
+        formula_status = card.formula_status
+        if formula_status is None:
+            formula_status = (
+                FORMULA_PENDING_STATUS if value is not None else FORMULA_MISSING_INPUTS_STATUS
+            )
         decorated.append(
             card.model_copy(
                 update={
@@ -155,7 +149,7 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
                     "denominator_label": spec.denominator_label,
                     "numerator_label": spec.numerator_label,
                     "source": spec.source,
-                    "formula_status": spec.formula_status,
+                    "formula_status": formula_status,
                 }
             )
         )
@@ -283,17 +277,6 @@ async def _overview_from_admin_facts(
             if mentions > 0:
                 prompt_buckets[prompt_key]["sentiments"].append(sentiment)
         geo = _fact_geo_display(row.get("geo_score"))
-        if geo is None and mentions > 0:
-            geo = geo_score(
-                MentionRollup(
-                    mention_count=mentions,
-                    response_count=1,
-                    total_response_count=1,
-                    total_mention_count=total or mentions,
-                    avg_position_rank=rank,
-                    avg_sentiment_score=sentiment,
-                )
-            )
         if geo is not None:
             bucket["geo_scores"].append(geo)
 
@@ -334,32 +317,30 @@ async def _overview_from_admin_facts(
         total_target_mentions += target_mentions
         total_all_mentions += all_mentions
         total_target_responses += len(bucket["target_response_ids"])
-        total_denominator += len(bucket["denominator_ids"]) or len(bucket["response_ids"])
+        total_denominator += len(bucket["denominator_ids"])
 
-    if total_denominator <= 0:
-        return None
-    avg_geo = _avg(all_geo_scores) or 0
-    mention = total_target_responses / total_denominator
-    sov = total_target_mentions / total_all_mentions if total_all_mentions else 0
-    avg_sentiment = _avg(all_sentiments) or 0
+    avg_geo = _avg(all_geo_scores)
+    mention = total_target_responses / total_denominator if total_denominator > 0 else None
+    sov = total_target_mentions / total_all_mentions if total_all_mentions else None
+    avg_sentiment = _avg(all_sentiments)
     kpi_cards = [
         KpiCard(
             label_zh="GEO 评分",
             label_en="GeoScore",
-            value=round(avg_geo, 1),
+            value=round(avg_geo, 1) if avg_geo is not None else None,
             delta_30d_pct=None,
         ),
         KpiCard(
             label_zh="提及率",
             label_en="Mention Rate",
-            value=round(mention * 100, 1),
+            value=round(mention * 100, 1) if mention is not None else None,
             unit="%",
             delta_30d_pct=None,
         ),
         KpiCard(
             label_zh="声量份额",
             label_en="Share of Voice",
-            value=round(sov * 100, 1),
+            value=round(sov * 100, 1) if sov is not None else None,
             unit="%",
             delta_30d_pct=None,
         ),
@@ -367,7 +348,7 @@ async def _overview_from_admin_facts(
             label_zh="情感分",
             label_en="Sentiment",
             metric_key="sentiment",
-            value=round(avg_sentiment, 2),
+            value=round(avg_sentiment, 2) if avg_sentiment is not None else None,
             delta_30d_pct=None,
         ),
     ]
@@ -441,6 +422,7 @@ async def _kpi_cards(
         func.avg(GeoScoreDaily.mention_rate).label("avg_mention"),
         func.avg(GeoScoreDaily.avg_sov).label("avg_sov"),
         func.avg(GeoScoreDaily.avg_sentiment).label("avg_sentiment"),
+        func.coalesce(func.sum(GeoScoreDaily.total_queries), 0).label("total_queries"),
     ).where(
         and_(
             GeoScoreDaily.brand_id == brand_id,
@@ -467,62 +449,14 @@ async def _kpi_cards(
     )
     prior = (await session.execute(stmt_prior)).one_or_none()
 
-    if not _row_has_values(cur, ("avg_geo", "avg_mention", "avg_sov", "avg_sentiment")):
-        cur_rollup = await brand_mention_window_rollup(session, brand_id, from_date, to_date)
-        prior_rollup = await brand_mention_window_rollup(session, brand_id, prior_from, prior_to)
-        if cur_rollup.has_data:
-            rollup_geo = geo_score(cur_rollup)
-            rollup_mention = mention_rate(cur_rollup)
-            rollup_sov = share_of_voice(cur_rollup)
-            rollup_sentiment = cur_rollup.avg_sentiment_score
-            prior_geo = geo_score(prior_rollup) if prior_rollup.has_data else None
-            prior_mention = mention_rate(prior_rollup) if prior_rollup.has_data else None
-            prior_sov = share_of_voice(prior_rollup) if prior_rollup.has_data else None
-            prior_sentiment = prior_rollup.avg_sentiment_score if prior_rollup.has_data else None
-
-            geo_delta = _pct_delta(rollup_geo, prior_geo)
-            mention_delta = _pct_delta(rollup_mention, prior_mention)
-            sov_delta = _pct_delta(rollup_sov, prior_sov)
-            sentiment_delta = _pct_delta(rollup_sentiment, prior_sentiment)
-
-            return [
-                KpiCard(
-                    label_zh="GEO 评分",
-                    label_en="GeoScore",
-                    value=round(rollup_geo or 0, 1),
-                    delta_30d_pct=geo_delta,
-                    direction=_direction(geo_delta),
-                ),
-                KpiCard(
-                    label_zh="提及率",
-                    label_en="Mention Rate",
-                    value=round((rollup_mention or 0) * 100, 1),
-                    unit="%",
-                    delta_30d_pct=mention_delta,
-                    direction=_direction(mention_delta),
-                ),
-                KpiCard(
-                    label_zh="声量份额",
-                    label_en="Share of Voice",
-                    value=round((rollup_sov or 0) * 100, 1),
-                    unit="%",
-                    delta_30d_pct=sov_delta,
-                    direction=_direction(sov_delta),
-                ),
-                KpiCard(
-                    label_zh="情感分",
-                    label_en="Sentiment",
-                    metric_key="sentiment",
-                    value=round(rollup_sentiment or 0, 2),
-                    delta_30d_pct=sentiment_delta,
-                    direction=_direction(sentiment_delta),
-                ),
-            ]
-
     geo = _optional_float(cur.avg_geo if cur else None)
     mention = _optional_float(cur.avg_mention if cur else None)
     sov = _optional_float(cur.avg_sov if cur else None)
     sentiment = _optional_float(cur.avg_sentiment if cur else None)
+    total_queries = int(getattr(cur, "total_queries", 0) or 0) if cur else 0
+    if total_queries <= 0:
+        mention = None
+        sov = None
 
     geo_delta = _pct_delta(geo, _optional_float(prior.avg_geo if prior else None))
     mention_delta = _pct_delta(mention, _optional_float(prior.avg_mention if prior else None))
@@ -533,14 +467,14 @@ async def _kpi_cards(
         KpiCard(
             label_zh="GEO 评分",
             label_en="GeoScore",
-            value=round(geo or 0, 1),
+            value=round(geo, 1) if geo is not None else None,
             delta_30d_pct=geo_delta,
             direction=_direction(geo_delta),
         ),
         KpiCard(
             label_zh="提及率",
             label_en="Mention Rate",
-            value=round((mention or 0) * 100, 1),
+            value=round(mention * 100, 1) if mention is not None else None,
             unit="%",
             delta_30d_pct=mention_delta,
             direction=_direction(mention_delta),
@@ -548,7 +482,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="声量份额",
             label_en="Share of Voice",
-            value=round((sov or 0) * 100, 1),
+            value=round(sov * 100, 1) if sov is not None else None,
             unit="%",
             delta_30d_pct=sov_delta,
             direction=_direction(sov_delta),
@@ -557,7 +491,7 @@ async def _kpi_cards(
             label_zh="情感分",
             label_en="Sentiment",
             metric_key="avg_sentiment",
-            value=round(sentiment or 0, 2),
+            value=round(sentiment, 2) if sentiment is not None else None,
             delta_30d_pct=sentiment_delta,
             direction=_direction(sentiment_delta),
         ),
@@ -588,25 +522,11 @@ async def _trend(
     rows = (await session.execute(stmt)).all()
     if rows:
         return [
-            TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1] or 0, 4)) for r in rows
+            TrendPoint(date=cast(datetime, r[0]).date(), value=round(r[1], 4))
+            for r in rows
+            if r[1] is not None
         ]
-
-    fallback_metric = {
-        "avg_geo_score": "geo_score",
-        "avg_sov": "sov",
-        "mention_rate": "mention_rate",
-        "avg_sentiment": "sentiment",
-        "avg_position_rank": "rank",
-        "citation_rate": "citation",
-    }.get(column)
-    if fallback_metric is None:
-        return []
-    rollups = await brand_mention_daily_rollups(session, brand_id, from_date, to_date)
-    return [
-        TrendPoint(date=date.fromisoformat(day), value=metric_value(rollup, fallback_metric))
-        for day, rollup in sorted(rollups.items())
-        if rollup.has_data
-    ]
+    return []
 
 
 async def _sentiment_trend(
@@ -615,27 +535,17 @@ async def _sentiment_trend(
     from_date: date,
     to_date: date,
 ) -> list[TrendPoint]:
-    """Sentiment trend pulls from `response_analyses.sentiment_score`.
-
-    Uses date_trunc('day', analyzed_at) to bucket; works for both
-    Postgres and SQLite (via func.date()).
-    """
-    rollups = await brand_mention_daily_rollups(session, brand_id, from_date, to_date)
-    if rollups:
-        return [
-            TrendPoint(date=date.fromisoformat(day), value=metric_value(rollup, "sentiment"))
-            for day, rollup in sorted(rollups.items())
-            if rollup.has_data
-        ]
-
-    bucket = func.date(ResponseAnalysis.analyzed_at)
+    """Sentiment trend pulls from target-brand mention sentiment evidence."""
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    bucket = func.date(BrandMention.created_at)
     stmt = (
-        select(bucket, func.avg(ResponseAnalysis.sentiment_score))
+        select(bucket, func.avg(BrandMention.sentiment_score))
         .where(
             and_(
-                ResponseAnalysis.target_brand_mentioned.is_(True),
-                ResponseAnalysis.analyzed_at >= datetime.combine(from_date, datetime.min.time()),
-                ResponseAnalysis.analyzed_at <= datetime.combine(to_date, datetime.max.time()),
+                brand_filter,
+                BrandMention.sentiment_score.isnot(None),
+                BrandMention.created_at >= datetime.combine(from_date, datetime.min.time()),
+                BrandMention.created_at <= datetime.combine(to_date, datetime.max.time()),
             )
         )
         .group_by(bucket)
@@ -650,7 +560,8 @@ async def _sentiment_trend(
             d = date.fromisoformat(d)
         elif isinstance(d, datetime):
             d = d.date()
-        points.append(TrendPoint(date=d, value=round(r[1] or 0, 4)))
+        if r[1] is not None:
+            points.append(TrendPoint(date=d, value=round(r[1], 4)))
     return points
 
 
@@ -665,8 +576,8 @@ async def _top_prompts(
     """Top N prompts by mention_count over the window.
 
     Joins `brand_mentions` → `llm_responses` → `prompts` (legacy upstream
-    tables). Falls back to a brand-level aggregate if the join path is
-    unavailable (e.g. SQLite test fixtures without those tables).
+    tables). If the join path is unavailable, the endpoint returns an empty
+    list and surfaces the missing evidence through the shared contract.
     """
     from sqlalchemy import text as _text
 
@@ -712,50 +623,12 @@ async def _top_prompts(
             ]
     except Exception as exc:
         logger.warning(
-            "Brand overview top prompts join failed; falling back to brand aggregate "
-            "(brand_id=%s, error=%s)",
+            "Brand overview top prompts join failed; returning empty top_prompts "
+            "without substituting aggregate values (brand_id=%s, error=%s)",
             brand_id,
             exc.__class__.__name__,
         )
-
-    # Fallback: brand-level aggregation when llm_responses/prompts unavailable.
-    brand_filter = await brand_mention_match_condition(session, brand_id)
-    stmt = (
-        select(
-            func.count(BrandMention.id).label("cnt"),
-            func.avg(BrandMention.position_rank).label("avg_rank"),
-            func.avg(BrandMention.sentiment_score).label("avg_sent"),
-        )
-        .where(
-            and_(
-                brand_filter,
-                BrandMention.created_at >= datetime.combine(from_date, datetime.min.time()),
-                BrandMention.created_at <= datetime.combine(to_date, datetime.max.time()),
-            )
-        )
-        .order_by(func.count(BrandMention.id).desc())
-        .limit(limit)
-    )
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(stmt)).all()
-    except Exception:
-        logger.exception(
-            "Brand overview top prompts fallback failed; returning empty top_prompts",
-            extra={"brand_id": brand_id},
-        )
-        return []
-    return [
-        TopPromptRow(
-            prompt_id=None,
-            prompt_text=f"(aggregated prompts for brand #{brand_id})",
-            mention_count=int(r[0] or 0),
-            avg_position_rank=round(r[1] or 0, 2) if r[1] is not None else None,
-            avg_sentiment_score=round(r[2] or 0, 2) if r[2] is not None else None,
-        )
-        for r in rows
-        if int(r[0] or 0) > 0
-    ]
+    return []
 
 
 async def _same_group_shared_domains(
@@ -849,7 +722,7 @@ async def get_brand_overview(
     brand_name = await resolve_brand_name(session, brand_id)
     shared_domains = await _same_group_shared_domains(session, brand_id)
 
-    state = "ok" if any(c.value for c in kpi_cards) else "empty"
+    state = "ok" if any(c.value is not None for c in kpi_cards) else "empty"
     has_data = state == "ok" or bool(geo_30d or sov_30d or sentiment_30d or top_prompts)
     context = await build_contract_context(
         session,

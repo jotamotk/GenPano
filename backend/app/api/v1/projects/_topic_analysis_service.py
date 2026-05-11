@@ -423,22 +423,14 @@ def _fact_brand_scope_matched(row: dict[str, Any]) -> bool:
 
 
 def _fact_target_mention_count(row: dict[str, Any]) -> int:
-    mentions = int(row.get("target_mention_count") or 0)
-    if mentions <= 0 and (row.get("target_brand_mentioned") or _fact_brand_scope_matched(row)):
-        return 1
-    return mentions
+    return int(row.get("target_mention_count") or 0)
 
 
 def _fact_all_mention_count(
     row: dict[str, Any],
     target_mentions: int | None = None,
 ) -> int:
-    mentions = (
-        _fact_target_mention_count(row) if target_mentions is None else int(target_mentions or 0)
-    )
     total = int(row.get("all_mention_count") or 0)
-    if total <= 0 and mentions > 0:
-        return 1
     return total
 
 

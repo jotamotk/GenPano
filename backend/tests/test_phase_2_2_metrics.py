@@ -140,7 +140,8 @@ async def test_metrics_default_window(client, user, project_with_full_data):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["brand_id"] == 42
     series_keys = {s["metric"] for s in body["series"]}
     assert series_keys == {"mention_rate", "sov", "rank", "sentiment", "citation"}
@@ -163,7 +164,9 @@ async def test_metrics_subset_series(client, user, project_with_full_data):
 
 
 @pytest.mark.asyncio
-async def test_metrics_uses_brand_mentions_when_daily_rollups_missing(client, user, db_session):
+async def test_metrics_marks_brand_mentions_partial_when_daily_rollups_missing(
+    client, user, db_session
+):
     p = Project(user_id=user.id, name="Mention Metrics", primary_brand_id=12, industry_id=1)
     db_session.add(p)
     await db_session.commit()
@@ -202,13 +205,14 @@ async def test_metrics_uses_brand_mentions_when_daily_rollups_missing(client, us
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
-    by_metric = {s["metric"]: s["points"] for s in body["series"]}
-    assert by_metric["mention_rate"]
-    assert by_metric["sov"]
-    assert by_metric["sentiment"]
-    assert by_metric["rank"]
-    assert by_metric["mention_rate"][0]["value"] > 0
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "missing_required_inputs"
+    assert "eligible_response_denominator" in body["missing_inputs"]
+    by_metric = {s["metric"]: s for s in body["series"]}
+    assert by_metric["mention_rate"]["points"] == []
+    assert by_metric["sov"]["points"] == []
+    assert by_metric["sentiment"]["points"] == []
+    assert by_metric["rank"]["points"] == []
 
 
 @pytest.mark.asyncio
@@ -230,7 +234,8 @@ async def test_topics_returns_pinned(client, user, project_with_full_data):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["total"] == 2
     states = {t["state"] for t in body["items"]}
     assert states == {"tracked", "ignored"}
@@ -258,7 +263,8 @@ async def test_sentiment_distribution_and_keywords(client, user, project_with_fu
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     dist = body["distribution"]
     assert dist["positive_count"] == 10
     assert dist["negative_count"] == 3
@@ -290,7 +296,8 @@ async def test_citations_list_and_domains(client, user, project_with_full_data):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["total"] == 5
     assert len(body["items"]) == 5
     domains = {d["domain"] for d in body["by_domain_top"]}

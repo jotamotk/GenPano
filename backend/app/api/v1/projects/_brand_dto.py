@@ -57,6 +57,14 @@ class ProductsOut(BaseModel):
     state: str = "ok"
     state_reason: str = "data_available"
     evidence_count: int = 0
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
 
 
 # ── /competitors/metrics ──────────────────────────────────────────
@@ -82,12 +90,16 @@ class CompetitorMetricsOut(BaseModel):
     state_reason: str = "data_available"
     state_detail: str | None = None
     project_scope: ProjectScope | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
     missing_sources: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    formula_status: str = "no_evidence"
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
     metric_definitions: dict[str, MetricDefinition] = Field(default_factory=dict)
     request_id: str | None = None
     data_freshness: DataFreshness = Field(default_factory=DataFreshness)
@@ -170,12 +182,16 @@ class CompetitorTrendsOut(BaseModel):
     state_reason: str = "data_available"
     state_detail: str | None = None
     project_scope: ProjectScope | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
     missing_sources: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    formula_status: str = "no_evidence"
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
     metric_definition: MetricDefinition | None = None
     request_id: str | None = None
     data_freshness: DataFreshness = Field(default_factory=DataFreshness)

@@ -25,6 +25,8 @@ from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
+    FORMULA_MISSING_INPUTS_STATUS,
+    FORMULA_PENDING_STATUS,
     build_contract_context,
     context_update,
     metric_definition,
@@ -32,10 +34,6 @@ from app.api.v1.projects._analytics_contract import (
     score_0_100,
 )
 from app.api.v1.projects._legacy_lookups import resolve_topic_names
-from app.api.v1.projects._mention_rollups import (
-    brand_mention_daily_rollups,
-    metric_value,
-)
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
     CitationRow,
@@ -78,6 +76,8 @@ class _FactMetricBucket(TypedDict):
     response_ids: set[int]
     mention_denominator_response_ids: set[int]
     target_mention_response_ids: set[int]
+    has_target_mention_input: bool
+    has_all_mention_input: bool
     target_mentions: int
     all_mentions: int
     ranks: list[float]
@@ -137,6 +137,19 @@ def _decorate_metric_series(
             else item.metric
         )
         spec = metric_definition(definition_key)
+        formula_status = FORMULA_PENDING_STATUS if item.points else FORMULA_MISSING_INPUTS_STATUS
+        missing_inputs: list[str] = []
+        if not item.points:
+            if item.metric == "mention_rate":
+                missing_inputs.append("eligible_response_denominator")
+            elif item.metric == "sov":
+                missing_inputs.append("brand_mentions.competitive_set")
+            elif item.metric == "rank":
+                missing_inputs.append("brand_mentions.position_rank")
+            elif item.metric == "sentiment":
+                missing_inputs.append("brand_mentions.sentiment_score")
+            elif item.metric == "citation":
+                missing_inputs.append("citation_sources")
         decorated.append(
             item.model_copy(
                 update={
@@ -146,9 +159,10 @@ def _decorate_metric_series(
                     "denominator_label": spec.denominator_label,
                     "numerator_label": spec.numerator_label,
                     "source": spec.source,
-                    "formula_status": spec.formula_status,
-                    "state": "ok" if item.points else "empty",
-                    "state_reason": "data_available" if item.points else "no_metric_data",
+                    "formula_status": formula_status,
+                    "missing_inputs": missing_inputs,
+                    "state": "ok" if item.points else "partial",
+                    "state_reason": ("data_available" if item.points else "missing_formula_inputs"),
                     "evidence_count": len(item.points),
                 }
             )
@@ -159,7 +173,7 @@ def _decorate_metric_series(
 def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
     if metric == "mention_rate":
         denominator = len(bucket["mention_denominator_response_ids"])
-        if denominator <= 0:
+        if denominator <= 0 or not bucket["has_target_mention_input"]:
             return None
         return round(
             len(bucket["target_mention_response_ids"]) / denominator,
@@ -167,7 +181,11 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
         )
     if metric == "sov":
         all_mentions = bucket["all_mentions"]
-        if all_mentions <= 0:
+        if (
+            all_mentions <= 0
+            or not bucket["has_target_mention_input"]
+            or not bucket["has_all_mention_input"]
+        ):
             return None
         return round(float(bucket["target_mentions"]) / all_mentions, 4)
     if metric == "rank":
@@ -226,6 +244,8 @@ async def _metrics_from_admin_facts(
                 "response_ids": set[int](),
                 "mention_denominator_response_ids": set[int](),
                 "target_mention_response_ids": set[int](),
+                "has_target_mention_input": False,
+                "has_all_mention_input": False,
                 "target_mentions": 0,
                 "all_mentions": 0,
                 "ranks": [],
@@ -236,6 +256,10 @@ async def _metrics_from_admin_facts(
         bucket["response_ids"].add(response_id)
         target_mentions = _fact_target_mention_count(row)
         all_mentions = _fact_all_mention_count(row, target_mentions)
+        if row.get("target_mention_count") is not None:
+            bucket["has_target_mention_input"] = True
+        if row.get("all_mention_count") is not None:
+            bucket["has_all_mention_input"] = True
         bucket["target_mentions"] += target_mentions
         bucket["all_mentions"] += all_mentions
         if _is_non_branded_row(row):
@@ -341,8 +365,7 @@ async def get_metrics(
             to_d=to_d,
             filters=analysis_filters,
         )
-        if fact_metrics.state != "empty":
-            return fact_metrics
+        return fact_metrics
 
     out_series: list[MetricSeries] = []
     score_component_metrics: set[str] = set()
@@ -363,27 +386,14 @@ async def get_metrics(
             score_component_metrics.add(metric)
         points = []
         for r in rows:
+            if r[1] is None:
+                continue
             d = r[0]
             if isinstance(d, datetime):
                 d = d.date()
             elif isinstance(d, str):
                 d = date.fromisoformat(d)
             points.append(MetricSeriesPoint(date=d, value=_normalize_metric_value(metric, r[1])))
-        if not points:
-            rollups = await brand_mention_daily_rollups(
-                session,
-                primary_brand_id,
-                from_d,
-                to_d,
-            )
-            points = [
-                MetricSeriesPoint(
-                    date=date.fromisoformat(day),
-                    value=metric_value(rollup, metric),
-                )
-                for day, rollup in sorted(rollups.items())
-                if rollup.has_data
-            ]
         out_series.append(MetricSeries(metric=metric, points=points))
 
     out_series = _decorate_metric_series(
@@ -481,14 +491,28 @@ async def get_topics(
                 last_seen_at=agg["last_seen_at"] if agg else None,
             )
         )
-    return TopicsOut(
+    state = "ok" if items and sum(item.mention_count for item in items) else "empty"
+    out = TopicsOut(
         project_id=project.id,
         items=items,
         total=len(items),
-        state="ok" if items else "empty",
-        state_reason="data_available" if items else "no_topic_data",
+        state=state,
+        state_reason="data_available" if state == "ok" else "no_topic_data",
         evidence_count=sum(item.mention_count for item in items),
     )
+    today = date.today()
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=project.primary_brand_id,
+        from_date=today - timedelta(days=DEFAULT_WINDOW_DAYS - 1),
+        to_date=today,
+        has_data=state == "ok",
+        base_state=state,
+        base_missing_inputs=["topic_score_daily"] if state != "ok" else None,
+        source_provenance=["project_topic_pins", "topic_score_daily"],
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /sentiment ────────────────────────────────────────────────────
@@ -596,12 +620,14 @@ async def get_sentiment(
             d = date.fromisoformat(d)
         elif isinstance(d, datetime):
             d = d.date()
-        t = r[3] or 1
+        total_for_day = int(r[3] or 0)
+        if total_for_day <= 0:
+            continue
         trend.append(
             SentimentTrendPoint(
                 date=d,
-                positive_pct=round((r[1] or 0) / t * 100, 1),
-                negative_pct=round((r[2] or 0) / t * 100, 1),
+                positive_pct=round((r[1] or 0) / total_for_day * 100, 1),
+                negative_pct=round((r[2] or 0) / total_for_day * 100, 1),
                 avg_score=round(r[4] or 0, 3),
             )
         )
@@ -673,7 +699,8 @@ async def get_sentiment(
     ]
 
     has_data = total > 0
-    return SentimentOut(
+    state = "ok" if has_data else "empty"
+    out = SentimentOut(
         project_id=project.id,
         brand_id=brand_id,
         period=_period(from_d, to_d),
@@ -681,10 +708,22 @@ async def get_sentiment(
         trend_30d=trend,
         top_keywords=top_keywords,
         top_drivers=top_drivers,
-        state="ok" if has_data else "empty",
+        state=state,
         state_reason="data_available" if has_data else "no_sentiment_data",
         evidence_count=total,
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=has_data,
+        base_state=state,
+        base_missing_inputs=["brand_mentions.sentiment_score"] if not has_data else None,
+        source_provenance=["brand_mentions", "sentiment_drivers"],
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /citations ────────────────────────────────────────────────────
@@ -790,7 +829,8 @@ async def get_citations(
     )
     total = int((await session.execute(stmt_total)).scalar_one() or 0)
 
-    return CitationsOut(
+    state = "ok" if total else "empty"
+    out = CitationsOut(
         project_id=project.id,
         brand_id=brand_id,
         period=_period(from_d, to_d),
@@ -798,10 +838,26 @@ async def get_citations(
         next_cursor=str(items[-1].citation_id) if has_more and items else None,
         total=total,
         by_domain_top=by_domain,
-        state="ok" if total else "empty",
+        state=state,
         state_reason="data_available" if total else "no_citation_data",
         evidence_count=total,
+        metric_definitions={
+            "citation_rate": metric_definition("citation_rate"),
+            "citation_share": metric_definition("citation"),
+        },
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=bool(total),
+        base_state=state,
+        base_missing_inputs=["citation_sources"] if not total else None,
+        source_provenance=["citation_sources", "brand_mentions"],
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # Minor service: ResponseAnalysis-based mention rate for /sentiment trend

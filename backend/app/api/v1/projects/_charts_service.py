@@ -1215,14 +1215,14 @@ async def get_mention_samples(
     if not items:
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
         seen: set[int] = set()
-        fallback_items: list[MentionSampleRow] = []
+        fact_items: list[MentionSampleRow] = []
         for row in fact_rows:
             rid = _as_int(row.get("response_id"))
             if rid is None or rid in seen or _fact_target_mention_count(row) <= 0:
                 continue
             seen.add(rid)
             polarity_value = _polarity_from_score(row.get("sentiment_score"))
-            fallback_items.append(
+            fact_items.append(
                 MentionSampleRow(
                     mention_id=rid,
                     response_id=rid,
@@ -1241,12 +1241,12 @@ async def get_mention_samples(
                     or None,
                 )
             )
-            if len(fallback_items) >= limit:
+            if len(fact_items) >= limit:
                 break
-        state = "ok" if fallback_items else "empty"
+        state = "ok" if fact_items else "empty"
         return MentionSamplesOut(
             project_id=project.id,
-            items=fallback_items,
+            items=fact_items,
             state=state,
             state_reason=_state_reason(state, "no_mention_sample_data"),
             evidence_count=len(seen),
@@ -1331,7 +1331,9 @@ async def get_authority_trend(
             fact_by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
         fact_points: list[AuthorityTrendPoint] = []
         for d_iso, tier_map in fact_by_day.items():
-            total = sum(tier_map.values()) or 1
+            total = sum(tier_map.values())
+            if total <= 0:
+                continue
             fact_points.append(
                 AuthorityTrendPoint(
                     date=d_iso,
@@ -1382,7 +1384,9 @@ async def get_authority_trend(
 
     authority_points: list[AuthorityTrendPoint] = []
     for d_iso, tier_map in authority_by_day.items():
-        total = sum(tier_map.values()) or 1
+        total = sum(tier_map.values())
+        if total <= 0:
+            continue
         authority_points.append(
             AuthorityTrendPoint(
                 date=d_iso,
@@ -1654,15 +1658,16 @@ async def get_content_gap(
                 .order_by(desc(func.count()))
             )
             pt_rows = (await session.execute(pt_stmt)).all()
-            pt_total = sum(int(r[1] or 0) for r in pt_rows) or 1
-            page_types = [
-                ContentGapPageTypeRow(
-                    page_type=r[0] or "other",
-                    count=int(r[1] or 0),
-                    pct=round(int(r[1] or 0) / pt_total * 100, 1),
-                )
-                for r in pt_rows
-            ]
+            pt_total = sum(int(r[1] or 0) for r in pt_rows)
+            if pt_total > 0:
+                page_types = [
+                    ContentGapPageTypeRow(
+                        page_type=r[0] or "other",
+                        count=int(r[1] or 0),
+                        pct=round(int(r[1] or 0) / pt_total * 100, 1),
+                    )
+                    for r in pt_rows
+                ]
         state = "ok" if monitoring_topics else "empty"
         evidence_count = _response_evidence_count(admin_rows)
         return ContentGapOut(
@@ -1754,15 +1759,19 @@ async def get_content_gap(
         .order_by(desc(func.count()))
     )
     pt_rows = (await session.execute(pt_stmt)).all()
-    pt_total = sum(int(r[1] or 0) for r in pt_rows) or 1
-    page_types = [
-        ContentGapPageTypeRow(
-            page_type=r[0] or "other",
-            count=int(r[1] or 0),
-            pct=round(int(r[1] or 0) / pt_total * 100, 1),
-        )
-        for r in pt_rows
-    ]
+    pt_total = sum(int(r[1] or 0) for r in pt_rows)
+    page_types = (
+        [
+            ContentGapPageTypeRow(
+                page_type=r[0] or "other",
+                count=int(r[1] or 0),
+                pct=round(int(r[1] or 0) / pt_total * 100, 1),
+            )
+            for r in pt_rows
+        ]
+        if pt_total > 0
+        else []
+    )
 
     state = "ok" if gap_topics else "empty"
     return ContentGapOut(

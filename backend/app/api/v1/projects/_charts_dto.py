@@ -7,7 +7,17 @@ Shapes mirror the recharts/donut props the FE already consumes (see
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+from app.api.v1.projects._analytics_contract import (
+    FORMULA_MISSING_INPUTS_STATUS,
+    FORMULA_NO_EVIDENCE_STATUS,
+    FORMULA_PENDING_STATUS,
+    FormulaDiagnostics,
+    formula_diagnostics_for,
+)
 
 
 class ChartState(BaseModel):
@@ -15,6 +25,38 @@ class ChartState(BaseModel):
     state_reason: str = "data_available"
     evidence_count: int = 0
     evidence_counts: dict[str, int] = Field(default_factory=dict)
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.formula_status or self.formula_status == FORMULA_NO_EVIDENCE_STATUS:
+            if self.state == "ok":
+                self.formula_status = FORMULA_PENDING_STATUS
+            elif self.state == "partial":
+                self.formula_status = FORMULA_MISSING_INPUTS_STATUS
+            else:
+                self.formula_status = FORMULA_NO_EVIDENCE_STATUS
+        if self.formula_diagnostics.status == "not_applicable":
+            self.formula_diagnostics = formula_diagnostics_for(
+                self.formula_status,
+                missing_inputs=self.missing_inputs,
+            )
+        if not self.selected_filters:
+            selected: dict[str, object] = {}
+            project_id = getattr(self, "project_id", None)
+            period = getattr(self, "period", None)
+            if project_id is not None:
+                selected["project_id"] = project_id
+            if period is not None:
+                selected["date_range"] = period
+            self.selected_filters = selected
+        if not self.source_provenance:
+            self.source_provenance = ["app_chart_service"]
 
 
 # ── /metrics/by-engine ──────────────────────────────────────────────
