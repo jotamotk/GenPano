@@ -18,6 +18,7 @@ from geo_tracker.db.models import (
     CitationSource,
     GEOScoreDaily,
     LLMResponse,
+    ProductScoreDaily,
     Prompt,
     Query,
     QueryStatus,
@@ -445,3 +446,145 @@ async def test_aggregator_uses_prd_denominators_for_mention_rate_and_sov(
     assert geo.mention_count == 1
     assert geo.mention_rate == pytest.approx(0.25)
     assert geo.avg_sov == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_aggregator_writes_geo_for_canonical_mentions_without_default_prompt_shape(
+    session: AsyncSession,
+):
+    day = await _add_response(
+        session,
+        query_id=120,
+        response_id=220,
+        prompt_id=50,
+        brand_id=2,
+        raw_text="canonical cross-owner fact",
+        intent=None,
+        topic_category=None,
+    )
+    await _add_response(
+        session,
+        query_id=121,
+        response_id=221,
+        prompt_id=51,
+        brand_id=2,
+        raw_text="same source owner but no canonical mention",
+        intent=None,
+        topic_category=None,
+        minutes=1,
+    )
+    session.add_all(
+        [
+            Brand(id=12, name="canonical brand", aliases=["canonical"], industry="beauty"),
+            BrandMention(
+                response_id=220,
+                brand_id=12,
+                brand_name="canonical brand",
+                is_target=False,
+                position_type="mentioned_only",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                mention_count=1,
+            ),
+        ]
+    )
+    await session.commit()
+
+    stats = await Aggregator(session).aggregate_daily(
+        day,
+        brand_id=12,
+        competitive_brand_ids={12, 2},
+    )
+
+    assert stats["geo_score_daily"] == 2
+    assert stats["topic_score"] == 2
+
+    geo = (
+        await session.execute(
+            select(GEOScoreDaily).where(
+                GEOScoreDaily.brand_id == 12,
+                GEOScoreDaily.target_llm.is_(None),
+                GEOScoreDaily.intent.is_(None),
+                GEOScoreDaily.language.is_(None),
+            )
+        )
+    ).scalar_one()
+    assert geo.total_queries == 1
+    assert geo.mention_count == 1
+    assert geo.mention_rate == pytest.approx(1.0)
+    assert geo.avg_sov == pytest.approx(1.0)
+
+    await Aggregator(session).aggregate_daily(
+        day,
+        brand_id=12,
+        competitive_brand_ids={12, 2},
+    )
+    rows = (
+        await session.execute(
+            select(GEOScoreDaily).where(GEOScoreDaily.brand_id == 12)
+        )
+    ).scalars().all()
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_product_aggregation_only_writes_explicit_product_level_mentions(
+    session: AsyncSession,
+):
+    day = await _add_response(
+        session,
+        query_id=130,
+        response_id=230,
+        prompt_id=60,
+        brand_id=2,
+        raw_text="brand-level canonical fact",
+    )
+    await _add_response(
+        session,
+        query_id=131,
+        response_id=231,
+        prompt_id=61,
+        brand_id=2,
+        raw_text="product-level canonical fact",
+        minutes=1,
+    )
+    session.add_all(
+        [
+            Brand(id=12, name="canonical brand", aliases=["canonical"], industry="beauty"),
+            BrandMention(
+                response_id=230,
+                brand_id=12,
+                brand_name="canonical brand",
+                is_target=False,
+                position_type="mentioned_only",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                mention_count=1,
+            ),
+            BrandMention(
+                response_id=231,
+                brand_id=12,
+                brand_name="canonical brand",
+                product_name="Advanced Night Repair",
+                is_target=False,
+                position_type="first_recommendation",
+                position_rank=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                mention_count=1,
+            ),
+        ]
+    )
+    await session.commit()
+
+    stats = await Aggregator(session).aggregate_daily(day, brand_id=12)
+
+    assert stats["product_score"] == 1
+    product = (
+        await session.execute(
+            select(ProductScoreDaily).where(ProductScoreDaily.brand_id == 12)
+        )
+    ).scalar_one()
+    assert product.product_name == "Advanced Night Repair"
+    assert product.total_queries == 1
+    assert product.mention_count == 1
