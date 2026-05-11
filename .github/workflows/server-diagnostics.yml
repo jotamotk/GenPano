@@ -35,6 +35,67 @@ jobs:
             echo "=== Docker compose status ==="
             docker compose ps
 
+            echo "=== Query dispatch production probe ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT status,
+                     target_llm,
+                     (queued_at IS NULL) AS unqueued,
+                     COUNT(*) AS rows,
+                     MIN(created_at) AS oldest_created_at,
+                     MAX(created_at) AS newest_created_at,
+                     MAX(queued_at) AS newest_queued_at,
+                     MAX(started_at) AS newest_started_at,
+                     MAX(finished_at) AS newest_finished_at
+              FROM queries
+              WHERE created_at >= NOW() - INTERVAL '24 hours'
+              GROUP BY status, target_llm, (queued_at IS NULL)
+              ORDER BY target_llm, status, unqueued;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, target_llm, status, queued_at, started_at, finished_at,
+                     retry_count, retry_reason, created_at
+              FROM queries
+              ORDER BY id DESC
+              LIMIT 30;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT id, action, created_at, after
+              FROM admin_audit_log
+              WHERE action IN ('retry_query', 'batch_trigger_queries', 'scheduler_manual_trigger')
+              ORDER BY created_at DESC
+              LIMIT 20;
+            " || true
+
+            echo "=== Backend Celery dispatch shim ==="
+            docker compose exec -T backend python - <<'PY' || true
+            from app.admin.queries import celery_dispatch as d
+
+            app = d._load_celery_app()
+            print("celery_app_loaded=", app is not None)
+            print("celery_app_type=", type(app).__module__ + "." + type(app).__name__ if app else None)
+            if app is not None:
+                print("broker_url=", str(app.conf.broker_url).replace("redis://", "redis://***@"))
+                print("default_queue=", app.conf.task_default_queue)
+            print("dispatch_execute_query_defaults=", getattr(d.dispatch_execute_query, "__defaults__", None))
+            print("dispatch_many_empty=", d.dispatch_many([]))
+            PY
+
+            echo "=== Redis queue lengths ==="
+            for q in celery llm_chatgpt llm_doubao llm_deepseek llm_gemini account_login analysis beat; do
+              printf "%s " "$q"
+              docker compose exec -T redis redis-cli LLEN "$q" || true
+            done
+
+            echo "=== Worker Celery inspect ==="
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active_queues --timeout=5 || true
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=5 || true
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=5 || true
+
+            echo "=== Recent worker and beat logs ==="
+            docker compose logs --tail=350 worker beat 2>&1 \
+              | grep -Ei 'execute_query|received task|task .*succeeded|task .*failed|dispatch_batch|dispatched|llm_|retry|error|warning|traceback|query' \
+              || true
+
             echo "=== Brand mention identity probe ==="
             echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY}"
             docker compose exec -T postgres psql -U genpano -d genpano -c "
