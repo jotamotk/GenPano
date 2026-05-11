@@ -1313,8 +1313,7 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     assert samples_body["state_reason"] == "data_available"
     assert samples_body["evidence_count"] >= 1
     assert any(
-        "Estee Lauder Advanced Night Repair" in row["snippet"]
-        for row in samples_body["items"]
+        "Estee Lauder Advanced Night Repair" in row["snippet"] for row in samples_body["items"]
     )
 
     citations = await client.get(

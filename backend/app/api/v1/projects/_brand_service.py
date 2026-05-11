@@ -534,11 +534,7 @@ async def get_products(
             filters=AnalysisFilters(from_date=from_d, to_date=to_d),
         )
         evidence_count = len(
-            {
-                rid
-                for row in fact_rows
-                if (rid := _as_int(row.get("response_id"))) is not None
-            }
+            {rid for row in fact_rows if (rid := _as_int(row.get("response_id"))) is not None}
         )
         return ProductsOut(
             project_id=project.id,

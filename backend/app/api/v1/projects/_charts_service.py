@@ -222,8 +222,7 @@ def _engine_metric_rows_from_facts(
         EngineMetricRow(
             engine=engine,
             mention_rate=round(
-                len(values["target_response_ids"])
-                / len(values["denominator_response_ids"]),
+                len(values["target_response_ids"]) / len(values["denominator_response_ids"]),
                 4,
             )
             if values["denominator_response_ids"]
@@ -881,8 +880,7 @@ async def get_sentiment_by_engine(
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     evidence_count = sum(
-        v["positive"] + v["neutral"] + v["negative"]
-        for v in sentiment_bucket.values()
+        v["positive"] + v["neutral"] + v["negative"] for v in sentiment_bucket.values()
     )
     return SentimentByEngineOut(
         project_id=project.id,
@@ -1798,9 +1796,7 @@ async def get_pr_targets(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(
-                    ProjectCompetitor.project_id == project.id
-                )
+                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
             )
         ).all()
     ][:3]
@@ -2077,9 +2073,7 @@ async def get_authority_radar(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(
-                    ProjectCompetitor.project_id == project.id
-                )
+                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
             )
         ).all()
     ]
