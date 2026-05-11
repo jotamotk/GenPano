@@ -701,7 +701,7 @@ async def get_topic_heatmap(
     top_topics = [int(r[0]) for r in (await session.execute(top_topic_stmt)).all()]
     if not top_topics:
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
-        rows, evidence_count = await _topic_heatmap_from_facts(
+        fact_rows_out, evidence_count = await _topic_heatmap_from_facts(
             session,
             project,
             fact_rows,
@@ -711,13 +711,13 @@ async def get_topic_heatmap(
         )
         state = (
             "ok"
-            if any(any(cell.value is not None for cell in row.values) for row in rows)
+            if any(any(cell.value is not None for cell in row.values) for row in fact_rows_out)
             else "empty"
         )
         return TopicHeatmapOut(
             project_id=project.id,
             metric=metric,
-            rows=rows,
+            rows=fact_rows_out,
             state=state,
             state_reason=_state_reason(state, "no_topic_metric_data"),
             evidence_count=evidence_count,
@@ -756,7 +756,7 @@ async def get_topic_heatmap(
     topic_names = await resolve_topic_names(session, top_topics)
     brand_names = await resolve_brand_names(session, brand_ids)
 
-    rows: list[HeatmapRow] = []
+    heatmap_rows: list[HeatmapRow] = []
     for bid in brand_ids:
         cells: list[HeatmapCell] = []
         for tid in top_topics:
@@ -769,14 +769,18 @@ async def get_topic_heatmap(
                     sample=c,
                 )
             )
-        rows.append(HeatmapRow(brand_id=bid, brand_name=brand_names.get(bid), values=cells))
+        heatmap_rows.append(HeatmapRow(brand_id=bid, brand_name=brand_names.get(bid), values=cells))
 
-    state = "ok" if any(any(c.value is not None for c in r.values) for r in rows) else "empty"
-    evidence_count = sum(cell.sample for row in rows for cell in row.values)
+    state = (
+        "ok"
+        if any(any(c.value is not None for c in row.values) for row in heatmap_rows)
+        else "empty"
+    )
+    evidence_count = sum(cell.sample for row in heatmap_rows for cell in row.values)
     return TopicHeatmapOut(
         project_id=project.id,
         metric=metric,
-        rows=rows,
+        rows=heatmap_rows,
         state=state,
         state_reason=_state_reason(state, "no_topic_metric_data"),
         evidence_count=evidence_count,
