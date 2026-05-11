@@ -183,7 +183,12 @@ async def _cleanup_previous_response(db, query_id: int) -> None:
     )
 
 
-async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) -> None:
+async def _mark_query_failed_after_task_abort_async(
+    query_id: int,
+    reason: str,
+    *,
+    quota_settlement: AccountQuotaSettlement | None = None,
+) -> None:
     engine = create_task_engine()
     try:
         async with get_task_async_session(engine) as db:
@@ -197,16 +202,31 @@ async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) 
                 started_at=query.started_at,
                 reason=reason,
             )
+            if quota_settlement is not None:
+                await quota_settlement.settle_failure(
+                    db,
+                    AccountPool(db),
+                    reason=reason,
+                )
             await db.commit()
     finally:
         await engine.dispose()
 
 
-def _mark_query_failed_after_task_abort(query_id: int, reason: str) -> None:
+def _mark_query_failed_after_task_abort(
+    query_id: int,
+    reason: str,
+    *,
+    quota_settlement: AccountQuotaSettlement | None = None,
+) -> None:
     cleanup_loop = asyncio.new_event_loop()
     try:
         cleanup_loop.run_until_complete(
-            _mark_query_failed_after_task_abort_async(query_id, reason)
+            _mark_query_failed_after_task_abort_async(
+                query_id,
+                reason,
+                quota_settlement=quota_settlement,
+            )
         )
     finally:
         cleanup_loop.close()
@@ -222,6 +242,7 @@ def execute_query(self, query_id: int) -> dict:
     asyncio.set_event_loop(loop)
 
     task_engine = create_task_engine()
+    quota_settlement = AccountQuotaSettlement()
 
     async def _run():
         async with get_task_async_session(task_engine) as db:
@@ -246,7 +267,6 @@ def execute_query(self, query_id: int) -> dict:
             account_id = None
             account_cookies = None
             pool = None
-            quota_settlement = AccountQuotaSettlement()
             requires_login = llm_config.get("requires_login", True)
 
             pool = AccountPool(db)
@@ -448,7 +468,11 @@ def execute_query(self, query_id: int) -> dict:
     except SoftTimeLimitExceeded:
         logger.exception("execute_query %s exceeded soft time limit", query_id)
         try:
-            _mark_query_failed_after_task_abort(query_id, "soft_time_limit")
+            _mark_query_failed_after_task_abort(
+                query_id,
+                "soft_time_limit",
+                quota_settlement=quota_settlement,
+            )
         except Exception as cleanup_exc:
             logger.error(
                 "execute_query %s failed to mark soft-timeout failure: %s",

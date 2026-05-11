@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib
+import sys
+import types
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -186,6 +190,110 @@ async def test_unreserved_abort_cleanup_does_not_refund_assigned_account(
 
     assert refunded is False
     assert settlement.settled is False
+    assert account.query_count_today == 1
+
+
+def _import_celery_tasks_with_fake_playwright(monkeypatch):
+    playwright = types.ModuleType("playwright")
+    playwright_async = types.ModuleType("playwright.async_api")
+    playwright_async.async_playwright = object
+    playwright_async.BrowserContext = object
+    playwright_async.ElementHandle = object
+    playwright_async.Page = object
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)
+    return importlib.import_module("geo_tracker.tasks.celery_tasks")
+
+
+class _ExistingSessionContext:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _NoopEngine:
+    async def dispose(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_reserved_soft_timeout_abort_cleanup_refunds_quota(
+    session: AsyncSession,
+    monkeypatch,
+):
+    celery_tasks = _import_celery_tasks_with_fake_playwright(monkeypatch)
+    account = await _create_account(session, query_count_today=1, daily_limit=2)
+    query = Query(
+        id=501,
+        account_id=account.id,
+        target_llm="chatgpt",
+        query_text="hello",
+        status="running",
+    )
+    session.add(query)
+    await session.commit()
+    settlement = AccountQuotaSettlement(account.id)
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", lambda: _NoopEngine())
+    monkeypatch.setattr(
+        celery_tasks,
+        "get_task_async_session",
+        lambda engine: _ExistingSessionContext(session),
+    )
+
+    await celery_tasks._mark_query_failed_after_task_abort_async(
+        query.id,
+        "soft_time_limit",
+        quota_settlement=settlement,
+    )
+    await session.refresh(account)
+    await session.refresh(query)
+
+    assert settlement.settled is True
+    assert account.query_count_today == 0
+    assert query.status == "failed"
+    assert query.retry_reason == "soft_time_limit"
+
+
+@pytest.mark.asyncio
+async def test_consumed_soft_timeout_abort_cleanup_keeps_quota(
+    session: AsyncSession,
+    monkeypatch,
+):
+    celery_tasks = _import_celery_tasks_with_fake_playwright(monkeypatch)
+    account = await _create_account(session, query_count_today=1, daily_limit=2)
+    query = Query(
+        id=502,
+        account_id=account.id,
+        target_llm="chatgpt",
+        query_text="hello",
+        status="running",
+    )
+    session.add(query)
+    await session.commit()
+    settlement = AccountQuotaSettlement(account.id)
+    settlement.mark_platform_consumed()
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", lambda: _NoopEngine())
+    monkeypatch.setattr(
+        celery_tasks,
+        "get_task_async_session",
+        lambda engine: _ExistingSessionContext(session),
+    )
+
+    await celery_tasks._mark_query_failed_after_task_abort_async(
+        query.id,
+        "soft_time_limit",
+        quota_settlement=settlement,
+    )
+    await session.refresh(account)
+
+    assert settlement.settled is True
     assert account.query_count_today == 1
 
 
