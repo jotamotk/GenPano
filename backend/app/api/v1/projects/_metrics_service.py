@@ -24,6 +24,13 @@ from genpano_models import (
 from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import (
+    build_contract_context,
+    context_update,
+    metric_definition,
+    ratio_decimal,
+    score_0_100,
+)
 from app.api.v1.projects._legacy_lookups import resolve_topic_names
 from app.api.v1.projects._mention_rollups import (
     brand_mention_daily_rollups,
@@ -106,6 +113,47 @@ def _metric_filters(
         to_date=base.to_date or to_d,
         engines=engine_tuple,
     )
+
+
+def _normalize_metric_value(metric: str, value: float | int | None) -> float:
+    if metric in {"mention_rate", "sov", "citation"}:
+        return ratio_decimal(value) or 0.0
+    if metric == "geo_score":
+        return score_0_100(value) or 0.0
+    return round(float(value or 0), 4)
+
+
+def _decorate_metric_series(
+    series: list[MetricSeries],
+    *,
+    score_component_metrics: set[str] | None = None,
+) -> list[MetricSeries]:
+    score_component_metrics = score_component_metrics or set()
+    decorated: list[MetricSeries] = []
+    for item in series:
+        definition_key = (
+            "avg_sentiment"
+            if item.metric == "sentiment" and item.metric in score_component_metrics
+            else item.metric
+        )
+        spec = metric_definition(definition_key)
+        decorated.append(
+            item.model_copy(
+                update={
+                    "unit": spec.unit,
+                    "value_scale": spec.value_scale,
+                    "value_range": spec.value_range,
+                    "denominator_label": spec.denominator_label,
+                    "numerator_label": spec.numerator_label,
+                    "source": spec.source,
+                    "formula_status": spec.formula_status,
+                    "state": "ok" if item.points else "empty",
+                    "state_reason": "data_available" if item.points else "no_metric_data",
+                    "evidence_count": len(item.points),
+                }
+            )
+        )
+    return decorated
 
 
 def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
@@ -212,14 +260,26 @@ async def _metrics_from_admin_facts(
             points.append(MetricSeriesPoint(date=date.fromisoformat(day), value=value))
         out_series.append(MetricSeries(metric=metric, points=points))
 
-    return MetricsOut(
+    out_series = _decorate_metric_series(out_series)
+    has_data = any(series.points for series in out_series)
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=has_data,
+        base_state="ok" if has_data else "empty",
+    )
+    out = MetricsOut(
         project_id=project.id,
         brand_id=brand_id,
         period=_period(from_d, to_d),
         engines=list(filters.engines) if filters.engines else None,
         series=out_series,
-        state="ok" if any(series.points for series in out_series) else "empty",
+        state="ok" if has_data else "empty",
     )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /metrics ──────────────────────────────────────────────────────
@@ -244,14 +304,25 @@ async def get_metrics(
         brand_id_override if brand_id_override is not None else project.primary_brand_id
     )
     if primary_brand_id is None:
-        return MetricsOut(
+        out = MetricsOut(
             project_id=project.id,
             brand_id=None,
             period=_period(from_d, to_d),
             engines=engines,
-            series=[MetricSeries(metric=m, points=[]) for m in requested],
+            series=_decorate_metric_series([MetricSeries(metric=m, points=[]) for m in requested]),
             state="empty",
         )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=None,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=False,
+            base_state="empty",
+            base_state_reason="no_primary_brand",
+        )
+        return out.model_copy(update=context_update(context))
 
     analysis_filters = _metric_filters(
         filters,
@@ -274,6 +345,7 @@ async def get_metrics(
             return fact_metrics
 
     out_series: list[MetricSeries] = []
+    score_component_metrics: set[str] = set()
     for metric in requested:
         col = METRIC_TO_COLUMN[metric]
         stmt = select(GeoScoreDaily.date, func.avg(col)).where(
@@ -287,6 +359,8 @@ async def get_metrics(
             stmt = stmt.where(GeoScoreDaily.target_llm.in_(engines))
         stmt = stmt.group_by(GeoScoreDaily.date).order_by(GeoScoreDaily.date)
         rows = (await session.execute(stmt)).all()
+        if metric == "sentiment" and rows:
+            score_component_metrics.add(metric)
         points = []
         for r in rows:
             d = r[0]
@@ -294,7 +368,7 @@ async def get_metrics(
                 d = d.date()
             elif isinstance(d, str):
                 d = date.fromisoformat(d)
-            points.append(MetricSeriesPoint(date=d, value=round(r[1] or 0, 4)))
+            points.append(MetricSeriesPoint(date=d, value=_normalize_metric_value(metric, r[1])))
         if not points:
             rollups = await brand_mention_daily_rollups(
                 session,
@@ -312,8 +386,12 @@ async def get_metrics(
             ]
         out_series.append(MetricSeries(metric=metric, points=points))
 
+    out_series = _decorate_metric_series(
+        out_series,
+        score_component_metrics=score_component_metrics,
+    )
     has_data = any(s.points for s in out_series)
-    return MetricsOut(
+    out = MetricsOut(
         project_id=project.id,
         brand_id=primary_brand_id,
         period=_period(from_d, to_d),
@@ -321,6 +399,16 @@ async def get_metrics(
         series=out_series,
         state="ok" if has_data else "empty",
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=primary_brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=has_data,
+        base_state=out.state,
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /topics ───────────────────────────────────────────────────────

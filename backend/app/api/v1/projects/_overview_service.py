@@ -32,6 +32,16 @@ from genpano_models import (
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import (
+    FORMULA_PENDING_STATUS,
+    MetricValue,
+    ValueRange,
+    build_contract_context,
+    context_update,
+    metric_definition,
+    percent_display,
+    score_0_100,
+)
 from app.api.v1.projects._legacy_lookups import resolve_brand_name
 from app.api.v1.projects._mention_rollups import (
     MentionRollup,
@@ -108,6 +118,91 @@ def _fact_target_mentions(row: dict[str, Any]) -> tuple[int, int]:
     mentions = _fact_target_mention_count(row)
     total = _fact_all_mention_count(row, mentions)
     return mentions, total
+
+
+def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
+    key_by_label = {
+        "GeoScore": "geo_score",
+        "Mention Rate": "mention_rate",
+        "Share of Voice": "sov",
+        "Sentiment": "sentiment",
+    }
+    decorated: list[KpiCard] = []
+    for card in cards:
+        metric_key = card.metric_key or key_by_label.get(card.label_en)
+        if metric_key is None:
+            decorated.append(card)
+            continue
+        if metric_key == "sentiment" and abs(float(card.value or 0)) > 1:
+            metric_key = "avg_sentiment"
+        spec = metric_definition(
+            metric_key,
+            display_percent=metric_key in {"mention_rate", "sov"},
+        )
+        value = card.value
+        if metric_key in {"mention_rate", "sov"}:
+            value = percent_display(float(value or 0))
+        elif metric_key in {"geo_score", "avg_sentiment"}:
+            value = score_0_100(float(value or 0)) or 0
+        decorated.append(
+            card.model_copy(
+                update={
+                    "metric_key": metric_key,
+                    "value": value,
+                    "unit": spec.unit,
+                    "value_scale": spec.value_scale,
+                    "value_range": spec.value_range,
+                    "denominator_label": spec.denominator_label,
+                    "numerator_label": spec.numerator_label,
+                    "source": spec.source,
+                    "formula_status": spec.formula_status,
+                }
+            )
+        )
+    return decorated
+
+
+async def _score_components(
+    session: AsyncSession,
+    brand_id: int,
+    from_date: date,
+    to_date: date,
+) -> dict[str, MetricValue]:
+    stmt = select(
+        func.avg(GeoScoreDaily.avg_geo_score).label("final_geo_score"),
+        func.avg(GeoScoreDaily.avg_visibility).label("visibility"),
+        func.avg(GeoScoreDaily.avg_position_rank).label("ranking"),
+        func.avg(GeoScoreDaily.avg_sentiment).label("sentiment"),
+        func.avg(GeoScoreDaily.avg_sov_score).label("context"),
+        func.avg(GeoScoreDaily.avg_citation_score).label("authority"),
+    ).where(
+        and_(
+            GeoScoreDaily.brand_id == brand_id,
+            GeoScoreDaily.date >= datetime.combine(from_date, datetime.min.time()),
+            GeoScoreDaily.date <= datetime.combine(to_date, datetime.max.time()),
+        )
+    )
+    row = (await session.execute(stmt)).one_or_none()
+    value_range = ValueRange(min=0.0, max=100.0)
+    values = {
+        "final_geo_score": row.final_geo_score if row else None,
+        "visibility": row.visibility if row else None,
+        "ranking": row.ranking if row else None,
+        "sentiment": row.sentiment if row else None,
+        "context": row.context if row else None,
+        "authority": row.authority if row else None,
+    }
+    return {
+        key: MetricValue(
+            value=score_0_100(value),
+            unit="score",
+            value_scale="score_0_100",
+            value_range=value_range,
+            source="geo_score_daily",
+            formula_status=FORMULA_PENDING_STATUS if value is not None else None,
+        )
+        for key, value in values.items()
+    }
 
 
 async def _overview_from_admin_facts(
@@ -271,6 +366,7 @@ async def _overview_from_admin_facts(
         KpiCard(
             label_zh="情感分",
             label_en="Sentiment",
+            metric_key="sentiment",
             value=round(avg_sentiment, 2),
             delta_30d_pct=None,
         ),
@@ -315,7 +411,13 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
                 unit="%",
                 delta_30d_pct=None,
             ),
-            KpiCard(label_zh="情感分", label_en="Sentiment", value=0, delta_30d_pct=None),
+            KpiCard(
+                label_zh="情感分",
+                label_en="Sentiment",
+                metric_key="sentiment",
+                value=0,
+                delta_30d_pct=None,
+            ),
         ],
         geo_score_30d=[],
         sov_30d=[],
@@ -410,6 +512,7 @@ async def _kpi_cards(
                 KpiCard(
                     label_zh="情感分",
                     label_en="Sentiment",
+                    metric_key="sentiment",
                     value=round(rollup_sentiment or 0, 2),
                     delta_30d_pct=sentiment_delta,
                     direction=_direction(sentiment_delta),
@@ -453,6 +556,7 @@ async def _kpi_cards(
         KpiCard(
             label_zh="情感分",
             label_en="Sentiment",
+            metric_key="avg_sentiment",
             value=round(sentiment or 0, 2),
             delta_30d_pct=sentiment_delta,
             direction=_direction(sentiment_delta),
@@ -710,7 +814,18 @@ async def get_brand_overview(
 
     brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
     if brand_id is None:
-        return _empty_overview(project)
+        empty = _empty_overview(project)
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=None,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=False,
+            base_state="empty",
+            base_state_reason="no_primary_brand",
+        )
+        return empty.model_copy(update=context_update(context))
 
     admin_fact_overview = None
     if await _has_admin_chain(session):
@@ -730,12 +845,24 @@ async def get_brand_overview(
         sov_30d = await _trend(session, brand_id, from_d, to_d, "avg_sov")
         sentiment_30d = await _sentiment_trend(session, brand_id, from_d, to_d)
         top_prompts = await _top_prompts(session, brand_id, from_d, to_d)
+    kpi_cards = _decorate_kpi_cards(kpi_cards)
     brand_name = await resolve_brand_name(session, brand_id)
     shared_domains = await _same_group_shared_domains(session, brand_id)
 
     state = "ok" if any(c.value for c in kpi_cards) else "empty"
+    has_data = state == "ok" or bool(geo_30d or sov_30d or sentiment_30d or top_prompts)
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=has_data,
+        base_state=state,
+    )
+    score_components = await _score_components(session, brand_id, from_d, to_d)
 
-    return BrandOverviewOut(
+    out = BrandOverviewOut(
         project_id=project.id,
         brand_id=brand_id,
         brand_name=brand_name,
@@ -748,4 +875,6 @@ async def get_brand_overview(
         top_prompts=top_prompts,
         same_group_shared_domains=shared_domains,
         state=state,
+        score_components=score_components,
     )
+    return out.model_copy(update=context_update(context))

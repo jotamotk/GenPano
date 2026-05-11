@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.api.v1.projects._analytics_contract import (
+    DataFreshness,
+    FormulaDiagnostics,
+    IdentityDiagnostics,
+    MetricDefinition,
+    ProjectScope,
+)
 
 
 # ── /products ─────────────────────────────────────────────────────
@@ -69,6 +77,18 @@ class CompetitorMetricsOut(BaseModel):
     primary: CompetitorBrandRow | None
     competitors: list[CompetitorBrandRow]
     state: str = "ok"
+    state_reason: str = "data_available"
+    state_detail: str | None = None
+    project_scope: ProjectScope | None = None
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    invalid_fields: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    metric_definitions: dict[str, MetricDefinition] = Field(default_factory=dict)
+    request_id: str | None = None
+    data_freshness: DataFreshness = Field(default_factory=DataFreshness)
 
 
 # ── /diagnostics ──────────────────────────────────────────────────
@@ -145,3 +165,15 @@ class CompetitorTrendsOut(BaseModel):
     period: dict[str, str]
     series: list[CompetitorTrendSeries]
     state: str = "ok"
+    state_reason: str = "data_available"
+    state_detail: str | None = None
+    project_scope: ProjectScope | None = None
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    invalid_fields: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    metric_definition: MetricDefinition | None = None
+    request_id: str | None = None
+    data_freshness: DataFreshness = Field(default_factory=DataFreshness)
