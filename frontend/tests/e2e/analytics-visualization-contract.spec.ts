@@ -39,6 +39,10 @@ test('renders issue 482 analytics visualization contract', async ({ page }, test
   await expect(
     contract.locator('p', { hasText: '70 Estee Lauder mentions / 182 competitive-set brand mentions' }),
   ).toBeVisible()
+  await expect(contract.getByText('Partial: identity path blocker')).toBeVisible()
+  await expect(
+    contract.locator('p', { hasText: 'projects where primary_brand_id=12 or project name matches 雅诗兰黛: 0 rows' }),
+  ).toBeVisible()
   await expect(contract.getByText('kpi_cards[].value_scale')).toBeVisible()
 
   const screenshot = await page.screenshot({ fullPage: true })

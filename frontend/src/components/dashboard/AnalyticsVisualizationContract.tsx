@@ -1,13 +1,13 @@
 import { Card, Badge, MetricLabel } from '../ui'
 
 type AnalyticsState = 'ok' | 'partial' | 'empty' | 'error'
-type PercentScale = 'decimal' | 'percent'
+type MetricScale = 'decimal' | 'percent' | 'count'
 
 interface MetricFixture {
   key: string
   label: string
   value: number | null
-  scale: PercentScale
+  scale: MetricScale
   denominator: string
   sourceField: string
   evidence: string
@@ -61,37 +61,46 @@ const overviewStates: StateFixture[] = [
   },
   {
     state: 'partial',
-    label: 'Partial',
+    label: 'Partial: identity path blocker',
     badge: 'partial',
     badgeVariant: 'orange',
-    summary: 'Core visibility metrics are available, but citation authority and product dimensions are not fully produced yet.',
+    summary: 'Production diagnostics confirmed brands.id=12 is 雅诗兰黛 and raw 雅诗兰黛 evidence exists, but there is no App project for primary_brand_id=12 and normalized facts are not attached to canonical brand_id=12.',
     metrics: [
       {
-        key: 'mention_rate',
-        label: 'Mention rate',
-        value: 0.118,
-        scale: 'decimal',
-        denominator: '39 brand-mentioned responses / 331 eligible non-brand responses',
-        sourceField: 'series.metric=mention_rate, points[].value_scale=decimal',
-        evidence: 'Rendered with partial badge and missing-dimension note.',
+        key: 'canonical_brand',
+        label: 'Canonical brand',
+        value: 12,
+        scale: 'count',
+        denominator: 'brands.id=12 / brand_name=雅诗兰黛',
+        sourceField: 'brand_identity.canonical_brand_id=12',
+        evidence: 'Brand exists; the UI should not blame chart rendering.',
       },
       {
-        key: 'sov',
-        label: 'SoV',
-        value: 31.7,
-        scale: 'percent',
-        denominator: '39 Estee Lauder mentions / 123 competitive-set brand mentions',
-        sourceField: 'sov_30d[].value, value_scale=percent',
-        evidence: 'Still not reused as mention rate.',
+        key: 'raw_evidence',
+        label: 'Raw evidence',
+        value: 936,
+        scale: 'count',
+        denominator: 'raw text probe: queries=936 and responses=58 containing 雅诗兰黛 mostly on brand_id=2 paths',
+        sourceField: 'evidence_counts.raw_text_query_hits, evidence_counts.raw_text_response_hits',
+        evidence: 'Evidence exists but is identity-misaligned.',
       },
       {
-        key: 'citation_share',
-        label: 'Citation share',
+        key: 'app_project',
+        label: 'App project',
         value: null,
         scale: 'percent',
-        denominator: 'citation_sources joined to brand mentions',
-        sourceField: 'missing_reasons[].field=citation_share',
-        evidence: 'Shown as partial, not 0%.',
+        denominator: 'projects where primary_brand_id=12 or project name matches 雅诗兰黛: 0 rows',
+        sourceField: 'project_scope.project_id, project_scope.primary_brand_id',
+        evidence: 'No project UUID means App APIs cannot fetch the slice yet.',
+      },
+      {
+        key: 'normalized_facts',
+        label: 'Normalized facts',
+        value: null,
+        scale: 'percent',
+        denominator: 'brand_mentions / response_analyses for canonical brand_id=12 are empty',
+        sourceField: 'missing_sources[].source=brand_mentions|response_analyses',
+        evidence: 'Render partial identity blocker, not 0% KPIs.',
       },
     ],
   },
@@ -173,7 +182,7 @@ const pageInventory = [
   {
     page: '/brand/overview',
     target: 'First Estee Lauder vertical slice: KPI cards, PANO trend, SoV donut, sentiment trend, competitor bubble, diagnostics.',
-    state: 'Visualized here: ok / partial / empty / error.',
+    state: 'Visualized here: desired ok plus current production partial identity blocker / empty / error.',
     handoff: '/overview, /metrics, /competitors/metrics, /competitors/trends, /diagnostics, /group-shared-domains',
   },
   {
@@ -210,15 +219,30 @@ const pageInventory = [
 
 const payloadFields = [
   'project_id',
+  'project_scope.exists',
+  'project_scope.missing_reason',
   'primary_brand_id',
+  'canonical_brand_id',
   'brand_id',
   'brand_name',
+  'brand_aliases[]',
   'period.from',
   'period.to',
   'state',
   'state_reason',
+  'state_detail',
   'request_id',
   'data_freshness.generated_at',
+  'identity_diagnostics.canonical_brand_id',
+  'identity_diagnostics.canonical_brand_name',
+  'identity_diagnostics.raw_text_brand_ids[]',
+  'identity_diagnostics.raw_text_query_hits',
+  'identity_diagnostics.raw_text_response_hits',
+  'identity_diagnostics.normalized_brand_mentions',
+  'identity_diagnostics.response_analyses',
+  'missing_sources[].source',
+  'missing_sources[].reason',
+  'missing_sources[].owner_issue',
   'evidence_counts.eligible_response_count',
   'evidence_counts.brand_mentioned_response_count',
   'evidence_counts.competitive_mention_count',
@@ -253,8 +277,9 @@ const payloadFields = [
   'invalid_fields[].reason',
 ]
 
-export function formatMetricPercent(value: number | null, scale: PercentScale): string {
+export function formatMetricPercent(value: number | null, scale: MetricScale): string {
   if (value == null || !Number.isFinite(value)) return 'No source data'
+  if (scale === 'count') return value.toLocaleString()
   const pct = scale === 'decimal' ? value * 100 : value
   return `${pct.toFixed(1)}%`
 }
@@ -308,6 +333,9 @@ export default function AnalyticsVisualizationContract() {
             </h2>
             <p className="mt-2 text-sm text-themed-muted">
               First vertical slice for /brand/overview: show real non-empty data when available, expose partial or empty upstream gaps, and surface API errors without falling back to mock truth.
+            </p>
+            <p className="mt-2 text-xs text-themed-muted">
+              Current production reality from #484: brand_id=12 is 雅诗兰黛, raw text evidence exists, but no App project/facts are available for canonical brand_id=12 yet.
             </p>
           </div>
           <div className="rounded-md px-3 py-2 text-xs text-themed-muted" style={{ background: 'var(--color-bg-subtle)' }}>

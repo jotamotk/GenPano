@@ -6,6 +6,7 @@ describe('AnalyticsVisualizationContract', () => {
     expect(formatMetricPercent(0.162, 'decimal')).toBe('16.2%')
     expect(formatMetricPercent(16.2, 'percent')).toBe('16.2%')
     expect(formatMetricPercent(38.4, 'percent')).toBe('38.4%')
+    expect(formatMetricPercent(936, 'count')).toBe('936')
   })
 
   it('shows distinct mention rate and SoV denominators for issue 482', () => {
@@ -14,6 +15,8 @@ describe('AnalyticsVisualizationContract', () => {
     expect(screen.getByText('App analytics visualization contract')).toBeInTheDocument()
     expect(screen.getByText('70 brand-mentioned responses / 432 non-brand category responses')).toBeInTheDocument()
     expect(screen.getByText('70 Estee Lauder mentions / 182 competitive-set brand mentions')).toBeInTheDocument()
+    expect(screen.getByText('Partial: identity path blocker')).toBeInTheDocument()
+    expect(screen.getByText('projects where primary_brand_id=12 or project name matches 雅诗兰黛: 0 rows')).toBeInTheDocument()
     expect(screen.getByText('kpi_cards[].value_scale')).toBeInTheDocument()
   })
 })
