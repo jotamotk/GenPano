@@ -43,7 +43,11 @@ def queue_for_target(target_llm: Any | None) -> str:
 
 def _normalize_dispatch_item(item: Any) -> tuple[int, Any | None]:
     if isinstance(item, dict):
-        raw_id = item.get("id", item.get("query_id"))
+        raw_id: Any = item.get("id")
+        if raw_id is None:
+            raw_id = item.get("query_id")
+        if raw_id is None:
+            raise ValueError("dispatch item missing query id")
         return int(raw_id), item.get("target_llm") or item.get("engine") or item.get("llm")
     if isinstance(item, (tuple, list)) and item:
         return int(item[0]), item[1] if len(item) > 1 else None
