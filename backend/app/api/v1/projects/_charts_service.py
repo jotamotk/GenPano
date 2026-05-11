@@ -76,7 +76,12 @@ from app.api.v1.projects._legacy_lookups import (
 )
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
+    _as_float,
+    _as_int,
+    _date_key,
+    _fact_all_mention_count,
     _fact_rows,
+    _fact_target_mention_count,
     get_topic_monitoring,
 )
 
@@ -127,6 +132,315 @@ def _needs_admin_filter(
     return bool(engines or segment_id or profile_id)
 
 
+def _state_reason(state: str, empty_reason: str) -> str:
+    return "data_available" if state == "ok" else empty_reason
+
+
+def _response_evidence_count(rows: list[dict[str, Any]]) -> int:
+    response_ids = {_as_int(row.get("response_id")) for row in rows}
+    return len({rid for rid in response_ids if rid is not None})
+
+
+def _chart_counts(**counts: int) -> dict[str, int]:
+    return {key: int(value or 0) for key, value in counts.items()}
+
+
+async def _admin_fact_rows(
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
+) -> list[dict[str, Any]]:
+    return await _fact_rows(
+        session,
+        project,
+        filters=_admin_filters(
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+def _polarity_from_score(score: object) -> str:
+    value = _as_float(score)
+    if value is None:
+        return "neutral"
+    if value > 0.05:
+        return "positive"
+    if value < -0.05:
+        return "negative"
+    return "neutral"
+
+
+def _label_for_polarity(polarity: str) -> str:
+    return {"positive": "Positive", "negative": "Negative", "neutral": "Neutral"}.get(
+        polarity, "Neutral"
+    )
+
+
+def _engine_metric_rows_from_facts(
+    fact_rows: list[dict[str, Any]],
+) -> tuple[list[EngineMetricRow], int]:
+    engine_bucket: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "responses": set(),
+            "target_mentions": 0,
+            "all_mentions": 0,
+            "citations": 0,
+            "sentiment": [],
+        }
+    )
+    seen: set[int] = set()
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+        target_mentions = _fact_target_mention_count(row)
+        all_mentions = _fact_all_mention_count(row, target_mentions)
+        engine_bucket[engine]["responses"].add(rid)
+        engine_bucket[engine]["target_mentions"] += target_mentions
+        engine_bucket[engine]["all_mentions"] += all_mentions
+        engine_bucket[engine]["citations"] += int(row.get("citation_count") or 0)
+        sentiment = _as_float(row.get("sentiment_score"))
+        if sentiment is not None:
+            engine_bucket[engine]["sentiment"].append(sentiment)
+    items = [
+        EngineMetricRow(
+            engine=engine,
+            mention_rate=round(values["target_mentions"] / len(values["responses"]), 4)
+            if values["responses"]
+            else None,
+            sov=round(values["target_mentions"] / values["all_mentions"], 4)
+            if values["all_mentions"]
+            else None,
+            citation_rate=round(values["citations"] / len(values["responses"]), 4)
+            if values["responses"]
+            else None,
+            sentiment=round(sum(values["sentiment"]) / len(values["sentiment"]), 3)
+            if values["sentiment"]
+            else None,
+        )
+        for engine, values in sorted(engine_bucket.items())
+        if values["responses"]
+    ]
+    return items, len(seen)
+
+
+def _position_distribution_from_facts(
+    fact_rows: list[dict[str, Any]],
+) -> tuple[list[PositionBucketRow], int, int]:
+    buckets: OrderedDict[str, int] = OrderedDict(
+        [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
+    )
+    seen: set[int] = set()
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        if _fact_target_mention_count(row) <= 0:
+            continue
+        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
+        if rank is None:
+            buckets["Unmentioned"] += 1
+        elif rank == 1:
+            buckets["Top1"] += 1
+        elif rank <= 3:
+            buckets["Top3"] += 1
+        elif rank <= 5:
+            buckets["Top5"] += 1
+        elif rank <= 10:
+            buckets["Top10"] += 1
+        else:
+            buckets["11+"] += 1
+    total = sum(buckets.values())
+    return (
+        [
+            PositionBucketRow(
+                bucket=k,
+                count=v,
+                pct=round((v / total * 100) if total else 0.0, 2),
+            )
+            for k, v in buckets.items()
+        ],
+        total,
+        len(seen),
+    )
+
+
+async def _topic_heatmap_from_facts(
+    session: AsyncSession,
+    project: Project,
+    fact_rows: list[dict[str, Any]],
+    *,
+    metric: str,
+    compare_with: list[int],
+    top_n: int,
+) -> tuple[list[HeatmapRow], int]:
+    primary = project.primary_brand_id
+    if primary is None:
+        return [], 0
+
+    topic_buckets: dict[int, dict[str, Any]] = {}
+    seen: set[int] = set()
+    for row in fact_rows:
+        tid = _as_int(row.get("topic_id"))
+        rid = _as_int(row.get("response_id"))
+        if tid is None or rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        bucket = topic_buckets.setdefault(
+            tid,
+            {
+                "name": row.get("topic_name") or f"topic-{tid}",
+                "responses": set(),
+                "target_responses": set(),
+                "sentiments": [],
+            },
+        )
+        bucket["responses"].add(rid)
+        if _fact_target_mention_count(row) > 0:
+            bucket["target_responses"].add(rid)
+        sentiment = _as_float(row.get("sentiment_score"))
+        if sentiment is not None:
+            bucket["sentiments"].append(sentiment)
+
+    top_topics = sorted(
+        topic_buckets,
+        key=lambda tid: (
+            -len(topic_buckets[tid]["target_responses"]),
+            -len(topic_buckets[tid]["responses"]),
+            tid,
+        ),
+    )[:top_n]
+    if not top_topics:
+        return [], len(seen)
+
+    topic_names = await resolve_topic_names(session, top_topics)
+    brand_ids = [primary, *compare_with]
+    brand_names = await resolve_brand_names(session, brand_ids)
+    cells: list[HeatmapCell] = []
+    for tid in top_topics:
+        bucket = topic_buckets[tid]
+        sample = len(bucket["responses"])
+        value = None
+        if metric == "sentiment":
+            sentiments = bucket["sentiments"]
+            if sentiments:
+                value = round(sum(sentiments) / len(sentiments), 4)
+        elif sample:
+            value = round(len(bucket["target_responses"]) / sample, 4)
+        cells.append(
+            HeatmapCell(
+                topic_id=tid,
+                topic_label=topic_names.get(tid) or bucket["name"],
+                value=value,
+                sample=sample,
+            )
+        )
+    rows = [HeatmapRow(brand_id=primary, brand_name=brand_names.get(primary), values=cells)]
+    for bid in compare_with:
+        rows.append(
+            HeatmapRow(
+                brand_id=bid,
+                brand_name=brand_names.get(bid),
+                values=[
+                    HeatmapCell(
+                        topic_id=cell.topic_id,
+                        topic_label=cell.topic_label,
+                        value=None,
+                        sample=0,
+                    )
+                    for cell in cells
+                ],
+            )
+        )
+    return rows, len(seen)
+
+
+def _sentiment_by_engine_from_facts(
+    fact_rows: list[dict[str, Any]],
+) -> tuple[list[SentimentByEngineRow], int]:
+    bucket: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"positive": 0, "neutral": 0, "negative": 0}
+    )
+    seen: set[int] = set()
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+        positive = int(row.get("positive_mentions") or 0)
+        neutral = int(row.get("neutral_mentions") or 0)
+        negative = int(row.get("negative_mentions") or 0)
+        if positive or neutral or negative:
+            bucket[engine]["positive"] += positive
+            bucket[engine]["neutral"] += neutral
+            bucket[engine]["negative"] += negative
+            continue
+        if _fact_target_mention_count(row) > 0:
+            bucket[engine][_polarity_from_score(row.get("sentiment_score"))] += 1
+    items = [
+        SentimentByEngineRow(
+            engine=engine,
+            positive=v["positive"],
+            neutral=v["neutral"],
+            negative=v["negative"],
+        )
+        for engine, v in sorted(bucket.items())
+        if v["positive"] or v["neutral"] or v["negative"]
+    ]
+    return items, len(seen)
+
+
+def _sentiment_trend_by_engine_from_facts(
+    fact_rows: list[dict[str, Any]],
+) -> tuple[list[str], list[SentimentTrendByEngineRow], int]:
+    by_day_engine: dict[str, dict[str, list[float]]] = OrderedDict()
+    engines_seen: set[str] = set()
+    seen: set[int] = set()
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        sentiment = _as_float(row.get("sentiment_score"))
+        if rid is None or rid in seen or sentiment is None:
+            continue
+        seen.add(rid)
+        day = _date_key(
+            row.get("query_created_at")
+            or row.get("response_created_at")
+            or row.get("query_finished_at")
+        )
+        if day is None:
+            continue
+        engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+        engines_seen.add(engine)
+        by_day_engine.setdefault(day, defaultdict(list))[engine].append(sentiment)
+    engines = sorted(engines_seen)
+    items = [
+        SentimentTrendByEngineRow(
+            date=day,
+            by_engine={
+                engine: round(sum(values.get(engine, [])) / len(values.get(engine, [])), 4)
+                if values.get(engine)
+                else None
+                for engine in engines
+            },
+        )
+        for day, values in by_day_engine.items()
+    ]
+    return engines, items, len(seen)
+
+
 # ── /metrics/by-engine ──────────────────────────────────────────────
 async def get_engine_metrics(
     session: AsyncSession,
@@ -141,66 +455,33 @@ async def get_engine_metrics(
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
         return EngineMetricsOut(
-            project_id=project.id, period=_period(from_d, to_d), items=[], state="empty"
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=[],
+            state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
-        engine_bucket: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {
-                "responses": set(),
-                "target_mentions": 0,
-                "all_mentions": 0,
-                "citations": 0,
-                "sentiment": [],
-            }
-        )
-        seen: set[int] = set()
-        for row in fact_rows:
-            rid = row.get("response_id")
-            if rid is None or int(rid) in seen:
-                continue
-            seen.add(int(rid))
-            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
-            engine_bucket[engine]["responses"].add(int(rid))
-            engine_bucket[engine]["target_mentions"] += int(row.get("target_mention_count") or 0)
-            engine_bucket[engine]["all_mentions"] += int(row.get("all_mention_count") or 0)
-            engine_bucket[engine]["citations"] += int(row.get("citation_count") or 0)
-            if row.get("sentiment_score") is not None:
-                engine_bucket[engine]["sentiment"].append(float(row["sentiment_score"]))
-        items = [
-            EngineMetricRow(
-                engine=engine,
-                mention_rate=round(values["target_mentions"] / len(values["responses"]), 4)
-                if values["responses"]
-                else None,
-                sov=round(values["target_mentions"] / values["all_mentions"], 4)
-                if values["all_mentions"]
-                else None,
-                citation_rate=round(values["citations"] / len(values["responses"]), 4)
-                if values["responses"]
-                else None,
-                sentiment=round(sum(values["sentiment"]) / len(values["sentiment"]), 3)
-                if values["sentiment"]
-                else None,
-            )
-            for engine, values in sorted(engine_bucket.items())
-        ]
+        items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
+        state = "ok" if items else "empty"
         return EngineMetricsOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             items=items,
-            state="ok" if items else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_admin_fact_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     stmt = (
         select(
@@ -232,11 +513,28 @@ async def get_engine_metrics(
         )
         for r in score_rows
     ]
+    if not items:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
+        state = "ok" if items else "empty"
+        return EngineMetricsOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=items,
+            state=state,
+            state_reason=_state_reason(state, "no_metric_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
+    evidence_count = len(score_rows)
     return EngineMetricsOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         items=items,
-        state="ok" if items else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=evidence_count,
+        evidence_counts=_chart_counts(geo_score_daily_rows=evidence_count),
     )
 
 
@@ -259,56 +557,30 @@ async def get_position_distribution(
             items=[],
             total_mentions=0,
             state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
-        fact_buckets: OrderedDict[str, int] = OrderedDict(
-            [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
-        )
-        seen: set[int] = set()
-        for row in fact_rows:
-            rid = row.get("response_id")
-            if rid is None or int(rid) in seen:
-                continue
-            seen.add(int(rid))
-            rank = row.get("min_position_rank") or row.get("target_brand_rank")
-            if rank is None:
-                fact_buckets["Unmentioned"] += 1
-            elif int(rank) == 1:
-                fact_buckets["Top1"] += 1
-            elif int(rank) <= 3:
-                fact_buckets["Top3"] += 1
-            elif int(rank) <= 5:
-                fact_buckets["Top5"] += 1
-            elif int(rank) <= 10:
-                fact_buckets["Top10"] += 1
-            else:
-                fact_buckets["11+"] += 1
-        total = sum(fact_buckets.values())
+        items, total, evidence_count = _position_distribution_from_facts(fact_rows)
+        state = "ok" if total else "empty"
         return PositionDistributionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
-            items=[
-                PositionBucketRow(
-                    bucket=k,
-                    count=v,
-                    pct=round((v / total * 100) if total else 0.0, 2),
-                )
-                for k, v in fact_buckets.items()
-            ],
+            items=items,
             total_mentions=total,
-            state="ok" if total else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_admin_fact_mentions"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     stmt = (
         select(BrandMention.position_rank, func.count())
@@ -346,12 +618,29 @@ async def get_position_distribution(
         PositionBucketRow(bucket=k, count=v, pct=round((v / total * 100) if total else 0.0, 2))
         for k, v in position_buckets.items()
     ]
+    if total == 0:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        items, total, evidence_count = _position_distribution_from_facts(fact_rows)
+        state = "ok" if total else "empty"
+        return PositionDistributionOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=items,
+            total_mentions=total,
+            state=state,
+            state_reason=_state_reason(state, "no_position_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
     return PositionDistributionOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         items=items,
         total_mentions=total,
-        state="ok" if total else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=total,
+        evidence_counts=_chart_counts(brand_mention_count=total),
     )
 
 
@@ -369,7 +658,13 @@ async def get_topic_heatmap(
     from_d, to_d = _resolve_window(from_date, to_date)
     primary = project.primary_brand_id
     if primary is None:
-        return TopicHeatmapOut(project_id=project.id, metric=metric, rows=[], state="empty")
+        return TopicHeatmapOut(
+            project_id=project.id,
+            metric=metric,
+            rows=[],
+            state="empty",
+            state_reason="no_primary_brand",
+        )
 
     # If no explicit comparison list supplied, use pinned competitors (top 4).
     if compare_with is None:
@@ -397,7 +692,27 @@ async def get_topic_heatmap(
     )
     top_topics = [int(r[0]) for r in (await session.execute(top_topic_stmt)).all()]
     if not top_topics:
-        return TopicHeatmapOut(project_id=project.id, metric=metric, rows=[], state="empty")
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        rows, evidence_count = await _topic_heatmap_from_facts(
+            session,
+            project,
+            fact_rows,
+            metric=metric,
+            compare_with=compare_with,
+            top_n=top_n,
+        )
+        state = (
+            "ok" if any(any(cell.value is not None for cell in row.values) for row in rows) else "empty"
+        )
+        return TopicHeatmapOut(
+            project_id=project.id,
+            metric=metric,
+            rows=rows,
+            state=state,
+            state_reason=_state_reason(state, "no_topic_metric_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
 
     metric_col = (
         TopicScoreDaily.avg_sentiment_score
@@ -446,11 +761,16 @@ async def get_topic_heatmap(
             )
         rows.append(HeatmapRow(brand_id=bid, brand_name=brand_names.get(bid), values=cells))
 
+    state = "ok" if any(any(c.value is not None for c in r.values) for r in rows) else "empty"
+    evidence_count = sum(cell.sample for row in rows for cell in row.values)
     return TopicHeatmapOut(
         project_id=project.id,
         metric=metric,
         rows=rows,
-        state="ok" if any(any(c.value is not None for c in r.values) for r in rows) else "empty",
+        state=state,
+        state_reason=_state_reason(state, "no_topic_metric_data"),
+        evidence_count=evidence_count,
+        evidence_counts=_chart_counts(topic_score_daily_sample_count=evidence_count),
     )
 
 
@@ -468,48 +788,33 @@ async def get_sentiment_by_engine(
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
         return SentimentByEngineOut(
-            project_id=project.id, period=_period(from_d, to_d), items=[], state="empty"
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=[],
+            state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
-        fact_bucket: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"positive": 0, "neutral": 0, "negative": 0}
-        )
-        seen: set[int] = set()
-        for row in fact_rows:
-            rid = row.get("response_id")
-            if rid is None or int(rid) in seen:
-                continue
-            seen.add(int(rid))
-            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
-            fact_bucket[engine]["positive"] += int(row.get("positive_mentions") or 0)
-            fact_bucket[engine]["neutral"] += int(row.get("neutral_mentions") or 0)
-            fact_bucket[engine]["negative"] += int(row.get("negative_mentions") or 0)
-        items = [
-            SentimentByEngineRow(
-                engine=engine,
-                positive=v["positive"],
-                neutral=v["neutral"],
-                negative=v["negative"],
-            )
-            for engine, v in sorted(fact_bucket.items())
-        ]
+        items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
+        state = "ok" if items else "empty"
         return SentimentByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             items=items,
-            state="ok" if items else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_sentiment_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     # JOIN brand_mentions → llm_responses to get target_llm. SQLite tests fall
     # back to "all" engine bucket if join unavailable.
@@ -551,11 +856,28 @@ async def get_sentiment_by_engine(
         )
         for engine, v in sorted(sentiment_bucket.items())
     ]
+    if not items:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
+        state = "ok" if items else "empty"
+        return SentimentByEngineOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=items,
+            state=state,
+            state_reason=_state_reason(state, "no_sentiment_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
+    evidence_count = sum(v["positive"] + v["neutral"] + v["negative"] for v in sentiment_bucket.values())
     return SentimentByEngineOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         items=items,
-        state="ok" if items else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=evidence_count,
+        evidence_counts=_chart_counts(brand_mention_count=evidence_count),
     )
 
 
@@ -578,55 +900,30 @@ async def get_sentiment_trend_by_engine(
             engines=[],
             items=[],
             state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
-        by_day_engine: dict[str, dict[str, list[float]]] = OrderedDict()
-        fact_engines_seen: set[str] = set()
-        seen: set[int] = set()
-        for row in fact_rows:
-            rid = row.get("response_id")
-            if rid is None or int(rid) in seen or row.get("sentiment_score") is None:
-                continue
-            seen.add(int(rid))
-            day = str(row.get("query_created_at") or row.get("response_created_at") or "")[:10]
-            if not day:
-                continue
-            engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
-            fact_engines_seen.add(engine)
-            by_day_engine.setdefault(day, defaultdict(list))[engine].append(
-                float(row["sentiment_score"])
-            )
-        engine_list = sorted(fact_engines_seen)
-        items = [
-            SentimentTrendByEngineRow(
-                date=day,
-                by_engine={
-                    engine: round(sum(values.get(engine, [])) / len(values.get(engine, [])), 4)
-                    if values.get(engine)
-                    else None
-                    for engine in engine_list
-                },
-            )
-            for day, values in by_day_engine.items()
-        ]
+        engine_list, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
+        state = "ok" if items else "empty"
         return SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             engines=engine_list,
             items=items,
-            state="ok" if items else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_sentiment_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     stmt = (
         select(
@@ -659,12 +956,30 @@ async def get_sentiment_trend_by_engine(
         SentimentTrendByEngineRow(date=d_iso, by_engine={e: by_date[d_iso].get(e) for e in engines})
         for d_iso in by_date
     ]
+    if not items:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        engines, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
+        state = "ok" if items else "empty"
+        return SentimentTrendByEngineOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            engines=engines,
+            items=items,
+            state=state,
+            state_reason=_state_reason(state, "no_sentiment_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
+    evidence_count = len(sentiment_rows)
     return SentimentTrendByEngineOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         engines=engines,
         items=items,
-        state="ok" if items else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=evidence_count,
+        evidence_counts=_chart_counts(geo_score_daily_rows=evidence_count),
     )
 
 
@@ -683,7 +998,12 @@ async def get_topic_attribution(
     from_d, to_d = _resolve_window(from_date, to_date)
     primary = project.primary_brand_id
     if primary is None:
-        return TopicAttributionOut(project_id=project.id, items=[], state="empty")
+        return TopicAttributionOut(
+            project_id=project.id,
+            items=[],
+            state="empty",
+            state_reason="no_primary_brand",
+        )
     f, t = _dt_range(from_d, to_d)
 
     admin_filters = AnalysisFilters(
@@ -739,10 +1059,15 @@ async def get_topic_attribution(
         )
     admin_items.sort(key=lambda item: (-item.negative_ratio, -item.negative_count, item.topic_id))
     if admin_items or admin_rows:
+        state = "ok" if admin_items else "empty"
+        evidence_count = _response_evidence_count(admin_rows)
         return TopicAttributionOut(
             project_id=project.id,
             items=admin_items[:limit],
-            state="ok" if admin_items else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_negative_topic_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
 
     stmt = (
@@ -784,7 +1109,14 @@ async def get_topic_attribution(
                 sample_snippet=None,
             )
         )
-    return TopicAttributionOut(project_id=project.id, items=items, state="ok" if items else "empty")
+    state = "ok" if items else "empty"
+    return TopicAttributionOut(
+        project_id=project.id,
+        items=items,
+        state=state,
+        state_reason=_state_reason(state, "no_negative_topic_data"),
+        evidence_count=sum(item.negative_count for item in items),
+    )
 
 
 # ── /mention-samples ────────────────────────────────────────────────
@@ -799,7 +1131,12 @@ async def get_mention_samples(
 ) -> MentionSamplesOut:
     from_d, to_d = _resolve_window(from_date, to_date)
     if project.primary_brand_id is None:
-        return MentionSamplesOut(project_id=project.id, items=[], state="empty")
+        return MentionSamplesOut(
+            project_id=project.id,
+            items=[],
+            state="empty",
+            state_reason="no_primary_brand",
+        )
     f, t = _dt_range(from_d, to_d)
 
     where = [
@@ -859,7 +1196,54 @@ async def get_mention_samples(
         )
         for m in rows
     ]
-    return MentionSamplesOut(project_id=project.id, items=items, state="ok" if items else "empty")
+    if not items:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        seen: set[int] = set()
+        fallback_items: list[MentionSampleRow] = []
+        for row in fact_rows:
+            rid = _as_int(row.get("response_id"))
+            if rid is None or rid in seen or _fact_target_mention_count(row) <= 0:
+                continue
+            seen.add(rid)
+            polarity_value = _polarity_from_score(row.get("sentiment_score"))
+            fallback_items.append(
+                MentionSampleRow(
+                    mention_id=rid,
+                    response_id=rid,
+                    label=_label_for_polarity(polarity_value),
+                    polarity=polarity_value,
+                    summary=str(row.get("response_raw_text") or "")[:280] or None,
+                    snippet=row.get("response_raw_text"),
+                    engine=row.get("target_llm") or row.get("response_target_llm"),
+                    topic=row.get("topic_name"),
+                    occurred_at=str(
+                        row.get("response_created_at")
+                        or row.get("query_finished_at")
+                        or row.get("query_created_at")
+                        or ""
+                    )
+                    or None,
+                )
+            )
+            if len(fallback_items) >= limit:
+                break
+        state = "ok" if fallback_items else "empty"
+        return MentionSamplesOut(
+            project_id=project.id,
+            items=fallback_items,
+            state=state,
+            state_reason=_state_reason(state, "no_mention_sample_data"),
+            evidence_count=len(seen),
+            evidence_counts=_chart_counts(admin_fact_response_count=len(seen)),
+        )
+    return MentionSamplesOut(
+        project_id=project.id,
+        items=items,
+        state="ok",
+        state_reason="data_available",
+        evidence_count=len(items),
+        evidence_counts=_chart_counts(brand_mention_count=len(items)),
+    )
 
 
 # ── /citations/authority-trend ──────────────────────────────────────
@@ -877,27 +1261,34 @@ async def get_authority_trend(
     primary = project.primary_brand_id
     if primary is None:
         return AuthorityTrendOut(
-            project_id=project.id, period=_period(from_d, to_d), points=[], state="empty"
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            points=[],
+            state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
+        evidence_count = _response_evidence_count(fact_rows)
         response_ids = sorted(
             {int(r["response_id"]) for r in fact_rows if r.get("response_id") is not None}
         )
         if not response_ids:
             return AuthorityTrendOut(
-                project_id=project.id, period=_period(from_d, to_d), points=[], state="empty"
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                points=[],
+                state="empty",
+                state_reason="no_admin_fact_data",
             )
         stmt = (
             select(
@@ -935,11 +1326,15 @@ async def get_authority_trend(
                     untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
                 )
             )
+        state = "ok" if fact_points else "empty"
         return AuthorityTrendOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             points=fact_points,
-            state="ok" if fact_points else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_citation_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
     # Per-day count of citations grouped by tier.
     stmt = (
@@ -982,11 +1377,33 @@ async def get_authority_trend(
                 untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
             )
         )
+    if not authority_points:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        evidence_count = _response_evidence_count(fact_rows)
+        return AuthorityTrendOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            points=[],
+            state="empty",
+            state_reason="no_citation_data",
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
     return AuthorityTrendOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         points=authority_points,
-        state="ok" if authority_points else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=sum(
+            1
+            for point in authority_points
+            if point.tier1_pct
+            or point.tier2_pct
+            or point.tier3_pct
+            or point.tier4_pct
+            or point.untiered_pct
+        ),
     )
 
 
@@ -1005,21 +1422,25 @@ async def get_citation_composition(
     primary = project.primary_brand_id
     if primary is None:
         return CitationCompositionOut(
-            project_id=project.id, period=_period(from_d, to_d), segments=[], total=0, state="empty"
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            segments=[],
+            total=0,
+            state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
     if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
-        fact_rows = await _fact_rows(
+        fact_rows = await _admin_fact_rows(
             session,
             project,
-            filters=_admin_filters(
-                from_d,
-                to_d,
-                engines=engines,
-                segment_id=segment_id,
-                profile_id=profile_id,
-            ),
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
         )
+        evidence_count = _response_evidence_count(fact_rows)
         response_ids = sorted(
             {int(r["response_id"]) for r in fact_rows if r.get("response_id") is not None}
         )
@@ -1030,6 +1451,8 @@ async def get_citation_composition(
                 segments=[],
                 total=0,
                 state="empty",
+                state_reason="no_admin_fact_data",
+                evidence_count=0,
             )
         stmt = (
             select(DomainAuthority.tier, func.count())
@@ -1055,6 +1478,7 @@ async def get_citation_composition(
             None: "Untiered",
         }
         by_tier = {r[0]: int(r[1] or 0) for r in rows}
+        state = "ok" if total else "empty"
         return CitationCompositionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1069,7 +1493,13 @@ async def get_citation_composition(
                 if (count := by_tier.get(tier, 0)) or tier is not None
             ],
             total=total,
-            state="ok" if total else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_citation_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(
+                admin_fact_response_count=evidence_count,
+                citation_source_count=total,
+            ),
         )
     stmt = (
         select(DomainAuthority.tier, func.count())
@@ -1110,12 +1540,28 @@ async def get_citation_composition(
                 pct=round(cnt / total * 100, 1) if total else 0.0,
             )
         )
+    if total == 0:
+        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        evidence_count = _response_evidence_count(fact_rows)
+        return CitationCompositionOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            segments=segments,
+            total=0,
+            state="empty",
+            state_reason="no_citation_data",
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
     return CitationCompositionOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         segments=segments,
         total=total,
-        state="ok" if total else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=total,
+        evidence_counts=_chart_counts(citation_source_count=total),
     )
 
 
@@ -1139,6 +1585,7 @@ async def get_content_gap(
             topics=[],
             page_type_distribution=[],
             state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
 
@@ -1200,11 +1647,16 @@ async def get_content_gap(
                 )
                 for r in pt_rows
             ]
+        state = "ok" if monitoring_topics else "empty"
+        evidence_count = _response_evidence_count(admin_rows)
         return ContentGapOut(
             project_id=project.id,
             topics=monitoring_topics,
             page_type_distribution=page_types,
-            state="ok" if monitoring_topics else "empty",
+            state=state,
+            state_reason=_state_reason(state, "no_content_gap_data"),
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
 
     # Topics where mention_rate > industry median but citation_rate is low.
@@ -1227,7 +1679,11 @@ async def get_content_gap(
     topic_rows = (await session.execute(stmt)).all()
     if not topic_rows:
         return ContentGapOut(
-            project_id=project.id, topics=[], page_type_distribution=[], state="empty"
+            project_id=project.id,
+            topics=[],
+            page_type_distribution=[],
+            state="empty",
+            state_reason="no_topic_metric_data",
         )
 
     topic_ids = [int(r[0]) for r in topic_rows]
@@ -1292,11 +1748,14 @@ async def get_content_gap(
         for r in pt_rows
     ]
 
+    state = "ok" if gap_topics else "empty"
     return ContentGapOut(
         project_id=project.id,
         topics=gap_topics,
         page_type_distribution=page_types,
-        state="ok" if gap_topics else "empty",
+        state=state,
+        state_reason=_state_reason(state, "no_content_gap_data"),
+        evidence_count=len(topic_rows),
     )
 
 
@@ -1317,6 +1776,7 @@ async def get_pr_targets(
             kol_scorecards=[],
             tier2_matrix=Tier2MatrixOut(domains=[], brands=[]),
             state="empty",
+            state_reason="no_primary_brand",
         )
     f, t = _dt_range(from_d, to_d)
 
@@ -1461,12 +1921,15 @@ async def get_pr_targets(
     except Exception:
         pass
 
+    state = "ok" if (targets or kols or top_domains) else "empty"
     return PrTargetsOut(
         project_id=project.id,
         targets=targets,
         kol_scorecards=kols,
         tier2_matrix=Tier2MatrixOut(domains=top_domains, brands=matrix_brand_rows),
-        state="ok" if (targets or kols or top_domains) else "empty",
+        state=state,
+        state_reason=_state_reason(state, "no_pr_target_data"),
+        evidence_count=sum(row.gap for row in targets) + len(kols) + len(top_domains),
     )
 
 
@@ -1485,6 +1948,7 @@ async def get_simulator_baseline(
             tiers=[],
             presets=[],
             state="empty",
+            state_reason="no_primary_brand",
         )
 
     # Latest weekly citation tier counts.
@@ -1565,6 +2029,7 @@ async def get_simulator_baseline(
             "delta_by_tier": {1: 0, 2: 1, 3: 6, 4: 0},
         },
     ]
+    state = "ok" if weekly is not None else "partial"
     return SimulatorBaselineOut(
         project_id=project.id,
         current_pano=round(current_pano, 1),
@@ -1572,7 +2037,9 @@ async def get_simulator_baseline(
         industry_top3_avg=round(top3, 1) if top3 is not None else None,
         tiers=tiers,
         presets=presets,
-        state="ok" if weekly is not None else "partial",
+        state=state,
+        state_reason="data_available" if state == "ok" else "geo_product_daily_pending",
+        evidence_count=1 if weekly is not None else 0,
     )
 
 
@@ -1583,7 +2050,12 @@ async def get_authority_radar(
 ) -> AuthorityRadarOut:
     primary = project.primary_brand_id
     if primary is None:
-        return AuthorityRadarOut(project_id=project.id, rows=[], state="empty")
+        return AuthorityRadarOut(
+            project_id=project.id,
+            rows=[],
+            state="empty",
+            state_reason="no_primary_brand",
+        )
 
     competitor_ids = [
         r[0]
@@ -1679,7 +2151,13 @@ async def get_authority_radar(
         for i, label in enumerate(tier_labels)
     ]
     state = "ok" if me[4] or top_comp_counts[4] else "empty"
-    return AuthorityRadarOut(project_id=project.id, rows=rows, state=state)
+    return AuthorityRadarOut(
+        project_id=project.id,
+        rows=rows,
+        state=state,
+        state_reason=_state_reason(state, "geo_product_daily_pending"),
+        evidence_count=me[4] + top_comp_counts[4],
+    )
 
 
 # ── /group-shared-domains ───────────────────────────────────────────
@@ -1696,6 +2174,7 @@ async def get_group_shared_domains(
             shared_ratio=None,
             items=[],
             state="empty",
+            state_reason="no_primary_brand",
         )
     membership = (
         await session.execute(
@@ -1710,6 +2189,7 @@ async def get_group_shared_domains(
             shared_ratio=None,
             items=[],
             state="empty",
+            state_reason="no_brand_group_data",
         )
 
     group = (
@@ -1777,13 +2257,16 @@ async def get_group_shared_domains(
     own_total = int((await session.execute(own_total_stmt)).scalar_one_or_none() or 0)
     shared_ratio = round(total_shared / own_total, 3) if own_total else None
 
+    state = "ok" if items else "empty"
     return GroupSharedDomainsOut(
         project_id=project.id,
         group_id=membership,
         group_name=group.name if group else None,
         shared_ratio=shared_ratio,
         items=items,
-        state="ok" if items else "empty",
+        state=state,
+        state_reason=_state_reason(state, "no_shared_domain_data"),
+        evidence_count=len(items),
     )
 
 
@@ -1794,7 +2277,12 @@ async def get_product_relations(
 ) -> ProductRelationsOut:
     primary = project.primary_brand_id
     if primary is None:
-        return ProductRelationsOut(project_id=project.id, items=[], state="empty")
+        return ProductRelationsOut(
+            project_id=project.id,
+            items=[],
+            state="empty",
+            state_reason="no_primary_brand",
+        )
 
     # Find products owned by primary brand.
     own_stmt = select(KgProduct.product_id, KgProduct.primary_name).where(
@@ -1804,7 +2292,12 @@ async def get_product_relations(
     own_ids = [int(r[0]) for r in own_rows]
     own_name = {int(r[0]): r[1] for r in own_rows}
     if not own_ids:
-        return ProductRelationsOut(project_id=project.id, items=[], state="empty")
+        return ProductRelationsOut(
+            project_id=project.id,
+            items=[],
+            state="empty",
+            state_reason="no_product_kg_data",
+        )
 
     # All relations involving these products.
     rel_stmt = select(KgProductRelation).where(
@@ -1840,8 +2333,11 @@ async def get_product_relations(
         )
         for r in rels
     ]
+    state = "ok" if items else "empty"
     return ProductRelationsOut(
         project_id=project.id,
         items=items,
-        state="ok" if items else "empty",
+        state=state,
+        state_reason=_state_reason(state, "no_product_relation_data"),
+        evidence_count=len(items),
     )

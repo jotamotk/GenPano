@@ -7,7 +7,14 @@ Shapes mirror the recharts/donut props the FE already consumes (see
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ChartState(BaseModel):
+    state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
 
 
 # ── /metrics/by-engine ──────────────────────────────────────────────
@@ -19,11 +26,10 @@ class EngineMetricRow(BaseModel):
     sentiment: float | None = None
 
 
-class EngineMetricsOut(BaseModel):
+class EngineMetricsOut(ChartState):
     project_id: str
     period: dict[str, str]
     items: list[EngineMetricRow]
-    state: str = "ok"
 
 
 # ── /position-distribution ──────────────────────────────────────────
@@ -33,12 +39,11 @@ class PositionBucketRow(BaseModel):
     pct: float
 
 
-class PositionDistributionOut(BaseModel):
+class PositionDistributionOut(ChartState):
     project_id: str
     period: dict[str, str]
     items: list[PositionBucketRow]
     total_mentions: int
-    state: str = "ok"
 
 
 # ── /topic-heatmap ──────────────────────────────────────────────────
@@ -55,11 +60,10 @@ class HeatmapRow(BaseModel):
     values: list[HeatmapCell]
 
 
-class TopicHeatmapOut(BaseModel):
+class TopicHeatmapOut(ChartState):
     project_id: str
     metric: str  # "mention_rate" | "sentiment"
     rows: list[HeatmapRow]
-    state: str = "ok"
 
 
 # ── /sentiment/by-engine ────────────────────────────────────────────
@@ -70,11 +74,10 @@ class SentimentByEngineRow(BaseModel):
     negative: int = 0
 
 
-class SentimentByEngineOut(BaseModel):
+class SentimentByEngineOut(ChartState):
     project_id: str
     period: dict[str, str]
     items: list[SentimentByEngineRow]
-    state: str = "ok"
 
 
 # ── /sentiment/trend-by-engine ──────────────────────────────────────
@@ -85,12 +88,11 @@ class SentimentTrendByEngineRow(BaseModel):
     by_engine: dict[str, float | None]
 
 
-class SentimentTrendByEngineOut(BaseModel):
+class SentimentTrendByEngineOut(ChartState):
     project_id: str
     period: dict[str, str]
     engines: list[str]
     items: list[SentimentTrendByEngineRow]
-    state: str = "ok"
 
 
 # ── /sentiment/topic-attribution ────────────────────────────────────
@@ -102,10 +104,9 @@ class TopicAttributionRow(BaseModel):
     sample_snippet: str | None = None
 
 
-class TopicAttributionOut(BaseModel):
+class TopicAttributionOut(ChartState):
     project_id: str
     items: list[TopicAttributionRow]
-    state: str = "ok"
 
 
 # ── /mention-samples ────────────────────────────────────────────────
@@ -121,10 +122,9 @@ class MentionSampleRow(BaseModel):
     occurred_at: str | None = None
 
 
-class MentionSamplesOut(BaseModel):
+class MentionSamplesOut(ChartState):
     project_id: str
     items: list[MentionSampleRow]
-    state: str = "ok"
 
 
 # ── /citations/authority-trend ──────────────────────────────────────
@@ -137,11 +137,10 @@ class AuthorityTrendPoint(BaseModel):
     untiered_pct: float = 0.0
 
 
-class AuthorityTrendOut(BaseModel):
+class AuthorityTrendOut(ChartState):
     project_id: str
     period: dict[str, str]
     points: list[AuthorityTrendPoint]
-    state: str = "ok"
 
 
 # ── /citations/composition ──────────────────────────────────────────
@@ -152,12 +151,11 @@ class CitationCompositionRow(BaseModel):
     pct: float
 
 
-class CitationCompositionOut(BaseModel):
+class CitationCompositionOut(ChartState):
     project_id: str
     period: dict[str, str]
     segments: list[CitationCompositionRow]
     total: int
-    state: str = "ok"
 
 
 # ── /citations/content-gap ──────────────────────────────────────────
@@ -176,11 +174,10 @@ class ContentGapPageTypeRow(BaseModel):
     pct: float
 
 
-class ContentGapOut(BaseModel):
+class ContentGapOut(ChartState):
     project_id: str
     topics: list[ContentGapTopicRow]
     page_type_distribution: list[ContentGapPageTypeRow]
-    state: str = "ok"
 
 
 # ── /citations/pr-targets ───────────────────────────────────────────
@@ -213,12 +210,11 @@ class Tier2MatrixOut(BaseModel):
     brands: list[Tier2MatrixRow]
 
 
-class PrTargetsOut(BaseModel):
+class PrTargetsOut(ChartState):
     project_id: str
     targets: list[PrTargetRow]
     kol_scorecards: list[KolScorecard]
     tier2_matrix: Tier2MatrixOut
-    state: str = "ok"
 
 
 # ── /citations/simulator-baseline ───────────────────────────────────
@@ -229,14 +225,13 @@ class SimulatorTierWeight(BaseModel):
     current_count: int
 
 
-class SimulatorBaselineOut(BaseModel):
+class SimulatorBaselineOut(ChartState):
     project_id: str
     current_pano: float
     industry_median: float | None
     industry_top3_avg: float | None
     tiers: list[SimulatorTierWeight]
     presets: list[dict[str, object]]
-    state: str = "ok"
 
 
 # ── /competitors/authority-radar ────────────────────────────────────
@@ -249,10 +244,9 @@ class AuthorityRadarRow(BaseModel):
     top_competitor_name: str | None = None
 
 
-class AuthorityRadarOut(BaseModel):
+class AuthorityRadarOut(ChartState):
     project_id: str
     rows: list[AuthorityRadarRow]
-    state: str = "ok"
 
 
 # ── /group-shared-domains ───────────────────────────────────────────
@@ -265,13 +259,12 @@ class GroupSharedDomainEntry(BaseModel):
     sister_brand_names: list[str] = []
 
 
-class GroupSharedDomainsOut(BaseModel):
+class GroupSharedDomainsOut(ChartState):
     project_id: str
     group_id: int | None
     group_name: str | None
     shared_ratio: float | None  # of total citations
     items: list[GroupSharedDomainEntry]
-    state: str = "ok"
 
 
 # ── /products/relations ─────────────────────────────────────────────
@@ -284,7 +277,6 @@ class ProductRelationRow(BaseModel):
     confidence: float | None
 
 
-class ProductRelationsOut(BaseModel):
+class ProductRelationsOut(ChartState):
     project_id: str
     items: list[ProductRelationRow]
-    state: str = "ok"

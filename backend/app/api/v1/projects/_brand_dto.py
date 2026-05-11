@@ -55,6 +55,8 @@ class ProductsOut(BaseModel):
     items: list[ProductRow]
     total: int
     state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
 
 
 # ── /competitors/metrics ──────────────────────────────────────────

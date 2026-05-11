@@ -358,7 +358,13 @@ async def get_products(
     from_d, to_d = _resolve_window(from_date, to_date)
 
     if project.primary_brand_id is None:
-        return ProductsOut(project_id=project.id, items=[], total=0, state="empty")
+        return ProductsOut(
+            project_id=project.id,
+            items=[],
+            total=0,
+            state="empty",
+            state_reason="no_primary_brand",
+        )
 
     primary_id = project.primary_brand_id
     from_dt = datetime.combine(from_d, datetime.min.time())
@@ -521,11 +527,35 @@ async def get_products(
             )
         )
 
+    if not items:
+        fact_rows = await _fact_rows(
+            session,
+            project,
+            filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        )
+        evidence_count = len(
+            {
+                rid
+                for row in fact_rows
+                if (rid := _as_int(row.get("response_id"))) is not None
+            }
+        )
+        return ProductsOut(
+            project_id=project.id,
+            items=[],
+            total=0,
+            state="empty",
+            state_reason="product_aggregates_pending" if evidence_count else "no_product_data",
+            evidence_count=evidence_count,
+        )
+
     return ProductsOut(
         project_id=project.id,
         items=items,
         total=len(items),
-        state="ok" if items else "empty",
+        state="ok",
+        state_reason="data_available",
+        evidence_count=len(items),
     )
 
 

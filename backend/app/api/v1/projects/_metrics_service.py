@@ -486,6 +486,8 @@ async def get_topics(
         items=items,
         total=len(items),
         state="ok" if items else "empty",
+        state_reason="data_available" if items else "no_topic_data",
+        evidence_count=sum(item.mention_count for item in items),
     )
 
 
@@ -517,6 +519,8 @@ async def get_sentiment(
             top_keywords=[],
             top_drivers=[],
             state="empty",
+            state_reason="no_primary_brand",
+            evidence_count=0,
         )
 
     brand_id = project.primary_brand_id
@@ -678,6 +682,8 @@ async def get_sentiment(
         top_keywords=top_keywords,
         top_drivers=top_drivers,
         state="ok" if has_data else "empty",
+        state_reason="data_available" if has_data else "no_sentiment_data",
+        evidence_count=total,
     )
 
 
@@ -702,6 +708,8 @@ async def get_citations(
             total=0,
             by_domain_top=[],
             state="empty",
+            state_reason="no_primary_brand",
+            evidence_count=0,
         )
 
     brand_id = project.primary_brand_id
@@ -791,6 +799,8 @@ async def get_citations(
         total=total,
         by_domain_top=by_domain,
         state="ok" if total else "empty",
+        state_reason="data_available" if total else "no_citation_data",
+        evidence_count=total,
     )
 
 
