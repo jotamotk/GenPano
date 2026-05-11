@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from geo_tracker.db.models import AccountStatus, LLMAccount
-from geo_tracker.pool.account_pool import AccountPool
+from geo_tracker.pool.account_pool import AccountPool, reserve_account_quota
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +90,8 @@ async def diagnose_account_unavailable(
     return account_unavailable_reason_from_accounts(list(result.scalars().all()))
 
 
-async def _claim_account(db: Any, account: LLMAccount, *, now: datetime) -> None:
-    account.last_used_at = now
-    account.query_count_today = int(account.query_count_today or 0) + 1
-    await db.commit()
+async def _claim_account(db: Any, account: LLMAccount, *, now: datetime) -> bool:
+    return await reserve_account_quota(db, account, now=now)
 
 
 async def acquire_query_account(
@@ -115,20 +113,28 @@ async def acquire_query_account(
     if assigned_id:
         assigned = await db.get(LLMAccount, int(assigned_id))
         if is_account_executable_for_query(assigned, target_llm=target_llm, now=now):
-            await _claim_account(db, assigned, now=now)
+            if await _claim_account(db, assigned, now=now):
+                logger.info(
+                    "Query %s: using scheduler-assigned account id=%s for %s",
+                    getattr(query, "id", None),
+                    assigned.id,
+                    target_llm,
+                )
+                return assigned
+            else:
+                logger.info(
+                    "Query %s: scheduler-assigned account id=%s reservation failed; "
+                    "falling back to account pool",
+                    getattr(query, "id", None),
+                    assigned_id,
+                )
+        else:
             logger.info(
-                "Query %s: using scheduler-assigned account id=%s for %s",
+                "Query %s: scheduler-assigned account id=%s is unavailable; "
+                "falling back to account pool",
                 getattr(query, "id", None),
-                assigned.id,
-                target_llm,
+                assigned_id,
             )
-            return assigned
-        logger.info(
-            "Query %s: scheduler-assigned account id=%s is unavailable; "
-            "falling back to account pool",
-            getattr(query, "id", None),
-            assigned_id,
-        )
 
     pool = pool or AccountPool(db)
     profile_id = getattr(query, "profile_id", None)

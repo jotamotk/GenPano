@@ -44,9 +44,9 @@ from geo_tracker.tasks.account_assignment import (
     acquire_query_account,
     diagnose_account_unavailable,
 )
+from geo_tracker.tasks.account_quota_settlement import AccountQuotaSettlement
 from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
-    _should_report_account_failure,
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 
@@ -183,7 +183,12 @@ async def _cleanup_previous_response(db, query_id: int) -> None:
     )
 
 
-async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) -> None:
+async def _mark_query_failed_after_task_abort_async(
+    query_id: int,
+    reason: str,
+    *,
+    quota_settlement: AccountQuotaSettlement | None = None,
+) -> None:
     engine = create_task_engine()
     try:
         async with get_task_async_session(engine) as db:
@@ -197,16 +202,31 @@ async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) 
                 started_at=query.started_at,
                 reason=reason,
             )
+            if quota_settlement is not None:
+                await quota_settlement.settle_failure(
+                    db,
+                    AccountPool(db),
+                    reason=reason,
+                )
             await db.commit()
     finally:
         await engine.dispose()
 
 
-def _mark_query_failed_after_task_abort(query_id: int, reason: str) -> None:
+def _mark_query_failed_after_task_abort(
+    query_id: int,
+    reason: str,
+    *,
+    quota_settlement: AccountQuotaSettlement | None = None,
+) -> None:
     cleanup_loop = asyncio.new_event_loop()
     try:
         cleanup_loop.run_until_complete(
-            _mark_query_failed_after_task_abort_async(query_id, reason)
+            _mark_query_failed_after_task_abort_async(
+                query_id,
+                reason,
+                quota_settlement=quota_settlement,
+            )
         )
     finally:
         cleanup_loop.close()
@@ -222,6 +242,7 @@ def execute_query(self, query_id: int) -> dict:
     asyncio.set_event_loop(loop)
 
     task_engine = create_task_engine()
+    quota_settlement = AccountQuotaSettlement()
 
     async def _run():
         async with get_task_async_session(task_engine) as db:
@@ -253,6 +274,7 @@ def execute_query(self, query_id: int) -> dict:
             if account and account.cookies_json:
                 account_cookies = account.cookies_json
                 account_id = account.id
+                quota_settlement.reserve(account_id)
                 query.account_id = account_id
                 await db.commit()
                 logger.info(
@@ -314,6 +336,8 @@ def execute_query(self, query_id: int) -> dict:
                     account_cookies=account_cookies,
                 )
                 response: LLMResponse | None = await guest_executor.execute(query)
+                if response is not None:
+                    quota_settlement.mark_platform_consumed()
 
                 # Require a meaningful response (guards against login redirects returning 1 char)
                 MIN_RESPONSE_LEN = 20
@@ -342,8 +366,11 @@ def execute_query(self, query_id: int) -> dict:
                             started_at=started_at,
                             reason=failure_reason,
                         )
-                        if account_id and pool:
-                            await pool.report_failure(account_id, reason=failure_reason)
+                        await quota_settlement.settle_failure(
+                            db,
+                            pool,
+                            reason=failure_reason,
+                        )
                         await db.commit()
                         logger.warning(
                             f"Query {query_id} failed: invalid response ({invalid_reason}), "
@@ -361,8 +388,7 @@ def execute_query(self, query_id: int) -> dict:
                         started_at=started_at,
                         reason=None,
                     )
-                    if account_id and pool:
-                        await pool.report_success(account_id)
+                    await quota_settlement.settle_success(pool)
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
@@ -380,12 +406,11 @@ def execute_query(self, query_id: int) -> dict:
                         reason=failure_reason,
                     )
                     # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
-                    if (
-                        account_id
-                        and pool
-                        and _should_report_account_failure(failure_reason)
-                    ):
-                        await pool.report_failure(account_id, reason=failure_reason)
+                    await quota_settlement.settle_failure(
+                        db,
+                        pool,
+                        reason=failure_reason,
+                    )
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
                     if failure_reason == "cookies_expired" and account_id:
@@ -424,12 +449,16 @@ def execute_query(self, query_id: int) -> dict:
                         f"after rollback: {commit_err}"
                     )
                 # 账号失败上报走独立 try，避免把主状态写回再次打断
-                if account_id and pool and _should_report_account_failure("exception"):
+                if account_id and pool:
                     try:
-                        await pool.report_failure(account_id, reason="exception")
+                        await quota_settlement.settle_failure(
+                            db,
+                            pool,
+                            reason="exception",
+                        )
                     except Exception as pool_err:
                         logger.error(
-                            f"Query {query_id}: pool.report_failure raised: {pool_err}"
+                            f"Query {query_id}: account failure settlement raised: {pool_err}"
                         )
                 return {"query_id": query_id, "status": "failed", "error": str(e)}
 
@@ -439,7 +468,11 @@ def execute_query(self, query_id: int) -> dict:
     except SoftTimeLimitExceeded:
         logger.exception("execute_query %s exceeded soft time limit", query_id)
         try:
-            _mark_query_failed_after_task_abort(query_id, "soft_time_limit")
+            _mark_query_failed_after_task_abort(
+                query_id,
+                "soft_time_limit",
+                quota_settlement=quota_settlement,
+            )
         except Exception as cleanup_exc:
             logger.error(
                 "execute_query %s failed to mark soft-timeout failure: %s",
