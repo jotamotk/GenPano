@@ -1,0 +1,133 @@
+name: Quota Counter Repair Runbook
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Report only, or apply an approved repair"
+        type: choice
+        required: true
+        default: dry_run
+        options:
+          - dry_run
+          - apply
+      service_day:
+        description: "UTC service day YYYY-MM-DD; ignored when start/end are provided"
+        required: false
+        default: ""
+      start:
+        description: "Inclusive UTC timestamp; required in apply mode"
+        required: false
+        default: ""
+      end:
+        description: "Exclusive UTC timestamp; required in apply mode"
+        required: false
+        default: ""
+      expected_total_delta:
+        description: "Required in apply mode; must exactly match the dry-run total"
+        required: false
+        default: ""
+      approval_ref:
+        description: "Required in apply mode; GitHub issue/comment URL with AI Lead approval"
+        required: false
+        default: ""
+
+concurrency:
+  group: quota-counter-repair-runbook
+  cancel-in-progress: false
+
+jobs:
+  runbook:
+    name: Run quota counter repair
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Execute on deployed worker container
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          SERVICE_DAY: ${{ inputs.service_day }}
+          START_TS: ${{ inputs.start }}
+          END_TS: ${{ inputs.end }}
+          EXPECTED_TOTAL_DELTA: ${{ inputs.expected_total_delta }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,SERVICE_DAY,START_TS,END_TS,EXPECTED_TOTAL_DELTA,APPROVAL_REF,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
+          command_timeout: 20m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            case "$MODE" in
+              dry_run|apply) ;;
+              *) fail "mode must be dry_run or apply, got '$MODE'" ;;
+            esac
+
+            if [ -n "$SERVICE_DAY" ]; then
+              [[ "$SERVICE_DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+                || fail "service_day must be YYYY-MM-DD, got '$SERVICE_DAY'"
+            fi
+            if { [ -n "$START_TS" ] && [ -z "$END_TS" ]; } || { [ -z "$START_TS" ] && [ -n "$END_TS" ]; }; then
+              fail "start and end must be provided together"
+            fi
+            if [ "$MODE" = "apply" ]; then
+              [ -n "$START_TS" ] || fail "apply mode requires start"
+              [ -n "$END_TS" ] || fail "apply mode requires end"
+              [[ "$EXPECTED_TOTAL_DELTA" =~ ^[0-9]+$ ]] \
+                || fail "apply mode requires integer expected_total_delta"
+              [ -n "$APPROVAL_REF" ] || fail "apply mode requires approval_ref"
+              [[ "$APPROVAL_REF" =~ https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+(#issuecomment-[0-9]+)? ]] \
+                || fail "approval_ref must be a GitHub issue/comment URL"
+            fi
+
+            cat <<AUDIT
+            === Quota Counter Repair Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            run_number=${GH_RUN_NUMBER}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            mode=${MODE}
+            service_day=${SERVICE_DAY:-<empty>}
+            start=${START_TS:-<empty>}
+            end=${END_TS:-<empty>}
+            expected_total_delta=${EXPECTED_TOTAL_DELTA:-<empty>}
+            approval_ref=${APPROVAL_REF:-<empty>}
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            args=(-m geo_tracker.tasks.quota_counter_repair)
+            if [ "$MODE" = "apply" ]; then
+              args+=(--apply --expected-total-delta "$EXPECTED_TOTAL_DELTA" --approval-ref "$APPROVAL_REF")
+            else
+              args+=(--dry-run)
+            fi
+            if [ -n "$START_TS" ]; then
+              args+=(--start "$START_TS" --end "$END_TS")
+            elif [ -n "$SERVICE_DAY" ]; then
+              args+=(--service-day "$SERVICE_DAY")
+            fi
+
+            echo "=== Quota repair ${MODE} ==="
+            docker compose exec -T worker python "${args[@]}"
+            RUNBOOK
