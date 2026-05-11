@@ -38,43 +38,6 @@ const DIMENSION_VARIANTS: Record<string, string> = {
   scenario: 'orange',
 }
 
-function pct(value: number | null | undefined, digits = 1) {
-  return value == null ? '-' : `${(value * 100).toFixed(digits)}%`
-}
-
-function score(value: number | null | undefined) {
-  return value == null ? '-' : value.toFixed(2)
-}
-
-function SentimentBar({ data }: { data?: Record<string, number> }) {
-  const positive = data?.positive || 0
-  const neutral = data?.neutral || 0
-  const negative = data?.negative || 0
-  const total = positive + neutral + negative || 1
-  return (
-    <div className="flex items-center overflow-hidden rounded-pill h-2.5 w-[150px]">
-      <div
-        style={{
-          width: `${(positive / total) * 100}%`,
-          background: 'var(--color-sentiment-positive)',
-        }}
-      />
-      <div
-        style={{
-          width: `${(neutral / total) * 100}%`,
-          background: 'var(--color-sentiment-neutral)',
-        }}
-      />
-      <div
-        style={{
-          width: `${(negative / total) * 100}%`,
-          background: 'var(--color-sentiment-warning)',
-        }}
-      />
-    </div>
-  )
-}
-
 function Breadcrumb({ items, onNavigate }: { items: any[]; onNavigate: (view: string) => void }) {
   return (
     <div className="flex items-center gap-1.5 text-sm mb-5">
@@ -138,16 +101,6 @@ function TopicsView({
   }, [filters.dimensions, filters.intents, intentRows, rows, search])
 
   const summary = monitoringQ.data?.summary
-  const topicIntentMatrix = useMemo(() => {
-    const byIntent = new Map<string, { prompt_count: number; query_count: number }>()
-    for (const row of intentRows) {
-      const bucket = byIntent.get(row.intent) || { prompt_count: 0, query_count: 0 }
-      bucket.prompt_count += row.prompt_count
-      bucket.query_count += row.query_count
-      byIntent.set(row.intent, bucket)
-    }
-    return Array.from(byIntent.entries())
-  }, [intentRows])
 
   return (
     <div className="space-y-6">
@@ -199,30 +152,6 @@ function TopicsView({
         </Card>
       </div>
 
-      <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-themed-primary">Topic x Intent</h3>
-          <span className="text-xs text-themed-muted">Filtered data only</span>
-        </div>
-        {topicIntentMatrix.length ? (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {topicIntentMatrix.map(([intent, counts]) => (
-              <div key={intent} className="rounded-card bg-themed-subtle p-3">
-                <div className="text-xs text-themed-muted">
-                  {INTENT_LABELS[intent] || intent}
-                </div>
-                <div className="text-xl font-semibold text-themed-primary tabular-nums mt-1">
-                  {counts.query_count}
-                </div>
-                <div className="text-[11px] text-themed-muted">{counts.prompt_count} prompts</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyState text="No intent data for the current filters." />
-        )}
-      </Card>
-
       <Card className="p-0 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-themed-card">
           <h3 className="text-sm font-semibold text-themed-primary">Monitoring Topics</h3>
@@ -233,11 +162,10 @@ function TopicsView({
             <tr>
               <th>Topic</th>
               <th>Dimension</th>
+              <th>Associated brand</th>
               <th className="text-right">Prompts</th>
               <th className="text-right">Queries</th>
               <th className="text-right">Responses</th>
-              <th>Engines</th>
-              <th>Sentiment</th>
               <th>Last collected</th>
             </tr>
           </thead>
@@ -254,6 +182,7 @@ function TopicsView({
                     {topic.dimension || '-'}
                   </Badge>
                 </td>
+                <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
                 <td className="text-right tabular-nums font-semibold text-themed-primary">
                   {topic.prompt_count}
                 </td>
@@ -263,25 +192,19 @@ function TopicsView({
                 <td className="text-right tabular-nums text-themed-muted">
                   {topic.response_count}
                 </td>
-                <td className="text-themed-muted text-xs">
-                  {topic.engine_coverage.join(', ') || '-'}
-                </td>
-                <td>
-                  <SentimentBar data={topic.sentiment_distribution} />
-                </td>
                 <td className="text-themed-muted text-xs">{topic.last_collected || '-'}</td>
               </tr>
             ))}
             {!monitoringQ.isLoading && filtered.length === 0 && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={7}>
                   <EmptyState text="No topics match the current filters." />
                 </td>
               </tr>
             )}
             {monitoringQ.isLoading && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={7}>
                   <EmptyState text="Loading topics..." />
                 </td>
               </tr>
@@ -350,8 +273,8 @@ function PromptsView({
               <th>Prompt</th>
               <th>Intent</th>
               <th className="text-right">Queries</th>
-              <th className="text-right">Mention rate</th>
-              <th className="text-right">Avg GEO</th>
+              <th className="text-right">Responses</th>
+              <th>Last collected</th>
             </tr>
           </thead>
           <tbody>
@@ -371,11 +294,9 @@ function PromptsView({
                   {prompt.query_count}
                 </td>
                 <td className="text-right tabular-nums text-themed-primary">
-                  {pct(prompt.mention_rate)}
+                  {prompt.response_count}
                 </td>
-                <td className="text-right tabular-nums text-themed-muted">
-                  {score(prompt.avg_geo_score)}
-                </td>
+                <td className="text-themed-muted text-xs">{prompt.last_collected || '-'}</td>
               </tr>
             ))}
             {!promptsQ.isLoading && prompts.length === 0 && (
@@ -407,11 +328,6 @@ function QueriesView({
 }) {
   const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, toProjectAnalysisParams(filters))
   const queries = queriesQ.data?.items || []
-  const successCount = queries.filter((query) =>
-    ['done', 'success', 'completed'].includes(String(query.status || '').toLowerCase()),
-  ).length
-  const successRate = queries.length ? Math.round((successCount / queries.length) * 100) : 0
-  const enginesCovered = new Set(queries.map((query) => query.target_llm).filter(Boolean)).size
 
   return (
     <div className="space-y-6">
@@ -424,32 +340,8 @@ function QueriesView({
           <Badge variant={INTENT_VARIANTS[prompt.intent || ''] || 'blue'} size="sm">
             {INTENT_LABELS[prompt.intent || ''] || prompt.intent || '-'}
           </Badge>
-          <span className="text-xs text-themed-muted">
-            Engines: {prompt.engine_coverage?.join(', ') || '-'}
-          </span>
         </div>
       </Card>
-
-      <div className="grid grid-cols-3 gap-4">
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Executions</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {queries.length}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Success rate</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {successRate}%
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Engines</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {enginesCovered}
-          </div>
-        </Card>
-      </div>
 
       <Card className="p-0 overflow-hidden">
         <div className="px-5 py-4 border-b border-themed-card">
@@ -506,7 +398,6 @@ function ResponseView({ projectId, query }: { projectId: string | null; query: a
   const detailQ = useQueryResponse(projectId, query?.query_id)
   const detail = detailQ.data
   const response = detail?.response as any
-  const analysis = detail?.analysis as any
   const mentions = detail?.brand_mentions || []
   const citations = detail?.citations || []
 
@@ -551,7 +442,6 @@ function ResponseView({ projectId, query }: { projectId: string | null; query: a
           <Card className="p-5">
             <div className="flex items-center justify-between border-b border-themed-card pb-3 mb-4">
               <h3 className="text-sm font-semibold text-themed-primary">Raw response</h3>
-              <span className="text-xs text-themed-muted">GEO {score(analysis?.geo_score)}</span>
             </div>
             <div className="text-sm leading-relaxed whitespace-pre-wrap text-themed-body">
               {response.raw_text || '-'}

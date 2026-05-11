@@ -27,6 +27,7 @@ class TopicMonitoringRow(BaseModel):
     topic_id: int
     topic_name: str
     dimension: str | None = None
+    associated_brand: str | None = None
     status: str | None = None
     prompt_count: int = 0
     query_count: int = 0

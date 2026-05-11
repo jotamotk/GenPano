@@ -422,6 +422,110 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
 
 
 @pytest.mark.asyncio
+async def test_topic_monitoring_uses_project_primary_text_match_when_fact_brand_fk_is_wrong(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO brands (id, name, industry) VALUES
+              (2, 'Wrong Owner', 'Beauty'),
+              (12, 'Estee Lauder', 'Beauty')
+            """
+        )
+    )
+    project.primary_brand_id = 12
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (1401, 2, 'Misfiled beauty topic', 'brand', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (1402, 1401, 'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               'commercial', 'non_branded', 'en', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (1403, 'chatgpt', 'done',
+               'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               2, 'PROF-A', 1402, :now, :now, :now, 800)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (1404, 1403, 1402,
+               'Estee Lauder Advanced Night Repair is often recommended for anti-aging routines.',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "ok"
+    assert body["summary"]["topic_count"] == 1
+    assert body["summary"]["prompt_count"] == 1
+    assert body["summary"]["query_count"] == 1
+    assert body["summary"]["response_count"] == 1
+    assert body["topics"][0]["topic_id"] == 1401
+    assert body["topics"][0]["associated_brand"] == "Estee Lauder"
+
+    prompts = await client.get(
+        f"/api/v1/projects/{project.id}/topics/1401/prompts",
+        headers=_bearer(user),
+    )
+    assert prompts.status_code == 200, prompts.text
+    assert prompts.json()["total"] == 1
+
+    queries = await client.get(
+        f"/api/v1/projects/{project.id}/prompts/1402/queries",
+        headers=_bearer(user),
+    )
+    assert queries.status_code == 200, queries.text
+    assert queries.json()["total"] == 1
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/queries/1403/response",
+        headers=_bearer(user),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["response"]["raw_text"].startswith("Estee Lauder")
+
+
+@pytest.mark.asyncio
 async def test_project_query_activity_is_project_scoped(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 
