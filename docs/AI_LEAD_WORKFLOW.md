@@ -339,3 +339,17 @@ The AI Lead should report Epic state in this shape:
 | #122 | backend-api | - | blocked | waiting page confirmation | hold |
 | #123 | qa-e2e | - | ready | depends on #130 | wait |
 ```
+
+For Admin incident merge/deploy comments, include explicit E2E coverage instead
+of summarizing only the Playwright pass/skipped count:
+
+```md
+Admin E2E release-gate evidence:
+- Base URL:
+- Mutation mode: read-only core smoke / controlled real business-flow mutation
+- Core smoke: run URL or not-run reason
+- Tracker smoke: run URL or not-run reason
+- Controlled retry/business flow: run URL or not-run reason
+- Skipped coverage:
+- Incident-specific acceptance claim: yes/no, with required coverage rows named
+```

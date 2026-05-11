@@ -22,6 +22,16 @@ jobs:
     name: Staging Admin E2E
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    env:
+      ADMIN_E2E_STAGING: "1"
+      ADMIN_E2E_CORE_SPEC: tests/e2e/admin-staging-smoke.spec.ts
+      ADMIN_E2E_BUSINESS_FLOW_SPEC: tests/e2e/admin-real-business-flow.spec.ts
+      ADMIN_E2E_TRACKER_SPEC: tests/e2e/admin-tracker-smoke.spec.ts
+      ADMIN_E2E_INPUT_REAL_GENERATION: ${{ inputs.real_generation }}
+      ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
+      ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
+      E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
+      PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
     defaults:
       run:
         working-directory: frontend
@@ -43,13 +53,122 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Prepare Admin E2E coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          real_generation="${ADMIN_E2E_INPUT_REAL_GENERATION}"
+          brand_id="${ADMIN_E2E_BRAND_ID}"
+          tracker_state="not included"
+          tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
+          business_state="included but expected to skip"
+          business_note="\`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation will run."
+          mutation_mode="read-only core smoke"
+          input_error=""
+
+          if [[ -f "${ADMIN_E2E_TRACKER_SPEC}" ]]; then
+            tracker_state="included"
+            tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` will run in this gate."
+            echo "ADMIN_E2E_TRACKER_INCLUDED=1" >> "${GITHUB_ENV}"
+          else
+            echo "ADMIN_E2E_TRACKER_INCLUDED=0" >> "${GITHUB_ENV}"
+          fi
+
+          if [[ "${real_generation}" == "true" ]]; then
+            mutation_mode="controlled real business-flow mutation"
+            business_state="included and expected to execute"
+            business_note="\`ADMIN_E2E_BRAND_ID=${brand_id}\`; real flow mutates the dedicated staging brand only."
+            if [[ -z "${brand_id}" ]]; then
+              input_error="real_generation=true requires brand_id."
+              business_state="blocked before Playwright"
+              business_note="${input_error}"
+            fi
+          fi
+
+          {
+            echo "## Admin E2E Release Gate Coverage"
+            echo ""
+            echo "This gate is a coverage inventory plus Playwright result. Do not treat a pass/skipped count as incident-specific acceptance unless the required coverage row below ran for that incident."
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Base URL | \`${PLAYWRIGHT_BASE_URL}\` |"
+            echo "| Mutation mode | ${mutation_mode} |"
+            echo "| E2E run id | \`${E2E_RUN_ID}\` |"
+            echo ""
+            echo "| Coverage category | Spec | Gate state | Notes |"
+            echo "| --- | --- | --- | --- |"
+            echo "| Core Admin smoke | \`${ADMIN_E2E_CORE_SPEC}\` | included and expected to execute | Pages: \`/admin/planner-topics\`, \`/admin/planner-prompt-matrix\`, \`/admin/planner-query-pool\`, \`/admin/planner-llm-extraction\`. |"
+            echo "| Controlled business flow | \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` | ${business_state} | ${business_note} |"
+            echo "| Tracker smoke | \`${ADMIN_E2E_TRACKER_SPEC}\` | ${tracker_state} | ${tracker_note} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ -n "${input_error}" ]]; then
+            echo "${input_error}" >&2
+            exit 1
+          fi
+
       - name: Staging Admin release gate
+        shell: bash
         env:
-          ADMIN_E2E_STAGING: "1"
-          ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
-          ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
           ADMIN_E2E_EMAIL: ${{ secrets.ADMIN_E2E_EMAIL }}
           ADMIN_E2E_PASSWORD: ${{ secrets.ADMIN_E2E_PASSWORD }}
-          E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
-          PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
-        run: npm run test:e2e:admin:staging -- --reporter=github
+        run: |
+          set -euo pipefail
+
+          specs=(
+            "${ADMIN_E2E_CORE_SPEC}"
+            "${ADMIN_E2E_BUSINESS_FLOW_SPEC}"
+          )
+
+          if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
+            specs+=("${ADMIN_E2E_TRACKER_SPEC}")
+          fi
+
+          set +e
+          npx playwright test --project=chromium-desktop --workers=1 "${specs[@]}" --reporter=github
+          status=$?
+          set -e
+
+          {
+            echo ""
+            echo "### Gate Result"
+            if [[ "${status}" -eq 0 ]]; then
+              echo "- Playwright command: passed."
+            else
+              echo "- Playwright command: failed with exit code \`${status}\`."
+            fi
+            echo "- Invoked specs:"
+            for spec in "${specs[@]}"; do
+              echo "  - \`${spec}\`"
+            done
+            invoked_categories="Core Admin smoke"
+            if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
+              invoked_categories="${invoked_categories}; Tracker smoke"
+            fi
+            if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "1" ]]; then
+              invoked_categories="${invoked_categories}; controlled Topic -> Prompt Matrix -> Query Pool -> Extraction mutation"
+            fi
+            if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "0" ]]; then
+              echo "- Skipped business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` is intentionally skipped by the test annotation."
+            else
+              echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
+            fi
+            if [[ "${status}" -eq 0 ]]; then
+              echo "- Coverage categories this result can claim: ${invoked_categories}."
+              if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "0" ]]; then
+                echo "- Coverage categories this result cannot claim: controlled Topic -> Prompt Matrix -> Query Pool -> Extraction mutation."
+              fi
+            else
+              echo "- Coverage categories invoked before failure: ${invoked_categories}."
+              echo "- Acceptance evidence from this failed result: none; investigate the failed Playwright command before using this run."
+            fi
+            if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
+              echo "- Tracker smoke included: yes."
+            else
+              echo "- Tracker smoke included: no; \`${ADMIN_E2E_TRACKER_SPEC}\` was absent from this checkout."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          exit "${status}"
