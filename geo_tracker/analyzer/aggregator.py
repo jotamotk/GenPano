@@ -194,10 +194,20 @@ class Aggregator:
         intent: str | None,
         language: str | None,
     ) -> bool:
-        eligible_analyses = [
+        default_eligible_analyses = [
             a for a in analyses
             if (q := queries.get(a.response_id)) is not None
             and self._is_default_mention_rate_eligible(q, prompts_by_query)
+        ]
+        eligible_analyses = default_eligible_analyses or [
+            a for a in analyses
+            if (q := queries.get(a.response_id)) is not None
+            and self._has_cross_owner_fact_mention(
+                a.response_id,
+                q,
+                brand_id,
+                mentions,
+            )
         ]
         total_queries = len(eligible_analyses)
         if total_queries == 0:
@@ -795,6 +805,20 @@ class Aggregator:
     @staticmethod
     def _mention_matches_brand(mention: BrandMention, brand_id: int) -> bool:
         return mention.brand_id == brand_id
+
+    @staticmethod
+    def _has_cross_owner_fact_mention(
+        response_id: int,
+        query: Query,
+        brand_id: int,
+        mentions: dict[int, list[BrandMention]],
+    ) -> bool:
+        if query.brand_id == brand_id:
+            return False
+        return any(
+            Aggregator._mention_matches_brand(mention, brand_id)
+            for mention in mentions.get(response_id, [])
+        )
 
     @staticmethod
     def _source_owners_by_fact_brand(
