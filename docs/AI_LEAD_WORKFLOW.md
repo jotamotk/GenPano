@@ -78,6 +78,10 @@ Agents implement scoped issues through PRs.
   workflow docs, and merge plans.
 - Owns requirement clarification, issue decomposition, dependency ordering,
   review orchestration, CI/CD diagnosis, and live verification planning.
+- Owns CD coordination during parallel Agent work: serialize or intentionally
+  order production deploys, monitor overlapping Build & Deploy runs, cancel
+  superseded deploy runs promptly, and verify the final live environment is
+  running the intended latest `main` SHA.
 - Converts user requests into Epic issues, PRD IDs, and Agent task issues.
 
 ### Frontend Visualization Agent
@@ -123,6 +127,9 @@ Agents implement scoped issues through PRs.
 
 - Owns GitHub Actions, deploy logs, server diagnostics, and release blockers.
 - Uses `gh` or GitHub Actions logs when CI/CD is involved.
+- Monitors overlapping Build & Deploy runs, identifies which run targets the
+  latest intended `main` SHA, cancels superseded deploys when safe, and reports
+  the final deployed SHA.
 - Does not patch business logic unless the AI Lead creates a separate issue.
 
 ### Review Agent
@@ -278,6 +285,8 @@ The AI Lead produces a merge plan before merge:
 - PR order
 - dependency graph
 - CI status
+- CD run plan for parallel-Agent merges, including which deploys should be
+  allowed to finish and which superseded deploy runs should be cancelled
 - risks
 - rollback notes
 - post-merge live verification
