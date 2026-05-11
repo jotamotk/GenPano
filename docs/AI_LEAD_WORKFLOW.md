@@ -61,7 +61,9 @@ Agents implement scoped issues through PRs.
 8. Merge plan and merge
    - The AI Lead prepares a merge plan with order, dependencies, risks, rollback
      notes, and live verification.
-   - Merge only after the user explicitly says `pr，merge`.
+   - The AI Lead may merge without waiting for a fixed `pr，merge` phrase once
+     review, CI, risk, rollback, and live-verification criteria are satisfied,
+     unless the user explicitly pauses or blocks the release.
    - After deployment, verify completed functionality on
      `http://116.62.36.173/` with Playwright E2E when the feature is user
      visible or production-facing.
@@ -280,7 +282,11 @@ The AI Lead produces a merge plan before merge:
 - rollback notes
 - post-merge live verification
 
-Only merge when the user explicitly says `pr，merge`.
+The AI Lead may merge without waiting for a fixed `pr，merge` phrase once the
+merge plan is ready, required reviews/checks pass, release risk is understood,
+rollback is documented, and post-merge live verification is planned. Worker
+Agents still do not merge. If the user explicitly pauses or blocks a release,
+the AI Lead must stop at the merge plan and wait.
 
 ## Status Labels
 

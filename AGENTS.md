@@ -36,8 +36,10 @@ state.
    PR.
 6. Worker PRs start as draft PRs. The Worker marks them ready only after the
    issue's verification checklist is complete.
-7. Worker Agents do not merge. The AI Lead prepares a merge plan; merge only
-   after the user explicitly says `pr，merge`.
+7. Worker Agents do not merge. The AI Lead prepares a merge plan and may merge
+   without waiting for a fixed `pr，merge` phrase once review, CI, risk, rollback,
+   and live-verification criteria are satisfied, unless the user explicitly
+   pauses or blocks the release.
 8. After deployed functionality is merged, verify the live product with
    Playwright E2E against `http://116.62.36.173/`.
 
