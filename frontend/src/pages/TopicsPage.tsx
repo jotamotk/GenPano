@@ -4,7 +4,6 @@ import { Badge, Button, Card } from '../components/ui'
 import BrandAnalysisFilterBar from '../components/filters/BrandAnalysisFilterBar'
 import { ProfileGroupSampleWarning } from '../components/filters/ProfileGroupFilter'
 import ProjectRequiredBanner from '../components/ProjectRequiredBanner'
-import QueryActivityCard from '../components/topics/QueryActivityCard'
 import { useProject } from '../contexts/ProjectContext'
 import { useBrandAnalysisFilters } from '../hooks/useBrandAnalysisFilters'
 import { useProjects } from '../hooks/useProjects'
@@ -508,7 +507,6 @@ export default function TopicsPage() {
   const { data: liveProjects } = useProjects()
   const { filters } = useBrandAnalysisFilters()
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject)
-  const analysisParams = toProjectAnalysisParams(filters)
 
   const goTo = {
     topics: () => {
@@ -564,16 +562,6 @@ export default function TopicsPage() {
   return (
     <div>
       <ProjectRequiredBanner />
-
-      {view === 'topics' && (
-        <div className="mb-6">
-          <QueryActivityCard
-            projectId={liveProjectId}
-            brandName={activeProject?.primaryBrandName || activeProject?.name}
-            filters={analysisParams}
-          />
-        </div>
-      )}
 
       {view !== 'topics' && <Breadcrumb items={breadcrumb} onNavigate={onBreadcrumb} />}
 

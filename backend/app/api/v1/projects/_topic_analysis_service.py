@@ -227,6 +227,24 @@ def _mention_name_condition(
     return f"LOWER(TRIM(COALESCE(bm.brand_name, ''))) IN ({', '.join(placeholders)})"
 
 
+def _target_mention_condition(
+    mention_cols: set[str],
+    brand_id: int | None,
+    terms: list[str],
+    params: dict[str, Any],
+) -> str | None:
+    parts: list[str] = []
+    if brand_id is not None and "brand_id" in mention_cols:
+        params["primary_brand_id"] = brand_id
+        parts.append("bm.brand_id = :primary_brand_id")
+    mention_name_condition = _mention_name_condition(mention_cols, terms, params)
+    if mention_name_condition:
+        parts.append(mention_name_condition)
+    if not parts:
+        return None
+    return f"({' OR '.join(parts)})" if len(parts) > 1 else parts[0]
+
+
 def _coerce_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -578,6 +596,12 @@ async def _fact_rows(
     )
 
     params: dict[str, Any] = {}
+    target_mention_condition = _target_mention_condition(
+        mention_cols,
+        scope_brand_id,
+        scope_terms,
+        params,
+    )
     topic_where: list[str] = []
     if topic_id is not None:
         topic_where.append("t.id = :topic_id")
@@ -637,6 +661,14 @@ async def _fact_rows(
             brand_scope_conditions.append("t.brand_id = :topic_brand_id")
         if "brand_id" in query_cols:
             brand_scope_conditions.append("q.brand_id = :topic_brand_id")
+        if has_mentions and response_join and target_mention_condition:
+            brand_scope_conditions.append(
+                "EXISTS ("
+                "SELECT 1 FROM brand_mentions bm "
+                "WHERE bm.response_id = r.id "
+                f"AND {target_mention_condition}"
+                ")"
+            )
 
         text_exprs: list[str] = []
         for column in ("text", "name", "title"):
@@ -688,11 +720,7 @@ async def _fact_rows(
         ]
 
     primary = scope_brand_id
-    params["primary_brand_id"] = primary
-    target_mention_condition = "bm.brand_id = :primary_brand_id"
-    mention_name_condition = _mention_name_condition(mention_cols, scope_terms, params)
-    if mention_name_condition:
-        target_mention_condition = f"({target_mention_condition} OR {mention_name_condition})"
+    target_mention_condition = target_mention_condition or "1 = 0"
     mention_selects = [
         "0 AS target_mention_count",
         "0 AS all_mention_count",
