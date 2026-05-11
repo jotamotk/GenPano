@@ -668,6 +668,44 @@ async def test_today_returns_grouped(client, admin_operator, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_stale_running_queries_marks_old_rows_failed(monkeypatch):
+    from app.admin.scheduler import db as scheduler_db
+
+    class Result:
+        rowcount = 3
+
+    class Session:
+        def __init__(self):
+            self.sql: list[str] = []
+            self.params: list[dict] = []
+            self.commits = 0
+
+        async def execute(self, stmt, params=None):
+            self.sql.append(str(stmt))
+            self.params.append(params or {})
+            return Result()
+
+        async def commit(self):
+            self.commits += 1
+
+    monkeypatch.setattr(scheduler_db, "_table_exists", AsyncMock(return_value=True))
+
+    session = Session()
+    changed = await scheduler_db.reconcile_stale_running_queries(
+        session,
+        max_age_seconds=600,
+    )
+
+    assert changed == 3
+    assert session.commits == 1
+    assert session.params == [{"seconds": 600}]
+    sql = session.sql[0]
+    assert "LOWER(status) = 'running'" in sql
+    assert "retry_reason = 'stale_running'" in sql
+    assert "finished_at = NOW()" in sql
+
+
+@pytest.mark.asyncio
 async def test_schedules_list(client, admin_operator, monkeypatch):
     _patch_db(monkeypatch, schedules=[_schedule_row(7)])
     resp = await client.get("/api/admin/scheduler/schedules?enabled_only=1")
