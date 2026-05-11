@@ -14,6 +14,16 @@ import type {
   CompetitorTrendsOut,
   MetricsOut,
 } from '../api/brandMetrics'
+import {
+  asFiniteNumber,
+  contractItemLabel,
+  formatRatioLikeForPercent,
+  normalizeRatioLike,
+  normalizeScore0To100,
+  normalizeSentimentRaw,
+  type AnalyticsContractMetadata,
+  type ContractListItem,
+} from '../api/analyticsContract'
 import type { DiagnosticOut } from '../api/diagnostics'
 import type { IndustryAvgGeoOut } from '../api/industries'
 
@@ -72,19 +82,33 @@ export interface DiagnosticAdapted {
   type: string
 }
 
-/** Find a numeric metric in the kpi_cards array by Chinese label heuristic. */
-function findKpiByLabel(
+type ContractKpiCard = BrandOverviewOut['kpi_cards'][number]
+
+function labelText(card: ContractKpiCard): string {
+  return `${card.label_zh || ''} ${card.label_en || ''}`.toLowerCase()
+}
+
+function findKpiCard(
   cards: BrandOverviewOut['kpi_cards'],
-  matchers: string[],
-): number | null {
+  metricKeys: string[],
+  labelMatchers: string[] = [],
+): ContractKpiCard | null {
+  const keys = new Set(metricKeys.map((key) => key.toLowerCase()))
   for (const card of cards) {
-    for (const m of matchers) {
-      if (card.label_zh.includes(m) || card.label_en.toLowerCase().includes(m.toLowerCase())) {
-        return card.value
-      }
+    const metricKey = String(card.metric_key || '').toLowerCase()
+    if (metricKey && keys.has(metricKey)) return card
+  }
+  for (const card of cards) {
+    const labels = labelText(card)
+    for (const matcher of labelMatchers) {
+      if (labels.includes(matcher.toLowerCase())) return card
     }
   }
   return null
+}
+
+function kpiNumber(card: ContractKpiCard | null): number | null {
+  return card ? asFiniteNumber(card.value) : null
 }
 
 export function adaptOverviewToPrimary(
@@ -93,11 +117,26 @@ export function adaptOverviewToPrimary(
   if (overview.brand_id == null && !overview.brand_name?.trim()) {
     return null
   }
-  const panoScore = findKpiByLabel(overview.kpi_cards, ['GEO', 'PANO', 'pano_score']) ?? 0
-  const mentionPct = findKpiByLabel(overview.kpi_cards, ['提及率', 'mention']) ?? 0
-  const sovPct = findKpiByLabel(overview.kpi_cards, ['声量', 'SoV', 'sov']) ?? 0
-  const sentiment = findKpiByLabel(overview.kpi_cards, ['情感', 'sentiment']) ?? 0
-  const ranking = Math.round(findKpiByLabel(overview.kpi_cards, ['排名', 'rank']) ?? 1)
+  const panoCard = findKpiCard(
+    overview.kpi_cards,
+    ['pano_score', 'geo_score', 'avg_geo_score'],
+    ['geo', 'pano', 'score'],
+  )
+  const mentionCard = findKpiCard(
+    overview.kpi_cards,
+    ['mention_rate', 'avg_mention_rate'],
+    ['mention', '提及'],
+  )
+  const sentimentCard = findKpiCard(
+    overview.kpi_cards,
+    ['sentiment', 'avg_sentiment'],
+    ['sentiment', '情感'],
+  )
+  const rankCard = findKpiCard(
+    overview.kpi_cards,
+    ['rank', 'avg_position_rank'],
+    ['rank', 'position', '排名'],
+  )
   const id = String(overview.brand_id ?? overview.brand_name)
   const name = overview.brand_name ?? `Brand #${overview.brand_id}`
 
@@ -106,13 +145,36 @@ export function adaptOverviewToPrimary(
     name,
     nameZh: name,
     nameEn: name,
-    panoScore: Math.round(panoScore),
-    mentionRate: mentionPct > 1 ? mentionPct / 100 : mentionPct,
-    sentiment: sentiment > 1 ? sentiment / 100 : sentiment,
-    ranking,
+    panoScore: normalizeScore0To100(kpiNumber(panoCard), panoCard?.value_scale),
+    mentionRate: normalizeRatioLike(
+      kpiNumber(mentionCard),
+      mentionCard?.value_scale,
+      mentionCard?.unit,
+    ),
+    sentiment: normalizeSentimentRaw(
+      kpiNumber(sentimentCard),
+      sentimentCard?.value_scale,
+      sentimentCard?.unit,
+    ),
+    ranking: Math.max(1, Math.round(kpiNumber(rankCard) ?? 1)),
     industryId: String(overview.industry_id ?? ''),
     change: undefined,
   }
+}
+
+export function adaptOverviewToSov(overview: BrandOverviewOut): SovEntry[] {
+  const sovCard = findKpiCard(
+    overview.kpi_cards,
+    ['sov', 'avg_sov'],
+    ['sov', 'share of voice', '声量'],
+  )
+  if (!sovCard) return []
+  const value = formatRatioLikeForPercent(sovCard.value, sovCard.value_scale, sovCard.unit)
+  if (value <= 0) return []
+  const name = overview.brand_name ?? `Brand #${overview.brand_id ?? '?'}`
+  const rows: SovEntry[] = [{ name, value }]
+  if (value < 99) rows.push({ name: 'Others', value: Math.max(0, +(100 - value).toFixed(1)) })
+  return rows
 }
 
 export function adaptCompetitorMetricsToList(
@@ -148,10 +210,11 @@ export function adaptCompetitorMetricsToList(
       industryId: '',
     }
   }
+  const competitors = Array.isArray(metrics.competitors) ? metrics.competitors : []
 
   return {
     primary: metrics.primary ? buildPrimary(metrics.primary) : null,
-    competitors: metrics.competitors.map(buildComp),
+    competitors: competitors.map(buildComp),
   }
 }
 
@@ -160,7 +223,7 @@ export function adaptCompetitorMetricsToSov(
 ): SovEntry[] {
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
-    ...metrics.competitors,
+    ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
   const filtered = all.filter((r) => r.avg_sov != null && (r.avg_sov ?? 0) > 0)
   if (filtered.length === 0) return []
@@ -183,7 +246,7 @@ export function adaptCompetitorMetricsToBubble(
 ): BubbleEntry[] {
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
-    ...metrics.competitors,
+    ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
   return all
     .filter((r) => r.avg_sov != null || r.avg_sentiment != null)
@@ -219,8 +282,8 @@ export function adaptOverviewToTrend(
     return {
       day,
       panoScore: Math.round(geo),
-      // mentionRate exposed as decimal-ish so existing formatters match
-      mentionRate: Math.round(sov * 100 * 10) / 10,
+      // Mention rate is supplied by /metrics. Do not reuse SoV as a proxy.
+      mentionRate: 0,
       sentiment: sent,
     }
   })
@@ -239,6 +302,166 @@ export function adaptDiagnostics(
       engine: '',
       type: d.type,
     }))
+}
+
+export type AnalyticsNoticeTone = 'loading' | 'partial' | 'empty' | 'error' | 'auth' | 'info'
+
+export interface AnalyticsContractNotice {
+  tone: AnalyticsNoticeTone
+  title: string
+  stateReason?: string | null
+  details: string[]
+  requestId?: string
+}
+
+export interface AnalyticsContractNoticeInput {
+  isLive: boolean
+  liveProjectId: string | null | undefined
+  overview?: (BrandOverviewOut & AnalyticsContractMetadata) | null
+  metrics?: (MetricsOut & AnalyticsContractMetadata) | null
+  isLoading?: boolean
+  error?: unknown
+}
+
+function errorField(error: unknown, key: string): unknown {
+  return error && typeof error === 'object' ? (error as Record<string, unknown>)[key] : undefined
+}
+
+function contractList(items: ContractListItem[] | undefined): string[] {
+  return (items ?? []).map(contractItemLabel).filter(Boolean)
+}
+
+function pushUnique(details: string[], value: string | null | undefined): void {
+  if (value && !details.includes(value)) details.push(value)
+}
+
+function metricContractDetails(overview: BrandOverviewOut | null | undefined): string[] {
+  const details: string[] = []
+  for (const card of overview?.kpi_cards ?? []) {
+    const key = card.metric_key
+    if (key !== 'mention_rate' && key !== 'sov') continue
+    const pieces = [
+      `${key} denominator: ${card.denominator_label || 'unspecified'}`,
+      card.value_scale ? `scale: ${card.value_scale}` : '',
+      card.formula_status ? `formula: ${card.formula_status}` : '',
+    ].filter(Boolean)
+    details.push(pieces.join('; '))
+  }
+  return details
+}
+
+export function buildAnalyticsContractNotice(
+  input: AnalyticsContractNoticeInput,
+): AnalyticsContractNotice | null {
+  if (!input.isLive) return null
+  if (input.isLoading) {
+    return {
+      tone: 'loading',
+      title: 'Loading analytics',
+      details: input.liveProjectId ? [`Project ${input.liveProjectId}`] : [],
+    }
+  }
+
+  if (input.error) {
+    const status = Number(errorField(input.error, 'status') ?? 0)
+    const requestId = String(
+      errorField(input.error, 'requestId') ||
+      errorField(input.error, 'request_id') ||
+      '',
+    )
+    const path = String(errorField(input.error, 'path') || '')
+    const details = [
+      status ? `status ${status}` : '',
+      requestId ? `request_id ${requestId}` : '',
+      path,
+    ].filter(Boolean)
+    return {
+      tone: status === 401 || status === 403 ? 'auth' : 'error',
+      title: status === 401 || status === 403
+        ? 'Analytics access needs authorization'
+        : 'Analytics failed to load',
+      details,
+      requestId,
+    }
+  }
+
+  const overview = input.overview
+  const metrics = input.metrics
+  if (!overview && !metrics) return null
+
+  const source = overview ?? metrics
+  const state = String(source?.state || 'ok')
+  const stateReason = source?.state_reason ?? null
+  const details: string[] = []
+  pushUnique(details, stateReason || undefined)
+  pushUnique(details, source?.state_detail || undefined)
+  for (const item of contractList(source?.missing_sources)) {
+    pushUnique(details, item)
+  }
+  for (const item of contractList(source?.missing_reasons)) {
+    pushUnique(details, item)
+  }
+  for (const item of contractList(source?.invalid_fields)) {
+    pushUnique(details, item)
+  }
+  for (const item of metricContractDetails(overview)) {
+    pushUnique(details, item)
+  }
+
+  const projectScope = source?.project_scope
+  const projectId = projectScope?.project_id || input.liveProjectId
+  if (projectScope && projectScope.exists === false) {
+    pushUnique(details, projectId ? `Project ${projectId}` : null)
+    pushUnique(details, projectScope.missing_reason || undefined)
+  }
+
+  const identity = source?.identity_diagnostics
+  if (identity?.canonical_alias_repair_count) {
+    pushUnique(details, `alias repairs ${identity.canonical_alias_repair_count}`)
+  }
+  for (const ownerId of identity?.raw_text_owner_brand_ids ?? []) {
+    pushUnique(details, `owner brand ${ownerId}`)
+  }
+
+  const counts = source?.evidence_counts ?? {}
+  if (counts.eligible_response_count != null) {
+    pushUnique(details, `eligible responses ${counts.eligible_response_count}`)
+  }
+  if (counts.brand_mentioned_response_count != null) {
+    pushUnique(details, `brand-mentioned responses ${counts.brand_mentioned_response_count}`)
+  }
+
+  if (state === 'partial') {
+    return {
+      tone: 'partial',
+      title: 'Partial analytics',
+      stateReason,
+      details,
+      requestId: source?.request_id || undefined,
+    }
+  }
+  if (state === 'empty') {
+    const projectPending =
+      projectScope?.exists === false ||
+      String(stateReason || '').includes('project')
+    return {
+      tone: 'empty',
+      title: projectPending ? 'Project context pending' : 'No analytics data yet',
+      stateReason,
+      details,
+      requestId: source?.request_id || undefined,
+    }
+  }
+  if (details.some((detail) => detail.includes('formula_pending') || detail.includes('upstream_formula'))) {
+    return {
+      tone: 'info',
+      title: 'Formula provenance pending',
+      stateReason,
+      details,
+      requestId: source?.request_id || undefined,
+    }
+  }
+  return null
 }
 
 
@@ -273,13 +496,21 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
   const sentiment = find('sentiment')
   const citation = find('citation')
   const rank = find('rank')
+  const percentPoints = (series: MetricsOut['series'][number] | undefined) =>
+    series ? series.points.map((p) => formatRatioLikeForPercent(p.value, series.value_scale, series.unit)) : []
+  const rawPoints = (series: MetricsOut['series'][number] | undefined) =>
+    series ? series.points.map((p) => +(p.value ?? 0).toFixed(1)) : []
 
   return {
-    mention: mention ? mention.points.map((p) => +(p.value * 100).toFixed(1)) : [],
-    sov: sov ? sov.points.map((p) => +(p.value * 100).toFixed(1)) : [],
-    sentiment: sentiment ? sentiment.points.map((p) => +(p.value * 100).toFixed(1)) : [],
-    citation: citation ? citation.points.map((p) => +(p.value * 100).toFixed(1)) : [],
-    rank: rank ? rank.points.map((p) => +p.value.toFixed(1)) : [],
+    mention: percentPoints(mention),
+    sov: percentPoints(sov),
+    sentiment: sentiment
+      ? sentiment.points.map((p) => +(
+          normalizeSentimentRaw(p.value, sentiment.value_scale, sentiment.unit) * 100
+        ).toFixed(1))
+      : [],
+    citation: percentPoints(citation),
+    rank: rawPoints(rank),
   }
 }
 

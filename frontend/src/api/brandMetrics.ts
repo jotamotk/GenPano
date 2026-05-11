@@ -9,24 +9,32 @@
 
 import { apiClient } from '../lib/apiClient'
 import { ProjectAnalysisParams, buildQuery } from '../lib/projectAnalysisFilters'
+import type {
+  AnalyticsContractMetadata,
+  AnalyticsState,
+  MetricContractFields,
+} from './analyticsContract'
 
 export interface MetricSeriesPoint {
   date: string
   value: number
 }
 
-export interface MetricSeries {
+export interface MetricSeries extends MetricContractFields {
   metric: 'mention_rate' | 'sov' | 'rank' | 'sentiment' | 'citation'
   points: MetricSeriesPoint[]
+  state?: AnalyticsState
+  state_reason?: string | null
+  evidence_count?: number
 }
 
-export interface MetricsOut {
+export interface MetricsOut extends AnalyticsContractMetadata {
   project_id: string
   brand_id: number | null
   period: { from: string; to: string }
   engines: string[] | null
   series: MetricSeries[]
-  state: 'ok' | 'empty' | 'partial'
+  state: AnalyticsState
 }
 
 export interface SentimentDistribution {
@@ -167,13 +175,14 @@ export interface CompetitorBrandRow {
   delta_30d_pct: number | null
 }
 
-export interface CompetitorMetricsOut {
+export interface CompetitorMetricsOut extends AnalyticsContractMetadata {
   project_id: string
   primary_brand_id: number | null
   period: { from: string; to: string }
   primary: CompetitorBrandRow | null
   competitors: CompetitorBrandRow[]
-  state?: 'ok' | 'empty' | 'partial'
+  state?: AnalyticsState
+  metric_definitions?: Record<string, MetricContractFields>
 }
 
 export const brandMetricsApi = {
@@ -247,10 +256,11 @@ export interface CompetitorTrendSeries {
   points: CompetitorTrendPoint[]
 }
 
-export interface CompetitorTrendsOut {
+export interface CompetitorTrendsOut extends AnalyticsContractMetadata {
   project_id: string
   metric: string
   period: { from: string; to: string }
   series: CompetitorTrendSeries[]
-  state: 'ok' | 'empty' | 'partial'
+  state: AnalyticsState
+  metric_definition?: MetricContractFields | null
 }

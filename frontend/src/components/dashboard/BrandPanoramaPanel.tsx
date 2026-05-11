@@ -937,6 +937,7 @@ export default function BrandPanoramaPanel({
     if (isLive && industryAvgScoreOverride != null) {
       return Math.round(industryAvgScoreOverride);
     }
+    if (isLive) return 0;
     const sameBrands = BRANDS.filter((b) => b.industryId === primary.industryId);
     if (!sameBrands.length) return 60;
     return Math.round(sameBrands.reduce((sum, b) => sum + b.panoScore, 0) / sameBrands.length);

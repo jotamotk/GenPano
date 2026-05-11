@@ -22,10 +22,13 @@ import {
   adaptCompetitorMetricsToSov,
   adaptCompetitorMetricsToBubble,
   adaptOverviewToTrend,
+  adaptOverviewToSov,
   adaptCompetitorTrendsToTrendData,
   adaptDiagnostics,
   adaptMetricsToSparklines,
   adaptIndustryAvgGeo,
+  buildAnalyticsContractNotice,
+  type AnalyticsContractNotice,
 } from '../adapters/dashboardAdapter';
 import type { ProjectAnalysisParams } from '../lib/projectAnalysisFilters';
 
@@ -42,6 +45,49 @@ function engineId(raw: string) {
   if (value.includes('deepseek')) return 'deepseek';
   if (value.includes('chatgpt') || value.includes('chat')) return 'chatgpt';
   return value;
+}
+
+function AnalyticsContractStatus({ notice }: { notice: AnalyticsContractNotice | null }) {
+  if (!notice) return null;
+  const toneColor =
+    notice.tone === 'auth' || notice.tone === 'error'
+      ? 'var(--color-danger)'
+      : notice.tone === 'partial'
+        ? 'var(--color-warning)'
+        : notice.tone === 'loading'
+          ? 'var(--color-accent)'
+          : 'var(--color-border-subtle)';
+  const details = notice.details.filter(Boolean).slice(0, 5);
+
+  return (
+    <div
+      role={notice.tone === 'auth' || notice.tone === 'error' ? 'alert' : 'status'}
+      className="mb-3 rounded-card border bg-themed-card p-3 text-themed-primary"
+      style={{ borderColor: toneColor }}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide">
+          {notice.tone}
+        </span>
+        <span className="text-sm font-semibold">{notice.title}</span>
+        {notice.stateReason && (
+          <span className="text-xs text-themed-muted">{notice.stateReason}</span>
+        )}
+      </div>
+      {details.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {details.map((detail) => (
+            <span
+              key={detail}
+              className="rounded-pill border border-themed-card px-2 py-0.5 text-[11px] text-themed-muted"
+            >
+              {detail}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -141,6 +187,39 @@ export default function DashboardPage() {
   const industryAvgQ = useIndustryAvgGeo(
     isLive && liveIndustryId ? liveIndustryId : null,
   );
+  const analyticsError =
+    overviewQ.error ||
+    metricsQ.error ||
+    competitorsQ.error ||
+    competitorTrendsQ.error ||
+    diagnosticsQ.error ||
+    industryAvgQ.error;
+  const analyticsNotice = useMemo(
+    () => buildAnalyticsContractNotice({
+      isLive,
+      liveProjectId,
+      overview: overviewQ.data ?? null,
+      metrics: metricsQ.data ?? null,
+      isLoading: isLive && (
+        overviewQ.isLoading ||
+        metricsQ.isLoading ||
+        competitorsQ.isLoading ||
+        competitorTrendsQ.isLoading
+      ),
+      error: analyticsError,
+    }),
+    [
+      isLive,
+      liveProjectId,
+      overviewQ.data,
+      metricsQ.data,
+      overviewQ.isLoading,
+      metricsQ.isLoading,
+      competitorsQ.isLoading,
+      competitorTrendsQ.isLoading,
+      analyticsError,
+    ],
+  );
 
   /* ── Adapter: convert backend → BrandPanoramaPanel prop shape ── */
   const adapted = useMemo(() => {
@@ -163,12 +242,14 @@ export default function DashboardPage() {
         : overviewQ.data
           ? adaptOverviewToTrend(overviewQ.data)
           : [];
+    const competitorSov = competitorsQ.data
+      ? adaptCompetitorMetricsToSov(competitorsQ.data)
+      : [];
+    const overviewSov = overviewQ.data ? adaptOverviewToSov(overviewQ.data) : [];
     return {
       primary: primaryFromBackend,
       competitors: compsList.competitors,
-      sov: competitorsQ.data
-        ? adaptCompetitorMetricsToSov(competitorsQ.data)
-        : [],
+      sov: competitorSov.length > 0 ? competitorSov : overviewSov,
       bubble: competitorsQ.data
         ? adaptCompetitorMetricsToBubble(competitorsQ.data)
         : [],
@@ -276,19 +357,22 @@ export default function DashboardPage() {
   );
 
   return (
-    <BrandPanoramaPanel
-      primary={primaryForPanel}
-      industry={mockIndustry}
-      competitors={competitorsForPanel}
-      headerSlot={header}
-      scrollAnchorId="dashboard-competition"
-      sovDataOverride={adapted?.sov}
-      bubbleDataOverride={adapted?.bubble}
-      trendDataOverride={adapted?.trend}
-      diagnosticsOverride={adapted?.diagnostics}
-      sparklineOverride={adapted?.sparklines ?? undefined}
-      industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
-      isLive={isLive}
-    />
+    <>
+      <AnalyticsContractStatus notice={analyticsNotice} />
+      <BrandPanoramaPanel
+        primary={primaryForPanel}
+        industry={mockIndustry}
+        competitors={competitorsForPanel}
+        headerSlot={header}
+        scrollAnchorId="dashboard-competition"
+        sovDataOverride={adapted?.sov}
+        bubbleDataOverride={adapted?.bubble}
+        trendDataOverride={adapted?.trend}
+        diagnosticsOverride={adapted?.diagnostics}
+        sparklineOverride={adapted?.sparklines ?? undefined}
+        industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
+        isLive={isLive}
+      />
+    </>
   );
 }
