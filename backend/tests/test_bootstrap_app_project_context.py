@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from scripts.bootstrap_app_project_context import (
     DEFAULT_COMPETITOR_POLICY,
+    add_context_safety_notes,
+    apply_plan,
     build_plan,
+    choose_existing_project,
     stable_project_id,
     validate_plan_can_write,
     validate_write_gate,
@@ -105,3 +110,69 @@ def test_write_refuses_plan_with_blockers() -> None:
 
     with pytest.raises(ValueError, match="plan has blockers"):
         validate_plan_can_write(plan)
+
+
+class RecordingSession:
+    def __init__(self) -> None:
+        self.executed: list[Any] = []
+        self.committed = False
+
+    async def execute(self, *args: Any, **kwargs: Any) -> None:
+        self.executed.append((args, kwargs))
+
+    async def commit(self) -> None:
+        self.committed = True
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_deterministic_project_collision_blocks_competitor_insert() -> None:
+    project_id = "95d43022-a5c8-5944-b6d6-34b29faa18b5"
+    context = {
+        "brand_rows": [{"id": 12, "name": "雅诗兰黛"}],
+        "project_rows": [
+            {
+                "id": project_id,
+                "user_id": "stale-user",
+                "name": "Old Estee Context",
+                "industry_id": None,
+                "primary_brand_id": 12,
+                "is_active": False,
+                "deleted_at": "2026-05-01 00:00:00",
+            }
+        ],
+        "target_as_competitor_rows": [],
+    }
+
+    existing_project = choose_existing_project(
+        project_rows=context["project_rows"],
+        brand_id=12,
+        project_id=project_id,
+    )
+    plan = build_plan(
+        brand_id=12,
+        user_id="approved-user",
+        project_name="Estee Lauder / 雅诗兰黛 App Analytics",
+        project_id=project_id,
+        industry_id=None,
+        competitor_brand_ids=[2],
+        existing_project=existing_project,
+        existing_competitor_brand_ids=set(),
+        write=True,
+        approval_ref="https://github.com/jotamotk/X/issues/492#issuecomment-approved",
+    )
+
+    add_context_safety_notes(
+        plan,
+        context=context,
+        existing_project=existing_project,
+        brand_id=12,
+    )
+
+    assert existing_project is None
+    assert any("project_id collision" in blocker for blocker in plan["blockers"])
+
+    session = RecordingSession()
+    with pytest.raises(ValueError, match="plan has blockers"):
+        await apply_plan(session, plan)  # type: ignore[arg-type]
+    assert session.executed == []
+    assert session.committed is False

@@ -256,18 +256,28 @@ def choose_existing_project(
     *, project_rows: Sequence[dict[str, Any]], brand_id: int, project_id: str
 ) -> dict[str, Any] | None:
     exact = [
-        row for row in project_rows if row.get("id") == project_id and row.get("deleted_at") is None
+        row
+        for row in project_rows
+        if row.get("id") == project_id and _is_intended_active_project(row, brand_id)
     ]
     if exact:
         return exact[0]
     primary = [
         row
         for row in project_rows
-        if row.get("primary_brand_id") == brand_id and row.get("deleted_at") is None
+        if row.get("primary_brand_id") == brand_id and _is_intended_active_project(row, brand_id)
     ]
     if len(primary) == 1:
         return primary[0]
     return None
+
+
+def _is_intended_active_project(row: dict[str, Any], brand_id: int) -> bool:
+    return (
+        row.get("primary_brand_id") == brand_id
+        and row.get("deleted_at") is None
+        and row.get("is_active") is not False
+    )
 
 
 def add_context_safety_notes(
@@ -282,6 +292,18 @@ def add_context_safety_notes(
 
     if not context["brand_rows"]:
         blockers.append(f"target brand_id={brand_id} was not found in brands")
+
+    exact_project_rows = [
+        row for row in context["project_rows"] if row.get("id") == plan["project_id"]
+    ]
+    unsafe_project_id_collisions = [
+        row for row in exact_project_rows if not _is_intended_active_project(row, brand_id)
+    ]
+    if unsafe_project_id_collisions:
+        blockers.append(
+            f"project_id collision for {plan['project_id']} is not an active "
+            f"primary_brand_id={brand_id} context"
+        )
 
     active_projects = [row for row in context["project_rows"] if row.get("deleted_at") is None]
     primary_projects = [row for row in active_projects if row.get("primary_brand_id") == brand_id]
