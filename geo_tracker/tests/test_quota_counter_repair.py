@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from geo_tracker.db.models import (
@@ -12,13 +13,15 @@ from geo_tracker.db.models import (
     Base,
     LLMAccount,
     LLMResponse,
+    QuotaCounterRepair,
     Query,
     QueryStatus,
 )
 from geo_tracker.tasks.quota_counter_repair import (
     RepairBlocked,
-    build_quota_repair_report,
     apply_quota_repair_plan,
+    build_quota_repair_report,
+    validate_deployed_code_sha,
 )
 
 
@@ -146,12 +149,19 @@ async def test_report_selects_only_current_day_non_consuming_unresponded_account
         reason="page_load_failed",
         event_at=day_start + timedelta(hours=6),
     )
-    has_response = _query(
+    ambiguous_exception = _query(
         108,
         account_id=11,
         target_llm="deepseek",
         reason="exception",
         event_at=day_start + timedelta(hours=7),
+    )
+    has_response = _query(
+        109,
+        account_id=11,
+        target_llm="deepseek",
+        reason="browser_timeout",
+        event_at=day_start + timedelta(hours=8),
     )
     session.add_all(
         [
@@ -162,12 +172,13 @@ async def test_report_selects_only_current_day_non_consuming_unresponded_account
             successful,
             previous_day,
             no_account,
+            ambiguous_exception,
             has_response,
         ]
     )
     session.add(
         LLMResponse(
-            query_id=108,
+            query_id=109,
             raw_text="platform returned text before persistence failed",
             response_time_ms=1000,
         )
@@ -181,6 +192,7 @@ async def test_report_selects_only_current_day_non_consuming_unresponded_account
     )
 
     assert report.candidate_query_ids == [101, 102, 103]
+    assert report.manual_review_query_ids == [108]
     assert report.total_refundable_attempts == 3
     assert [
         (item.engine, item.account_id, item.reason, item.refundable_attempts)
@@ -249,7 +261,12 @@ async def test_apply_guard_blocks_counter_underflow_and_exact_total_mismatch(
     assert report.account_plans[0].safe_to_apply is False
 
     with pytest.raises(RepairBlocked, match="would drop below zero"):
-        await apply_quota_repair_plan(session, report, expected_total_delta=2)
+        await apply_quota_repair_plan(
+            session,
+            report,
+            expected_total_delta=2,
+            current_service_day_start=day_start,
+        )
     await session.refresh(account)
     assert account.query_count_today == 1
 
@@ -262,12 +279,225 @@ async def test_apply_guard_blocks_counter_underflow_and_exact_total_mismatch(
     )
 
     with pytest.raises(RepairBlocked, match="expected_total_delta"):
-        await apply_quota_repair_plan(session, report, expected_total_delta=1)
+        await apply_quota_repair_plan(
+            session,
+            report,
+            expected_total_delta=1,
+            current_service_day_start=day_start,
+        )
     await session.refresh(account)
     assert account.query_count_today == 3
 
-    applied = await apply_quota_repair_plan(session, report, expected_total_delta=2)
+    applied = await apply_quota_repair_plan(
+        session,
+        report,
+        expected_total_delta=2,
+        current_service_day_start=day_start,
+        approval_ref="https://github.com/jotamotk/X/issues/519#issuecomment-1",
+    )
     await session.refresh(account)
 
     assert applied.total_delta == 2
     assert account.query_count_today == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_apply_cannot_double_refund_same_query_ids(session: AsyncSession):
+    day_start = datetime(2026, 5, 11)
+    account = await _account(
+        session,
+        account_id=30,
+        llm_name="chatgpt",
+        query_count_today=3,
+    )
+    session.add_all(
+        [
+            _query(
+                301,
+                account_id=30,
+                target_llm="chatgpt",
+                reason="no_response",
+                event_at=day_start + timedelta(hours=1),
+            ),
+            _query(
+                302,
+                account_id=30,
+                target_llm="chatgpt",
+                reason="no_input",
+                event_at=day_start + timedelta(hours=2),
+            ),
+        ]
+    )
+    await session.commit()
+
+    report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+    applied = await apply_quota_repair_plan(
+        session,
+        report,
+        expected_total_delta=2,
+        current_service_day_start=day_start,
+        approval_ref="https://github.com/jotamotk/X/issues/519#issuecomment-2",
+    )
+    await session.refresh(account)
+    assert applied.total_delta == 2
+    assert account.query_count_today == 1
+
+    repairs = (
+        await session.execute(
+            select(QuotaCounterRepair.query_id).order_by(QuotaCounterRepair.query_id)
+        )
+    ).scalars().all()
+    assert repairs == [301, 302]
+
+    with pytest.raises(RepairBlocked, match="already repaired"):
+        await apply_quota_repair_plan(
+            session,
+            report,
+            expected_total_delta=2,
+            current_service_day_start=day_start,
+            approval_ref="https://github.com/jotamotk/X/issues/519#issuecomment-2",
+        )
+    await session.refresh(account)
+    assert account.query_count_today == 1
+
+    next_report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+    assert next_report.candidate_query_ids == []
+    assert next_report.repaired_query_ids == [301, 302]
+
+
+@pytest.mark.asyncio
+async def test_old_window_apply_is_blocked_after_service_day_reset(session: AsyncSession):
+    old_day_start = datetime(2026, 5, 10)
+    current_day_start = old_day_start + timedelta(days=1)
+    account = await _account(
+        session,
+        account_id=40,
+        llm_name="deepseek",
+        query_count_today=5,
+    )
+    session.add(
+        _query(
+            401,
+            account_id=40,
+            target_llm="deepseek",
+            reason="page_load_failed",
+            event_at=old_day_start + timedelta(hours=23),
+        )
+    )
+    await session.commit()
+
+    report = await build_quota_repair_report(
+        session,
+        service_day_start=old_day_start,
+        service_day_end=current_day_start,
+    )
+
+    with pytest.raises(RepairBlocked, match="current service day"):
+        await apply_quota_repair_plan(
+            session,
+            report,
+            expected_total_delta=1,
+            current_service_day_start=current_day_start,
+            approval_ref="https://github.com/jotamotk/X/issues/519#issuecomment-3",
+        )
+    await session.refresh(account)
+    assert account.query_count_today == 5
+
+
+@pytest.mark.asyncio
+async def test_cross_midnight_attempt_uses_start_day_not_finished_day(
+    session: AsyncSession,
+):
+    day_start = datetime(2026, 5, 11)
+    previous_day_start = day_start - timedelta(days=1)
+    await _account(
+        session,
+        account_id=50,
+        llm_name="chatgpt",
+        query_count_today=2,
+    )
+    query = _query(
+        501,
+        account_id=50,
+        target_llm="chatgpt",
+        reason="browser_timeout",
+        event_at=day_start + timedelta(minutes=1),
+    )
+    query.started_at = day_start - timedelta(minutes=1)
+    query.executed_at = day_start - timedelta(minutes=1)
+    session.add(query)
+    await session.commit()
+
+    current_day_report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+    previous_day_report = await build_quota_repair_report(
+        session,
+        service_day_start=previous_day_start,
+        service_day_end=day_start,
+    )
+
+    assert current_day_report.candidate_query_ids == []
+    assert previous_day_report.candidate_query_ids == [501]
+
+
+@pytest.mark.asyncio
+async def test_query_account_engine_mismatch_is_unsafe_and_not_applied(
+    session: AsyncSession,
+):
+    day_start = datetime(2026, 5, 11)
+    account = await _account(
+        session,
+        account_id=60,
+        llm_name="chatgpt",
+        query_count_today=2,
+    )
+    session.add(
+        _query(
+            601,
+            account_id=60,
+            target_llm="deepseek",
+            reason="no_response",
+            event_at=day_start + timedelta(hours=1),
+        )
+    )
+    await session.commit()
+
+    report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+
+    assert report.account_plans[0].safe_to_apply is False
+    assert "engine_mismatch" in report.account_plans[0].unsafe_reasons
+    with pytest.raises(RepairBlocked, match="engine_mismatch"):
+        await apply_quota_repair_plan(
+            session,
+            report,
+            expected_total_delta=1,
+            current_service_day_start=day_start,
+            approval_ref="https://github.com/jotamotk/X/issues/519#issuecomment-4",
+        )
+    await session.refresh(account)
+    assert account.query_count_today == 2
+
+
+def test_deployed_code_sha_guard_rejects_mismatch_and_invalid_values():
+    reviewed = "a" * 40
+
+    assert validate_deployed_code_sha(reviewed, reviewed) == reviewed
+    with pytest.raises(RepairBlocked, match="deployed code SHA mismatch"):
+        validate_deployed_code_sha(reviewed, "b" * 40)
+    with pytest.raises(RepairBlocked, match="40-character git SHA"):
+        validate_deployed_code_sha("not-a-sha", reviewed)

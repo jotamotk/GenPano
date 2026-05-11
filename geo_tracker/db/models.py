@@ -271,6 +271,21 @@ class LLMAccount(Base):
                                        cascade="all, delete-orphan")
 
 
+class QuotaCounterRepair(Base):
+    __tablename__ = "quota_counter_repairs"
+
+    id                  = Column(Integer, primary_key=True)
+    query_id            = Column(Integer, ForeignKey("queries.id", ondelete="CASCADE"), nullable=False, unique=True)
+    account_id          = Column(Integer, ForeignKey("llm_accounts.id"), nullable=False)
+    engine              = Column(String(64), nullable=False)
+    reason              = Column(String(256), nullable=False)
+    delta               = Column(Integer, nullable=False, default=1)
+    service_day_start   = Column(DateTime, nullable=False)
+    service_day_end     = Column(DateTime, nullable=False)
+    approval_ref        = Column(Text, nullable=False)
+    repaired_at         = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 # ─── Account ↔ Profile (many-to-many with per-binding daily quota) ───────────
 # A single LLM account may serve dozens of Profiles. The legacy
 # llm_accounts.profile_id stays as the "primary" profile for backward compat;
