@@ -5,6 +5,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
+import AnalyticsVisualizationContract from '../components/dashboard/AnalyticsVisualizationContract';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
@@ -77,6 +78,8 @@ export default function DashboardPage() {
 
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
+  const showAnalyticsVisualizationContract =
+    searchParams.get('viz') === 'analytics-contract';
 
   /* ?brandId=X URL param lets the BrandPicker (sidebar) view this
      dashboard for a different brand than the project's primary, e.g.
@@ -276,19 +279,22 @@ export default function DashboardPage() {
   );
 
   return (
-    <BrandPanoramaPanel
-      primary={primaryForPanel}
-      industry={mockIndustry}
-      competitors={competitorsForPanel}
-      headerSlot={header}
-      scrollAnchorId="dashboard-competition"
-      sovDataOverride={adapted?.sov}
-      bubbleDataOverride={adapted?.bubble}
-      trendDataOverride={adapted?.trend}
-      diagnosticsOverride={adapted?.diagnostics}
-      sparklineOverride={adapted?.sparklines ?? undefined}
-      industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
-      isLive={isLive}
-    />
+    <div className="space-y-4">
+      {showAnalyticsVisualizationContract && <AnalyticsVisualizationContract />}
+      <BrandPanoramaPanel
+        primary={primaryForPanel}
+        industry={mockIndustry}
+        competitors={competitorsForPanel}
+        headerSlot={header}
+        scrollAnchorId="dashboard-competition"
+        sovDataOverride={adapted?.sov}
+        bubbleDataOverride={adapted?.bubble}
+        trendDataOverride={adapted?.trend}
+        diagnosticsOverride={adapted?.diagnostics}
+        sparklineOverride={adapted?.sparklines ?? undefined}
+        industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
+        isLive={isLive}
+      />
+    </div>
   );
 }
