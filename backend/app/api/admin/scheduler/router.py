@@ -564,10 +564,11 @@ async def scheduler_manual_trigger(
         )
 
     query_ids = [int(qid) for qid in (result.get("query_ids") or []) if str(qid).strip().isdigit()]
+    dispatch_items = result.get("query_dispatches") or query_ids
     dispatched = 0
     dispatch_failed = 0
-    if query_ids:
-        dispatched, dispatch_failed = dispatch_many(query_ids)
+    if dispatch_items:
+        dispatched, dispatch_failed = dispatch_many(dispatch_items)
     result = {**result, "dispatched": dispatched, "dispatch_failed": dispatch_failed}
 
     await emit_audit(

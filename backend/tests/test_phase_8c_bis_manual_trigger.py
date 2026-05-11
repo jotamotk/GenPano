@@ -228,6 +228,14 @@ async def test_manual_dispatch_batch_plan_uses_bulk_writes_to_avoid_proxy_timeou
     assert result["queries_created"] == 6
     assert result["run_id"] == 99
     assert result["query_ids"] == [100, 101, 102, 103, 104, 105]
+    assert result["query_dispatches"] == [
+        {"id": 100, "target_llm": "chatgpt"},
+        {"id": 101, "target_llm": "gemini"},
+        {"id": 102, "target_llm": "chatgpt"},
+        {"id": 103, "target_llm": "gemini"},
+        {"id": 104, "target_llm": "chatgpt"},
+        {"id": 105, "target_llm": "gemini"},
+    ]
     assert session.query_insert_rows == 6
     assert session.query_insert_calls == 1
     assert session.schedule_update_calls == 1
@@ -357,6 +365,38 @@ async def test_manual_trigger_success_audit_high(
     assert after.get("reason") == "ok"
     assert after.get("dispatched") == 3
     assert after.get("dispatch_failed") == 0
+
+
+@pytest.mark.asyncio
+async def test_manual_trigger_dispatches_with_engine_targets(
+    client, admin_operator, monkeypatch
+):
+    a = _scheduler_router_module()
+    dispatch_items = [
+        {"id": 101, "target_llm": "chatgpt"},
+        {"id": 102, "target_llm": "doubao"},
+        {"id": 103, "target_llm": "deepseek"},
+    ]
+    monkeypatch.setattr(a, "dispatch_many", MagicMock(return_value=(3, 0)))
+    fake_result = {
+        "target_total": 5,
+        "queries_created": 3,
+        "query_ids": [101, 102, 103],
+        "query_dispatches": dispatch_items,
+        "run_id": 42,
+        "reason": "ok",
+        "schedules_enabled": 5,
+        "schedules_dispatchable": 3,
+        "paused_engines": [],
+        "quotas_total": 0,
+        "schedule_failures": [],
+    }
+    monkeypatch.setattr(a, "run_manual_dispatch", AsyncMock(return_value=fake_result))
+
+    resp = await client.post("/api/admin/scheduler/manual_trigger", json={})
+
+    assert resp.status_code == 200
+    a.dispatch_many.assert_called_once_with(dispatch_items)
 
 
 @pytest.mark.asyncio

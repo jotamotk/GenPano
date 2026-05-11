@@ -461,12 +461,21 @@ async def run_manual_dispatch(
 
     created = 0
     query_ids: list[int] = []
+    query_dispatches: list[dict[str, Any]] = []
     if insert_rows:
         inserted = await session.execute(
-            insert(queries_table).returning(queries_table.c.id),
+            insert(queries_table).returning(queries_table.c.id, queries_table.c.target_llm),
             insert_rows,
         )
-        query_ids = [int(row["id"]) for row in inserted.mappings().all()]
+        inserted_rows = [dict(row) for row in inserted.mappings().all()]
+        query_ids = [int(row["id"]) for row in inserted_rows]
+        query_dispatches = [
+            {
+                "id": int(row["id"]),
+                "target_llm": row.get("target_llm") or params.get("target_llm"),
+            }
+            for row, params in zip(inserted_rows, insert_rows)
+        ]
         await session.execute(
             text(
                 """
@@ -525,6 +534,7 @@ async def run_manual_dispatch(
         "target_total": target_total,
         "queries_created": created,
         "query_ids": query_ids,
+        "query_dispatches": query_dispatches,
         "run_id": run_id,
         "reason": reason,
         "schedules_enabled": schedules_enabled_total,

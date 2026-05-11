@@ -281,7 +281,7 @@ class GuestQueryExecutor:
                 logger.warning(f"[{llm}] 节点 {current} 失败，加入黑名单 (已排除 {len(failed_nodes)} 个)")
 
         logger.error(f"[{llm}] 所有重试均失败")
-        self.last_error_reason = self.last_error_reason or "proxy_unavailable"
+        self.last_error_reason = self.last_error_reason or "no_response"
         return None
 
     async def _execute_once(

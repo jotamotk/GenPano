@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -70,6 +72,50 @@ def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("cookies_expired") is True
     assert _should_report_account_failure("browser_launch_timeout") is False
     assert _should_report_account_failure("soft_time_limit") is False
+
+
+@pytest.mark.asyncio
+async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(monkeypatch):
+    playwright = types.ModuleType("playwright")
+    playwright_async = types.ModuleType("playwright.async_api")
+    playwright_async.async_playwright = object
+    playwright_async.BrowserContext = object
+    playwright_async.Page = object
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)
+
+    import geo_tracker.agent.guest_executor as guest_executor_module
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    attempts = 0
+
+    async def fake_execute_once(self, query, config, *, use_proxy):
+        nonlocal attempts
+        attempts += 1
+        assert use_proxy is True
+        return None
+
+    async def fake_get_current_node(api_url, group_name):
+        return f"node-{attempts}"
+
+    async def fake_switch_to_next_node(api_url, group_name, exclude=None):
+        return f"node-next-{len(exclude or set())}"
+
+    monkeypatch.setattr(GuestQueryExecutor, "_execute_once", fake_execute_once)
+    monkeypatch.setattr(guest_executor_module, "get_current_node", fake_get_current_node)
+    monkeypatch.setattr(
+        guest_executor_module,
+        "switch_to_next_node",
+        fake_switch_to_next_node,
+    )
+
+    executor = GuestQueryExecutor(proxy_url="http://proxy.internal:6789")
+
+    result = await executor.execute(Query(query_text="hello", target_llm="chatgpt"))
+
+    assert result is None
+    assert attempts == 3
+    assert executor.last_error_reason == "no_response"
 
 
 class _FakeDb:
