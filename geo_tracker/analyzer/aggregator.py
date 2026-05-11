@@ -13,7 +13,7 @@ import logging
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, null
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.db.models import (
@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 PRD_CATEGORY_DIMENSIONS = {"品类", "category"}
 PRD_NON_BRAND_INTENTS = {"non_brand"}
+
+
+def _nullable_metric(value):
+    return value if value is not None else null()
 
 
 class Aggregator:
@@ -81,7 +85,9 @@ class Aggregator:
         response_ids = [a.response_id for a in analyses]
         mentions = await self._get_mentions(response_ids)
         queries = await self._get_queries(response_ids)
-        cited_response_ids = await self._get_cited_response_ids(response_ids)
+        citation_response_ids_by_brand = await self._get_citation_response_ids_by_brand(
+            response_ids
+        )
         prompts_by_query = await self._get_prompts_for_queries(queries.values())
 
         source_owners_by_fact_brand = self._source_owners_by_fact_brand(mentions, queries)
@@ -100,7 +106,7 @@ class Aggregator:
                 continue
             count = await self._aggregate_brand_daily(
                 bid, date, brand_analyses_list, mentions, queries,
-                cited_response_ids, prompts_by_query, competitive_brand_ids,
+                citation_response_ids_by_brand, prompts_by_query, competitive_brand_ids,
             )
             stats["geo_score_daily"] += count
 
@@ -128,7 +134,7 @@ class Aggregator:
         analyses: list[ResponseAnalysis],
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
-        cited_response_ids: set[int],
+        citation_response_ids_by_brand: dict[int, set[int]],
         prompts_by_query: dict[int, tuple[str | None, str | None, str | None]],
         competitive_brand_ids: set[int],
     ) -> int:
@@ -149,7 +155,7 @@ class Aggregator:
         rows_written = 0
         if await self._upsert_brand_daily_row(
             brand_id, date_start, analyses, mentions,
-            queries, cited_response_ids, prompts_by_query, competitive_brand_ids,
+            queries, citation_response_ids_by_brand, prompts_by_query, competitive_brand_ids,
             target_llm=None, intent=None, language=None,
         ):
             rows_written += 1
@@ -173,7 +179,7 @@ class Aggregator:
                 continue
             if await self._upsert_brand_daily_row(
                 brand_id, date_start, group_analyses, mentions,
-                queries, cited_response_ids, prompts_by_query, competitive_brand_ids,
+                queries, citation_response_ids_by_brand, prompts_by_query, competitive_brand_ids,
                 target_llm=llm, intent=intent, language=language,
             ):
                 rows_written += 1
@@ -187,7 +193,7 @@ class Aggregator:
         analyses: list[ResponseAnalysis],
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
-        cited_response_ids: set[int],
+        citation_response_ids_by_brand: dict[int, set[int]],
         prompts_by_query: dict[int, tuple[str | None, str | None, str | None]],
         competitive_brand_ids: set[int],
         target_llm: str | None,
@@ -199,16 +205,7 @@ class Aggregator:
             if (q := queries.get(a.response_id)) is not None
             and self._is_default_mention_rate_eligible(q, prompts_by_query)
         ]
-        eligible_analyses = default_eligible_analyses or [
-            a for a in analyses
-            if (q := queries.get(a.response_id)) is not None
-            and self._has_cross_owner_fact_mention(
-                a.response_id,
-                q,
-                brand_id,
-                mentions,
-            )
-        ]
+        eligible_analyses = default_eligible_analyses
         total_queries = len(eligible_analyses)
         if total_queries == 0:
             return False
@@ -222,20 +219,25 @@ class Aggregator:
         target_mention_response_ids = {m.response_id for m in target_mentions}
         mention_count = len(target_mention_response_ids)
         mention_rate = mention_count / total_queries if total_queries else 0
-        competitive_response_ids: set[int] = set()
-        if competitive_brand_ids:
-            competitive_response_ids = {
-                a.response_id
-                for a in eligible_analyses
-                if any(
-                    m.brand_id in competitive_brand_ids
-                    for m in mentions.get(a.response_id, [])
-                    if m.brand_id is not None
-                )
-            }
+        competitive_mentions = self._competitive_mentions_for_sov(
+            eligible_analyses,
+            mentions,
+            brand_id,
+            competitive_brand_ids,
+        )
+        competitive_mention_count = sum(m.mention_count or 1 for m in competitive_mentions)
+        target_competitive_mention_count = sum(
+            m.mention_count or 1
+            for m in competitive_mentions
+            if self._mention_matches_brand(m, brand_id)
+        )
+        non_target_competitive_mention_count = (
+            competitive_mention_count - target_competitive_mention_count
+        )
         avg_sov = (
-            len(target_mention_response_ids) / len(competitive_response_ids)
-            if competitive_response_ids else None
+            target_competitive_mention_count / competitive_mention_count
+            if competitive_mention_count and non_target_competitive_mention_count
+            else None
         )
 
         # Position stats
@@ -247,6 +249,7 @@ class Aggregator:
 
         # Sentiment stats
         sentiments = [m.sentiment_score for m in target_mentions if m.sentiment_score is not None]
+        has_sentiment_evidence = bool(sentiments)
         positives = sum(1 for m in target_mentions if m.sentiment == "positive")
         negatives = sum(1 for m in target_mentions if m.sentiment == "negative")
 
@@ -261,22 +264,33 @@ class Aggregator:
             for m in target_mentions
         ]
         sent_scores = [
-            GEOScorer.calc_sentiment(m.sentiment_score or 0.0, m.detail_level)
+            GEOScorer.calc_sentiment(m.sentiment_score, m.detail_level)
             for m in target_mentions
+            if m.sentiment_score is not None
         ]
-        target_cited_responses = target_mention_response_ids.intersection(cited_response_ids)
+        target_attributed_citation_response_ids = citation_response_ids_by_brand.get(
+            brand_id,
+            set(),
+        )
+        citation_evidence_available = bool(target_attributed_citation_response_ids)
+        target_cited_responses = target_mention_response_ids.intersection(
+            target_attributed_citation_response_ids
+        )
         citation_rate = (
             len(target_cited_responses) / len(target_mention_response_ids)
-            if target_mention_response_ids else 0
+            if target_mention_response_ids and citation_evidence_available else None
         )
-        citation_component = GEOScorer.calc_citations(len(target_cited_responses), False)
+        citation_component = (
+            GEOScorer.calc_citations(len(target_cited_responses), False)
+            if citation_evidence_available else None
+        )
         visibility_component = (
             round(sum(vis_scores) / len(vis_scores), 2) if vis_scores else 0
         )
         sentiment_component = (
-            round(sum(sent_scores) / len(sent_scores), 2) if sent_scores else 0
+            round(sum(sent_scores) / len(sent_scores), 2) if sent_scores else None
         )
-        sov_component = round(avg_sov * 100, 2) if avg_sov is not None else 0
+        sov_component = round(avg_sov * 100, 2) if avg_sov is not None else None
         geo_score = (
             GEOScorer.calc_overall(
                 visibility_component,
@@ -284,7 +298,11 @@ class Aggregator:
                 sov_component,
                 citation_component,
             )
-            if target_mentions else 0
+            if target_mentions
+            and sentiment_component is not None
+            and sov_component is not None
+            and citation_component is not None
+            else None
         )
 
         # Industry from first analysis that has it
@@ -305,10 +323,18 @@ class Aggregator:
             avg_position_rank=round(sum(ranks) / len(ranks), 2) if ranks else None,
             first_place_count=first_place,
             first_place_rate=round(first_place / total_queries, 4) if total_queries else 0,
-            positive_rate=round(positives / mention_count, 4) if mention_count else 0,
-            negative_rate=round(negatives / mention_count, 4) if mention_count else 0,
-            avg_sentiment_score=round(sum(sentiments) / len(sentiments), 4) if sentiments else 0,
-            citation_rate=round(citation_rate, 4),
+            positive_rate=(
+                round(positives / mention_count, 4)
+                if mention_count and has_sentiment_evidence else None
+            ),
+            negative_rate=(
+                round(negatives / mention_count, 4)
+                if mention_count and has_sentiment_evidence else None
+            ),
+            avg_sentiment_score=(
+                round(sum(sentiments) / len(sentiments), 4) if sentiments else None
+            ),
+            citation_rate=round(citation_rate, 4) if citation_rate is not None else None,
             avg_sov=round(avg_sov, 4) if avg_sov is not None else None,
             avg_visibility=visibility_component,
             avg_sentiment=sentiment_component,
@@ -317,6 +343,28 @@ class Aggregator:
             avg_geo_score=geo_score,
             industry=industry,
         )
+        # SQLAlchemy client defaults on legacy score columns can coerce absent
+        # values to 0.0 on INSERT. Reassign after construction so missing
+        # upstream evidence remains NULL instead of becoming fake zeros.
+        row.positive_rate = _nullable_metric(
+            round(positives / mention_count, 4)
+            if mention_count and has_sentiment_evidence else None
+        )
+        row.negative_rate = _nullable_metric(
+            round(negatives / mention_count, 4)
+            if mention_count and has_sentiment_evidence else None
+        )
+        row.avg_sentiment_score = _nullable_metric(
+            round(sum(sentiments) / len(sentiments), 4) if sentiments else None
+        )
+        row.citation_rate = _nullable_metric(
+            round(citation_rate, 4) if citation_rate is not None else None
+        )
+        row.avg_sov = _nullable_metric(round(avg_sov, 4) if avg_sov is not None else None)
+        row.avg_sentiment = _nullable_metric(sentiment_component)
+        row.avg_sov_score = _nullable_metric(sov_component)
+        row.avg_citation_score = _nullable_metric(citation_component)
+        row.avg_geo_score = _nullable_metric(geo_score)
 
         # Check existing row for this exact dimension tuple
         # Use is_() for None comparisons (NULL = NULL would never match in SQL)
@@ -374,11 +422,14 @@ class Aggregator:
 
         count = 0
         for industry, rows in by_industry.items():
-            scores = sorted([r.avg_geo_score for r in rows])
+            scored_rows = [r for r in rows if r.avg_geo_score is not None]
+            if not scored_rows:
+                continue
+            scores = sorted([r.avg_geo_score for r in scored_rows])
             n = len(scores)
 
             # Top brands JSON
-            sorted_rows = sorted(rows, key=lambda r: r.avg_geo_score, reverse=True)
+            sorted_rows = sorted(scored_rows, key=lambda r: r.avg_geo_score, reverse=True)
             top_brands = []
             for rank, r in enumerate(sorted_rows[:5], 1):
                 brand = await self.session.get(Brand, r.brand_id)
@@ -539,6 +590,15 @@ class Aggregator:
                 max(pp_counts, key=pp_counts.get) if pp_counts else None
             )
 
+            avg_sentiment_score = (
+                round(sum(pd["sentiments"]) / len(pd["sentiments"]), 4)
+                if pd["sentiments"] else None
+            )
+            win_rate = (
+                round(pd["comp_wins"] / pd["comp_total"], 4)
+                if pd["comp_total"] else None
+            )
+
             row = ProductScoreDaily(
                 brand_id=bid,
                 product_name=pname,
@@ -553,21 +613,17 @@ class Aggregator:
                 ),
                 first_place_count=pd["first_place"],
                 first_place_rate=round(pd["first_place"] / tq, 4) if tq else 0,
-                avg_sentiment_score=(
-                    round(sum(pd["sentiments"]) / len(pd["sentiments"]), 4)
-                    if pd["sentiments"] else 0
-                ),
+                avg_sentiment_score=avg_sentiment_score,
                 comparison_wins=pd["comp_wins"],
                 comparison_total=pd["comp_total"],
-                win_rate=(
-                    round(pd["comp_wins"] / pd["comp_total"], 4)
-                    if pd["comp_total"] else 0
-                ),
+                win_rate=win_rate,
                 top_features_json=top_features,
                 top_scenarios_json=top_scenarios,
                 price_positioning=price_pos,
                 price_positioning_json=pp_counts or None,
             )
+            row.avg_sentiment_score = _nullable_metric(avg_sentiment_score)
+            row.win_rate = _nullable_metric(win_rate)
 
             # UPSERT
             existing = await self.session.execute(
@@ -750,19 +806,31 @@ class Aggregator:
             if qid in queries_by_id
         }
 
-    async def _get_cited_response_ids(self, response_ids: list[int]) -> set[int]:
-        """Return the subset of response_ids that have at least one citation.
+    async def _get_citation_response_ids_by_brand(
+        self,
+        response_ids: list[int],
+    ) -> dict[int, set[int]]:
+        """Return response IDs with citation rows attributed to each brand.
 
-        Used to compute geo_score_daily.citation_rate per dimension group.
+        App analytics citation-rate/share evidence must be tied to a persisted
+        brand mention. Response-level citation presence is not enough because a
+        citation can support a competitor or remain unattributed.
         """
         if not response_ids:
-            return set()
+            return {}
         result = await self.session.execute(
-            select(CitationSource.response_id)
-            .where(CitationSource.response_id.in_(response_ids))
+            select(CitationSource.response_id, BrandMention.brand_id)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .where(
+                CitationSource.response_id.in_(response_ids),
+                BrandMention.brand_id.isnot(None),
+            )
             .distinct()
         )
-        return {row[0] for row in result.all()}
+        by_brand: dict[int, set[int]] = defaultdict(set)
+        for response_id, brand_id in result.all():
+            by_brand[int(brand_id)].add(int(response_id))
+        return by_brand
 
     async def _get_prompts_for_queries(
         self, queries,
@@ -803,22 +871,34 @@ class Aggregator:
         )
 
     @staticmethod
-    def _mention_matches_brand(mention: BrandMention, brand_id: int) -> bool:
-        return mention.brand_id == brand_id
+    def _competitive_mentions_for_sov(
+        analyses: list[ResponseAnalysis],
+        mentions: dict[int, list[BrandMention]],
+        brand_id: int,
+        competitive_brand_ids: set[int],
+    ) -> list[BrandMention]:
+        """Return mention rows eligible for SoV denominator evidence.
+
+        Configured competitors constrain known canonical brand IDs, but
+        unresolved LLM-only brands are still evidence that the extraction
+        universe is broader than the target brand.
+        """
+        denominator_ids = set(competitive_brand_ids or [])
+        denominator_ids.add(brand_id)
+        use_all_canonical = not competitive_brand_ids
+        out: list[BrandMention] = []
+        for analysis in analyses:
+            for mention in mentions.get(analysis.response_id, []):
+                if mention.brand_id is None:
+                    out.append(mention)
+                    continue
+                if use_all_canonical or int(mention.brand_id) in denominator_ids:
+                    out.append(mention)
+        return out
 
     @staticmethod
-    def _has_cross_owner_fact_mention(
-        response_id: int,
-        query: Query,
-        brand_id: int,
-        mentions: dict[int, list[BrandMention]],
-    ) -> bool:
-        if query.brand_id == brand_id:
-            return False
-        return any(
-            Aggregator._mention_matches_brand(mention, brand_id)
-            for mention in mentions.get(response_id, [])
-        )
+    def _mention_matches_brand(mention: BrandMention, brand_id: int) -> bool:
+        return mention.brand_id == brand_id
 
     @staticmethod
     def _source_owners_by_fact_brand(

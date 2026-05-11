@@ -339,10 +339,10 @@ async def test_aggregator_builds_canonical_brand_aggregates_from_cross_brand_men
     assert geo.total_queries == 2
     assert geo.mention_count == 1
     assert geo.mention_rate == pytest.approx(0.5)
-    assert geo.avg_sov == pytest.approx(1.0)
+    assert geo.avg_sov is None
     assert geo.citation_rate == pytest.approx(1.0)
     assert geo.avg_position_rank is None
-    assert 0 < geo.avg_geo_score <= 100
+    assert geo.avg_geo_score is None
 
     topic = (
         await session.execute(select(TopicScoreDaily).where(TopicScoreDaily.brand_id == 12))
@@ -449,7 +449,7 @@ async def test_aggregator_uses_prd_denominators_for_mention_rate_and_sov(
 
 
 @pytest.mark.asyncio
-async def test_aggregator_writes_geo_for_canonical_mentions_without_default_prompt_shape(
+async def test_aggregator_skips_geo_when_default_denominator_evidence_is_missing(
     session: AsyncSession,
 ):
     day = await _add_response(
@@ -496,23 +496,15 @@ async def test_aggregator_writes_geo_for_canonical_mentions_without_default_prom
         competitive_brand_ids={12, 2},
     )
 
-    assert stats["geo_score_daily"] == 2
+    assert stats["geo_score_daily"] == 0
     assert stats["topic_score"] == 2
 
-    geo = (
+    geo_rows = (
         await session.execute(
-            select(GEOScoreDaily).where(
-                GEOScoreDaily.brand_id == 12,
-                GEOScoreDaily.target_llm.is_(None),
-                GEOScoreDaily.intent.is_(None),
-                GEOScoreDaily.language.is_(None),
-            )
+            select(GEOScoreDaily).where(GEOScoreDaily.brand_id == 12)
         )
-    ).scalar_one()
-    assert geo.total_queries == 1
-    assert geo.mention_count == 1
-    assert geo.mention_rate == pytest.approx(1.0)
-    assert geo.avg_sov == pytest.approx(1.0)
+    ).scalars().all()
+    assert geo_rows == []
 
     await Aggregator(session).aggregate_daily(
         day,
@@ -524,7 +516,7 @@ async def test_aggregator_writes_geo_for_canonical_mentions_without_default_prom
             select(GEOScoreDaily).where(GEOScoreDaily.brand_id == 12)
         )
     ).scalars().all()
-    assert len(rows) == 2
+    assert rows == []
 
 
 @pytest.mark.asyncio
