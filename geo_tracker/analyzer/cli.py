@@ -28,6 +28,7 @@ from geo_tracker.analyzer.llm_analyzer import LLMAnalyzer
 from geo_tracker.analyzer.citation_mapper import CitationMapper
 from geo_tracker.analyzer.geo_scorer import GEOScorer
 from geo_tracker.analyzer.aggregator import Aggregator
+from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -434,6 +435,67 @@ async def run_aggregate(date_str: str) -> None:
     await engine.dispose()
 
 
+def _parse_day(value: str, *, end_of_day: bool = False) -> datetime:
+    day = datetime.strptime(value, "%Y-%m-%d")
+    if end_of_day:
+        return day.replace(hour=23, minute=59, second=59)
+    return day.replace(hour=0, minute=0, second=0)
+
+
+async def run_canonical_brand_repair(
+    *,
+    brand_id: int,
+    date_str: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    source_brand_id: int | None,
+    aliases: list[str] | None,
+    competitive_brand_ids: list[int] | None,
+    write: bool,
+    aggregate: bool,
+) -> None:
+    """Repair canonical brand mentions from raw text. Dry-run unless write=True."""
+    if date_str:
+        start_at = _parse_day(date_str)
+        end_at = _parse_day(date_str, end_of_day=True)
+    else:
+        start_at = _parse_day(date_from) if date_from else None
+        end_at = _parse_day(date_to, end_of_day=True) if date_to else None
+
+    engine = create_task_engine()
+    try:
+        async with get_task_async_session(engine) as session:
+            stats = await repair_canonical_brand_mentions(
+                session,
+                brand_id=brand_id,
+                start_at=start_at,
+                end_at=end_at,
+                source_brand_id=source_brand_id,
+                extra_aliases=aliases or [],
+                dry_run=not write,
+            )
+            logger.info(
+                "canonical brand repair complete dry_run=%s brand_id=%s stats=%s",
+                not write,
+                brand_id,
+                stats,
+            )
+            if write and aggregate:
+                if date_str:
+                    agg_stats = await Aggregator(session).aggregate_daily(
+                        start_at,
+                        brand_id,
+                        competitive_brand_ids=set(competitive_brand_ids or []),
+                    )
+                    logger.info("canonical brand aggregate stats=%s", agg_stats)
+                else:
+                    logger.warning(
+                        "--aggregate currently requires --date; skipping aggregation"
+                    )
+    finally:
+        await engine.dispose()
+
+
 async def run_reanalyze(date_str: str) -> None:
     """Reset analysis status and re-run for a date."""
     date = datetime.strptime(date_str, "%Y-%m-%d")
@@ -476,6 +538,35 @@ def main():
     p_re = subparsers.add_parser("reanalyze", help="Reset and re-analyze")
     p_re.add_argument("--date", required=True, help="Date to reanalyze (YYYY-MM-DD)")
 
+    # canonical brand repair
+    p_repair = subparsers.add_parser(
+        "repair-canonical-brand",
+        help="Dry-run-safe canonical brand mention repair from raw response text",
+    )
+    p_repair.add_argument("--brand-id", type=int, required=True, help="Canonical brand ID")
+    p_repair.add_argument("--date", help="Single date to repair (YYYY-MM-DD)")
+    p_repair.add_argument("--from", dest="date_from", help="Start date (YYYY-MM-DD)")
+    p_repair.add_argument("--to", dest="date_to", help="End date (YYYY-MM-DD)")
+    p_repair.add_argument("--source-brand-id", type=int, help="Optional owner brand filter")
+    p_repair.add_argument("--alias", action="append", default=[], help="Extra alias term")
+    p_repair.add_argument(
+        "--competitive-brand-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Project competitive brand ID for SoV denominator; repeatable.",
+    )
+    p_repair.add_argument(
+        "--write",
+        action="store_true",
+        help="Apply writes. Omit for dry-run.",
+    )
+    p_repair.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="After --write, aggregate the repaired single --date for the canonical brand.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run-daily":
@@ -484,6 +575,20 @@ def main():
         asyncio.run(run_aggregate(args.date))
     elif args.command == "reanalyze":
         asyncio.run(run_reanalyze(args.date))
+    elif args.command == "repair-canonical-brand":
+        asyncio.run(
+            run_canonical_brand_repair(
+                brand_id=args.brand_id,
+                date_str=args.date,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                source_brand_id=args.source_brand_id,
+                aliases=args.alias,
+                competitive_brand_ids=args.competitive_brand_id,
+                write=args.write,
+                aggregate=args.aggregate,
+            )
+        )
     else:
         parser.print_help()
         sys.exit(1)
