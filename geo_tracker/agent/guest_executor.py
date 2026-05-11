@@ -859,11 +859,15 @@ class GuestQueryExecutor:
     async def _extract_doubao_citations(self, page: Page) -> list:
         """从豆包引用面板提取引用链接。
 
-        豆包的引用不是内嵌在响应正文的 <a> 标签，而是在独立的引用面板中：
-        - 触发按钮: [data-testid="search-reference-ui-v3"]（需先点击展开）
-        - 每条引用: [data-testid="search-text-item"] 内含 <a href="...">
-        - 标题: .search-item-title-* 类名
-        - 编号: .footer-citation-* 类名
+        豆包 2026 UI 引用结构（线上 DOM 验证）：
+        - 触发器: <div class="entry-btn-v3-XXXX"> 内含 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
+        - 面板根: <div class="container-outer-XXXX" data-visible="true">
+        - 面板头: <span class="page-search-XXXX">参考资料</span>
+        - 每条引用容器: <div class="search-item-XXXX">（hash 后缀变化，前缀稳定）
+        - 标题: [class*="search-item-title"]
+        - 摘要: [class*="search-item-summary"]
+        - 来源: [class*="footer-title"]
+        - 编号: [class*="footer-citation"]
         """
         try:
             citations = await page.evaluate("""
@@ -871,28 +875,40 @@ class GuestQueryExecutor:
                     const citations = [];
                     const seen = new Set();
 
-                    // 策略1：从展开的引用面板中提取（search-text-item）
-                    const items = document.querySelectorAll('[data-testid="search-text-item"]');
-                    for (const item of items) {
+                    // 判断 class 是否是"引用项主容器"——前缀是 search-item-X 而不是
+                    // search-item-title-X / search-item-footer-X / search-item-summary-X /
+                    // search-item-transition-X 这类内层 class
+                    const INNER_PREFIXES = ['search-item-title', 'search-item-footer',
+                        'search-item-summary', 'search-item-transition'];
+                    const isItemContainer = (el) => {
+                        const cls = el.className || '';
+                        if (typeof cls !== 'string') return false;
+                        const classes = cls.split(/\\s+/);
+                        return classes.some(c => {
+                            if (!c.startsWith('search-item-')) return false;
+                            return !INNER_PREFIXES.some(p => c.startsWith(p));
+                        });
+                    };
+
+                    const pushFromItem = (item) => {
                         const link = item.querySelector('a[href]');
-                        if (!link) continue;
+                        if (!link) return;
                         const url = link.href;
-                        if (!url || !url.startsWith('http') || seen.has(url)) continue;
+                        if (!url || !url.startsWith('http') || seen.has(url)) return;
+                        // 过滤掉豆包自身的链接
+                        if (url.includes('doubao.com') || url.includes('bytedance.com')) return;
                         seen.add(url);
 
-                        // 提取标题（优先用 title class，fallback 到链接文本）
                         const titleEl = item.querySelector('[class*="search-item-title"]');
                         const title = titleEl
                             ? (titleEl.textContent || '').trim()
                             : (link.textContent || '').trim();
 
-                        // 提取引用编号
                         const citationEl = item.querySelector('[class*="footer-citation"]');
                         const citationNum = citationEl
                             ? parseInt(citationEl.textContent, 10)
                             : 0;
 
-                        // 提取来源名称
                         const sourceEl = item.querySelector('[class*="footer-title"]');
                         const source = sourceEl ? (sourceEl.textContent || '').trim() : '';
 
@@ -902,17 +918,46 @@ class GuestQueryExecutor:
                             source: source,
                             index: citationNum || (citations.length + 1)
                         });
+                    };
+
+                    // 策略1：找到处于打开态的引用面板（container-outer + data-visible="true"），
+                    // 从面板内提取所有引用项
+                    const panels = document.querySelectorAll(
+                        '[class*="container-outer"][data-visible="true"], '
+                        + '[class*="container-outer"]:not([data-visible="false"])'
+                    );
+                    for (const panel of panels) {
+                        // 仅当面板内含"参考资料"标题或 search-item-* 时才算引用面板
+                        const isRefPanel = panel.querySelector('[class*="page-search"]')
+                            || panel.querySelector('[class*="search-item-title"]');
+                        if (!isRefPanel) continue;
+                        const candidates = panel.querySelectorAll('[class*="search-item-"]');
+                        for (const c of candidates) {
+                            if (isItemContainer(c)) pushFromItem(c);
+                        }
                     }
 
-                    // 策略2：如果 search-text-item 未找到，尝试从弹出面板中的所有链接提取
-                    // 豆包的弹出面板可能使用 popover / dialog / drawer 等容器
+                    // 策略2：老版 testid（兼容性兜底）
+                    if (citations.length === 0) {
+                        const items = document.querySelectorAll('[data-testid="search-text-item"]');
+                        for (const item of items) pushFromItem(item);
+                    }
+
+                    // 策略3：全文档兜底 —— 任意主容器形态的 search-item-*
+                    if (citations.length === 0) {
+                        const all = document.querySelectorAll('[class*="search-item-"]');
+                        for (const c of all) {
+                            if (isItemContainer(c)) pushFromItem(c);
+                        }
+                    }
+
+                    // 策略4：通用面板兜底（popover / dialog / drawer）
                     if (citations.length === 0) {
                         const panelSelectors = [
                             '[data-testid*="search-reference"] a[href]',
                             '[class*="reference-panel"] a[href]',
                             '[class*="search-panel"] a[href]',
                             '[class*="citation-panel"] a[href]',
-                            // popover / drawer 容器内的链接
                             '[data-radix-popper-content-wrapper] a[href]',
                             '[role="dialog"] a[href]',
                         ];
@@ -922,7 +967,6 @@ class GuestQueryExecutor:
                                 for (const link of links) {
                                     const url = link.href;
                                     if (!url || !url.startsWith('http') || seen.has(url)) continue;
-                                    // 过滤掉豆包自身的链接
                                     if (url.includes('doubao.com') || url.includes('bytedance.com')) continue;
                                     seen.add(url);
                                     citations.push({
@@ -936,7 +980,6 @@ class GuestQueryExecutor:
                         }
                     }
 
-                    // 按引用编号排序
                     citations.sort((a, b) => a.index - b.index);
                     return citations;
                 }
@@ -1530,26 +1573,35 @@ class GuestQueryExecutor:
 
                 return "", "", []
 
-            # 豆包引用面板可能在响应完成后异步加载，额外等待
+            # 豆包引用面板：2026 UI 触发器从 [data-testid=...] 换成
+            # <div class="entry-btn-v3-XXXX"> 包裹 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
+            # 必须点击触发器才能渲染右侧面板（container-outer-XXXX[data-visible="true"]）
             if llm_name == "doubao":
                 try:
                     ref_btn = await page.wait_for_selector(
-                        '[data-testid="search-reference-ui-v3"]',
+                        '[class*="entry-btn-v3"], [data-testid="search-reference-ui-v3"]',
                         timeout=8000,
                     )
                     await page.wait_for_timeout(500)
-                    # 引用按钮需要点击才能展开面板，展开后才有 search-text-item
                     if ref_btn:
-                        await ref_btn.click()
+                        try:
+                            await ref_btn.click()
+                        except Exception:
+                            # entry-btn-v3 是个 div，可能需要走 JS click
+                            try:
+                                await ref_btn.evaluate("el => el.click()")
+                            except Exception as e:
+                                logger.debug(f"[doubao] 引用触发器点击失败: {e}")
                         logger.debug("[doubao] 已点击引用面板按钮，等待展开")
                         try:
                             await page.wait_for_selector(
+                                '[class*="container-outer"][data-visible="true"] [class*="search-item-title"], '
                                 '[data-testid="search-text-item"]',
                                 timeout=5000,
                             )
                             await page.wait_for_timeout(800)
                         except Exception:
-                            logger.debug("[doubao] 引用面板展开后未找到 search-text-item")
+                            logger.debug("[doubao] 引用面板展开后未找到 search-item")
                 except Exception:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 
