@@ -22,6 +22,7 @@ from geo_tracker.db.models import (
     ProductScoreDaily, Prompt, Query, ResponseAnalysis, AnalysisStatus,
     TopicScoreDaily,
 )
+from geo_tracker.analyzer.geo_scorer import GEOScorer
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,6 @@ class Aggregator:
                 LLMResponse.collected_at < date.replace(hour=23, minute=59, second=59),
             )
         )
-        if brand_id:
-            stmt = stmt.join(Query, Query.id == LLMResponse.query_id).where(
-                Query.brand_id == brand_id,
-            )
         result = await self.session.execute(stmt)
         analyses = result.scalars().all()
 
@@ -79,15 +76,20 @@ class Aggregator:
         cited_response_ids = await self._get_cited_response_ids(response_ids)
         prompts_by_query = await self._get_prompts_for_queries(queries.values())
 
-        # Group by brand
-        brand_analyses = defaultdict(list)
-        for a in analyses:
-            q = queries.get(a.response_id)
-            if q:
-                brand_analyses[q.brand_id].append(a)
+        source_owners_by_fact_brand = self._source_owners_by_fact_brand(mentions, queries)
+        brand_ids = self._brand_ids_for_aggregation(queries, mentions, brand_id)
 
         # 1. Aggregate GEOScoreDaily per brand
-        for bid, brand_analyses_list in brand_analyses.items():
+        for bid in brand_ids:
+            denominator_owner_ids = {bid}
+            denominator_owner_ids.update(source_owners_by_fact_brand.get(bid, set()))
+            brand_analyses_list = [
+                a for a in analyses
+                if (q := queries.get(a.response_id)) is not None
+                and q.brand_id in denominator_owner_ids
+            ]
+            if not brand_analyses_list:
+                continue
             count = await self._aggregate_brand_daily(
                 bid, date, brand_analyses_list, mentions, queries,
                 cited_response_ids, prompts_by_query,
@@ -99,12 +101,12 @@ class Aggregator:
 
         # 3. Aggregate ProductScoreDaily
         stats["product_score"] = await self._aggregate_product_daily(
-            date, mentions, queries,
+            date, mentions, queries, brand_id,
         )
 
         # 4. Aggregate TopicScoreDaily — backs projects/:id/topics endpoint
         stats["topic_score"] = await self._aggregate_topic_daily(
-            date, analyses, mentions, queries,
+            date, analyses, mentions, queries, brand_id,
         )
 
         await self.session.commit()
@@ -184,11 +186,21 @@ class Aggregator:
         target_mentions = []
         for a in analyses:
             for m in mentions.get(a.response_id, []):
-                if m.is_target:
+                if self._mention_matches_brand(m, brand_id):
                     target_mentions.append(m)
 
-        mention_count = len(target_mentions)
+        target_mention_response_ids = {m.response_id for m in target_mentions}
+        mention_count = len(target_mention_response_ids)
         mention_rate = mention_count / total_queries if total_queries else 0
+        any_brand_response_ids = {
+            a.response_id
+            for a in analyses
+            if any(m.brand_id is not None or m.brand_name for m in mentions.get(a.response_id, []))
+        }
+        avg_sov = (
+            len(target_mention_response_ids) / len(any_brand_response_ids)
+            if any_brand_response_ids else 0
+        )
 
         # Position stats
         ranks = [m.position_rank for m in target_mentions if m.position_rank]
@@ -202,16 +214,42 @@ class Aggregator:
         positives = sum(1 for m in target_mentions if m.sentiment == "positive")
         negatives = sum(1 for m in target_mentions if m.sentiment == "negative")
 
-        # GEO Score averages
-        vis_scores = [a.visibility_score for a in analyses if a.visibility_score]
-        sent_scores = [a.sentiment_score for a in analyses if a.sentiment_score]
-        sov_scores = [a.sov_score for a in analyses if a.sov_score]
-        cit_scores = [a.citation_score for a in analyses if a.citation_score]
-        geo_scores = [a.geo_score for a in analyses if a.geo_score]
-
-        # citation_rate = (responses with ≥1 citation) / (total responses for this group)
-        cited_in_group = sum(1 for a in analyses if a.response_id in cited_response_ids)
-        citation_rate = cited_in_group / total_queries if total_queries else 0
+        mention_rate_pct = mention_rate * 100
+        vis_scores = [
+            GEOScorer.calc_visibility(
+                True,
+                m.position_type,
+                m.position_rank,
+                mention_rate_pct,
+            )
+            for m in target_mentions
+        ]
+        sent_scores = [
+            GEOScorer.calc_sentiment(m.sentiment_score or 0.0, m.detail_level)
+            for m in target_mentions
+        ]
+        target_cited_responses = target_mention_response_ids.intersection(cited_response_ids)
+        citation_rate = (
+            len(target_cited_responses) / len(target_mention_response_ids)
+            if target_mention_response_ids else 0
+        )
+        citation_component = GEOScorer.calc_citations(len(target_cited_responses), False)
+        visibility_component = (
+            round(sum(vis_scores) / len(vis_scores), 2) if vis_scores else 0
+        )
+        sentiment_component = (
+            round(sum(sent_scores) / len(sent_scores), 2) if sent_scores else 0
+        )
+        sov_component = round(avg_sov * 100, 2)
+        geo_score = (
+            GEOScorer.calc_overall(
+                visibility_component,
+                sentiment_component,
+                sov_component,
+                citation_component,
+            )
+            if target_mentions else 0
+        )
 
         # Industry from first analysis that has it
         industry = next(
@@ -235,12 +273,12 @@ class Aggregator:
             negative_rate=round(negatives / mention_count, 4) if mention_count else 0,
             avg_sentiment_score=round(sum(sentiments) / len(sentiments), 4) if sentiments else 0,
             citation_rate=round(citation_rate, 4),
-            avg_sov=round(sum(sov_scores) / len(sov_scores), 2) if sov_scores else 0,
-            avg_visibility=round(sum(vis_scores) / len(vis_scores), 2) if vis_scores else 0,
-            avg_sentiment=round(sum(sent_scores) / len(sent_scores), 2) if sent_scores else 0,
-            avg_sov_score=round(sum(sov_scores) / len(sov_scores), 2) if sov_scores else 0,
-            avg_citation_score=round(sum(cit_scores) / len(cit_scores), 2) if cit_scores else 0,
-            avg_geo_score=round(sum(geo_scores) / len(geo_scores), 2) if geo_scores else 0,
+            avg_sov=round(avg_sov, 4),
+            avg_visibility=visibility_component,
+            avg_sentiment=sentiment_component,
+            avg_sov_score=sov_component,
+            avg_citation_score=citation_component,
+            avg_geo_score=geo_score,
             industry=industry,
         )
 
@@ -368,6 +406,7 @@ class Aggregator:
         date: datetime,
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
+        selected_brand_id: int | None = None,
     ) -> int:
         """Aggregate ProductScoreDaily from BrandMention + ProductFeatureMention."""
         date_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -384,10 +423,15 @@ class Aggregator:
                 if not m.product_name:
                     continue
 
-                key = (q.brand_id, m.product_name)
+                bid = m.brand_id or (q.brand_id if m.is_target else None)
+                if bid is None:
+                    continue
+                if selected_brand_id is not None and bid != selected_brand_id:
+                    continue
+                key = (bid, m.product_name)
                 if key not in product_data:
                     product_data[key] = {
-                        "brand_id": q.brand_id,
+                        "brand_id": bid,
                         "product_name": m.product_name,
                         "mention_count": 0,
                         "total_queries": 0,
@@ -519,6 +563,7 @@ class Aggregator:
         analyses: list[ResponseAnalysis],
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
+        selected_brand_id: int | None = None,
     ) -> int:
         """Aggregate per-(brand, topic, date) mention stats from BrandMention.
 
@@ -550,26 +595,40 @@ class Aggregator:
 
         # Index analyses by response_id for quick GEO lookup
         analysis_by_resp = {a.response_id: a for a in analyses}
+        source_owners_by_fact_brand = self._source_owners_by_fact_brand(mentions, queries)
 
         for resp_id, q in queries.items():
             topic_id = topic_by_prompt.get(q.prompt_id)
             if topic_id is None:
                 continue
-            key = (q.brand_id, topic_id)
-            g = groups[key]
-            g["response_count"] += 1
+            candidate_brand_ids = {q.brand_id}
+            for bid, owner_ids in source_owners_by_fact_brand.items():
+                if q.brand_id in owner_ids:
+                    candidate_brand_ids.add(bid)
+            if selected_brand_id is not None:
+                candidate_brand_ids = {
+                    bid for bid in candidate_brand_ids if bid == selected_brand_id
+                }
 
-            target_mentions = [m for m in mentions.get(resp_id, []) if m.is_target]
-            if target_mentions:
-                g["mention_count"] += 1
-                for m in target_mentions:
-                    if m.position_rank:
-                        g["ranks"].append(m.position_rank)
-                    if m.sentiment_score is not None:
-                        g["sentiments"].append(m.sentiment_score)
-            a = analysis_by_resp.get(resp_id)
-            if a and a.geo_score:
-                g["geo_scores"].append(a.geo_score)
+            for bid in candidate_brand_ids:
+                key = (bid, topic_id)
+                g = groups[key]
+                g["response_count"] += 1
+
+                target_mentions = [
+                    m for m in mentions.get(resp_id, [])
+                    if self._mention_matches_brand(m, bid)
+                ]
+                if target_mentions:
+                    g["mention_count"] += 1
+                    for m in target_mentions:
+                        if m.position_rank:
+                            g["ranks"].append(m.position_rank)
+                        if m.sentiment_score is not None:
+                            g["sentiments"].append(m.sentiment_score)
+                a = analysis_by_resp.get(resp_id)
+                if a and a.geo_score:
+                    g["geo_scores"].append(a.geo_score)
 
         count = 0
         for (brand_id, topic_id), g in groups.items():
@@ -688,3 +747,37 @@ class Aggregator:
             for q in queries
             if q.prompt_id is not None
         }
+
+    @staticmethod
+    def _mention_matches_brand(mention: BrandMention, brand_id: int) -> bool:
+        return mention.brand_id == brand_id
+
+    @staticmethod
+    def _source_owners_by_fact_brand(
+        mentions: dict[int, list[BrandMention]],
+        queries: dict[int, Query],
+    ) -> dict[int, set[int]]:
+        source_owners: dict[int, set[int]] = defaultdict(set)
+        for response_id, mention_list in mentions.items():
+            query = queries.get(response_id)
+            if query is None:
+                continue
+            for mention in mention_list:
+                if mention.brand_id is not None:
+                    source_owners[int(mention.brand_id)].add(query.brand_id)
+        return source_owners
+
+    @staticmethod
+    def _brand_ids_for_aggregation(
+        queries: dict[int, Query],
+        mentions: dict[int, list[BrandMention]],
+        selected_brand_id: int | None,
+    ) -> list[int]:
+        if selected_brand_id is not None:
+            return [selected_brand_id]
+        brand_ids = {q.brand_id for q in queries.values() if q.brand_id is not None}
+        for mention_list in mentions.values():
+            for mention in mention_list:
+                if mention.brand_id is not None:
+                    brand_ids.add(int(mention.brand_id))
+        return sorted(brand_ids)
