@@ -15,7 +15,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write
 
 env:
   IMAGE_TAG: ${{ github.sha }}
@@ -124,6 +123,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: latest-main
     if: needs.latest-main.outputs.should_deploy == 'true'
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
