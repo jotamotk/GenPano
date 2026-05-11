@@ -3,14 +3,74 @@ name: Build & Deploy
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
+  latest-main:
+    name: Confirm Latest Main
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.guard.outputs.should_deploy }}
+      latest_sha: ${{ steps.guard.outputs.latest_sha }}
+
+    steps:
+      - name: Compare run SHA with main
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          latest_sha="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["object"]["sha"])')"
+
+          echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_SHA}" != "${latest_sha}" ]; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Build & Deploy skipped"
+              echo ""
+              echo "- Result: stale main run skipped before build."
+              echo "- Run SHA: \`${GITHUB_SHA}\`"
+              echo "- Latest main SHA: \`${latest_sha}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Build & Deploy latest-main guard"
+            echo ""
+            echo "- Result: run is latest main; build may continue."
+            echo "- Run SHA: \`${GITHUB_SHA}\`"
+            echo "- Latest main SHA: \`${latest_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
+    needs: latest-main
+    if: needs.latest-main.outputs.should_deploy == 'true'
 
     steps:
       - name: Checkout
@@ -57,10 +117,60 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
+  pre-deploy-guard:
+    name: Confirm Latest Main Before Deploy
+    runs-on: ubuntu-latest
+    needs: [latest-main, build-and-push]
+    if: needs.latest-main.outputs.should_deploy == 'true'
+    outputs:
+      should_deploy: ${{ steps.guard.outputs.should_deploy }}
+      latest_sha: ${{ steps.guard.outputs.latest_sha }}
+
+    steps:
+      - name: Re-check run SHA with main
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          latest_sha="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["object"]["sha"])')"
+
+          echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
+
+          if [ "${GITHUB_SHA}" != "${latest_sha}" ]; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Build & Deploy skipped"
+              echo ""
+              echo "- Result: stale main run skipped before production deploy."
+              echo "- Run SHA: \`${GITHUB_SHA}\`"
+              echo "- Latest main SHA: \`${latest_sha}\`"
+              echo "- Images for the stale SHA may have been built, but deployment was not attempted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Build & Deploy pre-deploy guard"
+            echo ""
+            echo "- Result: run is still latest main; production deploy may continue."
+            echo "- Run SHA: \`${GITHUB_SHA}\`"
+            echo "- Latest main SHA: \`${latest_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy to Server
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: pre-deploy-guard
+    if: needs.pre-deploy-guard.outputs.should_deploy == 'true'
 
     steps:
       - name: Checkout
@@ -289,3 +399,15 @@ jobs:
             docker builder prune -af --keep-storage=2GB
             docker volume prune -f
             df -h / && docker system df
+
+      - name: Summarize deployed run
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Build & Deploy deployed"
+            echo ""
+            echo "- Result: deployed latest main to production."
+            echo "- Deployed SHA: \`${GITHUB_SHA}\`"
+            echo "- Production URL: http://116.62.36.173/"
+          } >> "$GITHUB_STEP_SUMMARY"
