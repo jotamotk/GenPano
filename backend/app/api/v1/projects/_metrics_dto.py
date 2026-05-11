@@ -75,6 +75,8 @@ class TopicsOut(BaseModel):
     items: list[TopicRow]
     total: int
     state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
 
 
 # ── /sentiment ────────────────────────────────────────────────────
@@ -119,6 +121,8 @@ class SentimentOut(BaseModel):
     top_keywords: list[SentimentKeywordRow]
     top_drivers: list[SentimentDriverRow]
     state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
 
 
 # ── /citations ────────────────────────────────────────────────────
@@ -147,3 +151,5 @@ class CitationsOut(BaseModel):
     total: int
     by_domain_top: list[CitationDomainRow]
     state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0

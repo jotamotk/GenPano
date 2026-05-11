@@ -1163,3 +1163,176 @@ async def test_chart_metric_corrections_use_admin_topic_response_chain(client, d
     assert barrier_gap["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
     assert barrier_gap["gap_score"] == pytest.approx(1 / 6, rel=0.01)
     assert gap_body["page_type_distribution"][0]["page_type"] == "article"
+
+
+@pytest.mark.asyncio
+async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_dimensions(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    project.primary_brand_id = 12
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO brands (id, name, industry) VALUES
+              (2, 'Source Owner', 'Beauty'),
+              (12, 'Estee Lauder', 'Beauty')
+            """
+        )
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (2501, 2, 'Misfiled anti-aging serum', 'product', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES
+              (2502, 2501, 'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               'commercial', 'non_branded', 'en', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+              (2503, 'chatgpt', 'done',
+               'Is Estee Lauder Advanced Night Repair good for anti-aging?',
+               2, 'PROF-A', 2502, :now, :now, :now, 800)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+              (2504, 2503, 2502,
+               'Estee Lauder Advanced Night Repair is frequently recommended for anti-aging.',
+               'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    db_session.add(
+        ResponseAnalysis(
+            response_id=2504,
+            target_brand_mentioned=False,
+            target_brand_rank=None,
+            sentiment_score=0.82,
+            geo_score=0.79,
+        )
+    )
+    db_session.add(
+        BrandMention(
+            response_id=2504,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            sentiment="positive",
+            sentiment_score=0.82,
+            mention_count=4,
+            position_rank=1,
+            context_snippet="Estee Lauder Advanced Night Repair",
+            created_at=now,
+        )
+    )
+    await db_session.commit()
+
+    headers = _bearer(user)
+
+    engine_metrics = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=headers,
+    )
+    assert engine_metrics.status_code == 200, engine_metrics.text
+    engine_body = engine_metrics.json()
+    assert engine_body["state"] == "ok"
+    assert engine_body["state_reason"] == "data_available"
+    assert engine_body["evidence_count"] >= 1
+    chatgpt = next(row for row in engine_body["items"] if row["engine"] == "chatgpt")
+    assert chatgpt["mention_rate"] == pytest.approx(1.0)
+    assert chatgpt["mention_rate"] <= 1.0
+    assert chatgpt["sov"] == pytest.approx(1.0)
+
+    position = await client.get(
+        f"/api/v1/projects/{project.id}/position-distribution",
+        headers=headers,
+    )
+    assert position.status_code == 200, position.text
+    position_body = position.json()
+    assert position_body["state"] == "ok"
+    assert position_body["evidence_count"] >= 1
+    assert position_body["total_mentions"] >= 1
+
+    heatmap = await client.get(
+        f"/api/v1/projects/{project.id}/topic-heatmap",
+        headers=headers,
+    )
+    assert heatmap.status_code == 200, heatmap.text
+    heatmap_body = heatmap.json()
+    assert heatmap_body["state"] == "ok"
+    primary_row = next(row for row in heatmap_body["rows"] if row["brand_id"] == 12)
+    topic_cell = next(cell for cell in primary_row["values"] if cell["topic_id"] == 2501)
+    assert topic_cell["value"] == pytest.approx(1.0)
+    assert topic_cell["sample"] == 1
+
+    sentiment = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/by-engine",
+        headers=headers,
+    )
+    assert sentiment.status_code == 200, sentiment.text
+    sentiment_body = sentiment.json()
+    assert sentiment_body["state"] == "ok"
+    assert sentiment_body["evidence_count"] >= 1
+    chatgpt_sentiment = next(row for row in sentiment_body["items"] if row["engine"] == "chatgpt")
+    assert chatgpt_sentiment["positive"] >= 1
+
+    samples = await client.get(
+        f"/api/v1/projects/{project.id}/mention-samples",
+        headers=headers,
+    )
+    assert samples.status_code == 200, samples.text
+    samples_body = samples.json()
+    assert samples_body["state"] == "ok"
+    assert samples_body["state_reason"] == "data_available"
+    assert samples_body["evidence_count"] >= 1
+    assert any(
+        "Estee Lauder Advanced Night Repair" in row["snippet"] for row in samples_body["items"]
+    )
+
+    citations = await client.get(
+        f"/api/v1/projects/{project.id}/citations/composition",
+        headers=headers,
+    )
+    assert citations.status_code == 200, citations.text
+    citations_body = citations.json()
+    assert citations_body["state"] == "empty"
+    assert citations_body["state_reason"] == "no_citation_data"
+    assert citations_body["evidence_count"] >= 1
+    assert citations_body["total"] == 0
+
+    products = await client.get(
+        f"/api/v1/projects/{project.id}/products",
+        headers=headers,
+    )
+    assert products.status_code == 200, products.text
+    products_body = products.json()
+    assert products_body["state"] == "empty"
+    assert products_body["state_reason"] == "product_aggregates_pending"
+    assert products_body["evidence_count"] >= 1
