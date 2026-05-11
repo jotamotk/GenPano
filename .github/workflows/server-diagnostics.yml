@@ -2,15 +2,6 @@ name: Server Diagnostics
 
 on:
   workflow_dispatch:
-    inputs:
-      brand_id:
-        description: "Brand id to inspect"
-        required: false
-        default: "12"
-      brand_query:
-        description: "Brand name fragment to inspect"
-        required: false
-        default: "雅诗兰黛"
 
 jobs:
   diagnostics:
@@ -27,232 +18,194 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/genpano
-            BRAND_ID='${{ inputs.brand_id }}'
-            BRAND_QUERY='${{ inputs.brand_query }}'
-            : "${BRAND_ID:=12}"
-            : "${BRAND_QUERY:=雅诗兰黛}"
 
             echo "=== Docker compose status ==="
             docker compose ps
 
-            echo "=== Brand mention identity probe ==="
-            echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY}"
+            echo "=== Deployed images ==="
+            docker compose images
+
+            echo "=== Worker celery config and runtime ==="
+            docker compose exec -T worker python - <<'PY' || true
+            from geo_tracker.tasks.celery_tasks import app
+
+            print("worker_concurrency_conf=", app.conf.worker_concurrency)
+            print("worker_prefetch_multiplier=", app.conf.worker_prefetch_multiplier)
+            print("task_time_limit=", app.conf.task_time_limit)
+            print("task_soft_time_limit=", app.conf.task_soft_time_limit)
+            print("task_routes=", app.conf.task_routes)
+            PY
+
+            echo "=== Worker process snapshot ==="
+            docker compose exec -T worker sh -lc \
+              "ps -eo pid,ppid,stat,comm,args | grep -Ei 'celery|python|firefox|chrom|camoufox' | grep -v grep | head -120" \
+              || true
+
+            echo "=== Celery inspect active queues/stats/active/reserved ==="
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active_queues --timeout=5 || true
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect stats --timeout=5 || true
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=5 || true
+            docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=5 || true
+
+            echo "=== Redis queue lengths ==="
+            for q in celery llm_chatgpt llm_doubao llm_deepseek llm_gemini account_login analysis beat; do
+              printf "%s " "$q"
+              docker compose exec -T redis redis-cli LLEN "$q" || true
+            done
+
+            echo "=== Account availability by engine/status ==="
             docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT id, name, name_zh, name_en
-              FROM brands
-              WHERE id = ${BRAND_ID}
-                 OR LOWER(COALESCE(name, '')) LIKE LOWER('%${BRAND_QUERY}%')
-                 OR LOWER(COALESCE(name_zh, '')) LIKE LOWER('%${BRAND_QUERY}%')
-                 OR LOWER(COALESCE(name_en, '')) LIKE LOWER('%${BRAND_QUERY}%')
-              ORDER BY id
-              LIMIT 20;
-            " || true
-            docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT brand_id,
-                     brand_name,
-                     COUNT(*) AS rows,
-                     COUNT(DISTINCT response_id) AS responses,
-                     SUM(COALESCE(mention_count, 1)) AS mentions,
-                     MIN(created_at) AS first_seen,
-                     MAX(created_at) AS last_seen
-              FROM brand_mentions
-              WHERE created_at >= NOW() - INTERVAL '90 days'
-                AND (
-                  brand_id = ${BRAND_ID}
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%${BRAND_QUERY}%')
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅思兰黛%')
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%雅诗兰黛%')
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estee%')
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%estée%')
-                  OR LOWER(COALESCE(brand_name, '')) LIKE LOWER('%lauder%')
-                )
-              GROUP BY brand_id, brand_name
-              ORDER BY rows DESC, responses DESC
-              LIMIT 40;
-            " || true
-            docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT brand_id,
-                     brand_name,
-                     COUNT(*) AS rows,
-                     COUNT(DISTINCT response_id) AS responses,
-                     SUM(COALESCE(mention_count, 1)) AS mentions
-              FROM brand_mentions
-              WHERE created_at >= NOW() - INTERVAL '90 days'
-              GROUP BY brand_id, brand_name
-              ORDER BY rows DESC
-              LIMIT 25;
+              SELECT
+                llm_name,
+                status,
+                COUNT(*) AS rows,
+                COUNT(*) FILTER (
+                  WHERE cookies_json IS NOT NULL AND cookies_json <> ''
+                ) AS with_cookies,
+                COUNT(*) FILTER (
+                  WHERE status = 'active'
+                    AND cookies_json IS NOT NULL
+                    AND cookies_json <> ''
+                    AND (cooldown_until IS NULL OR cooldown_until <= NOW())
+                    AND query_count_today < daily_limit
+                ) AS executable_now,
+                COUNT(*) FILTER (
+                  WHERE status = 'active'
+                    AND cookies_json IS NOT NULL
+                    AND cookies_json <> ''
+                    AND cooldown_until > NOW()
+                ) AS cooling_now,
+                COUNT(*) FILTER (
+                  WHERE status = 'active'
+                    AND cookies_json IS NOT NULL
+                    AND cookies_json <> ''
+                    AND query_count_today >= daily_limit
+                ) AS quota_full,
+                COALESCE(SUM(daily_limit), 0) AS daily_limit_total,
+                COALESCE(SUM(query_count_today), 0) AS used_today,
+                MAX(cooldown_until) AS newest_cooldown_until
+              FROM llm_accounts
+              GROUP BY llm_name, status
+              ORDER BY llm_name, status;
             " || true
 
-            echo "=== Admin fact brand probe ==="
+            echo "=== Account exclusion details for scheduler engines ==="
             docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT id, name, primary_brand_id, industry_id
-              FROM projects
-              WHERE primary_brand_id = ${BRAND_ID}
-                 OR LOWER(COALESCE(name, '')) LIKE LOWER('%${BRAND_QUERY}%')
-              ORDER BY name
-              LIMIT 20;
-            " || true
-            docker compose exec -T postgres psql -U genpano -d genpano -c "
-              WITH scoped_topics AS (
-                SELECT id FROM topics WHERE brand_id = ${BRAND_ID}
-              ),
-              scoped_prompts AS (
-                SELECT p.id FROM prompts p JOIN scoped_topics t ON t.id = p.topic_id
-              ),
-              scoped_queries AS (
-                SELECT q.id FROM queries q JOIN scoped_prompts p ON p.id = q.prompt_id
-              ),
-              scoped_responses AS (
-                SELECT r.id FROM llm_responses r JOIN scoped_queries q ON q.id = r.query_id
+              WITH engines(engine) AS (
+                VALUES ('chatgpt'), ('deepseek'), ('doubao'), ('gemini')
               )
               SELECT
-                (SELECT COUNT(*) FROM scoped_topics) AS topics,
-                (SELECT COUNT(*) FROM scoped_prompts) AS prompts,
-                (SELECT COUNT(*) FROM scoped_queries) AS queries,
-                (SELECT COUNT(*) FROM scoped_responses) AS responses,
-                (SELECT COUNT(*) FROM response_analyses ra JOIN scoped_responses r ON r.id = ra.response_id) AS analyses,
-                (SELECT COUNT(*) FROM brand_mentions bm JOIN scoped_responses r ON r.id = bm.response_id) AS response_brand_mentions;
+                e.engine,
+                COUNT(a.id) AS total,
+                COUNT(a.id) FILTER (WHERE a.status = 'active') AS active,
+                COUNT(a.id) FILTER (
+                  WHERE a.cookies_json IS NOT NULL AND a.cookies_json <> ''
+                ) AS with_cookies,
+                COUNT(a.id) FILTER (
+                  WHERE a.status = 'active'
+                    AND (a.cookies_json IS NULL OR a.cookies_json = '')
+                ) AS active_without_cookies,
+                COUNT(a.id) FILTER (
+                  WHERE a.status = 'active'
+                    AND a.cookies_json IS NOT NULL
+                    AND a.cookies_json <> ''
+                    AND a.cooldown_until > NOW()
+                ) AS active_cooling,
+                COUNT(a.id) FILTER (
+                  WHERE a.status = 'active'
+                    AND a.cookies_json IS NOT NULL
+                    AND a.cookies_json <> ''
+                    AND a.query_count_today >= a.daily_limit
+                ) AS active_quota_full,
+                COUNT(a.id) FILTER (
+                  WHERE a.status = 'active'
+                    AND a.cookies_json IS NOT NULL
+                    AND a.cookies_json <> ''
+                    AND (a.cooldown_until IS NULL OR a.cooldown_until <= NOW())
+                    AND a.query_count_today < a.daily_limit
+                ) AS executable_now
+              FROM engines e
+              LEFT JOIN llm_accounts a ON a.llm_name = e.engine
+              GROUP BY e.engine
+              ORDER BY e.engine;
             " || true
+
+            echo "=== Recent account rows (masked) ==="
             docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT q.brand_id,
-                     COUNT(DISTINCT t.id) AS topics,
-                     COUNT(DISTINCT p.id) AS prompts,
-                     COUNT(DISTINCT q.id) AS queries,
-                     COUNT(DISTINCT r.id) AS responses,
-                     COUNT(DISTINCT ra.id) AS analyses
-              FROM topics t
-              LEFT JOIN prompts p ON p.topic_id = t.id
-              LEFT JOIN queries q ON q.prompt_id = p.id
-              LEFT JOIN llm_responses r ON r.query_id = q.id
-              LEFT JOIN response_analyses ra ON ra.response_id = r.id
-              GROUP BY q.brand_id
-              ORDER BY responses DESC NULLS LAST, queries DESC NULLS LAST
-              LIMIT 20;
+              SELECT
+                id,
+                llm_name,
+                status,
+                CASE
+                  WHEN cookies_json IS NULL OR cookies_json = '' THEN false
+                  ELSE true
+                END AS has_cookies,
+                query_count_today,
+                daily_limit,
+                cooldown_until,
+                consecutive_fails,
+                profile_id,
+                cookies_updated_at,
+                last_used_at
+              FROM llm_accounts
+              WHERE llm_name IN ('chatgpt', 'deepseek', 'doubao', 'gemini')
+              ORDER BY llm_name, status, id
+              LIMIT 120;
             " || true
 
-            echo "=== Raw text brand query probe ==="
+            echo "=== Account rotation/failure reasons since midnight UTC ==="
             docker compose exec -T postgres psql -U genpano -d genpano -c "
-              SELECT id, name, name_zh, name_en
-              FROM brands
-              WHERE id IN (1, 2, ${BRAND_ID}, 24)
-              ORDER BY id;
+              SELECT
+                a.llm_name,
+                l.reason,
+                COUNT(*) AS rows,
+                MAX(l.rotated_at) AS newest_rotated_at
+              FROM account_rotation_logs l
+              LEFT JOIN llm_accounts a ON a.id = l.account_id
+              WHERE l.rotated_at >= date_trunc('day', NOW())
+              GROUP BY a.llm_name, l.reason
+              ORDER BY rows DESC, a.llm_name, l.reason;
             " || true
+
+            echo "=== Query failure/status distribution last 6h ==="
             docker compose exec -T postgres psql -U genpano -d genpano -c "
-              WITH hits AS (
-                SELECT 'topic' AS source, t.brand_id, t.id AS object_id,
-                       NULL::integer AS query_id, NULL::integer AS response_id
-                FROM topics t
-                WHERE COALESCE(t.text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
-                   OR COALESCE(t.text, '') ILIKE '%雅诗兰黛%'
-                   OR COALESCE(t.text, '') ILIKE '%雅思兰黛%'
-                   OR COALESCE(t.text, '') ILIKE '%estee%'
-                   OR COALESCE(t.text, '') ILIKE '%lauder%'
-                UNION ALL
-                SELECT 'prompt' AS source, q.brand_id, p.id AS object_id,
-                       NULL::integer AS query_id, NULL::integer AS response_id
-                FROM prompts p
-                LEFT JOIN topics t ON t.id = p.topic_id
-                LEFT JOIN queries q ON q.prompt_id = p.id
-                WHERE COALESCE(p.text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
-                   OR COALESCE(p.text, '') ILIKE '%雅诗兰黛%'
-                   OR COALESCE(p.text, '') ILIKE '%雅思兰黛%'
-                   OR COALESCE(p.text, '') ILIKE '%estee%'
-                   OR COALESCE(p.text, '') ILIKE '%lauder%'
-                UNION ALL
-                SELECT 'query' AS source, q.brand_id, q.id AS object_id,
-                       q.id AS query_id, NULL::integer AS response_id
-                FROM queries q
-                WHERE COALESCE(q.query_text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
-                   OR COALESCE(q.query_text, '') ILIKE '%雅诗兰黛%'
-                   OR COALESCE(q.query_text, '') ILIKE '%雅思兰黛%'
-                   OR COALESCE(q.query_text, '') ILIKE '%estee%'
-                   OR COALESCE(q.query_text, '') ILIKE '%lauder%'
-                UNION ALL
-                SELECT 'response' AS source, q.brand_id, r.id AS object_id,
-                       q.id AS query_id, r.id AS response_id
-                FROM llm_responses r
-                LEFT JOIN queries q ON q.id = r.query_id
-                WHERE COALESCE(r.raw_text, '') ILIKE '%' || '${BRAND_QUERY}' || '%'
-                   OR COALESCE(r.raw_text, '') ILIKE '%雅诗兰黛%'
-                   OR COALESCE(r.raw_text, '') ILIKE '%雅思兰黛%'
-                   OR COALESCE(r.raw_text, '') ILIKE '%estee%'
-                   OR COALESCE(r.raw_text, '') ILIKE '%lauder%'
-              )
-              SELECT source,
-                     brand_id,
-                     COUNT(*) AS rows,
-                     COUNT(DISTINCT query_id) AS queries,
-                     COUNT(DISTINCT response_id) AS responses
-              FROM hits
-              GROUP BY source, brand_id
-              ORDER BY source, rows DESC, brand_id;
+              SELECT
+                target_llm,
+                status,
+                COALESCE(retry_reason, '') AS retry_reason,
+                COUNT(*) AS rows,
+                MIN(created_at) AS oldest_created_at,
+                MAX(started_at) AS newest_started_at,
+                MAX(finished_at) AS newest_finished_at
+              FROM queries
+              WHERE created_at >= NOW() - INTERVAL '6 hours'
+                 OR queued_at >= NOW() - INTERVAL '6 hours'
+                 OR started_at >= NOW() - INTERVAL '6 hours'
+                 OR finished_at >= NOW() - INTERVAL '6 hours'
+              GROUP BY target_llm, status, retry_reason
+              ORDER BY rows DESC, target_llm, status, retry_reason
+              LIMIT 80;
             " || true
 
-            echo "=== Recent nginx logs ==="
-            docker compose logs --tail=220 nginx || true
+            echo "=== Recent query rows ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                id,
+                target_llm,
+                status,
+                account_id,
+                retry_reason,
+                retry_count,
+                queued_at,
+                started_at,
+                finished_at,
+                created_at
+              FROM queries
+              ORDER BY id DESC
+              LIMIT 80;
+            " || true
 
-            echo "=== Backend email env (password masked) ==="
-            docker compose exec -T backend python - <<'PY'
-            import os
-
-            keys = [
-                "USER_EMAIL_PROVIDER",
-                "EMAIL_PROVIDER",
-                "USER_EMAIL_FROM",
-                "EMAIL_FROM",
-                "USER_EMAIL_REPLY_TO",
-                "EMAIL_REPLY_TO",
-                "ALIYUN_DM_SMTP_USER",
-                "ALIYUN_DM_SMTP_HOST",
-                "ALIYUN_DM_SMTP_PORT",
-                "ALIYUN_DM_SMTP_SSL",
-                "ALIYUN_DM_SMTP_STARTTLS",
-                "ALIYUN_DM_SMTP_PASSWORD",
-                "USER_BASE_URL",
-                "FRONTEND_URL",
-            ]
-            for key in keys:
-                value = os.getenv(key, "")
-                if "PASSWORD" in key and value:
-                    value = "***"
-                print(f"{key}={value}")
-            PY
-
-            echo "=== Aliyun DM SMTP login probe (no email is sent) ==="
-            docker compose exec -T backend python - <<'PY'
-            import os
-            import smtplib
-            import ssl
-
-            def env_bool(name: str, default: bool) -> bool:
-                raw = os.getenv(name)
-                if raw is None:
-                    return default
-                return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-            host = os.getenv("ALIYUN_DM_SMTP_HOST", "smtpdm.aliyun.com")
-            port = int(os.getenv("ALIYUN_DM_SMTP_PORT", "465"))
-            user = os.getenv("ALIYUN_DM_SMTP_USER", "")
-            password = os.getenv("ALIYUN_DM_SMTP_PASSWORD", "")
-            use_ssl = env_bool("ALIYUN_DM_SMTP_SSL", port == 465)
-            use_starttls = env_bool("ALIYUN_DM_SMTP_STARTTLS", not use_ssl)
-
-            print(f"SMTP_TARGET={host}:{port} ssl={use_ssl} starttls={use_starttls} user={user} password_set={bool(password)}")
-            try:
-                context = ssl.create_default_context()
-                if use_ssl:
-                    smtp = smtplib.SMTP_SSL(host, port, timeout=15, context=context)
-                else:
-                    smtp = smtplib.SMTP(host, port, timeout=15)
-                    if use_starttls:
-                        smtp.starttls(context=context)
-                with smtp:
-                    smtp.ehlo()
-                    smtp.login(user, password)
-                print("SMTP_LOGIN_OK")
-            except Exception as exc:
-                print(f"SMTP_LOGIN_FAIL {type(exc).__name__}: {exc}")
-            PY
-
-            echo "=== Recent backend logs ==="
-            docker compose logs --tail=220 backend
+            echo "=== Recent worker logs for accounts/concurrency/failures ==="
+            docker compose logs --tail=500 worker 2>&1 \
+              | grep -Ei 'acquired account|No available account|no_account_available|cookies_expired|soft_time_limit|Soft time limit|BrowserType.launch|write EPIPE|worker_concurrency|concurrency|Task geo_tracker.tasks.celery_tasks.execute_query|execute_query .*raised|retry:' \
+              || true
