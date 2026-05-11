@@ -35,6 +35,121 @@ jobs:
             echo "=== Docker compose status ==="
             docker compose ps
 
+            echo "=== Incident #475 container image/start details ==="
+            docker compose ps -q | xargs -r docker inspect --format '{{.Name}} image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}} restart_count={{.RestartCount}}' || true
+
+            echo "=== Incident #475 sample query rows ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                q.id,
+                q.target_llm,
+                q.status,
+                q.queued_at,
+                q.started_at,
+                q.finished_at,
+                q.latency_ms,
+                q.retry_reason,
+                q.account_id,
+                a.status AS account_status,
+                a.consecutive_fails AS account_consecutive_fails,
+                a.cooldown_until AS account_cooldown_until,
+                a.query_count_today AS account_query_count_today,
+                a.daily_limit AS account_daily_limit,
+                p.id AS proxy_id,
+                p.provider AS proxy_provider,
+                p.is_banned AS proxy_is_banned,
+                p.cooldown_until AS proxy_cooldown_until,
+                p.fail_count AS proxy_fail_count,
+                p.success_count AS proxy_success_count
+              FROM queries q
+              LEFT JOIN llm_accounts a ON a.id = q.account_id
+              LEFT JOIN proxies p ON p.id = a.proxy_id
+              WHERE q.id IN (184581,184580,184578,184577,184576,184575,184574,184573,184572,184571,184570,184569,184568)
+              ORDER BY q.id DESC;
+            " || true
+
+            echo "=== Incident #475 failure summary around 2026-05-11 08:07-08:11 UTC ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                q.target_llm,
+                q.status,
+                COALESCE(q.retry_reason, '') AS retry_reason,
+                COUNT(*) AS rows,
+                MIN(q.queued_at) AS min_queued_at,
+                MIN(q.started_at) AS min_started_at,
+                MIN(q.finished_at) AS min_finished_at,
+                MAX(q.finished_at) AS max_finished_at,
+                ROUND(AVG(q.latency_ms))::int AS avg_latency_ms,
+                MAX(q.latency_ms) AS max_latency_ms
+              FROM queries q
+              WHERE COALESCE(q.started_at, q.finished_at, q.queued_at, q.created_at)
+                    BETWEEN TIMESTAMP '2026-05-11 08:07:00'
+                        AND TIMESTAMP '2026-05-11 08:11:00'
+              GROUP BY q.target_llm, q.status, COALESCE(q.retry_reason, '')
+              ORDER BY rows DESC, q.target_llm, retry_reason;
+            " || true
+
+            echo "=== Incident #475 account health by engine ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                llm_name,
+                status,
+                COUNT(*) AS accounts,
+                COUNT(*) FILTER (WHERE cookies_json IS NOT NULL AND cookies_json <> '') AS with_cookies,
+                COUNT(*) FILTER (WHERE cooldown_until IS NOT NULL AND cooldown_until > NOW()) AS cooling_down,
+                SUM(query_count_today) AS query_count_today,
+                SUM(daily_limit) AS daily_limit,
+                MAX(consecutive_fails) AS max_consecutive_fails
+              FROM llm_accounts
+              GROUP BY llm_name, status
+              ORDER BY llm_name, status;
+            " || true
+
+            echo "=== Incident #475 Redis queue lengths ==="
+            for q in celery llm_chatgpt llm_gemini llm_doubao llm_deepseek account_login analysis beat; do
+              printf '%s=' "$q"
+              docker compose exec -T redis redis-cli -n 0 LLEN "$q" || true
+            done
+            echo "Redis key count:"
+            docker compose exec -T redis redis-cli -n 0 DBSIZE || true
+            echo "Celery binding keys:"
+            docker compose exec -T redis redis-cli -n 0 --scan --pattern '_kombu.binding.*' | sort || true
+
+            echo "=== Incident #475 Celery worker inspect ==="
+            timeout 20s docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect ping || true
+            timeout 20s docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active || true
+            timeout 20s docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved || true
+            timeout 20s docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect stats || true
+
+            echo "=== Incident #475 proxy/vninja/clash state ==="
+            systemctl is-active vninja || true
+            systemctl status --no-pager -l vninja || true
+            ss -ltnp | grep -E ':(6789|9097|9098)\b' || true
+            curl -fsS --max-time 5 http://127.0.0.1:9097/configs -H 'Authorization: Bearer set-your-secret' | head -c 2000 || true
+            echo
+            curl -fsS --max-time 8 --proxy http://127.0.0.1:6789 https://www.gstatic.com/generate_204 -o /dev/null -w 'proxy_generate_204_http_code=%{http_code} total=%{time_total}\n' || true
+            docker compose exec -T worker python - <<'PY' || true
+            import os
+            import socket
+
+            print("CLASH_PROXY_URL=" + str(os.getenv("CLASH_PROXY_URL")))
+            print("CLASH_API_URL=" + str(os.getenv("CLASH_API_URL")))
+            for host, port in [("host.docker.internal", 6789), ("host.docker.internal", 9098)]:
+                try:
+                    with socket.create_connection((host, port), timeout=5):
+                        print(f"socket_ok {host}:{port}")
+                except Exception as exc:
+                    print(f"socket_fail {host}:{port} {type(exc).__name__}: {exc}")
+            PY
+
+            echo "=== Incident #475 logs around 2026-05-11 08:07-08:11 UTC ==="
+            journalctl -u vninja --since '2026-05-11 08:07:00 UTC' --until '2026-05-11 08:11:00 UTC' --no-pager -n 200 || true
+            journalctl -u docker --since '2026-05-11 08:07:00 UTC' --until '2026-05-11 08:11:00 UTC' --no-pager -n 200 || true
+            docker compose logs --since '2026-05-11T08:07:00' --until '2026-05-11T08:11:00' worker worker-analysis backend nginx || true
+
+            echo "=== Incident #475 current worker logs ==="
+            docker compose logs --tail=260 worker worker-analysis beat || true
+
             echo "=== Brand mention identity probe ==="
             echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY}"
             docker compose exec -T postgres psql -U genpano -d genpano -c "
