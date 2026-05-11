@@ -19,6 +19,10 @@ state.
 - The AI Lead owns requirement clarification, PRD linkage, issue decomposition,
   Agent assignment, PR review orchestration, CI/CD diagnosis, merge sequencing,
   and online Playwright E2E verification planning.
+- In multi-Agent parallel work, the AI Lead owns CD coordination: serialize or
+  intentionally order production deploys, monitor overlapping Build & Deploy
+  runs, cancel superseded deploy runs promptly, and verify the final live
+  environment is running the intended latest `main` SHA.
 - If the user asks for implementation while the current role is AI Lead, the
   Lead must create or update Agent task issues instead of editing code directly.
 
@@ -46,7 +50,9 @@ state.
 ### Agent Roles
 
 - `ai-lead-agent`: no business code; owns PRD, issue decomposition, scheduling,
-  reviews, CI/CD diagnosis, merge plans, and live verification planning.
+  reviews, CI/CD diagnosis, merge plans, CD coordination, and live verification
+  planning. It must cancel or stop superseded deployment runs when parallel
+  Agent merges would otherwise race on the shared production environment.
 - `frontend-visualization-agent`: turns requirements into real frontend pages.
   It may change pages, components, styling, and lightweight frontend-only empty
   states or mock data. It must not change backend, database, worker, or CI/CD
@@ -61,8 +67,11 @@ state.
   migration work. It must include targeted tests and a rollback note.
 - `qa-e2e-agent`: verifies behavior only. It owns local smoke checks,
   Playwright, and live E2E; it must not implement business behavior.
-- `release-ci-agent`: owns GitHub Actions, deploy logs, and server diagnostics.
-  It must not fold business fixes into CI work without a new Agent task issue.
+- `release-ci-agent`: owns GitHub Actions, deploy logs, server diagnostics, and
+  CD run hygiene. It monitors overlapping Build & Deploy runs, identifies which
+  run targets the latest intended `main` SHA, cancels superseded deploys when
+  safe, and reports the final deployed SHA. It must not fold business fixes into
+  CI work without a new Agent task issue.
 - `review-agent`: reviews only. It prioritizes bugs, regressions, missing tests,
   and release risk, with file and line references.
 
