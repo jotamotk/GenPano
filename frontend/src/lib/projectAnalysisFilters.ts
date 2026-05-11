@@ -17,6 +17,7 @@ export interface ProjectAnalysisParams {
   dimension?: string
   intent?: string
   prompt_scope?: string
+  brand_id?: number
 }
 
 export function toProjectAnalysisParams(

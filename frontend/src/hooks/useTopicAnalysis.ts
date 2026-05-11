@@ -13,6 +13,10 @@ function keyOf(filters: ProjectAnalysisParams = {}) {
     filters.engine ?? '',
     filters.segment_id ?? '',
     filters.profile_id ?? '',
+    filters.dimension ?? '',
+    filters.intent ?? '',
+    filters.prompt_scope ?? '',
+    filters.brand_id ?? '',
   ].join('|')
 }
 
@@ -60,20 +64,24 @@ export function usePromptQueries(
 export function useQueryResponse(
   projectId: string | null | undefined,
   queryId: number | null | undefined,
+  filters: ProjectAnalysisParams = {},
 ) {
   return useQuery({
-    queryKey: ['topic-analysis', 'response', projectId, queryId],
-    queryFn: () => topicAnalysisApi.response(projectId as string, queryId as number),
+    queryKey: ['topic-analysis', 'response', projectId, queryId, keyOf(filters)],
+    queryFn: () => topicAnalysisApi.response(projectId as string, queryId as number, filters),
     enabled: isLiveProjectId(projectId) && typeof queryId === 'number',
     staleTime: STALE,
     retry: false,
   })
 }
 
-export function useProjectSegments(projectId: string | null | undefined) {
+export function useProjectSegments(
+  projectId: string | null | undefined,
+  filters: ProjectAnalysisParams = {},
+) {
   return useQuery({
-    queryKey: ['topic-analysis', 'segments', projectId],
-    queryFn: () => topicAnalysisApi.segments(projectId as string),
+    queryKey: ['topic-analysis', 'segments', projectId, keyOf(filters)],
+    queryFn: () => topicAnalysisApi.segments(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
     retry: false,

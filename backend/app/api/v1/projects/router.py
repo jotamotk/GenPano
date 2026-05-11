@@ -338,6 +338,7 @@ async def project_topic_monitoring(
     dimension: str | None = Query(None),
     intent: str | None = Query(None),
     prompt_scope: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> TopicMonitoringOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_topic_monitoring(
@@ -353,6 +354,7 @@ async def project_topic_monitoring(
             intent=intent,
             prompt_scope=prompt_scope,
         ),
+        brand_id_override=brand_id,
     )
 
 
@@ -370,6 +372,7 @@ async def project_topic_prompts(
     dimension: str | None = Query(None),
     intent: str | None = Query(None),
     prompt_scope: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> TopicPromptsOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_topic_prompts(
@@ -386,6 +389,7 @@ async def project_topic_prompts(
             intent=intent,
             prompt_scope=prompt_scope,
         ),
+        brand_id_override=brand_id,
     )
 
 
@@ -403,6 +407,7 @@ async def project_prompt_queries(
     dimension: str | None = Query(None),
     intent: str | None = Query(None),
     prompt_scope: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> PromptQueriesOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_prompt_queries(
@@ -419,6 +424,7 @@ async def project_prompt_queries(
             intent=intent,
             prompt_scope=prompt_scope,
         ),
+        brand_id_override=brand_id,
     )
 
 
@@ -428,9 +434,15 @@ async def project_query_response(
     query_id: int,
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
+    brand_id: int | None = Query(None),
 ) -> QueryResponseDetailOut:
     project = await service.get_project_for_user(session, user, project_id)
-    return await get_query_response_detail(session, project, query_id=query_id)
+    return await get_query_response_detail(
+        session,
+        project,
+        query_id=query_id,
+        brand_id_override=brand_id,
+    )
 
 
 @router.get("/{project_id}/query-activity", response_model=QueryActivityOut)
@@ -446,6 +458,7 @@ async def project_query_activity(
     dimension: str | None = Query(None),
     intent: str | None = Query(None),
     prompt_scope: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> QueryActivityOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_query_activity(
@@ -461,6 +474,7 @@ async def project_query_activity(
             intent=intent,
             prompt_scope=prompt_scope,
         ),
+        brand_id_override=brand_id,
     )
 
 
@@ -469,9 +483,10 @@ async def project_segments(
     project_id: str,
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
+    brand_id: int | None = Query(None),
 ) -> ProjectSegmentsOut:
     project = await service.get_project_for_user(session, user, project_id)
-    return await get_project_segments(session, project)
+    return await get_project_segments(session, project, brand_id_override=brand_id)
 
 
 @router.get("/{project_id}/sentiment", response_model=SentimentOut)

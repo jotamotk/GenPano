@@ -48,7 +48,13 @@ export function useProfileGroupFilter() {
   const { activeProject } = useProject();
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
-  const segmentsQ = useProjectSegments(liveProjectId);
+  const brandIdParam = searchParams.get('brandId');
+  const brandIdOverride =
+    brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null;
+  const segmentsQ = useProjectSegments(
+    liveProjectId,
+    brandIdOverride != null ? { brand_id: brandIdOverride } : {},
+  );
   const groups = useMemo(() => {
     const liveSegments = segmentsQ.data?.items || [];
     if (!liveSegments.length) return PROFILE_GROUPS;
