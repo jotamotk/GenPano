@@ -191,6 +191,8 @@ def _engine_metric_rows_from_facts(
     engine_bucket: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "responses": set(),
+            "denominator_response_ids": set(),
+            "target_response_ids": set(),
             "target_mentions": 0,
             "all_mentions": 0,
             "citations": 0,
@@ -207,6 +209,9 @@ def _engine_metric_rows_from_facts(
         target_mentions = _fact_target_mention_count(row)
         all_mentions = _fact_all_mention_count(row, target_mentions)
         engine_bucket[engine]["responses"].add(rid)
+        engine_bucket[engine]["denominator_response_ids"].add(rid)
+        if target_mentions > 0:
+            engine_bucket[engine]["target_response_ids"].add(rid)
         engine_bucket[engine]["target_mentions"] += target_mentions
         engine_bucket[engine]["all_mentions"] += all_mentions
         engine_bucket[engine]["citations"] += int(row.get("citation_count") or 0)
@@ -216,8 +221,12 @@ def _engine_metric_rows_from_facts(
     items = [
         EngineMetricRow(
             engine=engine,
-            mention_rate=round(values["target_mentions"] / len(values["responses"]), 4)
-            if values["responses"]
+            mention_rate=round(
+                len(values["target_response_ids"])
+                / len(values["denominator_response_ids"]),
+                4,
+            )
+            if values["denominator_response_ids"]
             else None,
             sov=round(values["target_mentions"] / values["all_mentions"], 4)
             if values["all_mentions"]
@@ -702,7 +711,9 @@ async def get_topic_heatmap(
             top_n=top_n,
         )
         state = (
-            "ok" if any(any(cell.value is not None for cell in row.values) for row in rows) else "empty"
+            "ok"
+            if any(any(cell.value is not None for cell in row.values) for row in rows)
+            else "empty"
         )
         return TopicHeatmapOut(
             project_id=project.id,
@@ -869,7 +880,10 @@ async def get_sentiment_by_engine(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-    evidence_count = sum(v["positive"] + v["neutral"] + v["negative"] for v in sentiment_bucket.values())
+    evidence_count = sum(
+        v["positive"] + v["neutral"] + v["negative"]
+        for v in sentiment_bucket.values()
+    )
     return SentimentByEngineOut(
         project_id=project.id,
         period=_period(from_d, to_d),
@@ -1784,7 +1798,9 @@ async def get_pr_targets(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
+                select(ProjectCompetitor.brand_id).where(
+                    ProjectCompetitor.project_id == project.id
+                )
             )
         ).all()
     ][:3]
@@ -2061,7 +2077,9 @@ async def get_authority_radar(
         r[0]
         for r in (
             await session.execute(
-                select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
+                select(ProjectCompetitor.brand_id).where(
+                    ProjectCompetitor.project_id == project.id
+                )
             )
         ).all()
     ]

@@ -1239,6 +1239,19 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
             geo_score=0.79,
         )
     )
+    db_session.add(
+        BrandMention(
+            response_id=2504,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            sentiment="positive",
+            sentiment_score=0.82,
+            mention_count=4,
+            position_rank=1,
+            context_snippet="Estee Lauder Advanced Night Repair",
+            created_at=now,
+        )
+    )
     await db_session.commit()
 
     headers = _bearer(user)
@@ -1254,6 +1267,7 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     assert engine_body["evidence_count"] >= 1
     chatgpt = next(row for row in engine_body["items"] if row["engine"] == "chatgpt")
     assert chatgpt["mention_rate"] == pytest.approx(1.0)
+    assert chatgpt["mention_rate"] <= 1.0
     assert chatgpt["sov"] == pytest.approx(1.0)
 
     position = await client.get(
@@ -1298,7 +1312,10 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     assert samples_body["state"] == "ok"
     assert samples_body["state_reason"] == "data_available"
     assert samples_body["evidence_count"] >= 1
-    assert any("Estee Lauder Advanced Night Repair" in row["snippet"] for row in samples_body["items"])
+    assert any(
+        "Estee Lauder Advanced Night Repair" in row["snippet"]
+        for row in samples_body["items"]
+    )
 
     citations = await client.get(
         f"/api/v1/projects/{project.id}/citations/composition",
