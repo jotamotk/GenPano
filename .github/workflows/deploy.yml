@@ -87,11 +87,16 @@ jobs:
             return 1
           }
 
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
           latest_sha="$(latest_deploy_eligible_main_sha)"
 
           echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
 
-          if [ "${GITHUB_SHA}" != "${latest_sha}" ]; then
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
             echo "should_deploy=false" >> "$GITHUB_OUTPUT"
             {
               echo "## Build & Deploy skipped"
@@ -99,6 +104,7 @@ jobs:
               echo "- Result: stale main run skipped before build."
               echo "- Run SHA: \`${GITHUB_SHA}\`"
               echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+              echo "- Reason: the run SHA does not contain the latest deploy-eligible product state."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -107,7 +113,7 @@ jobs:
           {
             echo "## Build & Deploy latest-main guard"
             echo ""
-            echo "- Result: run is the latest deploy-eligible main commit; build may continue."
+            echo "- Result: run contains the latest deploy-eligible product state; build may continue."
             echo "- Run SHA: \`${GITHUB_SHA}\`"
             echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -232,11 +238,16 @@ jobs:
             return 1
           }
 
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
           latest_sha="$(latest_deploy_eligible_main_sha)"
 
           echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
 
-          if [ "${GITHUB_SHA}" != "${latest_sha}" ]; then
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
             echo "should_deploy=false" >> "$GITHUB_OUTPUT"
             {
               echo "## Build & Deploy skipped"
@@ -244,6 +255,7 @@ jobs:
               echo "- Result: stale main run skipped before production deploy."
               echo "- Run SHA: \`${GITHUB_SHA}\`"
               echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+              echo "- Reason: the run SHA does not contain the latest deploy-eligible product state."
               echo "- Images for the stale SHA may have been built, but deployment was not attempted."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -253,7 +265,7 @@ jobs:
           {
             echo "## Build & Deploy pre-deploy guard"
             echo ""
-            echo "- Result: run is still the latest deploy-eligible main commit; production deploy may continue."
+            echo "- Result: run still contains the latest deploy-eligible product state; production deploy may continue."
             echo "- Run SHA: \`${GITHUB_SHA}\`"
             echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -549,6 +561,11 @@ jobs:
             return 1
           }
 
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
           if [ "${{ steps.deploy_to_server.outcome }}" != "success" ]; then
             {
               echo "## Build & Deploy failed"
@@ -561,11 +578,11 @@ jobs:
 
           latest_sha="$(latest_deploy_eligible_main_sha)"
 
-          if [ "${GITHUB_SHA}" != "${latest_sha}" ]; then
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
             {
               echo "## Build & Deploy superseded"
               echo ""
-              echo "- Result: deployed SHA completed, but it is no longer the latest deploy-eligible main commit."
+              echo "- Result: deployed SHA completed, but it no longer contains the latest deploy-eligible product state."
               echo "- Deployed SHA: \`${GITHUB_SHA}\`"
               echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
               echo "- A newer queued run should deploy the latest deploy-eligible SHA."
@@ -577,7 +594,7 @@ jobs:
           {
             echo "## Build & Deploy authoritative latest deploy"
             echo ""
-            echo "- Result: deployed SHA is still the latest deploy-eligible main commit after deployment."
+            echo "- Result: deployed SHA still contains the latest deploy-eligible product state after deployment."
             echo "- Deployed SHA: \`${GITHUB_SHA}\`"
             echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
             echo "- Production URL: http://116.62.36.173/"
