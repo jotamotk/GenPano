@@ -16,6 +16,7 @@ export interface TopicMonitoringRow {
   topic_id: number
   topic_name: string
   dimension: string | null
+  associated_brand: string | null
   status: string | null
   prompt_count: number
   query_count: number

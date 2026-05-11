@@ -14,7 +14,11 @@ from genpano_models import Project
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.projects._legacy_lookups import BRAND_NAME_COLUMNS, brand_table_columns
+from app.api.v1.projects._legacy_lookups import (
+    BRAND_NAME_COLUMNS,
+    brand_table_columns,
+    resolve_brand_names,
+)
 from app.api.v1.projects._topic_analysis_dto import (
     BrandMentionDetail,
     CitationDetail,
@@ -205,6 +209,21 @@ def _text_scope_conditions(
         for expr in expressions:
             conditions.append(f"LOWER(COALESCE({expr}, '')) LIKE :{key}")
     return conditions
+
+
+def _mention_name_condition(
+    mention_cols: set[str],
+    terms: list[str],
+    params: dict[str, Any],
+) -> str | None:
+    if "brand_name" not in mention_cols or not terms:
+        return None
+    placeholders: list[str] = []
+    for idx, term in enumerate(terms):
+        key = f"brand_mention_term_{idx}"
+        params[key] = term
+        placeholders.append(f":{key}")
+    return f"LOWER(TRIM(COALESCE(bm.brand_name, ''))) IN ({', '.join(placeholders)})"
 
 
 def _coerce_json(value: Any) -> dict[str, Any]:
@@ -551,17 +570,14 @@ async def _fact_rows(
         if brand_id_override is not None
         else (int(project.primary_brand_id) if project.primary_brand_id is not None else None)
     )
-    override_terms = (
-        await _brand_fact_terms(session, int(brand_id_override))
-        if brand_id_override is not None
+    scope_terms = (
+        await _brand_fact_terms(session, scope_brand_id)
+        if scope_brand_id is not None
         else []
     )
 
     params: dict[str, Any] = {}
     topic_where: list[str] = []
-    if brand_id_override is None and project.primary_brand_id is not None and "brand_id" in topic_cols:
-        topic_where.append("t.brand_id = :topic_brand_id")
-        params["topic_brand_id"] = int(project.primary_brand_id)
     if topic_id is not None:
         topic_where.append("t.id = :topic_id")
         params["topic_id"] = int(topic_id)
@@ -581,7 +597,7 @@ async def _fact_rows(
         project=project,
         filters=filters,
         query_cols=query_cols,
-        brand_id=None if brand_id_override is not None else _PROJECT_BRAND,
+        brand_id=None,
     )
     query_join_conditions.extend(scoped_conditions)
     params.update(scoped_params)
@@ -613,7 +629,7 @@ async def _fact_rows(
             ]
 
     brand_scope_match_select = "0 AS brand_scope_matched"
-    if brand_id_override is not None and scope_brand_id is not None:
+    if scope_brand_id is not None:
         params["topic_brand_id"] = scope_brand_id
         brand_scope_conditions: list[str] = []
         if "brand_id" in topic_cols:
@@ -636,20 +652,21 @@ async def _fact_rows(
             response_expr = _response_text_expr(response_cols)
             if response_expr != "NULL":
                 text_exprs.append(response_expr)
-        brand_scope_conditions.extend(
-            _text_scope_conditions(
-                text_exprs,
-                override_terms,
-                params,
-                prefix="brand_scope_term",
-            )
+        text_scope_conditions = _text_scope_conditions(
+            text_exprs,
+            scope_terms,
+            params,
+            prefix="brand_scope_term",
         )
+        brand_scope_conditions.extend(text_scope_conditions)
         if brand_scope_conditions:
             brand_scope_expr = f"({' OR '.join(brand_scope_conditions)})"
             topic_where.append(brand_scope_expr)
-            brand_scope_match_select = (
-                f"CASE WHEN {brand_scope_expr} THEN 1 ELSE 0 END AS brand_scope_matched"
-            )
+            if text_scope_conditions:
+                text_scope_expr = f"({' OR '.join(text_scope_conditions)})"
+                brand_scope_match_select = (
+                    f"CASE WHEN {text_scope_expr} THEN 1 ELSE 0 END AS brand_scope_matched"
+                )
 
     analysis_join = ""
     analysis_selects = [
@@ -671,6 +688,10 @@ async def _fact_rows(
 
     primary = scope_brand_id
     params["primary_brand_id"] = primary
+    target_mention_condition = "bm.brand_id = :primary_brand_id"
+    mention_name_condition = _mention_name_condition(mention_cols, scope_terms, params)
+    if mention_name_condition:
+        target_mention_condition = f"({target_mention_condition} OR {mention_name_condition})"
     mention_selects = [
         "0 AS target_mention_count",
         "0 AS all_mention_count",
@@ -684,28 +705,28 @@ async def _fact_rows(
         mention_amount = "COALESCE(bm.mention_count, 1)" if "mention_count" in mention_cols else "1"
         mention_selects = [
             f"(SELECT COALESCE(SUM({mention_amount}), 0) FROM brand_mentions bm "
-            "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
+            f"WHERE bm.response_id = r.id AND {target_mention_condition}) "
             "AS target_mention_count",
             f"(SELECT COALESCE(SUM({mention_amount}), 0) FROM brand_mentions bm "
             "WHERE bm.response_id = r.id) "
             "AS all_mention_count",
             "(SELECT MIN(bm.position_rank) FROM brand_mentions bm "
-            "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id) "
+            f"WHERE bm.response_id = r.id AND {target_mention_condition}) "
             "AS min_position_rank",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id "
+            f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'positive') "
             "AS positive_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id "
+            f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
             "AS neutral_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id "
+            f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
             "AS negative_mentions",
             "(SELECT bm.context_snippet FROM brand_mentions bm WHERE bm.response_id = r.id "
-            "AND bm.brand_id = :primary_brand_id "
+            f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative' "
             "AND bm.context_snippet IS NOT NULL "
             "ORDER BY bm.id LIMIT 1) AS negative_sample_snippet",
@@ -718,7 +739,7 @@ async def _fact_rows(
             "WHERE cs.response_id = r.id "
             "AND (cs.mention_id IS NULL OR cs.mention_id IN ("
             "SELECT bm.id FROM brand_mentions bm "
-            "WHERE bm.response_id = r.id AND bm.brand_id = :primary_brand_id"
+            f"WHERE bm.response_id = r.id AND {target_mention_condition}"
             "))) AS citation_count"
         )
     elif has_citations and response_join:
@@ -777,6 +798,7 @@ def _topic_aggregates(
     *,
     project: Project,
     filters: AnalysisFilters,
+    associated_brand: str | None = None,
 ) -> tuple[list[TopicMonitoringRow], TopicMonitoringSummary, list[TopicIntentMatrixRow]]:
     topic_order: list[int] = []
     topics: dict[int, dict[str, Any]] = {}
@@ -792,6 +814,7 @@ def _topic_aggregates(
                 "topic_id": tid,
                 "topic_name": row.get("topic_name") or f"topic-{tid}",
                 "dimension": row.get("topic_dimension"),
+                "associated_brand": associated_brand,
                 "status": row.get("topic_status"),
                 "prompt_ids": set(),
                 "query_ids": set(),
@@ -839,8 +862,8 @@ def _topic_aggregates(
             aid = _as_int(row.get("analysis_id"))
             if aid is not None:
                 bucket["analysis_ids"].add(aid)
-            target_mentions = int(row.get("target_mention_count") or 0)
-            all_mentions = int(row.get("all_mention_count") or 0)
+            target_mentions = _fact_target_mention_count(row)
+            all_mentions = _fact_all_mention_count(row, target_mentions)
             bucket["target_mentions"] += target_mentions
             bucket["all_mentions"] += all_mentions
             if _is_non_branded_row(row):
@@ -906,6 +929,7 @@ def _topic_aggregates(
                 topic_id=tid,
                 topic_name=bucket["topic_name"],
                 dimension=bucket["dimension"],
+                associated_brand=bucket["associated_brand"],
                 status=bucket["status"],
                 prompt_count=prompt_count,
                 query_count=query_count,
@@ -970,7 +994,13 @@ async def get_topic_monitoring(
     if project.primary_brand_id is None:
         return _empty_monitoring(project)
     rows = await _fact_rows(session, project, filters=filters)
-    topics, summary, intent_matrix = _topic_aggregates(rows, project=project, filters=filters)
+    brand_names = await resolve_brand_names(session, [project.primary_brand_id])
+    topics, summary, intent_matrix = _topic_aggregates(
+        rows,
+        project=project,
+        filters=filters,
+        associated_brand=brand_names.get(project.primary_brand_id),
+    )
     return TopicMonitoringOut(
         project_id=project.id,
         brand_id=project.primary_brand_id,
@@ -1034,7 +1064,7 @@ async def get_topic_prompts(
         rid = _as_int(row.get("response_id"))
         if rid is not None and rid not in bucket["responses"]:
             bucket["responses"].add(rid)
-            target_mentions = int(row.get("target_mention_count") or 0)
+            target_mentions = _fact_target_mention_count(row)
             bucket["target_mentions"] += target_mentions
             if _is_non_branded_row(row):
                 bucket["mention_denominator_response_ids"].add(rid)
@@ -1111,7 +1141,7 @@ async def get_prompt_queries(
             finished_at=_iso(row.get("query_finished_at")),
             latency_ms=_as_int(row.get("latency_ms")),
             response_id=_as_int(row.get("response_id")),
-            target_mentioned=bool(int(row.get("target_mention_count") or 0)),
+            target_mentioned=_fact_target_mention_count(row) > 0,
             citation_count=int(row.get("citation_count") or 0),
             geo_score=_round(row.get("geo_score")),
             sentiment_score=_round(row.get("sentiment_score")),
@@ -1144,9 +1174,6 @@ async def get_query_response_detail(
 
     params: dict[str, Any] = {"query_id": int(query_id)}
     where = ["q.id = :query_id"]
-    if project.primary_brand_id is not None and "brand_id" in query_cols:
-        where.append("q.brand_id = :primary_brand_id")
-        params["primary_brand_id"] = int(project.primary_brand_id)
 
     prompt_join = "LEFT JOIN prompts p ON p.id = q.prompt_id" if "prompt_id" in query_cols else ""
     topic_join = (
@@ -1188,6 +1215,15 @@ async def get_query_response_detail(
     if not query_row:
         raise not_found("query not found")
     q = dict(query_row)
+    prompt_scope_id = _as_int(q.get("prompt_id"))
+    scoped_rows = await _fact_rows(
+        session,
+        project,
+        filters=AnalysisFilters(),
+        prompt_id=prompt_scope_id,
+    )
+    if not any(_as_int(row.get("query_id")) == int(query_id) for row in scoped_rows):
+        raise not_found("query not found")
 
     response: ResponseDetail | None = None
     analysis: ResponseAnalysisDetail | None = None
@@ -1475,7 +1511,7 @@ async def get_query_activity(
         aid = _as_int(row.get("analysis_id"))
         if aid is not None:
             analysis_ids.add(aid)
-        target_mentions = int(row.get("target_mention_count") or 0)
+        target_mentions = _fact_target_mention_count(row)
         is_non_branded = _is_non_branded_row(row)
         if is_non_branded:
             mention_denominator_response_ids.add(rid)
