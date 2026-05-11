@@ -62,8 +62,9 @@ def test_scheduler_manual_trigger_uses_selected_brand_scope() -> None:
 def test_scheduler_manual_trigger_surfaces_dispatch_result() -> None:
     html = _admin_html()
     section = html[
-        html.index("async manualTriggerScheduler")
-        : html.index("async toggleSchedulerMode", html.index("async manualTriggerScheduler"))
+        html.index("async manualTriggerScheduler") : html.index(
+            "async toggleSchedulerMode", html.index("async manualTriggerScheduler")
+        )
     ]
 
     assert "body.dispatched" in section

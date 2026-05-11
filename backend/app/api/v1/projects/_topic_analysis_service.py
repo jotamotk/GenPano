@@ -192,7 +192,8 @@ async def _brand_fact_terms(session: AsyncSession, brand_id: int) -> list[str]:
         return []
     if row is None:
         return []
-    return _expand_brand_fact_terms({term for value in row for term in [_clean_fact_term(value)] if term})
+    terms = {term for value in row for term in [_clean_fact_term(value)] if term}
+    return _expand_brand_fact_terms(terms)
 
 
 def _text_scope_conditions(
@@ -405,9 +406,7 @@ def _fact_brand_scope_matched(row: dict[str, Any]) -> bool:
 
 def _fact_target_mention_count(row: dict[str, Any]) -> int:
     mentions = int(row.get("target_mention_count") or 0)
-    if mentions <= 0 and (
-        row.get("target_brand_mentioned") or _fact_brand_scope_matched(row)
-    ):
+    if mentions <= 0 and (row.get("target_brand_mentioned") or _fact_brand_scope_matched(row)):
         return 1
     return mentions
 
@@ -417,9 +416,7 @@ def _fact_all_mention_count(
     target_mentions: int | None = None,
 ) -> int:
     mentions = (
-        _fact_target_mention_count(row)
-        if target_mentions is None
-        else int(target_mentions or 0)
+        _fact_target_mention_count(row) if target_mentions is None else int(target_mentions or 0)
     )
     total = int(row.get("all_mention_count") or 0)
     if total <= 0 and mentions > 0:
@@ -456,7 +453,13 @@ async def _query_scope_conditions(
     params: dict[str, Any] = {}
     conditions: list[str] = []
 
-    scoped_brand_id = project.primary_brand_id if brand_id is _PROJECT_BRAND else brand_id
+    scoped_brand_id: int | None
+    if brand_id is _PROJECT_BRAND:
+        scoped_brand_id = project.primary_brand_id
+    elif isinstance(brand_id, int):
+        scoped_brand_id = brand_id
+    else:
+        scoped_brand_id = None
     if scoped_brand_id is not None and "brand_id" in query_cols:
         conditions.append(f"{prefix}.brand_id = :primary_brand_id")
         params["primary_brand_id"] = int(scoped_brand_id)
@@ -571,9 +574,7 @@ async def _fact_rows(
         else (int(project.primary_brand_id) if project.primary_brand_id is not None else None)
     )
     scope_terms = (
-        await _brand_fact_terms(session, scope_brand_id)
-        if scope_brand_id is not None
-        else []
+        await _brand_fact_terms(session, scope_brand_id) if scope_brand_id is not None else []
     )
 
     params: dict[str, Any] = {}

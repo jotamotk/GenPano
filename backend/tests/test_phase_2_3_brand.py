@@ -336,9 +336,7 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
 
 
 @pytest.mark.asyncio
-async def test_competitor_metrics_uses_response_extracted_brand_entities(
-    client, user, db_session
-):
+async def test_competitor_metrics_uses_response_extracted_brand_entities(client, user, db_session):
     p = Project(user_id=user.id, name="Response Entity SoV", primary_brand_id=42, industry_id=1)
     db_session.add(p)
     await db_session.commit()
