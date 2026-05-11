@@ -91,7 +91,13 @@ def _load_cookies_from_env(env_var: str) -> list:
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
-        "input_selector":   "#prompt-textarea, [data-testid='prompt-textarea'], textarea, [role='textbox']",
+        # #prompt-textarea 是 ProseMirror contenteditable div，不是 textarea
+        "input_selector":   "#prompt-textarea, div[contenteditable='true'][role='textbox'], [data-testid='prompt-textarea'], textarea, [role='textbox']",
+        # 走 JS 注入路径（contenteditable=True 会启用 execCommand/paste/innerHTML 三段兜底）
+        "contenteditable":  True,
+        # 发送按钮：composer-submit-button-color 是稳定 class，aria-label="Send prompt" 是文案
+        # 排除语音按钮（aria-label 含 Voice/dictation）
+        "submit_button":    "button[aria-label='Send prompt'], button[data-testid='send-button'], button.composer-submit-button-color[aria-label*='Send'], #composer-submit-button",
         "submit_key":       "Enter",
         "response_selector": "[data-message-author-role='assistant'] .markdown, [data-message-author-role='assistant']",
         "wait_after_submit": 25000,
@@ -148,11 +154,15 @@ GUEST_LLM_CONFIG = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "[data-testid='chat_input_input'], textarea[data-testid='chat_input_input'], textarea, [contenteditable='true'], [class*='chat-input']",
-        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 Tailwind/业务 class name：
-        #   .send-btn-wrapper（空输入时 wrapper 被加 !hidden）
-        #   button[class*='send-msg-btn']（disabled 态 class: bg-g-send-msg-btn-disabled-bg）
-        "submit_button":    "button[class*='send-msg-btn']:not([disabled]), .send-btn-wrapper:not([class*='\\!hidden']) button, button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
+        # 豆包 2026 版 UI 不再使用 data-testid；改用稳定的 id / class：
+        #   #input-engine-container 包裹整个输入区
+        #   textarea.semi-input-textarea 是实际输入框（Semi Design）
+        #   页面上还有一个 aria-hidden 的隐藏 textarea 用于自动撑高，需排除
+        "input_selector":   "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), textarea.semi-input-textarea:not([aria-hidden='true']), textarea:not([aria-hidden='true']), [contenteditable='true']",
+        # 发送按钮的稳定标识：id="flow-end-msg-send"；旧版用 testid，新版 UI 已不再使用
+        # 禁用态通过 aria-disabled / data-disabled 属性表达，HTML disabled 属性并未设置，
+        # 因此 :not([disabled]) 不能区分禁用态——必须显式排除这两个属性。
+        "submit_button":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[id='flow-end-msg-send'], .send-btn-wrapper button:not([aria-disabled='true']):not([data-disabled='true']), button[class*='send-msg-btn']:not([aria-disabled='true']):not([data-disabled='true']):not([disabled]), button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
         "submit_key":       "Enter",
         # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
         "response_selector": ".flow-markdown-body, [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
@@ -855,11 +865,15 @@ class GuestQueryExecutor:
     async def _extract_doubao_citations(self, page: Page) -> list:
         """从豆包引用面板提取引用链接。
 
-        豆包的引用不是内嵌在响应正文的 <a> 标签，而是在独立的引用面板中：
-        - 触发按钮: [data-testid="search-reference-ui-v3"]（需先点击展开）
-        - 每条引用: [data-testid="search-text-item"] 内含 <a href="...">
-        - 标题: .search-item-title-* 类名
-        - 编号: .footer-citation-* 类名
+        豆包 2026 UI 引用结构（线上 DOM 验证）：
+        - 触发器: <div class="entry-btn-v3-XXXX"> 内含 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
+        - 面板根: <div class="container-outer-XXXX" data-visible="true">
+        - 面板头: <span class="page-search-XXXX">参考资料</span>
+        - 每条引用容器: <div class="search-item-XXXX">（hash 后缀变化，前缀稳定）
+        - 标题: [class*="search-item-title"]
+        - 摘要: [class*="search-item-summary"]
+        - 来源: [class*="footer-title"]
+        - 编号: [class*="footer-citation"]
         """
         try:
             citations = await page.evaluate("""
@@ -867,28 +881,40 @@ class GuestQueryExecutor:
                     const citations = [];
                     const seen = new Set();
 
-                    // 策略1：从展开的引用面板中提取（search-text-item）
-                    const items = document.querySelectorAll('[data-testid="search-text-item"]');
-                    for (const item of items) {
+                    // 判断 class 是否是"引用项主容器"——前缀是 search-item-X 而不是
+                    // search-item-title-X / search-item-footer-X / search-item-summary-X /
+                    // search-item-transition-X 这类内层 class
+                    const INNER_PREFIXES = ['search-item-title', 'search-item-footer',
+                        'search-item-summary', 'search-item-transition'];
+                    const isItemContainer = (el) => {
+                        const cls = el.className || '';
+                        if (typeof cls !== 'string') return false;
+                        const classes = cls.split(/\\s+/);
+                        return classes.some(c => {
+                            if (!c.startsWith('search-item-')) return false;
+                            return !INNER_PREFIXES.some(p => c.startsWith(p));
+                        });
+                    };
+
+                    const pushFromItem = (item) => {
                         const link = item.querySelector('a[href]');
-                        if (!link) continue;
+                        if (!link) return;
                         const url = link.href;
-                        if (!url || !url.startsWith('http') || seen.has(url)) continue;
+                        if (!url || !url.startsWith('http') || seen.has(url)) return;
+                        // 过滤掉豆包自身的链接
+                        if (url.includes('doubao.com') || url.includes('bytedance.com')) return;
                         seen.add(url);
 
-                        // 提取标题（优先用 title class，fallback 到链接文本）
                         const titleEl = item.querySelector('[class*="search-item-title"]');
                         const title = titleEl
                             ? (titleEl.textContent || '').trim()
                             : (link.textContent || '').trim();
 
-                        // 提取引用编号
                         const citationEl = item.querySelector('[class*="footer-citation"]');
                         const citationNum = citationEl
                             ? parseInt(citationEl.textContent, 10)
                             : 0;
 
-                        // 提取来源名称
                         const sourceEl = item.querySelector('[class*="footer-title"]');
                         const source = sourceEl ? (sourceEl.textContent || '').trim() : '';
 
@@ -898,17 +924,46 @@ class GuestQueryExecutor:
                             source: source,
                             index: citationNum || (citations.length + 1)
                         });
+                    };
+
+                    // 策略1：找到处于打开态的引用面板（container-outer + data-visible="true"），
+                    // 从面板内提取所有引用项
+                    const panels = document.querySelectorAll(
+                        '[class*="container-outer"][data-visible="true"], '
+                        + '[class*="container-outer"]:not([data-visible="false"])'
+                    );
+                    for (const panel of panels) {
+                        // 仅当面板内含"参考资料"标题或 search-item-* 时才算引用面板
+                        const isRefPanel = panel.querySelector('[class*="page-search"]')
+                            || panel.querySelector('[class*="search-item-title"]');
+                        if (!isRefPanel) continue;
+                        const candidates = panel.querySelectorAll('[class*="search-item-"]');
+                        for (const c of candidates) {
+                            if (isItemContainer(c)) pushFromItem(c);
+                        }
                     }
 
-                    // 策略2：如果 search-text-item 未找到，尝试从弹出面板中的所有链接提取
-                    // 豆包的弹出面板可能使用 popover / dialog / drawer 等容器
+                    // 策略2：老版 testid（兼容性兜底）
+                    if (citations.length === 0) {
+                        const items = document.querySelectorAll('[data-testid="search-text-item"]');
+                        for (const item of items) pushFromItem(item);
+                    }
+
+                    // 策略3：全文档兜底 —— 任意主容器形态的 search-item-*
+                    if (citations.length === 0) {
+                        const all = document.querySelectorAll('[class*="search-item-"]');
+                        for (const c of all) {
+                            if (isItemContainer(c)) pushFromItem(c);
+                        }
+                    }
+
+                    // 策略4：通用面板兜底（popover / dialog / drawer）
                     if (citations.length === 0) {
                         const panelSelectors = [
                             '[data-testid*="search-reference"] a[href]',
                             '[class*="reference-panel"] a[href]',
                             '[class*="search-panel"] a[href]',
                             '[class*="citation-panel"] a[href]',
-                            // popover / drawer 容器内的链接
                             '[data-radix-popper-content-wrapper] a[href]',
                             '[role="dialog"] a[href]',
                         ];
@@ -918,7 +973,6 @@ class GuestQueryExecutor:
                                 for (const link of links) {
                                     const url = link.href;
                                     if (!url || !url.startsWith('http') || seen.has(url)) continue;
-                                    // 过滤掉豆包自身的链接
                                     if (url.includes('doubao.com') || url.includes('bytedance.com')) continue;
                                     seen.add(url);
                                     citations.push({
@@ -932,7 +986,6 @@ class GuestQueryExecutor:
                         }
                     }
 
-                    // 按引用编号排序
                     citations.sort((a, b) => a.index - b.index);
                     return citations;
                 }
@@ -1043,41 +1096,84 @@ class GuestQueryExecutor:
             # 模拟人类打字速度（50-120ms/字符）
             await page.keyboard.type(query_text, delay=random.randint(50, 120))
 
+            # 豆包等 React 受控 textarea：keyboard.type 偶尔不触发 React state 更新，
+            # 导致 send 按钮保持禁用态、点击 no-op。这里校验实际值，若不一致则用
+            # native value setter + input 事件强制刷新 React tracker。
+            try:
+                actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
+            except Exception:
+                actual = None
+            if actual is not None and actual.strip() != query_text.strip():
+                logger.warning(
+                    f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
+                    "改用 JS 注入并触发 React input 事件"
+                )
+                try:
+                    await input_el.evaluate(
+                        """
+                        (el, text) => {
+                            const proto = el instanceof HTMLTextAreaElement
+                                ? HTMLTextAreaElement.prototype
+                                : HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                            setter.call(el, text);
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        """,
+                        query_text,
+                    )
+                    await page.wait_for_timeout(200)
+                except Exception as e:
+                    logger.debug(f"[{llm_name}] JS 注入文字失败: {e}")
+
         # 模拟人类"思考"后再提交
         await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
         async def _find_submit_button_js():
-            """豆包新 UI 无 testid，通过稳定 class + 位置 + 图标找 send 按钮。"""
+            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。"""
             return await page.evaluate_handle(
                 """
                 () => {
+                    const isEnabled = (b) => {
+                        if (!b) return false;
+                        if (b.disabled) return false;
+                        if (b.getAttribute('data-disabled') === 'true') return false;
+                        if (b.getAttribute('aria-disabled') === 'true') return false;
+                        const cls = b.className || '';
+                        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
+                        return true;
+                    };
+
+                    // 最优先：稳定的 id（线上 DOM 验证）
+                    const byId = document.getElementById('flow-end-msg-send');
+                    if (byId && isEnabled(byId)) return byId;
+
                     const all = [...document.querySelectorAll('button, [role="button"]')];
 
-                    // 最优先：按 class 匹配（稳定的 Tailwind/业务类名）
+                    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
                     const byClass = all.find(b => {
-                        if (b.disabled || b.getAttribute('data-disabled') === 'true') return false;
+                        if (!isEnabled(b)) return false;
                         const cls = b.className || '';
                         if (typeof cls !== 'string') return false;
-                        // disabled 态会是 bg-g-send-msg-btn-disabled-bg，跳过
-                        if (/send-msg-btn-disabled-bg/.test(cls)) return false;
                         return /send-msg-btn/.test(cls);
                     });
                     if (byClass) return byClass;
 
-                    // 其次：.send-btn-wrapper（不含 !hidden）内的 button
+                    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
                     const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
                     for (const w of wrappers) {
                         const wcls = w.className || '';
                         if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
                         const b = w.querySelector('button');
-                        if (b && !b.disabled && b.getAttribute('data-disabled') !== 'true') return b;
+                        if (isEnabled(b)) return b;
                     }
 
                     // 然后：aria-label / title 含 send/发送
                     const byAria = all.find(b => {
-                        if (b.disabled) return false;
+                        if (!isEnabled(b)) return false;
                         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
                         const title = (b.getAttribute('title') || '').toLowerCase();
                         return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
@@ -1086,13 +1182,13 @@ class GuestQueryExecutor:
 
                     // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
                     const input = document.querySelector(
-                        'textarea, [contenteditable="true"]'
+                        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
                     );
                     if (!input) return null;
                     const ir = input.getBoundingClientRect();
                     let best = null, bestDist = Infinity;
                     for (const b of all) {
-                        if (b.disabled || b.getAttribute('data-disabled') === 'true') continue;
+                        if (!isEnabled(b)) continue;
                         const r = b.getBoundingClientRect();
                         if (r.width === 0 || r.height === 0) continue;
                         const txt = (b.textContent || '').trim();
@@ -1115,11 +1211,25 @@ class GuestQueryExecutor:
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
                 try:
                     btn = await page.query_selector(btn_sel)
-                    if btn and await btn.is_visible():
-                        await btn.click()
-                        submitted = True
-                        logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
-                        break
+                    if not btn or not await btn.is_visible():
+                        continue
+                    # 二次校验：豆包等使用 aria-disabled / data-disabled / class 表达禁用态，
+                    # CSS :not([disabled]) 抓不到，会误点禁用按钮变成 no-op，导致后面 JS 兜底被跳过。
+                    is_disabled = await btn.evaluate(
+                        """
+                        b => b.disabled
+                          || b.getAttribute('aria-disabled') === 'true'
+                          || b.getAttribute('data-disabled') === 'true'
+                          || /send-msg-btn-disabled-bg/.test(b.className || '')
+                        """
+                    )
+                    if is_disabled:
+                        logger.debug(f"[{llm_name}] 跳过禁用按钮: {btn_sel}")
+                        continue
+                    await btn.click()
+                    submitted = True
+                    logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
+                    break
                 except Exception:
                     continue
         if not submitted and llm_name == "doubao":
@@ -1137,24 +1247,40 @@ class GuestQueryExecutor:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
 
-        # 验证提交成功：豆包 testid 已删除，改用 textarea 清空 + 出现新消息块判断
+        # 验证提交成功：依据各 LLM 的稳定标记判断"用户消息已上屏"
+        # 共用标记 + 各 LLM 特化（豆包: send-msg-bubble-bg；chatgpt: [data-message-author-role="user"]）
         async def _submit_confirmed() -> bool:
             try:
                 return await page.evaluate(
                     r"""
-                    (queryText) => {
-                        // 1) 存在 send_message testid（老 UI）
+                    ([queryText, llmName]) => {
+                        // 1) ChatGPT: 出现 user 消息气泡
+                        if (llmName === 'chatgpt') {
+                            const userMsgs = document.querySelectorAll(
+                                '[data-message-author-role="user"]'
+                            );
+                            const needle = queryText.slice(0, 30).trim();
+                            for (const el of userMsgs) {
+                                if ((el.textContent || '').includes(needle)) return true;
+                            }
+                            // URL 从 / 变成 /c/{id} 也算
+                            if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                            return false;
+                        }
+                        // 2) Doubao: 老 UI send_message testid
                         if (document.querySelector('[data-testid="send_message"]')) return true;
-                        // 2) 输入框被清空（发送后 doubao 会清空）
+                        // 3) Doubao: 输入框被清空（发送后会清空），排除隐藏 textarea
                         const inp = document.querySelector(
-                            'textarea[data-testid="chat_input_input"], textarea, [contenteditable="true"]'
+                            '#input-engine-container textarea.semi-input-textarea:not([aria-hidden="true"]), '
+                            + 'textarea.semi-input-textarea:not([aria-hidden="true"]), '
+                            + 'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
                         );
                         if (inp) {
                             const v = (inp.value !== undefined ? inp.value : inp.textContent) || '';
                             if (v.trim().length === 0 && queryText.length > 0) return true;
                         }
-                        // 3) 页面某个气泡类元素包含 query 文本
-                        //    豆包 2026 稳定 class: send-msg-bubble-bg（用户消息气泡）
+                        // 4) Doubao 2026 稳定 class: send-msg-bubble-bg（用户消息气泡），
+                        //    以及其他用户消息相关 class（兜底）
                         const candidates = document.querySelectorAll(
                             '[class*="send-msg-bubble-bg"], [class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"], [class*="message-list"]'
                         );
@@ -1165,12 +1291,12 @@ class GuestQueryExecutor:
                         return false;
                     }
                     """,
-                    query_text,
+                    [query_text, llm_name],
                 )
             except Exception:
                 return False
 
-        if llm_name == "doubao":
+        if llm_name in ("doubao", "chatgpt"):
             confirmed = False
             for _ in range(10):  # 最多 ~5s 轮询
                 if await _submit_confirmed():
@@ -1183,14 +1309,29 @@ class GuestQueryExecutor:
             else:
                 logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
                 try:
-                    input_retry = await page.query_selector(
-                        "[data-testid='chat_input_input'], textarea, [contenteditable='true']"
-                    )
-                    if input_retry:
-                        await input_retry.click(force=True)
-                        await page.wait_for_timeout(300)
-                    await page.keyboard.press("Enter")
-                    logger.info(f"[{llm_name}] 重试 Enter 提交")
+                    # 先再点一次发送按钮（id 是稳定标识），失败再退化到 Enter
+                    clicked_again = False
+                    try:
+                        retry_handle = await _find_submit_button_js()
+                        retry_el = retry_handle.as_element() if retry_handle else None
+                        if retry_el:
+                            await retry_el.click()
+                            clicked_again = True
+                            logger.info(f"[{llm_name}] 重试通过 JS 兜底按钮提交")
+                    except Exception as e:
+                        logger.debug(f"[{llm_name}] 重试 JS 兜底按钮失败: {e}")
+
+                    if not clicked_again:
+                        input_retry = await page.query_selector(
+                            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea:not([aria-hidden='true']), [contenteditable='true']"
+                        )
+                        if input_retry:
+                            await input_retry.click(force=True)
+                            await page.wait_for_timeout(300)
+                        await page.keyboard.press("Enter")
+                        logger.info(f"[{llm_name}] 重试 Enter 提交")
                     for _ in range(10):
                         if await _submit_confirmed():
                             confirmed = True
@@ -1339,7 +1480,49 @@ class GuestQueryExecutor:
                 except Exception:
                     continue
 
-            if not resp_text:
+            # 在做 <p>/<li>/main 兜底之前，先确认用户消息真的上屏了——
+            # 否则可能爬到首页 UI（比如 ChatGPT "What are you working on?" 文案）
+            user_msg_present = False
+            try:
+                user_msg_present = await page.evaluate(
+                    r"""
+                    ([queryText, llmName]) => {
+                        const needle = queryText.slice(0, 30).trim();
+                        if (!needle) return true;  // 空 query 不做校验
+                        // 通用：所有 LLM 都用的 user message marker
+                        const sels = [
+                            '[data-message-author-role="user"]',
+                            '[class*="send-msg-bubble-bg"]',  // doubao
+                            '[class*="user-message"]',
+                            '[class*="send-message"]',
+                            '[class*="message-item"]',
+                            '[class*="chat-item"]',
+                        ];
+                        for (const sel of sels) {
+                            const els = document.querySelectorAll(sel);
+                            for (const el of els) {
+                                if ((el.textContent || '').includes(needle)) return true;
+                            }
+                        }
+                        // 进入 /c/{id} 路径也算（chatgpt 等）
+                        if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                        return false;
+                    }
+                    """,
+                    [query_text, llm_name],
+                )
+            except Exception:
+                user_msg_present = False
+
+            if not resp_text and not user_msg_present:
+                # 没有响应也没有用户消息气泡 = 提交根本没成功，禁止抽取首页 UI
+                logger.warning(
+                    f"[{llm_name}] 未检测到用户消息气泡，提交可能未成功——"
+                    "跳过通用兜底抽取，避免误抓首页内容"
+                )
+                await _save_html(page, -1, f"{llm_name}_submit_failed_no_user_msg")
+
+            if not resp_text and user_msg_present:
                 # fallback 1：拼接所有 <p> 标签文本
                 logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
                 await _save_html(page, -1, f"{llm_name}_extract_fail")
@@ -1388,10 +1571,19 @@ class GuestQueryExecutor:
             if not resp_text:
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
 
-            # 豆包：检测是否误抓了首页内容（而非真正的 AI 响应）
-            if llm_name == "doubao" and resp_text:
-                homepage_indicators = ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"]
-                matched_indicators = [kw for kw in homepage_indicators if kw in resp_text]
+            # 检测是否误抓了首页内容（而非真正的 AI 响应）
+            homepage_indicators_by_llm = {
+                "doubao": ["有什么我能帮你的吗", "写一段早上", "PPT 生成", "超能模式", "图像生成"],
+                "chatgpt": [
+                    "What are you working on?",
+                    "How can I help you today?",
+                    "Examples", "Capabilities", "Limitations",
+                    "Stay logged out", "Log in", "Sign up",
+                ],
+            }
+            indicators = homepage_indicators_by_llm.get(llm_name, [])
+            if indicators and resp_text:
+                matched_indicators = [kw for kw in indicators if kw in resp_text]
                 if len(matched_indicators) >= 2:
                     logger.warning(
                         f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
@@ -1452,26 +1644,35 @@ class GuestQueryExecutor:
 
                 return "", "", []
 
-            # 豆包引用面板可能在响应完成后异步加载，额外等待
+            # 豆包引用面板：2026 UI 触发器从 [data-testid=...] 换成
+            # <div class="entry-btn-v3-XXXX"> 包裹 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
+            # 必须点击触发器才能渲染右侧面板（container-outer-XXXX[data-visible="true"]）
             if llm_name == "doubao":
                 try:
                     ref_btn = await page.wait_for_selector(
-                        '[data-testid="search-reference-ui-v3"]',
+                        '[class*="entry-btn-v3"], [data-testid="search-reference-ui-v3"]',
                         timeout=8000,
                     )
                     await page.wait_for_timeout(500)
-                    # 引用按钮需要点击才能展开面板，展开后才有 search-text-item
                     if ref_btn:
-                        await ref_btn.click()
+                        try:
+                            await ref_btn.click()
+                        except Exception:
+                            # entry-btn-v3 是个 div，可能需要走 JS click
+                            try:
+                                await ref_btn.evaluate("el => el.click()")
+                            except Exception as e:
+                                logger.debug(f"[doubao] 引用触发器点击失败: {e}")
                         logger.debug("[doubao] 已点击引用面板按钮，等待展开")
                         try:
                             await page.wait_for_selector(
+                                '[class*="container-outer"][data-visible="true"] [class*="search-item-title"], '
                                 '[data-testid="search-text-item"]',
                                 timeout=5000,
                             )
                             await page.wait_for_timeout(800)
                         except Exception:
-                            logger.debug("[doubao] 引用面板展开后未找到 search-text-item")
+                            logger.debug("[doubao] 引用面板展开后未找到 search-item")
                 except Exception:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 

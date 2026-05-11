@@ -43,11 +43,13 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 LLM_CONFIG: dict[str, dict] = {
     "chatgpt": {
         "url":              "https://chat.openai.com",
-        "input_selector":   "#prompt-textarea",
-        "submit_selector":  "button[data-testid='send-button']",
+        # #prompt-textarea 现在是 ProseMirror contenteditable div
+        "input_selector":   "#prompt-textarea, div[contenteditable='true'][role='textbox']",
+        # data-testid 偶尔变；优先稳定的 aria-label + class
+        "submit_selector":  "button[aria-label='Send prompt'], button[data-testid='send-button'], button.composer-submit-button-color[aria-label*='Send'], #composer-submit-button",
         "response_selector":"[data-message-author-role='assistant'] .markdown",
         # 流式输出完成信号：停止按钮消失 + 发送按钮重新可用
-        "wait_for_done":    "button[data-testid='send-button']:not([disabled])",
+        "wait_for_done":    "button[aria-label='Send prompt']:not([disabled]), button[data-testid='send-button']:not([disabled])",
         # 额外等待：流式光标消失
         "stream_cursor_selector": ".result-streaming",
         "response_timeout": 90_000,
@@ -103,10 +105,11 @@ LLM_CONFIG: dict[str, dict] = {
     },
     "doubao": {
         "url":              "https://www.doubao.com/chat",
-        "input_selector":   "textarea.input-area, textarea, [class*='chat-input']",
-        "submit_selector":  "button[data-testid='chat_input_send_button']",
-        "response_selector":"[class*='receive-message'] [class*='content'], .bot-message .content, [class*='message-content']",
-        "wait_for_done":    "button[data-testid='chat_input_send_button']:not([disabled])",
+        # 2026 版 UI 不再使用 data-testid；改用稳定 id / class
+        "input_selector":   "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), textarea.semi-input-textarea:not([aria-hidden='true']), textarea.input-area, textarea:not([aria-hidden='true']), [class*='chat-input']",
+        "submit_selector":  "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[id='flow-end-msg-send'], button[data-testid='chat_input_send_button']",
+        "response_selector":".flow-markdown-body, [class*='receive-message'] [class*='content'], .bot-message .content, [class*='message-content']",
+        "wait_for_done":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[data-testid='chat_input_send_button']:not([disabled])",
         "response_timeout": 90_000,
         "requires_login":   True,
         "cookies_env":      "DOUBAO_COOKIES_JSON",
