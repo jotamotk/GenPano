@@ -52,9 +52,7 @@ def stable_project_id(*, brand_id: int, project_slug: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
-def validate_write_gate(
-    *, write: bool, user_id: str | None, approval_ref: str | None
-) -> None:
+def validate_write_gate(*, write: bool, user_id: str | None, approval_ref: str | None) -> None:
     if not write:
         return
     if not user_id:
@@ -258,9 +256,7 @@ def choose_existing_project(
     *, project_rows: Sequence[dict[str, Any]], brand_id: int, project_id: str
 ) -> dict[str, Any] | None:
     exact = [
-        row
-        for row in project_rows
-        if row.get("id") == project_id and row.get("deleted_at") is None
+        row for row in project_rows if row.get("id") == project_id and row.get("deleted_at") is None
     ]
     if exact:
         return exact[0]
@@ -315,9 +311,7 @@ def add_context_safety_notes(
     plan["notes"] = notes
 
 
-async def fetch_existing_competitors(
-    session: AsyncSession, *, project_id: str
-) -> set[int]:
+async def fetch_existing_competitors(session: AsyncSession, *, project_id: str) -> set[int]:
     rows = await _fetch_mappings(
         session,
         """
