@@ -15,8 +15,13 @@
  */
 
 import { apiClient } from '../lib/apiClient'
+import type {
+  AnalyticsContractMetadata,
+  AnalyticsState,
+  MetricContractFields,
+} from './analyticsContract'
 
-export interface KpiCard {
+export interface KpiCard extends MetricContractFields {
   label_zh: string
   label_en: string
   value: number
@@ -44,7 +49,7 @@ export interface GroupSharedDomainRow {
   total_mentions: number
 }
 
-export interface BrandOverviewOut {
+export interface BrandOverviewOut extends AnalyticsContractMetadata {
   project_id: string
   brand_id: number | null
   brand_name: string | null
@@ -56,7 +61,7 @@ export interface BrandOverviewOut {
   sentiment_30d: TrendPoint[]
   top_prompts: TopPromptRow[]
   same_group_shared_domains: GroupSharedDomainRow[]
-  state: 'ok' | 'empty' | 'partial'
+  state: AnalyticsState
 }
 
 export const brandOverviewApi = {
