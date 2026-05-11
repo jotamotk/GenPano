@@ -8,7 +8,10 @@ import pytest
 
 from geo_tracker.db.models import AccountStatus, LLMAccount, Query
 from geo_tracker.agent.response_validation import invalid_response_reason
-from geo_tracker.tasks.account_assignment import acquire_query_account
+from geo_tracker.tasks.account_assignment import (
+    account_unavailable_reason_from_accounts,
+    acquire_query_account,
+)
 from geo_tracker.tasks.query_failure import (
     classify_execution_failure,
     _empty_response_failure_reason,
@@ -74,6 +77,32 @@ def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("soft_time_limit") is False
 
 
+def test_account_unavailability_classifies_daily_limit_exhaustion():
+    accounts = [
+        LLMAccount(
+            id=16,
+            llm_name="chatgpt",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+            query_count_today=20,
+            daily_limit=20,
+        ),
+        LLMAccount(
+            id=17,
+            llm_name="chatgpt",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+            query_count_today=60,
+            daily_limit=60,
+        ),
+    ]
+
+    assert (
+        account_unavailable_reason_from_accounts(accounts)
+        == "account_daily_limit_exhausted"
+    )
+
+
 @pytest.mark.asyncio
 async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(monkeypatch):
     playwright = types.ModuleType("playwright")
@@ -116,6 +145,76 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(mon
     assert result is None
     assert attempts == 3
     assert executor.last_error_reason == "no_response"
+
+
+def _install_fake_playwright(monkeypatch):
+    playwright = types.ModuleType("playwright")
+    playwright_async = types.ModuleType("playwright.async_api")
+    playwright_async.async_playwright = object
+    playwright_async.BrowserContext = object
+    playwright_async.Page = object
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)
+
+
+@pytest.mark.asyncio
+async def test_doubao_controlled_textarea_prefers_js_injection(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakeKeyboard:
+        def __init__(self):
+            self.typed: list[str] = []
+
+        async def type(self, text, delay=0):
+            self.typed.append(text)
+
+    class FakePage:
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    class FakeInput:
+        def __init__(self):
+            self.value = ""
+            self.scripts: list[str] = []
+
+        async def fill(self, text):
+            self.value = text
+
+        async def evaluate(self, script, arg=None):
+            self.scripts.append(script)
+            if arg is not None and "beforeinput" in script and "InputEvent" in script:
+                self.value = arg
+                return self.value
+            return self.value
+
+    page = FakePage()
+    input_el = FakeInput()
+    executor = GuestQueryExecutor()
+
+    filled = await executor._fill_plain_text_input(page, input_el, "hello doubao", "doubao")
+
+    assert filled is True
+    assert input_el.value == "hello doubao"
+    assert page.keyboard.typed == []
+    assert any("compositionend" in script for script in input_el.scripts)
+
+
+def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GUEST_LLM_CONFIG
+
+    selectors = [
+        selector.strip()
+        for selector in GUEST_LLM_CONFIG["doubao"]["response_selector"].split(",")
+    ]
+
+    assert "[data-testid='receive_message']" in selectors
 
 
 class _FakeDb:

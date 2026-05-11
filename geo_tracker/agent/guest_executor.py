@@ -165,7 +165,7 @@ GUEST_LLM_CONFIG = {
         "submit_button":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[id='flow-end-msg-send'], .send-btn-wrapper button:not([aria-disabled='true']):not([data-disabled='true']), button[class*='send-msg-btn']:not([aria-disabled='true']):not([data-disabled='true']):not([disabled]), button[data-testid='chat_input_send_button'], button[aria-label*='发送'], button[aria-label*='send' i], button[data-testid*='send']",
         "submit_key":       "Enter",
         # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
-        "response_selector": ".flow-markdown-body, [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
+        "response_selector": ".flow-markdown-body, [data-testid='receive_message'], [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
         "wait_after_submit": 60000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
@@ -1003,6 +1003,115 @@ class GuestQueryExecutor:
             except Exception:
                 pass
 
+    async def _inject_controlled_textarea_value(self, input_el, query_text: str) -> str:
+        """Set a controlled textarea/input value and return the observed value."""
+        try:
+            actual = await input_el.evaluate(
+                """
+                (el, text) => {
+                    el.focus();
+
+                    const proto = el instanceof HTMLTextAreaElement
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype;
+                    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+
+                    try {
+                        el.dispatchEvent(new InputEvent('beforeinput', {
+                            bubbles: true,
+                            cancelable: true,
+                            inputType: 'insertText',
+                            data: text
+                        }));
+                    } catch (e) {}
+
+                    if (descriptor && descriptor.set) {
+                        descriptor.set.call(el, text);
+                    } else {
+                        el.value = text;
+                    }
+
+                    try {
+                        el.setSelectionRange(text.length, text.length);
+                    } catch (e) {}
+
+                    const events = [
+                        new InputEvent('input', {
+                            bubbles: true,
+                            inputType: 'insertText',
+                            data: text
+                        }),
+                        new Event('change', { bubbles: true }),
+                    ];
+                    for (const event of events) {
+                        el.dispatchEvent(event);
+                    }
+
+                    try {
+                        el.dispatchEvent(new CompositionEvent('compositionend', {
+                            bubbles: true,
+                            data: text
+                        }));
+                    } catch (e) {
+                        el.dispatchEvent(new Event('compositionend', { bubbles: true }));
+                    }
+
+                    try {
+                        el.dispatchEvent(new KeyboardEvent('keyup', {
+                            bubbles: true,
+                            key: 'Process'
+                        }));
+                    } catch (e) {}
+
+                    return el.value ?? el.textContent ?? '';
+                }
+                """,
+                query_text,
+            )
+            return str(actual or "")
+        except Exception as e:
+            logger.debug(f"controlled textarea injection failed: {e}")
+            return ""
+
+    async def _fill_plain_text_input(
+        self,
+        page: Page,
+        input_el,
+        query_text: str,
+        llm_name: str,
+    ) -> bool:
+        """Fill a textarea/input, using JS first for Doubao's controlled input."""
+        try:
+            await input_el.fill("")
+        except Exception:
+            pass
+        await page.wait_for_timeout(random.randint(200, 500))
+
+        if llm_name == "doubao":
+            actual = await self._inject_controlled_textarea_value(input_el, query_text)
+            if actual.strip() == query_text.strip():
+                logger.info(f"[{llm_name}] 通过 JS 注入受控 textarea")
+                return True
+            logger.warning(
+                f"[{llm_name}] JS 注入后输入值与期望不一致"
+                f"（len={len(actual or '')} vs {len(query_text)}），回退到键盘输入"
+            )
+
+        await page.keyboard.type(query_text, delay=random.randint(50, 120))
+
+        try:
+            actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
+        except Exception:
+            actual = None
+        if actual is not None and actual.strip() != query_text.strip():
+            logger.warning(
+                f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
+                "改用 JS 注入并触发 React input 事件"
+            )
+            actual = await self._inject_controlled_textarea_value(input_el, query_text)
+            return actual.strip() == query_text.strip()
+        return True
+
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None,
         _retry_count: int = 0,
@@ -1088,44 +1197,12 @@ class GuestQueryExecutor:
             # 保存注入后的 HTML，确认文字是否真的进了编辑器
             await _save_html(page, -1, f"{llm_name}_after_inject")
         else:
-            try:
-                await input_el.fill("")
-            except:
-                pass
-            await page.wait_for_timeout(random.randint(200, 500))
-            # 模拟人类打字速度（50-120ms/字符）
-            await page.keyboard.type(query_text, delay=random.randint(50, 120))
-
-            # 豆包等 React 受控 textarea：keyboard.type 偶尔不触发 React state 更新，
-            # 导致 send 按钮保持禁用态、点击 no-op。这里校验实际值，若不一致则用
-            # native value setter + input 事件强制刷新 React tracker。
-            try:
-                actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
-            except Exception:
-                actual = None
-            if actual is not None and actual.strip() != query_text.strip():
-                logger.warning(
-                    f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
-                    "改用 JS 注入并触发 React input 事件"
-                )
-                try:
-                    await input_el.evaluate(
-                        """
-                        (el, text) => {
-                            const proto = el instanceof HTMLTextAreaElement
-                                ? HTMLTextAreaElement.prototype
-                                : HTMLInputElement.prototype;
-                            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                            setter.call(el, text);
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                        """,
-                        query_text,
-                    )
-                    await page.wait_for_timeout(200)
-                except Exception as e:
-                    logger.debug(f"[{llm_name}] JS 注入文字失败: {e}")
+            filled = await self._fill_plain_text_input(page, input_el, query_text, llm_name)
+            if not filled:
+                logger.warning(f"[{llm_name}] 输入框填充失败，放弃本次提交")
+                self.last_error_reason = "no_input"
+                await _save_html(page, -1, f"{llm_name}_input_fill_failed")
+                return "", "", []
 
         # 模拟人类"思考"后再提交
         await page.wait_for_timeout(random.randint(500, 1500))
@@ -1269,17 +1346,7 @@ class GuestQueryExecutor:
                         }
                         // 2) Doubao: 老 UI send_message testid
                         if (document.querySelector('[data-testid="send_message"]')) return true;
-                        // 3) Doubao: 输入框被清空（发送后会清空），排除隐藏 textarea
-                        const inp = document.querySelector(
-                            '#input-engine-container textarea.semi-input-textarea:not([aria-hidden="true"]), '
-                            + 'textarea.semi-input-textarea:not([aria-hidden="true"]), '
-                            + 'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
-                        );
-                        if (inp) {
-                            const v = (inp.value !== undefined ? inp.value : inp.textContent) || '';
-                            if (v.trim().length === 0 && queryText.length > 0) return true;
-                        }
-                        // 4) Doubao 2026 稳定 class: send-msg-bubble-bg（用户消息气泡），
+                        // 3) Doubao 2026 稳定 class: send-msg-bubble-bg（用户消息气泡），
                         //    以及其他用户消息相关 class（兜底）
                         const candidates = document.querySelectorAll(
                             '[class*="send-msg-bubble-bg"], [class*="user-message"], [class*="send-message"], [class*="message-item"], [class*="chat-item"], [class*="message-list"]'
@@ -1309,6 +1376,19 @@ class GuestQueryExecutor:
             else:
                 logger.warning(f"[{llm_name}] 提交后未检测到发送的消息，尝试重新提交")
                 try:
+                    if llm_name == "doubao":
+                        input_retry = await page.query_selector(
+                            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea.semi-input-textarea:not([aria-hidden='true']), "
+                            "textarea:not([aria-hidden='true']), [contenteditable='true']"
+                        )
+                        if input_retry:
+                            await input_retry.click(force=True)
+                            await page.wait_for_timeout(300)
+                            await self._fill_plain_text_input(
+                                page, input_retry, query_text, llm_name
+                            )
+
                     # 先再点一次发送按钮（id 是稳定标识），失败再退化到 Enter
                     clicked_again = False
                     try:
@@ -1342,6 +1422,8 @@ class GuestQueryExecutor:
                     else:
                         logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
                         await _save_html(page, -1, f"{llm_name}_submit_failed")
+                        self.last_error_reason = "no_response"
+                        return "", "", []
                 except Exception as e:
                     logger.warning(f"[{llm_name}] 重试提交异常: {e}")
 
