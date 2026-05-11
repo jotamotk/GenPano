@@ -168,9 +168,7 @@ async def _response_entity_competitor_metrics(
 
     from_dt = datetime.combine(from_d, datetime.min.time())
     to_dt = datetime.combine(to_d, datetime.max.time())
-    fact_brand_override = (
-        primary_id if primary_id != project.primary_brand_id else None
-    )
+    fact_brand_override = primary_id if primary_id != project.primary_brand_id else None
 
     fact_rows = await _fact_rows(
         session,
@@ -272,10 +270,13 @@ async def _response_entity_competitor_metrics(
         co_count = 0
         if bid != primary_id:
             co_count = len(set(bucket["response_ids"]) & primary_response_ids)
+        brand_name = bucket["brand_name"]
+        if bid is not None:
+            brand_name = name_map.get(bid) or brand_name
         return CompetitorBrandRow(
             brand_id=bid,
             brand_key=bucket["brand_key"],
-            brand_name=(name_map.get(bid) or bucket["brand_name"]) if bid is not None else bucket["brand_name"],
+            brand_name=brand_name,
             avg_geo_score=geo_score(rollup),
             avg_mention_rate=round(mention_rate(rollup), 4),
             avg_sov=round(share_of_voice(rollup), 4),
@@ -630,10 +631,11 @@ async def get_competitor_metrics(
     all_ids: list[int] = [primary_id]
     all_ids.extend(competitor_ids)
     name_map = await resolve_brand_names(session, all_ids)
-    if primary_row is not None:
+    if primary_row is not None and primary_row.brand_id is not None:
         primary_row.brand_name = name_map.get(primary_row.brand_id)
     for c in comp_rows:
-        c.brand_name = name_map.get(c.brand_id)
+        if c.brand_id is not None:
+            c.brand_name = name_map.get(c.brand_id)
 
     state = "ok" if (primary_row or comp_rows) else "empty"
     return CompetitorMetricsOut(

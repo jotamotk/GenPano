@@ -233,9 +233,10 @@ async def test_manual_dispatch_batch_plan_uses_bulk_writes_to_avoid_proxy_timeou
     assert session.schedule_update_calls == 1
     assert {row["profile_id"] for row in session.inserted_query_rows} == {101}
     assert {row["target_llm"] for row in session.inserted_query_rows} == {"chatgpt", "gemini"}
-    assert {
-        (row["target_llm"], row["account_id"]) for row in session.inserted_query_rows
-    } == {("chatgpt", 11), ("gemini", 12)}
+    assert {(row["target_llm"], row["account_id"]) for row in session.inserted_query_rows} == {
+        ("chatgpt", 11),
+        ("gemini", 12),
+    }
     assert session.committed is True
 
 

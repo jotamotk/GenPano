@@ -29,17 +29,6 @@ from app.api.v1.projects._mention_rollups import (
     brand_mention_daily_rollups,
     metric_value,
 )
-from app.api.v1.projects._topic_analysis_service import (
-    AnalysisFilters,
-    _as_float,
-    _as_int,
-    _date_key,
-    _fact_all_mention_count,
-    _fact_rows,
-    _fact_target_mention_count,
-    _has_admin_chain,
-    _is_non_branded_row,
-)
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
     CitationRow,
@@ -55,6 +44,17 @@ from app.api.v1.projects._metrics_dto import (
     TopicRow,
     TopicsOut,
 )
+from app.api.v1.projects._topic_analysis_service import (
+    AnalysisFilters,
+    _as_float,
+    _as_int,
+    _date_key,
+    _fact_all_mention_count,
+    _fact_rows,
+    _fact_target_mention_count,
+    _has_admin_chain,
+    _is_non_branded_row,
+)
 
 DEFAULT_WINDOW_DAYS = 30
 ALLOWED_METRICS = {"mention_rate", "sov", "rank", "sentiment", "citation"}
@@ -65,6 +65,17 @@ METRIC_TO_COLUMN = {
     "sentiment": GeoScoreDaily.avg_sentiment,
     "citation": GeoScoreDaily.citation_rate,
 }
+
+
+class _FactMetricBucket(TypedDict):
+    response_ids: set[int]
+    mention_denominator_response_ids: set[int]
+    target_mention_response_ids: set[int]
+    target_mentions: int
+    all_mentions: int
+    ranks: list[float]
+    sentiment_scores: list[float]
+    citation_count: int
 
 
 def _period(from_d: date, to_d: date) -> dict[str, str]:
@@ -97,34 +108,35 @@ def _metric_filters(
     )
 
 
-def _fact_metric_value(metric: str, bucket: dict[str, object]) -> float | None:
+def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
     if metric == "mention_rate":
-        denominator = len(bucket["mention_denominator_response_ids"])  # type: ignore[arg-type]
+        denominator = len(bucket["mention_denominator_response_ids"])
         if denominator <= 0:
             return None
         return round(
-            len(bucket["target_mention_response_ids"]) / denominator, 4,  # type: ignore[arg-type]
+            len(bucket["target_mention_response_ids"]) / denominator,
+            4,
         )
     if metric == "sov":
-        all_mentions = int(bucket["all_mentions"] or 0)
+        all_mentions = bucket["all_mentions"]
         if all_mentions <= 0:
             return None
-        return round(float(bucket["target_mentions"] or 0) / all_mentions, 4)
+        return round(float(bucket["target_mentions"]) / all_mentions, 4)
     if metric == "rank":
-        ranks = bucket["ranks"]  # type: ignore[assignment]
+        ranks = bucket["ranks"]
         if not ranks:
             return None
         return round(sum(ranks) / len(ranks), 4)
     if metric == "sentiment":
-        scores = bucket["sentiment_scores"]  # type: ignore[assignment]
+        scores = bucket["sentiment_scores"]
         if not scores:
             return None
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
-        response_count = len(bucket["response_ids"])  # type: ignore[arg-type]
+        response_count = len(bucket["response_ids"])
         if response_count <= 0:
             return None
-        return round(float(bucket["citation_count"] or 0) / response_count, 4)
+        return round(float(bucket["citation_count"]) / response_count, 4)
     return None
 
 
@@ -145,7 +157,7 @@ async def _metrics_from_admin_facts(
         filters=filters,
         brand_id_override=brand_id_override,
     )
-    buckets: dict[str, dict[str, object]] = {}
+    buckets: dict[str, _FactMetricBucket] = {}
     seen_response_ids: set[int] = set()
 
     for row in rows:
@@ -163,9 +175,9 @@ async def _metrics_from_admin_facts(
         bucket = buckets.setdefault(
             day,
             {
-                "response_ids": set(),
-                "mention_denominator_response_ids": set(),
-                "target_mention_response_ids": set(),
+                "response_ids": set[int](),
+                "mention_denominator_response_ids": set[int](),
+                "target_mention_response_ids": set[int](),
                 "target_mentions": 0,
                 "all_mentions": 0,
                 "ranks": [],
@@ -173,24 +185,22 @@ async def _metrics_from_admin_facts(
                 "citation_count": 0,
             },
         )
-        bucket["response_ids"].add(response_id)  # type: ignore[attr-defined]
+        bucket["response_ids"].add(response_id)
         target_mentions = _fact_target_mention_count(row)
         all_mentions = _fact_all_mention_count(row, target_mentions)
-        bucket["target_mentions"] = int(bucket["target_mentions"] or 0) + target_mentions
-        bucket["all_mentions"] = int(bucket["all_mentions"] or 0) + all_mentions
+        bucket["target_mentions"] += target_mentions
+        bucket["all_mentions"] += all_mentions
         if _is_non_branded_row(row):
-            bucket["mention_denominator_response_ids"].add(response_id)  # type: ignore[attr-defined]
+            bucket["mention_denominator_response_ids"].add(response_id)
             if target_mentions > 0:
-                bucket["target_mention_response_ids"].add(response_id)  # type: ignore[attr-defined]
+                bucket["target_mention_response_ids"].add(response_id)
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         if rank is not None:
-            bucket["ranks"].append(float(rank))  # type: ignore[attr-defined]
+            bucket["ranks"].append(float(rank))
         sentiment = _as_float(row.get("sentiment_score"))
         if sentiment is not None:
-            bucket["sentiment_scores"].append(sentiment)  # type: ignore[attr-defined]
-        bucket["citation_count"] = int(bucket["citation_count"] or 0) + int(
-            row.get("citation_count") or 0
-        )
+            bucket["sentiment_scores"].append(sentiment)
+        bucket["citation_count"] += int(row.get("citation_count") or 0)
 
     out_series: list[MetricSeries] = []
     for metric in requested:

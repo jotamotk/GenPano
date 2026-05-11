@@ -43,6 +43,13 @@ from app.api.v1.projects._mention_rollups import (
     metric_value,
     share_of_voice,
 )
+from app.api.v1.projects._overview_dto import (
+    BrandOverviewOut,
+    GroupSharedDomainRow,
+    KpiCard,
+    TopPromptRow,
+    TrendPoint,
+)
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
     _as_float,
@@ -54,16 +61,16 @@ from app.api.v1.projects._topic_analysis_service import (
     _has_admin_chain,
     _is_non_branded_row,
 )
-from app.api.v1.projects._overview_dto import (
-    BrandOverviewOut,
-    GroupSharedDomainRow,
-    KpiCard,
-    TopPromptRow,
-    TrendPoint,
-)
 
 DEFAULT_WINDOW_DAYS = 30
 logger = logging.getLogger(__name__)
+AdminOverviewFacts = tuple[
+    list[KpiCard],
+    list[TrendPoint],
+    list[TrendPoint],
+    list[TrendPoint],
+    list[TopPromptRow],
+]
 
 
 def _row_has_values(row: object | None, names: tuple[str, ...]) -> bool:
@@ -111,7 +118,7 @@ async def _overview_from_admin_facts(
     from_date: date,
     to_date: date,
     brand_id_override: int | None,
-) -> tuple[list[KpiCard], list[TrendPoint], list[TrendPoint], list[TrendPoint], list[TopPromptRow]] | None:
+) -> AdminOverviewFacts | None:
     rows = await _fact_rows(
         session,
         project,
@@ -220,7 +227,10 @@ async def _overview_from_admin_facts(
         all_mentions = int(bucket["all_mentions"] or 0)
         if all_mentions:
             sov_points.append(
-                TrendPoint(date=date.fromisoformat(day), value=round(target_mentions / all_mentions, 4))
+                TrendPoint(
+                    date=date.fromisoformat(day),
+                    value=round(target_mentions / all_mentions, 4),
+                )
             )
         sentiment = _avg(bucket["sentiments"])
         if sentiment is not None:
@@ -238,10 +248,32 @@ async def _overview_from_admin_facts(
     sov = total_target_mentions / total_all_mentions if total_all_mentions else 0
     avg_sentiment = _avg(all_sentiments) or 0
     kpi_cards = [
-        KpiCard(label_zh="GEO 评分", label_en="GeoScore", value=round(avg_geo, 1), delta_30d_pct=None),
-        KpiCard(label_zh="提及率", label_en="Mention Rate", value=round(mention * 100, 1), unit="%", delta_30d_pct=None),
-        KpiCard(label_zh="声量份额", label_en="Share of Voice", value=round(sov * 100, 1), unit="%", delta_30d_pct=None),
-        KpiCard(label_zh="情感分", label_en="Sentiment", value=round(avg_sentiment, 2), delta_30d_pct=None),
+        KpiCard(
+            label_zh="GEO 评分",
+            label_en="GeoScore",
+            value=round(avg_geo, 1),
+            delta_30d_pct=None,
+        ),
+        KpiCard(
+            label_zh="提及率",
+            label_en="Mention Rate",
+            value=round(mention * 100, 1),
+            unit="%",
+            delta_30d_pct=None,
+        ),
+        KpiCard(
+            label_zh="声量份额",
+            label_en="Share of Voice",
+            value=round(sov * 100, 1),
+            unit="%",
+            delta_30d_pct=None,
+        ),
+        KpiCard(
+            label_zh="情感分",
+            label_en="Sentiment",
+            value=round(avg_sentiment, 2),
+            delta_30d_pct=None,
+        ),
     ]
     top_prompts = [
         TopPromptRow(

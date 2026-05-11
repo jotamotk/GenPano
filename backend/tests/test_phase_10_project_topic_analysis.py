@@ -174,10 +174,14 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
             INSERT INTO prompts
                 (id, topic_id, text, intent, prompt_scope, language, status, created_at)
             VALUES
-              (201, 101, 'Best barrier repair cream?', 'commercial', 'non_branded', 'en', 'active', :now),
-              (202, 101, 'How does Test Brand repair sensitive skin?', 'informational', 'branded', 'en', 'active', :now),
-              (203, 102, 'Best vitamin c serum?', 'commercial', 'non_branded', 'en', 'active', :now),
-              (901, 901, 'Foreign brand prompt?', 'commercial', 'non_branded', 'en', 'active', :now)
+              (201, 101, 'Best barrier repair cream?', 'commercial',
+               'non_branded', 'en', 'active', :now),
+              (202, 101, 'How does Test Brand repair sensitive skin?',
+               'informational', 'branded', 'en', 'active', :now),
+              (203, 102, 'Best vitamin c serum?', 'commercial',
+               'non_branded', 'en', 'active', :now),
+              (901, 901, 'Foreign brand prompt?', 'commercial',
+               'non_branded', 'en', 'active', :now)
             """
         ),
         {"now": now},
@@ -195,7 +199,8 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
                  :d2, :d2, :d2, 3000),
                 (303, 'chatgpt', 'done', 'How to repair sensitive skin?', 42, 'PROF-A', 202,
                  :d3, :d3, :d3, 900),
-                (304, 'deepseek', 'done', 'Best barrier repair cream for redness?', 42, 'PROF-A', 201,
+                (304, 'deepseek', 'done', 'Best barrier repair cream for redness?',
+                 42, 'PROF-A', 201,
                  :d1, :d1, :d1, 700),
                 (901, 'chatgpt', 'done', 'Foreign brand query?', 900, 'PROF-A', 901,
                  :d1, :d1, :d1, 700)
@@ -577,9 +582,7 @@ async def test_project_metrics_use_filtered_admin_fact_set(client, db_session, u
     )
     assert filtered.status_code == 200, filtered.text
     filtered_body = filtered.json()
-    filtered_metric = {
-        series["metric"]: series["points"] for series in filtered_body["series"]
-    }
+    filtered_metric = {series["metric"]: series["points"] for series in filtered_body["series"]}
     assert filtered_metric["mention_rate"][0]["value"] == 0
     assert filtered_metric["sov"][0]["value"] == 0
 
@@ -614,7 +617,7 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
             INSERT INTO prompts
                 (id, topic_id, text, intent, prompt_scope, language, status, created_at)
             VALUES
-              (1202, 1201, '雅诗兰黛小棕瓶适合哪些抗老需求？',
+              (1202, 1201, '雅诗兰黛小棕瓶适合哪些抗老需求?',
                'commercial', 'non_branded', 'zh', 'active', :now)
             """
         ),
@@ -627,7 +630,7 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
                 (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
                  created_at, executed_at, finished_at, latency_ms)
             VALUES
-              (1203, 'chatgpt', 'done', '雅诗兰黛小棕瓶适合哪些抗老需求？',
+              (1203, 'chatgpt', 'done', '雅诗兰黛小棕瓶适合哪些抗老需求?',
                2, 'PROF-A', 1202, :now, :now, :now, 800)
             """
         ),

@@ -563,11 +563,7 @@ async def scheduler_manual_trigger(
             content={"success": False, "error": str(error)[:300]},
         )
 
-    query_ids = [
-        int(qid)
-        for qid in (result.get("query_ids") or [])
-        if str(qid).strip().isdigit()
-    ]
+    query_ids = [int(qid) for qid in (result.get("query_ids") or []) if str(qid).strip().isdigit()]
     dispatched = 0
     dispatch_failed = 0
     if query_ids:
