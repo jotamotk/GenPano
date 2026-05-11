@@ -3,14 +3,126 @@ name: Build & Deploy
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
+  latest-main:
+    name: Confirm Latest Main
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.guard.outputs.should_deploy }}
+      latest_sha: ${{ steps.guard.outputs.latest_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare run SHA with main
+        id: guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          is_ignored_deploy_path() {
+            local path="$1"
+            case "$path" in
+              .github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|docs/*|*.md)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          commit_is_deploy_eligible() {
+            local commit="$1"
+            local file
+            local diff_args=()
+
+            if git rev-parse --verify -q "${commit}^1" >/dev/null; then
+              diff_args=("${commit}^1" "$commit")
+            else
+              diff_args=(--root "$commit")
+            fi
+
+            while IFS= read -r file; do
+              if [ -n "$file" ] && ! is_ignored_deploy_path "$file"; then
+                return 0
+              fi
+            done < <(git diff-tree --no-commit-id --name-only -r "${diff_args[@]}")
+
+            return 1
+          }
+
+          latest_deploy_eligible_main_sha() {
+            local commit
+
+            git fetch --prune origin +refs/heads/main:refs/remotes/origin/main
+
+            for commit in $(git rev-list --first-parent origin/main); do
+              if commit_is_deploy_eligible "$commit"; then
+                echo "$commit"
+                return 0
+              fi
+            done
+
+            echo "No deploy-eligible commit found on origin/main" >&2
+            return 1
+          }
+
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
+          latest_sha="$(latest_deploy_eligible_main_sha)"
+
+          echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
+
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Build & Deploy skipped"
+              echo ""
+              echo "- Result: stale main run skipped before build."
+              echo "- Run SHA: \`${GITHUB_SHA}\`"
+              echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+              echo "- Reason: the run SHA does not contain the latest deploy-eligible product state."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Build & Deploy latest-main guard"
+            echo ""
+            echo "- Result: run contains the latest deploy-eligible product state; build may continue."
+            echo "- Run SHA: \`${GITHUB_SHA}\`"
+            echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-and-push:
     name: Build & Push Images
     runs-on: ubuntu-latest
+    needs: latest-main
+    if: needs.latest-main.outputs.should_deploy == 'true'
 
     steps:
       - name: Checkout
@@ -57,14 +169,118 @@ jobs:
           docker build -t ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }} ./geo_tracker
           docker push ${{ secrets.ACR_REGISTRY }}/genpano:worker-${{ env.IMAGE_TAG }}
 
-  deploy:
-    name: Deploy to Server
+  pre-deploy-guard:
+    name: Confirm Latest Main Before Deploy
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: [latest-main, build-and-push]
+    if: needs.latest-main.outputs.should_deploy == 'true'
+    outputs:
+      should_deploy: ${{ steps.guard.outputs.should_deploy }}
+      latest_sha: ${{ steps.guard.outputs.latest_sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Re-check run SHA with main
+        id: guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          is_ignored_deploy_path() {
+            local path="$1"
+            case "$path" in
+              .github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|docs/*|*.md)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          commit_is_deploy_eligible() {
+            local commit="$1"
+            local file
+            local diff_args=()
+
+            if git rev-parse --verify -q "${commit}^1" >/dev/null; then
+              diff_args=("${commit}^1" "$commit")
+            else
+              diff_args=(--root "$commit")
+            fi
+
+            while IFS= read -r file; do
+              if [ -n "$file" ] && ! is_ignored_deploy_path "$file"; then
+                return 0
+              fi
+            done < <(git diff-tree --no-commit-id --name-only -r "${diff_args[@]}")
+
+            return 1
+          }
+
+          latest_deploy_eligible_main_sha() {
+            local commit
+
+            git fetch --prune origin +refs/heads/main:refs/remotes/origin/main
+
+            for commit in $(git rev-list --first-parent origin/main); do
+              if commit_is_deploy_eligible "$commit"; then
+                echo "$commit"
+                return 0
+              fi
+            done
+
+            echo "No deploy-eligible commit found on origin/main" >&2
+            return 1
+          }
+
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
+          latest_sha="$(latest_deploy_eligible_main_sha)"
+
+          echo "latest_sha=${latest_sha}" >> "$GITHUB_OUTPUT"
+
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Build & Deploy skipped"
+              echo ""
+              echo "- Result: stale main run skipped before production deploy."
+              echo "- Run SHA: \`${GITHUB_SHA}\`"
+              echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+              echo "- Reason: the run SHA does not contain the latest deploy-eligible product state."
+              echo "- Images for the stale SHA may have been built, but deployment was not attempted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Build & Deploy pre-deploy guard"
+            echo ""
+            echo "- Result: run still contains the latest deploy-eligible product state; production deploy may continue."
+            echo "- Run SHA: \`${GITHUB_SHA}\`"
+            echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: pre-deploy-guard
+    if: needs.pre-deploy-guard.outputs.should_deploy == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Copy files to server
         uses: appleboy/scp-action@v0.1.7
@@ -76,6 +292,7 @@ jobs:
           target: /opt/genpano
 
       - name: Deploy
+        id: deploy_to_server
         uses: appleboy/ssh-action@v1.0.3
         env:
           GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
@@ -289,3 +506,96 @@ jobs:
             docker builder prune -af --keep-storage=2GB
             docker volume prune -f
             df -h / && docker system df
+
+      - name: Summarize deployed run
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          is_ignored_deploy_path() {
+            local path="$1"
+            case "$path" in
+              .github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|docs/*|*.md)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          commit_is_deploy_eligible() {
+            local commit="$1"
+            local file
+            local diff_args=()
+
+            if git rev-parse --verify -q "${commit}^1" >/dev/null; then
+              diff_args=("${commit}^1" "$commit")
+            else
+              diff_args=(--root "$commit")
+            fi
+
+            while IFS= read -r file; do
+              if [ -n "$file" ] && ! is_ignored_deploy_path "$file"; then
+                return 0
+              fi
+            done < <(git diff-tree --no-commit-id --name-only -r "${diff_args[@]}")
+
+            return 1
+          }
+
+          latest_deploy_eligible_main_sha() {
+            local commit
+
+            git fetch --prune origin +refs/heads/main:refs/remotes/origin/main
+
+            for commit in $(git rev-list --first-parent origin/main); do
+              if commit_is_deploy_eligible "$commit"; then
+                echo "$commit"
+                return 0
+              fi
+            done
+
+            echo "No deploy-eligible commit found on origin/main" >&2
+            return 1
+          }
+
+          run_contains_latest_deploy_eligible() {
+            local latest_sha="$1"
+            git merge-base --is-ancestor "$latest_sha" "$GITHUB_SHA"
+          }
+
+          if [ "${{ steps.deploy_to_server.outcome }}" != "success" ]; then
+            {
+              echo "## Build & Deploy failed"
+              echo ""
+              echo "- Result: production deploy step did not complete successfully."
+              echo "- Attempted SHA: \`${GITHUB_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          latest_sha="$(latest_deploy_eligible_main_sha)"
+
+          if ! run_contains_latest_deploy_eligible "$latest_sha"; then
+            {
+              echo "## Build & Deploy superseded"
+              echo ""
+              echo "- Result: deployed SHA completed, but it no longer contains the latest deploy-eligible product state."
+              echo "- Deployed SHA: \`${GITHUB_SHA}\`"
+              echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+              echo "- A newer queued run should deploy the latest deploy-eligible SHA."
+              echo "- Production URL: http://116.62.36.173/"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## Build & Deploy authoritative latest deploy"
+            echo ""
+            echo "- Result: deployed SHA still contains the latest deploy-eligible product state after deployment."
+            echo "- Deployed SHA: \`${GITHUB_SHA}\`"
+            echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
+            echo "- Production URL: http://116.62.36.173/"
+          } >> "$GITHUB_STEP_SUMMARY"
