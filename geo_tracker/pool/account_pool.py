@@ -10,16 +10,85 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.db.models import LLMAccount, AccountRotationLog, AccountStatus
+from geo_tracker.tasks.query_failure import _should_report_account_failure
 
 logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_FAILS = 3      # 连续失败N次 → banned
 COOLDOWN_HOURS        = 12     # 超配额冷却时间
 DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
+
+
+async def reserve_account_quota(
+    db: AsyncSession,
+    account: LLMAccount,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Atomically reserve one daily execution slot for an account."""
+    now = now or datetime.utcnow()
+
+    if not hasattr(db, "execute"):
+        daily_limit = int(account.daily_limit or 0)
+        if daily_limit <= 0 or int(account.query_count_today or 0) >= daily_limit:
+            return False
+        account.last_used_at = now
+        account.query_count_today = int(account.query_count_today or 0) + 1
+        await db.commit()
+        return True
+
+    count_today = func.coalesce(LLMAccount.query_count_today, 0)
+    stmt = (
+        update(LLMAccount)
+        .where(
+            LLMAccount.id == account.id,
+            func.coalesce(LLMAccount.daily_limit, 0) > 0,
+            count_today < LLMAccount.daily_limit,
+        )
+        .values(last_used_at=now, query_count_today=count_today + 1)
+    )
+    result = await db.execute(stmt)
+    if result.rowcount != 1:
+        await db.rollback()
+        return False
+
+    await db.commit()
+    await db.refresh(account)
+    return True
+
+
+async def refund_account_quota_reservation(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    reason: str | None,
+) -> bool:
+    """Refund a reserved slot for failures that did not consume platform quota."""
+    if _should_report_account_failure(reason):
+        return False
+
+    count_today = func.coalesce(LLMAccount.query_count_today, 0)
+    stmt = (
+        update(LLMAccount)
+        .where(LLMAccount.id == account_id, count_today > 0)
+        .values(query_count_today=count_today - 1)
+    )
+    result = await db.execute(stmt)
+    if result.rowcount != 1:
+        await db.rollback()
+        return False
+
+    await db.commit()
+    logger.info(
+        "Refunded account quota reservation account_id=%s reason=%s",
+        account_id,
+        reason,
+    )
+    return True
 
 
 class AccountPool:
@@ -58,7 +127,8 @@ class AccountPool:
                     # 冷却已过期 或 从未冷却
                     (LLMAccount.cooldown_until == None) | (LLMAccount.cooldown_until <= now),
                     # 今日配额未满
-                    LLMAccount.query_count_today < LLMAccount.daily_limit,
+                    func.coalesce(LLMAccount.daily_limit, 0) > 0,
+                    func.coalesce(LLMAccount.query_count_today, 0) < LLMAccount.daily_limit,
                 )
             )
         )
@@ -92,11 +162,17 @@ class AccountPool:
 
         # 优先用最久没使用的账号（均匀消耗）
         accounts.sort(key=lambda a: a.last_used_at or datetime.min)
-        account = accounts[0]
+        account = None
+        for candidate in accounts:
+            if await reserve_account_quota(self.db, candidate, now=now):
+                account = candidate
+                break
 
-        account.last_used_at = now
-        account.query_count_today += 1
-        await self.db.commit()
+        if account is None:
+            logger.warning(
+                f"No account reservation available for llm={llm_name} country={country_code}"
+            )
+            return None
 
         logger.info(
             f"Acquired account id={account.id} llm={llm_name} "
