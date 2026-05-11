@@ -36,7 +36,7 @@ from geo_tracker.db.models import (
     BrandMention, SentimentDriver, CitationSource,
     ResponseAnalysis, ProductFeatureMention,
 )
-from geo_tracker.pool.account_pool import AccountPool, refund_account_quota_reservation
+from geo_tracker.pool.account_pool import AccountPool
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
@@ -44,27 +44,13 @@ from geo_tracker.tasks.account_assignment import (
     acquire_query_account,
     diagnose_account_unavailable,
 )
+from geo_tracker.tasks.account_quota_settlement import AccountQuotaSettlement
 from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
-    _should_report_account_failure,
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 
 logger = logging.getLogger(__name__)
-
-
-async def _settle_account_failure(
-    db,
-    pool: AccountPool | None,
-    account_id: int | None,
-    reason: str | None,
-) -> None:
-    if not account_id or not pool:
-        return
-    if _should_report_account_failure(reason):
-        await pool.report_failure(account_id, reason=reason or "unknown")
-    else:
-        await refund_account_quota_reservation(db, account_id, reason=reason)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -211,12 +197,6 @@ async def _mark_query_failed_after_task_abort_async(query_id: int, reason: str) 
                 started_at=query.started_at,
                 reason=reason,
             )
-            if query.account_id:
-                await refund_account_quota_reservation(
-                    db,
-                    query.account_id,
-                    reason=reason,
-                )
             await db.commit()
     finally:
         await engine.dispose()
@@ -266,6 +246,7 @@ def execute_query(self, query_id: int) -> dict:
             account_id = None
             account_cookies = None
             pool = None
+            quota_settlement = AccountQuotaSettlement()
             requires_login = llm_config.get("requires_login", True)
 
             pool = AccountPool(db)
@@ -273,6 +254,7 @@ def execute_query(self, query_id: int) -> dict:
             if account and account.cookies_json:
                 account_cookies = account.cookies_json
                 account_id = account.id
+                quota_settlement.reserve(account_id)
                 query.account_id = account_id
                 await db.commit()
                 logger.info(
@@ -334,6 +316,8 @@ def execute_query(self, query_id: int) -> dict:
                     account_cookies=account_cookies,
                 )
                 response: LLMResponse | None = await guest_executor.execute(query)
+                if response is not None:
+                    quota_settlement.mark_platform_consumed()
 
                 # Require a meaningful response (guards against login redirects returning 1 char)
                 MIN_RESPONSE_LEN = 20
@@ -362,11 +346,10 @@ def execute_query(self, query_id: int) -> dict:
                             started_at=started_at,
                             reason=failure_reason,
                         )
-                        await _settle_account_failure(
+                        await quota_settlement.settle_failure(
                             db,
                             pool,
-                            account_id,
-                            failure_reason,
+                            reason=failure_reason,
                         )
                         await db.commit()
                         logger.warning(
@@ -385,8 +368,7 @@ def execute_query(self, query_id: int) -> dict:
                         started_at=started_at,
                         reason=None,
                     )
-                    if account_id and pool:
-                        await pool.report_success(account_id)
+                    await quota_settlement.settle_success(pool)
                     await db.commit()
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
                     return {"query_id": query_id, "status": "done", "mode": "guest"}
@@ -404,11 +386,10 @@ def execute_query(self, query_id: int) -> dict:
                         reason=failure_reason,
                     )
                     # 区分 cookies 过期和其他失败：response 为 None 通常是登录重定向
-                    await _settle_account_failure(
+                    await quota_settlement.settle_failure(
                         db,
                         pool,
-                        account_id,
-                        failure_reason,
+                        reason=failure_reason,
                     )
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
@@ -450,11 +431,10 @@ def execute_query(self, query_id: int) -> dict:
                 # 账号失败上报走独立 try，避免把主状态写回再次打断
                 if account_id and pool:
                     try:
-                        await _settle_account_failure(
+                        await quota_settlement.settle_failure(
                             db,
                             pool,
-                            account_id,
-                            "exception",
+                            reason="exception",
                         )
                     except Exception as pool_err:
                         logger.error(
