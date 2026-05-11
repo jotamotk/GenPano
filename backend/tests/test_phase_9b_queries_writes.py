@@ -366,7 +366,9 @@ async def test_retry_audit_med(client, admin_operator, monkeypatch, db_session: 
 
 
 @pytest.mark.asyncio
-async def test_retry_dispatches_to_original_target_engine_queue(client, admin_operator, monkeypatch):
+async def test_retry_dispatches_to_original_target_engine_queue(
+    client, admin_operator, monkeypatch
+):
     _patch_writes(
         monkeypatch,
         retry_query={"id": 1, "target_llm": "chatgpt", "query_text": "x", "brand_id": None},

@@ -474,7 +474,7 @@ async def run_manual_dispatch(
                 "id": int(row["id"]),
                 "target_llm": row.get("target_llm") or params.get("target_llm"),
             }
-            for row, params in zip(inserted_rows, insert_rows)
+            for row, params in zip(inserted_rows, insert_rows, strict=False)
         ]
         await session.execute(
             text(
