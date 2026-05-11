@@ -11,6 +11,10 @@ on:
         description: "Brand name fragment to inspect"
         required: false
         default: "雅诗兰黛"
+      project_id:
+        description: "Optional App project UUID to inspect"
+        required: false
+        default: "95d43022-a5c8-5944-b6d6-34b29faa18b5"
 
 jobs:
   diagnostics:
@@ -29,8 +33,14 @@ jobs:
             cd /opt/genpano
             BRAND_ID='${{ inputs.brand_id }}'
             BRAND_QUERY='${{ inputs.brand_query }}'
+            PROJECT_ID='${{ inputs.project_id }}'
             : "${BRAND_ID:=12}"
             : "${BRAND_QUERY:=雅诗兰黛}"
+            : "${PROJECT_ID:=95d43022-a5c8-5944-b6d6-34b29faa18b5}"
+            if ! [[ "${PROJECT_ID}" =~ ^[0-9A-Fa-f-]{36}$ ]]; then
+              echo "Invalid PROJECT_ID input '${PROJECT_ID}', falling back to empty probe"
+              PROJECT_ID="00000000-0000-0000-0000-000000000000"
+            fi
 
             echo "=== Docker compose status ==="
             docker compose ps
@@ -243,6 +253,87 @@ jobs:
               GROUP BY q.brand_id
               ORDER BY responses DESC NULLS LAST, queries DESC NULLS LAST
               LIMIT 20;
+            " || true
+
+            echo "=== App project context probe ==="
+            echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY} PROJECT_ID=${PROJECT_ID}"
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              WITH candidate_projects AS (
+                SELECT
+                  p.id,
+                  p.user_id,
+                  p.name,
+                  p.industry_id,
+                  p.primary_brand_id,
+                  p.is_active,
+                  p.deleted_at,
+                  p.created_at,
+                  EXISTS (
+                    SELECT 1
+                    FROM project_competitors pct
+                    WHERE pct.project_id = p.id
+                      AND pct.brand_id = ${BRAND_ID}
+                  ) AS target_as_competitor
+                FROM projects p
+                WHERE p.id = '${PROJECT_ID}'
+                   OR p.primary_brand_id = ${BRAND_ID}
+                   OR LOWER(COALESCE(p.name, '')) LIKE LOWER('%${BRAND_QUERY}%')
+                   OR EXISTS (
+                     SELECT 1
+                     FROM project_competitors pct
+                     WHERE pct.project_id = p.id
+                       AND pct.brand_id = ${BRAND_ID}
+                   )
+              )
+              SELECT
+                cp.id,
+                cp.user_id,
+                cp.name,
+                cp.industry_id,
+                cp.primary_brand_id,
+                cp.is_active,
+                cp.deleted_at,
+                cp.created_at,
+                cp.target_as_competitor,
+                COUNT(pc.brand_id) AS competitor_count,
+                COALESCE(
+                  STRING_AGG(pc.brand_id::text, ',' ORDER BY pc.brand_id),
+                  ''
+                ) AS competitor_brand_ids
+              FROM candidate_projects cp
+              LEFT JOIN project_competitors pc ON pc.project_id = cp.id
+              GROUP BY
+                cp.id,
+                cp.user_id,
+                cp.name,
+                cp.industry_id,
+                cp.primary_brand_id,
+                cp.is_active,
+                cp.deleted_at,
+                cp.created_at,
+                cp.target_as_competitor
+              ORDER BY
+                (cp.id = '${PROJECT_ID}') DESC,
+                (cp.primary_brand_id = ${BRAND_ID}) DESC,
+                cp.deleted_at NULLS FIRST,
+                cp.created_at DESC
+              LIMIT 50;
+            " || true
+            docker compose exec -T postgres psql -U genpano -d genpano -c "
+              SELECT
+                pc.project_id,
+                p.user_id,
+                p.name,
+                p.primary_brand_id,
+                pc.brand_id AS competitor_brand_id,
+                pc.pinned_at,
+                pc.pinned_by
+              FROM project_competitors pc
+              LEFT JOIN projects p ON p.id = pc.project_id
+              WHERE pc.project_id = '${PROJECT_ID}'
+                 OR pc.brand_id = ${BRAND_ID}
+              ORDER BY pc.project_id, pc.brand_id
+              LIMIT 50;
             " || true
 
             echo "=== Raw text brand query probe ==="
