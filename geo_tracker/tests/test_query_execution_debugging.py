@@ -36,6 +36,26 @@ def test_normal_chatgpt_answer_is_valid_response():
     assert invalid_response_reason("chatgpt", text) is None
 
 
+def test_session_debug_text_redacts_tokens(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import (
+        _redact_runtime_data,
+        _redact_sensitive_text,
+    )
+
+    text = '{"accessToken":"secret-access","refreshToken":"secret-refresh"} Bearer abc.def'
+
+    redacted = _redact_sensitive_text(text)
+
+    assert "secret-access" not in redacted
+    assert "secret-refresh" not in redacted
+    assert "abc.def" not in redacted
+    assert "[redacted]" in redacted
+    nested = _redact_runtime_data({"bodyText": text, "events": [{"text": text}]})
+    assert "secret-access" not in str(nested)
+
+
 def test_query_execution_debug_fields_are_populated():
     query = Query(query_text="hello", target_llm="doubao")
     started_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=2)
@@ -155,6 +175,42 @@ def _install_fake_playwright(monkeypatch):
     playwright_async.Page = object
     monkeypatch.setitem(sys.modules, "playwright", playwright)
     monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)
+
+
+@pytest.mark.asyncio
+async def test_find_attached_selector_recovers_partially_loaded_input(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import _find_attached_selector
+
+    class FakeElement:
+        async def is_visible(self):
+            return True
+
+    class FakePage:
+        def __init__(self):
+            self.calls: list[tuple[str, int, str]] = []
+
+        async def wait_for_selector(self, selector, timeout, state):
+            self.calls.append((selector, timeout, state))
+            if selector == "#ready":
+                return FakeElement()
+            raise RuntimeError("not attached")
+
+    page = FakePage()
+
+    selector, visible = await _find_attached_selector(
+        page,
+        "textarea, #ready, [contenteditable='true']",
+        timeout=123,
+    )
+
+    assert selector == "#ready"
+    assert visible is True
+    assert page.calls == [
+        ("textarea", 123, "attached"),
+        ("#ready", 123, "attached"),
+    ]
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -48,6 +49,47 @@ CF_CHALLENGE_TITLES = [
 
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+_SENSITIVE_TEXT_PATTERNS = [
+    (
+        re.compile(
+            r'("(?:access|refresh|id|session)?token"\s*:\s*")[^"]+(")',
+            re.IGNORECASE,
+        ),
+        r'\1[redacted]\2',
+    ),
+    (
+        re.compile(
+            r'("(?:authorization|cookie|set-cookie)"\s*:\s*")[^"]+(")',
+            re.IGNORECASE,
+        ),
+        r'\1[redacted]\2',
+    ),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE), "Bearer [redacted]"),
+]
+
+
+def _redact_sensitive_text(text: str | None) -> str:
+    if not text:
+        return ""
+    redacted = str(text)
+    for pattern, replacement in _SENSITIVE_TEXT_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def _redact_runtime_data(value):
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    if isinstance(value, list):
+        return [_redact_runtime_data(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_runtime_data(item) for key, item in value.items()}
+    return value
+
+
+def _debug_query_id(query_id: int | None) -> int:
+    return query_id if isinstance(query_id, int) and query_id > 0 else -1
 
 # 从环境变量加载各 LLM 的 cookies（JSON 数组格式）
 def _env_flag(name: str, default: bool = True) -> bool:
@@ -299,6 +341,28 @@ class GuestQueryExecutor:
         browser = None
         _camoufox_ctx = None
         _playwright = None
+        runtime_events: list[dict] = []
+
+        def _record_runtime_event(kind: str, text: object) -> None:
+            runtime_events.append(
+                {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "kind": kind,
+                    "text": _redact_sensitive_text(str(text))[:1000],
+                }
+            )
+            if len(runtime_events) > 120:
+                del runtime_events[: len(runtime_events) - 120]
+
+        def _attach_runtime_debug(page: Page) -> None:
+            page.on(
+                "console",
+                lambda msg: _record_runtime_event(
+                    "console",
+                    f"{getattr(msg, 'type', '')}: {getattr(msg, 'text', '')}",
+                ),
+            )
+            page.on("pageerror", lambda exc: _record_runtime_event("pageerror", exc))
 
         try:
             # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
@@ -392,6 +456,7 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
             page_obj = await context.new_page()
+            _attach_runtime_debug(page_obj)
 
             # 注入 localStorage（必须在页面打开后、导航前）
             if local_storage_data:
@@ -548,7 +613,10 @@ class GuestQueryExecutor:
                         )
                         if resp:
                             body = await page_obj.inner_text("body")
-                            logger.info(f"[{llm}] session endpoint HTTP {resp.status}, body: {body[:300]}")
+                            logger.info(
+                                f"[{llm}] session endpoint HTTP {resp.status}, "
+                                f"body: {_redact_sensitive_text(body)[:300]}"
+                            )
                             if resp.ok:
                                 try:
                                     session_data = json.loads(body)
@@ -560,16 +628,31 @@ class GuestQueryExecutor:
                                         )
                                     else:
                                         logger.warning(f"[{llm}] session 响应无 accessToken，cookie 可能已过期")
-                                        await _save_screenshot(page_obj, query.id, f"{llm}_session_no_token")
+                                        await _save_runtime_snapshot(
+                                            page_obj,
+                                            query.id,
+                                            f"{llm}_session_no_token",
+                                            config=config,
+                                            runtime_events=runtime_events,
+                                        )
                                         return None
                                 except json.JSONDecodeError:
                                     # 可能返回了 CF 挑战页面 HTML
-                                    logger.warning(f"[{llm}] session 响应非 JSON（可能是 CF 页面）: {body[:200]}")
+                                    logger.warning(
+                                        f"[{llm}] session 响应非 JSON（可能是 CF 页面）: "
+                                        f"{_redact_sensitive_text(body)[:200]}"
+                                    )
                                     await _save_screenshot(page_obj, query.id, f"{llm}_session_cf_block")
                                     return None
                             else:
                                 logger.warning(f"[{llm}] session 刷新 HTTP {resp.status}")
-                                await _save_screenshot(page_obj, query.id, f"{llm}_session_http_error")
+                                await _save_runtime_snapshot(
+                                    page_obj,
+                                    query.id,
+                                    f"{llm}_session_http_error",
+                                    config=config,
+                                    runtime_events=runtime_events,
+                                )
                                 return None
                         else:
                             logger.warning(f"[{llm}] session 刷新无响应")
@@ -579,7 +662,34 @@ class GuestQueryExecutor:
                         logger.info(f"[{llm}] session 刷新完成，重新打开新页面...")
                         await page_obj.close()
                         page_obj = await context.new_page()
-                        await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
+                        _attach_runtime_debug(page_obj)
+                        try:
+                            await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
+                        except Exception as reopen_error:
+                            matched_selector, visible = await _find_attached_selector(
+                                page_obj,
+                                config.get("input_selector", ""),
+                                timeout=5000,
+                            )
+                            await _save_runtime_snapshot(
+                                page_obj,
+                                query.id,
+                                f"{llm}_session_reopen_error",
+                                config=config,
+                                error=reopen_error,
+                                matched_selector=matched_selector,
+                                runtime_events=runtime_events,
+                            )
+                            if matched_selector:
+                                logger.warning(
+                                    "[%s] session reopen raised but input selector is present "
+                                    "(%s visible=%s); continuing",
+                                    llm,
+                                    matched_selector,
+                                    visible,
+                                )
+                            else:
+                                raise
                         await page_obj.wait_for_timeout(3000)
                         # 新页面再过一次 CF
                         cf_waited2 = 0
@@ -592,7 +702,17 @@ class GuestQueryExecutor:
                                 break
                     except Exception as e:
                         logger.warning(f"[{llm}] session 刷新异常: {e}")
-                        await _save_screenshot(page_obj, query.id, f"{llm}_session_exception")
+                        if page_obj and "/api/auth/session" in page_obj.url:
+                            await _save_runtime_snapshot(
+                                page_obj,
+                                query.id,
+                                f"{llm}_session_exception",
+                                config=config,
+                                error=e,
+                                runtime_events=runtime_events,
+                            )
+                        else:
+                            await _save_screenshot(page_obj, query.id, f"{llm}_session_exception")
                         return None
 
                 # 检测是否被重定向到登录页（cookie 过期或未注入）
@@ -689,13 +809,41 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm}] 页面最终标题: {title}")
             except Exception as e:
                 logger.error(f"[{llm}] 页面加载失败: {e}")
-                self.last_error_reason = "page_load_failed"
+                recovered_after_load_error = False
+                matched_selector = None
                 if page_obj:
                     try:
-                        await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
-                    except:
-                        pass
-                return None
+                        matched_selector, visible = await _find_attached_selector(
+                            page_obj,
+                            config.get("input_selector", ""),
+                            timeout=5000,
+                        )
+                        await _save_runtime_snapshot(
+                            page_obj,
+                            query.id,
+                            f"{llm}_load_error",
+                            config=config,
+                            error=e,
+                            matched_selector=matched_selector,
+                            runtime_events=runtime_events,
+                        )
+                        if matched_selector:
+                            recovered_after_load_error = True
+                            logger.warning(
+                                "[%s] page load raised but input selector is present "
+                                "(%s visible=%s); continuing",
+                                llm,
+                                matched_selector,
+                                visible,
+                            )
+                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error_recovered")
+                        else:
+                            await _save_screenshot(page_obj, query.id, f"{llm}_load_error")
+                    except Exception as probe_error:
+                        logger.warning(f"[{llm}] runtime probe after load error failed: {probe_error}")
+                if not recovered_after_load_error:
+                    self.last_error_reason = "page_load_failed"
+                    return None
 
             # 页面加载后检查是否被重定向到登录页
             current_url = page_obj.url
@@ -736,6 +884,13 @@ class GuestQueryExecutor:
                 self.last_error_reason = "no_input"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
+                    await _save_runtime_snapshot(
+                        page_obj,
+                        query.id,
+                        f"{llm}_no_input",
+                        config=config,
+                        runtime_events=runtime_events,
+                    )
                     try:
                         content = await page_obj.content()
                         content_path = SCREENSHOT_DIR / f"query_{query.id}_{llm}_content.html"
@@ -746,7 +901,14 @@ class GuestQueryExecutor:
                 return None
 
             # 执行查询
-            resp_text, resp_html, citations = await self._browser_query(page_obj, config, query.query_text, llm, input_el)
+            resp_text, resp_html, citations = await self._browser_query(
+                page_obj,
+                config,
+                query.query_text,
+                llm,
+                input_el,
+                query_id=query.id,
+            )
 
             if resp_text:
                 self.last_error_reason = None
@@ -766,6 +928,13 @@ class GuestQueryExecutor:
                 self.last_error_reason = "no_response"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
+                    await _save_runtime_snapshot(
+                        page_obj,
+                        query.id,
+                        f"{llm}_no_response",
+                        config=config,
+                        runtime_events=runtime_events,
+                    )
                 return None
 
         except Exception as e:
@@ -1115,9 +1284,11 @@ class GuestQueryExecutor:
     async def _browser_query(
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None,
         _retry_count: int = 0,
+        query_id: int | None = None,
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
         Returns: (response_text, response_html, citations_list)"""
+        debug_query_id = _debug_query_id(query_id)
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
@@ -1195,13 +1366,13 @@ class GuestQueryExecutor:
             """, [query_text, input_selectors])
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
             # 保存注入后的 HTML，确认文字是否真的进了编辑器
-            await _save_html(page, -1, f"{llm_name}_after_inject")
+            await _save_html(page, debug_query_id, f"{llm_name}_after_inject")
         else:
             filled = await self._fill_plain_text_input(page, input_el, query_text, llm_name)
             if not filled:
                 logger.warning(f"[{llm_name}] 输入框填充失败，放弃本次提交")
                 self.last_error_reason = "no_input"
-                await _save_html(page, -1, f"{llm_name}_input_fill_failed")
+                await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
                 return "", "", []
 
         # 模拟人类"思考"后再提交
@@ -1421,7 +1592,7 @@ class GuestQueryExecutor:
                         logger.info(f"[{llm_name}] 重试后消息发送成功")
                     else:
                         logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
-                        await _save_html(page, -1, f"{llm_name}_submit_failed")
+                        await _save_html(page, debug_query_id, f"{llm_name}_submit_failed")
                         self.last_error_reason = "no_response"
                         return "", "", []
                 except Exception as e:
@@ -1446,7 +1617,7 @@ class GuestQueryExecutor:
             login_domains = cfg.get("login_redirect_domains", [])
             if any(d in current_url for d in login_domains):
                 logger.warning(f"[{llm_name}] 检测到跳转到登录页: {current_url}，中止等待")
-                await _save_screenshot(page, -1, f"{llm_name}_login_redirect")
+                await _save_screenshot(page, debug_query_id, f"{llm_name}_login_redirect")
                 return "", "", []
 
             # 检查是否仍在生成中（豆包"深度思考"等状态）
@@ -1523,7 +1694,7 @@ class GuestQueryExecutor:
         resp_html = ""
         try:
             # 保存完整页面 HTML 用于调试 selector
-            await _save_html(page, -1, f"{llm_name}_response_page")
+            await _save_html(page, debug_query_id, f"{llm_name}_response_page")
 
             # 优先尝试配置的 selectors
             for sel in response_selectors:
@@ -1602,12 +1773,12 @@ class GuestQueryExecutor:
                     f"[{llm_name}] 未检测到用户消息气泡，提交可能未成功——"
                     "跳过通用兜底抽取，避免误抓首页内容"
                 )
-                await _save_html(page, -1, f"{llm_name}_submit_failed_no_user_msg")
+                await _save_html(page, debug_query_id, f"{llm_name}_submit_failed_no_user_msg")
 
             if not resp_text and user_msg_present:
                 # fallback 1：拼接所有 <p> 标签文本
                 logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
-                await _save_html(page, -1, f"{llm_name}_extract_fail")
+                await _save_html(page, debug_query_id, f"{llm_name}_extract_fail")
                 js_text = await page.evaluate("""
                     () => {
                         // 排除侧边栏/导航区域
@@ -1671,7 +1842,7 @@ class GuestQueryExecutor:
                         f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
                         f"（匹配首页关键词: {matched_indicators}），丢弃"
                     )
-                    await _save_html(page, -1, f"{llm_name}_homepage_content")
+                    await _save_html(page, debug_query_id, f"{llm_name}_homepage_content")
                     resp_text = ""
                     resp_html = ""
 
@@ -1683,7 +1854,7 @@ class GuestQueryExecutor:
                     llm_name,
                     invalid_reason,
                 )
-                await _save_html(page, -1, f"{llm_name}_{invalid_reason}")
+                await _save_html(page, debug_query_id, f"{llm_name}_{invalid_reason}")
 
                 # ChatGPT's SPA occasionally crashes mid-render and surfaces a
                 # JS stack trace where the answer should be. A single page
@@ -1716,6 +1887,7 @@ class GuestQueryExecutor:
                             return await self._browser_query(
                                 page, cfg, query_text, llm_name, new_input,
                                 _retry_count=1,
+                                query_id=query_id,
                             )
                         logger.warning(
                             "[%s] retry aborted: no input element after reload",
@@ -1778,6 +1950,116 @@ async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Pa
         return path
     except Exception as e:
         logger.warning(f"保存 HTML 失败: {e}")
+        return None
+
+
+async def _find_attached_selector(
+    page: Page,
+    selector_csv: str,
+    *,
+    timeout: int = 5000,
+) -> tuple[str | None, bool]:
+    """Return the first selector that exists on a partially loaded page."""
+    selectors = [s.strip() for s in selector_csv.split(",") if s.strip()]
+    for selector in selectors:
+        try:
+            element = await page.wait_for_selector(
+                selector,
+                timeout=timeout,
+                state="attached",
+            )
+            if element:
+                visible = False
+                try:
+                    visible = await element.is_visible()
+                except Exception:
+                    pass
+                return selector, visible
+        except Exception:
+            continue
+    return None, False
+
+
+async def _save_runtime_snapshot(
+    page: Page,
+    query_id: int,
+    suffix: str,
+    *,
+    config: dict | None = None,
+    error: BaseException | str | None = None,
+    matched_selector: str | None = None,
+    runtime_events: list[dict] | None = None,
+) -> Optional[Path]:
+    """Save a redacted DOM/runtime snapshot for scraper triage."""
+    try:
+        timestamp = int(datetime.utcnow().timestamp())
+        filename = f"query_{query_id}_{suffix}_{timestamp}.json" if suffix else f"query_{query_id}_{timestamp}.json"
+        path = SCREENSHOT_DIR / filename
+        selector_payload = {
+            "input": config.get("input_selector", "") if config else "",
+            "response": config.get("response_selector", "") if config else "",
+        }
+        page_state = await page.evaluate(
+            """
+            (selectors) => {
+                const inspect = (selectorCsv) => {
+                    return (selectorCsv || '')
+                        .split(',')
+                        .map(s => s.trim())
+                        .filter(Boolean)
+                        .map(selector => {
+                            try {
+                                const nodes = [...document.querySelectorAll(selector)];
+                                const first = nodes[0] || null;
+                                return {
+                                    selector,
+                                    count: nodes.length,
+                                    visibleCount: nodes.filter(n => {
+                                        const r = n.getBoundingClientRect();
+                                        const style = getComputedStyle(n);
+                                        return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                                    }).length,
+                                    firstText: first ? (first.innerText || first.textContent || first.value || '').slice(0, 500) : '',
+                                    firstHtml: first ? first.outerHTML.slice(0, 1000) : '',
+                                };
+                            } catch (e) {
+                                return {selector, error: String(e).slice(0, 300)};
+                            }
+                        });
+                };
+                return {
+                    url: location.href,
+                    title: document.title,
+                    readyState: document.readyState,
+                    activeElement: document.activeElement ? {
+                        tagName: document.activeElement.tagName,
+                        id: document.activeElement.id || '',
+                        className: String(document.activeElement.className || '').slice(0, 200),
+                    } : null,
+                    bodyText: (document.body?.innerText || '').slice(0, 3000),
+                    inputSelectors: inspect(selectors.input),
+                    responseSelectors: inspect(selectors.response),
+                    loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
+                };
+            }
+            """,
+            selector_payload,
+        )
+        snapshot = {
+            "savedAt": datetime.utcnow().isoformat() + "Z",
+            "queryId": query_id,
+            "suffix": suffix,
+            "matchedSelector": matched_selector,
+            "error": _redact_sensitive_text(f"{type(error).__name__}: {error}") if error else None,
+            "runtimeEvents": runtime_events[-80:] if runtime_events else [],
+            "page": page_state,
+        }
+        raw = json.dumps(_redact_runtime_data(snapshot), ensure_ascii=False, indent=2)
+        path.write_text(raw, encoding="utf-8")
+        logger.info(f"Runtime snapshot saved: {path} ({len(raw)} bytes)")
+        return path
+    except Exception as e:
+        logger.warning(f"Failed to save runtime snapshot: {e}")
         return None
 
 

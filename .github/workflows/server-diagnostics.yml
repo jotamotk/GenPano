@@ -15,6 +15,22 @@ on:
         description: "Optional App project UUID to inspect"
         required: false
         default: "95d43022-a5c8-5944-b6d6-34b29faa18b5"
+      scraper_mode:
+        description: "diagnostics or bestcoffer_batch"
+        required: false
+        default: "diagnostics"
+      batch_limit:
+        description: "bestcoffer_batch only: number of no-response queries to dispatch"
+        required: false
+        default: "5"
+      execute_batch:
+        description: "bestcoffer_batch only: true dispatches, false only lists candidates"
+        required: false
+        default: "false"
+      poll_seconds:
+        description: "bestcoffer_batch only: seconds to wait for selected queries"
+        required: false
+        default: "900"
 
 jobs:
   diagnostics:
@@ -22,7 +38,306 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Run bestCoffer scraper batch
+        if: ${{ inputs.scraper_mode == 'bestcoffer_batch' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          BATCH_LIMIT: ${{ inputs.batch_limit }}
+          EXECUTE_BATCH: ${{ inputs.execute_batch }}
+          POLL_SECONDS: ${{ inputs.poll_seconds }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh scraper-batch-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q GH_RUN_ID=%q bash -s' \
+            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${GH_RUN_ID}")"
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || fail "BRAND_ID must be an integer"
+          [[ "${BATCH_LIMIT}" =~ ^[0-9]+$ ]] || fail "BATCH_LIMIT must be an integer"
+          [[ "${POLL_SECONDS}" =~ ^[0-9]+$ ]] || fail "POLL_SECONDS must be an integer"
+          [ "${BATCH_LIMIT}" -ge 1 ] || fail "BATCH_LIMIT must be >= 1"
+          [ "${BATCH_LIMIT}" -le 100 ] || fail "BATCH_LIMIT must be <= 100 for staged scraper validation"
+          case "${EXECUTE_BATCH}" in
+            true|false) ;;
+            *) fail "EXECUTE_BATCH must be true or false" ;;
+          esac
+
+          artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
+          rm -rf "${artifact_dir}"
+          mkdir -p "${artifact_dir}/screenshots"
+          summary_file="${artifact_dir}/summary.txt"
+          exec > >(tee "${summary_file}") 2>&1
+          finish() {
+            status=$?
+            echo "=== Artifact manifest ==="
+            find "${artifact_dir}" -maxdepth 3 -type f | sort || true
+            tar -czf "/tmp/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" -C "${artifact_dir}" . || true
+            echo "artifact_archive=/tmp/genpano_scraper_batch_${GH_RUN_ID}.tar.gz"
+            exit "${status}"
+          }
+          trap finish EXIT
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano "$@" </dev/null
+          }
+
+          echo "=== bestCoffer scraper batch audit ==="
+          echo "run=https://github.com/jotamotk/X/actions/runs/${GH_RUN_ID}"
+          echo "brand_id=${BRAND_ID}"
+          echo "batch_limit=${BATCH_LIMIT}"
+          echo "execute_batch=${EXECUTE_BATCH}"
+          echo "poll_seconds=${POLL_SECONDS}"
+          date -u '+utc_started_at=%Y-%m-%dT%H:%M:%SZ'
+
+          echo "=== Docker compose status ==="
+          docker compose ps
+
+          echo "=== Preflight query/response counters ==="
+          psql_cmd -c "
+            WITH scoped AS (
+              SELECT q.id, q.target_llm, q.status
+              FROM queries q
+              WHERE q.brand_id = ${BRAND_ID}
+            ),
+            response_counts AS (
+              SELECT query_id, COUNT(*) AS responses
+              FROM llm_responses
+              GROUP BY query_id
+            )
+            SELECT
+              s.target_llm,
+              s.status,
+              COUNT(*) AS queries,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) > 0) AS queries_with_response,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) = 0) AS queries_without_response
+            FROM scoped s
+            LEFT JOIN response_counts r ON r.query_id = s.id
+            GROUP BY s.target_llm, s.status
+            ORDER BY s.target_llm, s.status;
+          "
+
+          selected_tsv="${artifact_dir}/selected.tsv"
+          psql_cmd -At -F $'\t' -c "
+            WITH selected AS (
+              SELECT q.id, q.target_llm
+              FROM queries q
+              WHERE q.brand_id = ${BRAND_ID}
+                AND NOT EXISTS (
+                  SELECT 1 FROM llm_responses r WHERE r.query_id = q.id
+                )
+              ORDER BY q.id
+              LIMIT ${BATCH_LIMIT}
+            )
+            SELECT id, target_llm FROM selected;
+          " > "${selected_tsv}"
+          batch_rows="$(cat "${selected_tsv}")"
+
+          if [ -z "${batch_rows}" ]; then
+            echo "No no-response bestCoffer queries remain for this batch."
+            ids_csv=""
+          else
+            ids_csv="$(printf '%s\n' "${batch_rows}" | awk -F'\t' 'NF {print $1}' | paste -sd, -)"
+          fi
+          ids_space="${ids_csv//,/ }"
+
+          echo "=== Selected batch IDs ==="
+          if [ -n "${ids_csv}" ]; then
+            printf '%s\n' "${batch_rows}"
+          else
+            echo "<none>"
+          fi
+
+          if [ "${EXECUTE_BATCH}" = "true" ] && [ -n "${ids_csv}" ]; then
+            echo "=== Reset selected queries to pending ==="
+            psql_cmd -c "
+              WITH selected AS (
+                SELECT unnest(string_to_array('${ids_csv}', ',')::int[]) AS id
+              )
+              UPDATE queries q
+              SET status = 'pending',
+                  retry_count = COALESCE(q.retry_count, 0) + 1,
+                  queued_at = NOW(),
+                  started_at = NULL,
+                  finished_at = NULL,
+                  latency_ms = NULL,
+                  retry_reason = 'bestcoffer_batch_audit:${GH_RUN_ID}'
+              FROM selected s
+              WHERE q.id = s.id
+              RETURNING q.id, q.target_llm, q.status, q.retry_reason;
+            "
+
+            echo "=== Dispatch selected queries ==="
+            batch_rows_b64="$(printf '%s' "${batch_rows}" | base64 | tr -d '\n')"
+            docker compose exec -T -e BATCH_ROWS_B64="${batch_rows_b64}" worker python - <<'PY'
+          import base64
+          import os
+
+          from geo_tracker.tasks.celery_tasks import execute_query
+
+          decoded = base64.b64decode(os.environ["BATCH_ROWS_B64"]).decode("utf-8")
+          rows = [line.split("\t", 1) for line in decoded.splitlines() if line.strip()]
+          for query_id, target_llm in rows:
+              queue = f"llm_{target_llm.strip()}"
+              execute_query.apply_async(args=[int(query_id)], queue=queue)
+              print(f"dispatched query_id={query_id} queue={queue}")
+          PY
+
+            echo "=== Poll selected queries ==="
+            deadline=$((SECONDS + POLL_SECONDS))
+            while true; do
+              psql_cmd -c "
+                WITH selected AS (
+                  SELECT unnest(string_to_array('${ids_csv}', ',')::int[]) AS id
+                ),
+                latest AS (
+                  SELECT DISTINCT ON (r.query_id) r.query_id, r.id AS response_id
+                  FROM llm_responses r
+                  JOIN selected s ON s.id = r.query_id
+                  ORDER BY r.query_id, r.id DESC
+                )
+                SELECT
+                  q.status,
+                  COUNT(*) AS queries,
+                  COUNT(latest.response_id) AS latest_responses,
+                  MIN(q.started_at) AS first_started_at,
+                  MAX(q.finished_at) AS last_finished_at
+                FROM queries q
+                JOIN selected s ON s.id = q.id
+                LEFT JOIN latest ON latest.query_id = q.id
+                GROUP BY q.status
+                ORDER BY q.status;
+              "
+              remaining="$(psql_cmd -At -c "
+                WITH selected AS (
+                  SELECT unnest(string_to_array('${ids_csv}', ',')::int[]) AS id
+                )
+                SELECT COUNT(*)
+                FROM queries q
+                JOIN selected s ON s.id = q.id
+                WHERE LOWER(q.status) IN ('pending', 'running');
+              " | tr -d '[:space:]')"
+              if [ "${remaining}" = "0" ]; then
+                echo "Selected batch reached terminal statuses."
+                break
+              fi
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "POLL_TIMEOUT remaining=${remaining}"
+                break
+              fi
+              sleep 20
+            done
+          fi
+
+          if [ -n "${ids_csv}" ]; then
+            echo "=== Final response/citation audit CSV ==="
+            psql_cmd -c "
+              COPY (
+                WITH selected AS (
+                  SELECT unnest(string_to_array('${ids_csv}', ',')::int[]) AS id
+                ),
+                latest AS (
+                  SELECT DISTINCT ON (r.query_id)
+                    r.query_id,
+                    r.id AS response_id,
+                    r.raw_text,
+                    r.citations_json,
+                    r.screenshot_path,
+                    r.collected_at
+                  FROM llm_responses r
+                  JOIN selected s ON s.id = r.query_id
+                  ORDER BY r.query_id, r.id DESC
+                )
+                SELECT
+                  q.id AS query_id,
+                  q.target_llm,
+                  q.status,
+                  q.retry_reason,
+                  q.latency_ms,
+                  q.started_at,
+                  q.finished_at,
+                  latest.response_id,
+                  LENGTH(COALESCE(latest.raw_text, '')) AS response_len,
+                  CASE
+                    WHEN jsonb_typeof(latest.citations_json::jsonb) = 'array'
+                    THEN jsonb_array_length(latest.citations_json::jsonb)
+                    ELSE 0
+                  END AS citation_count,
+                  latest.screenshot_path,
+                  latest.collected_at,
+                  CASE
+                    WHEN latest.response_id IS NULL THEN 'FAIL_NO_RESPONSE'
+                    WHEN LENGTH(BTRIM(COALESCE(latest.raw_text, ''))) < 80 THEN 'SUSPECT_SHORT_RESPONSE'
+                    WHEN latest.screenshot_path IS NULL THEN 'SUSPECT_NO_SCREENSHOT'
+                    WHEN COALESCE(latest.raw_text, '') ILIKE '%captcha%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%cloudflare%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%login%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%verify%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%登录%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%验证码%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%出错%'
+                      OR COALESCE(latest.raw_text, '') ILIKE '%失败%'
+                    THEN 'SUSPECT_RUNTIME_TEXT'
+                    ELSE 'REVIEW_RESPONSE_SCREENSHOT'
+                  END AS qa_auto_verdict,
+                  REGEXP_REPLACE(LEFT(COALESCE(latest.raw_text, ''), 500), '[[:space:]]+', ' ', 'g') AS response_preview
+                FROM queries q
+                JOIN selected s ON s.id = q.id
+                LEFT JOIN latest ON latest.query_id = q.id
+                ORDER BY q.id
+              ) TO STDOUT WITH CSV HEADER
+            " > "${artifact_dir}/audit.csv"
+            cat "${artifact_dir}/audit.csv"
+
+            echo "=== Collect screenshot/html artifacts from worker ==="
+            worker_cid="$(docker compose ps -q worker | head -n 1 || true)"
+            if [ -n "${worker_cid}" ]; then
+              docker compose exec -T -e IDS="${ids_space}" worker sh -lc '
+                rm -rf /tmp/scraper-artifacts
+                mkdir -p /tmp/scraper-artifacts/screenshots
+                for id in $IDS; do
+                  find /data/screenshots -maxdepth 1 -type f -name "query_${id}_*" -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
+                done
+                find /data/screenshots -maxdepth 1 -type f -mmin -120 \( -name "query_-1_*" -o -name "*response_page*.html" -o -name "*extract_fail*.html" \) -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
+                find /tmp/scraper-artifacts/screenshots -maxdepth 1 -type f | sort > /tmp/scraper-artifacts/artifact_files.txt || true
+              ' </dev/null || true
+              docker cp "${worker_cid}:/tmp/scraper-artifacts/." "${artifact_dir}/" || true
+            fi
+          fi
+
+          REMOTE
+
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}:/tmp/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" \
+            scraper-batch-artifacts/
+          tar -tzf "scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" | tee scraper-batch-artifacts/artifact-manifest.txt
+
+      - name: Upload bestCoffer scraper batch artifacts
+        if: ${{ always() && inputs.scraper_mode == 'bestcoffer_batch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bestcoffer-scraper-batch-${{ github.run_id }}
+          path: scraper-batch-artifacts
+
       - name: Run read-only diagnostics
+        if: ${{ inputs.scraper_mode != 'bestcoffer_batch' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
