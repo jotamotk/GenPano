@@ -5746,7 +5746,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               </div>
 
               <div class="flex items-center justify-between">
-                <h3 class="text-[14px] font-semibold text-ink">账号池详情</h3>
+                <div>
+                  <h3 class="text-[14px] font-semibold text-ink">账号池详情</h3>
+                  <div class="text-[11px] text-ink-muted mt-0.5">今日配额按 query_count_today / daily_limit / remaining 展示；高风险重置仅在审计确认后使用；正式退款/修正语义见 #519。</div>
+                </div>
                 <div class="flex items-center gap-2">
                   <span x-show="accountsLoading" class="text-[12px] text-ink-muted">加载中…</span>
                   <span x-show="accountsError" class="text-[12px] text-danger" x-text="accountsError"></span>
@@ -5774,13 +5777,14 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">标签</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">绑定 Profiles</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">最后使用</th>
+                      <th class="px-6 py-3 text-left font-semibold text-ink-muted">今日配额</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">成功率</th>
                       <th class="px-6 py-3 text-left font-semibold text-ink-muted">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr x-show="!accountsLoading && filteredAccountPool.length === 0">
-                      <td colspan="10" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
+                      <td colspan="11" class="px-6 py-8 text-center text-[12px] text-ink-muted">暂无账号</td>
                     </tr>
                     <template x-for="a in filteredAccountPool" :key="a.id">
                       <tr class="border-b border-b-card hover:bg-surface-page transition-colors">
@@ -5823,6 +5827,20 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           </button>
                         </td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.lastUsed"></td>
+                        <td class="px-6 py-3">
+                          <div class="min-w-[150px] space-y-1">
+                            <div class="flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                              <span class="font-semibold text-ink" x-text="a.dailyUsed + ' / ' + a.dailyLimit"></span>
+                              <span :class="a.remaining <= 0 && a.dailyLimit > 0 ? 'text-danger font-semibold' : 'text-success font-semibold'"
+                                    x-text="'剩余 ' + a.remaining"></span>
+                            </div>
+                            <div class="h-1.5 rounded-pill bg-surface-page overflow-hidden">
+                              <div class="h-full"
+                                   :class="a.remaining <= 0 && a.dailyLimit > 0 ? 'bg-danger' : 'bg-success'"
+                                   :style="'width:' + a.quotaPercent + '%'"></div>
+                            </div>
+                          </div>
+                        </td>
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.successRate"></td>
                         <td class="px-6 py-3">
                           <div class="flex items-center gap-1.5">
@@ -5834,8 +5852,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                               <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-success"
                                       @click="toggleAccount(a, 'active')" title="启用">启用</button>
                             </template>
-                            <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
-                                    @click="resetAccount(a)" title="清零失败计数与每日用量">重置</button>
+                            <button class="h-7 px-2 rounded-btn border border-warning/40 bg-warning/5 hover:bg-warning/10 text-[11px] font-semibold text-warning"
+                                    @click="resetAccount(a)" title="高风险：清零失败计数与今日用量，仅在审计确认后使用">高风险重置</button>
                             <button class="h-7 px-2 rounded-btn border border-danger/30 bg-surface hover:bg-danger/5 text-[11px] font-medium text-danger"
                                     @click="deleteAccount(a)" title="删除">删除</button>
                           </div>
@@ -6459,7 +6477,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted min-w-[200px]">Query</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">账号 / 代理</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
-                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="retry_reason">错误码 / 重试原因</th>
+                      <th class="px-3 py-2.5 text-left font-semibold text-ink-muted min-w-[260px]" title="retry_reason">错误码 / 重试原因</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="latency_ms">延迟</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="queued_at → started_at → finished_at">执行时间</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Debug</th>
@@ -6492,9 +6510,15 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                 :class="att.status==='success' ? 'bg-success/10 text-success' : att.status==='failed' ? 'bg-danger/10 text-danger' : att.status==='running' ? 'bg-info/10 text-info' : att.status==='pending' ? 'bg-gray-100 text-gray-600' : att.status==='retrying' ? 'bg-warning/10 text-warning' : att.status==='waiting_manual' ? 'bg-accent/10 text-accent' : att.status==='dlq' ? 'bg-danger/10 text-danger' : 'bg-gray-100 text-gray-500'"
                                 x-text="att.status==='success' ? '✅ 成功' : att.status==='failed' ? '❌ 失败' : att.status==='running' ? '▶ 运行中' : att.status==='pending' ? '⏸ 待执行' : att.status==='retrying' ? '⏳ 重试中' : att.status==='waiting_manual' ? '🔧 待人工' : att.status==='dlq' ? '☠️ DLQ' : att.status"></span>
                         </td>
-                        <td class="px-3 py-2.5 max-w-[200px]">
+                        <td class="px-3 py-2.5 max-w-[280px]">
                           <div class="font-mono text-[10px] truncate" :class="att.errorCode ? 'text-danger font-semibold' : 'text-ink-muted'" :title="att.errorCode || ''" x-text="att.errorCode || '—'"></div>
                           <div class="text-[10px] text-ink-muted truncate" :title="att.retryReason || ''" x-text="att.retryReason || ''"></div>
+                          <template x-if="isDailyQuotaExhausted(att)">
+                            <div class="mt-1.5 rounded-btn border border-warning/30 bg-warning/5 px-2 py-1.5 text-[10.5px] leading-relaxed text-ink-body">
+                              <div class="font-semibold text-warning" x-text="accountQuotaExplanation(att)"></div>
+                              <div class="mt-0.5 text-ink-muted">恢复路径：等待明日重置；提高 daily_limit；或按 #519 审计退款/修正今日计数。</div>
+                            </div>
+                          </template>
                         </td>
                         <td class="px-3 py-2.5 tabular-nums text-[11px] text-ink-body">
                           <div x-text="att.latencyMs != null ? att.latencyMs + 'ms' : (att.responseTime ? (att.responseTime / 1000).toFixed(1) + 's' : '—')"></div>
@@ -9380,8 +9404,14 @@ function mapAccountRowToCard(r) {
   const tags = [];
   if (r.cookie_count > 0) tags.push('cookies');
   if ((r.consecutive_fails || 0) >= 3) tags.push('待验证');
-  const dailyUsed = r.daily_used != null ? r.daily_used : 0;
-  const dailyLimit = r.daily_limit != null ? r.daily_limit : 0;
+  const dailyUsed = r.query_count_today != null
+    ? Number(r.query_count_today)
+    : (r.daily_used != null ? Number(r.daily_used) : 0);
+  const dailyLimit = r.daily_limit != null ? Number(r.daily_limit) : 0;
+  const remaining = dailyLimit > 0 ? Math.max(0, dailyLimit - dailyUsed) : 0;
+  const quotaPercent = dailyLimit > 0
+    ? Math.max(0, Math.min(100, Math.round((dailyUsed / dailyLimit) * 100)))
+    : 0;
   const lastUsed = r.updated_at ? new Date(r.updated_at).toLocaleString() : '—';
   const successRate = (dailyLimit > 0 && dailyUsed > 0)
     ? ((dailyUsed / dailyLimit) * 100).toFixed(1) + '%'
@@ -9401,6 +9431,8 @@ function mapAccountRowToCard(r) {
     cookieCount: r.cookie_count || 0,
     dailyUsed,
     dailyLimit,
+    remaining,
+    quotaPercent,
   };
 }
 
@@ -13214,6 +13246,7 @@ function adminApp() {
 
     // ====== B4 Account Pool (backed by /api/accounts) ======
     accountsLoading: false,
+    accountsLoaded: false,
     accountsError: null,
     accountPoolEngines: [],
     accountPoolList: [],
@@ -13374,10 +13407,12 @@ function adminApp() {
         if (rows && rows.error) throw new Error(rows.error);
         this.accountPoolList = (rows || []).map(mapAccountRowToCard);
         this.accountPoolEngines = summarizeAccountPool(this.accountPoolList);
+        this.accountsLoaded = true;
         // Fetch the binding counts so the new 绑定Profiles column populates
         // without an N+1 round-trip per account row.
         this.loadAccountProfileCounts();
       } catch (e) {
+        this.accountsLoaded = false;
         this.accountsError = String(e.message || e);
         this.toast('加载账号池失败: ' + this.accountsError);
       } finally {
@@ -13400,7 +13435,47 @@ function adminApp() {
         this.toast('操作失败: ' + (e.message || e));
       }
     },
+    isDailyQuotaExhausted(att) {
+      const code = String(att?.errorCode || att?.retryReason || '').toLowerCase();
+      return code.includes('account_daily_limit_exhausted');
+    },
+    accountQuotaStatusForEngine(engine) {
+      const engineLabel = String(engine || '').toLowerCase();
+      const allAccounts = this.accountPoolList || [];
+      const accounts = allAccounts.filter(a => {
+        const label = String(a.engine || '').toLowerCase();
+        const key = String(a.engineKey || '').toLowerCase();
+        return label === engineLabel || key === engineLabel;
+      });
+      const activeAccounts = accounts.filter(a => a.status === 'active');
+      const quota = activeAccounts.reduce((memo, a) => {
+        memo.active += 1;
+        memo.used += Number(a.dailyUsed || 0);
+        memo.limit += Number(a.dailyLimit || 0);
+        memo.remaining += Number(a.remaining || 0);
+        return memo;
+      }, {
+        loaded: false,
+        active: 0,
+        used: 0,
+        limit: 0,
+        remaining: 0,
+      });
+      quota.loaded = this.accountsLoaded;
+      return quota;
+    },
+    accountQuotaExplanation(att) {
+      const quota = this.accountQuotaStatusForEngine(att?.engine);
+      if (!quota.loaded) {
+        return '账号池配额未加载，先刷新账号池确认该引擎是否还有今日额度。';
+      }
+      return '活跃账号 ' + quota.active + ' 个，今日剩余额度 ' + quota.remaining;
+    },
     async resetAccount(a) {
+      if (!window.confirm(
+        '高风险操作：将清零账号 ' + a.id + ' 的今日用量和失败计数，并重新置为 active。' +
+        '\n\n仅在审计确认后使用；正式退款/修正语义见 #519。'
+      )) return;
       try {
         const res = await fetch(API_BASE + '/accounts/' + a.dbId + '/reset', {
           method: 'POST',
@@ -13638,7 +13713,7 @@ function adminApp() {
       if (key === 'users-list') this.loadUsers(this.userPagination.page || 1);
       if (key === 'users-login') this.loadLoginAudit();
       if (key === 'users-audit') this.loadUserAudit();
-      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAttempts(); }
+      if (key === 'tracker-attempts') { this.loadBrands(); this.loadAccounts(); this.loadAttempts(); }
       if (key === 'planner-resources') this.loadAccounts();
       if (key === 'planner-topics' || key === 'planner-prompt-matrix' || key === 'planner-query-pool') this.loadTopicPlanConfig();
       if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
