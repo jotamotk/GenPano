@@ -1,0 +1,357 @@
+name: App Analytics Production Runbook
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run read-only probes or apply approved production writes"
+        type: choice
+        required: true
+        default: dry_run
+        options:
+          - dry_run
+          - write
+      brand_id:
+        description: "Canonical App analytics brand id"
+        required: false
+        default: "12"
+      project_id:
+        description: "Approved App project UUID"
+        required: false
+        default: "95d43022-a5c8-5944-b6d6-34b29faa18b5"
+      project_name:
+        description: "Approved App project name"
+        required: false
+        default: "Estee Lauder / 雅诗兰黛 App Analytics"
+      owner_user_id:
+        description: "Required in write mode; approved production App owner user_id"
+        required: false
+        default: ""
+      competitor_brand_id:
+        description: "Approved project competitor brand id"
+        required: false
+        default: "2"
+      approval_ref:
+        description: "Required in write mode; GitHub issue/comment URL recording approval"
+        required: false
+        default: ""
+      run_canonical_repair:
+        description: "Run the canonical brand repair/backfill CLI"
+        type: boolean
+        required: false
+        default: true
+      date:
+        description: "Optional single repair date YYYY-MM-DD; enables --aggregate in write mode"
+        required: false
+        default: ""
+      source_brand_id:
+        description: "Owner/source brand id for canonical repair filtering"
+        required: false
+        default: "2"
+
+concurrency:
+  group: app-analytics-prod-runbook
+  cancel-in-progress: false
+
+jobs:
+  runbook:
+    name: Run approved App analytics production runbook
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Execute on deployed server containers
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          OWNER_USER_ID: ${{ inputs.owner_user_id }}
+          COMPETITOR_BRAND_ID: ${{ inputs.competitor_brand_id }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          RUN_CANONICAL_REPAIR: ${{ inputs.run_canonical_repair }}
+          REPAIR_DATE: ${{ inputs.date }}
+          SOURCE_BRAND_ID: ${{ inputs.source_brand_id }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,BRAND_ID,PROJECT_ID,PROJECT_NAME,OWNER_USER_ID,COMPETITOR_BRAND_ID,APPROVAL_REF,RUN_CANONICAL_REPAIR,REPAIR_DATE,SOURCE_BRAND_ID,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
+          command_timeout: 45m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            require_int() {
+              local name="$1"
+              local value="$2"
+              [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be an integer, got '$value'"
+            }
+
+            case "$MODE" in
+              dry_run|write) ;;
+              *) fail "mode must be dry_run or write, got '$MODE'" ;;
+            esac
+
+            require_int BRAND_ID "$BRAND_ID"
+            require_int COMPETITOR_BRAND_ID "$COMPETITOR_BRAND_ID"
+            require_int SOURCE_BRAND_ID "$SOURCE_BRAND_ID"
+            [[ "$PROJECT_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+              || fail "project_id must be UUID-shaped, got '$PROJECT_ID'"
+
+            RUN_CANONICAL_REPAIR="$(printf '%s' "$RUN_CANONICAL_REPAIR" | tr '[:upper:]' '[:lower:]')"
+            case "$RUN_CANONICAL_REPAIR" in
+              true|false) ;;
+              *) fail "run_canonical_repair must be true or false, got '$RUN_CANONICAL_REPAIR'" ;;
+            esac
+            if [ -n "$REPAIR_DATE" ]; then
+              [[ "$REPAIR_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+                || fail "date must be YYYY-MM-DD when provided, got '$REPAIR_DATE'"
+            fi
+
+            if [ "$MODE" = "write" ]; then
+              [ -n "$OWNER_USER_ID" ] || fail "write mode requires owner_user_id"
+              [ -n "$APPROVAL_REF" ] || fail "write mode requires approval_ref"
+              [[ "$APPROVAL_REF" =~ https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+(#issuecomment-[0-9]+)? ]] \
+                || fail "approval_ref must include a GitHub issue/comment URL"
+            fi
+
+            cat <<AUDIT
+            === App Analytics Production Runbook Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            run_number=${GH_RUN_NUMBER}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            mode=${MODE}
+            brand_id=${BRAND_ID}
+            project_id=${PROJECT_ID}
+            project_name=${PROJECT_NAME}
+            owner_user_id=${OWNER_USER_ID:-<empty>}
+            competitor_brand_id=${COMPETITOR_BRAND_ID}
+            source_brand_id=${SOURCE_BRAND_ID}
+            run_canonical_repair=${RUN_CANONICAL_REPAIR}
+            date=${REPAIR_DATE:-<empty>}
+            approval_ref=${APPROVAL_REF:-<empty>}
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            run_in_container() {
+              local service="$1"
+              shift
+              local cid
+              cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
+                docker compose exec -T "$service" "$@"
+              else
+                echo "Service '$service' is not running; using deployed image via docker compose run --rm -T." >&2
+                docker compose run --rm -T "$service" "$@"
+              fi
+            }
+
+            run_bootstrap() {
+              local write_flag="$1"
+              local args=(
+                scripts/bootstrap_app_project_context.py
+                --brand-id "$BRAND_ID"
+                --project-id "$PROJECT_ID"
+                --project-name "$PROJECT_NAME"
+                --competitor-brand-id "$COMPETITOR_BRAND_ID"
+              )
+              if [ -n "$OWNER_USER_ID" ]; then
+                args+=(--user-id "$OWNER_USER_ID")
+              fi
+              if [ -n "$APPROVAL_REF" ]; then
+                args+=(--approval-ref "$APPROVAL_REF")
+              fi
+              if [ "$write_flag" = "true" ]; then
+                args+=(--write)
+              fi
+              run_in_container backend python "${args[@]}"
+            }
+
+            run_canonical_repair_cli() {
+              local write_flag="$1"
+              local args=(
+                -m geo_tracker.analyzer.cli
+                repair-canonical-brand
+                --brand-id "$BRAND_ID"
+                --source-brand-id "$SOURCE_BRAND_ID"
+                --competitive-brand-id "$BRAND_ID"
+                --competitive-brand-id "$COMPETITOR_BRAND_ID"
+              )
+              if [ -n "$REPAIR_DATE" ]; then
+                args+=(--date "$REPAIR_DATE")
+              fi
+              if [ "$write_flag" = "true" ]; then
+                args+=(--write)
+                if [ -n "$REPAIR_DATE" ]; then
+                  args+=(--aggregate)
+                fi
+              fi
+              run_in_container worker python "${args[@]}"
+            }
+
+            echo "=== Bootstrap dry run (#494 script) ==="
+            run_bootstrap false
+
+            if [ "$RUN_CANONICAL_REPAIR" = "true" ]; then
+              echo "=== Canonical brand repair dry run (#491 CLI) ==="
+              if [ -n "$REPAIR_DATE" ]; then
+                echo "Repair date=${REPAIR_DATE}; write mode will add --aggregate after the write."
+              else
+                echo "Repair date is empty; canonical repair will not run aggregate because #491 CLI only aggregates with a single --date."
+              fi
+              run_canonical_repair_cli false
+            else
+              echo "=== Canonical brand repair skipped by input ==="
+            fi
+
+            if [ "$MODE" = "write" ]; then
+              echo "=== WRITE GATE SATISFIED: applying approved production writes ==="
+              echo "approval_ref=${APPROVAL_REF}"
+
+              echo "=== Bootstrap write (#494 script) ==="
+              run_bootstrap true
+
+              if [ "$RUN_CANONICAL_REPAIR" = "true" ]; then
+                echo "=== Canonical brand repair write (#491 CLI) ==="
+                run_canonical_repair_cli true
+              fi
+            else
+              echo "=== Dry-run mode complete; no production writes were requested ==="
+            fi
+
+            echo "=== Post-run read-only SQL summary ==="
+            docker compose exec -T postgres psql \
+              -U genpano \
+              -d genpano \
+              -v ON_ERROR_STOP=1 \
+              -v brand_id="$BRAND_ID" \
+              -v source_brand_id="$SOURCE_BRAND_ID" \
+              -v competitor_brand_id="$COMPETITOR_BRAND_ID" \
+              -v project_id="$PROJECT_ID" <<'SQL'
+            \echo '--- project row ---'
+            SELECT
+              id,
+              user_id,
+              name,
+              industry_id,
+              primary_brand_id,
+              is_active,
+              deleted_at,
+              created_at,
+              updated_at
+            FROM projects
+            WHERE id = :'project_id'
+               OR primary_brand_id = :brand_id
+            ORDER BY (id = :'project_id') DESC, deleted_at NULLS FIRST, created_at DESC
+            LIMIT 20;
+
+            \echo '--- project competitors ---'
+            SELECT
+              pc.project_id,
+              p.name AS project_name,
+              p.primary_brand_id,
+              pc.brand_id AS competitor_brand_id,
+              COALESCE(b.name_zh, b.name, b.name_en) AS competitor_name,
+              pc.pinned_by,
+              pc.pinned_at
+            FROM project_competitors pc
+            LEFT JOIN projects p ON p.id = pc.project_id
+            LEFT JOIN brands b ON b.id = pc.brand_id
+            WHERE pc.project_id = :'project_id'
+               OR pc.brand_id IN (:brand_id, :competitor_brand_id)
+            ORDER BY (pc.project_id = :'project_id') DESC, pc.project_id, pc.brand_id
+            LIMIT 50;
+
+            \echo '--- brand mention counters ---'
+            SELECT
+              brand_id,
+              brand_name,
+              COUNT(*) AS rows,
+              COUNT(DISTINCT response_id) AS responses,
+              SUM(COALESCE(mention_count, 1))::bigint AS mentions,
+              MIN(created_at) AS first_seen,
+              MAX(created_at) AS last_seen
+            FROM brand_mentions
+            WHERE brand_id = :brand_id
+            GROUP BY brand_id, brand_name
+            ORDER BY rows DESC, responses DESC, brand_name
+            LIMIT 25;
+
+            \echo '--- canonical repair markers ---'
+            SELECT
+              COUNT(*) AS repair_marked_analyses,
+              COUNT(DISTINCT response_id) AS repair_marked_responses
+            FROM response_analyses
+            WHERE COALESCE(raw_analysis_json::text, '') LIKE '%canonical_alias_repair_v1%'
+              AND COALESCE(raw_analysis_json::text, '') LIKE '%' || :brand_id || '%';
+
+            \echo '--- source-to-canonical response counters ---'
+            WITH scoped AS (
+              SELECT r.id AS response_id
+              FROM llm_responses r
+              JOIN queries q ON q.id = r.query_id
+              WHERE q.brand_id = :source_brand_id
+            )
+            SELECT
+              COUNT(*) AS source_responses,
+              COUNT(DISTINCT bm.response_id) FILTER (WHERE bm.brand_id = :brand_id) AS canonical_mention_responses,
+              COUNT(bm.id) FILTER (WHERE bm.brand_id = :brand_id) AS canonical_mention_rows
+            FROM scoped s
+            LEFT JOIN brand_mentions bm ON bm.response_id = s.response_id;
+
+            \echo '--- aggregate table counters ---'
+            SELECT
+              'geo_score_daily' AS table_name,
+              COUNT(*) AS rows,
+              MIN(date) AS first_date,
+              MAX(date) AS last_date,
+              COALESCE(SUM(total_queries), 0)::bigint AS denominator_count,
+              COALESCE(SUM(mention_count), 0)::bigint AS mention_count,
+              ROUND(COALESCE(AVG(mention_rate), 0)::numeric, 4) AS avg_mention_rate
+            FROM geo_score_daily
+            WHERE brand_id = :brand_id
+            UNION ALL
+            SELECT
+              'topic_score_daily' AS table_name,
+              COUNT(*) AS rows,
+              MIN(date) AS first_date,
+              MAX(date) AS last_date,
+              COALESCE(SUM(total_responses), 0)::bigint AS denominator_count,
+              COALESCE(SUM(mention_count), 0)::bigint AS mention_count,
+              ROUND(COALESCE(AVG(mention_rate), 0)::numeric, 4) AS avg_mention_rate
+            FROM topic_score_daily
+            WHERE brand_id = :brand_id
+            UNION ALL
+            SELECT
+              'product_score_daily' AS table_name,
+              COUNT(*) AS rows,
+              MIN(date) AS first_date,
+              MAX(date) AS last_date,
+              COALESCE(SUM(total_queries), 0)::bigint AS denominator_count,
+              COALESCE(SUM(mention_count), 0)::bigint AS mention_count,
+              ROUND(COALESCE(AVG(mention_rate), 0)::numeric, 4) AS avg_mention_rate
+            FROM product_score_daily
+            WHERE brand_id = :brand_id
+            ORDER BY table_name;
+            SQL
+            RUNBOOK
