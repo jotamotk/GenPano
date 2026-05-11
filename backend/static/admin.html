@@ -1983,6 +1983,14 @@
             <div class="px-5 py-4 border-b border-b-card flex items-center justify-between">
               <h3 class="text-[14px] font-semibold text-ink">未来 <span x-text="upcomingDays"></span> 天预览</h3>
               <div class="flex items-center gap-2 text-[11px]">
+                <span class="text-ink-muted">每页</span>
+                <select x-model.number="upcomingPerPage" @change="resetUpcomingPaging()"
+                        class="h-7 px-2 rounded-btn border border-b-default text-[11px] bg-white">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                  <option :value="100">100</option>
+                </select>
                 <span class="text-ink-muted">天数</span>
                 <select x-model.number="upcomingDays" @change="loadUpcoming()"
                         class="h-7 px-2 rounded-btn border border-b-default text-[11px] bg-white">
@@ -2010,16 +2018,39 @@
                             :class="d.count > 0 ? 'text-success font-semibold' : 'text-ink-muted'"
                             x-text="d.count + ' 条'"></span>
                     </button>
-                    <div x-show="d._expanded && d.count > 0" x-collapse class="border-t border-b-card/60 divide-y divide-b-card/40">
-                      <template x-for="f in d.fires" :key="f.schedule_id + ':' + f.fire_at">
-                        <div class="flex items-center gap-3 px-4 py-2 text-[11px]">
-                          <span class="font-mono text-ink-muted shrink-0" x-text="(f.fire_at || '').slice(11, 16)"></span>
-                          <span class="text-[10px] text-ink-muted shrink-0 w-[60px]" x-text="f.target_llm"></span>
-                          <span class="font-mono text-[10px] text-ink-muted shrink-0 w-[100px] truncate" :title="f.profile_id" x-text="f.profile_id || '— 自动 —'"></span>
-                          <span class="text-ink-body truncate flex-1" :title="f.query_text" x-text="f.query_text"></span>
-                          <span class="text-[10px] text-ink-muted shrink-0" x-text="'每 ' + f.cadence_days + ' 天'"></span>
+                    <div x-show="d._expanded && d.count > 0" x-collapse class="border-t border-b-card/60">
+                      <div class="divide-y divide-b-card/40">
+                        <template x-for="f in firePageRows(d)" :key="f.schedule_id + ':' + f.fire_at">
+                          <div class="flex items-center gap-3 px-4 py-2 text-[11px]">
+                            <span class="font-mono text-ink-muted shrink-0" x-text="(f.fire_at || '').slice(11, 16)"></span>
+                            <span class="text-[10px] text-ink-muted shrink-0 w-[60px]" x-text="f.target_llm"></span>
+                            <span class="font-mono text-[10px] text-ink-muted shrink-0 w-[100px] truncate" :title="f.profile_id" x-text="f.profile_id || '— 自动 —'"></span>
+                            <span class="text-ink-body truncate flex-1" :title="f.query_text" x-text="f.query_text"></span>
+                            <span class="text-[10px] text-ink-muted shrink-0" x-text="'每 ' + f.cadence_days + ' 天'"></span>
+                            <button class="h-6 px-2 rounded-btn border border-danger/30 bg-danger/5 text-danger text-[10px] font-semibold hover:bg-danger/10 shrink-0"
+                                    @click.stop="abortScheduleFire(f)"
+                                    title="禁用该计划，未来不再触发（可在 Query 计划列表里重新启用）">中止</button>
+                          </div>
+                        </template>
+                      </div>
+                      <div x-show="firePagesOf(d) > 1"
+                           class="flex items-center justify-between px-4 py-2 text-[10px] text-ink-muted bg-surface-page/60 border-t border-b-card/40">
+                        <span x-text="'Page ' + (d._firePage || 1) + ' / ' + firePagesOf(d) + ' · total ' + d.count"></span>
+                        <div class="inline-flex items-center gap-1">
+                          <button class="h-6 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                                  :disabled="(d._firePage || 1) <= 1"
+                                  @click.stop="setFirePage(d, 1)">«</button>
+                          <button class="h-6 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                                  :disabled="(d._firePage || 1) <= 1"
+                                  @click.stop="setFirePage(d, (d._firePage || 1) - 1)">‹</button>
+                          <button class="h-6 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                                  :disabled="(d._firePage || 1) >= firePagesOf(d)"
+                                  @click.stop="setFirePage(d, (d._firePage || 1) + 1)">›</button>
+                          <button class="h-6 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page disabled:opacity-40"
+                                  :disabled="(d._firePage || 1) >= firePagesOf(d)"
+                                  @click.stop="setFirePage(d, firePagesOf(d))">»</button>
                         </div>
-                      </template>
+                      </div>
                     </div>
                   </div>
                 </template>
@@ -12162,6 +12193,7 @@ function adminApp() {
     scheduleFilterBrandId: '',
     upcoming: { days: [] },
     upcomingDays: 7,
+    upcomingPerPage: 20,
     upcomingLoading: false,
     scheduleEditor: null,           // open/closed state + form fields
     scheduleEditorSaving: false,
@@ -17977,6 +18009,7 @@ function adminApp() {
         let openCount = 0;
         (upcoming.days || []).forEach(d => {
           d._expanded = (openCount < 3 && d.count > 0);
+          d._firePage = 1;
           if (d._expanded) openCount++;
         });
         this.upcoming = upcoming;
@@ -17998,6 +18031,47 @@ function adminApp() {
         this.upcoming = { days: [] };
       } finally {
         this.upcomingLoading = false;
+      }
+    },
+    firePagesOf(d) {
+      const per = Number(this.upcomingPerPage || 20) || 20;
+      const total = Number((d && d.count) || (d && Array.isArray(d.fires) ? d.fires.length : 0) || 0);
+      return Math.max(1, Math.ceil(total / per));
+    },
+    firePageRows(d) {
+      if (!d || !Array.isArray(d.fires)) return [];
+      const per = Number(this.upcomingPerPage || 20) || 20;
+      const page = Math.max(1, Math.min(this.firePagesOf(d), Number(d._firePage || 1)));
+      const start = (page - 1) * per;
+      return d.fires.slice(start, start + per);
+    },
+    setFirePage(d, n) {
+      if (!d) return;
+      d._firePage = Math.max(1, Math.min(this.firePagesOf(d), Number(n || 1)));
+    },
+    resetUpcomingPaging() {
+      (this.upcoming.days || []).forEach(d => { d._firePage = 1; });
+    },
+    async abortScheduleFire(f) {
+      const sid = f && (f.schedule_id ?? f.id);
+      if (sid === undefined || sid === null || sid === '') {
+        this.toast('该条目缺少 schedule_id，无法中止');
+        return;
+      }
+      if (!confirm('中止计划 #' + sid + '？\n这会禁用该计划，未来不会再触发。可在 Query 计划列表里重新启用。')) return;
+      try {
+        const res = await fetch(API_BASE + '/scheduler/schedules/' + sid, {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: false }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.toast('已中止计划 #' + sid);
+        await this.loadSchedules();
+        await this.loadUpcoming();
+      } catch (e) {
+        this.toast('中止失败: ' + (e.message || e));
       }
     },
     formatScheduleTs(iso) {
