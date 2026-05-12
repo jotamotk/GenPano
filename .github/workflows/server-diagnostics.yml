@@ -106,7 +106,8 @@ jobs:
           echo "batch_limit=${BATCH_LIMIT}"
           echo "execute_batch=${EXECUTE_BATCH}"
           echo "poll_seconds=${POLL_SECONDS}"
-          date -u '+utc_started_at=%Y-%m-%dT%H:%M:%SZ'
+          utc_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "utc_started_at=${utc_started_at}"
 
           echo "=== Docker compose status ==="
           docker compose ps
