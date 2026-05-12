@@ -142,6 +142,21 @@ def test_doubao_answer_like_page_with_login_button_is_rejected():
     assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
 
 
+def test_doubao_top_right_login_overrides_generic_avatar_markup():
+    text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。"
+    html = """
+    <header>
+      <div class="avatar-placeholder"></div>
+      <div class="toolbar-action">登录</div>
+    </header>
+    <main>
+      <div class="flow-markdown-body">bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。</div>
+    </main>
+    """
+
+    assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
+
+
 def test_doubao_authenticated_completed_answer_is_allowed():
     text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。"
     html = """
@@ -157,6 +172,38 @@ def test_doubao_authenticated_completed_answer_is_allowed():
     """
 
     assert doubao_auth_state_reason(text, html) is None
+
+
+def test_doubao_persistence_gate_rejects_answer_html_with_login_chrome():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。"
+    response_html = """
+    <header>
+      <div class="avatar-placeholder"></div>
+      <div class="toolbar-action">登录</div>
+    </header>
+    <main>
+      <div class="flow-markdown-body">bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。</div>
+    </main>
+    """
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_allows_executor_auth_ok_marker():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer-like content"
+    response_html = (
+        "<div class='flow-markdown-body'>bestCoffer answer-like content</div>"
+        "\n<!-- doubao-auth-state:ok -->"
+    )
+
+    assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
 
 
 @pytest.mark.asyncio
@@ -215,6 +262,35 @@ async def test_doubao_no_response_login_dialog_missing_state_overrides_generic_r
 
     assert reason == "doubao_auth_state_missing"
     assert executor.last_error_reason == "doubao_auth_state_missing"
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_failed_promotes_auth_failure_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return "登录以解锁更多功能\n手机号\n扫码登录\n登录"
+
+        async def content(self):
+            return """
+            <div role="dialog">
+              <h2>登录以解锁更多功能</h2>
+              <input placeholder="手机号" />
+              <button class="login-button">登录</button>
+            </div>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "submit_failed"
+
+    reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
 
 
 def test_query_execution_debug_fields_are_populated():

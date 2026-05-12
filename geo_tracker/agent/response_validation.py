@@ -25,11 +25,18 @@ _DOUBAO_LOGIN_BUTTON_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_DOUBAO_LOGIN_CHROME_RE = re.compile(
+    r"<(?:button|a|div|span)[^>]{0,240}>[\s\n\r]*\u767b\u5f55[\s\n\r]*</(?:button|a|div|span)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _DOUBAO_AUTHENTICATED_RE = re.compile(
-    r"(?:user-avatar|avatar|account-menu|profile-menu|user-info|"
+    r"(?:user-avatar|account-menu|profile-menu|user-info|"
     r"\u7528\u6237\u5934\u50cf|\u8d26\u53f7\u83dc\u5355|\u6211\u7684\u8d26\u53f7)",
     re.IGNORECASE,
 )
+
+DOUBAO_AUTH_OK_MARKER = "doubao-auth-state:ok"
 
 
 def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str | None:
@@ -42,11 +49,26 @@ def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str |
         return "doubao_not_logged_in"
     if "\u767b\u5f55" in combined and _DOUBAO_LOGIN_BUTTON_RE.search(combined):
         return "doubao_not_logged_in"
+    if html and "\u767b\u5f55" in html and _DOUBAO_LOGIN_CHROME_RE.search(html):
+        return "doubao_not_logged_in"
 
     if _DOUBAO_AUTHENTICATED_RE.search(combined):
         return None
 
     return "doubao_auth_state_missing"
+
+
+def doubao_persistence_auth_reason(
+    llm_name: str,
+    raw_text: str | None,
+    response_html: str | None = None,
+) -> str | None:
+    """Return a Doubao auth failure that must block DONE persistence."""
+    if (llm_name or "").lower() != "doubao":
+        return None
+    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
+        return None
+    return doubao_auth_state_reason(raw_text, response_html)
 
 
 def invalid_response_reason(llm_name: str, text: str | None) -> str | None:

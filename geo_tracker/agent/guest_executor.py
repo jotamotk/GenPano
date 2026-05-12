@@ -34,6 +34,7 @@ from geo_tracker.agent.clash_api import (
     CLASH_API_URL,
 )
 from geo_tracker.agent.response_validation import (
+    DOUBAO_AUTH_OK_MARKER,
     doubao_auth_state_reason,
     invalid_response_reason,
 )
@@ -1040,7 +1041,13 @@ class GuestQueryExecutor:
         auth_reason = await _doubao_auth_state_reason_from_page(page)
         if not auth_reason:
             return None
-        if self.last_error_reason in (None, "", "no_response", "no_input"):
+        if self.last_error_reason in (
+            None,
+            "",
+            "no_response",
+            "no_input",
+            "submit_failed",
+        ):
             self.last_error_reason = auth_reason
         return auth_reason
 
@@ -2050,6 +2057,7 @@ class GuestQueryExecutor:
                         runtime_events=runtime_events,
                     )
                     return "", "", []
+                resp_html = (resp_html or "") + f"\n<!-- {DOUBAO_AUTH_OK_MARKER} -->"
 
             # 豆包引用面板：2026 UI 触发器从 [data-testid=...] 换成
             # <div class="entry-btn-v3-XXXX"> 包裹 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
