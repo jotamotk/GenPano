@@ -193,9 +193,7 @@ def test_build_user_jwt_uses_live_app_e2e_claims_and_signature() -> None:
 
     body = f"{header_raw}.{payload_raw}".encode("ascii")
     expected_signature = (
-        base64.urlsafe_b64encode(
-            hmac.new(b"unit-secret", body, hashlib.sha256).digest()
-        )
+        base64.urlsafe_b64encode(hmac.new(b"unit-secret", body, hashlib.sha256).digest())
         .decode("ascii")
         .rstrip("=")
     )

@@ -589,7 +589,9 @@ def build_user_jwt(
             _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
         )
     )
-    signature = _b64url(hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
+    signature = _b64url(
+        hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    )
     return f"{body}.{signature}"
 
 
