@@ -121,6 +121,7 @@ def test_bestcoffer_batch_failure_path_still_fetches_manifest(tmp_path: Path) ->
             "TARGET_LLM": "chatgpt",
             "REPAIR_STALE_RUNNING": "false",
             "STALE_RUNNING_TTL_SECONDS": "3600",
+            "REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS": "true",
             "GH_RUN_ID": "25751875032",
         }
     )
@@ -197,3 +198,40 @@ def test_chatgpt_proxy_preflight_heredoc_starts_at_column_zero() -> None:
 
     assert "docker compose exec -T worker python - <<'PY' || true\nimport asyncio" in run_script
     assert "\nPY\n    docker compose exec -T worker sh -lc" in run_script
+
+
+def test_bestcoffer_batch_writes_chatgpt_citation_review_artifact() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "citation_review.jsonl" in workflow
+    assert "citation_not_applicable" in workflow
+    assert "source_markers_without_extractable_urls" in workflow
+
+
+def test_bestcoffer_batch_issue_697_artifacts_do_not_export_raw_payloads() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+    audit_block = run_script[
+        run_script.index("=== Final response/citation audit CSV ===") : run_script.index(
+            "=== Export current batch responses JSONL ==="
+        )
+    ]
+    responses_block = run_script[
+        run_script.index("=== Export current batch responses JSONL ===") : run_script.index(
+            "=== Collect current batch worker logs ==="
+        )
+    ]
+
+    assert "response_preview" not in audit_block
+    assert "REGEXP_REPLACE(LEFT(COALESCE(latest.raw_text" not in audit_block
+    assert "'query_text'" not in responses_block
+    assert "'response_text'" not in responses_block
+    assert "'citations'" not in responses_block
+    assert "query_text_hash" in responses_block
+    assert "response_text_hash" in responses_block
+    assert "citation_payload_hash" in responses_block
+    assert "REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS" in run_script
+    assert "payload_artifacts_redacted.txt" in run_script
+    assert "payload_logs_redacted.txt" in run_script
+    assert "-name '*.html'" in run_script
+    assert "-name '*.png'" in run_script
