@@ -949,14 +949,14 @@ describe('TopicsPage live brand override', () => {
             query_id: 900,
             prompt_id: 201,
             query_group_key: 'serum-safety',
-            query_text: 'What is the safest vitamin C serum?',
+            query_text: 'Vitamin C serum safety group',
             attempt_count: 3,
             daily_latest: [
               {
                 date: '2026-05-10',
                 query_id: 301,
                 response_id: 401,
-                query_text: 'What is the safest vitamin C serum?',
+                query_text: 'What is the safest vitamin C serum for sensitive skin?',
                 target_llm: 'chatgpt',
                 profile_id: 'profile-1',
                 profile_name: 'Sensitive skin buyer',
@@ -970,7 +970,7 @@ describe('TopicsPage live brand override', () => {
                 date: '2026-05-09',
                 query_id: 302,
                 response_id: 402,
-                query_text: 'What is the safest vitamin C serum?',
+                query_text: 'Which vitamin C serum is safest during pregnancy?',
                 target_llm: 'doubao',
                 profile_id: null,
                 profile_name: 'Unknown profile',
@@ -994,7 +994,13 @@ describe('TopicsPage live brand override', () => {
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which serum is safest?'))
 
-    expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
+    expect(screen.getByText('Vitamin C serum safety group')).toBeInTheDocument()
+    expect(
+      screen.getByText('What is the safest vitamin C serum for sensitive skin?'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Which vitamin C serum is safest during pregnancy?'),
+    ).toBeInTheDocument()
     expect(screen.getByText('Unique Queries')).toBeInTheDocument()
     expect(screen.getByText('Daily Successful Responses')).toBeInTheDocument()
     expect(screen.getByText('Profiles Covered')).toBeInTheDocument()
@@ -1134,7 +1140,7 @@ describe('TopicsPage live brand override', () => {
     expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
     expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
-    expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
+    expect(screen.getAllByText('What is the safest vitamin C serum?').length).toBeGreaterThan(0)
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
   })
 
@@ -1148,14 +1154,14 @@ describe('TopicsPage live brand override', () => {
             query_id: 900,
             prompt_id: 201,
             query_group_key: 'serum-safety',
-            query_text: 'What is the safest vitamin C serum?',
+            query_text: 'Vitamin C serum safety group',
             attempt_count: 1,
             daily_latest: [
               {
                 date: '2026-05-10',
                 query_id: 301,
                 response_id: 401,
-                query_text: 'What is the safest vitamin C serum?',
+                query_text: 'What is the safest vitamin C serum for sensitive skin?',
                 target_llm: 'chatgpt',
                 profile_id: null,
                 profile_name: null,
@@ -1193,6 +1199,8 @@ describe('TopicsPage live brand override', () => {
     const blob = createObjectURL.mock.calls[0][0] as Blob
     const csv = await readBlobText(blob)
     expect(csv).toContain('response_preview')
+    expect(csv).toContain('What is the safest vitamin C serum for sensitive skin?')
+    expect(csv).not.toContain('Vitamin C serum safety group')
     expect(csv).toContain('"Preview exported for operators, with comma support."')
     expect(csv).toContain('response_created_at')
     expect(csv).toContain('Unknown profile')

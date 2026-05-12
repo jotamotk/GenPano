@@ -401,7 +401,7 @@ function queryExportRows(groups: ReturnType<typeof groupSuccessfulQueries>) {
   return groups.flatMap((group) =>
     group.dailyRows.map(({ date, attempt }) => ({
       query_group_key: group.key,
-      query_text: group.queryText,
+      query_text: attempt.query_text || group.queryText,
       date,
       query_id: attempt.query_id,
       response_id: attempt.response_id,
@@ -1026,60 +1026,67 @@ function QueriesView({
               <Badge size="sm">{group.dailyRows.length} days</Badge>
             </div>
             <div className="divide-y divide-[var(--color-border-subtle)]">
-              {group.dailyRows.map(({ date, attempt }) => (
-                <div
-                  key={`${group.key}-${date}-${attempt.query_id}`}
-                  className="grid grid-cols-1 lg:grid-cols-[110px_minmax(150px,0.85fr)_minmax(220px,1.35fr)_105px_105px_150px] gap-3 px-4 py-3 items-center"
-                >
-                  <div className="text-xs font-semibold text-themed-primary tabular-nums">
-                    {date}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant="accent" size="sm">
-                        {attempt.target_llm || '-'}
-                      </Badge>
-                      <span className="text-sm text-themed-primary">
-                        {profileLabel(attempt)}
-                      </span>
+              {group.dailyRows.map(({ date, attempt }) => {
+                const exactQuery = attempt.query_text || group.queryText
+                return (
+                  <div
+                    key={`${group.key}-${date}-${attempt.query_id}`}
+                    className="grid grid-cols-1 lg:grid-cols-[110px_minmax(150px,0.85fr)_minmax(220px,1.35fr)_105px_105px_150px] gap-3 px-4 py-3 items-center"
+                  >
+                    <div className="text-xs font-semibold text-themed-primary tabular-nums">
+                      {date}
                     </div>
-                    <div className="text-[11px] text-themed-muted mt-1">
-                      Finished {formatDateTime(latestTimestamp(attempt))}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant="accent" size="sm">
+                          {attempt.target_llm || '-'}
+                        </Badge>
+                        <span className="text-sm text-themed-primary">
+                          {profileLabel(attempt)}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-themed-muted mt-1">
+                        Finished {formatDateTime(latestTimestamp(attempt))}
+                      </div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[11px] text-themed-muted">Exact query</div>
+                      <div className="text-xs leading-relaxed mt-1 line-clamp-1 break-words text-themed-primary">
+                        {exactQuery}
+                      </div>
+                      <div className="text-[11px] text-themed-muted mt-2">Latest response</div>
+                      <div
+                        className={`text-xs leading-relaxed mt-1 line-clamp-2 break-words ${
+                          attempt.response_preview ? 'text-themed-primary' : 'text-themed-muted'
+                        }`}
+                      >
+                        {responsePreview(attempt)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-themed-muted">Visibility</div>
+                      <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                        {attempt.target_mentioned ? 'Mentioned' : 'Not mentioned'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-themed-muted">Citations</div>
+                      <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                        {formatEvidenceCount(attempt.citation_count)}
+                      </div>
+                    </div>
+                    <div className="lg:text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onOpenAttempts(attempt, group.attempts)}
+                      >
+                        Open response attempts
+                      </Button>
                     </div>
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] text-themed-muted">Latest response</div>
-                    <div
-                      className={`text-xs leading-relaxed mt-1 line-clamp-2 break-words ${
-                        attempt.response_preview ? 'text-themed-primary' : 'text-themed-muted'
-                      }`}
-                    >
-                      {responsePreview(attempt)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-themed-muted">Visibility</div>
-                    <div className="text-sm font-semibold text-themed-primary tabular-nums">
-                      {attempt.target_mentioned ? 'Mentioned' : 'Not mentioned'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-themed-muted">Citations</div>
-                    <div className="text-sm font-semibold text-themed-primary tabular-nums">
-                      {formatEvidenceCount(attempt.citation_count)}
-                    </div>
-                  </div>
-                  <div className="lg:text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onOpenAttempts(attempt, group.attempts)}
-                    >
-                      Open response attempts
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </Card>
         ))}
