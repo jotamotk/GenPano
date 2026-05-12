@@ -6,7 +6,8 @@ import re
 from typing import Any
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?86)?(1\d{2})\d{4}(\d{4})(?!\d)")
-SMS_CODE_RE = re.compile(r"\b\d{4,8}\b")
+E164_PHONE_RE = re.compile(r"(?<!\d)(\+?\d{10,15})(?!\d)")
+SMS_CODE_RE = re.compile(r"(?<!\*)\b\d{4,8}\b")
 SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|token|secret|authorization|cookie|set-cookie)"
     r"([\"'\s:=]+)"
@@ -18,7 +19,15 @@ def mask_phone(phone: str | None) -> str:
     """Return a display-safe phone reference."""
     if not phone:
         return "[phone-redacted]"
-    return PHONE_RE.sub(r"\1****\2", str(phone))
+    phone_text = str(phone)
+    masked = PHONE_RE.sub(r"\1****\2", phone_text)
+    if masked != phone_text:
+        return masked
+    digits = re.sub(r"\D", "", phone_text)
+    if len(digits) >= 8:
+        prefix = "+" if phone_text.strip().startswith("+") else ""
+        return f"{prefix}{digits[:3]}****{digits[-4:]}"
+    return "[phone-redacted]"
 
 
 def redact_sensitive_text(value: Any) -> str:
@@ -27,6 +36,7 @@ def redact_sensitive_text(value: Any) -> str:
         return ""
     redacted = str(value)
     redacted = PHONE_RE.sub(r"\1****\2", redacted)
+    redacted = E164_PHONE_RE.sub(lambda match: mask_phone(match.group(1)), redacted)
     redacted = SECRET_RE.sub(r"\1\2[redacted]", redacted)
     redacted = SMS_CODE_RE.sub("[sms-code-redacted]", redacted)
     return redacted

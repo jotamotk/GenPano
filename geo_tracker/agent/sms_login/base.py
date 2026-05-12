@@ -464,6 +464,9 @@ class BaseSMSLoginHandler(ABC):
                     f"phone={mask_phone(phone)}, cookies={len(cookies_list)}"
                     + (f", localStorage={len(local_storage)} 项" if local_storage else "")
                 )
+                mark_success = getattr(sms_provider, "mark_success", None)
+                if mark_success:
+                    await mark_success(current_lease)
                 result = {"phone": phone, "cookies": cookies_list}
                 if local_storage:
                     result["localStorage"] = local_storage
