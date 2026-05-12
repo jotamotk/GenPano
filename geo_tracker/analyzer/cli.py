@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import re
 import sys
+from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, select, update
 
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
@@ -27,6 +29,12 @@ from geo_tracker.db.models import (
 from geo_tracker.analyzer.brand_detector import BrandDetector
 from geo_tracker.analyzer.llm_analyzer import LLMAnalyzer
 from geo_tracker.analyzer.citation_mapper import CitationMapper
+from geo_tracker.analyzer.fact_contract import (
+    AnalyzerCitationInput,
+    AnalyzerMentionInput,
+    AnalyzerResponseInput,
+    build_response_fact_packages,
+)
 from geo_tracker.analyzer.geo_scorer import GEOScorer
 from geo_tracker.analyzer.aggregator import Aggregator
 from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
@@ -181,6 +189,92 @@ def _find_mention_for_brand(
     return None
 
 
+def _competitor_contracts_from_competitors(competitors: list[Competitor]) -> list[dict]:
+    return [
+        {
+            "brand_id": None,
+            "brand_name": competitor.name,
+            "aliases": competitor.aliases or [],
+            "source": "configured_competitor",
+        }
+        for competitor in competitors
+    ]
+
+
+def _competitor_contracts_from_brands(brands: list[Brand]) -> list[dict]:
+    return [
+        {
+            "brand_id": brand.id,
+            "brand_name": brand.name,
+            "aliases": brand.aliases or [],
+            "source": "competitive_brand_id",
+        }
+        for brand in brands
+    ]
+
+
+def _response_input_from_pipeline(
+    *,
+    response: LLMResponse,
+    query: Query | None,
+    prompt_id: int | None,
+    topic_id: int | None,
+    has_analysis: bool,
+    mentions: list[BrandMention],
+    raw_names_by_mention_id: dict[int, str],
+    drivers_by_mention_id: dict[int, list[dict]],
+    citation_facts: list[dict],
+) -> AnalyzerResponseInput:
+    return AnalyzerResponseInput(
+        response_id=response.id,
+        query_id=response.query_id,
+        prompt_id=prompt_id,
+        topic_id=topic_id,
+        project_brand_id=query.brand_id if query else None,
+        engine=query.target_llm if query else None,
+        profile_id=query.profile_id if query else None,
+        collected_at=response.collected_at.isoformat() if response.collected_at else None,
+        analysis_status=response.analysis_status,
+        has_analysis=has_analysis,
+        raw_text=response.raw_text,
+        mentions=[
+            AnalyzerMentionInput(
+                mention_id=mention.id,
+                response_id=mention.response_id,
+                brand_id=mention.brand_id,
+                brand_name=mention.brand_name,
+                raw_name=raw_names_by_mention_id.get(mention.id, mention.brand_name),
+                is_target=bool(mention.is_target),
+                mention_count=mention.mention_count,
+                context_snippet=mention.context_snippet,
+                sentiment=mention.sentiment,
+                sentiment_score=mention.sentiment_score,
+                sentiment_drivers=drivers_by_mention_id.get(mention.id, []),
+                product_name=mention.product_name,
+                position_type=mention.position_type,
+                position_rank=mention.position_rank,
+                provenance="analyzer_pipeline",
+                confidence=None,
+            )
+            for mention in mentions
+        ],
+        citations=[
+            AnalyzerCitationInput(
+                citation_id=fact.get("citation_id"),
+                response_id=response.id,
+                mention_id=fact.get("mention_id"),
+                url=fact["url"],
+                domain=fact.get("domain"),
+                source_type=fact.get("source_type"),
+                tier=fact.get("tier"),
+                title=fact.get("title"),
+                brand_name=fact.get("brand_name"),
+            )
+            for fact in citation_facts
+        ],
+    )
+
+
 async def analyze_single_response(
     session,
     response: LLMResponse,
@@ -273,6 +367,8 @@ async def analyze_single_response(
         all_mentions = []
         processed_llm_keys = set()
         mention_facts: list[dict] = []
+        raw_names_by_mention_id: dict[int, str] = {}
+        drivers_by_mention_id: dict[int, list[dict]] = defaultdict(list)
 
         # First pass: match detected brands with LLM results
         for di, d in enumerate(detected):
@@ -337,6 +433,7 @@ async def analyze_single_response(
                 )
                 session.add(mention)
                 await session.flush()
+                raw_names_by_mention_id[mention.id] = raw_brand_name
 
                 total_mentions += d.mention_count
                 all_mentions.append(mention)
@@ -365,6 +462,14 @@ async def analyze_single_response(
                 # Create SentimentDriver records for each product entry
                 if llm_brand:
                     for driver in llm_brand.sentiment_drivers:
+                        driver_fact = {
+                            "driver_text": driver.driver_text,
+                            "polarity": driver.polarity,
+                            "category": driver.category,
+                            "strength": driver.strength,
+                            "source_quote": driver.source_quote,
+                        }
+                        drivers_by_mention_id[mention.id].append(driver_fact)
                         session.add(SentimentDriver(
                             mention_id=mention.id,
                             response_id=response.id,
@@ -413,6 +518,7 @@ async def analyze_single_response(
             )
             session.add(mention)
             await session.flush()
+            raw_names_by_mention_id[mention.id] = llm_brand.brand_name
             total_mentions += mention_count
             all_mentions.append(mention)
             mention_facts.append({
@@ -437,6 +543,14 @@ async def analyze_single_response(
                 target_mentions.append(mention)
 
             for driver in llm_brand.sentiment_drivers:
+                driver_fact = {
+                    "driver_text": driver.driver_text,
+                    "polarity": driver.polarity,
+                    "category": driver.category,
+                    "strength": driver.strength,
+                    "source_quote": driver.source_quote,
+                }
+                drivers_by_mention_id[mention.id].append(driver_fact)
                 session.add(SentimentDriver(
                     mention_id=mention.id,
                     response_id=response.id,
@@ -570,7 +684,10 @@ async def analyze_single_response(
                 ),
                 "missing_inputs": [
                     missing for missing, present in (
-                        ("brand_mentions.sentiment_score", best_target and best_target.sentiment_score is not None),
+                        (
+                            "brand_mentions.sentiment_score",
+                            best_target and best_target.sentiment_score is not None,
+                        ),
                         ("sentiment_drivers.source_quote", bool(quoted_target_driver_count)),
                     )
                     if not present
@@ -603,10 +720,30 @@ async def analyze_single_response(
                 "topic_id": topic_id,
             },
         }
+        analyzer_fact_packages = build_response_fact_packages(
+            [
+                _response_input_from_pipeline(
+                    response=response,
+                    query=query,
+                    prompt_id=prompt_id,
+                    topic_id=topic_id,
+                    has_analysis=True,
+                    mentions=all_mentions,
+                    raw_names_by_mention_id=raw_names_by_mention_id,
+                    drivers_by_mention_id=drivers_by_mention_id,
+                    citation_facts=citation_facts,
+                )
+            ],
+            target_brand_id=brand.id,
+            target_brand_name=brand.name,
+            target_aliases=brand.aliases or [],
+            configured_competitors=_competitor_contracts_from_competitors(competitors),
+        )
         raw_analysis_json = dict(llm_result.raw_json or {})
         raw_analysis_json["brand_mention_facts"] = mention_facts
         raw_analysis_json["citation_facts"] = citation_facts
         raw_analysis_json["metric_input_status"] = metric_input_status
+        raw_analysis_json["analyzer_fact_packages"] = analyzer_fact_packages
 
         # Create ResponseAnalysis
         analysis = ResponseAnalysis(
@@ -825,6 +962,260 @@ async def run_canonical_brand_repair(
         await engine.dispose()
 
 
+async def run_app_chart_fact_diagnostics(
+    *,
+    brand_id: int,
+    date_str: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    source_brand_id: int | None,
+    competitive_brand_ids: list[int] | None,
+) -> dict:
+    """Dry-run analyzer fact counters for App chart readiness.
+
+    This command performs SELECT-only diagnostics from the pipeline tables. It
+    does not repair, backfill, aggregate, or update production data.
+    """
+    if date_str:
+        start_at = _parse_day(date_str)
+        end_at = _parse_day(date_str, end_of_day=True)
+    else:
+        start_at = _parse_day(date_from) if date_from else None
+        end_at = _parse_day(date_to, end_of_day=True) if date_to else None
+
+    engine = create_task_engine()
+    try:
+        async with get_task_async_session(engine) as session:
+            brand = await session.get(Brand, brand_id)
+            if brand is None:
+                raise ValueError(f"brand_id {brand_id} not found")
+
+            competitor_brands = []
+            for cid in sorted({int(value) for value in (competitive_brand_ids or [])}):
+                competitor = await session.get(Brand, cid)
+                if competitor is not None:
+                    competitor_brands.append(competitor)
+
+            conditions = [LLMResponse.raw_text.isnot(None)]
+            if start_at is not None:
+                conditions.append(LLMResponse.collected_at >= start_at)
+            if end_at is not None:
+                conditions.append(LLMResponse.collected_at <= end_at)
+            if source_brand_id is not None:
+                conditions.append(Query.brand_id == source_brand_id)
+
+            stmt = select(LLMResponse, Query).join(Query, Query.id == LLMResponse.query_id)
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            rows = (await session.execute(stmt)).all()
+            response_ids = [response.id for response, _query in rows]
+
+            analyses_by_response: dict[int, ResponseAnalysis] = {}
+            mentions_by_response: dict[int, list[BrandMention]] = defaultdict(list)
+            citations_by_response: dict[int, list[CitationSource]] = defaultdict(list)
+            drivers_by_mention_id: dict[int, list[dict]] = defaultdict(list)
+            raw_names_by_mention_id: dict[int, str] = {}
+
+            if response_ids:
+                analyses = (
+                    await session.execute(
+                        select(ResponseAnalysis).where(ResponseAnalysis.response_id.in_(response_ids))
+                    )
+                ).scalars().all()
+                analyses_by_response = {analysis.response_id: analysis for analysis in analyses}
+                for analysis in analyses:
+                    raw = analysis.raw_analysis_json if isinstance(analysis.raw_analysis_json, dict) else {}
+                    for fact in raw.get("brand_mention_facts") or []:
+                        if isinstance(fact, dict) and fact.get("mention_id") is not None:
+                            raw_names_by_mention_id[int(fact["mention_id"])] = (
+                                fact.get("raw_brand_name")
+                                or fact.get("raw_name")
+                                or fact.get("brand_name")
+                            )
+
+                mention_rows = (
+                    await session.execute(
+                        select(BrandMention).where(BrandMention.response_id.in_(response_ids))
+                    )
+                ).scalars().all()
+                mention_ids = [mention.id for mention in mention_rows]
+                for mention in mention_rows:
+                    mentions_by_response[mention.response_id].append(mention)
+
+                if mention_ids:
+                    driver_rows = (
+                        await session.execute(
+                            select(SentimentDriver).where(SentimentDriver.mention_id.in_(mention_ids))
+                        )
+                    ).scalars().all()
+                    for driver in driver_rows:
+                        drivers_by_mention_id[driver.mention_id].append(
+                            {
+                                "driver_text": driver.driver_text,
+                                "polarity": driver.polarity,
+                                "category": driver.category,
+                                "strength": driver.strength,
+                                "source_quote": driver.source_quote,
+                            }
+                        )
+
+                citation_rows = (
+                    await session.execute(
+                        select(CitationSource).where(CitationSource.response_id.in_(response_ids))
+                    )
+                ).scalars().all()
+                for citation in citation_rows:
+                    citations_by_response[citation.response_id].append(citation)
+
+            inputs = [
+                AnalyzerResponseInput(
+                    response_id=response.id,
+                    query_id=response.query_id,
+                    prompt_id=query.prompt_id if query else None,
+                    topic_id=(await _topic_id_for_query(session, query)),
+                    project_brand_id=query.brand_id if query else None,
+                    engine=query.target_llm if query else None,
+                    profile_id=query.profile_id if query else None,
+                    collected_at=response.collected_at.isoformat() if response.collected_at else None,
+                    analysis_status=response.analysis_status,
+                    has_analysis=response.id in analyses_by_response,
+                    raw_text=response.raw_text,
+                    mentions=[
+                        AnalyzerMentionInput(
+                            mention_id=mention.id,
+                            response_id=mention.response_id,
+                            brand_id=mention.brand_id,
+                            brand_name=mention.brand_name,
+                            raw_name=raw_names_by_mention_id.get(mention.id, mention.brand_name),
+                            is_target=bool(mention.is_target),
+                            mention_count=mention.mention_count,
+                            context_snippet=mention.context_snippet,
+                            sentiment=mention.sentiment,
+                            sentiment_score=mention.sentiment_score,
+                            sentiment_drivers=drivers_by_mention_id.get(mention.id, []),
+                            product_name=mention.product_name,
+                            position_type=mention.position_type,
+                            position_rank=mention.position_rank,
+                            provenance="brand_mentions",
+                        )
+                        for mention in mentions_by_response.get(response.id, [])
+                    ],
+                    citations=[
+                        AnalyzerCitationInput(
+                            citation_id=citation.id,
+                            response_id=citation.response_id,
+                            mention_id=citation.mention_id,
+                            url=citation.url,
+                            domain=citation.domain,
+                            source_type=citation.source_type,
+                            title=citation.title,
+                        )
+                        for citation in citations_by_response.get(response.id, [])
+                    ],
+                )
+                for response, query in rows
+            ]
+            packages = build_response_fact_packages(
+                inputs,
+                target_brand_id=brand.id,
+                target_brand_name=brand.name,
+                target_aliases=brand.aliases or [],
+                configured_competitors=_competitor_contracts_from_brands(competitor_brands),
+            )
+            out = _diagnostic_summary(
+                packages,
+                brand_id=brand.id,
+                brand_name=brand.name,
+                start_at=start_at,
+                end_at=end_at,
+                source_brand_id=source_brand_id,
+                competitive_brand_ids=[brand.id for brand in competitor_brands],
+            )
+            logger.info(
+                "app chart fact diagnostics dry_run=true\n%s",
+                json.dumps(out, ensure_ascii=False, indent=2, sort_keys=True),
+            )
+            return out
+    finally:
+        await engine.dispose()
+
+
+async def _topic_id_for_query(session, query: Query | None) -> int | None:
+    if query is None or query.prompt_id is None:
+        return None
+    prompt = await session.get(Prompt, query.prompt_id)
+    return prompt.topic_id if prompt else None
+
+
+def _diagnostic_summary(
+    packages: dict,
+    *,
+    brand_id: int,
+    brand_name: str,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    source_brand_id: int | None,
+    competitive_brand_ids: list[int],
+) -> dict:
+    entities = packages["entities"]["facts"]
+    return {
+        "dry_run": True,
+        "write_performed": False,
+        "brand": {"brand_id": brand_id, "brand_name": brand_name},
+        "window": {
+            "from": start_at.isoformat() if start_at else None,
+            "to": end_at.isoformat() if end_at else None,
+            "source_brand_id": source_brand_id,
+            "competitive_brand_ids": competitive_brand_ids,
+        },
+        "response_coverage": {
+            "status": packages["coverage"]["status"],
+            "eligible": packages["coverage"]["eligible_count"],
+            "analyzed": packages["coverage"]["analyzed_count"],
+            "failed": packages["coverage"]["failed_count"],
+            "missing": packages["coverage"]["missing_analyzer_count"],
+            "reason_codes": packages["coverage"]["reason_codes"],
+        },
+        "competitor_extraction": {
+            "structured_competitors": sum(
+                1
+                for fact in entities
+                if fact["entity_role"] in {"configured_competitor", "response_named_competitor"}
+                and fact["source"] == "brand_mentions"
+            ),
+            "text_only_competitors": sum(
+                1 for fact in entities if fact["source"] == "text_configured_competitor"
+            ),
+            "competitor_names": sorted(
+                {
+                    fact["brand_name"] or fact["raw_name"]
+                    for fact in entities
+                    if fact["entity_role"] in {"configured_competitor", "response_named_competitor"}
+                }
+            ),
+        },
+        "sov": packages["sov"],
+        "sentiment": {
+            "status": packages["sentiment"]["status"],
+            "score_count": packages["sentiment"]["score_count"],
+            "label_count": packages["sentiment"]["label_count"],
+            "driver_count": packages["sentiment"]["driver_count"],
+            "quote_count": packages["sentiment"]["quote_count"],
+            "reason_codes": packages["sentiment"]["reason_codes"],
+        },
+        "citations": packages["citations"],
+        "topic_product_pano": {
+            "topic_product": packages["topic_product"],
+            "pano_geo": packages["pano_geo"],
+        },
+        "aggregate_rows": {
+            "not_recomputed": True,
+            "reason": "diagnostics command is SELECT-only and performs no production writes",
+        },
+        "rollback": "No rollback required for this dry-run diagnostics command; it performs no writes.",
+    }
+
+
 async def run_reanalyze(date_str: str) -> None:
     """Reset analysis status and re-run for a date."""
     date = datetime.strptime(date_str, "%Y-%m-%d")
@@ -896,6 +1287,24 @@ def main():
         help="After --write, aggregate the repaired single --date for the canonical brand.",
     )
 
+    # app chart fact diagnostics
+    p_diag = subparsers.add_parser(
+        "diagnose-app-chart-facts",
+        help="SELECT-only dry-run counters for #602 App chart analyzer facts",
+    )
+    p_diag.add_argument("--brand-id", type=int, required=True, help="Canonical target brand ID")
+    p_diag.add_argument("--date", help="Single date to inspect (YYYY-MM-DD)")
+    p_diag.add_argument("--from", dest="date_from", help="Start date (YYYY-MM-DD)")
+    p_diag.add_argument("--to", dest="date_to", help="End date (YYYY-MM-DD)")
+    p_diag.add_argument("--source-brand-id", type=int, help="Optional owner/source brand filter")
+    p_diag.add_argument(
+        "--competitive-brand-id",
+        action="append",
+        type=int,
+        default=[],
+        help="Competitive canonical brand ID for denominator hints; repeatable.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run-daily":
@@ -916,6 +1325,17 @@ def main():
                 competitive_brand_ids=args.competitive_brand_id,
                 write=args.write,
                 aggregate=args.aggregate,
+            )
+        )
+    elif args.command == "diagnose-app-chart-facts":
+        asyncio.run(
+            run_app_chart_fact_diagnostics(
+                brand_id=args.brand_id,
+                date_str=args.date,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                source_brand_id=args.source_brand_id,
+                competitive_brand_ids=args.competitive_brand_id,
             )
         )
     else:
