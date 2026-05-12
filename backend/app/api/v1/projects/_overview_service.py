@@ -41,6 +41,8 @@ from app.api.v1.projects._analytics_contract import (
     build_contract_context,
     context_update,
     metric_definition,
+    metric_formula_status,
+    metric_missing_inputs,
     percent_display,
     score_0_100,
 )
@@ -164,6 +166,9 @@ def _kpi_missing_inputs(
     *,
     evidence_source: str = "geo_score_daily",
 ) -> list[str]:
+    package_missing = metric_missing_inputs(context, metric_key)
+    if package_missing:
+        return package_missing
     if context.formula_status == FORMULA_OK_STATUS:
         return []
     inputs = {*context.missing_inputs, *context.missing_sources}
@@ -213,13 +218,18 @@ def _apply_kpi_contract(
         if not missing_inputs:
             out.append(card)
             continue
+        formula_status = metric_formula_status(
+            context,
+            card.metric_key,
+            FORMULA_MISSING_INPUTS_STATUS,
+        )
         out.append(
             card.model_copy(
                 update={
                     "value": None,
                     "delta_30d_pct": None,
                     "direction": None,
-                    "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+                    "formula_status": formula_status,
                 }
             )
         )
@@ -273,6 +283,17 @@ def _apply_score_component_contract(
     values: dict[str, MetricValue],
     context: AnalyticsContractContext,
 ) -> dict[str, MetricValue]:
+    pano_status = metric_formula_status(context, "pano_score")
+    if pano_status and pano_status != FORMULA_OK_STATUS:
+        return {
+            key: value.model_copy(
+                update={
+                    "value": None,
+                    "formula_status": pano_status,
+                }
+            )
+            for key, value in values.items()
+        }
     inputs = {*context.missing_inputs, *context.missing_sources}
     if context.formula_status == FORMULA_OK_STATUS:
         return values

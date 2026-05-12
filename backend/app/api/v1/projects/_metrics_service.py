@@ -32,6 +32,8 @@ from app.api.v1.projects._analytics_contract import (
     context_update,
     formula_diagnostics_for,
     metric_definition,
+    metric_formula_status,
+    metric_missing_inputs,
     ratio_decimal,
     score_0_100,
 )
@@ -190,6 +192,9 @@ def _series_missing_inputs(
     *,
     evidence_source: str = "geo_score_daily",
 ) -> list[str]:
+    package_missing = metric_missing_inputs(context, metric)
+    if package_missing:
+        return package_missing
     if evidence_source == "admin_facts":
         return []
     inputs = {*context.missing_inputs, *context.missing_sources}
@@ -231,11 +236,16 @@ def _apply_metric_series_contract(
         if not missing_inputs:
             out.append(item)
             continue
+        formula_status = metric_formula_status(
+            context,
+            item.metric,
+            FORMULA_MISSING_INPUTS_STATUS,
+        )
         out.append(
             item.model_copy(
                 update={
                     "points": [],
-                    "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+                    "formula_status": formula_status,
                     "missing_inputs": _unique([*item.missing_inputs, *missing_inputs]),
                     "state": "partial",
                     "state_reason": "missing_formula_inputs",
