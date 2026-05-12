@@ -400,6 +400,29 @@ export interface AnalyticsContractNotice {
   requestId?: string
 }
 
+export type BrandSwitchStateKey =
+  | 'no_collected_data'
+  | 'analysis_missing'
+  | 'project_unbound'
+  | 'no_aggregate_rows'
+
+export interface BrandSwitchSurfaceState {
+  surface: string
+  state: BrandSwitchStateKey
+  title: string
+  detail: string
+}
+
+export interface BrandSwitchStateContract {
+  brandId: number | null
+  brandName: string
+  projectId: string | null
+  title: string
+  blockers: BrandSwitchStateKey[]
+  states: BrandSwitchSurfaceState[]
+  evidence: string[]
+}
+
 export interface AnalyticsContractNoticeInput {
   isLive: boolean
   liveProjectId: string | null | undefined
@@ -407,6 +430,12 @@ export interface AnalyticsContractNoticeInput {
   metrics?: (MetricsOut & AnalyticsContractMetadata) | null
   isLoading?: boolean
   error?: unknown
+}
+
+export interface BrandSwitchStateContractInput extends AnalyticsContractNoticeInput {
+  requestedBrandId?: number | null
+  competitorMetrics?: (CompetitorMetricsOut & AnalyticsContractMetadata) | null
+  competitorTrends?: (CompetitorTrendsOut & AnalyticsContractMetadata) | null
 }
 
 function errorField(error: unknown, key: string): unknown {
@@ -434,6 +463,247 @@ function metricContractDetails(overview: BrandOverviewOut | null | undefined): s
     details.push(pieces.join('; '))
   }
   return details
+}
+
+const STATE_LABELS: Record<BrandSwitchStateKey, { title: string; detail: string }> = {
+  no_collected_data: {
+    title: 'No collected data',
+    detail: 'Admin has no successful collection evidence for this brand and window.',
+  },
+  analysis_missing: {
+    title: 'Analysis missing',
+    detail: 'Collected responses exist, but analyzer facts are not available yet.',
+  },
+  project_unbound: {
+    title: 'Project unbound',
+    detail: 'The active project is not bound to this brand or has no competitor context.',
+  },
+  no_aggregate_rows: {
+    title: 'No aggregate rows',
+    detail: 'Analyzer or raw evidence exists, but App chart aggregate rows are absent.',
+  },
+}
+
+const STATE_ORDER: BrandSwitchStateKey[] = [
+  'project_unbound',
+  'no_collected_data',
+  'analysis_missing',
+  'no_aggregate_rows',
+]
+
+const BRAND_SWITCH_SURFACES = [
+  'Overview',
+  'Visibility',
+  'Topics',
+  'Sentiment',
+  'Citations',
+  'Competitors',
+  'PANO trend',
+]
+
+function addState(states: Set<BrandSwitchStateKey>, value: string | null | undefined): void {
+  const text = String(value || '').toLowerCase()
+  for (const state of STATE_ORDER) {
+    if (text.includes(state)) states.add(state)
+  }
+}
+
+function evidenceCount(
+  source: AnalyticsContractMetadata | null | undefined,
+  keys: string[],
+): number | null {
+  const counts = source?.evidence_counts ?? {}
+  for (const key of keys) {
+    const value = counts[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function collectContractStates(
+  source: (AnalyticsContractMetadata & Record<string, unknown>) | null | undefined,
+  states: Set<BrandSwitchStateKey>,
+): void {
+  if (!source) return
+  addState(states, source.state_reason)
+  addState(states, source.state_detail)
+  addState(states, source.formula_status)
+  addState(states, source.project_scope?.missing_reason)
+  for (const item of [
+    ...(source.missing_sources ?? []),
+    ...(source.missing_inputs ?? []),
+    ...(source.missing_reasons ?? []),
+    ...(source.invalid_fields ?? []),
+  ]) {
+    addState(states, contractItemLabel(item))
+  }
+  for (const evidence of Object.values(source.metric_formula_evidence ?? {})) {
+    addState(states, evidence.status)
+    addState(states, evidence.formula_status)
+    for (const reason of evidence.reason_codes ?? []) addState(states, reason)
+    for (const input of evidence.missing_inputs ?? []) addState(states, input)
+  }
+
+  const projectScope = source.project_scope
+  if (
+    projectScope &&
+    (projectScope.primary_brand_id == null ||
+      (Array.isArray(projectScope.competitor_brand_ids) &&
+        projectScope.competitor_brand_ids.length === 0))
+  ) {
+    states.add('project_unbound')
+  }
+
+  const topicCount = evidenceCount(source, ['topic_count', 'topics'])
+  const promptCount = evidenceCount(source, ['prompt_count', 'prompts'])
+  const queryCount = evidenceCount(source, ['query_count', 'queries'])
+  const responseCount = evidenceCount(source, [
+    'response_count',
+    'responses',
+    'llm_response_count',
+    'successful_response_count',
+  ])
+  const analysisCount = evidenceCount(source, [
+    'analysis_count',
+    'analysis_row_count',
+    'analysis_rows',
+    'response_analysis_count',
+    'response_analyses_count',
+  ])
+  const mentionCount = evidenceCount(source, [
+    'brand_mention_count',
+    'brand_mention_row_count',
+    'brand_mention_rows',
+    'response_brand_mentions',
+  ])
+  const aggregateCount = evidenceCount(source, [
+    'aggregate_row_count',
+    'daily_aggregate_row_count',
+    'geo_score_daily_row_count',
+    'geo_score_daily_rows',
+    'topic_score_daily_row_count',
+    'topic_score_daily_rows',
+  ])
+
+  const collectedCounts = [topicCount, promptCount, queryCount, responseCount].filter(
+    (value): value is number => value != null,
+  )
+  if (collectedCounts.length > 0 && collectedCounts.every((value) => value === 0)) {
+    states.add('no_collected_data')
+  }
+  if ((responseCount ?? 0) > 0 && (analysisCount === 0 || mentionCount === 0)) {
+    states.add('analysis_missing')
+  }
+  if ((responseCount ?? 0) > 0 && aggregateCount === 0) {
+    states.add('no_aggregate_rows')
+  }
+}
+
+function firstCount(
+  sources: Array<AnalyticsContractMetadata | null | undefined>,
+  keys: string[],
+): number | null {
+  for (const source of sources) {
+    const value = evidenceCount(source, keys)
+    if (value != null) return value
+  }
+  return null
+}
+
+function contractEvidence(
+  sources: Array<AnalyticsContractMetadata | null | undefined>,
+): string[] {
+  const rows: Array<[string, string[]]> = [
+    ['topics', ['topic_count', 'topics']],
+    ['prompts', ['prompt_count', 'prompts']],
+    ['queries', ['query_count', 'queries']],
+    ['responses', ['response_count', 'responses', 'successful_response_count']],
+    ['analysis rows', ['analysis_row_count', 'analysis_rows', 'response_analysis_count']],
+    ['brand mention rows', ['brand_mention_row_count', 'brand_mention_rows']],
+    ['citation rows', ['citation_row_count', 'citation_rows']],
+    ['geo_score_daily rows', ['geo_score_daily_row_count', 'geo_score_daily_rows']],
+  ]
+  return rows
+    .map(([label, keys]) => {
+      const value = firstCount(sources, keys)
+      return value == null ? '' : `${label} ${value.toLocaleString()}`
+    })
+    .filter(Boolean)
+}
+
+function pickSurfaceState(
+  surface: string,
+  blockers: BrandSwitchStateKey[],
+): BrandSwitchStateKey {
+  if (blockers.includes('no_collected_data')) return 'no_collected_data'
+  if (surface === 'Overview') {
+    return blockers.includes('project_unbound')
+      ? 'project_unbound'
+      : blockers.includes('no_aggregate_rows')
+        ? 'no_aggregate_rows'
+        : blockers[0]
+  }
+  if (surface === 'Visibility' || surface === 'PANO trend') {
+    return blockers.includes('no_aggregate_rows') ? 'no_aggregate_rows' : blockers[0]
+  }
+  if (surface === 'Topics' || surface === 'Sentiment' || surface === 'Citations') {
+    return blockers.includes('analysis_missing') ? 'analysis_missing' : blockers[0]
+  }
+  if (surface === 'Competitors') {
+    return blockers.includes('project_unbound') ? 'project_unbound' : blockers[0]
+  }
+  return blockers[0]
+}
+
+export function buildBrandSwitchStateContract(
+  input: BrandSwitchStateContractInput,
+): BrandSwitchStateContract | null {
+  if (!input.isLive) return null
+  const sources = [
+    input.overview,
+    input.metrics,
+    input.competitorMetrics,
+    input.competitorTrends,
+  ]
+  const brandId =
+    input.requestedBrandId ??
+    input.overview?.brand_id ??
+    input.metrics?.brand_id ??
+    input.competitorMetrics?.primary_brand_id ??
+    null
+  const states = new Set<BrandSwitchStateKey>()
+  for (const source of sources) {
+    collectContractStates(source as (AnalyticsContractMetadata & Record<string, unknown>) | null, states)
+  }
+  const blockers = STATE_ORDER.filter((state) => states.has(state))
+  if (blockers.length === 0) return null
+
+  const projectId =
+    input.overview?.project_id ??
+    input.metrics?.project_id ??
+    input.competitorMetrics?.project_id ??
+    input.competitorTrends?.project_id ??
+    input.liveProjectId ??
+    null
+  const brandName = input.overview?.brand_name || (brandId ? `Brand ${brandId}` : 'Selected brand')
+
+  return {
+    brandId,
+    brandName,
+    projectId,
+    title: `${brandName} analytics states`,
+    blockers,
+    states: BRAND_SWITCH_SURFACES.map((surface) => {
+      const state = pickSurfaceState(surface, blockers)
+      return {
+        surface,
+        state,
+        title: STATE_LABELS[state].title,
+        detail: STATE_LABELS[state].detail,
+      }
+    }),
+    evidence: contractEvidence(sources),
+  }
 }
 
 export function buildAnalyticsContractNotice(

@@ -10,6 +10,7 @@ import {
   adaptOverviewToPrimary,
   adaptOverviewToSov,
   adaptOverviewToTrend,
+  buildBrandSwitchStateContract,
   buildAnalyticsContractNotice,
 } from '../../src/adapters/dashboardAdapter'
 import type { BrandOverviewOut } from '../../src/api/brandOverview'
@@ -742,6 +743,84 @@ describe('dashboard adapter', () => {
     expect(notice?.tone).toBe('empty')
     expect(notice?.title).toContain('Project context pending')
     expect(notice?.details.join(' ')).toContain('95d43022-a5c8-5944-b6d6-34b29faa18b5')
+  })
+
+  it('defines BestCoffer brand-switch states from project, analyzer, and aggregate evidence', () => {
+    const contract = buildBrandSwitchStateContract({
+      isLive: true,
+      liveProjectId: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+      requestedBrandId: 24,
+      overview: {
+        ...emptyOverview,
+        project_id: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+        brand_id: 24,
+        brand_name: 'BestCoffer',
+        state: 'empty',
+        state_reason: 'no_aggregate_rows',
+        project_scope: {
+          exists: true,
+          project_id: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+          requested_brand_id: 24,
+          primary_brand_id: null,
+          competitor_brand_ids: [],
+          missing_reason: 'project_unbound',
+        },
+        missing_sources: ['geo_score_daily'],
+        missing_reasons: ['analysis_missing', 'no_aggregate_rows'],
+        evidence_counts: {
+          topic_count: 13,
+          prompt_count: 75,
+          query_count: 464,
+          response_count: 55,
+          analysis_row_count: 0,
+          brand_mention_row_count: 0,
+          citation_row_count: 0,
+          geo_score_daily_row_count: 0,
+        },
+      } as unknown as BrandOverviewOut,
+    })
+
+    expect(contract?.brandId).toBe(24)
+    expect(contract?.states.map((item) => [item.surface, item.state])).toEqual([
+      ['Overview', 'project_unbound'],
+      ['Visibility', 'no_aggregate_rows'],
+      ['Topics', 'analysis_missing'],
+      ['Sentiment', 'analysis_missing'],
+      ['Citations', 'analysis_missing'],
+      ['Competitors', 'project_unbound'],
+      ['PANO trend', 'no_aggregate_rows'],
+    ])
+    expect(contract?.blockers).toEqual([
+      'project_unbound',
+      'analysis_missing',
+      'no_aggregate_rows',
+    ])
+    expect(contract?.evidence.join(' ')).toContain('responses 55')
+    expect(contract?.evidence.join(' ')).toContain('geo_score_daily rows 0')
+  })
+
+  it('separates no collected data from missing analyzer work', () => {
+    const contract = buildBrandSwitchStateContract({
+      isLive: true,
+      liveProjectId: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+      requestedBrandId: 24,
+      overview: {
+        ...emptyOverview,
+        brand_id: 24,
+        brand_name: 'BestCoffer',
+        state: 'empty',
+        state_reason: 'no_collected_data',
+        evidence_counts: {
+          topic_count: 0,
+          prompt_count: 0,
+          query_count: 0,
+          response_count: 0,
+        },
+      } as unknown as BrandOverviewOut,
+    })
+
+    expect(contract?.states.every((item) => item.state === 'no_collected_data')).toBe(true)
+    expect(contract?.blockers).toEqual(['no_collected_data'])
   })
 
   it('summarizes 401 and 403 failures as auth states', () => {

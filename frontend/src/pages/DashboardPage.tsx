@@ -5,6 +5,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import DashboardEmptyState from '../components/empty/DashboardEmptyState';
 import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
+import BrandSwitchStateContract from '../components/dashboard/BrandSwitchStateContract';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
@@ -27,6 +28,7 @@ import {
   adaptDiagnostics,
   adaptMetricsToSparklines,
   adaptIndustryAvgGeo,
+  buildBrandSwitchStateContract,
   buildAnalyticsContractNotice,
   type AnalyticsContractNotice,
 } from '../adapters/dashboardAdapter';
@@ -220,6 +222,38 @@ export default function DashboardPage() {
       analyticsError,
     ],
   );
+  const brandSwitchContract = useMemo(
+    () => buildBrandSwitchStateContract({
+      isLive,
+      liveProjectId,
+      requestedBrandId: brandIdOverride,
+      overview: overviewQ.data ?? null,
+      metrics: metricsQ.data ?? null,
+      competitorMetrics: competitorsQ.data ?? null,
+      competitorTrends: competitorTrendsQ.data ?? null,
+      isLoading: isLive && (
+        overviewQ.isLoading ||
+        metricsQ.isLoading ||
+        competitorsQ.isLoading ||
+        competitorTrendsQ.isLoading
+      ),
+      error: analyticsError,
+    }),
+    [
+      isLive,
+      liveProjectId,
+      brandIdOverride,
+      overviewQ.data,
+      metricsQ.data,
+      competitorsQ.data,
+      competitorTrendsQ.data,
+      overviewQ.isLoading,
+      metricsQ.isLoading,
+      competitorsQ.isLoading,
+      competitorTrendsQ.isLoading,
+      analyticsError,
+    ],
+  );
 
   /* ── Adapter: convert backend → BrandPanoramaPanel prop shape ── */
   const adapted = useMemo(() => {
@@ -358,6 +392,7 @@ export default function DashboardPage() {
   return (
     <>
       <AnalyticsContractStatus notice={analyticsNotice} />
+      <BrandSwitchStateContract contract={brandSwitchContract} />
       <BrandPanoramaPanel
         primary={primaryForPanel}
         industry={mockIndustry}
