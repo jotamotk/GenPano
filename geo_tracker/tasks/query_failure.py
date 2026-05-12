@@ -13,6 +13,7 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "no_input",
         "no_response",
         "page_load_failed",
+        "page_unavailable",
         "proxy_unavailable",
         "soft_time_limit",
     }
