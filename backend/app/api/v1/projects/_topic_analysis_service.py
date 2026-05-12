@@ -110,6 +110,15 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def _response_preview(value: Any, max_chars: int = 280) -> str | None:
+    if value is None:
+        return None
+    preview = " ".join(str(value).split())
+    if not preview:
+        return None
+    return preview[:max_chars]
+
+
 def _date_key(value: Any) -> str | None:
     if value is None:
         return None
@@ -1383,6 +1392,8 @@ async def get_prompt_queries(
                     executed_at=_iso(day_row.get("query_executed_at")),
                     finished_at=_iso(day_row.get("query_finished_at")),
                     latency_ms=_as_int(day_row.get("latency_ms")),
+                    response_preview=_response_preview(day_row.get("response_raw_text")),
+                    response_created_at=_iso(day_row.get("response_created_at")),
                     target_mentioned=_fact_target_mention_count(day_row) > 0,
                     citation_count=int(day_row.get("citation_count") or 0),
                     geo_score=_round(day_row.get("geo_score")),

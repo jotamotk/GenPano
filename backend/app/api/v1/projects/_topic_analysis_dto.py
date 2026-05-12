@@ -108,6 +108,8 @@ class PromptQueryDailyRow(BaseModel):
     executed_at: str | None = None
     finished_at: str | None = None
     latency_ms: int | None = None
+    response_preview: str | None = None
+    response_created_at: str | None = None
     target_mentioned: bool = False
     citation_count: int = 0
     geo_score: float | None = None

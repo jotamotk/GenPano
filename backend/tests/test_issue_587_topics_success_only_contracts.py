@@ -44,6 +44,12 @@ def test_latest_response_order_places_null_created_at_after_dated_rows() -> None
     assert topic_service._response_latest_order_sql({"id"}) == "r2.id DESC"
 
 
+def test_response_preview_normalizes_truncates_and_handles_empty_text() -> None:
+    assert topic_service._response_preview(None) is None
+    assert topic_service._response_preview(" \n\t ") is None
+    assert topic_service._response_preview(" alpha\n  beta\tgamma ", max_chars=12) == "alpha beta g"
+
+
 @pytest_asyncio.fixture
 async def user(db_session: AsyncSession) -> User:
     u = User(
@@ -201,7 +207,8 @@ async def _seed_success_only_workspace(
                  'Older complete answer mentioning Test Brand and Old Rival.',
                  'chatgpt', 'commercial', 'gpt-test', '[]', :older_time),
                 (587202, 587102, 58702,
-                 'Latest complete answer mentioning Test Brand, Rival Lab, and Retinol Pro.',
+                 'Latest complete answer   mentioning Test Brand,
+Rival Lab, and Retinol Pro.',
                  'chatgpt', 'commercial', 'gpt-test', '[]', :latest_time),
                 (587203, 587106, 58702,
                  'Middle complete answer mentioning Test Brand from another engine.',
@@ -416,6 +423,7 @@ async def _seed_success_only_workspace(
         "pending_query_id": 587104,
         "no_response_query_id": 587105,
         "latest_response_id": 587202,
+        "latest_response_created_at": str(latest_time),
         "success_day": success_day.date().isoformat(),
     }
 
@@ -522,6 +530,11 @@ async def test_prompt_and_query_contracts_use_daily_latest_and_attempts(
     assert group["citation_count"] == 2
     assert [row["query_id"] for row in group["daily_latest"]] == [ids["latest_query_id"]]
     assert group["daily_latest"][0]["date"] == ids["success_day"]
+    assert (
+        group["daily_latest"][0]["response_preview"]
+        == "Latest complete answer mentioning Test Brand, Rival Lab, and Retinol Pro."
+    )
+    assert group["daily_latest"][0]["response_created_at"] == ids["latest_response_created_at"]
     assert group["daily_latest"][0]["citation_count"] == 2
 
     excluded_ids = {
