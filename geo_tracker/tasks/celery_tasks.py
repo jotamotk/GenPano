@@ -14,6 +14,7 @@ import logging
 import os
 import time
 import uuid
+from urllib.parse import urlparse
 
 from celery import Celery
 from celery.schedules import crontab
@@ -27,6 +28,8 @@ from geo_tracker.agent.browser_lifecycle import (
 )
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
 from geo_tracker.agent.response_validation import (
+    chatgpt_auth_state_reason,
+    doubao_auth_state_reason,
     doubao_persistence_auth_reason,
     invalid_response_reason,
 )
@@ -43,7 +46,7 @@ from geo_tracker.db.models import (
     BrandMention, SentimentDriver, CitationSource,
     ResponseAnalysis, ProductFeatureMention,
 )
-from geo_tracker.pool.account_pool import AccountPool
+from geo_tracker.pool.account_pool import AccountPool, EXPIRED_ACCOUNT_REASONS
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
@@ -73,6 +76,136 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def _keep_alive_auto_relogin_enabled() -> bool:
     return _env_flag("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", False)
+
+
+def _safe_url_host(url: str | None) -> str:
+    if not url:
+        return "unknown"
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return "unknown"
+    return host.split("@")[-1].split(":")[0] or "unknown"
+
+
+def _keep_alive_body_marker(reason: str | None) -> str:
+    return {
+        "chatgpt_auth_redirect": "auth_redirect",
+        "chatgpt_login_page": "login_page",
+        "chatgpt_not_logged_in": "logged_out_shell",
+        "cookies_expired": "session_expired",
+        "doubao_auth_state_missing": "auth_state_missing",
+        "doubao_not_logged_in": "login_chrome",
+        "login_redirect": "login_redirect",
+        "session_expired": "session_expired",
+        "token_invalidated": "token_invalidated",
+    }.get(reason or "", "auth_loss")
+
+
+async def _page_text_title_html(page) -> tuple[str, str, str]:
+    body_text = ""
+    page_title = ""
+    html = ""
+    try:
+        body_text = await page.evaluate("document.body?.innerText || ''")
+    except Exception:
+        pass
+    try:
+        page_title = await page.title()
+    except Exception:
+        pass
+    try:
+        html = await page.evaluate("document.body?.outerHTML || ''")
+    except Exception:
+        pass
+    return body_text or "", page_title or "", html or ""
+
+
+async def _keep_alive_probe_failure_reason(
+    llm_name: str, config: dict, page
+) -> tuple[str | None, str]:
+    """Classify keep-alive auth loss without logging page bodies or cookies."""
+    current_url = getattr(page, "url", None)
+    url_host = _safe_url_host(current_url)
+    body_text, page_title, html = await _page_text_title_html(page)
+    llm = (llm_name or "").lower()
+
+    if llm == "chatgpt":
+        reason = chatgpt_auth_state_reason(
+            body_text,
+            url=current_url,
+            title=page_title,
+        )
+        if reason:
+            return reason, f"url_host={url_host} body_marker={_keep_alive_body_marker(reason)}"
+
+    if llm == "doubao":
+        reason = doubao_auth_state_reason(body_text, html)
+        if reason:
+            return reason, f"url_host={url_host} body_marker={_keep_alive_body_marker(reason)}"
+
+    reason = invalid_response_reason(llm, body_text)
+    if reason in EXPIRED_ACCOUNT_REASONS:
+        return reason, f"url_host={url_host} body_marker={_keep_alive_body_marker(reason)}"
+
+    login_domains = config.get("login_redirect_domains", [])
+    if current_url and any(domain in current_url for domain in login_domains):
+        reason = "login_redirect"
+        return reason, f"url_host={url_host} body_marker={_keep_alive_body_marker(reason)}"
+
+    return None, f"url_host={url_host} body_marker=none"
+
+
+async def _chatgpt_keep_alive_session_failure_reason(page) -> tuple[str | None, str]:
+    """Validate ChatGPT session endpoint without exposing the response body."""
+    try:
+        resp = await page.goto(
+            "https://chatgpt.com/api/auth/session",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+    except Exception:
+        return "chatgpt_auth_redirect", "session_probe=exception"
+
+    if not resp:
+        return "chatgpt_auth_redirect", "session_probe=no_response"
+
+    status = getattr(resp, "status", "unknown")
+    if not getattr(resp, "ok", False):
+        return "chatgpt_auth_redirect", f"session_http_status={status}"
+
+    try:
+        body = await page.inner_text("body")
+        session_data = json_mod.loads(body)
+    except Exception:
+        return "chatgpt_auth_redirect", f"session_http_status={status} session_json=false"
+
+    if not isinstance(session_data, dict) or not session_data.get("accessToken"):
+        return (
+            "chatgpt_not_logged_in",
+            f"session_http_status={status} session_access_token=false",
+        )
+
+    return None, f"session_http_status={status} session_access_token=true"
+
+
+def _merge_refreshed_cookie_payload(
+    previous_cookies_json: str | None,
+    refreshed_cookies: list,
+) -> str:
+    try:
+        old_data = json_mod.loads(previous_cookies_json or "")
+    except Exception:
+        old_data = None
+
+    if isinstance(old_data, dict):
+        payload = {"cookies": refreshed_cookies}
+        for key in ("localStorage", "storageState"):
+            if key in old_data:
+                payload[key] = old_data[key]
+        return json_mod.dumps(payload)
+
+    return json_mod.dumps(refreshed_cookies)
 
 
 DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
@@ -933,8 +1066,10 @@ def cookie_keep_alive() -> dict:
 
     async def _run():
         results = {"refreshed": 0, "failed": 0, "skipped": 0, "details": []}
+        run_id = f"cookie_keep_alive:{uuid.uuid4().hex[:12]}"
 
         async with get_task_async_session(task_engine) as db:
+            pool = AccountPool(db)
             # 获取所有有 cookies 的活跃账号
             stmt = select(LLMAccount).where(
                 LLMAccount.status == AccountStatus.ACTIVE.value,
@@ -974,17 +1109,11 @@ def cookie_keep_alive() -> dict:
                     if refreshed_cookies:
                         from datetime import datetime as dt
                         # 保留 localStorage 数据（新格式）
-                        try:
-                            old_data = json_mod.loads(account.cookies_json)
-                            if isinstance(old_data, dict) and "localStorage" in old_data:
-                                account.cookies_json = json_mod.dumps({
-                                    "cookies": refreshed_cookies,
-                                    "localStorage": old_data["localStorage"],
-                                })
-                            else:
-                                account.cookies_json = json_mod.dumps(refreshed_cookies)
-                        except Exception:
-                            account.cookies_json = json_mod.dumps(refreshed_cookies)
+                        previous_status = str(account.status or "")
+                        account.cookies_json = _merge_refreshed_cookie_payload(
+                            account.cookies_json,
+                            refreshed_cookies,
+                        )
                         account.cookies_updated_at = dt.utcnow()
                         await db.commit()
                         results["refreshed"] += 1
@@ -992,17 +1121,57 @@ def cookie_keep_alive() -> dict:
                             f"#{account.id} {llm_name}: refreshed {len(refreshed_cookies)} cookies"
                         )
                         logger.info(
-                            f"cookie_keep_alive: #{account.id} {llm_name} refreshed "
-                            f"({len(refreshed_cookies)} cookies)"
+                            "cookie_keep_alive lifecycle account_id=%s engine=%s "
+                            "previous_status=%s new_status=%s reason=%s "
+                            "run_id=%s evidence=%s account_ref=%s",
+                            account.id,
+                            llm_name,
+                            previous_status or "unknown",
+                            str(account.status or ""),
+                            "keep_alive_refreshed",
+                            run_id,
+                            f"cookie_count={len(refreshed_cookies)}",
+                            f"id:{account.id}",
                         )
                     else:
                         results["failed"] += 1
+                        failure_reason = (
+                            getattr(executor, "last_error_reason", None)
+                            or "cookie_keep_alive_probe_failed"
+                        )
+                        evidence = (
+                            getattr(executor, "keep_alive_evidence", None)
+                            or "probe_result=none"
+                        )
                         results["details"].append(
-                            f"#{account.id} {llm_name}: refresh failed (cookies may be expired)"
+                            f"#{account.id} {llm_name}: refresh failed reason={failure_reason}"
                         )
                         logger.warning(
-                            f"cookie_keep_alive: #{account.id} {llm_name} refresh failed"
+                            "cookie_keep_alive lifecycle account_id=%s engine=%s "
+                            "previous_status=%s new_status=%s reason=%s "
+                            "run_id=%s evidence=%s account_ref=%s",
+                            account.id,
+                            llm_name,
+                            str(account.status or "unknown"),
+                            (
+                                AccountStatus.EXPIRED.value
+                                if failure_reason in EXPIRED_ACCOUNT_REASONS
+                                else str(account.status or "unknown")
+                            ),
+                            failure_reason,
+                            run_id,
+                            evidence,
+                            f"id:{account.id}",
                         )
+                        if failure_reason in EXPIRED_ACCOUNT_REASONS:
+                            await pool.report_failure(
+                                account.id,
+                                reason=failure_reason,
+                                evidence=evidence,
+                                provider="cookie_keep_alive",
+                                run_id=run_id,
+                            )
+                            await db.refresh(account)
                         # 触发自动重新登录 (生产事故 2026-04-27: 加去重锁,
                         # 防止 keep-alive 周期性反复触发同账号登录)
                         if (
@@ -1433,11 +1602,19 @@ async def _visit_and_refresh(
         await page.wait_for_timeout(random.randint(3000, 6000))
 
         # 检查是否被重定向到登录页
-        current_url = page.url
-        login_domains = config.get("login_redirect_domains", [])
-        if any(d in current_url for d in login_domains):
+        auth_reason, evidence = await _keep_alive_probe_failure_reason(
+            llm_name,
+            config,
+            page,
+        )
+        if auth_reason:
+            executor.last_error_reason = auth_reason
+            executor.keep_alive_evidence = evidence
             logger.warning(
-                f"cookie_keep_alive: {llm_name} redirected to login: {current_url}"
+                "cookie_keep_alive: %s auth probe failed reason=%s evidence=%s",
+                llm_name,
+                auth_reason,
+                evidence,
             )
             return None
 
@@ -1451,6 +1628,11 @@ async def _visit_and_refresh(
             ]
             matched = [kw for kw in login_keywords if kw in body_text]
             if len(matched) >= 2:
+                executor.last_error_reason = "doubao_not_logged_in"
+                executor.keep_alive_evidence = (
+                    f"url_host={_safe_url_host(getattr(page, 'url', None))} "
+                    "body_marker=login_chrome"
+                )
                 logger.warning(
                     f"cookie_keep_alive: {llm_name} login page detected "
                     f"(matched: {matched})"
@@ -1458,6 +1640,24 @@ async def _visit_and_refresh(
                 return None
 
         # 模拟人类浏览：随机滚动
+        if llm_name == "chatgpt":
+            auth_reason, evidence = await _chatgpt_keep_alive_session_failure_reason(page)
+            if auth_reason:
+                executor.last_error_reason = auth_reason
+                executor.keep_alive_evidence = evidence
+                logger.warning(
+                    "cookie_keep_alive: %s session probe failed reason=%s evidence=%s",
+                    llm_name,
+                    auth_reason,
+                    evidence,
+                )
+                return None
+            try:
+                await page.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(random.randint(1000, 3000))
+            except Exception:
+                pass
+
         try:
             await page.mouse.move(
                 random.randint(200, 800), random.randint(200, 500),
