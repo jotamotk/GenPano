@@ -1,8 +1,8 @@
 """Controlled BestCoffer analyzer backfill for issue #686.
 
-This module is intentionally dry-run first. Apply mode requires an explicit
-issue #686 approval URL and only touches selected successful response ids plus
-their analyzer artifacts and requested aggregate rows.
+This module is intentionally dry-run first. Apply mode requires explicit
+issue #686 production-write approval evidence and only touches selected
+successful response ids plus their analyzer artifacts and requested aggregate rows.
 """
 
 from __future__ import annotations
@@ -38,9 +38,10 @@ from geo_tracker.db.models import (
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-GITHUB_ISSUE_RE = re.compile(
+GITHUB_ISSUE_COMMENT_RE = re.compile(
     r"^https://github\.com/jotamotk/trash_test/issues/686"
-    r"(#issuecomment-[0-9]+)?$"
+    r"#issuecomment-[0-9]+(?P<evidence>.*)$",
+    re.IGNORECASE,
 )
 MAX_LIMIT = 75
 
@@ -139,10 +140,19 @@ def validate_scope(scope: BestCofferAnalyzerBackfillScope, *, apply: bool = Fals
 
 def validate_approval_ref(approval_ref: str | None) -> str:
     value = (approval_ref or "").strip()
-    if not value or not GITHUB_ISSUE_RE.match(value):
+    match = GITHUB_ISSUE_COMMENT_RE.match(value) if value else None
+    normalized = re.sub(r"[-_]+", " ", value.lower())
+    has_write_approval = (
+        bool(re.search(r"\bproduction\s+writes?\b", normalized))
+        and bool(re.search(r"\bapprov\w*\b", normalized))
+        and "bestcoffer" in normalized
+        and ("apply" in normalized or "backfill" in normalized)
+    )
+    if not match or not has_write_approval:
         raise ValueError(
-            "apply mode requires approval_ref in "
-            "https://github.com/jotamotk/trash_test/issues/686"
+            "apply mode requires approval_ref to include a #686 issue comment URL "
+            "and explicit production-write approval evidence for BestCoffer "
+            "apply/backfill"
         )
     return value
 
@@ -166,6 +176,21 @@ def _response_invalid_reason(response: LLMResponse, query: Query) -> str | None:
         if reason:
             return reason
     return invalid_response_reason(llm_name, response.raw_text)
+
+
+def _target_scope_invalid_reason(
+    scope: BestCofferAnalyzerBackfillScope,
+    query: Query,
+    topic: Topic | None,
+) -> str | None:
+    if not (scope.normalized_response_ids() or scope.normalized_query_ids()):
+        return None
+    target_brand_id = int(scope.brand_id)
+    query_brand_id = int(query.brand_id) if query.brand_id is not None else None
+    topic_brand_id = int(topic.brand_id) if topic and topic.brand_id is not None else None
+    if query_brand_id == target_brand_id or topic_brand_id == target_brand_id:
+        return None
+    return "outside_target_brand_scope"
 
 
 async def _load_candidates(
@@ -237,6 +262,9 @@ async def collect_candidate_responses(
 
     out: list[CandidateResponse] = []
     for response, query, prompt, topic in rows:
+        invalid_reason = _target_scope_invalid_reason(scope, query, topic)
+        if invalid_reason is None:
+            invalid_reason = _response_invalid_reason(response, query)
         out.append(
             CandidateResponse(
                 response_id=int(response.id),
@@ -249,7 +277,7 @@ async def collect_candidate_responses(
                 collected_at=response.collected_at.isoformat() if response.collected_at else None,
                 analysis_status=response.analysis_status,
                 has_analysis=int(response.id) in analysis_response_ids,
-                invalid_reason=_response_invalid_reason(response, query),
+                invalid_reason=invalid_reason,
             )
         )
     return out
@@ -393,8 +421,9 @@ async def build_bestcoffer_analyzer_backfill_report(
             "does not catch up this brand slice automatically."
         ),
         "apply_plan": (
-            "Dry-run only. To apply, rerun with --apply and an approval_ref from "
-            "issue #686; the tool re-runs analyzer only for selected response_ids."
+            "Dry-run only. To apply, rerun with --apply and an approval_ref that "
+            "includes a #686 issue comment URL plus explicit production-write "
+            "approval evidence for BestCoffer apply/backfill."
         ),
         "rollback": (
             "Apply mutates only selected response analyzer artifacts "
@@ -414,6 +443,14 @@ async def build_bestcoffer_analyzer_backfill_report(
         analyze_func = analyze_single_response
 
     apply_results: list[dict] = []
+    if not selected:
+        report["apply_results"] = apply_results
+        report["after"] = before
+        report["apply_plan"] = (
+            "No selected response_ids after validation; no analyzer writes performed."
+        )
+        return report
+
     for candidate in selected:
         response, brand, competitors, intent = await _load_analyzer_inputs(
             session,
@@ -508,7 +545,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--approval-ref",
         default="",
-        help="Issue #686 URL required with --apply",
+        help=(
+            "Issue #686 comment URL plus explicit production-write approval evidence "
+            "required with --apply"
+        ),
     )
     return parser
 

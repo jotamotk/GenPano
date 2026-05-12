@@ -29,6 +29,14 @@ from geo_tracker.tasks.bestcoffer_analyzer_backfill import (
     validate_approval_ref,
 )
 
+EXPLICIT_PROD_APPROVAL_REF = (
+    "https://github.com/jotamotk/trash_test/issues/686#issuecomment-4433999999 "
+    "explicit production-write-approved evidence for BestCoffer analyzer backfill apply"
+)
+DISPATCH_ONLY_REF = (
+    "https://github.com/jotamotk/trash_test/issues/686#issuecomment-4433719761"
+)
+
 
 @pytest_asyncio.fixture
 async def session() -> AsyncGenerator[AsyncSession, None]:
@@ -131,6 +139,49 @@ async def _seed_bestcoffer_scope(session: AsyncSession) -> datetime:
     return day
 
 
+async def _seed_unrelated_response(session: AsyncSession) -> None:
+    day = datetime(2026, 4, 24, 11, 0)
+    session.add(
+        Topic(id=2201, brand_id=2, text="Unrelated beauty discovery", category="category")
+    )
+    await session.flush()
+    session.add(
+        Prompt(
+            id=2202,
+            topic_id=2201,
+            text="best sunscreen",
+            intent="non_brand",
+            language="en",
+            tags={"prompt_scope": "nonbrand", "topic_dimension": "category"},
+        )
+    )
+    await session.flush()
+    session.add(
+        Query(
+            id=2203,
+            prompt_id=2202,
+            brand_id=2,
+            query_text="best sunscreen for sensitive skin",
+            target_llm="chatgpt",
+            status=QueryStatus.DONE.value,
+            created_at=day,
+        )
+    )
+    await session.flush()
+    session.add(
+        LLMResponse(
+            id=2210,
+            query_id=2203,
+            raw_text="La Roche-Posay is recommended for sensitive skin sunscreen.",
+            citations_json=[],
+            response_time_ms=800,
+            collected_at=day,
+            analysis_status=AnalysisStatus.PENDING.value,
+        )
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_dry_run_selects_successful_bestcoffer_responses_and_excludes_invalid_artifacts(
     session: AsyncSession,
@@ -215,7 +266,7 @@ async def test_apply_uses_requested_brand_target_and_aggregates_selected_days(
         ),
         apply=True,
         aggregate=True,
-        approval_ref="https://github.com/jotamotk/trash_test/issues/686",
+        approval_ref=EXPLICIT_PROD_APPROVAL_REF,
         analyze_func=fake_analyze,
     )
 
@@ -269,11 +320,63 @@ async def test_apply_requires_issue_686_approval_ref(session: AsyncSession) -> N
     "approval_ref",
     [
         "https://github.com/jotamotk/trash_test/issues/686",
-        "https://github.com/jotamotk/trash_test/issues/686#issuecomment-4433719761",
+        DISPATCH_ONLY_REF,
     ],
 )
-def test_approval_ref_accepts_issue_686_urls(approval_ref: str) -> None:
-    assert validate_approval_ref(approval_ref) == approval_ref
+def test_approval_ref_rejects_non_production_write_evidence(approval_ref: str) -> None:
+    with pytest.raises(ValueError, match="production-write approval"):
+        validate_approval_ref(approval_ref)
+
+
+def test_approval_ref_accepts_explicit_production_write_evidence() -> None:
+    assert validate_approval_ref(EXPLICIT_PROD_APPROVAL_REF) == EXPLICIT_PROD_APPROVAL_REF
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope_kwargs",
+    [
+        {"response_ids": (2210,)},
+        {"query_ids": (2203,)},
+    ],
+)
+async def test_apply_excludes_explicit_ids_outside_bestcoffer_scope(
+    session: AsyncSession,
+    scope_kwargs: dict,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    await _seed_unrelated_response(session)
+    analyzed: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        analyzed.append(response.id)
+        response.analysis_status = AnalysisStatus.DONE.value
+        await session.commit()
+        return {"response_id": response.id, "status": "done"}
+
+    report = await build_bestcoffer_analyzer_backfill_report(
+        session,
+        BestCofferAnalyzerBackfillScope(
+            brand_id=24,
+            limit=10,
+            **scope_kwargs,
+        ),
+        apply=True,
+        approval_ref=EXPLICIT_PROD_APPROVAL_REF,
+        analyze_func=fake_analyze,
+    )
+
+    assert analyzed == []
+    assert report["write_performed"] is False
+    assert report["selected_response_ids"] == []
+    assert report["selected_query_ids"] == []
+    assert report["before"]["candidate_count"] == 1
+    assert report["before"]["selected_count"] == 0
+    assert report["before"]["excluded_invalid_count"] == 1
+    assert (
+        report["before"]["excluded_rows"][0]["invalid_reason"]
+        == "outside_target_brand_scope"
+    )
 
 
 @pytest.mark.asyncio
@@ -295,7 +398,7 @@ async def test_apply_failure_preserves_report_and_stops_before_aggregate(
             ),
             apply=True,
             aggregate=True,
-            approval_ref="https://github.com/jotamotk/trash_test/issues/686",
+            approval_ref=EXPLICIT_PROD_APPROVAL_REF,
             analyze_func=fake_analyze,
         )
 
