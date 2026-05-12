@@ -300,15 +300,15 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
     assert citation_body["items"][0]["domain"] == "example.com"
     assert citation_body["formula_status"] != "no_evidence"
     composition_body = composition.json()
-    assert composition_body["total"] == 1
+    assert composition_body["total"] == 0
+    assert composition_body["segments"] == []
     assert composition_body["formula_status"] == "partial"
     assert (
         "response_analyses.raw_analysis_json.analyzer_fact_packages"
         in composition_body["missing_inputs"]
     )
     authority_body = authority.json()
-    assert authority_body["points"][0]["date"] == WINDOW_FROM
-    assert authority_body["points"][0]["untiered_pct"] == pytest.approx(100.0)
+    assert authority_body["points"] == []
     assert authority_body["formula_status"] == "partial"
 
 
@@ -432,6 +432,6 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
         "response_analyses.raw_analysis_json.analyzer_fact_packages"
         in by_engine_body["missing_inputs"]
     )
-    assert by_engine_body["items"][0]["positive"] == 1
+    assert by_engine_body["items"] == []
     assert metric_series["formula_status"] == "ok"
     assert metric_series["points"][0]["value"] == pytest.approx(0.42)

@@ -126,14 +126,7 @@ async def test_sentiment_by_engine_uses_response_window_when_mentions_were_repai
     assert body["evidence_count"] == 1
     assert body["evidence_counts"]["sentiment_label_count"] == 1
     assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
-    assert body["items"] == [
-        {
-            "engine": "chatgpt",
-            "positive": 1,
-            "neutral": 0,
-            "negative": 0,
-        }
-    ]
+    assert body["items"] == []
 
 
 @pytest.mark.asyncio

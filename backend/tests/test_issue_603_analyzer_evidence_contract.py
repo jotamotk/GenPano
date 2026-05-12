@@ -901,6 +901,110 @@ async def test_engine_metrics_chart_nulls_legacy_values_when_analyzer_packages_m
 
 
 @pytest.mark.asyncio
+async def test_sentiment_by_engine_clears_legacy_counts_when_analyzer_packages_missing(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=6661,
+        prompt_id=6662,
+        query_id=6663,
+        response_id=6664,
+    )
+    db_session.add(
+        BrandMention(
+            response_id=6664,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            mention_count=1,
+            sentiment="positive",
+            sentiment_score=0.8,
+            created_at=DAY,
+        )
+    )
+    await db_session.commit()
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert body["items"] == []
+    assert body["evidence_count"] == 1
+    assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
+    assert body["metric_formula_evidence"]["sentiment"]["formula_status"] == (
+        "missing_required_inputs"
+    )
+
+
+@pytest.mark.asyncio
+async def test_citation_composition_clears_legacy_segments_when_analyzer_packages_missing(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=6671,
+        prompt_id=6672,
+        query_id=6673,
+        response_id=6674,
+    )
+    mention = BrandMention(
+        response_id=6674,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add(
+        CitationSource(
+            response_id=6674,
+            mention_id=mention.id,
+            url="https://example.com/evidence",
+            domain="example.com",
+            title="Evidence",
+            source_type="publisher",
+            created_at=DAY,
+        )
+    )
+    await db_session.commit()
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/citations/composition",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert body["segments"] == []
+    assert body["total"] == 0
+    assert body["evidence_count"] == 1
+    assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
+    assert body["metric_formula_evidence"]["citation"]["formula_status"] == (
+        "missing_required_inputs"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sentiment_and_citation_charts_apply_analyzer_package_status(
     client,
     user: User,
@@ -1008,7 +1112,9 @@ async def test_sentiment_and_citation_charts_apply_analyzer_package_status(
     assert authority_body["state"] == "partial"
     assert authority_body["formula_status"] == "partial"
     assert "unresolved_citation_attribution" in authority_body["missing_inputs"]
+    assert authority_body["points"] == []
     assert composition_body["state"] == "partial"
     assert composition_body["formula_status"] == "partial"
-    assert composition_body["total"] == 1
+    assert composition_body["segments"] == []
+    assert composition_body["total"] == 0
     assert composition_body["metric_formula_evidence"]["citation"]["unresolved_count"] == 1

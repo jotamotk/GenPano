@@ -317,6 +317,95 @@ async def _with_chart_contract[ChartOutT: BaseModel](
     return out.model_copy(update=update) if update else out
 
 
+def _contract_metric_status(update: dict[str, Any], metric_key: str) -> str | None:
+    evidence = update.get("metric_formula_evidence") or {}
+    metric_evidence = evidence.get(_metric_evidence_key(metric_key))
+    if not isinstance(metric_evidence, dict):
+        return None
+    return str(metric_evidence.get("formula_status") or FORMULA_MISSING_INPUTS_STATUS)
+
+
+def _contract_metric_non_ok(update: dict[str, Any], metric_key: str) -> bool:
+    status = _contract_metric_status(update, metric_key)
+    return status is not None and status != FORMULA_OK_STATUS
+
+
+async def _with_sentiment_by_engine_contract(
+    out: SentimentByEngineOut,
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    source_provenance: list[str],
+) -> SentimentByEngineOut:
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["sentiment"],
+        source_provenance=source_provenance,
+    )
+    if not update:
+        return out
+    if _contract_metric_non_ok(update, "sentiment"):
+        update["items"] = []
+    return out.model_copy(update=update)
+
+
+async def _with_authority_trend_contract(
+    out: AuthorityTrendOut,
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    source_provenance: list[str],
+) -> AuthorityTrendOut:
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["citation"],
+        source_provenance=source_provenance,
+    )
+    if not update:
+        return out
+    if _contract_metric_non_ok(update, "citation"):
+        update["points"] = []
+    return out.model_copy(update=update)
+
+
+async def _with_citation_composition_contract(
+    out: CitationCompositionOut,
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    source_provenance: list[str],
+) -> CitationCompositionOut:
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["citation"],
+        source_provenance=source_provenance,
+    )
+    if not update:
+        return out
+    if _contract_metric_non_ok(update, "citation"):
+        update["segments"] = []
+        update["total"] = 0
+    return out.model_copy(update=update)
+
+
 def _apply_engine_metric_contract(
     items: list[EngineMetricRow],
     update: dict[str, Any],
@@ -1506,13 +1595,12 @@ async def get_sentiment_by_engine(
                 evidence_count=score_evidence_count,
                 evidence_counts=_chart_counts(admin_fact_response_count=score_evidence_count),
             )
-            return await _with_chart_contract(
+            return await _with_sentiment_by_engine_contract(
                 out,
                 session,
                 project,
                 from_d,
                 to_d,
-                metric_keys=["sentiment"],
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
             )
         state = "ok" if items else "empty"
@@ -1525,13 +1613,12 @@ async def get_sentiment_by_engine(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_chart_contract(
+        return await _with_sentiment_by_engine_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["sentiment"],
             source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
         )
     # JOIN brand_mentions → llm_responses to get target_llm. SQLite tests fall
@@ -1559,13 +1646,12 @@ async def get_sentiment_by_engine(
             evidence_counts=response_counts,
             source_provenance=["brand_mentions", "llm_responses"],
         )
-        return await _with_chart_contract(
+        return await _with_sentiment_by_engine_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["sentiment"],
             source_provenance=["brand_mentions", "llm_responses"],
         )
     if response_missing and response_evidence:
@@ -1576,13 +1662,12 @@ async def get_sentiment_by_engine(
             evidence_counts=response_counts,
             missing_inputs=response_missing,
         )
-        return await _with_chart_contract(
+        return await _with_sentiment_by_engine_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["sentiment"],
             source_provenance=["brand_mentions", "llm_responses"],
         )
     try:
@@ -1634,13 +1719,12 @@ async def get_sentiment_by_engine(
                 evidence_count=score_evidence_count,
                 evidence_counts=_chart_counts(admin_fact_response_count=score_evidence_count),
             )
-            return await _with_chart_contract(
+            return await _with_sentiment_by_engine_contract(
                 out,
                 session,
                 project,
                 from_d,
                 to_d,
-                metric_keys=["sentiment"],
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
             )
         state = "ok" if items else "empty"
@@ -1653,13 +1737,12 @@ async def get_sentiment_by_engine(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_chart_contract(
+        return await _with_sentiment_by_engine_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["sentiment"],
             source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
         )
     evidence_count = sum(
@@ -1674,13 +1757,12 @@ async def get_sentiment_by_engine(
         evidence_count=evidence_count,
         evidence_counts=_chart_counts(brand_mention_count=evidence_count),
     )
-    return await _with_chart_contract(
+    return await _with_sentiment_by_engine_contract(
         out,
         session,
         project,
         from_d,
         to_d,
-        metric_keys=["sentiment"],
         source_provenance=["brand_mentions", "llm_responses"],
     )
 
@@ -2160,13 +2242,12 @@ async def get_authority_trend(
                 citation_source_count=citation_count,
             ),
         )
-        return await _with_chart_contract(
+        return await _with_authority_trend_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["citation"],
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
         )
     # Per-day count of citations grouped by tier.
@@ -2233,13 +2314,12 @@ async def get_authority_trend(
                     citation_source_count=citation_count,
                 ),
             )
-            return await _with_chart_contract(
+            return await _with_authority_trend_contract(
                 out,
                 session,
                 project,
                 from_d,
                 to_d,
-                metric_keys=["citation"],
                 source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
             )
         out = AuthorityTrendOut(
@@ -2251,13 +2331,12 @@ async def get_authority_trend(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_chart_contract(
+        return await _with_authority_trend_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["citation"],
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
         )
     out = AuthorityTrendOut(
@@ -2276,13 +2355,12 @@ async def get_authority_trend(
             or point.untiered_pct
         ),
     )
-    return await _with_chart_contract(
+    return await _with_authority_trend_contract(
         out,
         session,
         project,
         from_d,
         to_d,
-        metric_keys=["citation"],
         source_provenance=["citation_sources", "brand_mentions"],
     )
 
@@ -2353,13 +2431,12 @@ async def get_citation_composition(
                 citation_source_count=total,
             ),
         )
-        return await _with_chart_contract(
+        return await _with_citation_composition_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["citation"],
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
         )
     stmt = (
@@ -2423,13 +2500,12 @@ async def get_citation_composition(
                     citation_source_count=fact_total,
                 ),
             )
-            return await _with_chart_contract(
+            return await _with_citation_composition_contract(
                 out,
                 session,
                 project,
                 from_d,
                 to_d,
-                metric_keys=["citation"],
                 source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
             )
         out = CitationCompositionOut(
@@ -2442,13 +2518,12 @@ async def get_citation_composition(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_chart_contract(
+        return await _with_citation_composition_contract(
             out,
             session,
             project,
             from_d,
             to_d,
-            metric_keys=["citation"],
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
         )
     out = CitationCompositionOut(
@@ -2461,13 +2536,12 @@ async def get_citation_composition(
         evidence_count=total,
         evidence_counts=_chart_counts(citation_source_count=total),
     )
-    return await _with_chart_contract(
+    return await _with_citation_composition_contract(
         out,
         session,
         project,
         from_d,
         to_d,
-        metric_keys=["citation"],
         source_provenance=["citation_sources", "brand_mentions"],
     )
 

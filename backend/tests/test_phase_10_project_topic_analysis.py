@@ -1348,8 +1348,7 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
         in sentiment_body["missing_inputs"]
     )
     assert sentiment_body["evidence_count"] >= 1
-    chatgpt_sentiment = next(row for row in sentiment_body["items"] if row["engine"] == "chatgpt")
-    assert chatgpt_sentiment["positive"] >= 1
+    assert sentiment_body["items"] == []
 
     samples = await client.get(
         f"/api/v1/projects/{project.id}/mention-samples",
