@@ -137,10 +137,12 @@ for name in sorted(data.get("providers", {})):
     if name != "default":
         print(name)
 PY
+      provider_name="${provider_name%$'\r'}"
       [ -n "${provider_name}" ] || continue
+      encoded_provider_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${provider_name}")"
       status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 -X PUT \
         -H "Authorization: Bearer ${VNINJA_API_SECRET}" \
-        "http://127.0.0.1:9097/providers/proxies/${provider_name}" || true)"
+        "http://127.0.0.1:9097/providers/proxies/${encoded_provider_name}" || true)"
       echo "provider_refresh=${provider_name} http_code=${status}"
     done
   else
@@ -180,10 +182,11 @@ update_profiles_yaml_and_file() {
   local profiles_yaml="$1"
   local sub_url_file="$2"
   local downloaded_sub="$3"
+  local write_profile_payload="$4"
   local run_id="${GITHUB_RUN_ID:-manual}"
 
   as_root cp "${profiles_yaml}" "${profiles_yaml}.bak.${run_id}"
-  as_root python3 - "${profiles_yaml}" "${sub_url_file}" "${downloaded_sub}" "${run_id}" <<'PY'
+  as_root python3 - "${profiles_yaml}" "${sub_url_file}" "${downloaded_sub}" "${write_profile_payload}" "${run_id}" <<'PY'
 import json
 import re
 import shutil
@@ -193,7 +196,8 @@ from pathlib import Path
 profiles_path = Path(sys.argv[1])
 url_path = Path(sys.argv[2])
 downloaded_path = Path(sys.argv[3])
-run_id = sys.argv[4]
+write_profile_payload = sys.argv[4] == "true"
+run_id = sys.argv[5]
 
 new_url = url_path.read_text(encoding="utf-8").strip()
 if not re.match(r"^https?://", new_url):
@@ -207,7 +211,7 @@ current = []
 in_items = False
 
 for line in lines:
-    if re.match(r"^-\s+uid:\s*", line):
+    if re.match(r"^\s*-\s+uid:\s*", line):
         if in_items:
             blocks.append(current)
         else:
@@ -239,6 +243,7 @@ for block in blocks:
 
     out = []
     url_replaced = False
+    updated_replaced = False
     for line in block:
         url_match = re.match(r"^(\s*)url:\s*", line)
         updated_match = re.match(r"^(\s*)updated:\s*", line)
@@ -248,6 +253,7 @@ for block in blocks:
             changed = True
         elif updated_match:
             out.append(f"{updated_match.group(1)}updated: 0\n")
+            updated_replaced = True
             changed = True
         else:
             out.append(line)
@@ -264,6 +270,18 @@ for block in blocks:
                 changed = True
         out = injected
 
+    if not updated_replaced:
+        inserted = False
+        injected = []
+        for line in out:
+            injected.append(line)
+            if not inserted and re.match(r"^\s*url:\s*", line):
+                indent = re.match(r"^(\s*)", line).group(1)
+                injected.append(f"{indent}updated: 0\n")
+                inserted = True
+                changed = True
+        out = injected
+
     new_blocks.append(out)
 
 if not changed:
@@ -273,15 +291,18 @@ if not remote_files:
 
 profiles_path.write_text("".join(header + [line for block in new_blocks for line in block]), encoding="utf-8")
 
-for rel_file in remote_files:
-    dest = (profiles_dir / rel_file).resolve()
-    if dest.parent != profiles_dir:
-        raise SystemExit(f"refusing unsafe profile file path: {rel_file}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        shutil.copy2(dest, dest.with_name(dest.name + f".bak.{run_id}"))
-    shutil.copy2(downloaded_path, dest)
-    print(f"updated_profile_file={dest.name} bytes={dest.stat().st_size}")
+if write_profile_payload:
+    for rel_file in remote_files:
+        dest = (profiles_dir / rel_file).resolve()
+        if dest.parent != profiles_dir:
+            raise SystemExit(f"refusing unsafe profile file path: {rel_file}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.copy2(dest, dest.with_name(dest.name + f".bak.{run_id}"))
+        shutil.copy2(downloaded_path, dest)
+        print(f"updated_profile_file={dest.name} bytes={dest.stat().st_size}")
+else:
+    print("updated_profile_file=skipped_download_failed")
 
 print(f"remote_profiles_updated={len(remote_files)}")
 PY
@@ -302,9 +323,35 @@ download_subscription() {
     return 1
   fi
 
-  if ! curl -fsSL --retry 2 --connect-timeout 20 --max-time 90 "${sub_url}" -o "${output_file}"; then
-    echo "strict TLS subscription download failed; retrying once with --insecure"
-    curl -fsSLk --retry 1 --connect-timeout 20 --max-time 90 "${sub_url}" -o "${output_file}"
+  local user_agent
+  local user_agents=(
+    "clash-verge/v2.3.1"
+    "ClashforWindows/0.20.39"
+    "Clash"
+    "mihomo"
+    "Mozilla/5.0"
+  )
+  for user_agent in "${user_agents[@]}"; do
+    if curl -fsSL --retry 1 --connect-timeout 20 --max-time 90 \
+      -A "${user_agent}" \
+      -H "Accept: */*" \
+      "${sub_url}" -o "${output_file}"; then
+      echo "subscription_download_user_agent=${user_agent}"
+      break
+    fi
+    echo "subscription_download_failed_user_agent=${user_agent}; retrying with --insecure"
+    if curl -fsSLk --retry 1 --connect-timeout 20 --max-time 90 \
+      -A "${user_agent}" \
+      -H "Accept: */*" \
+      "${sub_url}" -o "${output_file}"; then
+      echo "subscription_download_user_agent=${user_agent} insecure_tls=true"
+      break
+    fi
+  done
+
+  if [ ! -s "${output_file}" ]; then
+    echo "subscription_downloaded=false"
+    return 1
   fi
 
   local bytes
@@ -346,10 +393,14 @@ main() {
     fi
 
     echo "=== Update V-Ninja subscription ==="
-    local downloaded_sub
+    local downloaded_sub write_profile_payload
     downloaded_sub="$(mktemp)"
-    download_subscription "${SUB_URL_FILE}" "${downloaded_sub}"
-    update_profiles_yaml_and_file "${profiles_yaml}" "${SUB_URL_FILE}" "${downloaded_sub}"
+    write_profile_payload="true"
+    if ! download_subscription "${SUB_URL_FILE}" "${downloaded_sub}"; then
+      write_profile_payload="false"
+      echo "subscription_download_fallback=url_only_vninja_fetch"
+    fi
+    update_profiles_yaml_and_file "${profiles_yaml}" "${SUB_URL_FILE}" "${downloaded_sub}" "${write_profile_payload}"
     rm -f "${downloaded_sub}"
 
     echo "=== Restart V-Ninja ==="
