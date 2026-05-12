@@ -16,6 +16,7 @@ from geo_tracker.db.models import (
     Brand,
     BrandMention,
     CitationSource,
+    Competitor,
     GEOScoreDaily,
     LLMResponse,
     ProductScoreDaily,
@@ -288,6 +289,304 @@ async def test_repair_inserts_canonical_mention_without_reassigning_owner(
     owner_query = await session.get(Query, 100)
     assert owner_query is not None
     assert owner_query.brand_id == 2
+
+
+@pytest.mark.asyncio
+async def test_repair_extracts_owner_competitor_denominator_for_estee_path(
+    session: AsyncSession,
+):
+    day = datetime(2026, 5, 12, 9, 30)
+    session.add_all(
+        [
+            Brand(id=2, name="La Roche-Posay", aliases=["LRP"], industry="beauty"),
+            Brand(id=12, name="Estee Lauder", aliases=["EL"], industry="beauty"),
+        ]
+    )
+    await session.flush()
+    session.add(Topic(id=120, brand_id=2, text="skincare", category="category"))
+    await session.flush()
+    session.add(
+        Prompt(
+            id=130,
+            topic_id=120,
+            text="best barrier repair serums",
+            intent="non_brand",
+            language="en",
+        )
+    )
+    session.add(
+        Query(
+            id=140,
+            prompt_id=130,
+            brand_id=2,
+            query_text="best barrier repair serums",
+            target_llm="doubao",
+            status=QueryStatus.DONE.value,
+            created_at=day,
+        )
+    )
+    session.add(
+        LLMResponse(
+            id=150,
+            query_id=140,
+            raw_text=(
+                "Estee Lauder Advanced Night Repair is compared with "
+                "La Roche-Posay Cicaplast in the same answer."
+            ),
+            citations_json=[],
+            response_time_ms=1000,
+            collected_at=day,
+            analysis_status=AnalysisStatus.DONE.value,
+        )
+    )
+    session.add(
+        ResponseAnalysis(
+            response_id=150,
+            dimension_industry="beauty",
+            dimension_category="category",
+            target_brand_mentioned=False,
+            total_brands_mentioned=0,
+            raw_analysis_json={"source": "owner-brand-analysis"},
+        )
+    )
+    await session.commit()
+
+    stats = await repair_canonical_brand_mentions(
+        session,
+        brand_id=12,
+        start_at=day.replace(hour=0, minute=0, second=0),
+        end_at=day.replace(hour=23, minute=59, second=59),
+        source_brand_id=2,
+        competitive_brand_ids={2},
+        dry_run=False,
+    )
+
+    assert stats["mentions_inserted"] == 1
+    assert stats["competitive_mentions_inserted"] == 1
+    mentions = (
+        await session.execute(
+            select(BrandMention).where(BrandMention.response_id == 150)
+        )
+    ).scalars().all()
+    assert {(m.brand_id, m.brand_name) for m in mentions} == {
+        (12, "Estee Lauder"),
+        (2, "La Roche-Posay"),
+    }
+    assert all(m.sentiment_score is None for m in mentions)
+
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 150)
+        )
+    ).scalar_one()
+    sov_status = analysis.raw_analysis_json["metric_input_status"]["sov"]
+    assert sov_status["state"] == "ok"
+    assert sov_status["competitive_mentions"] == 2
+    assert sov_status["non_target_competitive_mentions"] == 1
+
+    await Aggregator(session).aggregate_daily(
+        day,
+        brand_id=12,
+        competitive_brand_ids={12, 2},
+    )
+    geo = (
+        await session.execute(
+            select(GEOScoreDaily).where(
+                GEOScoreDaily.brand_id == 12,
+                GEOScoreDaily.target_llm.is_(None),
+                GEOScoreDaily.intent.is_(None),
+                GEOScoreDaily.language.is_(None),
+            )
+        )
+    ).scalar_one()
+    assert geo.avg_sov == pytest.approx(0.5)
+    assert geo.avg_sentiment_score is None
+    assert geo.avg_geo_score is None
+
+
+@pytest.mark.asyncio
+async def test_repair_extracts_name_only_configured_competitor_without_brand_id(
+    session: AsyncSession,
+):
+    day = datetime(2026, 5, 12, 9, 45)
+    session.add_all(
+        [
+            Brand(id=2, name="Source Owner", aliases=[], industry="beauty"),
+            Brand(id=12, name="Estee Lauder", aliases=["EL"], industry="beauty"),
+            Competitor(
+                brand_id=12,
+                name="Clinique",
+                aliases=["CLQ"],
+                source="manual",
+            ),
+        ]
+    )
+    await session.flush()
+    session.add(Topic(id=122, brand_id=2, text="skincare", category="category"))
+    await session.flush()
+    session.add(
+        Prompt(
+            id=132,
+            topic_id=122,
+            text="best hydrating products",
+            intent="non_brand",
+            language="en",
+        )
+    )
+    session.add(
+        Query(
+            id=142,
+            prompt_id=132,
+            brand_id=2,
+            query_text="best hydrating products",
+            target_llm="doubao",
+            status=QueryStatus.DONE.value,
+            created_at=day,
+        )
+    )
+    session.add(
+        LLMResponse(
+            id=152,
+            query_id=142,
+            raw_text="Estee Lauder is compared with Clinique.",
+            citations_json=[],
+            response_time_ms=1000,
+            collected_at=day,
+            analysis_status=AnalysisStatus.DONE.value,
+        )
+    )
+    await session.commit()
+
+    stats = await repair_canonical_brand_mentions(
+        session,
+        brand_id=12,
+        start_at=day.replace(hour=0, minute=0, second=0),
+        end_at=day.replace(hour=23, minute=59, second=59),
+        source_brand_id=2,
+        dry_run=False,
+    )
+
+    assert stats["competitive_mentions_inserted"] == 1
+    clinique = (
+        await session.execute(
+            select(BrandMention).where(
+                BrandMention.response_id == 152,
+                BrandMention.brand_name == "Clinique",
+            )
+        )
+    ).scalar_one()
+    assert clinique.brand_id is None
+    assert clinique.mention_count == 1
+
+    await Aggregator(session).aggregate_daily(day, brand_id=12, competitive_brand_ids={12})
+    geo = (
+        await session.execute(
+            select(GEOScoreDaily).where(
+                GEOScoreDaily.brand_id == 12,
+                GEOScoreDaily.target_llm.is_(None),
+                GEOScoreDaily.intent.is_(None),
+                GEOScoreDaily.language.is_(None),
+            )
+        )
+    ).scalar_one()
+    assert geo.avg_sov == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_repair_records_machine_readable_missing_sources_for_partial_metrics(
+    session: AsyncSession,
+):
+    day = datetime(2026, 5, 12, 10, 30)
+    session.add_all(
+        [
+            Brand(id=2, name="Source Owner", aliases=[], industry="beauty"),
+            Brand(id=12, name="Estee Lauder", aliases=["EL"], industry="beauty"),
+        ]
+    )
+    await session.flush()
+    session.add(Topic(id=121, brand_id=2, text="skincare", category="category"))
+    await session.flush()
+    session.add(
+        Prompt(
+            id=131,
+            topic_id=121,
+            text="best repair serum",
+            intent="non_brand",
+            language="en",
+        )
+    )
+    session.add(
+        Query(
+            id=141,
+            prompt_id=131,
+            brand_id=2,
+            query_text="best repair serum",
+            target_llm="doubao",
+            status=QueryStatus.DONE.value,
+            created_at=day,
+        )
+    )
+    session.add(
+        LLMResponse(
+            id=151,
+            query_id=141,
+            raw_text="Estee Lauder is mentioned, but no LLM position or sentiment is present.",
+            citations_json=[
+                {
+                    "url": "https://research.example/skincare",
+                    "title": "General skincare study",
+                    "index": 1,
+                }
+            ],
+            response_time_ms=1000,
+            collected_at=day,
+            analysis_status=AnalysisStatus.DONE.value,
+        )
+    )
+    await session.commit()
+
+    await repair_canonical_brand_mentions(
+        session,
+        brand_id=12,
+        start_at=day.replace(hour=0, minute=0, second=0),
+        end_at=day.replace(hour=23, minute=59, second=59),
+        source_brand_id=2,
+        dry_run=False,
+    )
+
+    mention = (
+        await session.execute(select(BrandMention).where(BrandMention.response_id == 151))
+    ).scalar_one()
+    assert mention.sentiment is None
+    assert mention.sentiment_score is None
+
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 151))
+    ).scalar_one()
+    assert citation.mention_id is None
+
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 151)
+        )
+    ).scalar_one()
+    assert analysis.sentiment_score is None
+    assert analysis.sov_score is None
+    assert analysis.citation_score is None
+    assert analysis.geo_score is None
+
+    status = analysis.raw_analysis_json["metric_input_status"]
+    assert status["canonical_alias_repair"]["state"] == "partial"
+    assert "canonical_alias_repair.partial" in status["canonical_alias_repair"]["missing_inputs"]
+    assert status["sov"]["state"] == "partial"
+    assert "brand_mentions.competitive_set" in status["sov"]["missing_inputs"]
+    assert status["sentiment"]["state"] == "partial"
+    assert "llm_brand_sentiment" in status["sentiment"]["missing_inputs"]
+    assert "sentiment_drivers.source_quote" in status["sentiment"]["missing_inputs"]
+    assert status["citation"]["state"] == "partial"
+    assert "citation_sources.mention_id" in status["citation"]["missing_inputs"]
+    assert status["pano_geo"]["state"] == "partial"
+    assert "llm_brand_position" in status["pano_geo"]["missing_inputs"]
 
 
 @pytest.mark.asyncio

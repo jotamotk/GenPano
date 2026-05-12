@@ -800,6 +800,7 @@ async def run_canonical_brand_repair(
                 end_at=end_at,
                 source_brand_id=source_brand_id,
                 extra_aliases=aliases or [],
+                competitive_brand_ids=set(competitive_brand_ids or []),
                 dry_run=not write,
             )
             logger.info(
