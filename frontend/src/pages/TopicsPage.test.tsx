@@ -961,6 +961,8 @@ describe('TopicsPage live brand override', () => {
                 profile_id: 'profile-1',
                 profile_name: 'Sensitive skin buyer',
                 finished_at: '2026-05-10T10:02:00Z',
+                response_created_at: '2026-05-10T10:02:30Z',
+                response_preview: 'Latest answer recommends a gentle vitamin C serum with dermatologist-backed citations.',
                 target_mentioned: true,
                 citation_count: 2,
               },
@@ -973,6 +975,8 @@ describe('TopicsPage live brand override', () => {
                 profile_id: null,
                 profile_name: 'Unknown profile',
                 finished_at: '2026-05-09T10:02:00Z',
+                response_created_at: '2026-05-09T10:02:30Z',
+                response_preview: 'Earlier answer did not include citations and did not mention the target brand.',
                 target_mentioned: false,
                 citation_count: 0,
               },
@@ -991,10 +995,17 @@ describe('TopicsPage live brand override', () => {
     fireEvent.click(screen.getByText('Which serum is safest?'))
 
     expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
+    expect(screen.getByText('Unique Queries')).toBeInTheDocument()
+    expect(screen.getByText('Daily Successful Responses')).toBeInTheDocument()
+    expect(screen.getByText('Profiles Covered')).toBeInTheDocument()
+    expect(screen.getByText('Citation Coverage')).toBeInTheDocument()
+    expect(screen.getByText('Includes Unknown profile')).toBeInTheDocument()
+    expect(screen.getByText(/Latest answer recommends a gentle vitamin C serum/i)).toBeInTheDocument()
+    expect(screen.getByText(/Earlier answer did not include citations/i)).toBeInTheDocument()
     expect(screen.getByText('2 days')).toBeInTheDocument()
     expect(screen.getByText('Sensitive skin buyer')).toBeInTheDocument()
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
-    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
   })
 
@@ -1125,6 +1136,66 @@ describe('TopicsPage live brand override', () => {
     expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
     expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
+  })
+
+  it('exports query previews with the successful daily rows', async () => {
+    topicHooks.useTopicMonitoring.mockReturnValue(topicMonitoringState())
+    topicHooks.useTopicPrompts.mockReturnValue(topicPromptsState())
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_group_key: 'serum-safety',
+            query_text: 'What is the safest vitamin C serum?',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                date: '2026-05-10',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'What is the safest vitamin C serum?',
+                target_llm: 'chatgpt',
+                profile_id: null,
+                profile_name: null,
+                finished_at: '2026-05-10T10:02:00Z',
+                response_created_at: '2026-05-10T10:02:30Z',
+                response_preview: 'Preview exported for operators, with comma support.',
+                target_mentioned: true,
+                citation_count: 2,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    const createObjectURL = vi.fn(() => 'blob:topics-query-export')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    fireEvent.click(screen.getByRole('button', { name: /Export queries/i }))
+
+    expect(clickSpy).toHaveBeenCalled()
+    const blob = createObjectURL.mock.calls[0][0] as Blob
+    const csv = await readBlobText(blob)
+    expect(csv).toContain('response_preview')
+    expect(csv).toContain('"Preview exported for operators, with comma support."')
+    expect(csv).toContain('response_created_at')
+    expect(csv).toContain('Unknown profile')
   })
 
   it('shows a metadata loading state while URL topic and prompt labels are restoring', () => {
