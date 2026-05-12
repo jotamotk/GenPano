@@ -65,7 +65,7 @@ def test_chatgpt_apple_signin_page_is_not_a_valid_response():
         "Email or Phone Number Continue"
     )
 
-    assert invalid_response_reason("chatgpt", text) == "chatgpt_login_page"
+    assert invalid_response_reason("chatgpt", text) == "chatgpt_auth_redirect"
 
 
 def test_chatgpt_session_log_summary_excludes_sensitive_body(monkeypatch):
@@ -110,6 +110,72 @@ def test_invalid_response_reason_detects_chatgpt_token_invalidated_message():
     text = "Your authentication token has been invalidated. Please try signing in again."
 
     assert invalid_response_reason("chatgpt", text) == "token_invalidated"
+
+
+@pytest.mark.parametrize(
+    ("url", "title", "text"),
+    [
+        (
+            "https://appleid.apple.com/auth/authorize?client_id=com.openai.chat",
+            "Sign in to Apple Account",
+            "Use your Apple Account to sign in to ChatGPT Email or Phone Number",
+        ),
+        (
+            "https://auth0.openai.com/u/login?state=abc",
+            "Log in to ChatGPT",
+            "Log in to ChatGPT Continue with Google Continue with Microsoft",
+        ),
+        (
+            "https://login.openai.com/authorize?client_id=chatgpt",
+            "Sign in",
+            "Sign in to ChatGPT Continue with Apple",
+        ),
+    ],
+)
+def test_chatgpt_auth_redirect_is_operator_visible(url, title, text):
+    reason = chatgpt_auth_state_reason(
+        text,
+        url=url,
+        title=title,
+    )
+
+    assert reason == "chatgpt_auth_redirect"
+
+
+def test_chatgpt_logged_out_shell_with_prompt_box_is_not_authenticated():
+    text = (
+        "ChatGPT Log in Sign up for free "
+        "Log in to get answers based on saved chats and uploaded files. "
+        "Accept all cookies #prompt-textarea Message ChatGPT"
+    )
+
+    assert chatgpt_auth_state_reason(text, url="https://chatgpt.com/") == "chatgpt_not_logged_in"
+    assert invalid_response_reason("chatgpt", text) == "chatgpt_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_auth_redirect_overrides_generic_browser_timeout(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        url = "https://appleid.apple.com/auth/authorize?client_id=com.openai.chat"
+
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return "Use your Apple Account to sign in to ChatGPT Email or Phone Number"
+
+        async def title(self):
+            return "Sign in to Apple Account"
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "browser_timeout"
+
+    reason = await executor._prefer_chatgpt_auth_failure_reason("chatgpt", FakePage())
+
+    assert reason == "chatgpt_auth_redirect"
+    assert executor.last_error_reason == "chatgpt_auth_redirect"
 
 
 @pytest.mark.asyncio
@@ -537,6 +603,8 @@ def test_empty_response_preserves_executor_failure_reason():
 def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("cookies_expired") is True
     assert _should_report_account_failure("token_invalidated") is True
+    assert _should_report_account_failure("chatgpt_not_logged_in") is True
+    assert _should_report_account_failure("chatgpt_auth_redirect") is True
     assert _should_report_account_failure("browser_launch_timeout") is False
     assert _should_report_account_failure("page_unavailable") is False
     assert _should_report_account_failure("proxy_api_unauthorized") is False

@@ -175,6 +175,30 @@ async def test_consuming_failure_followed_by_exception_does_not_refund(
 
 
 @pytest.mark.asyncio
+async def test_chatgpt_logged_out_auth_failure_cools_down_account(
+    session: AsyncSession,
+):
+    account = await _create_account(session)
+    pool = AccountPool(session)
+
+    acquired = await pool.acquire("chatgpt")
+    settlement = AccountQuotaSettlement(acquired.id)
+
+    refunded = await settlement.settle_failure(
+        session,
+        pool,
+        reason="chatgpt_not_logged_in",
+    )
+    await session.refresh(account)
+
+    assert refunded is False
+    assert settlement.settled is True
+    assert account.query_count_today == 1
+    assert account.status == AccountStatus.COOLDOWN.value
+    assert account.cooldown_until is not None
+
+
+@pytest.mark.asyncio
 async def test_unreserved_abort_cleanup_does_not_refund_assigned_account(
     session: AsyncSession,
 ):

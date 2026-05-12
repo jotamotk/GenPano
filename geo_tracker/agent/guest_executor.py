@@ -197,6 +197,12 @@ GUEST_LLM_CONFIG = {
             "button:has-text('No thanks')",
             "button:has-text('Maybe later')",
         ],
+        "login_redirect_domains": [
+            "appleid.apple.com",
+            "auth0.openai.com",
+            "auth.openai.com",
+            "login.openai.com",
+        ],
     },
     "gemini": {
         "url":              "https://gemini.google.com/app",
@@ -785,6 +791,28 @@ class GuestQueryExecutor:
                         return None
 
                 # 检测是否被重定向到登录页（cookie 过期或未注入）
+                if llm == "chatgpt":
+                    auth_reason = await self._prefer_chatgpt_auth_failure_reason(
+                        llm,
+                        page_obj,
+                        runtime_events=runtime_events,
+                    )
+                    if auth_reason:
+                        logger.warning(
+                            "[%s] UI auth gate blocked execution before prompt submit: %s",
+                            llm,
+                            auth_reason,
+                        )
+                        await _save_runtime_snapshot(
+                            page_obj,
+                            query.id,
+                            auth_reason,
+                            config=config,
+                            runtime_events=runtime_events,
+                        )
+                        await _save_screenshot(page_obj, query.id, auth_reason)
+                        return None
+
                 current_url = page_obj.url
                 login_domains = config.get("login_redirect_domains", [])
                 if any(d in current_url for d in login_domains):
@@ -920,6 +948,28 @@ class GuestQueryExecutor:
 
             # 页面加载后检查是否被重定向到登录页
             current_url = page_obj.url
+            if llm == "chatgpt":
+                auth_reason = await self._prefer_chatgpt_auth_failure_reason(
+                    llm,
+                    page_obj,
+                    runtime_events=runtime_events,
+                )
+                if auth_reason:
+                    logger.warning(
+                        "[%s] UI auth gate blocked execution before prompt submit: %s",
+                        llm,
+                        auth_reason,
+                    )
+                    await _save_runtime_snapshot(
+                        page_obj,
+                        query.id,
+                        auth_reason,
+                        config=config,
+                        runtime_events=runtime_events,
+                    )
+                    await _save_screenshot(page_obj, query.id, auth_reason)
+                    return None
+
             login_domains = config.get("login_redirect_domains", [])
             if any(d in current_url for d in login_domains):
                 logger.warning(f"[{llm}] 页面加载后仍在登录页: {current_url}，cookies/token 已失效")
@@ -1110,17 +1160,32 @@ class GuestQueryExecutor:
         if llm_name != "chatgpt" or page is None:
             return None
         body_text = ""
+        page_title = ""
         try:
             body_text = await page.evaluate("document.body?.innerText || ''")
         except Exception:
             pass
+        try:
+            page_title = await page.title()
+        except Exception:
+            pass
         auth_reason = chatgpt_auth_state_reason(
             body_text,
+            url=getattr(page, "url", None),
+            title=page_title,
             runtime_events=runtime_events,
         )
         if not auth_reason:
             return None
-        if self.last_error_reason in (None, "", "no_response", "no_input", "page_load_failed"):
+        if self.last_error_reason in (
+            None,
+            "",
+            "no_response",
+            "no_input",
+            "page_load_failed",
+            "browser_timeout",
+            "submit_failed",
+        ):
             self.last_error_reason = auth_reason
         return auth_reason
 
