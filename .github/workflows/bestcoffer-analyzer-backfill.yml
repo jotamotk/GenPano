@@ -1,0 +1,335 @@
+name: BestCoffer Analyzer Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry_run prints the scoped plan; apply reruns analyzer for selected responses"
+        type: choice
+        required: true
+        default: dry_run
+        options:
+          - dry_run
+          - apply
+      brand_id:
+        description: "Target BestCoffer canonical brand id"
+        required: false
+        default: "24"
+      date_from:
+        description: "Inclusive response collection date start (YYYY-MM-DD)"
+        required: false
+        default: ""
+      date_to:
+        description: "Inclusive response collection date end (YYYY-MM-DD)"
+        required: false
+        default: ""
+      response_ids:
+        description: "Optional comma-separated response ids; overrides date/query discovery"
+        required: false
+        default: ""
+      query_ids:
+        description: "Optional comma-separated query ids; overrides date discovery"
+        required: false
+        default: ""
+      source_brand_id:
+        description: "Optional source/query brand id filter"
+        required: false
+        default: ""
+      competitive_brand_id:
+        description: "Optional comma-separated competitor brand ids for aggregate recompute"
+        required: false
+        default: ""
+      limit:
+        description: "Maximum selected responses; hard-capped at 75"
+        required: false
+        default: "75"
+      aggregate:
+        description: "In apply mode, recompute affected brand-day aggregates"
+        type: boolean
+        required: false
+        default: false
+      approval_ref:
+        description: "Required for apply: #686 issue-comment URL plus explicit BestCoffer production-write approval wording"
+        required: false
+        default: ""
+
+concurrency:
+  group: bestcoffer-analyzer-backfill
+  cancel-in-progress: false
+
+jobs:
+  bestcoffer-backfill:
+    name: Run scoped BestCoffer analyzer backfill
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate workflow inputs before SSH
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          SOURCE_BRAND_ID: ${{ inputs.source_brand_id }}
+          COMPETITIVE_BRAND_ID: ${{ inputs.competitive_brand_id }}
+          LIMIT: ${{ inputs.limit }}
+          AGGREGATE: ${{ inputs.aggregate }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -Eeuo pipefail
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          compact() {
+            printf '%s' "$1" | tr -d '[:space:]'
+          }
+
+          require_positive_int() {
+            local name="$1"
+            local value="$2"
+            [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a positive integer, got '$value'"
+            [ "$value" -ge 1 ] || fail "$name must be >= 1"
+          }
+
+          require_optional_positive_int() {
+            local name="$1"
+            local value="$2"
+            [ -z "$value" ] && return 0
+            require_positive_int "$name" "$value"
+          }
+
+          require_optional_int_csv() {
+            local name="$1"
+            local value
+            value="$(compact "$2")"
+            [ -z "$value" ] && return 0
+            [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "$name must be comma-separated positive integers"
+          }
+
+          MODE_VALUE="${MODE:-}"
+          AGGREGATE_VALUE="${AGGREGATE:-}"
+          BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+          LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+          SOURCE_BRAND_ID_CLEAN="$(compact "${SOURCE_BRAND_ID:-}")"
+          RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+          QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+          COMPETITIVE_BRAND_ID_CLEAN="$(compact "${COMPETITIVE_BRAND_ID:-}")"
+          DATE_FROM_VALUE="${DATE_FROM:-}"
+          DATE_TO_VALUE="${DATE_TO:-}"
+          APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+
+          case "$MODE_VALUE" in
+            dry_run|apply) ;;
+            *) fail "mode must be dry_run or apply, got '$MODE_VALUE'" ;;
+          esac
+          case "$AGGREGATE_VALUE" in
+            true|false) ;;
+            *) fail "aggregate must be true or false, got '$AGGREGATE_VALUE'" ;;
+          esac
+
+          require_positive_int brand_id "$BRAND_ID_CLEAN"
+          require_positive_int limit "$LIMIT_CLEAN"
+          [ "$LIMIT_CLEAN" -le 75 ] || fail "limit must be <= 75"
+          require_optional_positive_int source_brand_id "$SOURCE_BRAND_ID_CLEAN"
+          require_optional_int_csv response_ids "$RESPONSE_IDS_CLEAN"
+          require_optional_int_csv query_ids "$QUERY_IDS_CLEAN"
+          require_optional_int_csv competitive_brand_id "$COMPETITIVE_BRAND_ID_CLEAN"
+
+          if [ -z "$RESPONSE_IDS_CLEAN" ] && [ -z "$QUERY_IDS_CLEAN" ]; then
+            [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD when response_ids/query_ids are empty"
+            [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD when response_ids/query_ids are empty"
+            [[ "$DATE_FROM_VALUE" < "$DATE_TO_VALUE" || "$DATE_FROM_VALUE" == "$DATE_TO_VALUE" ]] || fail "date_from must be on or before date_to"
+          else
+            [ -z "$DATE_FROM_VALUE" ] || [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+            [ -z "$DATE_TO_VALUE" ] || [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+          fi
+
+          if [ "$MODE_VALUE" = "apply" ]; then
+            [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+          fi
+          if [ -n "$APPROVAL_REF_VALUE" ]; then
+            [[ "$APPROVAL_REF_VALUE" =~ ^https://github\.com/jotamotk/trash_test/issues/686#issuecomment-[0-9]+ ]] \
+              || fail "approval_ref must start with https://github.com/jotamotk/trash_test/issues/686#issuecomment-{id}"
+          fi
+
+      - name: Execute BestCoffer backfill on deployed worker
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          SOURCE_BRAND_ID: ${{ inputs.source_brand_id }}
+          COMPETITIVE_BRAND_ID: ${{ inputs.competitive_brand_id }}
+          LIMIT: ${{ inputs.limit }}
+          AGGREGATE: ${{ inputs.aggregate }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,BRAND_ID,DATE_FROM,DATE_TO,RESPONSE_IDS,QUERY_IDS,SOURCE_BRAND_ID,COMPETITIVE_BRAND_ID,LIMIT,AGGREGATE,APPROVAL_REF,GH_REPOSITORY,GH_RUN_ID,GH_SHA,GH_ACTOR
+          command_timeout: 45m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            compact() {
+              printf '%s' "$1" | tr -d '[:space:]'
+            }
+
+            require_positive_int() {
+              local name="$1"
+              local value="$2"
+              [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a positive integer, got '$value'"
+              [ "$value" -ge 1 ] || fail "$name must be >= 1"
+            }
+
+            require_optional_positive_int() {
+              local name="$1"
+              local value="$2"
+              [ -z "$value" ] && return 0
+              require_positive_int "$name" "$value"
+            }
+
+            require_optional_int_csv() {
+              local name="$1"
+              local value
+              value="$(compact "$2")"
+              [ -z "$value" ] && return 0
+              [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "$name must be comma-separated positive integers"
+            }
+
+            MODE_VALUE="${MODE:-}"
+            AGGREGATE_VALUE="${AGGREGATE:-}"
+            DATE_FROM_VALUE="${DATE_FROM:-}"
+            DATE_TO_VALUE="${DATE_TO:-}"
+            APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+
+            case "$MODE_VALUE" in
+              dry_run|apply) ;;
+              *) fail "mode must be dry_run or apply, got '$MODE_VALUE'" ;;
+            esac
+            case "$AGGREGATE_VALUE" in
+              true|false) ;;
+              *) fail "aggregate must be true or false, got '$AGGREGATE_VALUE'" ;;
+            esac
+
+            BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+            LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+            SOURCE_BRAND_ID_CLEAN="$(compact "${SOURCE_BRAND_ID:-}")"
+            RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+            QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+            COMPETITIVE_BRAND_ID_CLEAN="$(compact "${COMPETITIVE_BRAND_ID:-}")"
+
+            require_positive_int brand_id "$BRAND_ID_CLEAN"
+            require_positive_int limit "$LIMIT_CLEAN"
+            [ "$LIMIT_CLEAN" -le 75 ] || fail "limit must be <= 75"
+            require_optional_positive_int source_brand_id "$SOURCE_BRAND_ID_CLEAN"
+            require_optional_int_csv response_ids "$RESPONSE_IDS_CLEAN"
+            require_optional_int_csv query_ids "$QUERY_IDS_CLEAN"
+            require_optional_int_csv competitive_brand_id "$COMPETITIVE_BRAND_ID_CLEAN"
+
+            if [ -z "$RESPONSE_IDS_CLEAN" ] && [ -z "$QUERY_IDS_CLEAN" ]; then
+              [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD when response_ids/query_ids are empty"
+              [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD when response_ids/query_ids are empty"
+              [[ "$DATE_FROM_VALUE" < "$DATE_TO_VALUE" || "$DATE_FROM_VALUE" == "$DATE_TO_VALUE" ]] || fail "date_from must be on or before date_to"
+            else
+              [ -z "$DATE_FROM_VALUE" ] || [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+              [ -z "$DATE_TO_VALUE" ] || [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+            fi
+
+            if [ "$MODE_VALUE" = "apply" ]; then
+              [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+            fi
+            if [ -n "$APPROVAL_REF_VALUE" ]; then
+              [[ "$APPROVAL_REF_VALUE" =~ ^https://github\.com/jotamotk/trash_test/issues/686#issuecomment-[0-9]+ ]] \
+                || fail "approval_ref must start with https://github.com/jotamotk/trash_test/issues/686#issuecomment-{id}"
+            fi
+
+            cat <<AUDIT
+            === BestCoffer Analyzer Backfill Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            mode=${MODE_VALUE}
+            scope=brand_id=${BRAND_ID_CLEAN};date_from=${DATE_FROM_VALUE:-<empty>};date_to=${DATE_TO_VALUE:-<empty>};response_ids=${RESPONSE_IDS_CLEAN:-<empty>};query_ids=${QUERY_IDS_CLEAN:-<empty>};source_brand_id=${SOURCE_BRAND_ID_CLEAN:-<empty>};competitive_brand_id=${COMPETITIVE_BRAND_ID_CLEAN:-<empty>};limit=${LIMIT_CLEAN};aggregate=${AGGREGATE_VALUE}
+            approval_ref=${APPROVAL_REF_VALUE:-<empty>}
+            no_broad_scraper_expansion=true
+            note=This workflow invokes only geo_tracker.tasks.bestcoffer_analyzer_backfill inside the deployed worker container. It does not enqueue or expand scraper collection.
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            run_in_container() {
+              local service="$1"
+              shift
+              local cid
+              cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
+                docker compose exec -T "$service" "$@" </dev/null
+              else
+                echo "Service '$service' is not running; using docker compose run --rm -T." >&2
+                docker compose run --rm -T "$service" "$@" </dev/null
+              fi
+            }
+
+            args=(
+              -m geo_tracker.tasks.bestcoffer_analyzer_backfill
+              --brand-id "$BRAND_ID_CLEAN"
+              --limit "$LIMIT_CLEAN"
+            )
+            if [ -n "$RESPONSE_IDS_CLEAN" ]; then
+              args+=(--response-ids "$RESPONSE_IDS_CLEAN")
+            fi
+            if [ -n "$QUERY_IDS_CLEAN" ]; then
+              args+=(--query-ids "$QUERY_IDS_CLEAN")
+            fi
+            if [ -n "$DATE_FROM_VALUE" ]; then
+              args+=(--from "$DATE_FROM_VALUE")
+            fi
+            if [ -n "$DATE_TO_VALUE" ]; then
+              args+=(--to "$DATE_TO_VALUE")
+            fi
+            if [ -n "$SOURCE_BRAND_ID_CLEAN" ]; then
+              args+=(--source-brand-id "$SOURCE_BRAND_ID_CLEAN")
+            fi
+            if [ -n "$COMPETITIVE_BRAND_ID_CLEAN" ]; then
+              IFS=',' read -r -a competitive_ids <<< "$COMPETITIVE_BRAND_ID_CLEAN"
+              for competitive_id in "${competitive_ids[@]}"; do
+                args+=(--competitive-brand-id "$competitive_id")
+              done
+            fi
+            if [ "$MODE_VALUE" = "apply" ]; then
+              args+=(--apply --approval-ref "$APPROVAL_REF_VALUE")
+              if [ "$AGGREGATE_VALUE" = "true" ]; then
+                args+=(--aggregate)
+              fi
+            fi
+
+            echo "=== BestCoffer analyzer backfill report ==="
+            run_in_container worker python "${args[@]}"
+            RUNBOOK
