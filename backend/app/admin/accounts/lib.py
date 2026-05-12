@@ -7,7 +7,7 @@ takes the validated structure and writes it as a JSON-serialized
 rows — only counts + platform / label.
 
 Public:
-- ``AccountStatus`` allowed values.
+- ``ACCOUNT_STATUSES`` allowed values.
 - ``CookieImportError``: coded validation error.
 - ``parse_cookies_payload(payload)``: validate + EditThisCookie auto-
   detect/convert + optional ``local_storage`` packing. Returns
@@ -21,7 +21,28 @@ import re
 import time
 from typing import Any
 
-ACCOUNT_STATUSES = ("active", "banned", "cooldown")
+ACCOUNT_STATUSES = ("active", "banned", "cooldown", "expired")
+
+_PHONE_TEXT_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{5,}\d)(?!\d)")
+_SMS_CODE_RE = re.compile(r"\b\d{4,8}\b")
+_SECRET_RE = re.compile(
+    r"(?i)(api[_-]?key|token|secret|authorization|cookie|set-cookie)"
+    r"([\"'\s:=]+)"
+    r"([^\"'\s,;}]+)"
+)
+_SENSITIVE_ACCOUNT_FIELD_MARKERS = (
+    "activation",
+    "api_key",
+    "apikey",
+    "cookie",
+    "local_storage",
+    "localstorage",
+    "password",
+    "provider_secret",
+    "secret",
+    "sms",
+    "token",
+)
 
 
 _SAME_SITE_MAP = {
@@ -159,6 +180,43 @@ def normalize_account_status(value: Any) -> str | None:
     """Returns one of ACCOUNT_STATUSES, or None when invalid."""
     text = str(value or "").strip().lower()
     return text if text in ACCOUNT_STATUSES else None
+
+
+def mask_phone_reference(value: Any) -> str:
+    """Return a display-safe account phone reference.
+
+    Non-phone labels such as ``web_upload`` or ``label-1`` are preserved.
+    Numeric phone-like identifiers expose only a short stable reference.
+    """
+    text = str(value or "")
+    digits = re.sub(r"\D+", "", text)
+    if len(digits) < 7:
+        return text
+    return f"{digits[:3]}****{digits[-4:]}"
+
+
+def redact_sensitive_text(value: Any) -> str:
+    """Best-effort redaction for Admin Accounts audit reasons."""
+    if value is None:
+        return ""
+    redacted = str(value)
+    redacted = _SMS_CODE_RE.sub("[sms-code-redacted]", redacted)
+    redacted = _PHONE_TEXT_RE.sub(lambda match: mask_phone_reference(match.group(0)), redacted)
+    redacted = _SECRET_RE.sub(r"\1\2[redacted]", redacted)
+    return redacted
+
+
+def redact_account_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Strip sensitive account fields and mask phone references for API output."""
+    safe: dict[str, Any] = {}
+    for key, value in dict(row).items():
+        key_l = str(key).lower()
+        if any(marker in key_l for marker in _SENSITIVE_ACCOUNT_FIELD_MARKERS):
+            continue
+        safe[key] = value
+    if "phone_number" in row:
+        safe["phone_number"] = mask_phone_reference(row.get("phone_number"))
+    return safe
 
 
 _LABEL_SAFE_RE = re.compile(r"[^a-zA-Z0-9_.\-+@]+")
