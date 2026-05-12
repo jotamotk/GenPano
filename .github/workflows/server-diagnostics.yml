@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, doubao_auth_false_success_repair, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, bestcoffer_batch, doubao_auth_false_success_repair, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -684,6 +684,43 @@ jobs:
         with:
           name: vninja-proxy-${{ github.run_id }}
           path: vninja-artifacts
+
+      - name: Run ChatGPT SMS env check
+        if: ${{ inputs.scraper_mode == 'chatgpt_sms_env_check' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh hero-sms-env-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" <<'REMOTE' | tee hero-sms-env-artifacts/runtime-env.json
+          set -Eeuo pipefail
+          cd /opt/genpano
+          docker compose exec -T worker python - <<'PY'
+          import json
+          import os
+
+          print(json.dumps({
+              "HERO_SMS_API_KEY_present": bool(os.getenv("HERO_SMS_API_KEY")),
+              "service": "worker",
+          }, sort_keys=True))
+          PY
+          REMOTE
+
+      - name: Upload ChatGPT SMS env diagnostic
+        if: ${{ always() && inputs.scraper_mode == 'chatgpt_sms_env_check' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hero-sms-env-${{ github.run_id }}
+          path: hero-sms-env-artifacts/runtime-env.json
+          if-no-files-found: error
 
       - name: Run read-only diagnostics
         if: ${{ inputs.scraper_mode == 'diagnostics' }}
