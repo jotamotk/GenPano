@@ -89,6 +89,7 @@ class BrandOverviewOut(BaseModel):
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
     formula_status: str = "no_evidence"
+    metric_formula_evidence: dict[str, object] = Field(default_factory=dict)
     selected_filters: dict[str, object] = Field(default_factory=dict)
     source_provenance: list[str] = Field(default_factory=list)
     score_components: dict[str, MetricValue] = Field(default_factory=dict)

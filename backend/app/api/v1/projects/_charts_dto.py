@@ -30,6 +30,7 @@ class ChartState(BaseModel):
     missing_reasons: list[str] = Field(default_factory=list)
     formula_status: str = "no_evidence"
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    metric_formula_evidence: dict[str, object] = Field(default_factory=dict)
     selected_filters: dict[str, object] = Field(default_factory=dict)
     source_provenance: list[str] = Field(default_factory=list)
 

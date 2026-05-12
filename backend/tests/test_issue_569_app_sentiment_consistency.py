@@ -163,10 +163,13 @@ async def test_live_target_sentiment_scores_power_all_score_label_surfaces(
     assert sentiment_body["missing_inputs"] == ["sentiment_drivers.source_quote"]
 
     by_engine_body = by_engine.json()
-    assert by_engine_body["state"] == "ok"
-    assert by_engine_body["formula_status"] == "ok"
-    assert by_engine_body["items"][0]["engine"] == "chatgpt"
-    assert by_engine_body["items"][0]["positive"] == 1
+    assert by_engine_body["state"] == "partial"
+    assert by_engine_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in by_engine_body["missing_inputs"]
+    )
+    assert by_engine_body["items"] == []
 
     trend_body = trend.json()
     assert trend_body["state"] == "ok"

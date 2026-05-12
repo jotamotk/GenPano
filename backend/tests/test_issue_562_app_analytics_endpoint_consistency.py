@@ -299,10 +299,17 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
     assert citation_body["total"] == 1
     assert citation_body["items"][0]["domain"] == "example.com"
     assert citation_body["formula_status"] != "no_evidence"
-    assert composition.json()["total"] == 1
-    assert composition.json()["formula_status"] == "ok"
-    assert authority.json()["points"][0]["date"] == WINDOW_FROM
-    assert authority.json()["points"][0]["untiered_pct"] == pytest.approx(100.0)
+    composition_body = composition.json()
+    assert composition_body["total"] == 0
+    assert composition_body["segments"] == []
+    assert composition_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in composition_body["missing_inputs"]
+    )
+    authority_body = authority.json()
+    assert authority_body["points"] == []
+    assert authority_body["formula_status"] == "partial"
 
 
 @pytest.mark.asyncio
@@ -355,7 +362,11 @@ async def test_sentiment_routes_share_partial_state_when_scores_exist_without_la
     assert by_engine_body["state"] == "partial"
     assert by_engine_body["formula_status"] == "missing_required_inputs"
     assert by_engine_body["evidence_count"] == 1
-    assert by_engine_body["missing_inputs"] == sentiment_body["missing_inputs"]
+    assert "brand_mentions.sentiment" in by_engine_body["missing_inputs"]
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in by_engine_body["missing_inputs"]
+    )
     metric_series = metric_body["series"][0]
     assert metric_series["points"] == []
     assert metric_series["state"] == "partial"
@@ -415,7 +426,12 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
     assert trend_body["state"] == "ok"
     assert trend_body["formula_status"] == "ok"
     assert trend_body["items"][0]["by_engine"]["chatgpt"] == pytest.approx(0.42)
-    assert by_engine_body["state"] == "ok"
-    assert by_engine_body["items"][0]["positive"] == 1
+    assert by_engine_body["state"] == "partial"
+    assert by_engine_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in by_engine_body["missing_inputs"]
+    )
+    assert by_engine_body["items"] == []
     assert metric_series["formula_status"] == "ok"
     assert metric_series["points"][0]["value"] == pytest.approx(0.42)

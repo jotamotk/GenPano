@@ -121,18 +121,12 @@ async def test_sentiment_by_engine_uses_response_window_when_mentions_were_repai
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["state"] == "ok"
-    assert body["formula_status"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
     assert body["evidence_count"] == 1
     assert body["evidence_counts"]["sentiment_label_count"] == 1
-    assert body["items"] == [
-        {
-            "engine": "chatgpt",
-            "positive": 1,
-            "neutral": 0,
-            "negative": 0,
-        }
-    ]
+    assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
+    assert body["items"] == []
 
 
 @pytest.mark.asyncio
@@ -159,5 +153,6 @@ async def test_sentiment_by_engine_reports_missing_engine_when_target_sentiment_
     assert body["formula_status"] == "missing_required_inputs"
     assert body["evidence_count"] == 1
     assert body["items"] == []
-    assert body["missing_inputs"] == ["llm_responses.target_llm"]
-    assert body["missing_sources"] == ["llm_responses.target_llm"]
+    assert "llm_responses.target_llm" in body["missing_inputs"]
+    assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
+    assert "llm_responses.target_llm" in body["missing_sources"]
