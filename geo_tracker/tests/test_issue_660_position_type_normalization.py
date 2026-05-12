@@ -68,6 +68,18 @@ def test_parser_normalizes_multilabel_position_types_to_canonical_values() -> No
                     "brand_name": "D",
                     "position_type": "",
                 },
+                {
+                    "brand_name": "E",
+                    "position_type": "comparison_loser/listed",
+                },
+                {
+                    "brand_name": "F",
+                    "position_type": "comparison_loser;comparison_winner",
+                },
+                {
+                    "brand_name": "G",
+                    "position_type": "comparison_loser listed",
+                },
             ]
         }
     )
@@ -77,6 +89,9 @@ def test_parser_normalizes_multilabel_position_types_to_canonical_values() -> No
         "listed",
         "mentioned_only",
         "mentioned_only",
+        "listed",
+        "comparison_winner",
+        "listed",
     ]
     assert all(len(brand.position_type) <= 32 for brand in result.brands)
 
