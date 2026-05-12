@@ -301,14 +301,17 @@ def _scope_raw_relation_evidence(
                 scoped_items.append(item)
                 continue
             relation = dict(item)
-            relation.setdefault("response_id", response_id)
-            if query_id is not None:
-                relation.setdefault("query_id", query_id)
-            if prompt_id is not None:
-                relation.setdefault("prompt_id", prompt_id)
-            if topic_id is not None:
-                relation.setdefault("topic_id", topic_id)
-            relation.setdefault("source", "current_response_analyzer")
+            relation["response_id"] = response_id
+            for field, scoped_id in (
+                ("query_id", query_id),
+                ("prompt_id", prompt_id),
+                ("topic_id", topic_id),
+            ):
+                if scoped_id is None:
+                    relation.pop(field, None)
+                else:
+                    relation[field] = scoped_id
+            relation["source"] = "current_response_analyzer"
             scoped_items.append(relation)
         scoped[key] = scoped_items
     return scoped
