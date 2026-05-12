@@ -13,7 +13,7 @@ import logging
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from sqlalchemy import select, and_, null
+from sqlalchemy import select, and_, delete, null
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.db.models import (
@@ -63,6 +63,11 @@ class Aggregator:
             "product_score": 0,
             "topic_score": 0,
         }
+        date_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        date_end = date.replace(hour=23, minute=59, second=59)
+        stats.update(
+            await self._clear_existing_daily_aggregates(date_start, brand_id)
+        )
 
         # Get all analyzed responses for the given date
         stmt = (
@@ -70,8 +75,8 @@ class Aggregator:
             .join(LLMResponse, LLMResponse.id == ResponseAnalysis.response_id)
             .where(
                 LLMResponse.analysis_status == AnalysisStatus.DONE.value,
-                LLMResponse.collected_at >= date.replace(hour=0, minute=0, second=0),
-                LLMResponse.collected_at < date.replace(hour=23, minute=59, second=59),
+                LLMResponse.collected_at >= date_start,
+                LLMResponse.collected_at < date_end,
             )
         )
         result = await self.session.execute(stmt)
@@ -79,6 +84,7 @@ class Aggregator:
 
         if not analyses:
             logger.info(f"No analyzed responses for {date.date()}")
+            await self.session.commit()
             return stats
 
         # Get related data
@@ -125,6 +131,35 @@ class Aggregator:
 
         await self.session.commit()
         logger.info(f"Aggregation complete for {date.date()}: {stats}")
+        return stats
+
+    async def _clear_existing_daily_aggregates(
+        self,
+        date_start: datetime,
+        brand_id: int | None,
+    ) -> dict[str, int]:
+        """Remove stale aggregate rows before recomputing a date/brand scope."""
+        stats: dict[str, int] = {}
+        scoped_tables = [
+            ("geo_score_daily_removed", GEOScoreDaily),
+            ("product_score_removed", ProductScoreDaily),
+            ("topic_score_removed", TopicScoreDaily),
+        ]
+        for stat_key, model in scoped_tables:
+            stmt = delete(model).where(model.date == date_start)
+            if brand_id is not None:
+                stmt = stmt.where(model.brand_id == brand_id)
+            result = await self.session.execute(stmt)
+            stats[stat_key] = max(result.rowcount or 0, 0)
+
+        if brand_id is None:
+            result = await self.session.execute(
+                delete(IndustryBenchmarkDaily).where(
+                    IndustryBenchmarkDaily.date == date_start,
+                )
+            )
+            stats["industry_benchmark_removed"] = max(result.rowcount or 0, 0)
+
         return stats
 
     async def _aggregate_brand_daily(
