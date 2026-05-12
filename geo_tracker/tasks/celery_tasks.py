@@ -507,7 +507,7 @@ def execute_query(self, query_id: int) -> dict:
                     "account_no_cookies",
                     "no_account_available",
                 }
-                auto_register_engines = {"doubao", "deepseek"}
+                auto_register_engines = {"doubao", "deepseek", "chatgpt"}
                 if (
                     query.target_llm in auto_register_engines
                     and failure_reason in auto_register_reasons
@@ -1110,11 +1110,14 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     # 打包 cookies + localStorage（如有）为新格式
                     cookies_data = login_result["cookies"]
                     local_storage = login_result.get("localStorage", {})
-                    if local_storage:
-                        account.cookies_json = json_mod.dumps({
-                            "cookies": cookies_data,
-                            "localStorage": local_storage,
-                        })
+                    storage_state = login_result.get("storageState", {})
+                    if local_storage or storage_state:
+                        cookie_payload = {"cookies": cookies_data}
+                        if local_storage:
+                            cookie_payload["localStorage"] = local_storage
+                        if storage_state:
+                            cookie_payload["storageState"] = storage_state
+                        account.cookies_json = json_mod.dumps(cookie_payload)
                     else:
                         account.cookies_json = json_mod.dumps(cookies_data)
                     account.cookies_updated_at = dt.utcnow()
@@ -1157,11 +1160,14 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     # 打包 cookies + localStorage（如有）为新格式
                     cookies_data = login_result["cookies"]
                     local_storage = login_result.get("localStorage", {})
-                    if local_storage:
-                        cookies_json_str = json_mod.dumps({
-                            "cookies": cookies_data,
-                            "localStorage": local_storage,
-                        })
+                    storage_state = login_result.get("storageState", {})
+                    if local_storage or storage_state:
+                        cookie_payload = {"cookies": cookies_data}
+                        if local_storage:
+                            cookie_payload["localStorage"] = local_storage
+                        if storage_state:
+                            cookie_payload["storageState"] = storage_state
+                        cookies_json_str = json_mod.dumps(cookie_payload)
                     else:
                         cookies_json_str = json_mod.dumps(cookies_data)
                     new_account_obj = await pool.create_account(

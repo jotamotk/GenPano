@@ -1135,6 +1135,166 @@ class _TaskSessionContext:
         return False
 
 
+def test_execute_query_enqueues_chatgpt_new_account_when_pool_has_no_active(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'chatgpt-no-active.db'}"
+    query_id = 184617
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add(
+                Query(
+                    id=query_id,
+                    target_llm="chatgpt",
+                    query_text="coffee brand advantages",
+                    status=QueryStatus.PENDING.value,
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return None
+
+    async def fake_diagnose_account_unavailable(db, llm_name):
+        assert llm_name == "chatgpt"
+        return "account_no_active"
+
+    enqueue_calls: list[dict] = []
+
+    async def fake_should_enqueue_new_account(platform):
+        assert platform == "chatgpt"
+        return True
+
+    class FakeAutoLogin:
+        @staticmethod
+        def apply_async(*, kwargs, queue):
+            enqueue_calls.append({"kwargs": kwargs, "queue": queue})
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(
+        celery_tasks,
+        "acquire_query_account",
+        fake_acquire_query_account,
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "diagnose_account_unavailable",
+        fake_diagnose_account_unavailable,
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "should_enqueue_new_account",
+        fake_should_enqueue_new_account,
+    )
+    monkeypatch.setattr(celery_tasks, "auto_login", FakeAutoLogin)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "account_no_active",
+    }
+    assert enqueue_calls == [
+        {
+            "kwargs": {"platform": "chatgpt", "new_account": True},
+            "queue": "account_login",
+        }
+    ]
+
+
+def test_auto_login_chatgpt_manual_challenge_does_not_create_account(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    import redis.asyncio as aioredis
+
+    from geo_tracker.agent import sms_login
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'chatgpt-auto-login.db'}"
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    class FakeRedisClient:
+        async def exists(self, _key):
+            return False
+
+        async def delete(self, _key):
+            return 1
+
+        async def set(self, *_args, **_kwargs):
+            return True
+
+        async def aclose(self):
+            return None
+
+    class FakeChatGPTHandler:
+        async def login_or_register(self, **_kwargs):
+            return {"status": "failed", "reason": "requires_manual_challenge"}
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(aioredis, "from_url", lambda *args, **kwargs: FakeRedisClient())
+    monkeypatch.setattr(
+        sms_login,
+        "get_handler",
+        lambda platform: FakeChatGPTHandler() if platform == "chatgpt" else None,
+    )
+
+    result = celery_tasks.auto_login.run(platform="chatgpt", new_account=True)
+
+    async def count_accounts():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            rows = await session.execute(select(LLMAccount))
+            count = len(rows.scalars().all())
+        await engine.dispose()
+        return count
+
+    assert result == {
+        "status": "failed",
+        "platform": "chatgpt",
+        "reason": "requires_manual_challenge",
+    }
+    assert asyncio.run(count_accounts()) == 0
+
+
 def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp_path):
     _install_fake_playwright(monkeypatch)
 
