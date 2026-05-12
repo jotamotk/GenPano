@@ -7,6 +7,46 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github/workflows/deploy.yml"
 SERVER_DIAGNOSTICS_WORKFLOW = REPO_ROOT / ".github/workflows/server-diagnostics.yml"
 SANITIZER_SCRIPT = REPO_ROOT / "scripts/sanitize_herosms_logs.py"
+GATE4_UNSAFE_SAMPLE = (
+    "HTTP Request: GET https://hero-sms.example/stubs/handler_api.php?"
+    "action=getNumber&service=dr&country=187&api_key=unit-secret"
+    "&phone=+15551234567 "
+    "apikey=unit-apikey token=unit-token secret=unit-secret "
+    "authorization=unit-auth cookie=unit-cookie-assignment "
+    "set-cookie=unit-set-cookie-assignment "
+    "Authorization: Bearer unit-bearer Cookie: session=unit-cookie; "
+    "Set-Cookie: hero=unit-set-cookie; phone=+15551234567 "
+    "msisdn=15551234567 sms_text='Your login code is 654321' "
+    'message="Use 112233" body=BodySecret code=998877 '
+    "activation_id=123456789 activation_ref=unit-activation-ref "
+    "activation_secret=unit-activation-secret activation_code=445566 "
+    "service=dr country=187 operator=physic countPhysical=5"
+)
+GATE4_FORBIDDEN_SUBSTRINGS = [
+    "hero-sms.example",
+    "handler_api.php",
+    "action=getNumber",
+    "api_key=",
+    "unit-secret",
+    "unit-apikey",
+    "unit-token",
+    "unit-auth",
+    "unit-cookie-assignment",
+    "unit-set-cookie-assignment",
+    "unit-bearer",
+    "unit-cookie",
+    "unit-set-cookie",
+    "+15551234567",
+    "15551234567",
+    "654321",
+    "112233",
+    "BodySecret",
+    "998877",
+    "123456789",
+    "unit-activation-ref",
+    "unit-activation-secret",
+    "445566",
+]
 
 
 def _load_sanitizer_module():
@@ -19,6 +59,38 @@ def _load_sanitizer_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _inline_sanitizer_sources() -> list[str]:
+    workflow = yaml.safe_load(SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["diagnostics"]["steps"]
+    scripts = [
+        steps[0]["run"],
+        next(step for step in steps if step.get("name") == "Run read-only diagnostics")["with"][
+            "script"
+        ],
+    ]
+    sources = []
+    start = "cat > \"${sanitizer_py}\" <<'PY'\n"
+    end = "\nPY\nchmod 700"
+    for script in scripts:
+        assert start in script
+        assert end in script
+        sources.append(script.split(start, 1)[1].split(end, 1)[0])
+    return sources
+
+
+def _assert_gate4_sanitized(safe: str) -> None:
+    for forbidden in GATE4_FORBIDDEN_SUBSTRINGS:
+        assert forbidden not in safe
+
+    assert "[HeroSMS URL redacted]" in safe
+    assert "[phone redacted]" in safe
+    assert "[secret redacted]" in safe
+    assert "[SMS field redacted]" in safe
+    assert "[activation field redacted]" in safe
+    assert "operator=physic" in safe
+    assert "countPhysical=5" in safe
 
 
 def test_deploy_propagates_hero_sms_api_key_without_printing_value() -> None:
@@ -63,10 +135,7 @@ def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
     run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
-    sanitizer_selftest = (
-        "sanitize_herosms_stream <<< \"$(printf 'api_key=unit-secret "
-        "HERO_SMS_%s=unit-secret' 'API_KEY')\""
-    )
+    sanitizer_selftest = "sanitizer_probe=\"$(sanitize_herosms_stream <<'EOF'"
     collect_worker_logs = (
         'docker compose logs --since "${utc_started_at}" worker worker-analysis beat'
     )
@@ -74,6 +143,11 @@ def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     assert "sanitize_herosms_logs" in workflow_text
     assert "scripts/sanitize_herosms_logs.py" not in run_script
     assert sanitizer_selftest in run_script
+    assert "handler_api.php" in run_script
+    assert "selftest-activation-secret" in run_script
+    assert "selftest-cookie" in run_script
+    assert "+15551234567" in run_script
+    assert "654321" in run_script
     assert run_script.index(sanitizer_selftest) < run_script.index(collect_worker_logs)
     assert "HERO_SMS_API_KEY=" not in workflow_text
 
@@ -91,12 +165,28 @@ def test_herosms_log_sanitizer_redacts_sample_stdout_and_artifact_text() -> None
     assert "unit-secret" not in safe
     assert "api_key=" not in safe
     assert "HERO_SMS_API_KEY=" not in safe
-    assert "api key [redacted]" in safe
+    assert "[HeroSMS URL redacted]" in safe
     assert "HERO_SMS_API_KEY_present=true" in safe
-    assert "service=dr" in safe
-    assert "country=187" in safe
     assert "operator=physic" in safe
     assert "countPhysical=5" in safe
+
+
+def test_herosms_log_sanitizer_redacts_gate4_sensitive_values() -> None:
+    sanitizer = _load_sanitizer_module()
+
+    safe = sanitizer.sanitize_text(GATE4_UNSAFE_SAMPLE)
+
+    _assert_gate4_sanitized(safe)
+
+
+def test_workflow_inline_herosms_sanitizers_redact_gate4_sensitive_values() -> None:
+    for index, source in enumerate(_inline_sanitizer_sources()):
+        namespace = {"__name__": f"inline_sanitizer_{index}"}
+        exec(compile(source, f"inline_sanitizer_{index}.py", "exec"), namespace)
+
+        safe = namespace["sanitize_text"](GATE4_UNSAFE_SAMPLE)
+
+        _assert_gate4_sanitized(safe)
 
 
 def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
@@ -108,10 +198,7 @@ def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
         if step.get("name") == "Run read-only diagnostics"
     )
     run_script = diagnostic_step["with"]["script"]
-    sanitizer_selftest = (
-        "sanitize_herosms_stream <<< \"$(printf 'api_key=unit-secret "
-        "HERO_SMS_%s=unit-secret' 'API_KEY')\""
-    )
+    sanitizer_selftest = "sanitizer_probe=\"$(sanitize_herosms_stream <<'EOF'"
     first_worker_log = (
         "docker compose logs --since '2026-05-11T08:07:00' "
         "--until '2026-05-11T08:11:00' worker worker-analysis backend nginx"
@@ -120,6 +207,11 @@ def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
     assert "sanitize_herosms_stream()" in workflow_text
     assert "scripts/sanitize_herosms_logs.py" not in run_script
     assert sanitizer_selftest in run_script
+    assert "handler_api.php" in run_script
+    assert "selftest-activation-secret" in run_script
+    assert "selftest-cookie" in run_script
+    assert "+15551234567" in run_script
+    assert "654321" in run_script
     assert run_script.index(sanitizer_selftest) < run_script.index(first_worker_log)
     assert (
         "docker compose logs --since '2026-05-11T08:07:00' "
