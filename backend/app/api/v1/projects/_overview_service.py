@@ -158,21 +158,27 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
     return decorated
 
 
-def _kpi_missing_inputs(metric_key: str | None, context: AnalyticsContractContext) -> list[str]:
+def _kpi_missing_inputs(
+    metric_key: str | None,
+    context: AnalyticsContractContext,
+    *,
+    evidence_source: str = "geo_score_daily",
+) -> list[str]:
     if context.formula_status == FORMULA_OK_STATUS:
         return []
     inputs = {*context.missing_inputs, *context.missing_sources}
     missing: list[str] = []
-    if (
-        context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
-        or "geo_score_daily.total_queries" in inputs
-        or "eligible_response_denominator" in inputs
-    ):
-        missing.append("geo_score_daily")
-        if "eligible_response_denominator" in inputs:
-            missing.append("eligible_response_denominator")
-        if "geo_score_daily.total_queries" in inputs:
-            missing.append("geo_score_daily.total_queries")
+    if evidence_source == "geo_score_daily":
+        if (
+            context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+            or "geo_score_daily.total_queries" in inputs
+            or "eligible_response_denominator" in inputs
+        ):
+            missing.append("geo_score_daily")
+            if "eligible_response_denominator" in inputs:
+                missing.append("eligible_response_denominator")
+            if "geo_score_daily.total_queries" in inputs:
+                missing.append("geo_score_daily.total_queries")
     if metric_key == "sov" and (
         "brand_mentions.competitive_set" in inputs
         or context.evidence_counts.get("competitive_mention_count", 0) <= 0
@@ -190,10 +196,16 @@ def _kpi_missing_inputs(metric_key: str | None, context: AnalyticsContractContex
 def _apply_kpi_contract(
     cards: list[KpiCard],
     context: AnalyticsContractContext,
+    *,
+    evidence_source: str = "geo_score_daily",
 ) -> list[KpiCard]:
     out: list[KpiCard] = []
     for card in cards:
-        missing_inputs = _kpi_missing_inputs(card.metric_key, context)
+        missing_inputs = _kpi_missing_inputs(
+            card.metric_key,
+            context,
+            evidence_source=evidence_source,
+        )
         if not missing_inputs:
             out.append(card)
             continue
@@ -834,7 +846,11 @@ async def get_brand_overview(
         has_data=has_data,
         base_state=state,
     )
-    kpi_cards = _apply_kpi_contract(kpi_cards, context)
+    kpi_cards = _apply_kpi_contract(
+        kpi_cards,
+        context,
+        evidence_source="admin_facts" if admin_fact_overview is not None else "geo_score_daily",
+    )
     score_components = _apply_score_component_contract(
         await _score_components(session, brand_id, from_d, to_d),
         context,

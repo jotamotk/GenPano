@@ -181,13 +181,19 @@ def _unique(values: list[str]) -> list[str]:
     return out
 
 
-def _series_missing_inputs(metric: str, context: AnalyticsContractContext) -> list[str]:
+def _series_missing_inputs(
+    metric: str,
+    context: AnalyticsContractContext,
+    *,
+    evidence_source: str = "geo_score_daily",
+) -> list[str]:
     inputs = {*context.missing_inputs, *context.missing_sources}
     missing: list[str] = []
-    if "eligible_response_denominator" in inputs:
-        missing.append("eligible_response_denominator")
-    if "geo_score_daily.total_queries" in inputs:
-        missing.append("geo_score_daily.total_queries")
+    if evidence_source == "geo_score_daily":
+        if "eligible_response_denominator" in inputs:
+            missing.append("eligible_response_denominator")
+        if "geo_score_daily.total_queries" in inputs:
+            missing.append("geo_score_daily.total_queries")
     if metric == "sov" and (
         "brand_mentions.competitive_set" in inputs
         or context.evidence_counts.get("competitive_mention_count", 0) <= 0
@@ -207,10 +213,16 @@ def _series_missing_inputs(metric: str, context: AnalyticsContractContext) -> li
 def _apply_metric_series_contract(
     series: list[MetricSeries],
     context: AnalyticsContractContext,
+    *,
+    evidence_source: str = "geo_score_daily",
 ) -> list[MetricSeries]:
     out: list[MetricSeries] = []
     for item in series:
-        missing_inputs = _series_missing_inputs(item.metric, context)
+        missing_inputs = _series_missing_inputs(
+            item.metric,
+            context,
+            evidence_source=evidence_source,
+        )
         if not missing_inputs:
             out.append(item)
             continue
@@ -232,10 +244,18 @@ def _apply_metric_series_contract(
 def _series_contract_missing_inputs(
     series: list[MetricSeries],
     context: AnalyticsContractContext,
+    *,
+    evidence_source: str = "geo_score_daily",
 ) -> list[str]:
     missing: list[str] = []
     for item in series:
-        missing.extend(_series_missing_inputs(item.metric, context))
+        missing.extend(
+            _series_missing_inputs(
+                item.metric,
+                context,
+                evidence_source=evidence_source,
+            )
+        )
     return _unique(missing)
 
 
@@ -364,7 +384,11 @@ async def _metrics_from_admin_facts(
         has_data=has_data,
         base_state="ok" if has_data else "empty",
     )
-    series_missing_inputs = _series_contract_missing_inputs(out_series, context)
+    series_missing_inputs = _series_contract_missing_inputs(
+        out_series,
+        context,
+        evidence_source="admin_facts",
+    )
     if series_missing_inputs and context.formula_status == FORMULA_OK_STATUS:
         context = await build_contract_context(
             session,
@@ -379,7 +403,11 @@ async def _metrics_from_admin_facts(
             base_missing_sources=series_missing_inputs,
             formula_status=FORMULA_MISSING_INPUTS_STATUS,
         )
-    out_series = _apply_metric_series_contract(out_series, context)
+    out_series = _apply_metric_series_contract(
+        out_series,
+        context,
+        evidence_source="admin_facts",
+    )
     out = MetricsOut(
         project_id=project.id,
         brand_id=brand_id,
