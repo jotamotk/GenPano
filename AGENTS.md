@@ -95,6 +95,7 @@ state.
   Acceptance Mapping and comment with the impact.
 
 See `docs/AI_LEAD_WORKFLOW.md` for the full operating procedure and templates.
+For Claude Code collaboration, see `docs/AI_LEAD_CLAUDE_COLLABORATION.md`.
 
 ## Admin Surface Rule
 

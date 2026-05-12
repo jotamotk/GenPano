@@ -13,6 +13,10 @@ The AI Lead does not write business code. It coordinates the work, keeps the
 requirement trail intact, reviews outcomes, and drives verification. Worker
 Agents implement scoped issues through PRs.
 
+Claude Code collaboration is governed by
+`docs/AI_LEAD_CLAUDE_COLLABORATION.md`. Treat Claude Code as an assigned Agent
+tool inside this workflow, not as a parallel source of authority.
+
 ## End-to-End Flow
 
 1. User need
