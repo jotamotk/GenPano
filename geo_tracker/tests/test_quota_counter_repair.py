@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from geo_tracker.db.models import (
@@ -17,10 +17,12 @@ from geo_tracker.db.models import (
     Query,
     QueryStatus,
 )
+from geo_tracker.tasks import quota_counter_repair
 from geo_tracker.tasks.quota_counter_repair import (
     RepairBlocked,
     apply_quota_repair_plan,
     build_quota_repair_report,
+    build_quota_repair_payload,
     validate_deployed_code_sha,
 )
 
@@ -220,6 +222,102 @@ async def test_report_selects_only_current_day_non_consuming_unresponded_account
 
 
 @pytest.mark.asyncio
+async def test_underflow_dry_run_blocks_without_negative_after_counter(
+    session: AsyncSession,
+):
+    day_start = datetime(2026, 5, 11)
+    await _account(
+        session,
+        account_id=19,
+        llm_name="chatgpt",
+        query_count_today=1,
+    )
+    session.add_all(
+        [
+            _query(
+                191,
+                account_id=19,
+                target_llm="chatgpt",
+                reason="no_response",
+                event_at=day_start + timedelta(hours=1),
+            ),
+            _query(
+                192,
+                account_id=19,
+                target_llm="chatgpt",
+                reason="page_load_failed",
+                event_at=day_start + timedelta(hours=2),
+            ),
+        ]
+    )
+    await session.commit()
+
+    report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+    payload = build_quota_repair_payload(report, mode="dry_run")
+
+    assert report.total_refundable_attempts == 2
+    assert report.account_plans[0].safe_to_apply is False
+    assert report.account_plans[0].proposed_delta == 0
+    assert report.account_plans[0].unapplied_delta == 2
+    assert report.account_plans[0].after_query_count_today == 1
+    assert report.account_plans[0].after_query_count_today >= 0
+    assert "counter_underflow" in report.account_plans[0].unsafe_reasons
+    assert payload["ok"] is False
+    assert payload["blocked"] is True
+    assert "counter_underflow" in payload["error"]
+    assert (
+        payload["report"]["account_plans"][0]["after_query_count_today"] >= 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_negative_current_counter_blocks_without_negative_after_counter(
+    session: AsyncSession,
+):
+    day_start = datetime(2026, 5, 11)
+    await _account(
+        session,
+        account_id=18,
+        llm_name="chatgpt",
+        query_count_today=-1,
+    )
+    session.add(
+        _query(
+            181,
+            account_id=18,
+            target_llm="chatgpt",
+            reason="no_response",
+            event_at=day_start + timedelta(hours=1),
+        )
+    )
+    await session.commit()
+
+    report = await build_quota_repair_report(
+        session,
+        service_day_start=day_start,
+        service_day_end=day_start + timedelta(days=1),
+    )
+    payload = build_quota_repair_payload(report, mode="dry_run")
+
+    assert report.account_plans[0].current_query_count_today == -1
+    assert report.account_plans[0].after_query_count_today == 0
+    assert report.account_plans[0].proposed_delta == 0
+    assert report.account_plans[0].unapplied_delta == 1
+    assert report.account_plans[0].safe_to_apply is False
+    assert "current_counter_negative" in report.account_plans[0].unsafe_reasons
+    assert payload["ok"] is False
+    assert payload["blocked"] is True
+    assert "current_counter_negative" in payload["blocking_reasons"]
+    assert (
+        payload["report"]["account_plans"][0]["after_query_count_today"] >= 0
+    )
+
+
+@pytest.mark.asyncio
 async def test_apply_guard_blocks_counter_underflow_and_exact_total_mismatch(
     session: AsyncSession,
 ):
@@ -256,8 +354,9 @@ async def test_apply_guard_blocks_counter_underflow_and_exact_total_mismatch(
         service_day_end=day_start + timedelta(days=1),
     )
 
-    assert report.account_plans[0].proposed_delta == 2
-    assert report.account_plans[0].after_query_count_today == -1
+    assert report.account_plans[0].proposed_delta == 0
+    assert report.account_plans[0].unapplied_delta == 2
+    assert report.account_plans[0].after_query_count_today == 1
     assert report.account_plans[0].safe_to_apply is False
 
     with pytest.raises(RepairBlocked, match="would drop below zero"):
@@ -269,6 +368,10 @@ async def test_apply_guard_blocks_counter_underflow_and_exact_total_mismatch(
         )
     await session.refresh(account)
     assert account.query_count_today == 1
+    repair_count = (
+        await session.execute(select(func.count(QuotaCounterRepair.query_id)))
+    ).scalar_one()
+    assert repair_count == 0
 
     account.query_count_today = 3
     await session.commit()
@@ -501,3 +604,22 @@ def test_deployed_code_sha_guard_rejects_mismatch_and_invalid_values():
         validate_deployed_code_sha(reviewed, "b" * 40)
     with pytest.raises(RepairBlocked, match="40-character git SHA"):
         validate_deployed_code_sha("not-a-sha", reviewed)
+
+
+def test_main_returns_nonzero_for_blocked_dry_run_payload(monkeypatch, capsys):
+    async def fake_run_cli(args):
+        return {
+            "ok": False,
+            "mode": "dry_run",
+            "blocked": True,
+            "blocking_reasons": ["counter_underflow"],
+            "error": "repair would drop below zero; unsafe reasons=counter_underflow",
+            "report": {"account_plans": []},
+        }
+
+    monkeypatch.setattr(quota_counter_repair, "_run_cli", fake_run_cli)
+
+    assert quota_counter_repair.main(["--dry-run"]) == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is False
+    assert output["blocked"] is True

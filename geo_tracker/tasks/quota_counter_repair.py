@@ -54,6 +54,7 @@ class AccountRepairPlan:
     current_query_count_today: int
     daily_limit: int
     proposed_delta: int
+    unapplied_delta: int
     after_query_count_today: int
     safe_to_apply: bool
     reasons: dict[str, int]
@@ -287,22 +288,26 @@ async def build_quota_repair_report(
             if account is not None and getattr(account, "llm_name", None)
             else account_engine
         )
-        delta = len(entry["query_ids"])
-        after = current - delta
+        candidate_delta = len(entry["query_ids"])
         unsafe_reasons: list[str] = []
         if account is None:
             unsafe_reasons.append("missing_account")
+        if current < 0:
+            unsafe_reasons.append("current_counter_negative")
         if real_account_engine and engine != real_account_engine:
             unsafe_reasons.append("engine_mismatch")
-        if after < 0:
+        if current - candidate_delta < 0:
             unsafe_reasons.append("counter_underflow")
+        proposed_delta = 0 if unsafe_reasons else candidate_delta
+        after = max(current - proposed_delta, 0)
         plans.append(
             AccountRepairPlan(
                 engine=engine,
                 account_id=account_id,
                 current_query_count_today=current,
                 daily_limit=daily_limit,
-                proposed_delta=delta,
+                proposed_delta=proposed_delta,
+                unapplied_delta=candidate_delta - proposed_delta,
                 after_query_count_today=after,
                 safe_to_apply=not unsafe_reasons,
                 reasons=dict(sorted(entry["reasons"].items())),
@@ -327,6 +332,41 @@ async def build_quota_repair_report(
         groups=groups,
         account_plans=plans,
     )
+
+
+def _unsafe_reasons(report: QuotaRepairReport) -> list[str]:
+    return sorted(
+        {
+            reason
+            for plan in report.account_plans
+            if not plan.safe_to_apply
+            for reason in (plan.unsafe_reasons or ["unsafe_plan"])
+        }
+    )
+
+
+def _unsafe_error(reasons: list[str]) -> str:
+    if "counter_underflow" in reasons:
+        return "repair would drop below zero; unsafe reasons=" + ",".join(reasons)
+    return "unsafe repair plan: " + ",".join(reasons)
+
+
+def build_quota_repair_payload(
+    report: QuotaRepairReport,
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    reasons = _unsafe_reasons(report)
+    payload: dict[str, Any] = {
+        "ok": not reasons,
+        "mode": mode,
+        "blocked": bool(reasons),
+        "blocking_reasons": reasons,
+        "report": report.to_dict(),
+    }
+    if reasons:
+        payload["error"] = _unsafe_error(reasons)
+    return payload
 
 
 async def _existing_repairs(session: AsyncSession, query_ids: list[int]) -> list[int]:
@@ -363,6 +403,10 @@ async def apply_quota_repair_plan(
     current_service_day_start: datetime | None = None,
     approval_ref: str = "",
 ) -> ApplyResult:
+    reasons = _unsafe_reasons(report)
+    if reasons:
+        raise RepairBlocked(_unsafe_error(reasons))
+
     total_delta = sum(plan.proposed_delta for plan in report.account_plans)
     if total_delta != expected_total_delta:
         raise RepairBlocked(
@@ -380,22 +424,6 @@ async def apply_quota_repair_plan(
         report,
         current_service_day_start=current_service_day_start or _current_service_day_start(),
     )
-
-    unsafe = [plan for plan in report.account_plans if not plan.safe_to_apply]
-    if unsafe:
-        reasons = sorted(
-            {
-                reason
-                for plan in unsafe
-                for reason in (plan.unsafe_reasons or ["unsafe_plan"])
-            }
-        )
-        if "counter_underflow" in reasons:
-            raise RepairBlocked(
-                "repair would drop below zero; unsafe reasons="
-                + ",".join(reasons)
-            )
-        raise RepairBlocked("unsafe repair plan: " + ",".join(reasons))
 
     if not approval_ref:
         raise RepairBlocked("apply requires approval_ref")
@@ -493,10 +521,10 @@ async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
                 service_day_start=service_day_start,
                 service_day_end=service_day_end,
             )
-            payload: dict[str, Any] = {
-                "mode": "apply" if args.apply else "dry_run",
-                "report": report.to_dict(),
-            }
+            payload = build_quota_repair_payload(
+                report,
+                mode="apply" if args.apply else "dry_run",
+            )
             if args.apply:
                 if args.expected_total_delta is None:
                     raise RepairBlocked("--apply requires --expected-total-delta")
@@ -522,8 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     except RepairBlocked as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
         return 2
-    print(json.dumps({"ok": True, **payload}, indent=2, sort_keys=True))
-    return 0
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if payload.get("ok", True) else 2
 
 
 if __name__ == "__main__":
