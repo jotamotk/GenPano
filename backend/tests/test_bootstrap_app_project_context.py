@@ -4,11 +4,13 @@ from typing import Any
 
 import pytest
 from scripts.bootstrap_app_project_context import (
+    DEFAULT_ALIASES,
     DEFAULT_COMPETITOR_POLICY,
     add_context_safety_notes,
     apply_plan,
     build_plan,
     choose_existing_project,
+    parse_args,
     stable_project_id,
     validate_plan_can_write,
     validate_write_gate,
@@ -110,6 +112,88 @@ def test_write_refuses_plan_with_blockers() -> None:
 
     with pytest.raises(ValueError, match="plan has blockers"):
         validate_plan_can_write(plan)
+
+
+def test_bestcoffer_aliases_do_not_inherit_estee_defaults() -> None:
+    args = parse_args(
+        [
+            "--brand-id",
+            "24",
+            "--project-name",
+            "BestCoffer App Analytics",
+            "--brand-alias",
+            "BestCoffer",
+            "--brand-alias",
+            "贝斯考夫",
+        ]
+    )
+
+    assert args.brand_alias == ["BestCoffer", "贝斯考夫"]
+    assert all("Estee" not in alias for alias in args.brand_alias)
+
+
+def test_non_estee_without_aliases_uses_project_name_only() -> None:
+    args = parse_args(
+        [
+            "--brand-id",
+            "24",
+            "--project-name",
+            "BestCoffer App Analytics",
+        ]
+    )
+
+    assert args.brand_alias == []
+
+
+def test_estee_default_aliases_remain_available() -> None:
+    args = parse_args([])
+
+    assert args.brand_alias == DEFAULT_ALIASES
+
+
+def test_supplied_target_alias_active_non_primary_candidate_still_blocks() -> None:
+    context = {
+        "brand_rows": [{"id": 24, "name": "BestCoffer"}],
+        "project_rows": [
+            {
+                "id": "33333333-3333-4333-8333-333333333333",
+                "user_id": "other-user",
+                "name": "BestCoffer legacy context",
+                "industry_id": None,
+                "primary_brand_id": 12,
+                "is_active": True,
+                "deleted_at": None,
+            }
+        ],
+        "target_as_competitor_rows": [],
+    }
+    existing_project = choose_existing_project(
+        project_rows=context["project_rows"],
+        brand_id=24,
+        project_id="44444444-4444-4444-8444-444444444444",
+    )
+    plan = build_plan(
+        brand_id=24,
+        user_id="approved-user",
+        project_name="BestCoffer App Analytics",
+        project_id="44444444-4444-4444-8444-444444444444",
+        industry_id=None,
+        competitor_brand_ids=[2],
+        existing_project=existing_project,
+        existing_competitor_brand_ids=set(),
+        write=False,
+        approval_ref=None,
+    )
+
+    add_context_safety_notes(
+        plan,
+        context=context,
+        existing_project=existing_project,
+        brand_id=24,
+    )
+
+    assert existing_project is None
+    assert any("active non-primary candidates" in blocker for blocker in plan["blockers"])
 
 
 class RecordingSession:

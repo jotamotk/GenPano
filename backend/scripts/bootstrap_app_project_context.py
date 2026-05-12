@@ -474,12 +474,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--brand-alias",
         action="append",
-        default=list(DEFAULT_ALIASES),
+        default=None,
         help="Alias/name fragment used for read-only project lookup; repeatable.",
     )
     parser.add_argument("--approval-ref", default=None)
     parser.add_argument("--write", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.brand_alias is None:
+        args.brand_alias = list(DEFAULT_ALIASES) if args.brand_id == DEFAULT_BRAND_ID else []
+    else:
+        args.brand_alias = _unique_strings(args.brand_alias)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
