@@ -97,6 +97,7 @@ jobs:
           remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q REPAIR_STALE_RUNNING=%q STALE_RUNNING_TTL_SECONDS=%q GH_RUN_ID=%q bash -s' \
             "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${REPAIR_STALE_RUNNING}" "${STALE_RUNNING_TTL_SECONDS}" "${GH_RUN_ID}")"
 
+          set +e
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
           set -Eeuo pipefail
           cd /opt/genpano
@@ -585,11 +586,35 @@ jobs:
           fi
 
           REMOTE
+          remote_status=${PIPESTATUS[0]}
+          set -e
 
+          scp_status=0
           scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
             "${SERVER_USER}@${SERVER_HOST}:/tmp/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" \
-            scraper-batch-artifacts/
-          tar -tzf "scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" | tee scraper-batch-artifacts/artifact-manifest.txt
+            scraper-batch-artifacts/ || scp_status=$?
+
+          manifest_status=0
+          artifact_archive="scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz"
+          if [ -f "${artifact_archive}" ]; then
+            tar -tzf "${artifact_archive}" | tee scraper-batch-artifacts/artifact-manifest.txt \
+              || manifest_status=$?
+          else
+            {
+              echo "artifact_archive_missing=${artifact_archive}"
+              echo "scp_status=${scp_status}"
+            } | tee scraper-batch-artifacts/artifact-manifest.txt
+          fi
+
+          if [ "${remote_status}" -ne 0 ]; then
+            exit "${remote_status}"
+          fi
+          if [ "${scp_status}" -ne 0 ]; then
+            exit "${scp_status}"
+          fi
+          if [ "${manifest_status}" -ne 0 ]; then
+            exit "${manifest_status}"
+          fi
 
       - name: Upload bestCoffer scraper batch artifacts
         if: ${{ always() && inputs.scraper_mode == 'bestcoffer_batch' }}
