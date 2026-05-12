@@ -35,12 +35,14 @@ class TopicMonitoringRow(BaseModel):
     success_rate: float | None = None
     engine_coverage: list[str] = Field(default_factory=list)
     mention_rate: float | None = None
+    visibility_rate: float | None = None
     sov: float | None = None
     avg_rank: float | None = None
     avg_geo_score: float | None = None
     sentiment_distribution: dict[str, int] = Field(
         default_factory=lambda: {"positive": 0, "neutral": 0, "negative": 0}
     )
+    citation_count: int = 0
     citation_rate: float | None = None
     last_collected: str | None = None
 
@@ -75,8 +77,13 @@ class TopicPromptRow(BaseModel):
     success_rate: float | None = None
     engine_coverage: list[str] = Field(default_factory=list)
     mention_rate: float | None = None
+    visibility_rate: float | None = None
     avg_rank: float | None = None
     avg_geo_score: float | None = None
+    sentiment_distribution: dict[str, int] = Field(
+        default_factory=lambda: {"positive": 0, "neutral": 0, "negative": 0}
+    )
+    citation_count: int = 0
     citation_rate: float | None = None
     last_collected: str | None = None
 
@@ -89,18 +96,41 @@ class TopicPromptsOut(BaseModel):
     state: str = "ok"
 
 
-class PromptQueryRow(BaseModel):
+class PromptQueryDailyRow(BaseModel):
+    date: str
     query_id: int
-    prompt_id: int | None = None
+    response_id: int
     query_text: str | None = None
     target_llm: str | None = None
     status: str | None = None
     profile_id: str | None = None
+    profile_name: str = "Unknown profile"
+    executed_at: str | None = None
+    finished_at: str | None = None
+    latency_ms: int | None = None
+    target_mentioned: bool = False
+    citation_count: int = 0
+    geo_score: float | None = None
+    sentiment_score: float | None = None
+
+
+class PromptQueryRow(BaseModel):
+    query_id: int
+    prompt_id: int | None = None
+    query_group_key: str | None = None
+    query_text: str | None = None
+    target_llm: str | None = None
+    status: str | None = None
+    profile_id: str | None = None
+    profile_name: str = "Unknown profile"
     created_at: str | None = None
     executed_at: str | None = None
     finished_at: str | None = None
     latency_ms: int | None = None
     response_id: int | None = None
+    date: str | None = None
+    attempt_count: int = 0
+    daily_latest: list[PromptQueryDailyRow] = Field(default_factory=list)
     target_mentioned: bool = False
     citation_count: int = 0
     geo_score: float | None = None
@@ -123,6 +153,7 @@ class QueryDetail(BaseModel):
     target_llm: str | None = None
     status: str | None = None
     profile_id: str | None = None
+    profile_name: str = "Unknown profile"
     created_at: str | None = None
     executed_at: str | None = None
     finished_at: str | None = None
@@ -181,6 +212,70 @@ class CitationDetail(BaseModel):
     created_at: str | None = None
 
 
+class ProductFeatureAttributeDetail(BaseModel):
+    feature_id: int
+    analysis_id: int | None = None
+    brand_name: str | None = None
+    product_name: str | None = None
+    feature_name: str | None = None
+    feature_sentiment: str | None = None
+    context_snippet: str | None = None
+    scenario: str | None = None
+    price_positioning: str | None = None
+    created_at: str | None = None
+
+
+class SentimentDriverDetail(BaseModel):
+    driver_id: int
+    mention_id: int | None = None
+    response_id: int | None = None
+    brand_name: str | None = None
+    driver_text: str
+    polarity: str | None = None
+    category: str | None = None
+    strength: float | None = None
+    source_quote: str | None = None
+    created_at: str | None = None
+
+
+class ResponseRelationDetail(BaseModel):
+    source: str
+    entity_kind: str | None = None
+    type: str
+    a_id: int | None = None
+    b_id: int | None = None
+    a_name: str | None = None
+    b_name: str | None = None
+    confidence: float | None = None
+    evidence: Any | None = None
+    response_id: int | None = None
+
+
+class AnalyzerFacts(BaseModel):
+    citations: list[CitationDetail] = Field(default_factory=list)
+    brands_mentioned: list[BrandMentionDetail] = Field(default_factory=list)
+    products_features_attributes: list[ProductFeatureAttributeDetail] = Field(default_factory=list)
+    relations: list[ResponseRelationDetail] = Field(default_factory=list)
+    sentiment_drivers: list[SentimentDriverDetail] = Field(default_factory=list)
+
+
+class ResponseAttemptDetail(BaseModel):
+    query_id: int
+    response_id: int
+    query_text: str | None = None
+    target_llm: str | None = None
+    status: str | None = None
+    profile_id: str | None = None
+    profile_name: str = "Unknown profile"
+    executed_at: str | None = None
+    finished_at: str | None = None
+    latency_ms: int | None = None
+    response: ResponseDetail
+    analysis: ResponseAnalysisDetail | None = None
+    citations: list[CitationDetail] = Field(default_factory=list)
+    analyzer_facts: AnalyzerFacts = Field(default_factory=AnalyzerFacts)
+
+
 class QueryResponseDetailOut(BaseModel):
     project_id: str
     query: QueryDetail
@@ -188,6 +283,8 @@ class QueryResponseDetailOut(BaseModel):
     analysis: ResponseAnalysisDetail | None = None
     brand_mentions: list[BrandMentionDetail] = Field(default_factory=list)
     citations: list[CitationDetail] = Field(default_factory=list)
+    analyzer_facts: AnalyzerFacts = Field(default_factory=AnalyzerFacts)
+    attempts: list[ResponseAttemptDetail] = Field(default_factory=list)
     state: str = "ok"
 
 
