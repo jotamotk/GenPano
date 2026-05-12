@@ -71,12 +71,14 @@ jobs:
 
           real_generation="${ADMIN_E2E_INPUT_REAL_GENERATION}"
           brand_id="${ADMIN_E2E_BRAND_ID}"
-          tracker_retry_query_id="$(echo "${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}" | xargs)"
-          tracker_retry_expected_engine="$(echo "${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE}" | xargs)"
+          tracker_retry_query_id="${ADMIN_E2E_TRACKER_RETRY_QUERY_ID#"${ADMIN_E2E_TRACKER_RETRY_QUERY_ID%%[![:space:]]*}"}"
+          tracker_retry_query_id="${tracker_retry_query_id%"${tracker_retry_query_id##*[![:space:]]}"}"
+          tracker_retry_expected_engine="${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE#"${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE%%[![:space:]]*}"}"
+          tracker_retry_expected_engine="${tracker_retry_expected_engine%"${tracker_retry_expected_engine##*[![:space:]]}"}"
           tracker_state="not included"
           tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
           controlled_retry_state="skipped by default"
-          controlled_retry_note="No \`tracker_retry_query_id\` input was provided; no Tracker retry mutation will run."
+          controlled_retry_note="No \`tracker_retry_query_id\` input was provided; no Tracker retry mutation will run. No batch retry, cleanup, or manual dispatch will run."
           business_state="included but expected to skip"
           business_note="\`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation will run."
           mutation_mode="read-only core smoke"
@@ -94,7 +96,7 @@ jobs:
           if [[ -n "${tracker_retry_query_id}" ]]; then
             mutation_mode="controlled Tracker retry mutation"
             controlled_retry_state="included and expected to execute"
-            controlled_retry_note="\`tracker_retry_query_id=${tracker_retry_query_id}\`; mutates exactly this one query via Tracker retry. No batch retry will run."
+            controlled_retry_note="\`tracker_retry_query_id=${tracker_retry_query_id}\`; mutates exactly this one query via the Tracker row retry UI. No batch retry, cleanup, or manual dispatch will run."
             if ! [[ "${tracker_retry_query_id}" =~ ^[0-9]+$ ]]; then
               input_error="tracker_retry_query_id must be a positive integer."
               controlled_retry_state="blocked before Playwright"
@@ -110,16 +112,21 @@ jobs:
 
           if [[ "${real_generation}" == "true" ]]; then
             if [[ -n "${tracker_retry_query_id}" ]]; then
-              mutation_mode="controlled business-flow and Tracker retry mutations"
-            else
-              mutation_mode="controlled real business-flow mutation"
-            fi
-            business_state="included and expected to execute"
-            business_note="\`ADMIN_E2E_BRAND_ID=${brand_id}\`; real flow mutates the dedicated staging brand only."
-            if [[ -z "${brand_id}" ]]; then
-              input_error="real_generation=true requires brand_id."
+              input_error="tracker_retry_query_id cannot be combined with real_generation=true; #478 allows exactly one Tracker retry mutation and no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation."
+              mutation_mode="blocked mixed mutation request"
               business_state="blocked before Playwright"
               business_note="${input_error}"
+              controlled_retry_state="blocked before Playwright"
+              controlled_retry_note="${input_error}"
+            else
+              mutation_mode="controlled real business-flow mutation"
+              business_state="included and expected to execute"
+              business_note="\`ADMIN_E2E_BRAND_ID=${brand_id}\`; real flow mutates the dedicated staging brand only."
+              if [[ -z "${brand_id}" ]]; then
+                input_error="real_generation=true requires brand_id."
+                business_state="blocked before Playwright"
+                business_note="${input_error}"
+              fi
             fi
           fi
 
@@ -166,7 +173,7 @@ jobs:
             specs+=("${ADMIN_E2E_TRACKER_SPEC}")
           fi
           if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}; no batch retry will run."
+            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; no batch retry, cleanup, or manual dispatch will run."
             specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
           fi
 
@@ -203,7 +210,7 @@ jobs:
               echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
             fi
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; this run mutates exactly one query and asserts \`dispatched=true\` plus no immediate quota exhaustion."
+              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi

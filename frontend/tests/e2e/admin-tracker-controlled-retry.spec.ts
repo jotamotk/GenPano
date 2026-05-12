@@ -1,7 +1,12 @@
 import { expect, test, type Page, type Response } from '@playwright/test';
 
 import { ensureAdminSession } from './admin-auth';
-import { installAdminErrorGuards, normalizeAdminApiPath } from './admin-fixtures';
+import {
+  fulfillJson,
+  installAdminDocumentRoute,
+  installAdminErrorGuards,
+  normalizeAdminApiPath,
+} from './admin-fixtures';
 
 const stagingEnabled = process.env.ADMIN_E2E_STAGING === '1';
 const retryQueryIdInput = (process.env.ADMIN_E2E_TRACKER_RETRY_QUERY_ID || '').trim();
@@ -13,6 +18,7 @@ const pollSeconds = Math.max(
 
 const mutationMode = 'controlled live Tracker retry mutation';
 const quotaExhaustedReason = 'account_daily_limit_exhausted';
+const retryRequestMarkers = new Set(['qa controlled retry gate', 'manual retry from admin']);
 
 type ApiResult = {
   ok: boolean;
@@ -30,10 +36,15 @@ type QueryRow = {
   error_code?: string | null;
 };
 
-test.skip(
-  !stagingEnabled || !retryQueryIdInput,
-  'Set ADMIN_E2E_STAGING=1 and ADMIN_E2E_TRACKER_RETRY_QUERY_ID to run the opt-in live Tracker retry mutation.',
-);
+type QuerySnapshot = {
+  queryId: number;
+  status: string;
+  retryCount: number | null;
+  targetLlm: string;
+  retryReason: string;
+  rawRowJson: string;
+};
+
 test.setTimeout((pollSeconds + 90) * 1000);
 
 const parseRetryQueryId = () => {
@@ -93,21 +104,31 @@ const readSingleQuery = async (page: Page, queryId: number, count = '1') => {
   return rows[0];
 };
 
-const querySnapshot = (queryId: number, row: QueryRow) => ({
+const querySnapshot = (queryId: number, row: QueryRow): QuerySnapshot => ({
   queryId,
   status: String(row.status || ''),
   retryCount: row.retry_count == null ? null : Number(row.retry_count),
   targetLlm: String(row.target_llm || ''),
   retryReason: String(row.retry_reason || row.error_code || ''),
+  rawRowJson: JSON.stringify(row),
 });
 
-const assertNotQuotaExhausted = (snapshot: ReturnType<typeof querySnapshot>) => {
-  if (snapshot.retryReason.toLowerCase().includes(quotaExhaustedReason)) {
+const assertNoQuotaExhaustionText = (queryId: number, label: string, value: unknown) => {
+  const haystack = String(typeof value === 'string' ? value : JSON.stringify(value)).toLowerCase();
+  if (haystack.includes(quotaExhaustedReason)) {
     throw new Error(
-      `Controlled retry for query ${snapshot.queryId} hit ${quotaExhaustedReason}: ` +
-      `status=${snapshot.status}; retry_count=${snapshot.retryCount}; target_llm=${snapshot.targetLlm}; retry_reason=${snapshot.retryReason}`,
+      `Controlled retry for query ${queryId} hit ${quotaExhaustedReason} in ${label}: ${haystack.slice(0, 1000)}`,
     );
   }
+};
+
+const assertNotQuotaExhausted = (snapshot: QuerySnapshot) => {
+  assertNoQuotaExhaustionText(snapshot.queryId, 'query snapshot', [
+    snapshot.status,
+    snapshot.retryReason,
+    snapshot.targetLlm,
+    snapshot.rawRowJson,
+  ].join(' | '));
 };
 
 const isRetryResponse = (queryId: number) => (response: Response) => {
@@ -127,7 +148,7 @@ const loadTrackerFilteredToQuery = async (page: Page, queryId: number) => {
     const path = normalizeAdminApiPath(url);
     return path.endsWith('/queries') && url.searchParams.get('id') === String(queryId);
   }, { timeout: 60_000 });
-  await page.getByRole('button', { name: '搜索' }).click();
+  await page.getByRole('button', { name: '搜索', exact: true }).click();
   const response = await responsePromise;
   expect(response.ok(), `Filtered Tracker query load must return 2xx/3xx, got HTTP ${response.status()} at ${response.url()}`).toBeTruthy();
 
@@ -136,25 +157,17 @@ const loadTrackerFilteredToQuery = async (page: Page, queryId: number) => {
   return row;
 };
 
-const postRetryByApi = async (page: Page, queryId: number) => {
-  console.info(`[Admin Tracker controlled retry] UI retry button unavailable; falling back to same-origin POST /admin/api/queries/${queryId}/retry.`);
-  return await adminApi(page, `/queries/${queryId}/retry`, {
-    method: 'POST',
-    body: JSON.stringify({ reason: 'qa controlled retry gate' }),
-  });
-};
-
 const triggerRetry = async (page: Page, queryId: number) => {
   const row = await loadTrackerFilteredToQuery(page, queryId);
-  const retryButton = row.getByRole('button', { name: '重试' });
-  const uiButtonVisible = await retryButton.isVisible({ timeout: 15_000 }).catch(() => false);
-
-  if (!uiButtonVisible) {
-    return {
-      result: await postRetryByApi(page, queryId),
-      path: 'api-fallback',
-    };
-  }
+  const retryButton = row.getByRole('button', { name: /^重试$/ });
+  await expect(
+    retryButton,
+    `Controlled retry requires operator UI evidence: Tracker row Q-${queryId} must expose a visible 重试 button; API fallback is not allowed.`,
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(
+    retryButton,
+    `Controlled retry requires operator UI evidence: Tracker row Q-${queryId} retry button must be enabled.`,
+  ).toBeEnabled({ timeout: 15_000 });
 
   console.info(`[Admin Tracker controlled retry] Clicking Tracker UI row retry button for query ${queryId}.`);
   const retryResponsePromise = page.waitForResponse(isRetryResponse(queryId), { timeout: 60_000 });
@@ -172,22 +185,40 @@ const triggerRetry = async (page: Page, queryId: number) => {
   };
 };
 
-const classifyPassingOutcome = (snapshot: ReturnType<typeof querySnapshot>, timedOut: boolean) => {
+const hasRetryCountIncrease = (before: QuerySnapshot, after: QuerySnapshot) => (
+  before.retryCount !== null
+  && after.retryCount !== null
+  && Number.isFinite(before.retryCount)
+  && Number.isFinite(after.retryCount)
+  && after.retryCount >= before.retryCount + 1
+);
+
+const isRequestMarkerReason = (reason: string) => retryRequestMarkers.has(reason.trim().toLowerCase());
+
+const classifyPassingOutcome = (snapshot: QuerySnapshot, before: QuerySnapshot) => {
   const normalizedStatus = snapshot.status.toLowerCase();
+  if (!hasRetryCountIncrease(before, snapshot)) return '';
   if (['done', 'success'].includes(normalizedStatus)) {
     return `terminal success status=${snapshot.status}`;
   }
-  if (normalizedStatus === 'failed' && snapshot.retryReason) {
+  if (
+    ['failed', 'dlq', 'waiting_manual'].includes(normalizedStatus)
+    && snapshot.retryReason
+    && !isRequestMarkerReason(snapshot.retryReason)
+  ) {
     return `terminal non-quota failure status=${snapshot.status}; retry_reason=${snapshot.retryReason}`;
-  }
-  if (timedOut && ['pending', 'running', 'retrying', 'queued', ''].includes(normalizedStatus)) {
-    return `still ${snapshot.status || 'unknown'} after ${pollSeconds}s with no quota exhaustion`;
   }
   return '';
 };
 
-const pollForAcceptedOutcome = async (page: Page, queryId: number) => {
-  const deadline = Date.now() + pollSeconds * 1000;
+const pollForAcceptedOutcome = async (
+  page: Page,
+  queryId: number,
+  before: QuerySnapshot,
+  maxPollSeconds = pollSeconds,
+) => {
+  const deadline = Date.now() + maxPollSeconds * 1000;
+  const pollDelayMs = Math.min(5_000, Math.max(250, Math.floor(maxPollSeconds * 500)));
   let lastSnapshot = querySnapshot(queryId, await readSingleQuery(page, queryId, '0'));
   let outcome = '';
 
@@ -195,32 +226,35 @@ const pollForAcceptedOutcome = async (page: Page, queryId: number) => {
     lastSnapshot = querySnapshot(queryId, await readSingleQuery(page, queryId, '0'));
     assertNotQuotaExhausted(lastSnapshot);
 
-    outcome = classifyPassingOutcome(lastSnapshot, false);
+    outcome = classifyPassingOutcome(lastSnapshot, before);
     if (outcome) {
       return { outcome, snapshot: lastSnapshot };
     }
 
-    await page.waitForTimeout(5_000);
+    await page.waitForTimeout(pollDelayMs);
   }
 
   assertNotQuotaExhausted(lastSnapshot);
-  outcome = classifyPassingOutcome(lastSnapshot, true);
-  if (!outcome) {
-    throw new Error(
-      `Controlled retry for query ${queryId} ended in unsupported state: ` +
-      `status=${lastSnapshot.status}; retry_count=${lastSnapshot.retryCount}; target_llm=${lastSnapshot.targetLlm}; retry_reason=${lastSnapshot.retryReason}`,
-    );
-  }
-  return { outcome, snapshot: lastSnapshot };
+  throw new Error(
+    `Controlled retry for query ${queryId} did not reach an accepted terminal outcome within ${maxPollSeconds}s: ` +
+    `status=${lastSnapshot.status || 'empty'}; retry_count=${lastSnapshot.retryCount}; ` +
+    `expected_retry_count_min=${before.retryCount === null ? 'unknown' : before.retryCount + 1}; target_llm=${lastSnapshot.targetLlm}; ` +
+    `retry_reason=${lastSnapshot.retryReason || 'empty'}; raw=${lastSnapshot.rawRowJson.slice(0, 1000)}`,
+  );
 };
 
 test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion`, async ({ page }) => {
+  test.skip(
+    !stagingEnabled || !retryQueryIdInput,
+    'Set ADMIN_E2E_STAGING=1 and ADMIN_E2E_TRACKER_RETRY_QUERY_ID to run the opt-in live Tracker retry mutation.',
+  );
+
   const queryId = parseRetryQueryId();
   test.info().annotations.push({
     type: 'mode',
-    description: `${mutationMode}; mutates exactly one query id=${queryId}; no batch retry.`,
+    description: `${mutationMode}; mutates exactly one query id=${queryId}; no batch retry, no cleanup, no manual dispatch.`,
   });
-  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; no batch retry will run.`);
+  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; no batch retry, cleanup, or manual dispatch will run.`);
 
   const errors = installAdminErrorGuards(page);
   await ensureAdminSession(page);
@@ -239,12 +273,13 @@ test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion
   }
 
   const { result: retryResult, path } = await triggerRetry(page, queryId);
+  assertNoQuotaExhaustionText(queryId, 'retry POST body', retryResult.body);
   expect(retryResult.status, `Retry POST must return HTTP 200 at ${retryResult.url}; body=${JSON.stringify(retryResult.body)}`).toBe(200);
   expect(retryResult.body?.success, `Retry POST must return success=true; body=${JSON.stringify(retryResult.body)}`).toBe(true);
   expect(retryResult.body?.dispatched, `Retry POST must dispatch to worker; dispatched=false is not accepted for query ${queryId}. Body=${JSON.stringify(retryResult.body)}`).toBe(true);
   console.info(`[Admin Tracker controlled retry] Retry POST accepted via ${path}; dispatched=true for query ${queryId}.`);
 
-  const { outcome, snapshot } = await pollForAcceptedOutcome(page, queryId);
+  const { outcome, snapshot } = await pollForAcceptedOutcome(page, queryId, before);
   await loadTrackerFilteredToQuery(page, queryId);
   await expect(page.locator('tbody tr', { hasText: `Q-${queryId}` }).first()).toBeVisible({ timeout: 30_000 });
 
@@ -254,4 +289,105 @@ test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion
   );
 
   await errors.assertClean();
+});
+
+const fakeQueryId = 184576;
+const fakeQueryRow = (overrides: Record<string, unknown> = {}) => ({
+  id: fakeQueryId,
+  target_llm: 'deepseek',
+  status: 'failed',
+  retry_count: 2,
+  retry_reason: 'browser_timeout',
+  query_text: 'controlled retry fake row',
+  account_label: 'ACC-FAKE',
+  ...overrides,
+});
+
+const installControlledRetryRoutes = async (
+  page: Page,
+  rows: QueryRow[],
+  options: { includeRetryButton?: boolean } = {},
+) => {
+  let queryReads = 0;
+  await installAdminDocumentRoute(page);
+  if (options.includeRetryButton === false) {
+    await page.addInitScript(() => {
+      const style = document.createElement('style');
+      style.textContent = 'tbody tr button { display: none !important; }';
+      document.addEventListener('DOMContentLoaded', () => document.head.appendChild(style), { once: true });
+    });
+  }
+  await page.route(/.*\/(?:api\/admin|admin\/api)(?:\/.*)?/, async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = normalizeAdminApiPath(url);
+    const method = request.method();
+
+    if (method === 'GET' && path.endsWith('/auth/session')) {
+      await fulfillJson(route, {
+        authenticated: true,
+        admin: { id: 'admin-controlled-retry-e2e', email: 'tracker@example.test' },
+      });
+      return;
+    }
+
+    if (method === 'GET' && path.endsWith('/analyzer/brands')) {
+      await fulfillJson(route, []);
+      return;
+    }
+
+    if (method === 'GET' && path.endsWith('/queries')) {
+      const row = rows[Math.min(queryReads, rows.length - 1)];
+      queryReads += 1;
+      await fulfillJson(route, {
+        rows: [row],
+        total: 1,
+        by_status: { [String(row.status || '')]: 1 },
+      });
+      return;
+    }
+
+    if (method === 'POST' && path.endsWith(`/queries/${fakeQueryId}/retry`)) {
+      await fulfillJson(route, { success: true, dispatched: true });
+      return;
+    }
+
+    await fulfillJson(route, {});
+  });
+};
+
+test('controlled retry fails instead of using API fallback when the UI retry button is unavailable', async ({ page }) => {
+  await installControlledRetryRoutes(page, [fakeQueryRow()], { includeRetryButton: false });
+  await expect(triggerRetry(page, fakeQueryId)).rejects.toThrow(/operator UI evidence|API fallback/i);
+});
+
+test('controlled retry polling fails pending timeout instead of accepting it', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({ status: 'pending', retry_count: 3, retry_reason: 'qa controlled retry gate' }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(/pending/i);
+});
+
+test('controlled retry polling fails quota exhaustion when sentinel appears in raw row fields', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({
+      status: 'failed:account_daily_limit_exhausted',
+      retry_count: 3,
+      retry_reason: 'browser_timeout',
+    }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(quotaExhaustedReason);
+});
+
+test('controlled retry polling requires retry_count to increase before accepting terminal failure', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({ status: 'failed', retry_count: 2, retry_reason: 'browser_timeout' }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(/expected_retry_count_min=3/);
 });
