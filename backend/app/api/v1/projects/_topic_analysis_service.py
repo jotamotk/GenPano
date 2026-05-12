@@ -733,6 +733,7 @@ async def _fact_rows(
         "0 AS positive_mentions",
         "0 AS neutral_mentions",
         "0 AS negative_mentions",
+        "NULL AS target_sentiment_score",
         "NULL AS negative_sample_snippet",
     ]
     if has_mentions and response_join and primary is not None:
@@ -753,12 +754,16 @@ async def _fact_rows(
             "AS positive_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
             f"AND {target_mention_condition} "
-            "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'neutral') "
+            "AND LOWER(bm.sentiment) = 'neutral') "
             "AS neutral_mentions",
             "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id "
             f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative') "
             "AS negative_mentions",
+            "(SELECT AVG(bm.sentiment_score) FROM brand_mentions bm "
+            "WHERE bm.response_id = r.id "
+            f"AND {target_mention_condition} "
+            "AND bm.sentiment_score IS NOT NULL) AS target_sentiment_score",
             "(SELECT bm.context_snippet FROM brand_mentions bm WHERE bm.response_id = r.id "
             f"AND {target_mention_condition} "
             "AND LOWER(COALESCE(bm.sentiment, 'neutral')) = 'negative' "
@@ -771,10 +776,10 @@ async def _fact_rows(
         citation_select = (
             "(SELECT COUNT(*) FROM citation_sources cs "
             "WHERE cs.response_id = r.id "
-            "AND (cs.mention_id IS NULL OR cs.mention_id IN ("
+            "AND cs.mention_id IN ("
             "SELECT bm.id FROM brand_mentions bm "
             f"WHERE bm.response_id = r.id AND {target_mention_condition}"
-            "))) AS citation_count"
+            ")) AS citation_count"
         )
     elif has_citations and response_join:
         citation_select = (

@@ -78,6 +78,7 @@ from app.api.v1.projects._legacy_lookups import (
     resolve_brand_names,
     resolve_topic_names,
 )
+from app.api.v1.projects._mention_rollups import brand_mention_match_condition
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
     _as_float,
@@ -149,28 +150,198 @@ def _chart_counts(**counts: int) -> dict[str, int]:
     return {key: int(value or 0) for key, value in counts.items()}
 
 
+def _fact_response_ids(rows: list[dict[str, Any]]) -> list[int]:
+    ids = {_as_int(row.get("response_id")) for row in rows}
+    return sorted(rid for rid in ids if rid is not None)
+
+
+def _fact_response_day_map(rows: list[dict[str, Any]]) -> dict[int, str]:
+    response_days: dict[int, str] = {}
+    for row in rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in response_days:
+            continue
+        day = _date_key(
+            row.get("response_created_at")
+            or row.get("query_finished_at")
+            or row.get("query_created_at")
+        )
+        if day is not None:
+            response_days[rid] = day
+    return response_days
+
+
+def _fact_sentiment_score_response_count(rows: list[dict[str, Any]]) -> int:
+    ids = {
+        _as_int(row.get("response_id"))
+        for row in rows
+        if _as_int(row.get("response_id")) is not None
+        and (
+            _as_float(row.get("target_sentiment_score")) is not None
+            or _as_float(row.get("sentiment_score")) is not None
+        )
+    }
+    return len({rid for rid in ids if rid is not None})
+
+
+async def _target_citation_composition_rows(
+    session: AsyncSession,
+    *,
+    brand_id: int,
+    response_ids: list[int],
+) -> tuple[list[CitationCompositionRow], int]:
+    if not response_ids:
+        return [], 0
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    rows = (
+        await session.execute(
+            select(DomainAuthority.tier, func.count())
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
+            .where(
+                and_(
+                    CitationSource.response_id.in_(response_ids),
+                    CitationSource.domain.isnot(None),
+                    brand_filter,
+                )
+            )
+            .group_by(DomainAuthority.tier)
+        )
+    ).all()
+    total = sum(int(row[1] or 0) for row in rows)
+    label_for = {
+        1: "Tier 1",
+        2: "Tier 2",
+        3: "Tier 3",
+        4: "Tier 4",
+        None: "Untiered",
+    }
+    by_tier = {row[0]: int(row[1] or 0) for row in rows}
+    return (
+        [
+            CitationCompositionRow(
+                label=label_for[tier],
+                tier=tier,
+                count=count,
+                pct=round(count / total * 100, 1) if total else 0.0,
+            )
+            for tier in (1, 2, 3, 4, None)
+            if (count := by_tier.get(tier, 0)) or tier is not None
+        ],
+        total,
+    )
+
+
+async def _target_authority_points_from_facts(
+    session: AsyncSession,
+    *,
+    brand_id: int,
+    response_days: dict[int, str],
+) -> tuple[list[AuthorityTrendPoint], int]:
+    if not response_days:
+        return [], 0
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    rows = (
+        await session.execute(
+            select(
+                CitationSource.response_id,
+                DomainAuthority.tier,
+                func.count().label("cnt"),
+            )
+            .select_from(CitationSource)
+            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
+            .where(
+                and_(
+                    CitationSource.response_id.in_(sorted(response_days)),
+                    CitationSource.domain.isnot(None),
+                    brand_filter,
+                )
+            )
+            .group_by(CitationSource.response_id, DomainAuthority.tier)
+        )
+    ).all()
+    by_day: dict[str, dict[int | None, int]] = OrderedDict()
+    total_count = 0
+    for response_id, tier, count in rows:
+        day = response_days.get(int(response_id))
+        if day is None:
+            continue
+        value = int(count or 0)
+        by_day.setdefault(day, defaultdict(int))[tier] += value
+        total_count += value
+    points: list[AuthorityTrendPoint] = []
+    for day, tier_map in by_day.items():
+        total = sum(tier_map.values())
+        if total <= 0:
+            continue
+        points.append(
+            AuthorityTrendPoint(
+                date=day,
+                tier1_pct=round(tier_map.get(1, 0) / total * 100, 1),
+                tier2_pct=round(tier_map.get(2, 0) / total * 100, 1),
+                tier3_pct=round(tier_map.get(3, 0) / total * 100, 1),
+                tier4_pct=round(tier_map.get(4, 0) / total * 100, 1),
+                untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
+            )
+        )
+    return points, total_count
+
+
 async def _sentiment_contract_evidence_count(
     session: AsyncSession,
     brand_id: int,
     from_d: date,
     to_d: date,
+    *,
+    response_ids: list[int] | None = None,
 ) -> int:
-    f, t = _dt_range(from_d, to_d)
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    predicates = [
+        brand_filter,
+        BrandMention.sentiment_score.isnot(None),
+        func.lower(BrandMention.sentiment).in_(["positive", "neutral", "negative"]),
+    ]
+    if response_ids is not None:
+        if not response_ids:
+            return 0
+        predicates.append(BrandMention.response_id.in_(response_ids))
+    else:
+        f, t = _dt_range(from_d, to_d)
+        predicates.extend([BrandMention.created_at >= f, BrandMention.created_at <= t])
     return int(
         (
-            await session.execute(
-                select(func.count(BrandMention.id)).where(
-                    and_(
-                        BrandMention.brand_id == brand_id,
-                        BrandMention.sentiment_score.isnot(None),
-                        func.lower(BrandMention.sentiment).in_(["positive", "neutral", "negative"]),
-                        BrandMention.created_at >= f,
-                        BrandMention.created_at <= t,
-                    )
-                )
-            )
+            await session.execute(select(func.count(BrandMention.id)).where(and_(*predicates)))
         ).scalar_one()
         or 0
+    )
+
+
+def _sentiment_by_engine_missing_out(
+    *,
+    project_id: str,
+    period: dict[str, str],
+    evidence_count: int,
+    evidence_counts: dict[str, int],
+) -> SentimentByEngineOut:
+    missing_inputs = ["brand_mentions.sentiment_score", "brand_mentions.sentiment"]
+    return SentimentByEngineOut(
+        project_id=project_id,
+        period=period,
+        items=[],
+        state="partial",
+        state_reason="missing_formula_inputs",
+        evidence_count=evidence_count,
+        evidence_counts=evidence_counts,
+        missing_inputs=missing_inputs,
+        missing_sources=missing_inputs,
+        formula_status=FORMULA_MISSING_INPUTS_STATUS,
+        formula_diagnostics=formula_diagnostics_for(
+            FORMULA_MISSING_INPUTS_STATUS,
+            missing_inputs=missing_inputs,
+        ),
+        source_provenance=["brand_mentions", "geo_score_daily"],
     )
 
 
@@ -273,7 +444,12 @@ def _engine_metric_rows_from_facts(
         engine_bucket[engine]["target_mentions"] += target_mentions
         engine_bucket[engine]["all_mentions"] += all_mentions
         engine_bucket[engine]["citations"] += int(row.get("citation_count") or 0)
-        sentiment = _as_float(row.get("sentiment_score"))
+        target_mentions = _fact_target_mention_count(row)
+        sentiment = (
+            _as_float(row.get("target_sentiment_score"))
+            if target_mentions > 0
+            else _as_float(row.get("sentiment_score"))
+        )
         if sentiment is not None:
             engine_bucket[engine]["sentiment"].append(sentiment)
     items = [
@@ -376,7 +552,12 @@ async def _topic_heatmap_from_facts(
         bucket["responses"].add(rid)
         if _fact_target_mention_count(row) > 0:
             bucket["target_responses"].add(rid)
-        sentiment = _as_float(row.get("sentiment_score"))
+        target_mentions = _fact_target_mention_count(row)
+        sentiment = (
+            _as_float(row.get("target_sentiment_score"))
+            if target_mentions > 0
+            else _as_float(row.get("sentiment_score"))
+        )
         if sentiment is not None:
             bucket["sentiments"].append(sentiment)
 
@@ -453,9 +634,6 @@ def _sentiment_by_engine_from_facts(
             bucket[engine]["positive"] += positive
             bucket[engine]["neutral"] += neutral
             bucket[engine]["negative"] += negative
-            continue
-        if _fact_target_mention_count(row) > 0:
-            bucket[engine][_polarity_from_score(row.get("sentiment_score"))] += 1
     items = [
         SentimentByEngineRow(
             engine=engine,
@@ -477,7 +655,12 @@ def _sentiment_trend_by_engine_from_facts(
     seen: set[int] = set()
     for row in fact_rows:
         rid = _as_int(row.get("response_id"))
-        sentiment = _as_float(row.get("sentiment_score"))
+        target_mentions = _fact_target_mention_count(row)
+        sentiment = (
+            _as_float(row.get("target_sentiment_score"))
+            if target_mentions > 0
+            else _as_float(row.get("sentiment_score"))
+        )
         if rid is None or rid in seen or sentiment is None:
             continue
         seen.add(rid)
@@ -878,6 +1061,14 @@ async def get_sentiment_by_engine(
             profile_id=profile_id,
         )
         items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
+        score_evidence_count = _fact_sentiment_score_response_count(fact_rows)
+        if not items and score_evidence_count:
+            return _sentiment_by_engine_missing_out(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                evidence_count=score_evidence_count,
+                evidence_counts=_chart_counts(admin_fact_response_count=score_evidence_count),
+            )
         state = "ok" if items else "empty"
         return SentimentByEngineOut(
             project_id=project.id,
@@ -931,6 +1122,14 @@ async def get_sentiment_by_engine(
     if not items:
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
         items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
+        score_evidence_count = _fact_sentiment_score_response_count(fact_rows)
+        if not items and score_evidence_count:
+            return _sentiment_by_engine_missing_out(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                evidence_count=score_evidence_count,
+                evidence_counts=_chart_counts(admin_fact_response_count=score_evidence_count),
+            )
         state = "ok" if items else "empty"
         return SentimentByEngineOut(
             project_id=project.id,
@@ -995,6 +1194,7 @@ async def get_sentiment_trend_by_engine(
             project.primary_brand_id,
             from_d,
             to_d,
+            response_ids=_fact_response_ids(fact_rows),
         ):
             return _sentiment_missing_out(
                 project_id=project.id,
@@ -1054,6 +1254,7 @@ async def get_sentiment_trend_by_engine(
             project.primary_brand_id,
             from_d,
             to_d,
+            response_ids=_fact_response_ids(fact_rows),
         ):
             return _sentiment_missing_out(
                 project_id=project.id,
@@ -1321,7 +1522,11 @@ async def get_mention_samples(
             if rid is None or rid in seen or _fact_target_mention_count(row) <= 0:
                 continue
             seen.add(rid)
-            polarity_value = _polarity_from_score(row.get("sentiment_score"))
+            polarity_value = _polarity_from_score(
+                row.get("target_sentiment_score")
+                if row.get("target_sentiment_score") is not None
+                else row.get("sentiment_score")
+            )
             fact_items.append(
                 MentionSampleRow(
                     mention_id=rid,
@@ -1406,44 +1611,11 @@ async def get_authority_trend(
                 state="empty",
                 state_reason="no_admin_fact_data",
             )
-        stmt = (
-            select(
-                func.date(CitationSource.created_at).label("d"),
-                DomainAuthority.tier,
-                func.count().label("cnt"),
-            )
-            .select_from(CitationSource)
-            .outerjoin(BrandMention, BrandMention.id == CitationSource.mention_id)
-            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
-            .where(
-                and_(
-                    CitationSource.response_id.in_(response_ids),
-                    or_(CitationSource.mention_id.is_(None), BrandMention.brand_id == primary),
-                )
-            )
-            .group_by("d", DomainAuthority.tier)
-            .order_by("d")
+        fact_points, citation_count = await _target_authority_points_from_facts(
+            session,
+            brand_id=primary,
+            response_days=_fact_response_day_map(fact_rows),
         )
-        fact_authority_rows = (await session.execute(stmt)).all()
-        fact_by_day: dict[str, dict[int | None, int]] = OrderedDict()
-        for d, tier, cnt in fact_authority_rows:
-            d_iso = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
-            fact_by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
-        fact_points: list[AuthorityTrendPoint] = []
-        for d_iso, tier_map in fact_by_day.items():
-            total = sum(tier_map.values())
-            if total <= 0:
-                continue
-            fact_points.append(
-                AuthorityTrendPoint(
-                    date=d_iso,
-                    tier1_pct=round(tier_map.get(1, 0) / total * 100, 1),
-                    tier2_pct=round(tier_map.get(2, 0) / total * 100, 1),
-                    tier3_pct=round(tier_map.get(3, 0) / total * 100, 1),
-                    tier4_pct=round(tier_map.get(4, 0) / total * 100, 1),
-                    untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
-                )
-            )
         state = "ok" if fact_points else "empty"
         return AuthorityTrendOut(
             project_id=project.id,
@@ -1451,8 +1623,11 @@ async def get_authority_trend(
             points=fact_points,
             state=state,
             state_reason=_state_reason(state, "no_citation_data"),
-            evidence_count=evidence_count,
-            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+            evidence_count=citation_count if citation_count else evidence_count,
+            evidence_counts=_chart_counts(
+                admin_fact_response_count=evidence_count,
+                citation_source_count=citation_count,
+            ),
         )
     # Per-day count of citations grouped by tier.
     stmt = (
@@ -1500,6 +1675,24 @@ async def get_authority_trend(
     if not authority_points:
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
         evidence_count = _response_evidence_count(fact_rows)
+        fact_points, citation_count = await _target_authority_points_from_facts(
+            session,
+            brand_id=primary,
+            response_days=_fact_response_day_map(fact_rows),
+        )
+        if fact_points:
+            return AuthorityTrendOut(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                points=fact_points,
+                state="ok",
+                state_reason="data_available",
+                evidence_count=citation_count,
+                evidence_counts=_chart_counts(
+                    admin_fact_response_count=evidence_count,
+                    citation_source_count=citation_count,
+                ),
+            )
         return AuthorityTrendOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1574,44 +1767,16 @@ async def get_citation_composition(
                 state_reason="no_admin_fact_data",
                 evidence_count=0,
             )
-        stmt = (
-            select(DomainAuthority.tier, func.count())
-            .select_from(CitationSource)
-            .outerjoin(BrandMention, BrandMention.id == CitationSource.mention_id)
-            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
-            .where(
-                and_(
-                    CitationSource.response_id.in_(response_ids),
-                    CitationSource.domain.isnot(None),
-                    or_(CitationSource.mention_id.is_(None), BrandMention.brand_id == primary),
-                )
-            )
-            .group_by(DomainAuthority.tier)
+        segments, total = await _target_citation_composition_rows(
+            session,
+            brand_id=primary,
+            response_ids=response_ids,
         )
-        rows = (await session.execute(stmt)).all()
-        total = sum(int(r[1] or 0) for r in rows)
-        label_for = {
-            1: "Tier 1",
-            2: "Tier 2",
-            3: "Tier 3",
-            4: "Tier 4",
-            None: "Untiered",
-        }
-        by_tier = {r[0]: int(r[1] or 0) for r in rows}
         state = "ok" if total else "empty"
         return CitationCompositionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
-            segments=[
-                CitationCompositionRow(
-                    label=label_for[tier],
-                    tier=tier,
-                    count=count,
-                    pct=round(count / total * 100, 1) if total else 0.0,
-                )
-                for tier in (1, 2, 3, 4, None)
-                if (count := by_tier.get(tier, 0)) or tier is not None
-            ],
+            segments=segments,
             total=total,
             state=state,
             state_reason=_state_reason(state, "no_citation_data"),
@@ -1663,6 +1828,25 @@ async def get_citation_composition(
     if total == 0:
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
         evidence_count = _response_evidence_count(fact_rows)
+        fact_segments, fact_total = await _target_citation_composition_rows(
+            session,
+            brand_id=primary,
+            response_ids=_fact_response_ids(fact_rows),
+        )
+        if fact_total:
+            return CitationCompositionOut(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                segments=fact_segments,
+                total=fact_total,
+                state="ok",
+                state_reason="data_available",
+                evidence_count=fact_total,
+                evidence_counts=_chart_counts(
+                    admin_fact_response_count=evidence_count,
+                    citation_source_count=fact_total,
+                ),
+            )
         return CitationCompositionOut(
             project_id=project.id,
             period=_period(from_d, to_d),

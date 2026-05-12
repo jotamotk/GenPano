@@ -371,7 +371,11 @@ async def _overview_from_admin_facts(
             bucket["ranks"].append(float(rank))
             if mentions > 0:
                 prompt_buckets[prompt_key]["ranks"].append(float(rank))
-        sentiment = _as_float(row.get("sentiment_score"))
+        sentiment = (
+            _as_float(row.get("target_sentiment_score"))
+            if mentions > 0
+            else _as_float(row.get("sentiment_score"))
+        )
         if sentiment is not None:
             bucket["sentiments"].append(sentiment)
             if mentions > 0:
