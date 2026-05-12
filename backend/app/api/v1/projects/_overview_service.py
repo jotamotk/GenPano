@@ -184,8 +184,12 @@ def _kpi_missing_inputs(
         or context.evidence_counts.get("competitive_mention_count", 0) <= 0
     ):
         missing.append("brand_mentions.competitive_set")
-    if metric_key in {"avg_sentiment", "sentiment"} and (
-        "brand_mentions.sentiment_score" in inputs or "llm_brand_sentiment" in inputs
+    if metric_key in {"avg_sentiment", "sentiment"} and "brand_mentions.sentiment_score" in inputs:
+        missing.append("brand_mentions.sentiment_score")
+    if (
+        evidence_source != "admin_facts"
+        and metric_key in {"avg_sentiment", "sentiment"}
+        and "llm_brand_sentiment" in inputs
     ):
         missing.append("brand_mentions.sentiment_score")
     if metric_key == "geo_score" and "llm_brand_position" in inputs:
