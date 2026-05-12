@@ -22,6 +22,7 @@ const filterKey = (filters: ProjectAnalysisParams = {}) =>
     filters.dimension ?? '',
     filters.intent ?? '',
     filters.prompt_scope ?? '',
+    filters.brand_id ?? '',
   ].join('|')
 
 export function useEngineMetrics(

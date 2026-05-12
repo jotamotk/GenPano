@@ -1,4 +1,5 @@
 import React from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -13,7 +14,7 @@ import KpiCard from '../../components/dashboard/KpiCard';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
-import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandMetrics, useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useEngineMetrics,
@@ -54,11 +55,13 @@ export default function BrandVisibilityPage() {
   const { t, formatNumber } = useLocale();
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const [searchParams] = useSearchParams();
+  const brandIdOverride = brandIdFromSearchParams(searchParams);
   // Hook must be referenced even if BrandAnalysisFilterBar already reads it — the
   // import itself triggers the C10 harness grep, and reading filters lets us wire
   // downstream fetches (kept as placeholder here, ready for real backend).
   const { filters } = useBrandAnalysisFilters();
-  const chartFilters = toProjectAnalysisParams(filters);
+  const chartFilters = toProjectAnalysisParams(filters, brandIdOverride);
 
   // ── Live data hooks (gated on UUID project id) ──
   const { data: liveProjects } = useProjects();
@@ -68,9 +71,9 @@ export default function BrandVisibilityPage() {
   const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
     'mention_rate',
     'sov',
-  ], null, chartFilters);
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, null, chartFilters);
-  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', null, chartFilters);
+  ], brandIdOverride, chartFilters);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, brandIdOverride, chartFilters);
+  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', brandIdOverride, chartFilters);
   const engineQ = useEngineMetrics(isLive ? liveProjectId : null, chartFilters);
   const positionQ = usePositionDistribution(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {

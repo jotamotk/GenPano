@@ -799,6 +799,61 @@ describe('dashboard adapter', () => {
     expect(contract?.evidence.join(' ')).toContain('geo_score_daily rows 0')
   })
 
+  it('maps BestCoffer backend state aliases into the visualization contract', () => {
+    const contract = buildBrandSwitchStateContract({
+      isLive: true,
+      liveProjectId: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+      requestedBrandId: 24,
+      overview: {
+        ...emptyOverview,
+        project_id: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+        brand_id: 24,
+        brand_name: 'BestCoffer',
+        state: 'partial',
+        state_reason: 'missing_project_brand_binding',
+      } as unknown as BrandOverviewOut,
+      metrics: {
+        project_id: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+        brand_id: 24,
+        period: { from: '2026-05-01', to: '2026-05-12' },
+        engines: null,
+        state: 'partial',
+        state_reason: 'partial_analyzer_data',
+        series: [],
+        metric_formula_evidence: {
+          pano_geo: {
+            formula_status: 'missing_required_inputs',
+            reason_codes: ['no_aggregate_rows'],
+          },
+        },
+      } as unknown as MetricsOut,
+      competitorMetrics: {
+        project_id: '6cdf6713-aba0-4517-87b1-0487f1d36df7',
+        primary_brand_id: null,
+        period: { from: '2026-05-01', to: '2026-05-12' },
+        state: 'empty',
+        state_reason: 'no_primary_brand',
+        primary: null,
+        competitors: [],
+      } as unknown as CompetitorMetricsOut,
+    })
+
+    expect(contract?.blockers).toEqual([
+      'project_unbound',
+      'analysis_missing',
+      'no_aggregate_rows',
+    ])
+    expect(contract?.states.map((item) => [item.surface, item.state])).toEqual([
+      ['Overview', 'project_unbound'],
+      ['Visibility', 'no_aggregate_rows'],
+      ['Topics', 'analysis_missing'],
+      ['Sentiment', 'analysis_missing'],
+      ['Citations', 'analysis_missing'],
+      ['Competitors', 'project_unbound'],
+      ['PANO trend', 'no_aggregate_rows'],
+    ])
+  })
+
   it('separates no collected data from missing analyzer work', () => {
     const contract = buildBrandSwitchStateContract({
       isLive: true,

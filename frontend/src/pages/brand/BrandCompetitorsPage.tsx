@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -12,7 +13,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
-import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityRadar,
@@ -69,15 +70,17 @@ export default function BrandCompetitorsPage() {
   const { t } = useLocale();
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const [searchParams] = useSearchParams();
+  const brandIdOverride = brandIdFromSearchParams(searchParams);
   const { filters } = useBrandAnalysisFilters(); // C10
-  const chartFilters = toProjectAnalysisParams(filters);
+  const chartFilters = toProjectAnalysisParams(filters, brandIdOverride);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
-  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, null, chartFilters);
-  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', null, chartFilters);
+  const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, brandIdOverride, chartFilters);
+  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', brandIdOverride, chartFilters);
   const radarQ = useAuthorityRadar(isLive ? liveProjectId : null);
   const groupQ = useGroupSharedDomains(isLive ? liveProjectId : null);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {

@@ -491,6 +491,12 @@ const STATE_ORDER: BrandSwitchStateKey[] = [
   'no_aggregate_rows',
 ]
 
+const STATE_REASON_ALIASES: Record<string, BrandSwitchStateKey[]> = {
+  missing_project_brand_binding: ['project_unbound'],
+  no_primary_brand: ['project_unbound'],
+  partial_analyzer_data: ['analysis_missing'],
+}
+
 const BRAND_SWITCH_SURFACES = [
   'Overview',
   'Visibility',
@@ -505,6 +511,10 @@ function addState(states: Set<BrandSwitchStateKey>, value: string | null | undef
   const text = String(value || '').toLowerCase()
   for (const state of STATE_ORDER) {
     if (text.includes(state)) states.add(state)
+  }
+  for (const [reason, mappedStates] of Object.entries(STATE_REASON_ALIASES)) {
+    if (!text.includes(reason)) continue
+    for (const state of mappedStates) states.add(state)
   }
 }
 

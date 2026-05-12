@@ -11,7 +11,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
-import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandCitations } from '../../hooks/useBrandMetrics';
 import {
@@ -67,7 +67,8 @@ export default function BrandCitationsPage() {
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const { filters } = useBrandAnalysisFilters(); // C10
-  const chartFilters = toProjectAnalysisParams(filters);
+  const brandIdOverride = brandIdFromSearchParams(params);
+  const chartFilters = toProjectAnalysisParams(filters, brandIdOverride);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
