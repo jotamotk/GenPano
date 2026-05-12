@@ -1,6 +1,7 @@
 from pathlib import Path
 
-WORKFLOW = Path(".github/workflows/server-diagnostics.yml")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = REPO_ROOT / ".github/workflows/server-diagnostics.yml"
 
 
 def test_bestcoffer_batch_repair_preserves_response_rows_and_records_reason() -> None:
