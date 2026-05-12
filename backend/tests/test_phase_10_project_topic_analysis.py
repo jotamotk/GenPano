@@ -688,13 +688,13 @@ async def test_project_query_activity_is_project_scoped(client, db_session, user
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["totals"]["queries"] == 3
+    assert body["totals"]["queries"] == 4
     assert body["totals"]["responses"] == 3
     assert body["totals"]["analyzed"] == 3
     assert body["totals"]["mentions_target"] == 1
     assert body["totals"]["mention_denominator"] == 2
     assert body["by_status"]["done"] == 3
-    assert "failed" not in body["by_status"]
+    assert body["by_status"]["failed"] == 1
     assert body["by_topic"][0]["topic_id"] == 101
     assert body["by_topic"][0]["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
 

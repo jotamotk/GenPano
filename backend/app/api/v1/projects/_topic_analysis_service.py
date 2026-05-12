@@ -189,8 +189,13 @@ def _row_attempt_time(row: dict[str, Any]) -> Any:
     )
 
 
-def _row_attempt_sort_key(row: dict[str, Any]) -> tuple[str, int]:
-    return (_timestamp_key(_row_attempt_time(row)), int(row.get("query_id") or 0))
+def _row_attempt_sort_key(row: dict[str, Any]) -> tuple[str, int, str, int]:
+    return (
+        _timestamp_key(_row_attempt_time(row)),
+        int(row.get("query_id") or 0),
+        _timestamp_key(row.get("response_created_at")),
+        int(row.get("response_id") or 0),
+    )
 
 
 def _profile_name(profile_id: Any, profile_names: dict[str, str]) -> str:
@@ -669,6 +674,7 @@ async def _fact_rows(
     topic_id: int | None = None,
     prompt_id: int | None = None,
     brand_id_override: int | None = None,
+    successful_responses_only: bool = True,
 ) -> list[dict[str, Any]]:
     if not await _has_admin_chain(session):
         return []
@@ -687,7 +693,7 @@ async def _fact_rows(
     has_mentions = await legacy_table_exists(session, "brand_mentions")
     has_citations = await legacy_table_exists(session, "citation_sources")
     mention_cols = await legacy_table_columns(session, "brand_mentions") if has_mentions else set()
-    if not has_responses or "id" not in response_cols:
+    if successful_responses_only and (not has_responses or "id" not in response_cols):
         return []
 
     scope_brand_id = (
@@ -731,7 +737,7 @@ async def _fact_rows(
     query_join_conditions.extend(scoped_conditions)
     params.update(scoped_params)
     success_condition = _success_status_condition(query_cols)
-    if success_condition:
+    if successful_responses_only and success_condition:
         query_join_conditions.append(success_condition)
 
     response_join = ""
@@ -744,21 +750,24 @@ async def _fact_rows(
         "NULL AS response_created_at",
     ]
     response_on: list[str] = []
-    if "query_id" in response_cols:
-        response_on.append("r.query_id = q.id")
-    if not response_on and "prompt_id" in response_cols:
-        response_on.append("r.prompt_id = p.id")
-    if not response_on:
+    if has_responses and "id" in response_cols:
+        if "query_id" in response_cols:
+            response_on.append("r.query_id = q.id")
+        if not response_on and "prompt_id" in response_cols:
+            response_on.append("r.prompt_id = p.id")
+    if response_on:
+        response_join_type = "JOIN" if successful_responses_only else "LEFT JOIN"
+        response_join = f"{response_join_type} llm_responses r ON {' OR '.join(response_on)}"
+        response_selects = [
+            "r.id AS response_id",
+            f"{_response_text_expr(response_cols)} AS response_raw_text",
+            _select_col(response_cols, "r", "target_llm", "response_target_llm"),
+            _select_col(response_cols, "r", "intent", "response_intent"),
+            _select_col(response_cols, "r", "llm_version", "response_llm_version"),
+            _select_col(response_cols, "r", "created_at", "response_created_at"),
+        ]
+    elif successful_responses_only:
         return []
-    response_join = f"JOIN llm_responses r ON {' OR '.join(response_on)}"
-    response_selects = [
-        "r.id AS response_id",
-        f"{_response_text_expr(response_cols)} AS response_raw_text",
-        _select_col(response_cols, "r", "target_llm", "response_target_llm"),
-        _select_col(response_cols, "r", "intent", "response_intent"),
-        _select_col(response_cols, "r", "llm_version", "response_llm_version"),
-        _select_col(response_cols, "r", "created_at", "response_created_at"),
-    ]
 
     brand_scope_match_select = "0 AS brand_scope_matched"
     if scope_brand_id is not None:
@@ -959,6 +968,7 @@ def _topic_aggregates(
                 "mention_denominator_response_ids": set(),
                 "target_mention_response_ids": set(),
                 "citation_count": 0,
+                "cited_response_ids": set(),
                 "ranks": [],
                 "geo_scores": [],
                 "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
@@ -1003,6 +1013,8 @@ def _topic_aggregates(
                 if target_mentions > 0:
                     bucket["target_mention_response_ids"].add(rid)
             bucket["citation_count"] += int(row.get("citation_count") or 0)
+            if int(row.get("citation_count") or 0) > 0:
+                bucket["cited_response_ids"].add(rid)
             rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
             if rank is not None:
                 bucket["ranks"].append(float(rank))
@@ -1076,7 +1088,7 @@ def _topic_aggregates(
                 avg_geo_score=_mean(bucket["geo_scores"]),
                 sentiment_distribution=bucket["sentiment"],
                 citation_count=citations,
-                citation_rate=_pct(citations, response_count),
+                citation_rate=_pct(len(bucket["cited_response_ids"]), response_count),
                 last_collected=_iso(bucket["last_collected"]),
             )
         )
@@ -1189,6 +1201,7 @@ async def get_topic_prompts(
                 "mention_denominator_response_ids": set(),
                 "target_mention_response_ids": set(),
                 "citations": 0,
+                "cited_response_ids": set(),
                 "ranks": [],
                 "geo_scores": [],
                 "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
@@ -1221,6 +1234,8 @@ async def get_topic_prompts(
                 if target_mentions > 0:
                     bucket["target_mention_response_ids"].add(rid)
             bucket["citations"] += int(row.get("citation_count") or 0)
+            if int(row.get("citation_count") or 0) > 0:
+                bucket["cited_response_ids"].add(rid)
             rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
             if rank is not None:
                 bucket["ranks"].append(float(rank))
@@ -1258,7 +1273,7 @@ async def get_topic_prompts(
             avg_geo_score=_mean(b["geo_scores"]),
             sentiment_distribution=b["sentiment"],
             citation_count=int(b["citations"]),
-            citation_rate=_pct(b["citations"], len(b["responses"])),
+            citation_rate=_pct(len(b["cited_response_ids"]), len(b["responses"])),
             last_collected=_iso(b["last_collected"]),
         )
         for b in buckets
@@ -1818,6 +1833,7 @@ async def get_query_response_detail(
         prompt_id=prompt_scope_id,
         brand_id_override=brand_id,
     )
+    scoped_rows.sort(key=_row_attempt_sort_key, reverse=True)
     selected_scope_row = next(
         (row for row in scoped_rows if _as_int(row.get("query_id")) == int(query_id)),
         None,
@@ -1830,11 +1846,16 @@ async def get_query_response_detail(
     response_id: int | None = None
     if await legacy_table_exists(session, "llm_responses") and "id" in response_cols:
         response_where: list[str] = []
-        if "query_id" in response_cols:
+        selected_response_id = _as_int(selected_scope_row.get("response_id"))
+        response_params = dict(params)
+        if selected_response_id is not None:
+            response_where.append("r.id = :selected_response_id")
+            response_params["selected_response_id"] = selected_response_id
+        elif "query_id" in response_cols:
             response_where.append("r.query_id = :query_id")
         elif _as_int(q.get("prompt_id")) is not None and "prompt_id" in response_cols:
             response_where.append("r.prompt_id = :prompt_id")
-            params["prompt_id"] = int(q["prompt_id"])
+            response_params["prompt_id"] = int(q["prompt_id"])
         if response_where:
             rrow = (
                 (
@@ -1857,7 +1878,7 @@ async def get_query_response_detail(
                         LIMIT 1
                         """
                         ),
-                        params,
+                        response_params,
                     )
                 )
                 .mappings()
@@ -2129,6 +2150,7 @@ async def get_query_activity(
         project,
         filters=effective_filters,
         brand_id_override=brand_id,
+        successful_responses_only=False,
     )
 
     query_ids: set[int] = set()

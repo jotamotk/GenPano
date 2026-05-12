@@ -456,7 +456,7 @@ async def test_monitoring_contract_is_success_only_and_window_honest(
     assert topic["query_count"] == 3
     assert topic["response_count"] == 3
     assert topic["citation_count"] == 2
-    assert topic["citation_rate"] == pytest.approx(2 / 3, rel=0.01)
+    assert topic["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
     assert topic["visibility_rate"] == pytest.approx(1.0)
     assert topic["sentiment_distribution"] == {
         "positive": 2,
@@ -489,6 +489,7 @@ async def test_prompt_and_query_contracts_use_daily_latest_and_attempts(
     assert prompt["query_count"] == 3
     assert prompt["response_count"] == 3
     assert prompt["citation_count"] == 2
+    assert prompt["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
     assert prompt["visibility_rate"] == pytest.approx(1.0)
     assert prompt["sentiment_distribution"] == {
         "positive": 2,
@@ -538,6 +539,74 @@ async def test_prompt_and_query_contracts_use_daily_latest_and_attempts(
     assert all(a["response"]["raw_text"] for a in detail_body["attempts"])
     assert detail_body["attempts"][0]["profile_name"] == "Unknown profile"
     assert len(detail_body["attempts"][0]["citations"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_query_activity_keeps_failed_pending_and_no_response_queries(
+    client,
+    db_session: AsyncSession,
+    user: User,
+) -> None:
+    project, _ids = await _seed_success_only_workspace(db_session, user)
+
+    activity = await client.get(
+        f"/api/v1/projects/{project.id}/query-activity",
+        headers=_bearer(user),
+    )
+
+    assert activity.status_code == 200, activity.text
+    body = activity.json()
+    assert body["totals"]["queries"] == 6
+    assert body["totals"]["responses"] == 3
+    assert body["by_status"]["done"] == 4
+    assert body["by_status"]["failed"] == 1
+    assert body["by_status"]["pending"] == 1
+
+
+@pytest.mark.asyncio
+async def test_response_detail_uses_daily_latest_response_id_with_backfilled_duplicates(
+    client,
+    db_session: AsyncSession,
+    user: User,
+) -> None:
+    project, ids = await _seed_success_only_workspace(db_session, user)
+    backfill_time = datetime.fromisoformat(str(ids["success_day"]))
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+                (587299, 587102, 58702,
+                 'Backfilled stale duplicate answer without citations.',
+                 'chatgpt', 'commercial', 'gpt-test', '[]', :backfill_time)
+            """
+        ),
+        {"backfill_time": backfill_time},
+    )
+    await db_session.commit()
+    headers = _bearer(user)
+
+    queries = await client.get(
+        f"/api/v1/projects/{project.id}/prompts/{ids['prompt_id']}/queries",
+        headers=headers,
+    )
+    assert queries.status_code == 200, queries.text
+    group = queries.json()["items"][0]
+    daily_latest = group["daily_latest"][0]
+    assert daily_latest["response_id"] == ids["latest_response_id"]
+
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/queries/{ids['latest_query_id']}/response",
+        headers=headers,
+    )
+
+    assert detail.status_code == 200, detail.text
+    detail_body = detail.json()
+    assert detail_body["response"]["response_id"] == daily_latest["response_id"]
+    assert detail_body["response"]["raw_text"].startswith("Latest complete answer")
+    assert len(detail_body["citations"]) == daily_latest["citation_count"] == 2
 
 
 @pytest.mark.asyncio
