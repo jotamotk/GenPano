@@ -64,7 +64,7 @@ def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     workflow = yaml.safe_load(workflow_text)
     run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
     sanitizer_selftest = (
-        'sanitize_herosms_stream <<< "$(printf \'api_key=unit-secret '
+        "sanitize_herosms_stream <<< \"$(printf 'api_key=unit-secret "
         "HERO_SMS_%s=unit-secret' 'API_KEY')\""
     )
     collect_worker_logs = (
@@ -109,7 +109,7 @@ def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
     )
     run_script = diagnostic_step["with"]["script"]
     sanitizer_selftest = (
-        'sanitize_herosms_stream <<< "$(printf \'api_key=unit-secret '
+        "sanitize_herosms_stream <<< \"$(printf 'api_key=unit-secret "
         "HERO_SMS_%s=unit-secret' 'API_KEY')\""
     )
     first_worker_log = (
