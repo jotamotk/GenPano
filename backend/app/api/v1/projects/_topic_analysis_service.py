@@ -516,6 +516,14 @@ def _response_text_expr(cols: set[str]) -> str:
     return "NULL"
 
 
+def _response_latest_order_sql(cols: set[str]) -> str:
+    order = []
+    if "created_at" in cols:
+        order.extend(["r2.created_at IS NULL ASC", "r2.created_at DESC"])
+    order.append("r2.id DESC")
+    return ", ".join(order)
+
+
 def _false_condition() -> str:
     return "1 = 0"
 
@@ -749,15 +757,30 @@ async def _fact_rows(
         "NULL AS response_llm_version",
         "NULL AS response_created_at",
     ]
-    response_on: list[str] = []
+    response_match_condition = ""
     if has_responses and "id" in response_cols:
+        response_order_sql = _response_latest_order_sql(response_cols)
         if "query_id" in response_cols:
-            response_on.append("r.query_id = q.id")
-        if not response_on and "prompt_id" in response_cols:
-            response_on.append("r.prompt_id = p.id")
-    if response_on:
+            response_match_condition = (
+                "r.id = ("
+                "SELECT r2.id FROM llm_responses r2 "
+                "WHERE r2.query_id = q.id "
+                f"ORDER BY {response_order_sql} "
+                "LIMIT 1"
+                ")"
+            )
+        elif "prompt_id" in response_cols:
+            response_match_condition = (
+                "r.id = ("
+                "SELECT r2.id FROM llm_responses r2 "
+                "WHERE r2.prompt_id = p.id "
+                f"ORDER BY {response_order_sql} "
+                "LIMIT 1"
+                ")"
+            )
+    if response_match_condition:
         response_join_type = "JOIN" if successful_responses_only else "LEFT JOIN"
-        response_join = f"{response_join_type} llm_responses r ON {' OR '.join(response_on)}"
+        response_join = f"{response_join_type} llm_responses r ON {response_match_condition}"
         response_selects = [
             "r.id AS response_id",
             f"{_response_text_expr(response_cols)} AS response_raw_text",
