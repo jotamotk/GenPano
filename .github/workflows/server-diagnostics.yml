@@ -465,9 +465,9 @@ jobs:
           trap cleanup EXIT
           chmod +x "${REMOTE_SCRIPT}"
           if [ "${MODE}" = "update" ]; then
-            bash "${REMOTE_SCRIPT}" update "${SUB_URL_FILE}"
+            timeout 8m bash "${REMOTE_SCRIPT}" update "${SUB_URL_FILE}"
           else
-            bash "${REMOTE_SCRIPT}" check
+            timeout 5m bash "${REMOTE_SCRIPT}" check
           fi
           REMOTE
 
