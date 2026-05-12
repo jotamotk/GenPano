@@ -67,7 +67,9 @@ def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
         'sanitize_herosms_stream <<< "$(printf \'api_key=unit-secret '
         "HERO_SMS_%s=unit-secret' 'API_KEY')\""
     )
-    collect_worker_logs = 'docker compose logs --since "${utc_started_at}" worker worker-analysis beat'
+    collect_worker_logs = (
+        'docker compose logs --since "${utc_started_at}" worker worker-analysis beat'
+    )
 
     assert "sanitize_herosms_logs" in workflow_text
     assert "scripts/sanitize_herosms_logs.py" not in run_script
