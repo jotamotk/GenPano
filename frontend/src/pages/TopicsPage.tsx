@@ -277,6 +277,34 @@ function profileLabel(row: LooseRecord | null | undefined) {
   return name || id || 'Unknown profile'
 }
 
+function visibilityValue(row: LooseRecord | null | undefined) {
+  return row?.visibility_rate ?? row?.sov ?? row?.mention_rate
+}
+
+function parseIdParam(value: string | null) {
+  if (!value || !/^\d+$/.test(value)) return null
+  return Number(value)
+}
+
+function urlTopic(topicId: number | null) {
+  return {
+    topic_id: topicId,
+    topic_name: topicId == null ? 'Topic' : `Topic ${topicId}`,
+    dimension: null,
+    associated_brand: null,
+  }
+}
+
+function urlPrompt(promptId: number, topicId: number | null) {
+  return {
+    prompt_id: promptId,
+    topic_id: topicId,
+    prompt_text: `Prompt ${promptId}`,
+    intent: null,
+    language: null,
+  }
+}
+
 function csvCell(value: unknown) {
   const text = value == null ? '' : String(value)
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
@@ -475,7 +503,7 @@ function TopicsView({
   }, [filters.dimensions, filters.intents, intentRows, rows, search])
 
   const summary = monitoringQ.data?.summary
-  const avgVisibility = averageMetric(rows, ['mention_rate', 'sov'])
+  const avgVisibility = averageMetric(rows, ['visibility_rate', 'sov', 'mention_rate'])
   const avgCitationCoverage = averageMetric(rows, ['citation_rate'])
   const sentiment = sentimentTotals(rows)
   const isEmpty = !monitoringQ.isLoading && rows.length === 0
@@ -599,7 +627,7 @@ function TopicsView({
                   </td>
                   <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
                   <td className="text-right tabular-nums font-semibold text-themed-primary">
-                    {formatPercent(topic.sov ?? topic.mention_rate)}
+                    {formatPercent(visibilityValue(topic))}
                   </td>
                   <td>
                     <SentimentMix value={topic.sentiment_distribution} />
@@ -705,7 +733,7 @@ function PromptsView({
       }),
     [intent, language, prompts],
   )
-  const topicVisibility = topic.sov ?? topic.mention_rate
+  const topicVisibility = visibilityValue(topic)
 
   return (
     <div className="space-y-5">
@@ -809,7 +837,7 @@ function PromptsView({
             </div>
             <div className="mt-4 pt-4 border-t border-themed-card grid grid-cols-2 md:grid-cols-4 gap-3">
               {miniMetric('Success rate', formatPercent(prompt.success_rate))}
-              {miniMetric('Visibility', formatPercent(prompt.mention_rate))}
+              {miniMetric('Visibility', formatPercent(visibilityValue(prompt)))}
               {miniMetric('Avg rank', formatScore(prompt.avg_rank))}
               {miniMetric('Citation coverage', formatPercent(prompt.citation_rate))}
             </div>
@@ -1426,18 +1454,54 @@ function ResponseAttemptsModal({
 }
 
 export default function TopicsPage() {
-  const [view, setView] = useState('topics')
-  const [selectedTopic, setSelectedTopic] = useState<any>(null)
-  const [selectedPrompt, setSelectedPrompt] = useState<any>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const topicIdFromUrl = parseIdParam(searchParams.get('topicId'))
+  const promptIdFromUrl = parseIdParam(searchParams.get('promptId'))
+  const [view, setView] = useState(() =>
+    promptIdFromUrl != null ? 'queries' : topicIdFromUrl != null ? 'prompts' : 'topics',
+  )
+  const [selectedTopic, setSelectedTopic] = useState<any>(() =>
+    topicIdFromUrl != null || promptIdFromUrl != null ? urlTopic(topicIdFromUrl) : null,
+  )
+  const [selectedPrompt, setSelectedPrompt] = useState<any>(() =>
+    promptIdFromUrl != null ? urlPrompt(promptIdFromUrl, topicIdFromUrl) : null,
+  )
   const [responseModal, setResponseModal] = useState<{ query: any; attempts: any[] } | null>(null)
   const { activeProject } = useProject()
   const { data: liveProjects } = useProjects()
   const { filters, setRange } = useBrandAnalysisFilters()
-  const [searchParams, setSearchParams] = useSearchParams()
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject)
   const brandIdParam = searchParams.get('brandId')
   const brandIdOverride =
     brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null
+
+  useEffect(() => {
+    if (topicIdFromUrl == null && promptIdFromUrl == null) {
+      setView('topics')
+      setSelectedTopic(null)
+      setSelectedPrompt(null)
+      setResponseModal(null)
+      return
+    }
+
+    setSelectedTopic((current: any) =>
+      current?.topic_id === topicIdFromUrl ? current : urlTopic(topicIdFromUrl),
+    )
+
+    if (promptIdFromUrl != null) {
+      setView('queries')
+      setSelectedPrompt((current: any) =>
+        current?.prompt_id === promptIdFromUrl
+          ? current
+          : urlPrompt(promptIdFromUrl, topicIdFromUrl),
+      )
+    } else {
+      setView('prompts')
+      setSelectedPrompt(null)
+    }
+    setResponseModal(null)
+  }, [promptIdFromUrl, topicIdFromUrl])
+
   const updateDrilldownParams = (updates: Record<string, string | number | null>) => {
     const params = new URLSearchParams(searchParams)
     Object.entries(updates).forEach(([key, value]) => {

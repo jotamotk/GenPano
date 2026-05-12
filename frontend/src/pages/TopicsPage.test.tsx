@@ -217,7 +217,69 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getByRole('columnheader', { name: /Sentiment/i })).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /Citations/i })).toBeInTheDocument()
     expect(screen.getByText('Ingredient safety')).toBeInTheDocument()
-    expect(screen.getByText('42.0%')).toBeInTheDocument()
+    expect(screen.getAllByText('42.0%').length).toBeGreaterThan(0)
+  })
+
+  it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            visibility_rate: 0.83,
+            mention_rate: 0.12,
+            sov: 0.24,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+            visibility_rate: 0.71,
+            mention_rate: 0.13,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage()
+
+    expect(screen.getAllByText('83.0%').length).toBeGreaterThan(0)
+    expect(screen.queryByText('24.0%')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+
+    expect(screen.getByText('71.0%')).toBeInTheDocument()
+    expect(screen.queryByText('13.0%')).not.toBeInTheDocument()
   })
 
   it('does not borrow summary citations for topic rows without per-topic citation counts', () => {
@@ -752,6 +814,50 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
+  })
+
+  it('hydrates topic and prompt drilldown from URL params on refresh', () => {
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_group_key: 'serum-safety',
+            query_text: 'What is the safest vitamin C serum?',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                date: '2026-05-10',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'What is the safest vitamin C serum?',
+                target_llm: 'chatgpt',
+                profile_id: null,
+                profile_name: 'Unknown profile',
+                finished_at: '2026-05-10T10:02:00Z',
+                target_mentioned: true,
+                citation_count: 2,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(topicHooks.usePromptQueries).toHaveBeenCalledWith(
+      liveProjectId,
+      201,
+      expect.objectContaining({ brand_id: 12 }),
+    )
+    expect(screen.getByText(/Daily latest successful responses/i)).toBeInTheDocument()
+    expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
+    expect(screen.getByText('Unknown profile')).toBeInTheDocument()
   })
 
   it('opens response attempts from backend payload, switches attempts, and renders analyzer_facts', () => {
