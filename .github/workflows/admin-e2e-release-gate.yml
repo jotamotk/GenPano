@@ -24,6 +24,11 @@ on:
         description: "Optional expected target_llm for tracker_retry_query_id, for example deepseek."
         required: false
         type: string
+      tracker_retry_poll_seconds:
+        description: "Optional controlled Tracker retry poll window in seconds, clamped by the spec to 15..180; use 180 for slow live DeepSeek retries."
+        required: false
+        default: "180"
+        type: string
 
 jobs:
   staging-admin-e2e:
@@ -41,6 +46,7 @@ jobs:
       ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
       ADMIN_E2E_TRACKER_RETRY_QUERY_ID: ${{ inputs.tracker_retry_query_id }}
       ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE: ${{ inputs.tracker_retry_expected_engine }}
+      ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS: ${{ inputs.tracker_retry_poll_seconds }}
       E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
       PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
     defaults:
@@ -75,6 +81,8 @@ jobs:
           tracker_retry_query_id="${tracker_retry_query_id%"${tracker_retry_query_id##*[![:space:]]}"}"
           tracker_retry_expected_engine="${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE#"${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE%%[![:space:]]*}"}"
           tracker_retry_expected_engine="${tracker_retry_expected_engine%"${tracker_retry_expected_engine##*[![:space:]]}"}"
+          tracker_retry_poll_seconds="${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS#"${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS%%[![:space:]]*}"}"
+          tracker_retry_poll_seconds="${tracker_retry_poll_seconds%"${tracker_retry_poll_seconds##*[![:space:]]}"}"
           tracker_state="not included"
           tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
           controlled_retry_state="skipped by default"
@@ -142,6 +150,7 @@ jobs:
             echo "| E2E run id | \`${E2E_RUN_ID}\` |"
             echo "| Tracker retry query id | \`${tracker_retry_query_id:-none}\` |"
             echo "| Tracker retry expected engine | \`${tracker_retry_expected_engine:-not enforced}\` |"
+            echo "| Tracker retry poll seconds | \`${tracker_retry_poll_seconds:-180}\` (spec clamps to 15..180) |"
             echo ""
             echo "| Coverage category | Spec | Gate state | Notes |"
             echo "| --- | --- | --- | --- |"
@@ -173,7 +182,7 @@ jobs:
             specs+=("${ADMIN_E2E_TRACKER_SPEC}")
           fi
           if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; no batch retry, cleanup, or manual dispatch will run."
+            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); no batch retry, cleanup, or manual dispatch will run."
             specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
           fi
 
@@ -210,7 +219,7 @@ jobs:
               echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
             fi
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
+              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi

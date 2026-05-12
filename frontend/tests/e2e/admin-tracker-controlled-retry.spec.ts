@@ -13,7 +13,7 @@ const retryQueryIdInput = (process.env.ADMIN_E2E_TRACKER_RETRY_QUERY_ID || '').t
 const expectedEngineInput = (process.env.ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE || '').trim();
 const pollSeconds = Math.max(
   15,
-  Math.min(180, Number(process.env.ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS || 90) || 90),
+  Math.min(180, Number(process.env.ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS || 180) || 180),
 );
 
 const mutationMode = 'controlled live Tracker retry mutation';
@@ -254,7 +254,7 @@ test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion
     type: 'mode',
     description: `${mutationMode}; mutates exactly one query id=${queryId}; no batch retry, no cleanup, no manual dispatch.`,
   });
-  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; no batch retry, cleanup, or manual dispatch will run.`);
+  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; poll_seconds=${pollSeconds}; no batch retry, cleanup, or manual dispatch will run.`);
 
   const errors = installAdminErrorGuards(page);
   await ensureAdminSession(page);
@@ -368,6 +368,15 @@ test('controlled retry polling fails pending timeout instead of accepting it', a
   ]);
   await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
   await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(/pending/i);
+});
+
+test('controlled retry polling fails running timeout instead of accepting it', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({ status: 'running', retry_count: 3, retry_reason: 'qa controlled retry gate' }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(/running/i);
 });
 
 test('controlled retry polling fails quota exhaustion when sentinel appears in raw row fields', async ({ page }) => {
