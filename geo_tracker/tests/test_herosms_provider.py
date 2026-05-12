@@ -2,6 +2,7 @@ import logging
 import sys
 import types
 
+import httpx
 import pytest
 
 
@@ -377,3 +378,74 @@ async def test_provider_logs_redact_phone_code_activation_and_api_key(caplog):
     assert _activation_id() not in logs
     assert "445566" not in logs
     assert "[sms-code-redacted]" in logs
+
+
+@pytest.mark.asyncio
+async def test_client_request_summary_logs_only_safe_herosms_fields(caplog):
+    from geo_tracker.agent.sms_login.herosms_client import HeroSMSClient
+    from geo_tracker.agent.sms_login.providers import HeroSMSProvider
+
+    fake = _FakeHTTPClient(
+        [
+            _FakeResponse(json_data=_offer_payload()),
+            _FakeResponse(text=_access_number_response()),
+        ]
+    )
+    provider = HeroSMSProvider(
+        client=HeroSMSClient(api_key=_api_key(), http_client=fake)
+    )
+
+    caplog.set_level(
+        logging.DEBUG,
+        logger="geo_tracker.agent.sms_login.herosms_client",
+    )
+
+    await provider.reserve_number()
+
+    logs = caplog.text
+    assert "HeroSMS handler request" in logs
+    assert "service=dr" in logs
+    assert "country=187" in logs
+    assert "operator=physic" in logs
+    assert "price_bucket=usd<=0.60" in logs
+    assert "api key [redacted]" in logs
+    assert "api_key=" not in logs
+    assert _api_key() not in logs
+
+
+@pytest.mark.asyncio
+async def test_httpx_request_logging_does_not_emit_herosms_api_key_query(caplog):
+    from geo_tracker.agent.sms_login.herosms_client import HeroSMSClient
+    from geo_tracker.agent.sms_login.providers import HeroSMSProvider
+
+    responses = [
+        httpx.Response(200, json=_offer_payload()),
+        httpx.Response(200, text=_access_number_response()),
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert responses, f"unexpected request {request.url}"
+        return responses.pop(0)
+
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://hero-sms.example",
+    )
+    provider = HeroSMSProvider(
+        client=HeroSMSClient(
+            api_key=_api_key(),
+            http_client=http_client,
+            base_url="https://hero-sms.example",
+        )
+    )
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    caplog.set_level(logging.DEBUG, logger="httpcore")
+
+    await provider.reserve_number()
+    await provider.close()
+
+    logs = caplog.text
+    assert _api_key() not in logs
+    assert "api_key=" not in logs
+    assert "handler_api.php?action=getNumber" not in logs

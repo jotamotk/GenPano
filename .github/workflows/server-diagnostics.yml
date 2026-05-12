@@ -513,11 +513,19 @@ jobs:
             mkdir -p "${artifact_dir}/logs"
             docker compose logs --since "${utc_started_at}" worker worker-analysis beat \
               > "${artifact_dir}/logs/worker-services.log" 2>&1 || true
+            sanitize_herosms_stream() {
+              python3 scripts/sanitize_herosms_logs.py
+            }
+            sanitize_herosms_logs() {
+              python3 scripts/sanitize_herosms_logs.py "$1"
+            }
+            sanitize_herosms_logs "${artifact_dir}/logs/worker-services.log"
             if [ -n "${ids_space}" ]; then
               ids_regex="$(printf '%s\n' ${ids_space} | paste -sd'|' -)"
               grep -E "(${ids_regex})|execute_query|page_load|browser_timeout|soft_time_limit|no_input|no_response|cookies_expired|token_invalidated|proxy_api|proxy_global|proxy_route|page_unavailable|deepseek|doubao|chatgpt" \
                 "${artifact_dir}/logs/worker-services.log" \
                 > "${artifact_dir}/logs/selected-query-worker.log" 2>/dev/null || true
+              sanitize_herosms_logs "${artifact_dir}/logs/selected-query-worker.log"
             fi
 
             echo "=== Collect screenshot/html artifacts from worker ==="
@@ -917,7 +925,15 @@ jobs:
 
           print(json.dumps({
               "HERO_SMS_API_KEY_present": bool(os.getenv("HERO_SMS_API_KEY")),
-              "service": "worker",
+              "country": "187",
+              "countPhysical": None,
+              "operator": "physic",
+              "price_bucket": "usd<=0.60",
+              "purchaseAttempted": False,
+              "purchaseEndpointsCalled": False,
+              "readOnly": True,
+              "runtime_service": "worker",
+              "service": "dr",
           }, sort_keys=True))
           PY
           REMOTE
@@ -946,6 +962,9 @@ jobs:
             BRAND_ID='${{ inputs.brand_id }}'
             BRAND_QUERY='${{ inputs.brand_query }}'
             PROJECT_ID='${{ inputs.project_id }}'
+            sanitize_herosms_stream() {
+              python3 scripts/sanitize_herosms_logs.py
+            }
             : "${BRAND_ID:=12}"
             : "${BRAND_QUERY:=雅诗兰黛}"
             : "${PROJECT_ID:=95d43022-a5c8-5944-b6d6-34b29faa18b5}"
@@ -1071,10 +1090,10 @@ jobs:
             echo "=== Incident #475 logs around 2026-05-11 08:07-08:11 UTC ==="
             journalctl -u vninja --since '2026-05-11 08:07:00 UTC' --until '2026-05-11 08:11:00 UTC' --no-pager -n 200 || true
             journalctl -u docker --since '2026-05-11 08:07:00 UTC' --until '2026-05-11 08:11:00 UTC' --no-pager -n 200 || true
-            docker compose logs --since '2026-05-11T08:07:00' --until '2026-05-11T08:11:00' worker worker-analysis backend nginx || true
+            docker compose logs --since '2026-05-11T08:07:00' --until '2026-05-11T08:11:00' worker worker-analysis backend nginx 2>&1 | sanitize_herosms_stream || true
 
             echo "=== Incident #475 current worker logs ==="
-            docker compose logs --tail=260 worker worker-analysis beat || true
+            docker compose logs --tail=260 worker worker-analysis beat 2>&1 | sanitize_herosms_stream || true
 
             echo "=== Brand mention identity probe ==="
             echo "BRAND_ID=${BRAND_ID} BRAND_QUERY=${BRAND_QUERY}"
