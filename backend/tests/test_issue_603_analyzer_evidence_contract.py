@@ -468,3 +468,291 @@ async def test_citations_expose_attributed_and_unresolved_package_counts_separat
     assert body["evidence_counts"]["analyzer_attributed_citation_count"] == 1
     assert body["evidence_counts"]["analyzer_unresolved_citation_count"] == 1
     assert body["metric_formula_evidence"]["citation"]["unresolved_tier_counts"] == {"4": 1}
+
+
+@pytest.mark.asyncio
+async def test_analyzer_rollup_ignores_same_brand_packages_outside_project_response_scope(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    own_packages = _base_packages(response_id=6401)
+    other_packages = _base_packages(response_id=6402)
+    other_packages["sov"].update(
+        {
+            "status": "missing_required_inputs",
+            "formula_status": "missing_required_inputs",
+            "reason_codes": ["target_only_sov"],
+            "denominator_competitive_mentions": 1,
+            "sov": None,
+            "competitors": [],
+        }
+    )
+    db_session.add(_geo_score())
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=6401,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                position_rank=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            _analysis(6401, own_packages),
+            _analysis(6402, other_packages),
+        ]
+    )
+    await db_session.commit()
+
+    overview = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12, "from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert overview.status_code == 200, overview.text
+    body = overview.json()
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == "ok"
+    assert "target_only_sov" not in body["missing_reasons"]
+    assert body["evidence_counts"]["analyzer_package_count"] == 1
+    assert body["evidence_counts"]["analyzer_sov_denominator_competitive_mentions"] == 2
+
+
+@pytest.mark.asyncio
+async def test_overview_trends_are_withheld_when_analyzer_package_blocks_metric(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    packages = _base_packages(response_id=6501)
+    packages["sov"].update(
+        {
+            "status": "missing_required_inputs",
+            "formula_status": "missing_required_inputs",
+            "reason_codes": ["target_only_sov"],
+            "denominator_competitive_mentions": 1,
+            "sov": None,
+            "competitors": [],
+        }
+    )
+    packages["sentiment"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "reason_codes": ["missing_sentiment_driver_quote"],
+            "driver_count": 0,
+            "quote_count": 0,
+        }
+    )
+    packages["pano_geo"].update(
+        {
+            "status": "missing_required_inputs",
+            "formula_status": "missing_required_inputs",
+            "component_readiness": {
+                "coverage": "ok",
+                "sov": "missing_required_inputs",
+                "sentiment": "partial",
+                "citation": "ok",
+            },
+            "reason_codes": ["sov_missing_required_inputs", "sentiment_partial"],
+        }
+    )
+    db_session.add(_geo_score())
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=6501,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            _analysis(6501, packages),
+        ]
+    )
+    await db_session.commit()
+
+    overview = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12, "from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert overview.status_code == 200, overview.text
+    body = overview.json()
+    assert _card(body, "sov")["value"] is None
+    assert _card(body, "avg_sentiment")["value"] is None
+    assert body["sov_30d"] == []
+    assert body["sentiment_30d"] == []
+    assert body["geo_score_30d"] == []
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_chart_applies_analyzer_proof_to_legacy_series(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    packages = _base_packages(response_id=6601)
+    packages["sov"].update(
+        {
+            "status": "missing_required_inputs",
+            "formula_status": "missing_required_inputs",
+            "reason_codes": ["target_only_sov"],
+            "denominator_competitive_mentions": 1,
+            "sov": None,
+            "competitors": [],
+        }
+    )
+    db_session.add(_geo_score())
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=6601,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            _analysis(6601, packages),
+        ]
+    )
+    await db_session.commit()
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == "missing_required_inputs"
+    assert body["items"][0]["sov"] is None
+    assert "target_only_sov" in body["missing_inputs"]
+
+
+@pytest.mark.asyncio
+async def test_sentiment_and_citation_charts_apply_analyzer_package_status(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    packages = _base_packages(response_id=6701)
+    packages["sentiment"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "reason_codes": ["missing_sentiment_driver_quote"],
+            "driver_count": 0,
+            "quote_count": 0,
+        }
+    )
+    packages["citations"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "citation_count": 2,
+            "attributed_count": 1,
+            "unresolved_count": 1,
+            "reason_codes": ["unresolved_citation_attribution"],
+        }
+    )
+    mention = BrandMention(
+        response_id=6701,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            GeoScoreDaily(
+                brand_id=12,
+                date=datetime.combine(DAY.date(), datetime.min.time()),
+                target_llm="chatgpt",
+                total_queries=10,
+                mention_count=5,
+                mention_rate=0.5,
+                avg_sov=0.5,
+                avg_position_rank=1.0,
+                avg_sentiment_score=0.8,
+                citation_rate=0.5,
+                avg_visibility=0.7,
+                avg_sentiment=0.8,
+                avg_sov_score=0.5,
+                avg_citation_score=0.5,
+                avg_geo_score=0.8,
+            ),
+            CitationSource(
+                response_id=6701,
+                mention_id=mention.id,
+                url="https://example.com/target",
+                domain="example.com",
+                title="Target evidence",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=6701,
+                mention_id=None,
+                url="https://unresolved.example/source",
+                domain="unresolved.example",
+                title="Unresolved evidence",
+                source_type="social",
+                created_at=DAY,
+            ),
+            _analysis(6701, packages),
+        ]
+    )
+    await db_session.commit()
+
+    sentiment = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+    authority = await client.get(
+        f"/api/v1/projects/{project.id}/citations/authority-trend",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+    composition = await client.get(
+        f"/api/v1/projects/{project.id}/citations/composition",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert sentiment.status_code == 200, sentiment.text
+    assert authority.status_code == 200, authority.text
+    assert composition.status_code == 200, composition.text
+    sentiment_body = sentiment.json()
+    authority_body = authority.json()
+    composition_body = composition.json()
+    assert sentiment_body["state"] == "partial"
+    assert sentiment_body["formula_status"] == "partial"
+    assert "missing_sentiment_driver_quote" in sentiment_body["missing_inputs"]
+    assert authority_body["state"] == "partial"
+    assert authority_body["formula_status"] == "partial"
+    assert "unresolved_citation_attribution" in authority_body["missing_inputs"]
+    assert composition_body["state"] == "partial"
+    assert composition_body["formula_status"] == "partial"
+    assert composition_body["total"] == 1
+    assert composition_body["metric_formula_evidence"]["citation"]["unresolved_count"] == 1

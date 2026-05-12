@@ -677,6 +677,9 @@ async def _analyzer_fact_rollup(
         package = _as_package(row[0])
         if package is None:
             continue
+        package_response_ids = _package_response_ids(package)
+        if not package_response_ids or not (package_response_ids & target_response_ids):
+            continue
         target_brand_id = _package_target_brand_id(package)
         if target_brand_id is not None and target_brand_id != brand_id:
             continue

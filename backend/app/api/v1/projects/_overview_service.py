@@ -884,6 +884,16 @@ async def get_brand_overview(
         await _score_components(session, brand_id, from_d, to_d),
         context,
     )
+    if (geo_status := metric_formula_status(context, "pano_score")) and (
+        geo_status != FORMULA_OK_STATUS
+    ):
+        geo_30d = []
+    if (sov_status := metric_formula_status(context, "sov")) and (sov_status != FORMULA_OK_STATUS):
+        sov_30d = []
+    if (sentiment_status := metric_formula_status(context, "sentiment")) and (
+        sentiment_status != FORMULA_OK_STATUS
+    ):
+        sentiment_30d = []
 
     out = BrandOverviewOut(
         project_id=project.id,
