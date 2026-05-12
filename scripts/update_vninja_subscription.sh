@@ -14,6 +14,8 @@ MODE="${1:-check}"
 SUB_URL_FILE="${2:-}"
 VNINJA_API_SECRET="${VNINJA_API_SECRET:-set-your-secret}"
 VNINJA_DATA_DIR="${VNINJA_DATA_DIR:-}"
+VNINJA_ALLOW_LAN_SCRIPT="${VNINJA_ALLOW_LAN_SCRIPT:-/usr/local/bin/vninja-allow-lan.sh}"
+VNINJA_ALLOW_LAN_LOG="${VNINJA_ALLOW_LAN_LOG:-/tmp/vninja-allow-lan-refresh.${GITHUB_RUN_ID:-manual}.log}"
 
 as_root() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -178,26 +180,31 @@ PY
   fi
 }
 
-update_profiles_yaml_and_file() {
+run_allow_lan_refresh() {
+  if as_root test -x "${VNINJA_ALLOW_LAN_SCRIPT}"; then
+    echo "allow_lan_refresh=started_nonblocking log=${VNINJA_ALLOW_LAN_LOG}"
+    as_root sh -c 'nohup timeout 20s "$1" </dev/null >>"$2" 2>&1 &' sh \
+      "${VNINJA_ALLOW_LAN_SCRIPT}" "${VNINJA_ALLOW_LAN_LOG}" || true
+  else
+    echo "allow_lan_refresh=skipped script_not_executable"
+  fi
+}
+
+update_remote_profile_url() {
   local profiles_yaml="$1"
   local sub_url_file="$2"
-  local downloaded_sub="$3"
-  local write_profile_payload="$4"
   local run_id="${GITHUB_RUN_ID:-manual}"
 
   as_root cp "${profiles_yaml}" "${profiles_yaml}.bak.${run_id}"
-  as_root python3 - "${profiles_yaml}" "${sub_url_file}" "${downloaded_sub}" "${write_profile_payload}" "${run_id}" <<'PY'
+  as_root python3 - "${profiles_yaml}" "${sub_url_file}" "${run_id}" <<'PY'
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 
 profiles_path = Path(sys.argv[1])
 url_path = Path(sys.argv[2])
-downloaded_path = Path(sys.argv[3])
-write_profile_payload = sys.argv[4] == "true"
-run_id = sys.argv[5]
+run_id = sys.argv[3]
 
 new_url = url_path.read_text(encoding="utf-8").strip()
 if not re.match(r"^https?://", new_url):
@@ -226,7 +233,6 @@ if in_items:
 else:
     raise SystemExit("profiles.yaml does not contain item blocks")
 
-profiles_dir = (profiles_path.parent / "profiles").resolve()
 remote_files = []
 new_blocks = []
 changed = False
@@ -290,81 +296,9 @@ if not remote_files:
     raise SystemExit("remote profile item has no file field")
 
 profiles_path.write_text("".join(header + [line for block in new_blocks for line in block]), encoding="utf-8")
-
-if write_profile_payload:
-    for rel_file in remote_files:
-        dest = (profiles_dir / rel_file).resolve()
-        if dest.parent != profiles_dir:
-            raise SystemExit(f"refusing unsafe profile file path: {rel_file}")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            shutil.copy2(dest, dest.with_name(dest.name + f".bak.{run_id}"))
-        shutil.copy2(downloaded_path, dest)
-        print(f"updated_profile_file={dest.name} bytes={dest.stat().st_size}")
-else:
-    print("updated_profile_file=skipped_download_failed")
-
+print("profile_payload_fetch=delegated_to_vninja_app")
 print(f"remote_profiles_updated={len(remote_files)}")
 PY
-}
-
-download_subscription() {
-  local sub_url_file="$1"
-  local output_file="$2"
-  local sub_url
-  sub_url="$(tr -d '\r\n' < "${sub_url_file}")"
-
-  if [ -z "${sub_url}" ]; then
-    echo "subscription URL secret is empty" >&2
-    return 1
-  fi
-  if ! [[ "${sub_url}" =~ ^https?:// ]]; then
-    echo "subscription URL secret must start with http:// or https://" >&2
-    return 1
-  fi
-
-  local user_agent
-  local user_agents=(
-    "clash-verge/v2.3.1"
-    "ClashforWindows/0.20.39"
-    "Clash"
-    "mihomo"
-    "Mozilla/5.0"
-  )
-  for user_agent in "${user_agents[@]}"; do
-    if curl -fsSL --retry 1 --connect-timeout 20 --max-time 90 \
-      -A "${user_agent}" \
-      -H "Accept: */*" \
-      "${sub_url}" -o "${output_file}"; then
-      echo "subscription_download_user_agent=${user_agent}"
-      break
-    fi
-    echo "subscription_download_failed_user_agent=${user_agent}; retrying with --insecure"
-    if curl -fsSLk --retry 1 --connect-timeout 20 --max-time 90 \
-      -A "${user_agent}" \
-      -H "Accept: */*" \
-      "${sub_url}" -o "${output_file}"; then
-      echo "subscription_download_user_agent=${user_agent} insecure_tls=true"
-      break
-    fi
-  done
-
-  if [ ! -s "${output_file}" ]; then
-    echo "subscription_downloaded=false"
-    return 1
-  fi
-
-  local bytes
-  bytes="$(wc -c < "${output_file}" | tr -d '[:space:]')"
-  if [ "${bytes}" -lt 100 ]; then
-    echo "downloaded subscription is unexpectedly small: ${bytes} bytes" >&2
-    return 1
-  fi
-  if grep -qiE '<html|<!doctype' "${output_file}"; then
-    echo "downloaded subscription looks like an HTML error page" >&2
-    return 1
-  fi
-  echo "subscription_downloaded_bytes=${bytes}"
 }
 
 main() {
@@ -393,15 +327,8 @@ main() {
     fi
 
     echo "=== Update V-Ninja subscription ==="
-    local downloaded_sub write_profile_payload
-    downloaded_sub="$(mktemp)"
-    write_profile_payload="true"
-    if ! download_subscription "${SUB_URL_FILE}" "${downloaded_sub}"; then
-      write_profile_payload="false"
-      echo "subscription_download_fallback=url_only_vninja_fetch"
-    fi
-    update_profiles_yaml_and_file "${profiles_yaml}" "${SUB_URL_FILE}" "${downloaded_sub}" "${write_profile_payload}"
-    rm -f "${downloaded_sub}"
+    echo "subscription_update_path=vninja_app_remote_profile"
+    update_remote_profile_url "${profiles_yaml}" "${SUB_URL_FILE}"
 
     echo "=== Restart V-Ninja ==="
     as_root systemctl restart vninja
@@ -410,9 +337,7 @@ main() {
     else
       echo "vninja_api_ready=false"
     fi
-    if as_root test -x /usr/local/bin/vninja-allow-lan.sh; then
-      as_root /usr/local/bin/vninja-allow-lan.sh || true
-    fi
+    run_allow_lan_refresh
     wait_for_vninja_api || true
 
     echo "=== V-Ninja profiles summary after update ==="
