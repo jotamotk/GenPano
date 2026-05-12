@@ -14,9 +14,11 @@ from genpano_models import (
     CitationSource,
     GeoScoreDaily,
     Project,
+    ProjectTopicPin,
     ResponseAnalysis,
     User,
 )
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.user_auth.jwt import sign_user_access_token
@@ -62,6 +64,135 @@ async def _project(db_session: AsyncSession, user: User) -> Project:
     db_session.add(p)
     await db_session.commit()
     return p
+
+
+async def _seed_admin_chain_tables(db_session: AsyncSession) -> None:
+    await db_session.execute(text("ALTER TABLE brands ADD COLUMN name TEXT"))
+    await db_session.execute(text("ALTER TABLE brands ADD COLUMN industry TEXT"))
+    await db_session.execute(
+        text(
+            """
+            CREATE TABLE topics (
+                id INTEGER PRIMARY KEY,
+                brand_id INTEGER,
+                text TEXT,
+                category TEXT,
+                status TEXT,
+                created_at DATETIME
+            )
+            """
+        )
+    )
+    for ddl in [
+        "ALTER TABLE prompts ADD COLUMN topic_id INTEGER",
+        "ALTER TABLE prompts ADD COLUMN text TEXT",
+        "ALTER TABLE prompts ADD COLUMN intent TEXT",
+        "ALTER TABLE prompts ADD COLUMN prompt_scope TEXT",
+        "ALTER TABLE prompts ADD COLUMN language TEXT",
+        "ALTER TABLE prompts ADD COLUMN status TEXT",
+        "ALTER TABLE prompts ADD COLUMN created_at DATETIME",
+    ]:
+        await db_session.execute(text(ddl))
+    await db_session.execute(
+        text(
+            """
+            CREATE TABLE queries (
+                id INTEGER PRIMARY KEY,
+                target_llm TEXT,
+                status TEXT,
+                query_text TEXT,
+                brand_id INTEGER,
+                profile_id TEXT,
+                prompt_id INTEGER,
+                created_at DATETIME,
+                executed_at DATETIME,
+                finished_at DATETIME,
+                latency_ms INTEGER
+            )
+            """
+        )
+    )
+    for ddl in [
+        "ALTER TABLE llm_responses ADD COLUMN query_id INTEGER",
+        "ALTER TABLE llm_responses ADD COLUMN prompt_id INTEGER",
+        "ALTER TABLE llm_responses ADD COLUMN raw_text TEXT",
+        "ALTER TABLE llm_responses ADD COLUMN target_llm TEXT",
+        "ALTER TABLE llm_responses ADD COLUMN intent TEXT",
+        "ALTER TABLE llm_responses ADD COLUMN llm_version TEXT",
+        "ALTER TABLE llm_responses ADD COLUMN citations_json TEXT",
+        "ALTER TABLE llm_responses ADD COLUMN created_at DATETIME",
+    ]:
+        await db_session.execute(text(ddl))
+
+
+async def _seed_chain_response(
+    db_session: AsyncSession,
+    *,
+    topic_id: int,
+    prompt_id: int,
+    query_id: int,
+    response_id: int,
+) -> None:
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (:topic_id, 12, :topic_text, 'product', 'active', :day)
+            """
+        ),
+        {"topic_id": topic_id, "topic_text": f"Estee Lauder topic {topic_id}", "day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES (:prompt_id, :topic_id, :prompt_text, 'commercial', 'non_branded',
+                    'en', 'active', :day)
+            """
+        ),
+        {
+            "prompt_id": prompt_id,
+            "topic_id": topic_id,
+            "prompt_text": f"Is Estee Lauder serum topic {topic_id} recommended?",
+            "day": DAY,
+        },
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES (:query_id, 'chatgpt', 'done', :query_text, 12, 'PROF-603',
+                    :prompt_id, :day, :day, :day, 100)
+            """
+        ),
+        {
+            "query_id": query_id,
+            "prompt_id": prompt_id,
+            "query_text": f"Is Estee Lauder serum topic {topic_id} recommended?",
+            "day": DAY,
+        },
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES (:response_id, :query_id, :prompt_id, :raw_text, 'chatgpt',
+                    'commercial', 'gpt-test', '[]', :day)
+            """
+        ),
+        {
+            "response_id": response_id,
+            "query_id": query_id,
+            "prompt_id": prompt_id,
+            "raw_text": f"Estee Lauder response for topic {topic_id}",
+            "day": DAY,
+        },
+    )
 
 
 def _card(body: dict[str, Any], metric_key: str) -> dict[str, Any]:
@@ -523,6 +654,83 @@ async def test_analyzer_rollup_ignores_same_brand_packages_outside_project_respo
 
 
 @pytest.mark.asyncio
+async def test_analyzer_rollup_ignores_same_brand_packages_from_another_project_chain(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    other_project = Project(
+        user_id=user.id,
+        name=f"Issue 603 other {uuid.uuid4().hex[:6]}",
+        primary_brand_id=12,
+        industry_id=7,
+    )
+    db_session.add(other_project)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProjectTopicPin(project_id=project.id, topic_id=6801, state="tracked"),
+            ProjectTopicPin(project_id=other_project.id, topic_id=6802, state="tracked"),
+        ]
+    )
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=6801,
+        prompt_id=68011,
+        query_id=68012,
+        response_id=68013,
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=6802,
+        prompt_id=68021,
+        query_id=68022,
+        response_id=68023,
+    )
+    db_session.add(_geo_score())
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=68013,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            BrandMention(
+                response_id=68023,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            _analysis(68023, _base_packages(response_id=68023)),
+        ]
+    )
+    await db_session.commit()
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["evidence_counts"].get("analyzer_package_count", 0) == 0
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == "missing_required_inputs"
+    assert body["items"][0]["sov"] is None
+    assert "missing_analyzer_fact_packages" in body["missing_reasons"]
+
+
+@pytest.mark.asyncio
 async def test_overview_trends_are_withheld_when_analyzer_package_blocks_metric(
     client,
     user: User,
@@ -642,6 +850,54 @@ async def test_engine_metrics_chart_applies_analyzer_proof_to_legacy_series(
     assert body["metric_formula_evidence"]["sov"]["formula_status"] == "missing_required_inputs"
     assert body["items"][0]["sov"] is None
     assert "target_only_sov" in body["missing_inputs"]
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_chart_nulls_legacy_values_when_analyzer_packages_missing(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    db_session.add(_geo_score())
+    db_session.add(
+        BrandMention(
+            response_id=6651,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            mention_count=1,
+            sentiment="positive",
+            sentiment_score=0.8,
+            created_at=DAY,
+        )
+    )
+    await db_session.commit()
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert "response_analyses.raw_analysis_json.analyzer_fact_packages" in body["missing_inputs"]
+    assert body["metric_formula_evidence"]["coverage"]["formula_status"] == (
+        "missing_required_inputs"
+    )
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == ("missing_required_inputs")
+    assert body["metric_formula_evidence"]["sentiment"]["formula_status"] == (
+        "missing_required_inputs"
+    )
+    assert body["metric_formula_evidence"]["citation"]["formula_status"] == (
+        "missing_required_inputs"
+    )
+    assert body["items"][0]["mention_rate"] is None
+    assert body["items"][0]["sov"] is None
+    assert body["items"][0]["sentiment"] is None
+    assert body["items"][0]["citation_rate"] is None
 
 
 @pytest.mark.asyncio

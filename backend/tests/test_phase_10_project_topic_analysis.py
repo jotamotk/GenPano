@@ -1308,9 +1308,10 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     )
     assert engine_body["evidence_count"] >= 1
     chatgpt = next(row for row in engine_body["items"] if row["engine"] == "chatgpt")
-    assert chatgpt["mention_rate"] == pytest.approx(1.0)
-    assert chatgpt["mention_rate"] <= 1.0
-    assert chatgpt["sov"] == pytest.approx(1.0)
+    assert chatgpt["mention_rate"] is None
+    assert chatgpt["sov"] is None
+    assert chatgpt["citation_rate"] is None
+    assert chatgpt["sentiment"] is None
 
     position = await client.get(
         f"/api/v1/projects/{project.id}/position-distribution",

@@ -184,6 +184,32 @@ def _chart_has_data(out: Any) -> bool:
     return False
 
 
+def _metric_evidence_key(metric_key: str) -> str:
+    if metric_key in {"mention_rate", "avg_mention_rate"}:
+        return "coverage"
+    if metric_key in {"citation_rate", "avg_citation_rate"}:
+        return "citation"
+    if metric_key in {"avg_sentiment"}:
+        return "sentiment"
+    if metric_key in {"avg_sov"}:
+        return "sov"
+    return metric_key
+
+
+def _missing_analyzer_metric_evidence(metric_keys: list[str]) -> dict[str, dict[str, Any]]:
+    return {
+        evidence_key: {
+            "metric_key": evidence_key,
+            "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+            "reason_codes": ["missing_analyzer_fact_packages"],
+            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "fact_classes": [evidence_key],
+            "sample_response_ids": [],
+        }
+        for evidence_key in _unique([_metric_evidence_key(key) for key in metric_keys])
+    }
+
+
 async def _chart_contract_update(
     session: AsyncSession,
     project: Project,
@@ -214,13 +240,12 @@ async def _chart_contract_update(
         status = metric_formula_status(context, metric_key)
         if status and status != FORMULA_OK_STATUS:
             missing_inputs.extend(metric_missing_inputs(context, metric_key))
-            metric_evidence = context.metric_formula_evidence.get(
-                "citation" if metric_key == "citation_rate" else metric_key
-            )
+            metric_evidence = context.metric_formula_evidence.get(_metric_evidence_key(metric_key))
             if isinstance(metric_evidence, dict):
                 missing_reasons.extend(metric_evidence.get("reason_codes") or [])
 
     if not evidence and has_data:
+        evidence = _missing_analyzer_metric_evidence(metric_keys)
         missing_inputs.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
         missing_reasons.append("missing_analyzer_fact_packages")
 
@@ -300,7 +325,9 @@ def _apply_engine_metric_contract(
 
     def _status(key: str) -> str | None:
         value = evidence.get(key)
-        return value.get("formula_status") if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return FORMULA_MISSING_INPUTS_STATUS
+        return str(value.get("formula_status") or FORMULA_MISSING_INPUTS_STATUS)
 
     return [
         item.model_copy(
