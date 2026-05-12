@@ -45,17 +45,23 @@ def _log_account_state_transition(
     new_status: str,
     reason: str,
     evidence: str,
+    provider: str = "none",
+    price_bucket: str = "none",
+    run_id: str = "none",
 ) -> None:
     logger.info(
         "Account lifecycle transition account_id=%s engine=%s "
         "previous_status=%s new_status=%s reason=%s evidence=%s "
-        "provider=none price_bucket=none run_id=none account_ref=%s",
+        "provider=%s price_bucket=%s run_id=%s account_ref=%s",
         account.id,
         account.llm_name,
         previous_status or "unknown",
         new_status,
         reason,
         evidence,
+        provider,
+        price_bucket,
+        run_id,
         f"id:{account.id}",
     )
 
@@ -228,6 +234,10 @@ class AccountPool:
         account_id: int,
         reason: str = "unknown",
         is_ban: bool = False,
+        evidence: str | None = None,
+        provider: str = "none",
+        price_bucket: str = "none",
+        run_id: str = "none",
     ) -> None:
         """
         记录失败，达到阈值自动封禁
@@ -251,7 +261,10 @@ class AccountPool:
                 previous_status=previous_status,
                 new_status=AccountStatus.EXPIRED.value,
                 reason=reason,
-                evidence="expired_login_material",
+                evidence=evidence or "expired_login_material",
+                provider=provider,
+                price_bucket=price_bucket,
+                run_id=run_id,
             )
         elif reason == "response_too_short" or (
             account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
