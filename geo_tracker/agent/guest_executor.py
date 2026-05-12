@@ -98,6 +98,25 @@ def _redact_runtime_data(value):
     return value
 
 
+def _chatgpt_session_log_summary(body: str | None) -> str:
+    """Return metadata-only session diagnostics without user/token values."""
+    body = body or ""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return f"json=False body_len={len(body)}"
+
+    data = data if isinstance(data, dict) else {}
+    user = data.get("user")
+    return (
+        "json=True "
+        f"body_len={len(body)} "
+        f"access_token_present={bool(data.get('accessToken'))} "
+        f"user_present={bool(user)} "
+        f"expires_present={bool(data.get('expires'))}"
+    )
+
+
 def _debug_query_id(query_id: int | None) -> int:
     return query_id if isinstance(query_id, int) and query_id > 0 else -1
 
@@ -625,16 +644,14 @@ class GuestQueryExecutor:
                             body = await page_obj.inner_text("body")
                             logger.info(
                                 f"[{llm}] session endpoint HTTP {resp.status}, "
-                                f"body: {_redact_sensitive_text(body)[:300]}"
+                                f"{_chatgpt_session_log_summary(body)}"
                             )
                             if resp.ok:
                                 try:
                                     session_data = json.loads(body)
                                     if session_data.get("accessToken"):
                                         logger.info(
-                                            f"[{llm}] session 刷新成功，"
-                                            f"用户: {session_data.get('user', {}).get('email', 'unknown')}, "
-                                            f"expires: {session_data.get('expires', 'unknown')}"
+                                            f"[{llm}] session refresh succeeded"
                                         )
                                     else:
                                         logger.warning(f"[{llm}] session 响应无 accessToken，cookie 可能已过期")
@@ -649,8 +666,8 @@ class GuestQueryExecutor:
                                 except json.JSONDecodeError:
                                     # 可能返回了 CF 挑战页面 HTML
                                     logger.warning(
-                                        f"[{llm}] session 响应非 JSON（可能是 CF 页面）: "
-                                        f"{_redact_sensitive_text(body)[:200]}"
+                                        f"[{llm}] session response was not JSON "
+                                        f"({_chatgpt_session_log_summary(body)})"
                                     )
                                     await _save_screenshot(page_obj, query.id, f"{llm}_session_cf_block")
                                     return None
@@ -972,7 +989,7 @@ class GuestQueryExecutor:
                 )
             else:
                 logger.error(f"[{llm}] 未能获取响应")
-                self.last_error_reason = "no_response"
+                self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
                     await _save_runtime_snapshot(
@@ -1924,6 +1941,7 @@ class GuestQueryExecutor:
                         f"（匹配首页关键词: {matched_indicators}），丢弃"
                     )
                     await _save_html(page, debug_query_id, f"{llm_name}_homepage_content")
+                    self.last_error_reason = f"{llm_name}_homepage_content"
                     resp_text = ""
                     resp_html = ""
 
@@ -1935,6 +1953,7 @@ class GuestQueryExecutor:
                     llm_name,
                     invalid_reason,
                 )
+                self.last_error_reason = invalid_reason
                 await _save_html(page, debug_query_id, f"{llm_name}_{invalid_reason}")
 
                 # ChatGPT's SPA occasionally crashes mid-render and surfaces a

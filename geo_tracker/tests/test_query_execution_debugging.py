@@ -37,6 +37,45 @@ def test_normal_chatgpt_answer_is_valid_response():
     assert invalid_response_reason("chatgpt", text) is None
 
 
+def test_chatgpt_home_shell_is_not_a_valid_response():
+    text = (
+        "Skip to content New chat Search chats Recents Chat history New chat "
+        "Search chats Codex More James Free ChatGPT What's on your mind today?"
+    )
+
+    assert invalid_response_reason("chatgpt", text) == "chatgpt_home_shell"
+
+
+def test_chatgpt_apple_signin_page_is_not_a_valid_response():
+    text = (
+        "Apple Account Sign in Use your Apple Account to sign in to ChatGPT. "
+        "Email or Phone Number Continue"
+    )
+
+    assert invalid_response_reason("chatgpt", text) == "chatgpt_login_page"
+
+
+def test_chatgpt_session_log_summary_excludes_sensitive_body(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import _chatgpt_session_log_summary
+
+    body = (
+        '{"accessToken":true,'
+        '"refreshToken":true,'
+        '"user":{"display":"Fixture User"},'
+        '"expires":true}'
+    )
+
+    summary = _chatgpt_session_log_summary(body)
+
+    assert "refreshToken" not in summary
+    assert "Fixture User" not in summary
+    assert "access_token_present=True" in summary
+    assert "user_present=True" in summary
+    assert "expires_present=True" in summary
+
+
 def test_session_debug_text_redacts_tokens(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
