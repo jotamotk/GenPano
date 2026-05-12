@@ -52,6 +52,10 @@ from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
+from geo_tracker.tasks.stale_running_repair import (
+    DEFAULT_STALE_RUNNING_SECONDS,
+    repair_stale_running_queries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -680,6 +684,19 @@ def dispatch_batch(limit: int = 50) -> dict:
     async def _run():
         from sqlalchemy import text as sa_text
         async with get_task_async_session(task_engine) as db:
+            stale_report = await repair_stale_running_queries(
+                db,
+                max_age_seconds=_env_int(
+                    "QUERY_STALE_RUNNING_SECONDS",
+                    DEFAULT_STALE_RUNNING_SECONDS,
+                ),
+            )
+            if stale_report.repaired:
+                logger.warning(
+                    "Repaired %s stale running queries before dispatch_batch: %s",
+                    stale_report.repaired,
+                    stale_report.to_dict(),
+                )
             # Debug: raw SQL count to verify DB connectivity and status values
             raw = await db.execute(
                 sa_text("SELECT status, COUNT(*) as n FROM queries GROUP BY status ORDER BY n DESC LIMIT 10")

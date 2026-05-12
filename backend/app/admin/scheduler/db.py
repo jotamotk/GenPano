@@ -334,6 +334,8 @@ async def reconcile_stale_running_queries(
     """Mark old running query rows failed before showing progress counters."""
     if not await _table_exists(session, "queries"):
         return 0
+    if not await _table_exists(session, "llm_responses"):
+        return 0
     seconds = max(60, int(max_age_seconds or _stale_running_seconds()))
     result = await session.execute(
         text(
@@ -341,7 +343,7 @@ async def reconcile_stale_running_queries(
             UPDATE queries
                SET status = 'failed',
                    finished_at = NOW(),
-                   retry_reason = 'stale_running',
+                   retry_reason = 'stale_running_timeout',
                    latency_ms = CASE
                        WHEN started_at IS NULL THEN latency_ms
                        ELSE GREATEST(
@@ -352,6 +354,11 @@ async def reconcile_stale_running_queries(
              WHERE LOWER(status) = 'running'
                AND COALESCE(started_at, executed_at, queued_at, created_at)
                    < NOW() - (CAST(:seconds AS text) || ' seconds')::interval
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM llm_responses r
+                    WHERE r.query_id = queries.id
+               )
             RETURNING id
             """
         ),

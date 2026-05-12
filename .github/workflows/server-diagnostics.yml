@@ -43,6 +43,14 @@ on:
         description: "bestcoffer_batch only: seconds to wait for selected queries"
         required: false
         default: "900"
+      repair_stale_running:
+        description: "bestcoffer_batch only: true marks stale running/no-response rows failed before selection"
+        required: false
+        default: "false"
+      stale_running_ttl_seconds:
+        description: "bestcoffer_batch only: age threshold for stale running repair"
+        required: false
+        default: "3600"
 
 jobs:
   diagnostics:
@@ -63,6 +71,8 @@ jobs:
           EXECUTE_BATCH: ${{ inputs.execute_batch }}
           POLL_SECONDS: ${{ inputs.poll_seconds }}
           TARGET_LLM: ${{ inputs.target_llm }}
+          REPAIR_STALE_RUNNING: ${{ inputs.repair_stale_running }}
+          STALE_RUNNING_TTL_SECONDS: ${{ inputs.stale_running_ttl_seconds }}
           GH_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -72,8 +82,8 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
-          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q GH_RUN_ID=%q bash -s' \
-            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${GH_RUN_ID}")"
+          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q REPAIR_STALE_RUNNING=%q STALE_RUNNING_TTL_SECONDS=%q GH_RUN_ID=%q bash -s' \
+            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${REPAIR_STALE_RUNNING}" "${STALE_RUNNING_TTL_SECONDS}" "${GH_RUN_ID}")"
 
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
           set -Eeuo pipefail
@@ -87,14 +97,21 @@ jobs:
           [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || fail "BRAND_ID must be an integer"
           [[ "${BATCH_LIMIT}" =~ ^[0-9]+$ ]] || fail "BATCH_LIMIT must be an integer"
           [[ "${POLL_SECONDS}" =~ ^[0-9]+$ ]] || fail "POLL_SECONDS must be an integer"
+          [[ "${STALE_RUNNING_TTL_SECONDS}" =~ ^[0-9]+$ ]] || fail "STALE_RUNNING_TTL_SECONDS must be an integer"
           if [ -n "${TARGET_LLM}" ] && [ "${TARGET_LLM}" != "all" ] && ! [[ "${TARGET_LLM}" =~ ^[a-z0-9_-]+$ ]]; then
             fail "TARGET_LLM must be empty, all, or a lowercase engine key"
           fi
           [ "${BATCH_LIMIT}" -ge 1 ] || fail "BATCH_LIMIT must be >= 1"
           [ "${BATCH_LIMIT}" -le 100 ] || fail "BATCH_LIMIT must be <= 100 for staged scraper validation"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -ge 60 ] || fail "STALE_RUNNING_TTL_SECONDS must be >= 60"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -le 604800 ] || fail "STALE_RUNNING_TTL_SECONDS must be <= 604800"
           case "${EXECUTE_BATCH}" in
             true|false) ;;
             *) fail "EXECUTE_BATCH must be true or false" ;;
+          esac
+          case "${REPAIR_STALE_RUNNING}" in
+            true|false) ;;
+            *) fail "REPAIR_STALE_RUNNING must be true or false" ;;
           esac
 
           artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
@@ -124,6 +141,8 @@ jobs:
           echo "execute_batch=${EXECUTE_BATCH}"
           echo "poll_seconds=${POLL_SECONDS}"
           echo "target_llm=${TARGET_LLM:-all}"
+          echo "repair_stale_running=${REPAIR_STALE_RUNNING}"
+          echo "stale_running_ttl_seconds=${STALE_RUNNING_TTL_SECONDS}"
           utc_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "utc_started_at=${utc_started_at}"
 
@@ -155,6 +174,79 @@ jobs:
             ORDER BY s.target_llm, s.status;
           "
 
+          if [ "${REPAIR_STALE_RUNNING}" = "true" ]; then
+            echo "=== Repair stale running no-response rows ==="
+            repair_ids_tsv="${artifact_dir}/stale_running_repaired.tsv"
+            psql_cmd -At -F $'\t' -c "
+              WITH candidates AS (
+                SELECT q.id, q.target_llm, q.status AS previous_status
+                FROM queries q
+                WHERE q.brand_id = ${BRAND_ID}
+                  AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+                  AND LOWER(q.status) = 'running'
+                  AND COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at)
+                      < NOW() - (CAST('${STALE_RUNNING_TTL_SECONDS}' AS text) || ' seconds')::interval
+                  AND NOT EXISTS (
+                    SELECT 1 FROM llm_responses r WHERE r.query_id = q.id
+                  )
+              ),
+              updated AS (
+                UPDATE queries q
+                   SET status = 'failed',
+                       finished_at = NOW(),
+                       retry_reason = 'stale_running_timeout:${GH_RUN_ID}',
+                       latency_ms = CASE
+                         WHEN q.started_at IS NULL THEN q.latency_ms
+                         ELSE GREATEST(
+                           0,
+                           FLOOR(EXTRACT(EPOCH FROM (NOW() - q.started_at)) * 1000)::int
+                         )
+                       END
+                  FROM candidates c
+                 WHERE q.id = c.id
+                RETURNING q.id, q.target_llm, c.previous_status, q.status, q.retry_reason
+              )
+              SELECT id, target_llm, previous_status, status, retry_reason
+              FROM updated
+              ORDER BY target_llm, id;
+            " > "${repair_ids_tsv}"
+
+            if [ -s "${repair_ids_tsv}" ]; then
+              echo "Repaired stale running rows:"
+              cat "${repair_ids_tsv}"
+              repair_ids_csv="$(awk -F'\t' 'NF {print $1}' "${repair_ids_tsv}" | paste -sd, -)"
+              echo "Rollback note:"
+              echo "UPDATE queries SET status = 'running', finished_at = NULL, retry_reason = 'rollback_stale_running_timeout:${GH_RUN_ID}' WHERE id IN (${repair_ids_csv}) AND retry_reason = 'stale_running_timeout:${GH_RUN_ID}';"
+            else
+              echo "No stale running no-response rows matched repair criteria."
+            fi
+
+            echo "=== Post-repair query/response counters ==="
+            psql_cmd -c "
+              WITH scoped AS (
+                SELECT q.id, q.target_llm, q.status
+                FROM queries q
+                WHERE q.brand_id = ${BRAND_ID}
+                  AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+              ),
+              response_counts AS (
+                SELECT query_id, COUNT(*) AS responses
+                FROM llm_responses
+                GROUP BY query_id
+              )
+              SELECT
+                s.target_llm,
+                s.status,
+                COUNT(*) AS queries,
+                COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) > 0) AS queries_with_response,
+                COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) = 0) AS queries_without_response
+              FROM scoped s
+              LEFT JOIN response_counts r ON r.query_id = s.id
+              GROUP BY s.target_llm, s.status
+              ORDER BY s.target_llm, s.status;
+            "
+          fi
+
           selected_tsv="${artifact_dir}/selected.tsv"
           psql_cmd -At -F $'\t' -c "
             WITH selected AS (
@@ -162,6 +254,7 @@ jobs:
               FROM queries q
               WHERE q.brand_id = ${BRAND_ID}
                 AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+                AND LOWER(q.status) IN ('pending', 'failed')
                 AND NOT EXISTS (
                   SELECT 1 FROM llm_responses r WHERE r.query_id = q.id
                 )
