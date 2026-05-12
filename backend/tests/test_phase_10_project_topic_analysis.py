@@ -1299,8 +1299,13 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     )
     assert engine_metrics.status_code == 200, engine_metrics.text
     engine_body = engine_metrics.json()
-    assert engine_body["state"] == "ok"
-    assert engine_body["state_reason"] == "data_available"
+    assert engine_body["state"] == "partial"
+    assert engine_body["state_reason"] == "partial_analyzer_data"
+    assert engine_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in engine_body["missing_inputs"]
+    )
     assert engine_body["evidence_count"] >= 1
     chatgpt = next(row for row in engine_body["items"] if row["engine"] == "chatgpt")
     assert chatgpt["mention_rate"] == pytest.approx(1.0)
@@ -1335,7 +1340,12 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     )
     assert sentiment.status_code == 200, sentiment.text
     sentiment_body = sentiment.json()
-    assert sentiment_body["state"] == "ok"
+    assert sentiment_body["state"] == "partial"
+    assert sentiment_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in sentiment_body["missing_inputs"]
+    )
     assert sentiment_body["evidence_count"] >= 1
     chatgpt_sentiment = next(row for row in sentiment_body["items"] if row["engine"] == "chatgpt")
     assert chatgpt_sentiment["positive"] >= 1
@@ -1359,8 +1369,13 @@ async def test_phase5_charts_use_text_matched_admin_facts_and_explain_missing_di
     )
     assert citations.status_code == 200, citations.text
     citations_body = citations.json()
-    assert citations_body["state"] == "empty"
-    assert citations_body["state_reason"] == "no_citation_data"
+    assert citations_body["state"] == "partial"
+    assert citations_body["state_reason"] == "partial_analyzer_data"
+    assert citations_body["formula_status"] == "partial"
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in citations_body["missing_inputs"]
+    )
     assert citations_body["evidence_count"] >= 1
     assert citations_body["total"] == 0
 
