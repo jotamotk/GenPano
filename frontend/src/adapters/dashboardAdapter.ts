@@ -41,6 +41,8 @@ export interface PrimaryBrandAdapted {
   mentionRate: number | null
   /** -1..1 */
   sentiment: number | null
+  /** percent 0..100 */
+  sov?: number | null
   ranking: number | null
   industryId: string
   change?: string
@@ -109,23 +111,35 @@ function normalizeCompetitorMentionRate(
   metrics: CompetitorMetricsOut,
   value: unknown,
 ): number | null {
-  if (!isOkAnalyticsState(metrics.state)) return null
   const definition = findMetricDefinition(
     metrics.metric_definitions,
     ['avg_mention_rate', 'mention_rate'],
   )
+  if (!canUseContractMetricValue(metrics.state, definition)) return null
   return normalizeRatioLikeOrNull(value, definition?.value_scale, definition?.unit)
+}
+
+function normalizeCompetitorSov(
+  metrics: CompetitorMetricsOut,
+  value: unknown,
+): number | null {
+  const definition = findMetricDefinition(
+    metrics.metric_definitions,
+    ['avg_sov', 'sov'],
+  )
+  if (!canUseContractMetricValue(metrics.state, definition)) return null
+  return formatRatioLikeForPercentOrNull(value, definition?.value_scale, definition?.unit)
 }
 
 function normalizeCompetitorSentiment(
   metrics: CompetitorMetricsOut,
   value: unknown,
 ): number | null {
-  if (!isOkAnalyticsState(metrics.state)) return null
   const definition = findMetricDefinition(
     metrics.metric_definitions,
     ['avg_sentiment', 'sentiment'],
   )
+  if (!canUseContractMetricValue(metrics.state, definition)) return null
   return normalizeSentimentRawOrNull(value, definition?.value_scale, definition?.unit)
 }
 
@@ -180,6 +194,11 @@ export function adaptOverviewToPrimary(
     ['sentiment', 'avg_sentiment'],
     ['sentiment', '情感'],
   )
+  const sovCard = findKpiCard(
+    overview.kpi_cards,
+    ['sov', 'share_of_voice'],
+    ['sov', 'share of voice'],
+  )
   const rankCard = findKpiCard(
     overview.kpi_cards,
     ['rank', 'avg_position_rank'],
@@ -207,6 +226,11 @@ export function adaptOverviewToPrimary(
       sentimentCard?.value_scale,
       sentimentCard?.unit,
     ),
+    sov: formatRatioLikeForPercentOrNull(
+      kpiNumber(sovCard, overview.state),
+      sovCard?.value_scale,
+      sovCard?.unit,
+    ),
     ranking: kpiNumber(rankCard, overview.state) == null
       ? null
       : Math.max(1, Math.round(kpiNumber(rankCard, overview.state) as number)),
@@ -232,13 +256,14 @@ export function adaptCompetitorMetricsToList(
       name,
       nameZh: name,
       nameEn: name,
-      panoScore: isOkAnalyticsState(metrics.state) && row.avg_geo_score != null
+      panoScore: canUseContractMetricValue(
+        metrics.state,
+        findMetricDefinition(metrics.metric_definitions, ['avg_geo_score', 'geo_score', 'pano_score']),
+      ) && row.avg_geo_score != null
         ? Math.round(row.avg_geo_score)
         : null,
       mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
-      sov: isOkAnalyticsState(metrics.state) && row.avg_sov != null
-        ? Math.round(((row.avg_sov <= 1 ? row.avg_sov * 100 : row.avg_sov) + Number.EPSILON) * 10) / 10
-        : null,
+      sov: normalizeCompetitorSov(metrics, row.avg_sov),
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
       ranking: null,
       industryId: '',
@@ -252,13 +277,14 @@ export function adaptCompetitorMetricsToList(
       name,
       nameZh: name,
       nameEn: name,
-      panoScore: isOkAnalyticsState(metrics.state) && row.avg_geo_score != null
+      panoScore: canUseContractMetricValue(
+        metrics.state,
+        findMetricDefinition(metrics.metric_definitions, ['avg_geo_score', 'geo_score', 'pano_score']),
+      ) && row.avg_geo_score != null
         ? Math.round(row.avg_geo_score)
         : null,
       mentionRate: normalizeCompetitorMentionRate(metrics, row.avg_mention_rate),
-      sov: isOkAnalyticsState(metrics.state) && row.avg_sov != null
-        ? Math.round(((row.avg_sov <= 1 ? row.avg_sov * 100 : row.avg_sov) + Number.EPSILON) * 10) / 10
-        : null,
+      sov: normalizeCompetitorSov(metrics, row.avg_sov),
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
       industryId: '',
     }
@@ -274,17 +300,21 @@ export function adaptCompetitorMetricsToList(
 export function adaptCompetitorMetricsToSov(
   metrics: CompetitorMetricsOut,
 ): SovEntry[] {
-  if (!isOkAnalyticsState(metrics.state)) return []
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
-  const filtered = all.filter((r) => r.avg_sov != null && (r.avg_sov ?? 0) > 0)
+  const filtered = all
+    .map((row) => ({
+      row,
+      value: normalizeCompetitorSov(metrics, row.avg_sov),
+    }))
+    .filter((item) => item.value != null && item.value > 0)
   if (filtered.length === 0) return []
   const top = filtered
-    .map((r) => ({
-      name: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
-      value: Math.round(((r.avg_sov! <= 1 ? r.avg_sov! * 100 : r.avg_sov!) + Number.EPSILON) * 10) / 10,
+    .map(({ row, value }) => ({
+      name: row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`,
+      value: value as number,
     }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 6)
@@ -294,18 +324,22 @@ export function adaptCompetitorMetricsToSov(
 export function adaptCompetitorMetricsToBubble(
   metrics: CompetitorMetricsOut,
 ): BubbleEntry[] {
-  if (!isOkAnalyticsState(metrics.state)) return []
   const all = [
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
   return all
-    .filter((r) => r.avg_sov != null && r.avg_sentiment != null)
-    .map((r) => ({
-      brand: r.brand_name ?? r.brand_key ?? `Brand #${r.brand_id ?? '?'}`,
-      sov: +(r.avg_sov as number * 100).toFixed(1),
-      sentiment: normalizeCompetitorSentiment(metrics, r.avg_sentiment) as number,
-      mentions: r.co_mention_count ?? 0,
+    .map((row) => ({
+      row,
+      sov: normalizeCompetitorSov(metrics, row.avg_sov),
+      sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
+    }))
+    .filter((item) => item.sov != null && item.sentiment != null)
+    .map(({ row, sov, sentiment }) => ({
+      brand: row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`,
+      sov: sov as number,
+      sentiment: sentiment as number,
+      mentions: row.co_mention_count ?? 0,
     }))
 }
 

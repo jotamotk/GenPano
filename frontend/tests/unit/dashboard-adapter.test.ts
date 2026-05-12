@@ -169,6 +169,105 @@ describe('dashboard adapter', () => {
     expect(primary?.ranking).toBeNull()
   })
 
+  it('renders usable metric-level KPI values when the overview endpoint is partial', () => {
+    const overview = {
+      ...emptyOverview,
+      brand_id: 12,
+      brand_name: 'Estee Lauder',
+      industry_id: 7,
+      state: 'partial',
+      state_reason: 'brand_mentions.position_rank_missing',
+      kpi_cards: [
+        {
+          metric_key: 'pano_score',
+          label_zh: 'PANO',
+          label_en: 'PANO',
+          value: 80,
+          unit: 'score',
+          value_scale: 'score_0_100',
+          formula_status: 'ok',
+          delta_30d_pct: null,
+          direction: null,
+        },
+        {
+          metric_key: 'mention_rate',
+          label_zh: 'Mention',
+          label_en: 'Mention',
+          value: 82.9,
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+          delta_30d_pct: null,
+          direction: null,
+        },
+        {
+          metric_key: 'sov',
+          label_zh: 'SoV',
+          label_en: 'Share of Voice',
+          value: 97.3,
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+          delta_30d_pct: null,
+          direction: null,
+        },
+        {
+          metric_key: 'sentiment',
+          label_zh: 'Sentiment',
+          label_en: 'Sentiment',
+          value: 0,
+          unit: 'score',
+          value_scale: 'raw_-1_1',
+          formula_status: 'ok',
+          delta_30d_pct: null,
+          direction: null,
+        },
+        {
+          metric_key: 'rank',
+          label_zh: 'Rank',
+          label_en: 'Rank',
+          value: 1,
+          unit: 'rank',
+          value_scale: 'ordinal',
+          formula_status: 'rank_evidence_missing',
+          delta_30d_pct: null,
+          direction: null,
+        },
+      ],
+    } as unknown as BrandOverviewOut
+
+    const primary = adaptOverviewToPrimary(overview)
+
+    expect(primary?.panoScore).toBe(80)
+    expect(primary?.mentionRate).toBeCloseTo(0.829)
+    expect(primary?.sov).toBeCloseTo(97.3)
+    expect(primary?.sentiment).toBe(0)
+    expect(primary?.ranking).toBeNull()
+  })
+
+  it('does not use partial overview KPI values that lack metric-level evidence', () => {
+    const overview = {
+      ...emptyOverview,
+      brand_id: 12,
+      brand_name: 'Estee Lauder',
+      state: 'partial',
+      kpi_cards: [
+        {
+          metric_key: 'mention_rate',
+          label_zh: 'Mention',
+          label_en: 'Mention',
+          value: 82.9,
+          unit: 'percent',
+          value_scale: 'percent',
+          delta_30d_pct: null,
+          direction: null,
+        },
+      ],
+    } as unknown as BrandOverviewOut
+
+    expect(adaptOverviewToPrimary(overview)?.mentionRate).toBeNull()
+  })
+
   it('does not synthesize SoV slices or Others from a single overview KPI card', () => {
     const overview = {
       ...emptyOverview,
@@ -337,6 +436,111 @@ describe('dashboard adapter', () => {
       mention: [],
       sov: [],
     })
+  })
+
+  it('keeps usable metric-level sparklines when the metrics endpoint is partial', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      engines: null,
+      state: 'partial',
+      state_reason: 'rank_inputs_missing',
+      series: [
+        {
+          metric: 'mention_rate',
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+          points: [{ date: '2026-05-11', value: 82.9 }],
+        },
+        {
+          metric: 'sov',
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+          points: [{ date: '2026-05-11', value: 97.3 }],
+        },
+        {
+          metric: 'sentiment',
+          unit: 'score',
+          value_scale: 'raw_-1_1',
+          formula_status: 'ok',
+          points: [{ date: '2026-05-11', value: 0 }],
+        },
+        {
+          metric: 'rank',
+          unit: 'rank',
+          value_scale: 'ordinal',
+          formula_status: 'rank_evidence_missing',
+          points: [{ date: '2026-05-11', value: 1 }],
+        },
+      ],
+    } as unknown as MetricsOut
+
+    expect(adaptMetricsToSparklines(metrics)).toMatchObject({
+      mention: [82.9],
+      sov: [97.3],
+      sentiment: [0],
+      rank: [],
+    })
+  })
+
+  it('keeps real competitor rows under unrelated endpoint partial state', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      primary_brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'partial',
+      state_reason: 'position_rank_missing',
+      metric_definitions: {
+        avg_sov: {
+          metric_key: 'avg_sov',
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+        },
+        avg_sentiment: {
+          metric_key: 'avg_sentiment',
+          unit: 'score',
+          value_scale: 'raw_-1_1',
+          formula_status: 'ok',
+        },
+      },
+      primary: {
+        brand_id: 12,
+        brand_key: 'estee_lauder',
+        brand_name: 'Estee Lauder',
+        avg_geo_score: 80,
+        avg_mention_rate: 82.9,
+        avg_sov: 97.3,
+        avg_sentiment: 0,
+        co_mention_count: 9,
+        delta_30d_pct: null,
+      },
+      competitors: [
+        {
+          brand_id: 34,
+          brand_key: 'lancome',
+          brand_name: 'Lancome',
+          avg_geo_score: 73,
+          avg_mention_rate: 12.4,
+          avg_sov: 2.7,
+          avg_sentiment: 0.2,
+          co_mention_count: 7,
+          delta_30d_pct: null,
+        },
+      ],
+    } as CompetitorMetricsOut
+
+    expect(adaptCompetitorMetricsToSov(metrics)).toEqual([
+      { name: 'Estee Lauder', value: 97.3 },
+      { name: 'Lancome', value: 2.7 },
+    ])
+    expect(adaptCompetitorMetricsToBubble(metrics)).toEqual([
+      { brand: 'Estee Lauder', sov: 97.3, sentiment: 0, mentions: 9 },
+      { brand: 'Lancome', sov: 2.7, sentiment: 0.2, mentions: 7 },
+    ])
   })
 
   it('uses /metrics mention_rate for competitor trend rows and never rebuilds it from SoV', () => {

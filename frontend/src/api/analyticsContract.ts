@@ -64,6 +64,7 @@ export interface AnalyticsContractMetadata {
 
 export interface MetricContractFields {
   metric_key?: string | null
+  state?: AnalyticsState | null
   unit?: string | null
   value_scale?: string | null
   value_range?: ValueRange | null
@@ -92,6 +93,19 @@ export function isOkAnalyticsState(state: AnalyticsState | null | undefined): bo
   return normalized === 'ok'
 }
 
+export function isUsableAnalyticsEndpointState(state: AnalyticsState | null | undefined): boolean {
+  const normalized = lower(state)
+  return !normalized || normalized === 'ok' || normalized === 'partial'
+}
+
+function hasUsableMetricEvidence(fields: MetricContractFields | null | undefined): boolean {
+  if (!fields) return false
+  const metricState = lower(fields.state)
+  const formulaStatus = lower(fields.formula_status)
+  if (formulaStatus) return isOkFormulaStatus(fields.formula_status)
+  return metricState === 'ok'
+}
+
 export function isOkFormulaStatus(status: string | null | undefined): boolean {
   const normalized = lower(status)
   if (!normalized) return true
@@ -107,7 +121,11 @@ export function canUseContractMetricValue(
   state: AnalyticsState | null | undefined,
   fields: MetricContractFields | null | undefined,
 ): boolean {
-  return isOkAnalyticsState(state) && isOkFormulaStatus(fields?.formula_status)
+  if (!isUsableAnalyticsEndpointState(state)) return false
+  if (lower(state) === 'partial') return hasUsableMetricEvidence(fields)
+  const metricState = lower(fields?.state)
+  if (metricState && metricState !== 'ok') return false
+  return isOkFormulaStatus(fields?.formula_status)
 }
 
 export function asContractMetricNumber(
