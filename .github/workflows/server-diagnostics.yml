@@ -965,7 +965,7 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
       - name: Verify live App analytics business completeness
         working-directory: frontend
