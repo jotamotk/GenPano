@@ -56,6 +56,16 @@ def test_session_debug_text_redacts_tokens(monkeypatch):
     assert "secret-access" not in str(nested)
 
 
+def test_doubao_unavailable_page_text_is_detected(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import _is_doubao_unavailable_page_text
+
+    assert _is_doubao_unavailable_page_text("该页面暂时不可用\n请尝试刷新此页面")
+    assert _is_doubao_unavailable_page_text("刷新页面")
+    assert not _is_doubao_unavailable_page_text("你好，欢迎使用豆包")
+
+
 def test_query_execution_debug_fields_are_populated():
     query = Query(query_text="hello", target_llm="doubao")
     started_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=2)
