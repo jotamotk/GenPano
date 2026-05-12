@@ -1,13 +1,14 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LocaleProvider } from '../../contexts/LocaleContext'
 import BrandCitationsPage from './BrandCitationsPage'
 
 const mockState = vi.hoisted(() => ({
   citationsData: null as any,
+  citationsCalls: [] as any[],
 }))
 
 vi.mock('../../components/charts', () => ({
@@ -60,7 +61,10 @@ vi.mock('../../hooks/useBrandAnalysisFilters', () => ({
 }))
 
 vi.mock('../../hooks/useBrandMetrics', () => ({
-  useBrandCitations: () => ({ data: mockState.citationsData }),
+  useBrandCitations: (...args: any[]) => {
+    mockState.citationsCalls.push(args)
+    return { data: mockState.citationsData }
+  },
 }))
 
 vi.mock('../../hooks/useCharts', () => ({
@@ -88,6 +92,17 @@ function renderCitationsPage() {
 }
 
 describe('BrandCitationsPage analyzer evidence guards', () => {
+  beforeEach(() => {
+    mockState.citationsData = null
+    mockState.citationsCalls = []
+  })
+
+  it('passes the URL brandId to citation requests as brand_id', () => {
+    renderCitationsPage()
+
+    expect(mockState.citationsCalls[0]?.[2]).toMatchObject({ brand_id: 42 })
+  })
+
   it('does not reconstruct top cited pages from raw citation items', () => {
     mockState.citationsData = {
       project_id: '11111111-2222-3333-4444-555555555555',

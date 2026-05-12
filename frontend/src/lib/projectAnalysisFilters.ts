@@ -20,11 +20,27 @@ export interface ProjectAnalysisParams {
   brand_id?: number
 }
 
+export function brandIdFromSearchParams(searchParams: URLSearchParams): number | null {
+  const raw = searchParams.get('brandId')
+  if (!raw || !/^\d+$/.test(raw)) return null
+  const brandId = Number(raw)
+  return Number.isSafeInteger(brandId) ? brandId : null
+}
+
+export function withBrandIdOverride(
+  params: ProjectAnalysisParams,
+  brandIdOverride?: number | null,
+): ProjectAnalysisParams {
+  if (brandIdOverride == null) return params
+  return { ...params, brand_id: brandIdOverride }
+}
+
 export function toProjectAnalysisParams(
   filters?: BrandAnalysisFiltersLike | null,
+  brandIdOverride?: number | null,
 ): ProjectAnalysisParams {
   const params: ProjectAnalysisParams = {}
-  if (!filters) return params
+  if (!filters) return withBrandIdOverride(params, brandIdOverride)
   if (filters.from) params.from = filters.from
   if (filters.to) params.to = filters.to
   if (filters.engines?.length) params.engine = filters.engines.join(',')
@@ -40,7 +56,7 @@ export function toProjectAnalysisParams(
       params.segment_id = audience
     }
   }
-  return params
+  return withBrandIdOverride(params, brandIdOverride)
 }
 
 export function buildQuery(params: Record<string, unknown> = {}): string {

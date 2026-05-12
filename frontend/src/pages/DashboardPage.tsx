@@ -32,7 +32,10 @@ import {
   buildAnalyticsContractNotice,
   type AnalyticsContractNotice,
 } from '../adapters/dashboardAdapter';
-import type { ProjectAnalysisParams } from '../lib/projectAnalysisFilters';
+import {
+  brandIdFromSearchParams,
+  type ProjectAnalysisParams,
+} from '../lib/projectAnalysisFilters';
 
 function isoOffset(days: number) {
   const d = new Date();
@@ -130,9 +133,7 @@ export default function DashboardPage() {
      dashboard for a different brand than the project's primary, e.g.
      viewing 雅诗兰黛's panorama from a sports-shoes project. The
      backend resolves the override against the same project context. */
-  const brandIdParam = searchParams.get('brandId');
-  const brandIdOverride =
-    brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null;
+  const brandIdOverride = brandIdFromSearchParams(searchParams);
   const analysisFilters = useMemo<ProjectAnalysisParams>(() => {
     const range = searchParams.get('range') || '30d';
     const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;

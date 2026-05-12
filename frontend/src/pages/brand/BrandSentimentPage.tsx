@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
@@ -10,7 +11,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
-import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandSentiment } from '../../hooks/useBrandMetrics';
 import {
@@ -52,10 +53,12 @@ export default function BrandSentimentPage() {
   const { t } = useLocale();
   const { activeProject } = useProject();
   const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const [searchParams] = useSearchParams();
+  const brandIdOverride = brandIdFromSearchParams(searchParams);
   // C10: page must reference useBrandAnalysisFilters (filter state lives in URL
   // and drives downstream fetches once the backend is wired).
   const { filters } = useBrandAnalysisFilters();
-  const chartFilters = toProjectAnalysisParams(filters);
+  const chartFilters = toProjectAnalysisParams(filters, brandIdOverride);
 
   // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
   const [polarity, setPolarity] = useState('all');
