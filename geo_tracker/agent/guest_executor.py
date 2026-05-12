@@ -1468,20 +1468,24 @@ class GuestQueryExecutor:
                     );
                     if (!input) return null;
                     const ir = input.getBoundingClientRect();
-                    let best = null, bestDist = Infinity;
+                    let best = null, bestScore = -Infinity;
                     for (const b of all) {
                         if (!isEnabled(b)) continue;
+                        const cls = b.className || '';
+                        if (typeof cls === 'string' && /toggle-button/.test(cls)) continue;
                         const r = b.getBoundingClientRect();
                         if (r.width === 0 || r.height === 0) continue;
                         const txt = (b.textContent || '').trim();
-                        if (txt.length > 4) continue;  // 文本按钮跳过
+                        if (txt.length > 0) continue;  // avoid mode/search toggles
                         if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
                         // 限制在 input 正下方/右侧附近 150px 以内
                         const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
                         const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
                         if (dx > 300 || dy > 200) continue;
-                        const dist = dx + dy;
-                        if (dist < bestDist) { bestDist = dist; best = b; }
+                        if ((r.left + r.width / 2) < (ir.left + ir.width * 0.55)) continue;
+                        const verticalPenalty = Math.abs((r.top + r.bottom) / 2 - (ir.top + ir.bottom) / 2);
+                        const score = (r.left + r.width) - verticalPenalty - dx - dy;
+                        if (score > bestScore) { bestScore = score; best = b; }
                     }
                     return best;
                 }
