@@ -106,6 +106,7 @@ async def test_computed_overview_and_metrics_values_report_formula_status_ok(
                 brand_name="Estee Lauder",
                 mention_count=1,
                 position_rank=1,
+                sentiment="positive",
                 sentiment_score=0.6,
                 created_at=now,
             ),
@@ -115,6 +116,7 @@ async def test_computed_overview_and_metrics_values_report_formula_status_ok(
                 brand_name="Clinique",
                 mention_count=1,
                 position_rank=2,
+                sentiment="negative",
                 sentiment_score=0.2,
                 created_at=now,
             ),
@@ -211,6 +213,7 @@ async def test_name_only_competitor_mentions_count_as_competitive_evidence(
                 brand_name="Estee Lauder",
                 mention_count=1,
                 position_rank=1,
+                sentiment="positive",
                 sentiment_score=0.5,
                 created_at=now,
             ),
@@ -220,6 +223,7 @@ async def test_name_only_competitor_mentions_count_as_competitive_evidence(
                 brand_name="Clinique",
                 mention_count=1,
                 position_rank=2,
+                sentiment="negative",
                 sentiment_score=0.2,
                 created_at=now,
             ),
@@ -339,6 +343,219 @@ async def test_geo_score_daily_with_zero_denominator_is_partial_not_one_hundred_
     assert body["evidence_counts"]["eligible_response_count"] == 0
     assert _card_by_key(body, "mention_rate")["value"] is None
     assert _card_by_key(body, "sov")["value"] is None
+    for key in ("geo_score", "mention_rate", "sov", "avg_sentiment"):
+        card = _card_by_key(body, key)
+        assert card["value"] is None
+        assert card["formula_status"] == "missing_required_inputs"
+
+
+@pytest.mark.asyncio
+async def test_partial_overview_propagates_missing_inputs_to_nested_kpis(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    p = await _project(db_session, user)
+    d = datetime.now().date()
+    db_session.add(
+        GeoScoreDaily(
+            brand_id=12,
+            date=datetime.combine(d, datetime.min.time()),
+            target_llm="chatgpt",
+            total_queries=0,
+            mention_count=58,
+            mention_rate=0.829,
+            avg_sov=1.0,
+            avg_position_rank=None,
+            avg_sentiment_score=0.5,
+            citation_rate=0.0,
+            avg_visibility=0.0,
+            avg_sentiment=0.5,
+            avg_sov_score=1.0,
+            avg_citation_score=0.0,
+            avg_geo_score=0.0,
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{p.id}/overview",
+        headers=_bearer(user),
+        params={"brand_id": 12},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "missing_required_inputs"
+    assert body["evidence_counts"]["eligible_response_count"] == 0
+    assert "eligible_response_denominator" in body["missing_inputs"]
+    for key in ("geo_score", "mention_rate", "sov", "avg_sentiment"):
+        card = _card_by_key(body, key)
+        assert card["value"] is None
+        assert card["formula_status"] == "missing_required_inputs"
+
+
+@pytest.mark.asyncio
+async def test_metrics_withhold_fallback_points_when_formula_inputs_are_missing(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    p = await _project(db_session, user)
+    d = datetime.now().date()
+    db_session.add(
+        GeoScoreDaily(
+            brand_id=12,
+            date=datetime.combine(d, datetime.min.time()),
+            target_llm="chatgpt",
+            total_queries=0,
+            mention_count=58,
+            mention_rate=0.829,
+            avg_sov=1.0,
+            avg_position_rank=None,
+            avg_sentiment_score=0.5,
+            citation_rate=0.0,
+            avg_visibility=0.0,
+            avg_sentiment=0.5,
+            avg_sov_score=1.0,
+            avg_citation_score=0.0,
+            avg_geo_score=0.0,
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{p.id}/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12, "series": "mention_rate,sov,sentiment,citation"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "missing_required_inputs"
+    by_metric = {series["metric"]: series for series in body["series"]}
+    for metric in ("mention_rate", "sov", "sentiment", "citation"):
+        assert by_metric[metric]["points"] == []
+        assert by_metric[metric]["state"] == "partial"
+        assert by_metric[metric]["formula_status"] == "missing_required_inputs"
+    assert "brand_mentions.competitive_set" in by_metric["sov"]["missing_inputs"]
+    assert "citation_sources" in by_metric["citation"]["missing_inputs"]
+
+
+@pytest.mark.asyncio
+async def test_citation_metric_agrees_with_citations_when_sources_absent(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    p = await _project(db_session, user)
+    d = datetime.now().date()
+    db_session.add(
+        GeoScoreDaily(
+            brand_id=12,
+            date=datetime.combine(d, datetime.min.time()),
+            target_llm="chatgpt",
+            total_queries=10,
+            mention_count=5,
+            mention_rate=0.5,
+            avg_sov=0.5,
+            avg_position_rank=1.0,
+            avg_sentiment_score=0.5,
+            citation_rate=0.4,
+            avg_visibility=0.5,
+            avg_sentiment=0.5,
+            avg_sov_score=0.5,
+            avg_citation_score=0.4,
+            avg_geo_score=0.5,
+        )
+    )
+    await db_session.commit()
+
+    metrics = await client.get(
+        f"/api/v1/projects/{p.id}/metrics",
+        headers=_bearer(user),
+        params={"brand_id": 12, "series": "citation"},
+    )
+    citations = await client.get(
+        f"/api/v1/projects/{p.id}/citations",
+        headers=_bearer(user),
+    )
+
+    assert metrics.status_code == 200, metrics.text
+    assert citations.status_code == 200, citations.text
+    citation_series = metrics.json()["series"][0]
+    citations_body = citations.json()
+    assert citations_body["state"] in {"empty", "partial"}
+    assert citations_body["formula_status"] != "ok"
+    assert citations_body["evidence_counts"]["citation_source_count"] == 0
+    assert citation_series["points"] == []
+    assert citation_series["state"] == "partial"
+    assert citation_series["formula_status"] == "missing_required_inputs"
+    assert "citation_sources" in citation_series["missing_inputs"]
+
+
+@pytest.mark.asyncio
+async def test_sentiment_trend_by_engine_does_not_override_empty_sentiment_contract(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    p = await _project(db_session, user)
+    d = datetime.now().date()
+    db_session.add(
+        GeoScoreDaily(
+            brand_id=12,
+            date=datetime.combine(d, datetime.min.time()),
+            target_llm="chatgpt",
+            total_queries=10,
+            mention_count=5,
+            mention_rate=0.5,
+            avg_sov=0.5,
+            avg_position_rank=1.0,
+            avg_sentiment_score=0.5,
+            citation_rate=0.0,
+            avg_visibility=0.5,
+            avg_sentiment=0.5,
+            avg_sov_score=0.5,
+            avg_citation_score=0.0,
+            avg_geo_score=0.5,
+        )
+    )
+    db_session.add(
+        BrandMention(
+            response_id=9601,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            mention_count=1,
+            position_rank=1,
+            sentiment=None,
+            sentiment_score=0.5,
+            created_at=datetime.now(),
+        )
+    )
+    await db_session.commit()
+
+    sentiment = await client.get(
+        f"/api/v1/projects/{p.id}/sentiment",
+        headers=_bearer(user),
+    )
+    trend = await client.get(
+        f"/api/v1/projects/{p.id}/sentiment/trend-by-engine",
+        headers=_bearer(user),
+    )
+
+    assert sentiment.status_code == 200, sentiment.text
+    assert trend.status_code == 200, trend.text
+    sentiment_body = sentiment.json()
+    trend_body = trend.json()
+    assert sentiment_body["state"] in {"empty", "partial"}
+    assert sentiment_body["formula_status"] != "ok"
+    assert trend_body["items"] == []
+    assert trend_body["state"] == "partial"
+    assert trend_body["formula_status"] == "missing_required_inputs"
+    assert "brand_mentions.sentiment_score" in trend_body["missing_inputs"]
 
 
 @pytest.mark.asyncio

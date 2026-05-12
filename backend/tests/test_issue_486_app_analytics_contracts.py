@@ -174,8 +174,9 @@ async def test_overview_contract_exposes_units_evidence_and_percent_scale(
     assert cards["mention_rate"]["formula_status"] == "ok"
     assert "eligible" in cards["mention_rate"]["denominator_label"]
 
-    assert cards["sov"]["value"] == pytest.approx(38.4)
+    assert cards["sov"]["value"] is None
     assert cards["sov"]["value_scale"] == "percent"
+    assert cards["sov"]["formula_status"] == "missing_required_inputs"
     assert "competitive" in cards["sov"]["denominator_label"]
     assert cards["sov"]["denominator_label"] != cards["mention_rate"]["denominator_label"]
 
@@ -266,8 +267,12 @@ async def test_metrics_contract_uses_decimal_values_and_distinct_denominators(
     body = resp.json()
     by_metric = {series["metric"]: series for series in body["series"]}
     assert by_metric["mention_rate"]["points"][0]["value"] == pytest.approx(0.162)
-    assert by_metric["sov"]["points"][0]["value"] == pytest.approx(0.384)
-    assert by_metric["citation"]["points"][0]["value"] == pytest.approx(0.125)
+    assert by_metric["sov"]["points"] == []
+    assert by_metric["sov"]["formula_status"] == "missing_required_inputs"
+    assert "brand_mentions.competitive_set" in by_metric["sov"]["missing_inputs"]
+    assert by_metric["citation"]["points"] == []
+    assert by_metric["citation"]["formula_status"] == "missing_required_inputs"
+    assert "citation_sources" in by_metric["citation"]["missing_inputs"]
 
     assert by_metric["mention_rate"]["unit"] == "ratio"
     assert by_metric["mention_rate"]["value_scale"] == "decimal"
@@ -276,10 +281,10 @@ async def test_metrics_contract_uses_decimal_values_and_distinct_denominators(
     assert "eligible" in by_metric["mention_rate"]["denominator_label"]
     assert "competitive" in by_metric["sov"]["denominator_label"]
     assert by_metric["mention_rate"]["denominator_label"] != by_metric["sov"]["denominator_label"]
-    assert body["state"] == "ok"
-    assert body["state_reason"] == "data_available"
-    assert body["formula_status"] == "ok"
-    assert body["formula_diagnostics"]["status"] == "ok"
+    assert body["state"] == "partial"
+    assert body["state_reason"] == "missing_formula_inputs"
+    assert body["formula_status"] == "missing_required_inputs"
+    assert body["formula_diagnostics"]["status"] == "missing_required_inputs"
 
 
 @pytest.mark.asyncio
