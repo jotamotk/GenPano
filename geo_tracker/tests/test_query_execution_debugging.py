@@ -148,9 +148,85 @@ def test_chatgpt_logged_out_shell_with_prompt_box_is_not_authenticated():
         "Log in to get answers based on saved chats and uploaded files. "
         "Accept all cookies #prompt-textarea Message ChatGPT"
     )
+    runtime_events = [
+        {"kind": "console", "text": "script-src allows https://auth0.openai.com"}
+    ]
 
     assert chatgpt_auth_state_reason(text, url="https://chatgpt.com/") == "chatgpt_not_logged_in"
+    assert (
+        chatgpt_auth_state_reason(
+            text,
+            url="https://chatgpt.com/",
+            runtime_events=runtime_events,
+        )
+        == "chatgpt_not_logged_in"
+    )
     assert invalid_response_reason("chatgpt", text) == "chatgpt_not_logged_in"
+
+
+def test_chatgpt_auth0_csp_allowlist_on_chatgpt_shell_is_not_redirect():
+    text = (
+        "ChatGPT New chat Search chats James Free Upgrade Get Plus "
+        "#prompt-textarea Message ChatGPT What's on your mind today?"
+    )
+    runtime_events = [
+        {
+            "kind": "console",
+            "text": (
+                "Refused to load script because it violates script-src "
+                "https://auth0.openai.com https://chatgpt.com"
+            ),
+        }
+    ]
+
+    reason = chatgpt_auth_state_reason(
+        text,
+        url="https://chatgpt.com/",
+        title="ChatGPT",
+        runtime_events=runtime_events,
+    )
+
+    assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_auth0_csp_allowlist_does_not_override_submit_failed(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return (
+                "ChatGPT New chat Search chats James Free Upgrade Get Plus "
+                "#prompt-textarea Message ChatGPT What's on your mind today?"
+            )
+
+        async def title(self):
+            return "ChatGPT"
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "submit_failed"
+
+    reason = await executor._prefer_chatgpt_auth_failure_reason(
+        "chatgpt",
+        FakePage(),
+        runtime_events=[
+            {
+                "kind": "console",
+                "text": (
+                    "script-src allows https://auth0.openai.com "
+                    "https://chatgpt.com"
+                ),
+            }
+        ],
+    )
+
+    assert reason is None
+    assert executor.last_error_reason == "submit_failed"
 
 
 @pytest.mark.asyncio

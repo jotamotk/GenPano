@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 
 _CHATGPT_ASSET_STACK_RE = re.compile(
@@ -132,34 +133,51 @@ def chatgpt_auth_state_reason(
     runtime_events: list[dict] | None = None,
 ) -> str | None:
     """Return a ChatGPT auth/session failure reason, if page/runtime proves one."""
-    parts = [text or "", url or "", title or ""]
+    page_parts = [text or "", url or "", title or ""]
+    runtime_parts = []
     for event in runtime_events or []:
         if isinstance(event, dict):
-            parts.append(str(event.get("text") or ""))
+            runtime_parts.append(str(event.get("text") or ""))
         else:
-            parts.append(str(event))
-    lower = "\n".join(parts).lower()
+            runtime_parts.append(str(event))
+    page_lower = "\n".join(page_parts).lower()
+    runtime_lower = "\n".join(runtime_parts).lower()
+    combined_lower = "\n".join((page_lower, runtime_lower))
 
-    if any(marker in lower for marker in _CHATGPT_TOKEN_INVALIDATED_MARKERS):
+    if any(marker in combined_lower for marker in _CHATGPT_TOKEN_INVALIDATED_MARKERS):
         return "token_invalidated"
     for marker, reason in _GENERIC_INVALID_MARKERS.items():
-        if marker in lower:
+        if marker in combined_lower:
             return reason
-    if any(marker in lower for marker in _CHATGPT_AUTH_REDIRECT_HOST_MARKERS):
+    if _chatgpt_url_is_auth_redirect(url):
         return "chatgpt_auth_redirect"
     redirect_markers = sum(
-        marker in lower for marker in _CHATGPT_AUTH_REDIRECT_TEXT_MARKERS
+        marker in page_lower for marker in _CHATGPT_AUTH_REDIRECT_TEXT_MARKERS
     )
     if redirect_markers >= 2:
         return "chatgpt_auth_redirect"
     logged_out_markers = sum(
-        marker in lower for marker in _CHATGPT_LOGGED_OUT_SHELL_MARKERS
+        marker in page_lower for marker in _CHATGPT_LOGGED_OUT_SHELL_MARKERS
     )
     if logged_out_markers >= 2:
         return "chatgpt_not_logged_in"
-    if _looks_like_chatgpt_logged_out_shell(lower):
+    if _looks_like_chatgpt_logged_out_shell(page_lower):
         return "chatgpt_not_logged_in"
     return None
+
+
+def _chatgpt_url_is_auth_redirect(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    host = host.split("@")[-1].split(":")[0]
+    return any(
+        host == marker or host.endswith(f".{marker}")
+        for marker in _CHATGPT_AUTH_REDIRECT_HOST_MARKERS
+    )
 
 
 def doubao_persistence_auth_reason(
