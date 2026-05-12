@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+FACT_CONTRACT_PATH = REPO_ROOT / "geo_tracker" / "analyzer" / "fact_contract.py"
+_SPEC = importlib.util.spec_from_file_location("issue_602_fact_contract", FACT_CONTRACT_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
+fact_contract = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = fact_contract
+_SPEC.loader.exec_module(fact_contract)
 
-from geo_tracker.analyzer.fact_contract import (  # noqa: E402
-    AnalyzerCitationInput,
-    AnalyzerMentionInput,
-    AnalyzerResponseInput,
-    build_response_fact_packages,
-)
+AnalyzerCitationInput = fact_contract.AnalyzerCitationInput
+AnalyzerMentionInput = fact_contract.AnalyzerMentionInput
+AnalyzerResponseInput = fact_contract.AnalyzerResponseInput
+build_response_fact_packages = fact_contract.build_response_fact_packages
 
 
 def _response(
