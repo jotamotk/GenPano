@@ -339,6 +339,8 @@ async def test_list_accepts_expired_status_filter_and_redacts_phone(
         **_account_row(3),
         "status": "expired",
         "phone_number": "+14155552671",
+        "cookie_count": 2,
+        "cookies_updated_at": "2026-05-12T13:30:00",
         "cookies_json": [{"name": "session", "value": "secret-cookie"}],
         "sms_text": "Your code is 654321",
         "provider_api_key": "secret-provider-key",
@@ -355,6 +357,8 @@ async def test_list_accepts_expired_status_filter_and_redacts_phone(
     body = resp.json()
     assert body[0]["status"] == "expired"
     assert body[0]["phone_number"] == "141****2671"
+    assert body[0]["cookie_count"] == 2
+    assert body[0]["cookies_updated_at"] == "2026-05-12T13:30:00"
     rendered = json.dumps(body)
     assert "+14155552671" not in rendered
     assert "secret-cookie" not in rendered

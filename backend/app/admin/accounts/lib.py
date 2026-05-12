@@ -30,18 +30,35 @@ _SECRET_RE = re.compile(
     r"([\"'\s:=]+)"
     r"([^\"'\s,;}]+)"
 )
-_SENSITIVE_ACCOUNT_FIELD_MARKERS = (
-    "activation",
-    "api_key",
-    "apikey",
-    "cookie",
-    "local_storage",
-    "localstorage",
-    "password",
-    "provider_secret",
-    "secret",
-    "sms",
-    "token",
+_SAFE_ACCOUNT_FIELDS = frozenset(
+    {
+        "cookie_count",
+        "cookies_updated_at",
+    }
+)
+_SENSITIVE_ACCOUNT_FIELDS = frozenset(
+    {
+        "activation_id",
+        "activation_ref",
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "cookies",
+        "cookies_json",
+        "local_storage",
+        "localstorage",
+        "password",
+        "password_encrypted",
+        "provider_api_key",
+        "provider_secret",
+        "secret",
+        "set_cookie",
+        "set-cookie",
+        "sms",
+        "sms_text",
+        "token",
+    }
 )
 
 
@@ -211,7 +228,15 @@ def redact_account_row(row: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in dict(row).items():
         key_l = str(key).lower()
-        if any(marker in key_l for marker in _SENSITIVE_ACCOUNT_FIELD_MARKERS):
+        if key_l not in _SAFE_ACCOUNT_FIELDS and (
+            key_l in _SENSITIVE_ACCOUNT_FIELDS
+            or key_l.endswith(("_api_key", "_secret", "_token"))
+            or "activation" in key_l
+            or "localstorage" in key_l
+            or "local_storage" in key_l
+            or "password" in key_l
+            or "sms" in key_l
+        ):
             continue
         safe[key] = value
     if "phone_number" in row:
