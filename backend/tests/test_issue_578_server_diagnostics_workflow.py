@@ -197,3 +197,11 @@ def test_chatgpt_proxy_preflight_heredoc_starts_at_column_zero() -> None:
 
     assert "docker compose exec -T worker python - <<'PY' || true\nimport asyncio" in run_script
     assert "\nPY\n    docker compose exec -T worker sh -lc" in run_script
+
+
+def test_bestcoffer_batch_writes_chatgpt_citation_review_artifact() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "citation_review.jsonl" in workflow
+    assert "citation_not_applicable" in workflow
+    assert "source_markers_without_extractable_urls" in workflow

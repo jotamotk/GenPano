@@ -639,6 +639,123 @@ jobs:
               ' </dev/null || true
               docker cp "${worker_cid}:/tmp/scraper-artifacts/." "${artifact_dir}/" || true
             fi
+
+            python3 - "${artifact_dir}" <<'PY' > "${artifact_dir}/citation_review.jsonl" || true
+          from __future__ import annotations
+
+          import html
+          import json
+          import re
+          import sys
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          artifact_dir = Path(sys.argv[1])
+          responses_path = artifact_dir / "responses.jsonl"
+          screenshots_dir = artifact_dir / "screenshots"
+          skip_parts = (
+              "chatgpt.com",
+              "cdn.openai.com",
+              "openaiassets.blob.core.windows.net",
+              "persistent.oaistatic.com",
+              "oaistatic.com",
+              "oaiusercontent.com",
+              "cdn-cgi",
+              "gstatic.com",
+              "googleapis.com",
+              "statsig",
+              "sentry",
+              "intercom",
+          )
+          attr_url_re = re.compile(
+              r"(?:href|data-url|data-href|cite)=['\"](?P<url>https?://[^'\"]+)['\"]",
+              re.IGNORECASE,
+          )
+          source_ui_re = re.compile(
+              r"(?:data-testid|aria-label|title)=['\"][^'\"]*(?:source|sources|citation|citations)[^'\"]*['\"]"
+              r"|>\s*(?:Sources|Citations)\s*<",
+              re.IGNORECASE,
+          )
+
+          def is_skipped(url: str) -> bool:
+              try:
+                  host = (urlparse(url).netloc or "").lower().split("@")[-1].split(":")[0]
+              except Exception:
+                  return True
+              lowered = url.lower()
+              return not host or any(part in host or part in lowered for part in skip_parts)
+
+          def external_url_count(text: str) -> int:
+              seen: set[str] = set()
+              for match in attr_url_re.finditer(text):
+                  url = html.unescape(match.group("url")).rstrip(".,;:!?)]}")
+                  if url and not is_skipped(url):
+                      seen.add(url)
+              return len(seen)
+
+          def assistant_segments(text: str) -> list[str]:
+              lowered = text.lower()
+              positions = [
+                  match.start()
+                  for match in re.finditer(
+                      r"data-message-author-role=['\"]assistant['\"]",
+                      lowered,
+                  )
+              ]
+              segments: list[str] = []
+              for index, start in enumerate(positions):
+                  end = positions[index + 1] if index + 1 < len(positions) else len(text)
+                  segments.append(text[start:end])
+              return segments
+
+          if responses_path.is_file():
+              for line in responses_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                  if not line.strip():
+                      continue
+                  row = json.loads(line)
+                  query_id = row.get("query_id")
+                  html_files = sorted(screenshots_dir.glob(f"query_{query_id}_*response_page*.html"))
+                  external_count = 0
+                  source_marker_count = 0
+                  for html_file in html_files:
+                      body = html_file.read_text(encoding="utf-8", errors="ignore")
+                      scoped_html = "\n".join(assistant_segments(body))
+                      external_count += external_url_count(scoped_html)
+                      source_marker_count += len(source_ui_re.findall(scoped_html))
+                  citation_count = int(row.get("citation_count") or 0)
+                  target_llm = str(row.get("target_llm") or "").lower()
+                  if citation_count > 0:
+                      status = "citations_present"
+                      reason = "persisted_citations"
+                  elif target_llm != "chatgpt":
+                      status = "not_checked"
+                      reason = "non_chatgpt_without_citations"
+                  elif external_count > 0:
+                      status = "citation_extractor_gap"
+                      reason = "external_urls_in_html_not_persisted"
+                  elif source_marker_count > 0:
+                      status = "citation_extractor_gap"
+                      reason = "source_markers_without_extractable_urls"
+                  else:
+                      status = "citation_not_applicable"
+                      reason = "no_source_markers_or_external_links"
+                  print(
+                      json.dumps(
+                          {
+                              "query_id": query_id,
+                              "target_llm": target_llm,
+                              "response_id": row.get("response_id"),
+                              "citation_count": citation_count,
+                              "citation_status": status,
+                              "citation_reason": reason,
+                              "html_response_files": len(html_files),
+                              "external_url_count": external_count,
+                              "source_marker_count": source_marker_count,
+                          },
+                          ensure_ascii=False,
+                      )
+                  )
+          PY
           fi
 
           REMOTE

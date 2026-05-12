@@ -36,6 +36,11 @@ from geo_tracker.agent.clash_api import (
     switch_to_next_node,
     CLASH_API_URL,
 )
+from geo_tracker.agent.citation_extraction import (
+    classify_citation_extraction,
+    extract_citations_from_html,
+    merge_citations,
+)
 from geo_tracker.agent.response_validation import (
     chatgpt_auth_state_reason,
     DOUBAO_AUTH_OK_MARKER,
@@ -1276,6 +1281,16 @@ class GuestQueryExecutor:
                     return citations
 
             # 通用提取：在响应区域内查找所有链接
+            if llm_name == "chatgpt":
+                citations = await self._extract_chatgpt_citations(page)
+                if citations:
+                    logger.info(
+                        "[%s] extracted %s source links from ChatGPT Sources UI",
+                        llm_name,
+                        len(citations),
+                    )
+                    return citations
+
             js_citations = await page.evaluate("""
                 (selectors) => {
                     const skipDomains = [
@@ -1333,6 +1348,125 @@ class GuestQueryExecutor:
         except Exception as e:
             logger.warning(f"[{llm_name}] 引用提取失败: {e}")
         return citations
+
+    async def _extract_chatgpt_citations(self, page: Page) -> list:
+        """Open ChatGPT's collapsed Sources UI and extract external links."""
+        try:
+            clicked = False
+            try:
+                buttons = page.locator(
+                    "button[aria-label*='Source'], "
+                    "button[aria-label*='source'], "
+                    "button[aria-label*='Citation'], "
+                    "button[aria-label*='citation']"
+                )
+                count = await buttons.count()
+                if count:
+                    button = buttons.nth(count - 1)
+                    await button.scroll_into_view_if_needed(timeout=2000)
+                    await button.click(timeout=3000)
+                    clicked = True
+            except Exception as e:
+                logger.debug("[chatgpt] source button locator click failed: %s", e)
+
+            if not clicked:
+                try:
+                    handle = await page.evaluate_handle(
+                        """
+                        () => {
+                            const buttons = [...document.querySelectorAll('button')].reverse();
+                            return buttons.find((button) => {
+                                const label = [
+                                    button.getAttribute('aria-label') || '',
+                                    button.getAttribute('title') || '',
+                                    button.textContent || '',
+                                ].join(' ');
+                                return /sources?|citations?/i.test(label);
+                            }) || null;
+                        }
+                        """
+                    )
+                    element = handle.as_element() if handle else None
+                    if element:
+                        await element.scroll_into_view_if_needed(timeout=2000)
+                        await element.click(timeout=3000)
+                        clicked = True
+                except Exception as e:
+                    logger.debug("[chatgpt] source button JS click failed: %s", e)
+
+            if clicked:
+                await page.wait_for_timeout(1200)
+
+            citations = await page.evaluate(
+                """
+                () => {
+                    const skipDomains = [
+                        'chatgpt.com', 'gemini.google.com', 'accounts.google.com',
+                        'cdn.oaistatic.com', 'persistent.oaistatic.com',
+                        'oaiusercontent.com', 'cdn.openai.com',
+                        'openaiassets.blob.core.windows.net',
+                        'gstatic.com', 'googleapis.com', 'google.com/gsi',
+                        'statsig', 'sentry', 'intercom', 'cdn-cgi',
+                    ];
+                    function isSkipped(url) {
+                        try {
+                            const parsed = new URL(url);
+                            const host = parsed.hostname.toLowerCase();
+                            const lowered = url.toLowerCase();
+                            return skipDomains.some(d => host.includes(d) || lowered.includes(d));
+                        } catch(e) {
+                            return true;
+                        }
+                    }
+                    const panelSelectors = [
+                        '[role="dialog"]',
+                        '[data-radix-popper-content-wrapper]',
+                        '[popover]',
+                        '[data-testid*="source" i]',
+                        '[data-testid*="citation" i]',
+                        '[class*="source" i]',
+                        '[class*="citation" i]',
+                    ];
+                    const roots = [];
+                    for (const sel of panelSelectors) {
+                        try {
+                            document.querySelectorAll(sel).forEach(el => roots.push(el));
+                        } catch(e) {}
+                    }
+                    const citations = [];
+                    const seen = new Set();
+                    function push(url, title) {
+                        if (!url || !url.startsWith('http') || seen.has(url)) return;
+                        if (isSkipped(url)) return;
+                        seen.add(url);
+                        citations.push({
+                            url,
+                            title: (title || '').trim().slice(0, 200),
+                            index: citations.length + 1,
+                        });
+                    }
+                    for (const root of roots) {
+                        root.querySelectorAll('a[href]').forEach(a => {
+                            push(a.href, a.textContent || a.getAttribute('aria-label') || '');
+                        });
+                        root.querySelectorAll('[data-url], [data-href], [cite]').forEach(el => {
+                            push(
+                                el.getAttribute('data-url')
+                                  || el.getAttribute('data-href')
+                                  || el.getAttribute('cite')
+                                  || '',
+                                el.textContent || el.getAttribute('aria-label') || ''
+                            );
+                        });
+                    }
+                    return citations;
+                }
+                """
+            )
+            return citations or []
+        except Exception as e:
+            logger.warning("[chatgpt] source panel extraction failed: %s", e)
+            return []
 
     async def _extract_doubao_citations(self, page: Page) -> list:
         """从豆包引用面板提取引用链接。
@@ -2304,6 +2438,26 @@ class GuestQueryExecutor:
 
             # 提取引用链接
             citations = await self._extract_citations(page, cfg, llm_name)
+            html_citations = extract_citations_from_html(resp_html, llm_name=llm_name)
+            if html_citations:
+                citations = merge_citations(citations, html_citations)
+            if llm_name == "chatgpt":
+                citation_state = classify_citation_extraction(
+                    llm_name,
+                    raw_text=resp_text,
+                    response_html=resp_html,
+                    citations=citations,
+                )
+                logger.info(
+                    "[%s] citation extraction status=%s reason=%s "
+                    "citations=%s html_candidates=%s source_markers=%s",
+                    llm_name,
+                    citation_state["status"],
+                    citation_state["reason"],
+                    citation_state["citation_count"],
+                    citation_state["html_candidate_count"],
+                    citation_state["source_marker_count"],
+                )
             return resp_text, resp_html, citations
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
