@@ -752,6 +752,7 @@ function normalizePanelBrand(brand, fallback = PANEL_FALLBACK_BRAND) {
     panoScore: finiteMetric(merged.panoScore),
     mentionRate: finiteMetric(merged.mentionRate),
     sentiment: finiteMetric(merged.sentiment),
+    sov: finiteMetric(merged.sov),
     ranking: finiteMetric(merged.ranking) == null
       ? null
       : Math.max(1, Math.round(finiteMetric(merged.ranking))),
@@ -869,7 +870,8 @@ export default function BrandPanoramaPanel({
   const mentionRateDec   = asMetricNumber(primary.mentionRate);
   const mentionRateValue = mentionRateDec == null ? null : +(mentionRateDec * 100).toFixed(1);
   const sovEntry         = sovData.find((s) => s.name === primary.name);
-  const sovValue         = sovEntry ? sovEntry.value : null;
+  const sovMetricValue   = asMetricNumber(primary.sov);
+  const sovValue         = sovMetricValue ?? (sovEntry ? sovEntry.value : null);
   const sentimentValue   = asMetricNumber(primary.sentiment);
   const citationShare    = isLive
     ? (sparklineOverride?.citation?.at(-1) ?? null)
