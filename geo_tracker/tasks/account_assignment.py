@@ -64,6 +64,12 @@ def account_unavailable_reason_from_accounts(
     if not accounts:
         return "account_pool_empty"
 
+    expired = [
+        account for account in accounts if account.status == AccountStatus.EXPIRED.value
+    ]
+    if len(expired) == len(accounts):
+        return "account_all_expired"
+
     active = [account for account in accounts if account.status == AccountStatus.ACTIVE.value]
     if not active:
         return "account_no_active"
