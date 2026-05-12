@@ -88,6 +88,24 @@ def test_target_only_responses_do_not_yield_sov_ok() -> None:
     assert "target_only_sov" in packages["sov"]["reason_codes"]
 
 
+def test_alias_only_target_without_canonical_id_stays_target_and_blocks_sov_ok() -> None:
+    packages = build_response_fact_packages(
+        [_response(mentions=[_mention(brand_id=None, brand_name="EL", raw_name="EL")])],
+        target_brand_id=12,
+        target_brand_name="Estee Lauder",
+        target_aliases=["EL"],
+        configured_competitors=[],
+    )
+
+    target_fact = packages["entities"]["facts"][0]
+    assert target_fact["entity_role"] == "target"
+    assert packages["sov"]["status"] == "missing_required_inputs"
+    assert packages["sov"]["numerator_target_mentions"] == 1
+    assert packages["sov"]["denominator_competitive_mentions"] == 1
+    assert packages["sov"]["competitors"] == []
+    assert "target_only_sov" in packages["sov"]["reason_codes"]
+
+
 def test_competitor_text_without_structured_mentions_is_extracted_as_partial_evidence() -> None:
     packages = build_response_fact_packages(
         [
@@ -141,6 +159,50 @@ def test_sentiment_score_only_remains_partial_for_explanatory_modules() -> None:
     assert packages["sentiment"]["driver_count"] == 0
     assert packages["sentiment"]["quote_count"] == 0
     assert "missing_sentiment_driver_quote" in packages["sentiment"]["reason_codes"]
+
+
+def test_citation_chart_counts_exclude_unresolved_citation_metadata() -> None:
+    packages = build_response_fact_packages(
+        [
+            _response(
+                mentions=[_mention(brand_id=12, brand_name="Estee Lauder", is_target=True)],
+                citations=[
+                    AnalyzerCitationInput(
+                        citation_id=1,
+                        response_id=1,
+                        mention_id=112,
+                        url="https://example.com/a",
+                        domain="Example.COM",
+                        source_type="publisher",
+                        tier=2,
+                    ),
+                    AnalyzerCitationInput(
+                        citation_id=2,
+                        response_id=1,
+                        mention_id=None,
+                        url="https://unresolved.example/b",
+                        domain="Unresolved.EXAMPLE",
+                        source_type="social",
+                        tier=4,
+                    ),
+                ],
+            )
+        ],
+        target_brand_id=12,
+        target_brand_name="Estee Lauder",
+        target_aliases=[],
+        configured_competitors=[],
+    )
+
+    citations = packages["citations"]
+    assert citations["status"] == "partial"
+    assert citations["attributed_count"] == 1
+    assert citations["unresolved_count"] == 1
+    assert citations["normalized_domains"] == ["example.com"]
+    assert citations["source_type_counts"] == {"publisher": 1}
+    assert citations["tier_counts"] == {"2": 1}
+    assert citations["unresolved_source_type_counts"] == {"social": 1}
+    assert citations["unresolved_tier_counts"] == {"4": 1}
 
 
 def test_missing_analyzer_rows_block_ok_and_do_not_become_zero() -> None:

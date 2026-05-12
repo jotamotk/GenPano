@@ -166,9 +166,10 @@ def _entity_facts(
     facts: list[dict[str, Any]] = []
     seen_structured: set[tuple[int, str]] = set()
     configured_specs = [_competitor_spec(item) for item in configured_competitors]
+    target_terms = [target_brand_name, *target_aliases]
     for response in responses:
         for mention in response.mentions:
-            role = _entity_role(mention, target_brand_id, configured_specs)
+            role = _entity_role(mention, target_brand_id, target_terms, configured_specs)
             raw_name = mention.raw_name or mention.brand_name
             key = (response.response_id, _norm(raw_name))
             seen_structured.add(key)
@@ -198,7 +199,9 @@ def _entity_facts(
         for spec in configured_specs:
             if spec["brand_id"] == target_brand_id:
                 continue
-            if any((response.response_id, _norm(term)) in seen_structured for term in spec["terms"]):
+            if any(
+                (response.response_id, _norm(term)) in seen_structured for term in spec["terms"]
+            ):
                 continue
             hit = _first_text_hit(response.raw_text, spec["terms"])
             if not hit:
@@ -245,8 +248,7 @@ def _sov_package(
     competitive_facts = [
         f
         for f in entity_facts
-        if f["entity_role"]
-        in {"target", "configured_competitor", "response_named_competitor"}
+        if f["entity_role"] in {"target", "configured_competitor", "response_named_competitor"}
     ]
     numerator = sum(
         int(f["mention_count"] or 0)
@@ -353,7 +355,9 @@ def _citation_package(responses: list[AnalyzerResponseInput]) -> dict[str, Any]:
     citations = [citation for response in responses for citation in response.citations]
     attributed = [citation for citation in citations if citation.mention_id is not None]
     unresolved = [citation for citation in citations if citation.mention_id is None]
-    domains = sorted({_normalize_domain(c.domain or c.url) for c in attributed if c.domain or c.url})
+    domains = sorted(
+        {_normalize_domain(c.domain or c.url) for c in attributed if c.domain or c.url}
+    )
     if not citations:
         status = STATUS_EMPTY
     elif unresolved:
@@ -367,8 +371,10 @@ def _citation_package(responses: list[AnalyzerResponseInput]) -> dict[str, Any]:
         "attributed_count": len(attributed),
         "unresolved_count": len(unresolved),
         "normalized_domains": domains,
-        "source_type_counts": _count_by(citations, "source_type"),
-        "tier_counts": _count_by(citations, "tier"),
+        "source_type_counts": _count_by(attributed, "source_type"),
+        "tier_counts": _count_by(attributed, "tier"),
+        "unresolved_source_type_counts": _count_by(unresolved, "source_type"),
+        "unresolved_tier_counts": _count_by(unresolved, "tier"),
         "sample_response_ids": sorted({c.response_id for c in citations})[:20],
         "reason_codes": ["unresolved_citation_attribution"] if unresolved else [],
     }
@@ -379,7 +385,9 @@ def _topic_product_package(
     entity_facts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     missing_chain = [
-        r.response_id for r in responses if r.topic_id is None or r.prompt_id is None or r.query_id is None
+        r.response_id
+        for r in responses
+        if r.topic_id is None or r.prompt_id is None or r.query_id is None
     ]
     product_facts = [f for f in entity_facts if _clean(f.get("product_name"))]
     return {
@@ -434,14 +442,17 @@ def _competitor_spec(item: dict[str, Any]) -> dict[str, Any]:
 def _entity_role(
     mention: AnalyzerMentionInput,
     target_brand_id: int,
+    target_terms: list[str],
     configured_specs: list[dict[str, Any]],
 ) -> str:
-    if mention.is_target or mention.brand_id == target_brand_id:
+    mention_terms = {_norm(mention.brand_name), _norm(mention.raw_name)}
+    mention_terms.discard("")
+    target_names = {_norm(term) for term in target_terms}
+    target_names.discard("")
+    if mention.is_target or mention.brand_id == target_brand_id or mention_terms & target_names:
         return "target"
     configured_ids = {spec["brand_id"] for spec in configured_specs if spec["brand_id"] is not None}
-    configured_names = {
-        _norm(term) for spec in configured_specs for term in spec["terms"]
-    }
+    configured_names = {_norm(term) for spec in configured_specs for term in spec["terms"]}
     if mention.brand_id in configured_ids or _norm(mention.brand_name) in configured_names:
         return "configured_competitor"
     return "response_named_competitor" if mention.brand_name else "other_entity"
@@ -463,7 +474,7 @@ def _first_text_hit(raw_text: str | None, terms: list[str]) -> dict[str, Any] | 
         return {
             "term": normalized,
             "count": len(positions),
-            "snippet": raw_text[max(0, start - radius): min(len(raw_text), end + radius)],
+            "snippet": raw_text[max(0, start - radius) : min(len(raw_text), end + radius)],
         }
     return None
 
@@ -509,7 +520,9 @@ def _competitor_list(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "raw_names": sorted(set(row["raw_names"])),
             "missing_inputs": sorted(set(row["missing_inputs"])),
         }
-        for row in sorted(by_key.values(), key=lambda item: (str(item["brand_id"]), item["brand_name"] or ""))
+        for row in sorted(
+            by_key.values(), key=lambda item: (str(item["brand_id"]), item["brand_name"] or "")
+        )
     ]
 
 
