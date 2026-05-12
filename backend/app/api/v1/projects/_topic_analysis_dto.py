@@ -254,9 +254,7 @@ class ResponseRelationDetail(BaseModel):
 class AnalyzerFacts(BaseModel):
     citations: list[CitationDetail] = Field(default_factory=list)
     brands_mentioned: list[BrandMentionDetail] = Field(default_factory=list)
-    products_features_attributes: list[ProductFeatureAttributeDetail] = Field(
-        default_factory=list
-    )
+    products_features_attributes: list[ProductFeatureAttributeDetail] = Field(default_factory=list)
     relations: list[ResponseRelationDetail] = Field(default_factory=list)
     sentiment_drivers: list[SentimentDriverDetail] = Field(default_factory=list)
 

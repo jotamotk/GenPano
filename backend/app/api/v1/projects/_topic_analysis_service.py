@@ -171,10 +171,7 @@ def _normalize_key(value: Any) -> str | None:
 def _success_status_condition(cols: set[str], alias: str = "q") -> str | None:
     if "status" not in cols:
         return None
-    return (
-        f"LOWER(COALESCE({alias}.status, '')) "
-        "IN ('done', 'success', 'completed')"
-    )
+    return f"LOWER(COALESCE({alias}.status, '')) IN ('done', 'success', 'completed')"
 
 
 def _logical_query_key(row: dict[str, Any]) -> str:
@@ -418,7 +415,7 @@ async def _profile_names_for_ids(
                     f"""
                     SELECT CAST(id AS TEXT) AS id, {name_expr} AS name
                     FROM profiles
-                    WHERE CAST(id AS TEXT) IN ({', '.join(placeholders)})
+                    WHERE CAST(id AS TEXT) IN ({", ".join(placeholders)})
                     """
                 ),
                 params,
@@ -1733,9 +1730,7 @@ async def _analyzer_facts_for_response(
         else await _brand_mentions_for_response(session, response_id)
     )
     citation_rows = (
-        citations
-        if citations is not None
-        else await _citations_for_response(session, response_id)
+        citations if citations is not None else await _citations_for_response(session, response_id)
     )
     features = await _product_features_for_analysis(
         session,
@@ -1996,11 +1991,7 @@ async def get_query_response_detail(
 
     profile_names = await _profile_names_for_ids(
         session,
-        {
-            str(row["profile_id"])
-            for row in [q, *scoped_rows]
-            if row.get("profile_id") is not None
-        },
+        {str(row["profile_id"]) for row in [q, *scoped_rows] if row.get("profile_id") is not None},
     )
     analyzer_facts = (
         await _analyzer_facts_for_response(
@@ -2046,9 +2037,7 @@ async def get_query_response_detail(
                 response_id=attempt_response_id,
                 query_text=row.get("query_text"),
                 target_llm=row.get("target_llm") or row.get("response_target_llm"),
-                status=str(row.get("query_status")).lower()
-                if row.get("query_status")
-                else None,
+                status=str(row.get("query_status")).lower() if row.get("query_status") else None,
                 profile_id=str(row.get("profile_id"))
                 if row.get("profile_id") is not None
                 else None,
