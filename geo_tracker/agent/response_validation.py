@@ -65,9 +65,11 @@ def _strip_hidden_doubao_auth_chrome(html: str | None) -> str:
     while previous != visible_html:
         previous = visible_html
         visible_html = _DOUBAO_ELEMENT_WITH_ATTRS_RE.sub(
-            lambda match: "\n"
-            if _DOUBAO_HIDDEN_ATTR_RE.search(match.group("attrs") or "")
-            else match.group(0),
+            lambda match: (
+                "\n"
+                if _DOUBAO_HIDDEN_ATTR_RE.search(match.group("attrs") or "")
+                else match.group(0)
+            ),
             visible_html,
         )
     return visible_html

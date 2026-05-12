@@ -64,9 +64,7 @@ def _finished_at_rollback_literal(value) -> str:
 def _validated_query_ids(query_ids: list[int] | tuple[int, ...]) -> tuple[int, ...]:
     ids = tuple(int(query_id) for query_id in query_ids)
     unsupported = [
-        query_id
-        for query_id in ids
-        if query_id not in KNOWN_FALSE_SUCCESS_QUERY_IDS
+        query_id for query_id in ids if query_id not in KNOWN_FALSE_SUCCESS_QUERY_IDS
     ]
     if unsupported:
         allowed = ", ".join(str(query_id) for query_id in KNOWN_FALSE_SUCCESS_QUERY_IDS)
@@ -109,7 +107,10 @@ async def repair_known_doubao_auth_false_successes(
     now = datetime.now(UTC).replace(tzinfo=None)
     for query, response in rows:
         expected_response_id = KNOWN_RESPONSE_IDS_BY_QUERY_ID.get(int(query.id))
-        if expected_response_id is not None and int(response.id) != expected_response_id:
+        if (
+            expected_response_id is not None
+            and int(response.id) != expected_response_id
+        ):
             skipped_query_ids.append(int(query.id))
             continue
 

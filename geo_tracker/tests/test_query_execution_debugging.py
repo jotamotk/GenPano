@@ -96,7 +96,9 @@ def test_session_debug_text_redacts_tokens(monkeypatch):
         _redact_sensitive_text,
     )
 
-    text = '{"accessToken":"secret-access","refreshToken":"secret-refresh"} Bearer abc.def'
+    text = (
+        '{"accessToken":"secret-access","refreshToken":"secret-refresh"} Bearer abc.def'
+    )
 
     redacted = _redact_sensitive_text(text)
 
@@ -268,7 +270,9 @@ async def test_doubao_no_response_login_dialog_sets_auth_failure_reason(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_doubao_no_response_login_dialog_missing_state_overrides_generic_reason(monkeypatch):
+async def test_doubao_no_response_login_dialog_missing_state_overrides_generic_reason(
+    monkeypatch,
+):
     _install_fake_playwright(monkeypatch)
 
     from geo_tracker.agent.guest_executor import GuestQueryExecutor
@@ -474,7 +478,9 @@ def test_account_unavailability_classifies_daily_limit_exhaustion():
 
 
 @pytest.mark.asyncio
-async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(monkeypatch):
+async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(
+    monkeypatch,
+):
     playwright = types.ModuleType("playwright")
     playwright_async = types.ModuleType("playwright.async_api")
     playwright_async.async_playwright = object
@@ -502,7 +508,9 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(mon
         return f"node-next-{len(exclude or set())}"
 
     monkeypatch.setattr(GuestQueryExecutor, "_execute_once", fake_execute_once)
-    monkeypatch.setattr(guest_executor_module, "get_current_node", fake_get_current_node)
+    monkeypatch.setattr(
+        guest_executor_module, "get_current_node", fake_get_current_node
+    )
     monkeypatch.setattr(
         guest_executor_module,
         "switch_to_next_node",
@@ -604,7 +612,9 @@ async def test_doubao_controlled_textarea_prefers_js_injection(monkeypatch):
     input_el = FakeInput()
     executor = GuestQueryExecutor()
 
-    filled = await executor._fill_plain_text_input(page, input_el, "hello doubao", "doubao")
+    filled = await executor._fill_plain_text_input(
+        page, input_el, "hello doubao", "doubao"
+    )
 
     assert filled is True
     assert input_el.value == "hello doubao"
@@ -738,7 +748,9 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
 
     monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
     monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
-    monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
+    monkeypatch.setattr(
+        celery_tasks, "acquire_query_account", fake_acquire_query_account
+    )
     monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
 
     result = celery_tasks.execute_query.run(query_id)
