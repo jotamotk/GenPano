@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_OK_STATUS,
+    AnalyticsContractContext,
     build_contract_context,
     context_update,
     metric_definition,
@@ -170,6 +171,74 @@ def _decorate_metric_series(
     return decorated
 
 
+def _unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value and value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
+
+
+def _series_missing_inputs(metric: str, context: AnalyticsContractContext) -> list[str]:
+    inputs = {*context.missing_inputs, *context.missing_sources}
+    missing: list[str] = []
+    if "eligible_response_denominator" in inputs:
+        missing.append("eligible_response_denominator")
+    if "geo_score_daily.total_queries" in inputs:
+        missing.append("geo_score_daily.total_queries")
+    if metric == "sov" and (
+        "brand_mentions.competitive_set" in inputs
+        or context.evidence_counts.get("competitive_mention_count", 0) <= 0
+    ):
+        missing.append("brand_mentions.competitive_set")
+    elif metric == "rank" and "llm_brand_position" in inputs:
+        missing.append("brand_mentions.position_rank")
+    elif metric == "sentiment" and (
+        "brand_mentions.sentiment_score" in inputs or "llm_brand_sentiment" in inputs
+    ):
+        missing.append("brand_mentions.sentiment_score")
+    elif metric == "citation" and context.evidence_counts.get("citation_source_count", 0) <= 0:
+        missing.append("citation_sources")
+    return _unique(missing)
+
+
+def _apply_metric_series_contract(
+    series: list[MetricSeries],
+    context: AnalyticsContractContext,
+) -> list[MetricSeries]:
+    out: list[MetricSeries] = []
+    for item in series:
+        missing_inputs = _series_missing_inputs(item.metric, context)
+        if not missing_inputs:
+            out.append(item)
+            continue
+        out.append(
+            item.model_copy(
+                update={
+                    "points": [],
+                    "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+                    "missing_inputs": _unique([*item.missing_inputs, *missing_inputs]),
+                    "state": "partial",
+                    "state_reason": "missing_formula_inputs",
+                    "evidence_count": 0,
+                }
+            )
+        )
+    return out
+
+
+def _series_contract_missing_inputs(
+    series: list[MetricSeries],
+    context: AnalyticsContractContext,
+) -> list[str]:
+    missing: list[str] = []
+    for item in series:
+        missing.extend(_series_missing_inputs(item.metric, context))
+    return _unique(missing)
+
+
 def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
     if metric == "mention_rate":
         denominator = len(bucket["mention_denominator_response_ids"])
@@ -200,7 +269,7 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
         response_count = len(bucket["response_ids"])
-        if response_count <= 0:
+        if response_count <= 0 or bucket["citation_count"] <= 0:
             return None
         return round(float(bucket["citation_count"]) / response_count, 4)
     return None
@@ -295,6 +364,22 @@ async def _metrics_from_admin_facts(
         has_data=has_data,
         base_state="ok" if has_data else "empty",
     )
+    series_missing_inputs = _series_contract_missing_inputs(out_series, context)
+    if series_missing_inputs and context.formula_status == FORMULA_OK_STATUS:
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state="partial",
+            base_state_reason="missing_formula_inputs",
+            base_missing_inputs=series_missing_inputs,
+            base_missing_sources=series_missing_inputs,
+            formula_status=FORMULA_MISSING_INPUTS_STATUS,
+        )
+    out_series = _apply_metric_series_contract(out_series, context)
     out = MetricsOut(
         project_id=project.id,
         brand_id=brand_id,
@@ -418,6 +503,22 @@ async def get_metrics(
         has_data=has_data,
         base_state=out.state,
     )
+    series_missing_inputs = _series_contract_missing_inputs(out_series, context)
+    if series_missing_inputs and context.formula_status == FORMULA_OK_STATUS:
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=primary_brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state="partial",
+            base_state_reason="missing_formula_inputs",
+            base_missing_inputs=series_missing_inputs,
+            base_missing_sources=series_missing_inputs,
+            formula_status=FORMULA_MISSING_INPUTS_STATUS,
+        )
+    out = out.model_copy(update={"series": _apply_metric_series_contract(out_series, context)})
     return out.model_copy(update=context_update(context))
 
 

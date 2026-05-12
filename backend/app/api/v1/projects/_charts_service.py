@@ -32,6 +32,10 @@ from genpano_models import (
 from sqlalchemy import and_, case, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import (
+    FORMULA_MISSING_INPUTS_STATUS,
+    formula_diagnostics_for,
+)
 from app.api.v1.projects._charts_dto import (
     AuthorityRadarOut,
     AuthorityRadarRow,
@@ -143,6 +147,62 @@ def _response_evidence_count(rows: list[dict[str, Any]]) -> int:
 
 def _chart_counts(**counts: int) -> dict[str, int]:
     return {key: int(value or 0) for key, value in counts.items()}
+
+
+async def _sentiment_contract_evidence_count(
+    session: AsyncSession,
+    brand_id: int,
+    from_d: date,
+    to_d: date,
+) -> int:
+    f, t = _dt_range(from_d, to_d)
+    return int(
+        (
+            await session.execute(
+                select(func.count(BrandMention.id)).where(
+                    and_(
+                        BrandMention.brand_id == brand_id,
+                        BrandMention.sentiment_score.isnot(None),
+                        func.lower(BrandMention.sentiment).in_(
+                            ["positive", "neutral", "negative"]
+                        ),
+                        BrandMention.created_at >= f,
+                        BrandMention.created_at <= t,
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
+def _sentiment_missing_out(
+    *,
+    project_id: str,
+    period: dict[str, str],
+    engines: list[str],
+    evidence_count: int,
+    evidence_counts: dict[str, int],
+) -> SentimentTrendByEngineOut:
+    missing_inputs = ["brand_mentions.sentiment_score", "brand_mentions.sentiment"]
+    return SentimentTrendByEngineOut(
+        project_id=project_id,
+        period=period,
+        engines=engines,
+        items=[],
+        state="partial",
+        state_reason="missing_formula_inputs",
+        evidence_count=evidence_count,
+        evidence_counts=evidence_counts,
+        missing_inputs=missing_inputs,
+        missing_sources=missing_inputs,
+        formula_status=FORMULA_MISSING_INPUTS_STATUS,
+        formula_diagnostics=formula_diagnostics_for(
+            FORMULA_MISSING_INPUTS_STATUS,
+            missing_inputs=missing_inputs,
+        ),
+        source_provenance=["brand_mentions", "geo_score_daily"],
+    )
 
 
 async def _admin_fact_rows(
@@ -931,6 +991,20 @@ async def get_sentiment_trend_by_engine(
         )
         engine_list, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
         state = "ok" if items else "empty"
+        evidence_counts = _chart_counts(admin_fact_response_count=evidence_count)
+        if items and not await _sentiment_contract_evidence_count(
+            session,
+            project.primary_brand_id,
+            from_d,
+            to_d,
+        ):
+            return _sentiment_missing_out(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                engines=engine_list,
+                evidence_count=evidence_count,
+                evidence_counts=evidence_counts,
+            )
         return SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -939,7 +1013,7 @@ async def get_sentiment_trend_by_engine(
             state=state,
             state_reason=_state_reason(state, "no_sentiment_data"),
             evidence_count=evidence_count,
-            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+            evidence_counts=evidence_counts,
         )
     stmt = (
         select(
@@ -976,6 +1050,20 @@ async def get_sentiment_trend_by_engine(
         fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
         engines, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
         state = "ok" if items else "empty"
+        evidence_counts = _chart_counts(admin_fact_response_count=evidence_count)
+        if items and not await _sentiment_contract_evidence_count(
+            session,
+            project.primary_brand_id,
+            from_d,
+            to_d,
+        ):
+            return _sentiment_missing_out(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                engines=engines,
+                evidence_count=evidence_count,
+                evidence_counts=evidence_counts,
+            )
         return SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -984,9 +1072,23 @@ async def get_sentiment_trend_by_engine(
             state=state,
             state_reason=_state_reason(state, "no_sentiment_data"),
             evidence_count=evidence_count,
-            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+            evidence_counts=evidence_counts,
         )
     evidence_count = len(sentiment_rows)
+    evidence_counts = _chart_counts(geo_score_daily_rows=evidence_count)
+    if not await _sentiment_contract_evidence_count(
+        session,
+        project.primary_brand_id,
+        from_d,
+        to_d,
+    ):
+        return _sentiment_missing_out(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            engines=engines,
+            evidence_count=evidence_count,
+            evidence_counts=evidence_counts,
+        )
     return SentimentTrendByEngineOut(
         project_id=project.id,
         period=_period(from_d, to_d),
@@ -995,7 +1097,7 @@ async def get_sentiment_trend_by_engine(
         state="ok",
         state_reason="data_available",
         evidence_count=evidence_count,
-        evidence_counts=_chart_counts(geo_score_daily_rows=evidence_count),
+        evidence_counts=evidence_counts,
     )
 
 

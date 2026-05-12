@@ -145,9 +145,14 @@ async def test_metrics_default_window(client, user, project_with_full_data):
     assert body["brand_id"] == 42
     series_keys = {s["metric"] for s in body["series"]}
     assert series_keys == {"mention_rate", "sov", "rank", "sentiment", "citation"}
-    # Each series has 30 points
-    for s in body["series"]:
-        assert len(s["points"]) == 30
+    by_metric = {s["metric"]: s for s in body["series"]}
+    assert len(by_metric["mention_rate"]["points"]) == 30
+    assert len(by_metric["rank"]["points"]) == 30
+    assert len(by_metric["sentiment"]["points"]) == 30
+    assert len(by_metric["citation"]["points"]) == 30
+    assert by_metric["sov"]["points"] == []
+    assert by_metric["sov"]["formula_status"] == "missing_required_inputs"
+    assert "brand_mentions.competitive_set" in by_metric["sov"]["missing_inputs"]
 
 
 @pytest.mark.asyncio

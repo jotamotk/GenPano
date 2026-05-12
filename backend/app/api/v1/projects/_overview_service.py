@@ -35,6 +35,7 @@ from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_NO_EVIDENCE_STATUS,
     FORMULA_OK_STATUS,
+    AnalyticsContractContext,
     MetricValue,
     ValueRange,
     build_contract_context,
@@ -157,6 +158,58 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
     return decorated
 
 
+def _kpi_missing_inputs(metric_key: str | None, context: AnalyticsContractContext) -> list[str]:
+    if context.formula_status == FORMULA_OK_STATUS:
+        return []
+    inputs = {*context.missing_inputs, *context.missing_sources}
+    missing: list[str] = []
+    if (
+        context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+        or "geo_score_daily.total_queries" in inputs
+        or "eligible_response_denominator" in inputs
+    ):
+        missing.append("geo_score_daily")
+        if "eligible_response_denominator" in inputs:
+            missing.append("eligible_response_denominator")
+        if "geo_score_daily.total_queries" in inputs:
+            missing.append("geo_score_daily.total_queries")
+    if metric_key == "sov" and (
+        "brand_mentions.competitive_set" in inputs
+        or context.evidence_counts.get("competitive_mention_count", 0) <= 0
+    ):
+        missing.append("brand_mentions.competitive_set")
+    if metric_key in {"avg_sentiment", "sentiment"} and (
+        "brand_mentions.sentiment_score" in inputs or "llm_brand_sentiment" in inputs
+    ):
+        missing.append("brand_mentions.sentiment_score")
+    if metric_key == "geo_score" and "llm_brand_position" in inputs:
+        missing.append("llm_brand_position")
+    return _unique(missing)
+
+
+def _apply_kpi_contract(
+    cards: list[KpiCard],
+    context: AnalyticsContractContext,
+) -> list[KpiCard]:
+    out: list[KpiCard] = []
+    for card in cards:
+        missing_inputs = _kpi_missing_inputs(card.metric_key, context)
+        if not missing_inputs:
+            out.append(card)
+            continue
+        out.append(
+            card.model_copy(
+                update={
+                    "value": None,
+                    "delta_30d_pct": None,
+                    "direction": None,
+                    "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+                }
+            )
+        )
+    return out
+
+
 async def _score_components(
     session: AsyncSession,
     brand_id: int,
@@ -198,6 +251,41 @@ async def _score_components(
         )
         for key, value in values.items()
     }
+
+
+def _apply_score_component_contract(
+    values: dict[str, MetricValue],
+    context: AnalyticsContractContext,
+) -> dict[str, MetricValue]:
+    inputs = {*context.missing_inputs, *context.missing_sources}
+    if context.formula_status == FORMULA_OK_STATUS:
+        return values
+    if (
+        context.evidence_counts.get("geo_score_daily_rows", 0) > 0
+        and "geo_score_daily.total_queries" not in inputs
+        and "eligible_response_denominator" not in inputs
+    ):
+        return values
+    return {
+        key: value.model_copy(
+            update={
+                "value": None,
+                "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+            }
+        )
+        for key, value in values.items()
+    }
+
+
+def _unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value and value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
+
 
 
 async def _overview_from_admin_facts(
@@ -747,7 +835,11 @@ async def get_brand_overview(
         has_data=has_data,
         base_state=state,
     )
-    score_components = await _score_components(session, brand_id, from_d, to_d)
+    kpi_cards = _apply_kpi_contract(kpi_cards, context)
+    score_components = _apply_score_component_contract(
+        await _score_components(session, brand_id, from_d, to_d),
+        context,
+    )
 
     out = BrandOverviewOut(
         project_id=project.id,
