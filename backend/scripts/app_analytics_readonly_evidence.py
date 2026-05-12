@@ -103,7 +103,7 @@ BEGIN TRANSACTION READ ONLY;
 \\echo '--- readonly probe context ---'
 SELECT
   NOW() AS captured_at,
-  '{config.project_id}'::uuid AS project_id,
+  '{config.project_id}'::text AS project_id,
   {config.brand_id}::int AS brand_id,
   {competitor_array} AS competitor_brand_ids,
   '{date_from}'::date AS date_from,
@@ -121,11 +121,11 @@ SELECT
   COALESCE(STRING_AGG(pc.brand_id::text, ',' ORDER BY pc.brand_id), '') AS competitor_brand_ids
 FROM projects p
 LEFT JOIN project_competitors pc ON pc.project_id = p.id
-WHERE p.id = '{config.project_id}'::uuid
+WHERE p.id::text = '{config.project_id}'
    OR p.primary_brand_id = {config.brand_id}
    OR pc.brand_id = ANY({competitor_array})
 GROUP BY p.id, p.user_id, p.name, p.industry_id, p.primary_brand_id, p.is_active
-ORDER BY (p.id = '{config.project_id}'::uuid) DESC, p.created_at DESC
+ORDER BY (p.id::text = '{config.project_id}') DESC, p.created_at DESC
 LIMIT 25;
 
 \\echo '--- response counts by engine/date ---'
