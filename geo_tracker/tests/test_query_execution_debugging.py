@@ -94,6 +94,7 @@ def test_empty_response_preserves_executor_failure_reason():
 def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("cookies_expired") is True
     assert _should_report_account_failure("browser_launch_timeout") is False
+    assert _should_report_account_failure("page_unavailable") is False
     assert _should_report_account_failure("soft_time_limit") is False
 
 

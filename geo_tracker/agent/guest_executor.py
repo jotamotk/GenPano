@@ -879,9 +879,43 @@ class GuestQueryExecutor:
                     logger.debug(f"[{llm}] 选择器失败: {sel} - {e}")
                     continue
 
+            if not input_el and llm == "doubao":
+                try:
+                    body_text = await page_obj.evaluate("document.body?.innerText || ''")
+                    unavailable_markers = ["该页面暂时不可用", "页面暂时不可用", "刷新页面", "返回首页"]
+                    if any(marker in body_text for marker in unavailable_markers):
+                        logger.warning("[%s] detected transient unavailable page; reloading once", llm)
+                        await _save_runtime_snapshot(
+                            page_obj,
+                            query.id,
+                            f"{llm}_page_unavailable_before_reload",
+                            config=config,
+                            runtime_events=runtime_events,
+                        )
+                        await page_obj.reload(wait_until="domcontentloaded", timeout=60000)
+                        await page_obj.wait_for_timeout(5000)
+                        for sel in selectors:
+                            if not sel:
+                                continue
+                            try:
+                                input_el = await page_obj.wait_for_selector(
+                                    sel,
+                                    timeout=10000,
+                                    state="attached",
+                                )
+                                if input_el:
+                                    logger.info("[%s] input found after unavailable-page reload: %s", llm, sel)
+                                    break
+                            except Exception:
+                                continue
+                        if not input_el:
+                            self.last_error_reason = "page_unavailable"
+                except Exception as reload_error:
+                    logger.warning("[%s] unavailable-page reload probe failed: %s", llm, reload_error)
+
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
-                self.last_error_reason = "no_input"
+                self.last_error_reason = self.last_error_reason or "no_input"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
                     await _save_runtime_snapshot(
@@ -1480,7 +1514,7 @@ class GuestQueryExecutor:
                     break
                 except Exception:
                     continue
-        if not submitted and llm_name == "doubao":
+        if not submitted and llm_name in ("doubao", "deepseek"):
             # JS 兜底：找 input 附近的 send 图标按钮
             try:
                 handle = await _find_submit_button_js()
@@ -1515,6 +1549,22 @@ class GuestQueryExecutor:
                             if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
                             return false;
                         }
+                        if (llmName === 'deepseek') {
+                            const needle = queryText.slice(0, 24).trim();
+                            if (!needle) return true;
+                            const textareas = [...document.querySelectorAll('textarea')];
+                            const stillInInput = textareas.some(el =>
+                                ((el.value || el.textContent || '').includes(needle))
+                            );
+                            const messageCandidates = document.querySelectorAll(
+                                '[class*="message"], [class*="chat"], [class*="markdown"], main'
+                            );
+                            for (const el of messageCandidates) {
+                                if (textareas.some(input => input === el || el.contains(input))) continue;
+                                if ((el.textContent || '').includes(needle)) return true;
+                            }
+                            return !stillInInput && (document.body.innerText || '').includes(needle);
+                        }
                         // 2) Doubao: 老 UI send_message testid
                         if (document.querySelector('[data-testid="send_message"]')) return true;
                         // 3) Doubao 2026 稳定 class: send-msg-bubble-bg（用户消息气泡），
@@ -1534,7 +1584,7 @@ class GuestQueryExecutor:
             except Exception:
                 return False
 
-        if llm_name in ("doubao", "chatgpt"):
+        if llm_name in ("doubao", "chatgpt", "deepseek"):
             confirmed = False
             for _ in range(10):  # 最多 ~5s 轮询
                 if await _submit_confirmed():
@@ -1822,6 +1872,20 @@ class GuestQueryExecutor:
                     resp_text = js_text[:5000]
 
             if not resp_text:
+                try:
+                    page_text = await page.evaluate("document.body?.innerText || ''")
+                    invalid_page_reason = invalid_response_reason(llm_name, page_text)
+                    if invalid_page_reason:
+                        logger.warning(
+                            "[%s] page content indicates invalid session/content (%s)",
+                            llm_name,
+                            invalid_page_reason,
+                        )
+                        self.last_error_reason = invalid_page_reason
+                        await _save_html(page, debug_query_id, f"{llm_name}_{invalid_page_reason}")
+                        return "", "", []
+                except Exception as e:
+                    logger.debug("[%s] invalid page probe failed: %s", llm_name, e)
                 logger.warning(f"[{llm_name}] 所有提取方式均失败，当前 URL: {page.url}")
 
             # 检测是否误抓了首页内容（而非真正的 AI 响应）
@@ -2054,7 +2118,7 @@ async def _save_runtime_snapshot(
             "runtimeEvents": runtime_events[-80:] if runtime_events else [],
             "page": page_state,
         }
-        raw = json.dumps(_redact_runtime_data(snapshot), ensure_ascii=False, indent=2)
+        raw = json.dumps(_redact_runtime_data(snapshot), ensure_ascii=True, indent=2)
         path.write_text(raw, encoding="utf-8")
         logger.info(f"Runtime snapshot saved: {path} ({len(raw)} bytes)")
         return path

@@ -83,6 +83,7 @@ jobs:
           artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
           rm -rf "${artifact_dir}"
           mkdir -p "${artifact_dir}/screenshots"
+          worker_artifact_marker="/tmp/scraper-artifact-marker-${GH_RUN_ID}"
           summary_file="${artifact_dir}/summary.txt"
           exec > >(tee "${summary_file}") 2>&1
           finish() {
@@ -161,6 +162,8 @@ jobs:
           echo "=== Selected batch IDs ==="
           if [ -n "${ids_csv}" ]; then
             printf '%s\n' "${batch_rows}"
+            docker compose exec -T -e ARTIFACT_MARKER="${worker_artifact_marker}" worker sh -lc \
+              'touch "${ARTIFACT_MARKER}"' </dev/null || true
           else
             echo "<none>"
           fi
@@ -309,13 +312,13 @@ jobs:
             echo "=== Collect screenshot/html artifacts from worker ==="
             worker_cid="$(docker compose ps -q worker | head -n 1 || true)"
             if [ -n "${worker_cid}" ]; then
-              docker compose exec -T -e IDS="${ids_space}" worker sh -lc '
+              docker compose exec -T -e IDS="${ids_space}" -e ARTIFACT_MARKER="${worker_artifact_marker}" worker sh -lc '
                 rm -rf /tmp/scraper-artifacts
                 mkdir -p /tmp/scraper-artifacts/screenshots
                 for id in $IDS; do
-                  find /data/screenshots -maxdepth 1 -type f -name "query_${id}_*" -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
+                  find /data/screenshots -maxdepth 1 -type f -newer "${ARTIFACT_MARKER}" -name "query_${id}_*" -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
                 done
-                find /data/screenshots -maxdepth 1 -type f -mmin -120 \( -name "query_-1_*" -o -name "*response_page*.html" -o -name "*extract_fail*.html" \) -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
+                find /data/screenshots -maxdepth 1 -type f -newer "${ARTIFACT_MARKER}" \( -name "query_-1_*" -o -name "*response_page*.html" -o -name "*extract_fail*.html" \) -exec cp {} /tmp/scraper-artifacts/screenshots/ \; 2>/dev/null || true
                 find /tmp/scraper-artifacts/screenshots -maxdepth 1 -type f | sort > /tmp/scraper-artifacts/artifact_files.txt || true
               ' </dev/null || true
               docker cp "${worker_cid}:/tmp/scraper-artifacts/." "${artifact_dir}/" || true
