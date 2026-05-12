@@ -83,6 +83,9 @@ class BaseSMSLoginHandler(ABC):
     sms_keyword: str = ""
     login_url: str = ""
     sms_provider_factory = LubanSMSProvider
+    local_storage_keys: tuple[str, ...] | None = ("userToken",)
+    phone_relogin_pattern: str = r"\d{11}"
+    fallback_to_new_number_on_relogin_unavailable: bool = False
 
     @abstractmethod
     async def navigate_to_login(self, page: Page) -> bool:
@@ -112,6 +115,10 @@ class BaseSMSLoginHandler(ABC):
     MAX_PHONE_RETRIES = 5
     # 单次取号时最多跳过多少个黑名单号码
     _MAX_BLACKLIST_SKIP = 20
+
+    async def classify_non_success(self, page: Page) -> str | None:
+        """Return an explicit non-success reason after SMS submit, if known."""
+        return None
 
     async def _get_clean_number(
         self,
@@ -170,7 +177,9 @@ class BaseSMSLoginHandler(ABC):
         used_leases: list[SMSNumberLease] = []
         current_lease: SMSNumberLease | None = None
         # 手机号是否为有效 11 位数字（web_upload 等占位符跳过 SMS 登录）
-        is_valid_phone = bool(phone) and bool(re.fullmatch(r"\d{11}", phone or ""))
+        is_valid_phone = bool(phone) and bool(
+            re.fullmatch(self.phone_relogin_pattern, phone or "")
+        )
         is_relogin = is_valid_phone  # 只有合法手机号才走重登录流程
 
         if phone and not is_valid_phone:
@@ -201,7 +210,12 @@ class BaseSMSLoginHandler(ABC):
                     logger.info(
                         f"[{self.platform}] 复用手机号: {mask_phone(phone)}"
                     )
-                except RuntimeError as e:
+                except Exception as e:
+                    if not (
+                        isinstance(e, RuntimeError)
+                        or self.fallback_to_new_number_on_relogin_unavailable
+                    ):
+                        raise
                     # 号码不在线 / 通道无此号码等：降级为随机取新号
                     logger.warning(
                         f"[{self.platform}] 复用手机号失败 "
@@ -247,7 +261,10 @@ class BaseSMSLoginHandler(ABC):
                             f"[{self.platform}] 注入 {len(cookies)} 个已有 cookies"
                         )
                 except Exception as e:
-                    logger.warning(f"[{self.platform}] 注入 cookies 失败: {e}")
+                    logger.warning(
+                        f"[{self.platform}] 注入 cookies 失败: "
+                        f"{redact_sensitive_text(e)}"
+                    )
 
             page = await context.new_page()
 
@@ -264,7 +281,10 @@ class BaseSMSLoginHandler(ABC):
 
             # 执行登录流程
             logger.info(f"[{self.platform}] 导航到登录表单...")
-            if not await self.navigate_to_login(page):
+            step_result = await self.navigate_to_login(page)
+            if isinstance(step_result, str):
+                return _fail(step_result)
+            if not step_result:
                 return _fail("无法导航到登录表单（modal 未弹出）")
 
             # ── 手机号 + 短信验证码循环 ─────────────────────────────────
@@ -291,19 +311,28 @@ class BaseSMSLoginHandler(ABC):
                         self.login_url, wait_until="domcontentloaded", timeout=60000
                     )
                     await page.wait_for_timeout(random.randint(2000, 4000))
-                    if not await self.navigate_to_login(page):
+                    step_result = await self.navigate_to_login(page)
+                    if isinstance(step_result, str):
+                        return _fail(step_result)
+                    if not step_result:
                         last_fail_reason = "重试时无法导航到登录表单"
                         logger.error(f"[{self.platform}] {last_fail_reason}")
                         continue
 
                 logger.info(f"[{self.platform}] 输入手机号: {mask_phone(phone)}")
-                if not await self.input_phone(page, phone):
+                step_result = await self.input_phone(page, phone)
+                if isinstance(step_result, str):
+                    return _fail(step_result)
+                if not step_result:
                     last_fail_reason = "无法输入手机号（找不到输入框）"
                     logger.error(f"[{self.platform}] {last_fail_reason}")
                     continue
 
                 logger.info(f"[{self.platform}] 点击发送验证码...")
-                if not await self.click_send_sms(page):
+                step_result = await self.click_send_sms(page)
+                if isinstance(step_result, str):
+                    return _fail(step_result)
+                if not step_result:
                     last_fail_reason = "无法点击发送验证码按钮"
                     logger.error(f"[{self.platform}] {last_fail_reason}")
                     continue
@@ -333,7 +362,10 @@ class BaseSMSLoginHandler(ABC):
 
                 # 收到验证码，继续登录流程
                 logger.info(f"[{self.platform}] 输入验证码: [sms-code-redacted]")
-                if not await self.input_code(page, sms_code):
+                step_result = await self.input_code(page, sms_code)
+                if isinstance(step_result, str):
+                    return _fail(step_result)
+                if not step_result:
                     return _fail("无法输入验证码（找不到验证码输入框）")
 
                 await page.wait_for_timeout(random.randint(500, 1000))
@@ -370,7 +402,10 @@ class BaseSMSLoginHandler(ABC):
                 page.on("response", _capture_api_error)
 
                 logger.info(f"[{self.platform}] 提交登录...")
-                if not await self.submit_login(page):
+                step_result = await self.submit_login(page)
+                if isinstance(step_result, str):
+                    return _fail(step_result)
+                if not step_result:
                     logger.warning(f"[{self.platform}] 提交按钮未找到，尝试 Enter")
                     await page.keyboard.press("Enter")
 
@@ -435,7 +470,12 @@ class BaseSMSLoginHandler(ABC):
                     await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
                     last_fail_reason = f"手机号 {mask_phone(phone)} 设备环境错误"
                     continue
+                if isinstance(verify_result, str):
+                    return _fail(verify_result)
                 if not verify_result:
+                    explicit_reason = await self.classify_non_success(page)
+                    if explicit_reason:
+                        return _fail(explicit_reason)
                     return _fail(f"登录验证失败（验证码已提交但未登录成功），URL: {page.url}")
 
                 # 提取 cookies
@@ -457,19 +497,28 @@ class BaseSMSLoginHandler(ABC):
                         }
                     """)
                 except Exception as e:
-                    logger.debug(f"[{self.platform}] 提取 localStorage 失败: {e}")
+                    logger.debug(
+                        f"[{self.platform}] 提取 localStorage 失败: "
+                        f"{redact_sensitive_text(e)}"
+                    )
 
                 logger.info(
                     f"[{self.platform}] 登录成功! "
                     f"phone={mask_phone(phone)}, cookies={len(cookies_list)}"
                     + (f", localStorage={len(local_storage)} 项" if local_storage else "")
                 )
+                if self.local_storage_keys is None:
+                    local_storage = await self._extract_all_local_storage(page)
+                storage_state = await self._extract_storage_state(context)
+
                 mark_success = getattr(sms_provider, "mark_success", None)
                 if mark_success:
                     await mark_success(current_lease)
                 result = {"phone": phone, "cookies": cookies_list}
                 if local_storage:
                     result["localStorage"] = local_storage
+                if storage_state:
+                    result["storageState"] = storage_state
                 return result
 
             # 所有重试都失败
@@ -624,6 +673,40 @@ class BaseSMSLoginHandler(ABC):
                     logger.warning(
                         f"[{self.platform}] CAPTCHA 等待超时, 继续尝试..."
                     )
+
+    async def _extract_all_local_storage(self, page: Page) -> dict:
+        try:
+            result = await page.evaluate("""
+                () => {
+                    const result = {};
+                    for (let i = 0; i < localStorage.length; i += 1) {
+                        const key = localStorage.key(i);
+                        if (key) result[key] = localStorage.getItem(key);
+                    }
+                    return result;
+                }
+            """)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.debug(
+                f"[{self.platform}] extract localStorage failed: "
+                f"{redact_sensitive_text(e)}"
+            )
+            return {}
+
+    async def _extract_storage_state(self, context) -> dict:
+        try:
+            storage_state = getattr(context, "storage_state", None)
+            if not storage_state:
+                return {}
+            result = await storage_state()
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            logger.debug(
+                f"[{self.platform}] extract storage state failed: "
+                f"{redact_sensitive_text(e)}"
+            )
+            return {}
 
     @staticmethod
     def _format_cookies(raw_cookies: list[dict]) -> list[dict]:

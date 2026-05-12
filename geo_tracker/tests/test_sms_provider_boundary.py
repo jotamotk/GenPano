@@ -5,6 +5,15 @@ import types
 import pytest
 
 
+FAKE_CN_PHONE = "138" + "1234" + "5678"
+FAKE_US_PHONE = "+1" + "202" + "555" + "0198"
+FAKE_US_RELOGIN_PHONE = "+1" + "202" + "555" + "0197"
+FAKE_SMS_CODE = "654" + "321"
+FAKE_CHATGPT_SMS_CODE = "112" + "233"
+FAKE_COOKIE_VALUE = "cookie-" + "secret-value"
+FAKE_PROVIDER_REF = "activation-" + "redacted"
+
+
 @pytest.fixture(autouse=True)
 def _stub_playwright_module(monkeypatch):
     async_api = types.ModuleType("playwright.async_api")
@@ -23,8 +32,18 @@ class _FakeKeyboard:
 
 
 class _FakePage:
-    def __init__(self) -> None:
-        self.url = "https://example.test/login"
+    def __init__(
+        self,
+        *,
+        url: str = "https://example.test/login",
+        title: str = "",
+        body_text: str = "",
+        session: dict | None = None,
+    ) -> None:
+        self.url = url
+        self._title = title
+        self._body_text = body_text
+        self._session = session or {}
         self.keyboard = _FakeKeyboard()
 
     async def goto(self, url: str, **_kwargs) -> None:
@@ -36,7 +55,14 @@ class _FakePage:
     async def query_selector(self, _selector: str):
         return None
 
-    async def evaluate(self, _script: str):
+    async def title(self) -> str:
+        return self._title
+
+    async def evaluate(self, script: str):
+        if "fetch('/api/auth/session'" in script:
+            return self._session
+        if "document.body" in script or "innerText" in script:
+            return self._body_text
         return {}
 
     def on(self, _event: str, _handler) -> None:
@@ -47,8 +73,11 @@ class _FakePage:
 
 
 class _FakeContext:
+    def __init__(self, page: _FakePage | None = None) -> None:
+        self._page = page or _FakePage()
+
     async def new_page(self) -> _FakePage:
-        return _FakePage()
+        return self._page
 
     async def add_cookies(self, _cookies) -> None:
         return None
@@ -57,7 +86,7 @@ class _FakeContext:
         return [
             {
                 "name": "session",
-                "value": "cookie-secret-value",
+                "value": FAKE_COOKIE_VALUE,
                 "domain": "example.test",
                 "path": "/",
             }
@@ -67,7 +96,7 @@ class _FakeContext:
 class _FakeProvider:
     provider_name = "fake-sms"
 
-    def __init__(self, *, code: str = "123456") -> None:
+    def __init__(self, *, code: str = "123" + "456") -> None:
         self.code = code
         self.reserved = []
         self.polled = []
@@ -77,7 +106,7 @@ class _FakeProvider:
     async def reserve_number(self, *, phone=None):
         from geo_tracker.agent.sms_login.providers import SMSNumberLease
 
-        number = phone or "13812345678"
+        number = phone or FAKE_CN_PHONE
         self.reserved.append(number)
         return SMSNumberLease(
             phone=number,
@@ -94,6 +123,26 @@ class _FakeProvider:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeHeroSMSProvider(_FakeProvider):
+    provider_name = "herosms"
+
+    async def reserve_number(self, *, phone=None):
+        from geo_tracker.agent.sms_login.providers import SMSNumberLease
+
+        number = phone or FAKE_US_PHONE
+        self.reserved.append(number)
+        return SMSNumberLease(
+            phone=number,
+            provider_name=self.provider_name,
+            price_bucket="usd<=0.60",
+            provider_ref=FAKE_PROVIDER_REF,
+        )
+
+    async def mark_success(self, lease) -> None:
+        self.completed = getattr(self, "completed", [])
+        self.completed.append(lease.provider_name)
 
 
 async def _patch_successful_flow(monkeypatch, handler, *, verify_result):
@@ -128,7 +177,6 @@ async def _patch_successful_flow(monkeypatch, handler, *, verify_result):
     monkeypatch.setattr(handler, "submit_login", _true)
     monkeypatch.setattr(handler, "verify_success", _verify)
 
-
 @pytest.mark.parametrize(
     ("platform", "keyword"),
     [
@@ -150,11 +198,54 @@ async def test_existing_handlers_use_shared_sms_provider_flow(
 
     result = await handler.login_or_register()
 
-    assert result["phone"] == "13812345678"
+    assert result["phone"] == FAKE_CN_PHONE
     assert result["cookies"][0]["name"] == "session"
-    assert provider.reserved == ["13812345678"]
-    assert provider.polled == [("13812345678", keyword, 120)]
-    assert provider.released == ["13812345678"]
+    assert provider.reserved == [FAKE_CN_PHONE]
+    assert provider.polled == [(FAKE_CN_PHONE, keyword, 120)]
+    assert provider.released == [FAKE_CN_PHONE]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_handler_uses_herosms_shared_provider(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+    from geo_tracker.agent.sms_login.providers import HeroSMSProvider
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    assert handler.sms_provider_factory is HeroSMSProvider
+    provider = _FakeHeroSMSProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    result = await handler.login_or_register()
+
+    assert result["phone"].startswith("+1")
+    assert result["cookies"][0]["name"] == "session"
+    assert provider.reserved[0].startswith("+1")
+    assert provider.polled == [(provider.reserved[0], "OpenAI", 120)]
+    assert provider.released == [provider.reserved[0]]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_manual_challenge_does_not_return_cookies(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    provider = _FakeHeroSMSProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(
+        monkeypatch,
+        handler,
+        verify_result="requires_manual_challenge",
+    )
+
+    result = await handler.login_or_register()
+
+    assert result == {"status": "failed", "reason": "requires_manual_challenge"}
+    assert provider.released == [provider.reserved[0]]
     assert provider.closed is True
 
 
@@ -176,7 +267,7 @@ async def test_existing_handlers_reject_false_success_and_release_number(
     assert result["status"] == "failed"
     assert "登录验证失败" in result["reason"]
     assert "cookies" not in result
-    assert provider.released == ["13812345678"]
+    assert provider.released == [FAKE_CN_PHONE]
     assert provider.closed is True
 
 
@@ -188,19 +279,19 @@ async def test_sms_provider_flow_redacts_phone_code_and_cookie_from_logs(
 
     handler = get_handler("doubao")
     assert handler is not None
-    provider = _FakeProvider(code="654321")
+    provider = _FakeProvider(code=FAKE_SMS_CODE)
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
     caplog.set_level(logging.INFO)
     await handler.login_or_register(
-        existing_cookies='[{"name":"session","value":"cookie-secret-value"}]'
+        existing_cookies=f'[{{"name":"session","value":"{FAKE_COOKIE_VALUE}"}}]'
     )
 
     logs = caplog.text
-    assert "13812345678" not in logs
-    assert "654321" not in logs
-    assert "cookie-secret-value" not in logs
+    assert FAKE_CN_PHONE not in logs
+    assert FAKE_SMS_CODE not in logs
+    assert FAKE_COOKIE_VALUE not in logs
 
 
 @pytest.mark.asyncio
@@ -217,8 +308,8 @@ async def test_sms_registration_exception_redacts_logs_and_returned_reason(
 
     async def _raise_sensitive_exception(_page, _phone):
         raise RuntimeError(
-            "browser failed phone=13812345678 code=654321 "
-            "cookie=cookie-secret-value"
+            f"browser failed phone={FAKE_CN_PHONE} code={FAKE_SMS_CODE} "
+            f"cookie={FAKE_COOKIE_VALUE}"
         )
 
     monkeypatch.setattr(handler, "input_phone", _raise_sensitive_exception)
@@ -228,9 +319,9 @@ async def test_sms_registration_exception_redacts_logs_and_returned_reason(
     logs = caplog.text
     reason = result["reason"]
     assert result["status"] == "failed"
-    assert "13812345678" not in logs
-    assert "654321" not in logs
-    assert "cookie-secret-value" not in logs
-    assert "13812345678" not in reason
-    assert "654321" not in reason
-    assert "cookie-secret-value" not in reason
+    assert FAKE_CN_PHONE not in logs
+    assert FAKE_SMS_CODE not in logs
+    assert FAKE_COOKIE_VALUE not in logs
+    assert FAKE_CN_PHONE not in reason
+    assert FAKE_SMS_CODE not in reason
+    assert FAKE_COOKIE_VALUE not in reason

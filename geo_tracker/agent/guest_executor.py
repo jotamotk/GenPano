@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, BrowserContext, Page
 
@@ -198,6 +199,35 @@ def _load_cookies_from_env(env_var: str) -> list:
         return []
 
 # 各 LLM 的浏览器操作配置（无账号 guest 模式）
+def _local_storage_from_storage_state(
+    storage_state: dict | None,
+    target_url: str,
+) -> dict:
+    if not isinstance(storage_state, dict):
+        return {}
+    try:
+        target = urlparse(target_url)
+        target_origin = f"{target.scheme}://{target.netloc}".rstrip("/")
+    except Exception:
+        target_origin = ""
+    origins = storage_state.get("origins") or []
+    if not isinstance(origins, list):
+        return {}
+    for origin in origins:
+        if not isinstance(origin, dict):
+            continue
+        if target_origin and str(origin.get("origin", "")).rstrip("/") != target_origin:
+            continue
+        items = origin.get("localStorage") or []
+        if isinstance(items, list):
+            return {
+                str(item.get("name")): item.get("value")
+                for item in items
+                if isinstance(item, dict) and item.get("name") and item.get("value")
+            }
+    return {}
+
+
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
@@ -541,6 +571,11 @@ class GuestQueryExecutor:
                         # 新格式: cookies + localStorage
                         injected_cookies = parsed.get("cookies", [])
                         local_storage_data = parsed.get("localStorage", {})
+                        if not local_storage_data:
+                            local_storage_data = _local_storage_from_storage_state(
+                                parsed.get("storageState"),
+                                config.get("url", ""),
+                            )
                         logger.info(
                             f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个) "
                             f"+ localStorage ({len(local_storage_data)} 项)"
@@ -550,7 +585,10 @@ class GuestQueryExecutor:
                         injected_cookies = parsed
                         logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
                 except Exception as e:
-                    logger.warning(f"[{llm}] 解析 account_cookies 失败: {e}")
+                    logger.warning(
+                        f"[{llm}] 解析 account_cookies 失败: "
+                        f"{_redact_sensitive_text(str(e))}"
+                    )
 
             if not injected_cookies:
                 cookies_env = config.get("cookies_env")
@@ -585,13 +623,16 @@ class GuestQueryExecutor:
                         (keys) => {
                             const result = {};
                             for (const k of keys) {
-                                const v = localStorage.getItem(k);
-                                result[k] = v ? v.substring(0, 80) + (v.length > 80 ? '...' : '') : null;
+                                result[k] = Boolean(localStorage.getItem(k));
                             }
                             return result;
                         }
                     """, list(local_storage_data.keys()))
-                    logger.info(f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage, 验证: {verify}")
+                    verified_count = sum(1 for present in verify.values() if present)
+                    logger.info(
+                        f"[{llm}] 已注入 {len(local_storage_data)} 项 localStorage, "
+                        f"verified_keys={verified_count}"
+                    )
                     # 不 reload，后续主流程会重新 goto 加载页面
 
             # Playwright 需要手动隐藏自动化特征（Camoufox 自带，不需要）
