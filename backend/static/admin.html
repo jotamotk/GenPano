@@ -5719,7 +5719,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <span x-text="e.healthAvg + '%'"></span>
                       </div>
                     </div>
-                    <div class="grid grid-cols-5 gap-2 text-[11px]">
+                    <div class="grid grid-cols-6 gap-2 text-[11px]">
                       <div>
                         <div class="text-ink-muted mb-0.5">总计</div>
                         <div class="text-[16px] font-bold text-ink" x-text="e.total"></div>
@@ -5735,6 +5735,10 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <div>
                         <div class="text-ink-muted mb-0.5">冷却</div>
                         <div class="text-[16px] font-bold text-warning" x-text="e.cooldown"></div>
+                      </div>
+                      <div>
+                        <div class="text-ink-muted mb-0.5">过期</div>
+                        <div class="text-[16px] font-bold text-accent" x-text="e.expired"></div>
                       </div>
                       <div>
                         <div class="text-ink-muted mb-0.5">冻结</div>
@@ -5765,6 +5769,17 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                 </div>
               </div>
 
+              <div class="flex flex-wrap items-center gap-2">
+                <template x-for="f in accountStatusFilters()" :key="f.key">
+                  <button class="h-8 px-3 rounded-btn border text-[12px] font-semibold transition-colors"
+                          :class="accountStatusFilter === f.key ? f.activeClass : 'border-b-default bg-surface text-ink-body hover:bg-surface-page'"
+                          @click="setAccountStatusFilter(f.key)">
+                    <span x-text="f.label"></span>
+                    <span class="ml-1 tabular-nums" x-text="f.count"></span>
+                  </button>
+                </template>
+              </div>
+
               <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
                 <table class="w-full text-[13px]">
                   <thead>
@@ -5793,8 +5808,8 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <td class="px-6 py-3 text-ink-body" x-text="a.engine"></td>
                         <td class="px-6 py-3">
                           <span class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[11px] font-semibold"
-                                :class="a.status==='active' ? 'bg-success/10 text-success' : a.status==='warming' ? 'bg-info/10 text-info' : a.status==='cooldown' ? 'bg-warning/10 text-warning' : a.status==='frozen' ? 'bg-danger/10 text-danger' : 'bg-gray-100 text-gray-600'">
-                            <span x-text="a.status==='active' ? '活跃' : a.status==='warming' ? '预热' : a.status==='cooldown' ? '冷却' : a.status==='frozen' ? '冻结' : '禁用'"></span>
+                                :class="accountStatusMeta(a.status).badgeClass">
+                            <span x-text="accountStatusMeta(a.status).label"></span>
                           </span>
                         </td>
                         <td class="px-6 py-3">
@@ -5844,6 +5859,11 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.successRate"></td>
                         <td class="px-6 py-3">
                           <div class="flex items-center gap-1.5">
+                            <template x-if="a.status === 'expired'">
+                              <button class="h-7 px-2 rounded-btn border border-accent/40 bg-accent/5 hover:bg-accent/10 text-[11px] font-semibold text-accent disabled:opacity-40"
+                                      :disabled="accountBusy"
+                                      @click="triggerAccountRecovery(a)" title="提交恢复登录任务">恢复登录</button>
+                            </template>
                             <template x-if="a.status === 'active'">
                               <button class="h-7 px-2 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[11px] font-medium text-ink-body"
                                       @click="toggleAccount(a, 'banned')" title="禁用">禁用</button>
@@ -5857,6 +5877,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                             <button class="h-7 px-2 rounded-btn border border-danger/30 bg-surface hover:bg-danger/5 text-[11px] font-medium text-danger"
                                     @click="deleteAccount(a)" title="删除">删除</button>
                           </div>
+                          <div x-show="accountRecoveryStatus[a.dbId]"
+                               class="mt-1 max-w-[220px] text-[11px] leading-snug text-ink-muted"
+                               x-text="accountRecoveryStatus[a.dbId]"></div>
                         </td>
                       </tr>
                     </template>
@@ -9184,7 +9207,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- Tab 2: SMS Register -->
       <template x-if="accountModalTab==='sms'">
         <div class="space-y-3">
-          <p class="text-[12px] text-ink-muted">触发 worker 端的自动 SMS 注册流程，会在后台通过 LubanSMS 接码平台完成手机号注册并保存 cookies。</p>
+          <p class="text-[12px] text-ink-muted">提交自动 SMS 注册任务，后台完成手机号注册并保存登录材料。</p>
           <label class="text-[12px] font-medium text-ink-body block">
             平台
             <select x-model="smsForm.platform" class="mt-1 h-9 px-3 rounded-input border border-b-default bg-white text-[13px]">
@@ -9209,7 +9232,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <!-- Tab 3: Auto login -->
       <template x-if="accountModalTab==='login'">
         <div class="space-y-3">
-          <p class="text-[12px] text-ink-muted">为已存在的账号重新获取 cookies（比如 cookies 过期时），通过 worker 发起一次 SMS 登录。</p>
+          <p class="text-[12px] text-ink-muted">为已存在的账号重新获取登录材料。提交后需等待后台验证结果，点击本身不代表恢复成功。</p>
           <label class="text-[12px] font-medium text-ink-body block">
             账号
             <select x-model.number="loginForm.accountId" class="mt-1 h-9 px-3 w-full rounded-input border border-b-default bg-white text-[13px]">
@@ -9371,7 +9394,40 @@ function mapQueryRowToAttempt(r) {
   };
 }
 
-// Map a row from /api/accounts into the shape the prototype's account pool
+function accountStatusMeta(status) {
+  const key = String(status || '').toLowerCase();
+  const map = {
+    active: { label: '活跃', badgeClass: 'bg-success/10 text-success' },
+    warming: { label: '预热', badgeClass: 'bg-info/10 text-info' },
+    cooldown: { label: '冷却', badgeClass: 'bg-warning/10 text-warning' },
+    expired: { label: '已过期 · 可恢复', badgeClass: 'bg-accent/10 text-accent' },
+    frozen: { label: '冻结', badgeClass: 'bg-danger/10 text-danger' },
+    banned: { label: '禁用', badgeClass: 'bg-gray-100 text-gray-600' },
+  };
+  return map[key] || { label: '禁用', badgeClass: 'bg-gray-100 text-gray-600' };
+}
+
+function redactAccountUiText(value) {
+  if (value === null || value === undefined || value === '') return '';
+  let text = String(value).slice(0, 180);
+  text = text.replace(/(?:api[_-]?key|provider[_-]?secret)\s*[:=]\s*[^,\s}]+/gi, '[已隐藏]');
+  text = text.replace(/\+?\d[\d\s().-]{6,}\d/g, '[已隐藏手机号]');
+  text = text.replace(/(cookies?|localStorage|token|sms|activation[_-]?id)\s*[:=]\s*[^,\s}]+/gi, '$1=[已隐藏]');
+  return text;
+}
+
+function accountTaskResultMessage(result) {
+  const r = result && typeof result === 'object' ? result : {};
+  const status = String(r.status || r.state || r.code || '').toLowerCase();
+  const reason = redactAccountUiText(r.error || r.message || r.reason || r.code || status);
+  if (status === 'success') return '登录已验证，正在刷新账号状态';
+  if (status.includes('manual') || status.includes('captcha') || status.includes('risk')) {
+    return '需要人工处理' + (reason ? ': ' + reason : '');
+  }
+  return '恢复未完成' + (reason ? ': ' + reason : '，请稍后刷新账号池');
+}
+
+// Map a row from /api/admin/accounts into the shape the prototype's account pool
       // template expects. The admin_console schema uses fields like consecutive_fails
 // and daily_used which don't have a direct prototype equivalent — we derive
 // health_score and status buckets from them.
@@ -9381,12 +9437,13 @@ function mapAccountRowToCard(r) {
     deepseek: 'DeepSeek', kimi: 'Kimi', glm: 'GLM',
   };
   const engine = engineLabelMap[String(r.llm_name||'').toLowerCase()] || r.llm_name || '—';
-  // Bucket DB status onto the prototype's 5 states.
+  // Bucket DB status onto the prototype's account states.
   const raw = String(r.status || '').toLowerCase();
   const statusMap = {
     active: 'active', ok: 'active', available: 'active',
     warming: 'warming', new: 'warming',
     cooldown: 'cooldown', paused: 'cooldown',
+    expired: 'expired',
     frozen: 'frozen', banned: 'banned', blocked: 'frozen',
     disabled: 'banned',
   };
@@ -9402,7 +9459,8 @@ function mapAccountRowToCard(r) {
     healthScore = 40;
   }
   const tags = [];
-  if (r.cookie_count > 0) tags.push('cookies');
+  if (r.cookie_count > 0) tags.push('cookies ' + r.cookie_count);
+  if (status === 'expired') tags.push('可恢复');
   if ((r.consecutive_fails || 0) >= 3) tags.push('待验证');
   const dailyUsed = r.query_count_today != null
     ? Number(r.query_count_today)
@@ -9429,6 +9487,7 @@ function mapAccountRowToCard(r) {
     created: r.updated_at || '',
     phone: r.phone_number || '',
     cookieCount: r.cookie_count || 0,
+    cookiesUpdatedAt: r.cookies_updated_at || null,
     dailyUsed,
     dailyLimit,
     remaining,
@@ -9441,13 +9500,14 @@ function summarizeAccountPool(list) {
   for (const a of list) {
     const key = a.engine || '—';
     if (!byEngine[key]) {
-      byEngine[key] = { engine: key, total: 0, active: 0, warming: 0, cooldown: 0, frozen: 0, healthSum: 0, healthCnt: 0 };
+      byEngine[key] = { engine: key, total: 0, active: 0, warming: 0, cooldown: 0, expired: 0, frozen: 0, healthSum: 0, healthCnt: 0 };
     }
     const b = byEngine[key];
     b.total++;
     if (a.status === 'active') b.active++;
     else if (a.status === 'warming') b.warming++;
     else if (a.status === 'cooldown') b.cooldown++;
+    else if (a.status === 'expired') b.expired++;
     else if (a.status === 'frozen' || a.status === 'banned') b.frozen++;
     if (a.healthScore > 0) {
       b.healthSum += a.healthScore;
@@ -9460,6 +9520,7 @@ function summarizeAccountPool(list) {
     active: b.active,
     warming: b.warming,
     cooldown: b.cooldown,
+    expired: b.expired,
     frozen: b.frozen,
     healthAvg: b.healthCnt > 0 ? Math.round(b.healthSum / b.healthCnt) : 0,
   }));
@@ -13250,6 +13311,9 @@ function adminApp() {
     accountsError: null,
     accountPoolEngines: [],
     accountPoolList: [],
+    accountPoolAllList: [],
+    accountStatusFilter: 'all',
+    accountRecoveryStatus: {},
 
     // Account registration modal (Import Cookies / SMS Register / Auto Login)
     accountModal: false,
@@ -13266,6 +13330,48 @@ function adminApp() {
       this.accountModal = true;
     },
 
+    accountAccountsApiPath(path) {
+      return API_BASE + '/admin/accounts' + (path || '');
+    },
+
+    async fetchAccounts(status) {
+      const qp = new URLSearchParams();
+      if (status && status !== 'all') qp.set('status', status);
+      const url = this.accountAccountsApiPath(qp.toString() ? '?' + qp.toString() : '');
+      const res = await fetch(url, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const rows = await res.json();
+      if (rows && rows.error) throw new Error(rows.error);
+      return (rows || []).map(mapAccountRowToCard);
+    },
+
+    accountStatusCounts() {
+      const counts = { all: 0, active: 0, warming: 0, cooldown: 0, expired: 0, frozen: 0, banned: 0 };
+      for (const a of this.accountPoolAllList || []) {
+        if (String(a.engineKey || '').toLowerCase() === 'gemini') continue;
+        counts.all++;
+        if (counts[a.status] !== undefined) counts[a.status]++;
+        if (a.status === 'banned') counts.frozen++;
+      }
+      return counts;
+    },
+
+    accountStatusFilters() {
+      const c = this.accountStatusCounts();
+      return [
+        { key: 'all', label: '全部', count: c.all, activeClass: 'border-ink bg-ink text-white' },
+        { key: 'active', label: '活跃', count: c.active, activeClass: 'border-success/40 bg-success/10 text-success' },
+        { key: 'cooldown', label: '冷却', count: c.cooldown, activeClass: 'border-warning/40 bg-warning/10 text-warning' },
+        { key: 'expired', label: '过期', count: c.expired, activeClass: 'border-accent/40 bg-accent/10 text-accent' },
+        { key: 'banned', label: '禁用', count: c.banned, activeClass: 'border-danger/40 bg-danger/10 text-danger' },
+      ];
+    },
+
+    async setAccountStatusFilter(status) {
+      this.accountStatusFilter = status || 'all';
+      await this.loadAccounts();
+    },
+
     async submitImportCookies() {
       const f = this.cookieForm;
       if (!f.cookiesJson.trim()) { this.toast('请粘贴 Cookies JSON'); return; }
@@ -13278,7 +13384,7 @@ function adminApp() {
       }
       this.accountBusy = true;
       try {
-        const res = await fetch(API_BASE + '/accounts/import_cookies', {
+        const res = await fetch(this.accountAccountsApiPath('/import_cookies'), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -13315,7 +13421,7 @@ function adminApp() {
         });
         const body = await res.json();
         if (!body.success || !body.task_id) throw new Error(body.error || '触发失败');
-        this.accountTaskStatus = '已入队 · task=' + body.task_id + ' · 等待 worker 拾取…';
+        this.accountTaskStatus = '任务已提交 · task=' + body.task_id + ' · 等待后台处理…';
         this.pollAccountTask(body.task_id);
       } catch (e) {
         this.accountTaskStatus = '错误: ' + (e.message || e);
@@ -13328,13 +13434,13 @@ function adminApp() {
       this.accountBusy = true;
       this.accountTaskStatus = '发起登录…';
       try {
-        const res = await fetch(API_BASE + '/accounts/' + this.loginForm.accountId + '/auto_login', {
+        const res = await fetch(this.accountAccountsApiPath('/' + this.loginForm.accountId + '/auto_login'), {
           method: 'POST',
           credentials: 'same-origin',
         });
         const body = await res.json();
         if (!body.success || !body.task_id) throw new Error(body.error || '触发失败');
-        this.accountTaskStatus = '已入队 · task=' + body.task_id + ' · 等待 worker 拾取…';
+        this.accountTaskStatus = '任务已提交 · task=' + body.task_id + ' · 等待后台处理…';
         this.pollAccountTask(body.task_id);
       } catch (e) {
         this.accountTaskStatus = '错误: ' + (e.message || e);
@@ -13342,14 +13448,47 @@ function adminApp() {
       }
     },
 
-    pollAccountTask(taskId) {
+    setAccountRecoveryStatus(accountId, message) {
+      if (!accountId) return;
+      this.accountRecoveryStatus = { ...this.accountRecoveryStatus, [accountId]: message };
+    },
+
+    async triggerAccountRecovery(a) {
+      if (!a?.dbId) return;
+      this.accountBusy = true;
+      this.setAccountRecoveryStatus(a.dbId, '正在提交恢复任务…');
+      try {
+        const res = await fetch(this.accountAccountsApiPath('/' + a.dbId + '/auto_login'), {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || !body.success || !body.task_id) {
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        this.setAccountRecoveryStatus(a.dbId, '恢复任务已提交，等待后台处理');
+        this.accountTaskStatus = '恢复任务已提交，等待后台处理';
+        this.pollAccountTask(body.task_id, { accountId: a.dbId });
+      } catch (e) {
+        const message = '恢复未发起: ' + redactAccountUiText(e.message || e);
+        this.setAccountRecoveryStatus(a.dbId, message);
+        this.accountTaskStatus = message;
+        this.accountBusy = false;
+      }
+    },
+
+    pollAccountTask(taskId, options = {}) {
       let attempts = 0;
       const max = 80; // ~4 分钟
+      const updateStatus = (message) => {
+        this.accountTaskStatus = message;
+        this.setAccountRecoveryStatus(options.accountId, message);
+      };
       const timer = setInterval(async () => {
         attempts++;
         if (attempts > max) {
           clearInterval(timer);
-          this.accountTaskStatus = '超时 · 任务仍在后台运行，请稍后刷新账号池';
+          updateStatus('超时 · 任务仍在后台运行，请稍后刷新账号池');
           this.accountBusy = false;
           return;
         }
@@ -13358,17 +13497,17 @@ function adminApp() {
           const body = await res.json();
           const state = body.state;
           if (state === 'PENDING' || state === 'RECEIVED') {
-            this.accountTaskStatus = '等待 worker 拾取… (' + attempts + ')';
+            updateStatus('等待后台处理… (' + attempts + ')');
           } else if (state === 'STARTED' || state === 'RETRY') {
-            this.accountTaskStatus = '登录中… (SMS 验证进行中)';
+            updateStatus('恢复登录处理中…');
           } else if (state === 'SUCCESS') {
             clearInterval(timer);
             const r = body.result || {};
             if (r.status === 'success') {
-              this.accountTaskStatus = '登录成功 · 账号 #' + (r.account_id || '') + (r.phone ? ' (' + r.phone + ')' : '');
+              updateStatus(accountTaskResultMessage(r));
               this.loadAccounts();
             } else {
-              this.accountTaskStatus = '失败: ' + (r.error || JSON.stringify(r));
+              updateStatus(accountTaskResultMessage(r));
             }
             this.accountBusy = false;
           } else if (state === 'FAILURE') {
@@ -13376,7 +13515,7 @@ function adminApp() {
             // Status string stays short and screenshot-friendly.
             // Full traceback / structured payload is offered via the
             // sticky error panel where it can be copied wholesale.
-            this.accountTaskStatus = '任务失败: ' + (body.error || body.code || '未知错误');
+            updateStatus('任务失败: ' + redactAccountUiText(body.error || body.code || '未知错误'));
             this.showErrorFrom({
               body: {
                 code: body.code || body.error || 'task_failed',
@@ -13391,7 +13530,7 @@ function adminApp() {
             this.accountBusy = false;
           }
         } catch (e) {
-          this.accountTaskStatus = '状态查询失败';
+          updateStatus('状态查询失败');
           this.showErrorFrom(e);
         }
       }, 3000);
@@ -13401,12 +13540,11 @@ function adminApp() {
       this.accountsLoading = true;
       this.accountsError = null;
       try {
-        const res = await fetch(API_BASE + '/accounts', { credentials: 'same-origin' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const rows = await res.json();
-        if (rows && rows.error) throw new Error(rows.error);
-        this.accountPoolList = (rows || []).map(mapAccountRowToCard);
-        this.accountPoolEngines = summarizeAccountPool(this.accountPoolList);
+        this.accountPoolAllList = await this.fetchAccounts('all');
+        this.accountPoolList = this.accountStatusFilter === 'all'
+          ? this.accountPoolAllList
+          : await this.fetchAccounts(this.accountStatusFilter);
+        this.accountPoolEngines = summarizeAccountPool(this.accountPoolAllList);
         this.accountsLoaded = true;
         // Fetch the binding counts so the new 绑定Profiles column populates
         // without an N+1 round-trip per account row.
@@ -13421,7 +13559,7 @@ function adminApp() {
     },
     async toggleAccount(a, status) {
       try {
-        const res = await fetch(API_BASE + '/accounts/' + a.dbId + '/status', {
+        const res = await fetch(this.accountAccountsApiPath('/' + a.dbId + '/status'), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -13429,7 +13567,7 @@ function adminApp() {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.success === false) throw new Error(body.error || ('HTTP ' + res.status));
-        this.toast(status === 'active' ? '已启用 ' + a.id : '已禁用 ' + a.id);
+        this.toast(status === 'active' ? '已启用 ' + a.id : '已更新 ' + a.id);
         await this.loadAccounts();
       } catch (e) {
         this.toast('操作失败: ' + (e.message || e));
@@ -13477,7 +13615,7 @@ function adminApp() {
         '\n\n仅在审计确认后使用；正式退款/修正语义见 #519。'
       )) return;
       try {
-        const res = await fetch(API_BASE + '/accounts/' + a.dbId + '/reset', {
+        const res = await fetch(this.accountAccountsApiPath('/' + a.dbId + '/reset'), {
           method: 'POST',
           credentials: 'same-origin',
         });
@@ -13492,7 +13630,7 @@ function adminApp() {
     async deleteAccount(a) {
       if (!window.confirm('确定删除账号 ' + a.id + '（' + (a.phone || a.engine) + '）？此操作不可撤销。')) return;
       try {
-        const res = await fetch(API_BASE + '/accounts/' + a.dbId, {
+        const res = await fetch(this.accountAccountsApiPath('/' + a.dbId), {
           method: 'DELETE',
           credentials: 'same-origin',
         });
@@ -17900,7 +18038,7 @@ function adminApp() {
           only: this.accountDrawerOnly || 'all',
           limit: '500',
         });
-        const res = await fetch(API_BASE + '/accounts/' + this.accountDrawer.dbId + '/profiles?' + params, { credentials: 'same-origin' });
+        const res = await fetch(this.accountAccountsApiPath('/' + this.accountDrawer.dbId + '/profiles?' + params), { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         if (data && data.error) throw new Error(data.error);
@@ -18049,7 +18187,7 @@ function adminApp() {
           })),
           remove_profile_ids: this.accountDrawerDetail._removed || [],
         };
-        const res = await fetch(API_BASE + '/accounts/' + this.accountDrawer.dbId + '/profiles', {
+        const res = await fetch(this.accountAccountsApiPath('/' + this.accountDrawer.dbId + '/profiles'), {
           method: 'PUT',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -18069,7 +18207,7 @@ function adminApp() {
     },
     async loadAccountProfileCounts() {
       try {
-        const res = await fetch(API_BASE + '/accounts/profile_counts', { credentials: 'same-origin' });
+        const res = await fetch(this.accountAccountsApiPath('/profile_counts'), { credentials: 'same-origin' });
         if (!res.ok) return;
         const data = await res.json();
         this.accountProfileCounts = data || {};
@@ -18087,7 +18225,7 @@ function adminApp() {
       this.autoAssignBusy = true;
       this.autoAssignResult = null;
       try {
-        const res = await fetch(API_BASE + '/accounts/auto_assign_profiles', {
+        const res = await fetch(this.accountAccountsApiPath('/auto_assign_profiles'), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
