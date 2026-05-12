@@ -108,10 +108,17 @@ function EmptyState({
 }
 
 function StateBadge({ state }: { state?: string }) {
-  const variant = state === 'ok' ? 'green' : state === 'partial' ? 'orange' : 'secondary'
+  const normalized = String(state || '').toLowerCase()
+  if (!normalized || normalized === 'ok') return null
+  const display =
+    normalized === 'partial'
+      ? { label: 'Limited data', variant: 'orange' }
+      : normalized === 'empty'
+        ? { label: 'No data yet', variant: 'secondary' }
+        : { label: 'Data unavailable', variant: 'secondary' }
   return (
-    <Badge variant={variant} size="sm">
-      {state || 'empty'}
+    <Badge variant={display.variant} size="sm">
+      {display.label}
     </Badge>
   )
 }
@@ -478,7 +485,7 @@ function TopicsView({
                     {formatPercent(topic.citation_rate)}
                   </td>
                   <td className="text-right tabular-nums text-themed-muted">
-                    {formatEvidenceCount((topic as LooseRecord).citation_count ?? summary?.citation_count)}
+                    {formatEvidenceCount((topic as LooseRecord).citation_count)}
                   </td>
                   <td className="text-right tabular-nums font-semibold text-themed-primary">
                     {formatEvidenceCount(topic.prompt_count)}
@@ -850,6 +857,56 @@ function analysisList(analysis: LooseRecord | null | undefined, keys: string[]) 
   return []
 }
 
+function titleCase(value: unknown) {
+  const text = value == null ? '' : String(value)
+  if (!text) return ''
+  return text
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function analysisSummaryFacts(analysis: LooseRecord | null | undefined) {
+  if (!analysis) return []
+  const facts: Array<{ label: string; value: string }> = []
+  const targetMentioned = analysis.target_brand_mentioned
+  if (typeof targetMentioned === 'boolean') {
+    facts.push({ label: 'Target brand', value: targetMentioned ? 'Mentioned' : 'Not mentioned' })
+  }
+  const rank = asNumber(analysis.target_brand_rank)
+  if (rank != null) facts.push({ label: 'Target rank', value: `#${formatEvidenceCount(rank)}` })
+  if (analysis.target_brand_sentiment) {
+    facts.push({ label: 'Target sentiment', value: titleCase(analysis.target_brand_sentiment) })
+  }
+  const scoreFields = [
+    ['Visibility score', analysis.visibility_score],
+    ['Sentiment score', analysis.sentiment_score],
+    ['Share of voice', analysis.sov_score],
+    ['Citation score', analysis.citation_score],
+    ['GEO score', analysis.geo_score],
+  ] as const
+  scoreFields.forEach(([label, value]) => {
+    if (asNumber(value) != null) facts.push({ label, value: formatScore(value) })
+  })
+  if (analysis.analyzed_at) facts.push({ label: 'Analyzed', value: formatDateTime(analysis.analyzed_at) })
+  return facts
+}
+
+function AnalysisSummaryGrid({ facts }: { facts: Array<{ label: string; value: string }> }) {
+  if (!facts.length) {
+    return <div className="text-xs text-themed-muted">No analyzer summary is available for this response.</div>
+  }
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {facts.map((fact) => (
+        <div key={fact.label} className="p-2.5 rounded-btn bg-themed-subtle">
+          <div className="text-[11px] text-themed-muted">{fact.label}</div>
+          <div className="text-sm font-semibold text-themed-primary mt-0.5">{fact.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function FactList({ items, emptyText }: { items: string[]; emptyText: string }) {
   if (!items.length) return <div className="text-xs text-themed-muted">{emptyText}</div>
   return (
@@ -917,6 +974,9 @@ function ResponseAttemptsModal({
   const attributes = analysisList(analysis, ['attributes', 'attribute_mentions'])
   const relations = analysisList(analysis, ['relations', 'response_relations'])
   const drivers = analysisList(analysis, ['sentiment_drivers', 'drivers'])
+  const productFacts = [...products, ...features, ...attributes]
+  const summaryFacts = analysisSummaryFacts(analysis)
+  const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
 
   return (
     <div
@@ -1018,6 +1078,10 @@ function ResponseAttemptsModal({
               <h4 className="text-sm font-semibold text-themed-primary">Analyzer facts</h4>
             </div>
 
+            <FactSection title="Analyzer summary">
+              <AnalysisSummaryGrid facts={summaryFacts} />
+            </FactSection>
+
             <FactSection title="Citations">
               <div className="space-y-2">
                 {citations.slice(0, 6).map((cite: LooseRecord, index: number) => (
@@ -1064,20 +1128,34 @@ function ResponseAttemptsModal({
               </div>
             </FactSection>
 
-            <FactSection title="Products and features">
-              <FactList
-                items={[...products, ...features, ...attributes]}
-                emptyText="No products, features, or attributes for this response."
-              />
-            </FactSection>
+            {productFacts.length > 0 && (
+              <FactSection title="Products and features">
+                <FactList
+                  items={productFacts}
+                  emptyText="No products, features, or attributes for this response."
+                />
+              </FactSection>
+            )}
 
-            <FactSection title="Response relations">
-              <FactList items={relations} emptyText="No response-scoped relations for this response." />
-            </FactSection>
+            {relations.length > 0 && (
+              <FactSection title="Response relations">
+                <FactList items={relations} emptyText="No response-scoped relations for this response." />
+              </FactSection>
+            )}
 
-            <FactSection title="Sentiment drivers">
-              <FactList items={drivers} emptyText="No sentiment drivers for this response." />
-            </FactSection>
+            {drivers.length > 0 && (
+              <FactSection title="Sentiment drivers">
+                <FactList items={drivers} emptyText="No sentiment drivers for this response." />
+              </FactSection>
+            )}
+
+            {analysis && !hasFutureAnalyzerFacts && (
+              <FactSection title="Additional analyzer fields">
+                <div className="text-xs text-themed-muted">
+                  Product, relation, and driver details are not available for this response yet.
+                </div>
+              </FactSection>
+            )}
           </aside>
         </div>
       </div>

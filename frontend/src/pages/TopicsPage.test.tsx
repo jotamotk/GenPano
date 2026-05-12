@@ -208,6 +208,89 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getByText('42.0%')).toBeInTheDocument()
   })
 
+  it('does not borrow summary citations for topic rows without per-topic citation counts', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 2,
+          query_count: 4,
+          response_count: 3,
+          analyzed_count: 3,
+          target_mention_count: 2,
+          citation_count: 987,
+          last_collected: '2026-05-11',
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 2,
+            query_count: 4,
+            response_count: 3,
+            mention_rate: 0.67,
+            sov: 0.42,
+            sentiment_distribution: { positive: 2, neutral: 1, negative: 0 },
+            citation_rate: 0.88,
+            last_collected: '2026-05-11',
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
+        <TopicsPage />
+      </MemoryRouter>,
+    )
+
+    const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
+    expect(within(row).queryByText('987')).not.toBeInTheDocument()
+    expect(within(row).getByText('--')).toBeInTheDocument()
+  })
+
+  it('uses product availability copy instead of raw API states', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 0,
+          query_count: 0,
+          response_count: 0,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 0,
+            query_count: 0,
+            response_count: 0,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'partial',
+      },
+      isLoading: false,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
+        <TopicsPage />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Limited data')).toBeInTheDocument()
+    expect(screen.queryByText(/^partial$/i)).not.toBeInTheDocument()
+  })
+
   it('drills from topics to prompts to query groups and opens the response attempts modal', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
@@ -360,5 +443,141 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText(/Products and features/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Response relations/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Sentiment drivers/i)).toBeInTheDocument()
+  })
+
+  it('renders current response analyzer facts when future enrichment lists are absent', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+          analyzed_count: 1,
+          target_mention_count: 1,
+          citation_count: 0,
+          last_collected: '2026-05-11',
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            mention_rate: 1,
+            sov: 1,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+            citation_rate: 0,
+            last_collected: '2026-05-11',
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest for sensitive skin?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+            success_rate: 1,
+            engine_coverage: ['chatgpt'],
+            mention_rate: 1,
+            avg_rank: 2,
+            avg_geo_score: 0.82,
+            citation_rate: 0,
+            last_collected: '2026-05-11',
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 301,
+            prompt_id: 201,
+            query_text: 'What is the safest vitamin C serum for sensitive skin?',
+            target_llm: 'chatgpt',
+            status: 'success',
+            profile_id: 'Sensitive skin buyer',
+            created_at: '2026-05-10T09:00:00Z',
+            executed_at: '2026-05-10T09:00:00Z',
+            finished_at: '2026-05-10T09:01:00Z',
+            response_id: 401,
+            target_mentioned: true,
+            citation_count: 0,
+            geo_score: 0.82,
+            sentiment_score: 0.74,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useQueryResponse.mockReturnValue({
+      data: {
+        response: {
+          response_id: 401,
+          target_llm: 'chatgpt',
+          created_at: '2026-05-10T09:01:00Z',
+          raw_text: 'Acme is mentioned positively for sensitive skin routines.',
+        },
+        analysis: {
+          target_brand_mentioned: true,
+          target_brand_rank: 2,
+          target_brand_sentiment: 'positive',
+          visibility_score: 0.68,
+          sentiment_score: 0.74,
+          sov_score: 0.5,
+          citation_score: 0,
+          geo_score: 0.82,
+          analyzed_at: '2026-05-10T09:02:00Z',
+        },
+        brand_mentions: [],
+        citations: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
+        <TopicsPage />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which serum is safest for sensitive skin?'))
+    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText(/Analyzer summary/i)).toBeInTheDocument()
+    expect(within(modal).getByText('Target brand')).toBeInTheDocument()
+    expect(within(modal).getByText('Mentioned')).toBeInTheDocument()
+    expect(within(modal).getByText('Target rank')).toBeInTheDocument()
+    expect(within(modal).getByText('#2')).toBeInTheDocument()
+    expect(within(modal).getByText('Visibility score')).toBeInTheDocument()
+    expect(within(modal).getByText('68.0')).toBeInTheDocument()
+    expect(
+      within(modal).getByText(/Product, relation, and driver details are not available for this response yet/i),
+    ).toBeInTheDocument()
+    expect(
+      within(modal).queryByText(/No products, features, or attributes for this response/i),
+    ).not.toBeInTheDocument()
   })
 })
