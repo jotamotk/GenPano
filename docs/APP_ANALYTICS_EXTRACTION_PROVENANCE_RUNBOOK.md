@@ -26,6 +26,8 @@ This runbook covers the no-fallback analyzer and aggregate inputs for
   `avg_citation_score`, `avg_geo_score`.
 - `topic_score_daily`: `brand_id`, `topic_id`, `mention_count`, `total_responses`,
   `mention_rate`, `avg_position_rank`, `avg_sentiment_score`, `avg_geo_score`.
+- `product_score_daily`: `brand_id`, `product_name`, `mention_count`,
+  `total_queries`, `mention_rate`, `avg_sentiment_score`, `win_rate`.
 
 ## Dry-Run Counters For Estee Lauder
 
@@ -122,6 +124,77 @@ Suggested local command shape:
 python -m geo_tracker.analyzer.cli run-daily --date YYYY-MM-DD --brand-id BRAND_ID
 ```
 
+## Stale Aggregate Cleanup Handoff
+
+Issue #553 fixes the reaggregation behavior where no-fallback calculation could
+refuse to write a replacement row but leave old aggregate rows readable by the
+App. After deployment, aggregate recomputation first removes existing
+`geo_score_daily`, `topic_score_daily`, and `product_score_daily` rows for the
+requested brand/date scope, then writes only rows that are computable from the
+current evidence.
+
+Affected production dates to repair for Estee Lauder / brand `12`:
+
+- `2026-04-24`
+- `2026-05-06`
+- `2026-05-07`
+
+For each date, AI Lead or Release/CI should run the approved canonical repair
+write path with aggregation enabled and the confirmed competitive set:
+
+```powershell
+python -m geo_tracker.analyzer.cli repair-canonical-brand `
+  --brand-id 12 `
+  --source-brand-id 2 `
+  --competitive-brand-id 2 `
+  --date YYYY-MM-DD `
+  --write `
+  --aggregate
+```
+
+Expected counter shape after this PR:
+
+- `geo_score_daily_removed`, `topic_score_removed`, and `product_score_removed`
+  report how many stale daily rows were cleared before recomputation.
+- `geo_score_daily=0` is acceptable when the PRD mention-rate denominator is
+  missing; the important postcondition is that stale `mention_rate=1.0000` rows
+  are no longer present for that brand/date.
+- `topic_score=0` is acceptable when topic linkage is missing; otherwise topic
+  rows must be freshly recomputed and no old one-topic or target-only rows should
+  remain.
+- `product_score=0` is acceptable when no product-level mentions exist; stale
+  product rows for the same brand/date should be absent.
+
+Read-only aggregate verification:
+
+```sql
+SELECT brand_id, date, target_llm, intent, language,
+       total_queries, mention_count, mention_rate, avg_sov, citation_rate,
+       avg_geo_score
+FROM geo_score_daily
+WHERE brand_id = 12
+  AND date::date IN ('2026-04-24', '2026-05-06', '2026-05-07')
+ORDER BY date, target_llm NULLS FIRST, intent NULLS FIRST, language NULLS FIRST;
+
+SELECT brand_id, topic_id, date, mention_count, total_responses, mention_rate,
+       avg_geo_score
+FROM topic_score_daily
+WHERE brand_id = 12
+  AND date::date IN ('2026-04-24', '2026-05-06', '2026-05-07')
+ORDER BY date, topic_id;
+
+SELECT brand_id, product_name, date, mention_count, total_queries, mention_rate,
+       avg_sentiment_score, win_rate
+FROM product_score_daily
+WHERE brand_id = 12
+  AND date::date IN ('2026-04-24', '2026-05-06', '2026-05-07')
+ORDER BY date, product_name;
+```
+
+If the rows are absent after recomputation, treat that as an explicit missing
+aggregate state for Backend/API and Frontend Integration follow-up. Do not
+recreate rows manually with zero, one, or target-only values.
+
 ## Rollback
 
 This PR adds no schema migration.
@@ -131,6 +204,10 @@ Rollback options:
 - Revert the application commit if extraction or aggregation behavior regresses.
 - Re-run aggregation for the affected date range from the pre-revert code path
   if daily aggregate rows were regenerated.
+- Daily aggregate cleanup only removes derived `geo_score_daily`,
+  `topic_score_daily`, and `product_score_daily` rows for the recomputed scope.
+  Roll forward by rerunning the repaired aggregation. Roll back by reverting the
+  commit and rerunning the prior aggregation command for the affected dates.
 - If a live backfill inserted analyzer rows with wrong provenance, pause further
   analyzer writes and coordinate a data repair issue before deleting rows.
 
