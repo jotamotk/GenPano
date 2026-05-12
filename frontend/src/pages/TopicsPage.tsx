@@ -266,6 +266,122 @@ function uniqueValues(rows: LooseRecord[], key: string) {
   )
 }
 
+function withCurrentOption(options: string[], current: string) {
+  if (!current || current === 'all' || options.includes(current)) return options
+  return [current, ...options]
+}
+
+function profileLabel(row: LooseRecord | null | undefined) {
+  const name = row?.profile_name == null ? '' : String(row.profile_name).trim()
+  const id = row?.profile_id == null ? '' : String(row.profile_id).trim()
+  return name || id || 'Unknown profile'
+}
+
+function csvCell(value: unknown) {
+  const text = value == null ? '' : String(value)
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function csvLine(values: unknown[]) {
+  return values.map(csvCell).join(',')
+}
+
+function downloadCsv(
+  filename: string,
+  metadata: Record<string, unknown>,
+  rows: Array<Record<string, unknown>>,
+) {
+  const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
+  const lines = [
+    ...Object.entries(metadata).map(([key, value]) => csvLine([key, value])),
+    '',
+    csvLine(headers),
+    ...rows.map((row) => csvLine(headers.map((header) => row[header]))),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportMetadata(
+  layer: string,
+  filters: any,
+  brandIdOverride: number | null,
+  extra: Record<string, unknown> = {},
+) {
+  const params = analysisParamsWithBrand(filters, brandIdOverride)
+  return {
+    layer,
+    success_only: true,
+    from: params.from || '',
+    to: params.to || '',
+    engine: params.engine || '',
+    segment_id: params.segment_id || '',
+    profile_id: params.profile_id || '',
+    brand_id: params.brand_id ?? '',
+    ...extra,
+  }
+}
+
+function topicExportRows(rows: LooseRecord[]) {
+  return rows.map((topic) => ({
+    topic_id: topic.topic_id,
+    topic_name: topic.topic_name,
+    dimension: topic.dimension || '',
+    associated_brand: topic.associated_brand || '',
+    prompt_count: topic.prompt_count ?? 0,
+    query_count: topic.query_count ?? 0,
+    response_count: topic.response_count ?? 0,
+    visibility_rate: topic.visibility_rate ?? topic.sov ?? topic.mention_rate ?? '',
+    citation_count: topic.citation_count ?? 0,
+    citation_rate: topic.citation_rate ?? '',
+    positive: topic.sentiment_distribution?.positive ?? 0,
+    neutral: topic.sentiment_distribution?.neutral ?? 0,
+    negative: topic.sentiment_distribution?.negative ?? 0,
+    last_collected: topic.last_collected || '',
+  }))
+}
+
+function promptExportRows(rows: LooseRecord[]) {
+  return rows.map((prompt) => ({
+    prompt_id: prompt.prompt_id,
+    topic_id: prompt.topic_id,
+    prompt_text: prompt.prompt_text || '',
+    intent: prompt.intent || '',
+    language: prompt.language || '',
+    query_count: prompt.query_count ?? 0,
+    response_count: prompt.response_count ?? 0,
+    visibility_rate: prompt.visibility_rate ?? prompt.mention_rate ?? '',
+    citation_count: prompt.citation_count ?? 0,
+    citation_rate: prompt.citation_rate ?? '',
+    success_rate: prompt.success_rate ?? '',
+    last_collected: prompt.last_collected || '',
+  }))
+}
+
+function queryExportRows(groups: ReturnType<typeof groupSuccessfulQueries>) {
+  return groups.flatMap((group) =>
+    group.dailyRows.map(({ date, attempt }) => ({
+      query_group_key: group.key,
+      query_text: group.queryText,
+      date,
+      query_id: attempt.query_id,
+      response_id: attempt.response_id,
+      target_llm: attempt.target_llm || '',
+      profile: profileLabel(attempt),
+      target_mentioned: Boolean(attempt.target_mentioned),
+      citation_count: attempt.citation_count ?? 0,
+      geo_score: attempt.geo_score ?? '',
+      sentiment_score: attempt.sentiment_score ?? '',
+      finished_at: attempt.finished_at || '',
+    })),
+  )
+}
+
 function ListFilter({
   label,
   value,
@@ -400,6 +516,13 @@ function TopicsView({
             type="button"
             className="inline-flex items-center gap-2 t-btn-secondary py-1.5 px-3 text-xs font-medium"
             aria-label="Export topics"
+            onClick={() =>
+              downloadCsv(
+                'topics-successful.csv',
+                exportMetadata('topics', filters, brandIdOverride),
+                topicExportRows(filtered),
+              )
+            }
           >
             <Download size={14} aria-hidden />
             Export
@@ -543,16 +666,36 @@ function PromptsView({
   brandIdOverride: number | null
   onSelectPrompt: (prompt: any) => void
 }) {
-  const [intent, setIntent] = useState('all')
-  const [language, setLanguage] = useState('all')
-  const analysisParams = useMemo(
-    () => analysisParamsWithBrand(filters, brandIdOverride),
-    [brandIdOverride, filters],
-  )
+  const [searchParams, setSearchParams] = useSearchParams()
+  const promptIntentParam = searchParams.get('promptIntent') || 'all'
+  const promptLanguageParam = searchParams.get('promptLanguage') || 'all'
+  const [intent, setIntent] = useState(promptIntentParam)
+  const [language, setLanguage] = useState(promptLanguageParam)
+  useEffect(() => {
+    setIntent(promptIntentParam)
+  }, [promptIntentParam])
+  useEffect(() => {
+    setLanguage(promptLanguageParam)
+  }, [promptLanguageParam])
+
+  const setPromptFilter = (key: 'promptIntent' | 'promptLanguage', next: string) => {
+    if (key === 'promptIntent') setIntent(next)
+    else setLanguage(next)
+    const params = new URLSearchParams(searchParams)
+    if (!next || next === 'all') params.delete(key)
+    else params.set(key, next)
+    setSearchParams(params, { replace: true })
+  }
+
+  const analysisParams = useMemo(() => {
+    const params = analysisParamsWithBrand(filters, brandIdOverride)
+    if (intent !== 'all') params.intent = intent
+    return params
+  }, [brandIdOverride, filters, intent])
   const promptsQ = useTopicPrompts(projectId, topic?.topic_id, analysisParams)
   const prompts = promptsQ.data?.items || []
-  const promptIntents = uniqueValues(prompts, 'intent')
-  const languages = uniqueValues(prompts, 'language')
+  const promptIntents = withCurrentOption(uniqueValues(prompts, 'intent'), intent)
+  const languages = withCurrentOption(uniqueValues(prompts, 'language'), language)
   const filteredPrompts = useMemo(
     () =>
       prompts.filter((prompt) => {
@@ -601,14 +744,29 @@ function PromptsView({
             label="Intent"
             value={intent}
             options={promptIntents}
-            onChange={setIntent}
+            onChange={(next) => setPromptFilter('promptIntent', next)}
           />
           <ListFilter
             label="Language"
             value={language}
             options={languages}
-            onChange={setLanguage}
+            onChange={(next) => setPromptFilter('promptLanguage', next)}
           />
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 t-btn-secondary py-1.5 px-3 text-xs font-medium"
+            aria-label="Export prompts"
+            onClick={() =>
+              downloadCsv(
+                'topics-prompts-successful.csv',
+                exportMetadata('prompts', filters, brandIdOverride, { intent, language }),
+                promptExportRows(filteredPrompts),
+              )
+            }
+          >
+            <Download size={14} aria-hidden />
+            Export prompts
+          </button>
         </div>
       </Card>
 
@@ -673,6 +831,26 @@ function PromptsView({
 }
 
 function groupSuccessfulQueries(queries: LooseRecord[]) {
+  if (queries.some((query) => Array.isArray(query.daily_latest))) {
+    return queries
+      .map((query) => {
+        const dailyRows = (Array.isArray(query.daily_latest) ? query.daily_latest : [])
+          .filter((attempt: LooseRecord) => attempt?.response_id != null)
+          .map((attempt: LooseRecord) => ({
+            date: attempt.date || dayKey(latestTimestamp(attempt)),
+            attempt,
+          }))
+        return {
+          key: query.query_group_key || query.query_text || `Query ${query.query_id}`,
+          queryText: query.query_text || dailyRows[0]?.attempt?.query_text || `Query ${query.query_id}`,
+          attempts: dailyRows.map(({ attempt }) => attempt),
+          attemptCount: asNumber(query.attempt_count) ?? dailyRows.length,
+          dailyRows,
+        }
+      })
+      .filter((group) => group.dailyRows.length > 0)
+  }
+
   const groups = new Map<string, LooseRecord[]>()
   queries.filter(isSuccessfulQuery).forEach((query) => {
     const key = query.query_text || `Query ${query.query_id}`
@@ -694,6 +872,7 @@ function groupSuccessfulQueries(queries: LooseRecord[]) {
       key: queryText,
       queryText,
       attempts: sorted,
+      attemptCount: sorted.length,
       dailyRows: Array.from(latestByDay.entries()).map(([date, attempt]) => ({ date, attempt })),
     }
   })
@@ -721,7 +900,7 @@ function QueriesView({
   const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, analysisParams)
   const queries = queriesQ.data?.items || []
   const groups = useMemo(() => groupSuccessfulQueries(queries), [queries])
-  const successfulAttempts = groups.reduce((count, group) => count + group.attempts.length, 0)
+  const successfulAttempts = groups.reduce((count, group) => count + group.attemptCount, 0)
 
   return (
     <div className="space-y-5">
@@ -750,7 +929,26 @@ function QueriesView({
             Query groups show the latest successful answer for each day.
           </p>
         </div>
-        <StateBadge state={queriesQ.data?.state} />
+        <div className="flex items-center gap-2">
+          <StateBadge state={queriesQ.data?.state} />
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 t-btn-secondary py-1.5 px-3 text-xs font-medium"
+            aria-label="Export queries"
+            onClick={() =>
+              downloadCsv(
+                'topics-queries-successful.csv',
+                exportMetadata('queries', filters, brandIdOverride, {
+                  prompt_id: prompt?.prompt_id ?? '',
+                }),
+                queryExportRows(groups),
+              )
+            }
+          >
+            <Download size={14} aria-hidden />
+            Export queries
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -783,7 +981,7 @@ function QueriesView({
                         {attempt.target_llm || '-'}
                       </Badge>
                       <span className="text-sm text-themed-primary">
-                        {attempt.profile_id || 'All profiles'}
+                        {profileLabel(attempt)}
                       </span>
                     </div>
                     <div className="text-[11px] text-themed-muted mt-1">
@@ -855,6 +1053,50 @@ function analysisList(analysis: LooseRecord | null | undefined, keys: string[]) 
     if (list.length) return list
   }
   return []
+}
+
+function analyzerFacts(value: LooseRecord | null | undefined) {
+  return {
+    citations: Array.isArray(value?.citations) ? value.citations : [],
+    brands_mentioned: Array.isArray(value?.brands_mentioned) ? value.brands_mentioned : [],
+    products_features_attributes: Array.isArray(value?.products_features_attributes)
+      ? value.products_features_attributes
+      : [],
+    relations: Array.isArray(value?.relations) ? value.relations : [],
+    sentiment_drivers: Array.isArray(value?.sentiment_drivers) ? value.sentiment_drivers : [],
+  }
+}
+
+function productFactLabels(items: LooseRecord[]) {
+  return items
+    .map((item) => {
+      const parts = [item.product_name, item.feature_name]
+        .filter((value) => value !== null && value !== undefined && value !== '')
+        .map(String)
+      if (parts.length) return parts.join(' / ')
+      return item.context_snippet || item.brand_name || item.scenario || JSON.stringify(item)
+    })
+    .filter(Boolean)
+}
+
+function relationLabels(items: LooseRecord[]) {
+  return items
+    .map((item) => {
+      const a = item.a_name || item.a_id
+      const b = item.b_name || item.b_id
+      const type = item.type || item.entity_kind
+      if (a && type && b) return `${a} ${type} ${b}`
+      return item.evidence || JSON.stringify(item)
+    })
+    .filter(Boolean)
+    .map(String)
+}
+
+function driverLabels(items: LooseRecord[]) {
+  return items
+    .map((item) => item.driver_text || item.source_quote || item.category || JSON.stringify(item))
+    .filter(Boolean)
+    .map(String)
 }
 
 function titleCase(value: unknown) {
@@ -951,7 +1193,18 @@ function ResponseAttemptsModal({
   attempts: any[]
   onClose: () => void
 }) {
-  const orderedAttempts = attempts.length ? attempts : [query]
+  const responseParams = useMemo<ProjectAnalysisParams>(
+    () => (brandIdOverride != null ? { brand_id: brandIdOverride } : {}),
+    [brandIdOverride],
+  )
+  const initialAttempts = attempts.length ? attempts : [query]
+  const initialQueryId = query?.query_id || initialAttempts[0]?.query_id
+  const detailQ = useQueryResponse(projectId, initialQueryId, responseParams)
+  const detail = detailQ.data
+  const detailedAttempts = Array.isArray((detail as LooseRecord | null | undefined)?.attempts)
+    ? ((detail as LooseRecord).attempts as LooseRecord[])
+    : []
+  const orderedAttempts = detailedAttempts.length ? detailedAttempts : initialAttempts
   const [activeId, setActiveId] = useState(orderedAttempts[0]?.query_id)
   useEffect(() => {
     setActiveId(orderedAttempts[0]?.query_id)
@@ -959,22 +1212,31 @@ function ResponseAttemptsModal({
 
   const activeAttempt =
     orderedAttempts.find((attempt) => attempt.query_id === activeId) || orderedAttempts[0]
-  const responseParams = useMemo<ProjectAnalysisParams>(
-    () => (brandIdOverride != null ? { brand_id: brandIdOverride } : {}),
-    [brandIdOverride],
-  )
-  const detailQ = useQueryResponse(projectId, activeAttempt?.query_id, responseParams)
-  const detail = detailQ.data
-  const response = detail?.response as LooseRecord | null | undefined
-  const analysis = detail?.analysis as LooseRecord | null | undefined
-  const mentions = detail?.brand_mentions || []
-  const citations = detail?.citations || []
-  const products = analysisList(analysis, ['products', 'product_mentions', 'product_names'])
-  const features = analysisList(analysis, ['features', 'product_features', 'feature_mentions'])
-  const attributes = analysisList(analysis, ['attributes', 'attribute_mentions'])
-  const relations = analysisList(analysis, ['relations', 'response_relations'])
-  const drivers = analysisList(analysis, ['sentiment_drivers', 'drivers'])
-  const productFacts = [...products, ...features, ...attributes]
+  const response = (activeAttempt?.response || detail?.response) as LooseRecord | null | undefined
+  const analysis = (activeAttempt?.analysis || detail?.analysis) as LooseRecord | null | undefined
+  const factsSource = (activeAttempt?.analyzer_facts || detail?.analyzer_facts) as
+    | LooseRecord
+    | null
+    | undefined
+  const scopedFacts = analyzerFacts(factsSource)
+  const hasScopedFacts = Boolean(factsSource)
+  const mentions = hasScopedFacts ? scopedFacts.brands_mentioned : detail?.brand_mentions || []
+  const citations = hasScopedFacts
+    ? scopedFacts.citations
+    : (activeAttempt?.citations || detail?.citations || [])
+  const productFacts = hasScopedFacts
+    ? productFactLabels(scopedFacts.products_features_attributes)
+    : [
+        ...analysisList(analysis, ['products', 'product_mentions', 'product_names']),
+        ...analysisList(analysis, ['features', 'product_features', 'feature_mentions']),
+        ...analysisList(analysis, ['attributes', 'attribute_mentions']),
+      ]
+  const relations = hasScopedFacts
+    ? relationLabels(scopedFacts.relations)
+    : analysisList(analysis, ['relations', 'response_relations'])
+  const drivers = hasScopedFacts
+    ? driverLabels(scopedFacts.sentiment_drivers)
+    : analysisList(analysis, ['sentiment_drivers', 'drivers'])
   const summaryFacts = analysisSummaryFacts(analysis)
   const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
 
@@ -1053,7 +1315,7 @@ function ResponseAttemptsModal({
                   <Badge variant="accent" size="sm">
                     {activeAttempt?.target_llm || '-'}
                   </Badge>
-                  <span>{activeAttempt?.profile_id || 'All profiles'}</span>
+                  <span>{profileLabel(activeAttempt || detail?.query || query)}</span>
                   <span>{formatDateTime(response?.created_at || latestTimestamp(activeAttempt))}</span>
                 </div>
               </section>
@@ -1082,7 +1344,7 @@ function ResponseAttemptsModal({
               <AnalysisSummaryGrid facts={summaryFacts} />
             </FactSection>
 
-            <FactSection title="Citations">
+            <FactSection title={`Citations (${citations.length})`}>
               <div className="space-y-2">
                 {citations.slice(0, 6).map((cite: LooseRecord, index: number) => (
                   <a
@@ -1171,11 +1433,19 @@ export default function TopicsPage() {
   const { activeProject } = useProject()
   const { data: liveProjects } = useProjects()
   const { filters, setRange } = useBrandAnalysisFilters()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject)
   const brandIdParam = searchParams.get('brandId')
   const brandIdOverride =
     brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null
+  const updateDrilldownParams = (updates: Record<string, string | number | null>) => {
+    const params = new URLSearchParams(searchParams)
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value === null || value === '') params.delete(key)
+      else params.set(key, String(value))
+    })
+    setSearchParams(params)
+  }
 
   const goTo = {
     topics: () => {
@@ -1183,17 +1453,31 @@ export default function TopicsPage() {
       setSelectedTopic(null)
       setSelectedPrompt(null)
       setResponseModal(null)
+      updateDrilldownParams({
+        topicId: null,
+        promptId: null,
+        promptIntent: null,
+        promptLanguage: null,
+      })
     },
     prompts: (topic: any) => {
       setView('prompts')
       setSelectedTopic(topic)
       setSelectedPrompt(null)
       setResponseModal(null)
+      updateDrilldownParams({
+        topicId: topic?.topic_id ?? null,
+        promptId: null,
+      })
     },
     queries: (prompt: any) => {
       setView('queries')
       setSelectedPrompt(prompt)
       setResponseModal(null)
+      updateDrilldownParams({
+        topicId: selectedTopic?.topic_id ?? null,
+        promptId: prompt?.prompt_id ?? null,
+      })
     },
   }
 
@@ -1212,6 +1496,7 @@ export default function TopicsPage() {
       setView('prompts')
       setSelectedPrompt(null)
       setResponseModal(null)
+      updateDrilldownParams({ promptId: null })
     } else if (target === 'queries') {
       setView('queries')
       setResponseModal(null)

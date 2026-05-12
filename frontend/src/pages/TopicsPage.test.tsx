@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const liveProjectId = '11111111-1111-4111-8111-111111111111'
 
@@ -87,7 +87,31 @@ vi.mock('../hooks/useTopicAnalysis', () => topicHooks)
 
 import TopicsPage from './TopicsPage'
 
+function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
+  const location = useLocation()
+  onChange(location.search)
+  return null
+}
+
+function renderTopicsPage(initialEntry = '/brand/topics?brandId=12') {
+  let search = ''
+  const result = render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <TopicsPage />
+      <LocationProbe onChange={(next) => {
+        search = next
+      }}
+      />
+    </MemoryRouter>,
+  )
+  return { ...result, getSearch: () => search }
+}
+
 describe('TopicsPage live brand override', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   beforeEach(() => {
     topicHooks.useTopicMonitoring.mockReset()
     topicHooks.useTopicPrompts.mockReset()
@@ -123,11 +147,7 @@ describe('TopicsPage live brand override', () => {
   })
 
   it('passes URL brandId to the topic monitoring API filters', () => {
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     expect(topicHooks.useTopicMonitoring).toHaveBeenCalledWith(
       liveProjectId,
@@ -141,11 +161,7 @@ describe('TopicsPage live brand override', () => {
   })
 
   it('shows an honest 7-day empty state with a 30-day switch affordance', () => {
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     expect(
       screen.getByText(/No successful responses in the current 7-day view/i),
@@ -193,11 +209,7 @@ describe('TopicsPage live brand override', () => {
       isLoading: false,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     expect(screen.getByText(/Successful responses/i)).toBeInTheDocument()
     expect(screen.getByText(/Analyzed answers/i)).toBeInTheDocument()
@@ -243,11 +255,7 @@ describe('TopicsPage live brand override', () => {
       isLoading: false,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
     expect(within(row).queryByText('987')).not.toBeInTheDocument()
@@ -281,11 +289,7 @@ describe('TopicsPage live brand override', () => {
       isLoading: false,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     expect(screen.getByText('Limited data')).toBeInTheDocument()
     expect(screen.queryByText(/^partial$/i)).not.toBeInTheDocument()
@@ -414,11 +418,7 @@ describe('TopicsPage live brand override', () => {
       isLoading: false,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     fireEvent.click(screen.getByText('Ingredient safety'))
 
@@ -555,11 +555,7 @@ describe('TopicsPage live brand override', () => {
       isLoading: false,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/brand/topics?brandId=12']}>
-        <TopicsPage />
-      </MemoryRouter>,
-    )
+    renderTopicsPage()
 
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which serum is safest for sensitive skin?'))
@@ -579,5 +575,467 @@ describe('TopicsPage live brand override', () => {
     expect(
       within(modal).queryByText(/No products, features, or attributes for this response/i),
     ).not.toBeInTheDocument()
+  })
+
+  it('sends prompt intent to the backend filters and preserves prompt filters in the URL', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 2,
+          query_count: 2,
+          response_count: 2,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 2,
+            query_count: 2,
+            response_count: 2,
+            sentiment_distribution: { positive: 1, neutral: 1, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+          },
+          {
+            prompt_id: 202,
+            topic_id: 101,
+            prompt_text: 'Where can I buy the serum?',
+            intent: 'commercial',
+            language: 'zh',
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 0, neutral: 1, negative: 0 },
+          },
+        ],
+        total: 2,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    const { getSearch } = renderTopicsPage()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByRole('button', { name: /Commercial/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'ZH' }))
+
+    const promptCalls = topicHooks.useTopicPrompts.mock.calls
+    const lastPromptCall = promptCalls[promptCalls.length - 1]
+    expect(lastPromptCall[1]).toBe(101)
+    expect(lastPromptCall[2]).toEqual(
+      expect.objectContaining({
+        brand_id: 12,
+        intent: 'commercial',
+      }),
+    )
+    expect(getSearch()).toContain('promptIntent=commercial')
+    expect(getSearch()).toContain('promptLanguage=zh')
+    expect(screen.queryByText('Which serum is safest?')).not.toBeInTheDocument()
+    expect(screen.getByText('Where can I buy the serum?')).toBeInTheDocument()
+  })
+
+  it('renders backend logical query groups with daily_latest rows and explicit profile labels', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 2,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 2,
+            sentiment_distribution: { positive: 1, neutral: 1, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 2,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_group_key: 'serum-safety',
+            query_text: 'What is the safest vitamin C serum?',
+            attempt_count: 3,
+            daily_latest: [
+              {
+                date: '2026-05-10',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'What is the safest vitamin C serum?',
+                target_llm: 'chatgpt',
+                profile_id: 'profile-1',
+                profile_name: 'Sensitive skin buyer',
+                finished_at: '2026-05-10T10:02:00Z',
+                target_mentioned: true,
+                citation_count: 2,
+              },
+              {
+                date: '2026-05-09',
+                query_id: 302,
+                response_id: 402,
+                query_text: 'What is the safest vitamin C serum?',
+                target_llm: 'doubao',
+                profile_id: null,
+                profile_name: 'Unknown profile',
+                finished_at: '2026-05-09T10:02:00Z',
+                target_mentioned: false,
+                citation_count: 0,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which serum is safest?'))
+
+    expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
+    expect(screen.getByText('2 days')).toBeInTheDocument()
+    expect(screen.getByText('Sensitive skin buyer')).toBeInTheDocument()
+    expect(screen.getByText('Unknown profile')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
+  })
+
+  it('opens response attempts from backend payload, switches attempts, and renders analyzer_facts', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 2,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 2,
+            sentiment_distribution: { positive: 1, neutral: 1, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 2,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_group_key: 'serum-safety',
+            query_text: 'What is the safest vitamin C serum?',
+            attempt_count: 2,
+            daily_latest: [
+              {
+                date: '2026-05-10',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'What is the safest vitamin C serum?',
+                target_llm: 'chatgpt',
+                profile_id: 'profile-1',
+                profile_name: 'Sensitive skin buyer',
+                finished_at: '2026-05-10T10:02:00Z',
+                target_mentioned: true,
+                citation_count: 2,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useQueryResponse.mockReturnValue({
+      data: {
+        query: {
+          query_id: 301,
+          query_text: 'What is the safest vitamin C serum?',
+          profile_name: 'Sensitive skin buyer',
+        },
+        response: {
+          response_id: 401,
+          query_id: 301,
+          raw_text: 'First answer cites two sources.',
+          target_llm: 'chatgpt',
+          created_at: '2026-05-10T10:02:00Z',
+        },
+        analysis: {
+          target_brand_mentioned: true,
+          visibility_score: 0.9,
+        },
+        analyzer_facts: {
+          citations: [
+            { citation_id: 1, response_id: 401, url: 'https://official.example/a', domain: 'official.example' },
+            { citation_id: 2, response_id: 401, url: 'https://review.example/b', domain: 'review.example' },
+          ],
+          brands_mentioned: [
+            { mention_id: 1, response_id: 401, brand_name: 'Acme', position_rank: 1, sentiment: 'positive' },
+          ],
+          products_features_attributes: [
+            { feature_id: 1, product_name: 'Vitamin C serum', feature_name: 'fragrance-free' },
+          ],
+          relations: [
+            { source: 'response_analysis', type: 'supports', a_name: 'Acme', b_name: 'Sensitive skin', response_id: 401 },
+          ],
+          sentiment_drivers: [
+            { driver_id: 1, response_id: 401, driver_text: 'Dermatologist backed', polarity: 'positive' },
+          ],
+        },
+        attempts: [
+          {
+            query_id: 301,
+            response_id: 401,
+            query_text: 'What is the safest vitamin C serum?',
+            target_llm: 'chatgpt',
+            profile_name: 'Sensitive skin buyer',
+            finished_at: '2026-05-10T10:02:00Z',
+            response: {
+              response_id: 401,
+              query_id: 301,
+              raw_text: 'First answer cites two sources.',
+              target_llm: 'chatgpt',
+              created_at: '2026-05-10T10:02:00Z',
+            },
+            analysis: { target_brand_mentioned: true, visibility_score: 0.9 },
+            analyzer_facts: {
+              citations: [
+                { citation_id: 1, response_id: 401, url: 'https://official.example/a', domain: 'official.example' },
+                { citation_id: 2, response_id: 401, url: 'https://review.example/b', domain: 'review.example' },
+              ],
+              brands_mentioned: [
+                { mention_id: 1, response_id: 401, brand_name: 'Acme', position_rank: 1, sentiment: 'positive' },
+              ],
+              products_features_attributes: [
+                { feature_id: 1, product_name: 'Vitamin C serum', feature_name: 'fragrance-free' },
+              ],
+              relations: [
+                { source: 'response_analysis', type: 'supports', a_name: 'Acme', b_name: 'Sensitive skin', response_id: 401 },
+              ],
+              sentiment_drivers: [
+                { driver_id: 1, response_id: 401, driver_text: 'Dermatologist backed', polarity: 'positive' },
+              ],
+            },
+          },
+          {
+            query_id: 303,
+            response_id: 403,
+            query_text: 'What is the safest vitamin C serum?',
+            target_llm: 'chatgpt',
+            profile_name: 'Sensitive skin buyer',
+            finished_at: '2026-05-10T08:02:00Z',
+            response: {
+              response_id: 403,
+              query_id: 303,
+              raw_text: 'Earlier answer cites one source.',
+              target_llm: 'chatgpt',
+              created_at: '2026-05-10T08:02:00Z',
+            },
+            analysis: { target_brand_mentioned: false, visibility_score: 0.1 },
+            analyzer_facts: {
+              citations: [
+                { citation_id: 3, response_id: 403, url: 'https://earlier.example/c', domain: 'earlier.example' },
+              ],
+              brands_mentioned: [],
+              products_features_attributes: [],
+              relations: [],
+              sentiment_drivers: [],
+            },
+          },
+        ],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which serum is safest?'))
+    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText('Attempt 2')).toBeInTheDocument()
+    expect(within(modal).getByText(/Citations \(2\)/i)).toBeInTheDocument()
+    expect(within(modal).getByText('official.example')).toBeInTheDocument()
+    expect(within(modal).getByText('Vitamin C serum / fragrance-free')).toBeInTheDocument()
+    expect(within(modal).getByText('Acme supports Sensitive skin')).toBeInTheDocument()
+    expect(within(modal).getByText('Dermatologist backed')).toBeInTheDocument()
+
+    fireEvent.click(within(modal).getByText('Attempt 2'))
+
+    expect(within(modal).getByText(/Earlier answer cites one source/i)).toBeInTheDocument()
+    expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
+    expect(within(modal).getByText('earlier.example')).toBeInTheDocument()
+  })
+
+  it('exports the active prompt layer with current filters and visible successful rows', async () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 2,
+          query_count: 2,
+          response_count: 2,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 2,
+            query_count: 2,
+            response_count: 2,
+            sentiment_distribution: { positive: 1, neutral: 1, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+            citation_count: 0,
+          },
+          {
+            prompt_id: 202,
+            topic_id: 101,
+            prompt_text: 'Where can I buy the serum?',
+            intent: 'commercial',
+            language: 'zh',
+            query_count: 1,
+            response_count: 1,
+            citation_count: 2,
+          },
+        ],
+        total: 2,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    const createObjectURL = vi.fn(() => 'blob:topics-export')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    renderTopicsPage()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByRole('button', { name: /Commercial/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Export prompts/i }))
+
+    expect(clickSpy).toHaveBeenCalled()
+    const blob = createObjectURL.mock.calls[0][0] as Blob
+    const csv = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = reject
+      reader.readAsText(blob)
+    })
+    expect(csv).toContain('layer,prompts')
+    expect(csv).toContain('intent,commercial')
+    expect(csv).toContain('language,all')
+    expect(csv).toContain('Where can I buy the serum?')
+    expect(csv).not.toContain('Which serum is safest?')
   })
 })
