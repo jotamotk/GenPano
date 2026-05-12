@@ -201,3 +201,36 @@ async def test_sms_provider_flow_redacts_phone_code_and_cookie_from_logs(
     assert "13812345678" not in logs
     assert "654321" not in logs
     assert "cookie-secret-value" not in logs
+
+
+@pytest.mark.asyncio
+async def test_sms_registration_exception_redacts_logs_and_returned_reason(
+    monkeypatch, caplog
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    provider = _FakeProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _raise_sensitive_exception(_page, _phone):
+        raise RuntimeError(
+            "browser failed phone=13812345678 code=654321 "
+            "cookie=cookie-secret-value"
+        )
+
+    monkeypatch.setattr(handler, "input_phone", _raise_sensitive_exception)
+    caplog.set_level(logging.ERROR)
+    result = await handler.login_or_register()
+
+    logs = caplog.text
+    reason = result["reason"]
+    assert result["status"] == "failed"
+    assert "13812345678" not in logs
+    assert "654321" not in logs
+    assert "cookie-secret-value" not in logs
+    assert "13812345678" not in reason
+    assert "654321" not in reason
+    assert "cookie-secret-value" not in reason

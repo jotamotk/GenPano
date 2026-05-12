@@ -477,7 +477,10 @@ class BaseSMSLoginHandler(ABC):
 
         except Exception as e:
             safe_error = redact_sensitive_text(e)
-            logger.exception(f"[{self.platform}] 登录异常: {safe_error}")
+            logger.error(
+                f"[{self.platform}] 登录异常: {safe_error} "
+                f"(exception_type={type(e).__name__})"
+            )
             return {"status": "failed", "reason": f"异常: {safe_error}"}
 
         finally:
