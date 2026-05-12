@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -131,3 +132,59 @@ async def test_repair_rejects_unknown_query_id_override_without_writing():
         assert query.status == QueryStatus.DONE.value
         assert query.retry_reason is None
         assert response.analysis_status == AnalysisStatus.DONE.value
+
+
+def test_rollback_sql_does_not_update_response_when_query_guard_is_stale():
+    from geo_tracker.tasks.doubao_auth_false_success_repair import _rollback_sql
+
+    query = Query(
+        id=184409,
+        target_llm="doubao",
+        status=QueryStatus.DONE.value,
+        finished_at=datetime(2026, 5, 12, 9, 42, 11, 123456),
+    )
+    response = LLMResponse(
+        id=532,
+        query_id=184409,
+        analysis_status=AnalysisStatus.DONE.value,
+    )
+    sql = _rollback_sql(query, response)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE queries (
+                id INTEGER PRIMARY KEY,
+                target_llm TEXT,
+                status TEXT,
+                retry_reason TEXT,
+                finished_at TEXT
+            );
+            CREATE TABLE llm_responses (
+                id INTEGER PRIMARY KEY,
+                query_id INTEGER,
+                analysis_status TEXT
+            );
+            INSERT INTO queries (
+                id, target_llm, status, retry_reason, finished_at
+            ) VALUES (
+                184409, 'doubao', 'done', NULL, '2026-05-12 09:42:11.123456'
+            );
+            INSERT INTO llm_responses (
+                id, query_id, analysis_status
+            ) VALUES (
+                532, 184409, 'failed'
+            );
+            """
+        )
+
+        conn.executescript(sql)
+
+        response_status = conn.execute(
+            "SELECT analysis_status FROM llm_responses WHERE id = 532"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert response_status == AnalysisStatus.FAILED.value
