@@ -14,6 +14,7 @@ from genpano_models import (
     CitationSource,
     GeoScoreDaily,
     Project,
+    ProjectCompetitor,
     ProjectTopicPin,
     ResponseAnalysis,
     User,
@@ -944,6 +945,117 @@ async def test_sentiment_by_engine_clears_legacy_counts_when_analyzer_packages_m
     assert body["metric_formula_evidence"]["sentiment"]["formula_status"] == (
         "missing_required_inputs"
     )
+
+
+@pytest.mark.asyncio
+async def test_sentiment_by_engine_recovers_failed_legacy_query_before_contract_context(
+    client,
+    user: User,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=6681,
+        prompt_id=6682,
+        query_id=6683,
+        response_id=6684,
+    )
+    packages = _base_packages(response_id=6684)
+    packages["sentiment"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "reason_codes": ["missing_competitor_sentiment_evidence"],
+            "driver_count": 1,
+            "quote_count": 1,
+        }
+    )
+    db_session.add_all(
+        [
+            ProjectCompetitor(project_id=project.id, brand_id=2),
+            BrandMention(
+                response_id=6684,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            _analysis(6684, packages),
+        ]
+    )
+    await db_session.commit()
+
+    from app.api.v1.projects import _charts_service as charts_service
+
+    async def no_response_window(
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[list[object], int, dict[str, int], list[str]]:
+        return [], 0, {}, []
+
+    async def admin_fact_rows(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        return [
+            {
+                "response_id": 6684,
+                "target_llm": "chatgpt",
+                "positive_mentions": 1,
+                "neutral_mentions": 0,
+                "negative_mentions": 0,
+            }
+        ]
+
+    monkeypatch.setattr(
+        charts_service,
+        "_sentiment_by_engine_from_response_window",
+        no_response_window,
+    )
+    monkeypatch.setattr(charts_service, "_admin_fact_rows", admin_fact_rows)
+
+    original_execute = AsyncSession.execute
+    original_rollback = AsyncSession.rollback
+    poisoned_session_ids: set[int] = set()
+
+    async def execute_with_poison(
+        self: AsyncSession,
+        statement: object,
+        *args: object,
+        **kwargs: object,
+    ):
+        statement_text = str(statement)
+        if id(self) in poisoned_session_ids:
+            raise RuntimeError("current transaction is aborted, commands ignored until end")
+        if "COUNT(*)::int AS cnt" in statement_text and "JOIN llm_responses r" in statement_text:
+            poisoned_session_ids.add(id(self))
+            raise RuntimeError("simulated legacy sentiment by-engine query failure")
+        return await original_execute(self, statement, *args, **kwargs)
+
+    async def rollback_clears_poison(self: AsyncSession) -> None:
+        poisoned_session_ids.discard(id(self))
+        await original_rollback(self)
+
+    monkeypatch.setattr(AsyncSession, "execute", execute_with_poison)
+    monkeypatch.setattr(AsyncSession, "rollback", rollback_clears_poison)
+
+    chart = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert chart.status_code == 200, chart.text
+    body = chart.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert body["items"] == []
+    assert body["evidence_count"] == 1
+    assert body["selected_filters"]["competitor_brand_ids"] == [2]
+    assert body["metric_formula_evidence"]["sentiment"]["formula_status"] == "partial"
+    assert "missing_competitor_sentiment_evidence" in body["missing_inputs"]
 
 
 @pytest.mark.asyncio
