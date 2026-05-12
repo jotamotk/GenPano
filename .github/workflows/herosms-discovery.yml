@@ -1,0 +1,300 @@
+name: HeroSMS Discovery
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/herosms-discovery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Read-only HeroSMS OpenAI USA offer discovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Discover read-only offers
+        env:
+          HERO_SMS_API_KEY: ${{ secrets.HERO_SMS_API_KEY }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+          from decimal import Decimal, InvalidOperation
+          from pathlib import Path
+          from typing import Any
+
+          BASE = "https://hero-sms.com"
+          MAX_PRICE = Decimal("0.60")
+          TARGET_SERVICE_TERMS = ("openai", "chatgpt")
+          TARGET_COUNTRY_NAMES = {"usa", "united states", "united states of america"}
+          SUMMARY_PATH = Path("herosms-discovery-summary.json")
+
+          class EndpointError(RuntimeError):
+              def __init__(self, endpoint: str, status: str, detail: str):
+                  super().__init__(f"{endpoint} failed: {status}: {detail}")
+                  self.endpoint = endpoint
+                  self.status = status
+                  self.detail = detail
+
+          def mask_secret(text: str, secret: str) -> str:
+              if secret:
+                  return text.replace(secret, "***")
+              return text
+
+          def fetch_json(endpoint: str, path: str, params: dict[str, Any] | None = None, *, api_key: str = "") -> Any:
+              params = dict(params or {})
+              if api_key:
+                  params["api_key"] = api_key
+              query = urllib.parse.urlencode(params)
+              url = f"{BASE}{path}" + (f"?{query}" if query else "")
+              safe_endpoint = endpoint
+              try:
+                  request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "genpano-herosms-discovery/1.0"})
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      raw = response.read(1_000_000).decode("utf-8", errors="replace")
+              except urllib.error.HTTPError as exc:
+                  body = exc.read(2000).decode("utf-8", errors="replace")
+                  raise EndpointError(safe_endpoint, f"HTTP_{exc.code}", mask_secret(body[:500], api_key)) from None
+              except Exception as exc:
+                  raise EndpointError(safe_endpoint, type(exc).__name__, mask_secret(str(exc)[:500], api_key)) from None
+              try:
+                  return json.loads(raw)
+              except json.JSONDecodeError:
+                  raise EndpointError(safe_endpoint, "NON_JSON", mask_secret(raw[:500], api_key)) from None
+
+          def as_decimal(value: Any) -> Decimal | None:
+              try:
+                  return Decimal(str(value))
+              except (InvalidOperation, TypeError, ValueError):
+                  return None
+
+          def get_items(payload: Any) -> list[dict[str, Any]]:
+              data = payload.get("data") if isinstance(payload, dict) else payload
+              if isinstance(data, list):
+                  return [item for item in data if isinstance(item, dict)]
+              if isinstance(data, dict):
+                  return [item for item in data.values() if isinstance(item, dict)]
+              return []
+
+          def find_service() -> dict[str, Any] | None:
+              seen: dict[str, dict[str, Any]] = {}
+              for term in TARGET_SERVICE_TERMS:
+                  payload = fetch_json(
+                      f"public service search {term}",
+                      "/api/v1/left-menu/services",
+                      {"search": term, "page": 1, "size": 20},
+                  )
+                  for item in get_items(payload):
+                      code = str(item.get("service", "")).strip()
+                      name = str(item.get("name", "")).strip()
+                      if code and any(token in name.lower() or token in code.lower() for token in TARGET_SERVICE_TERMS):
+                          seen[code] = {"service": code, "name": name}
+              return next(iter(seen.values()), None)
+
+          def find_country(service_code: str) -> dict[str, Any] | None:
+              for page in range(1, 9):
+                  payload = fetch_json(
+                      f"public country page {page}",
+                      f"/api/v1/left-menu/service/{service_code}/countries",
+                      {"service": service_code, "page": page, "size": 25},
+                  )
+                  for item in get_items(payload):
+                      name = str(item.get("name", "")).strip().lower()
+                      if name in TARGET_COUNTRY_NAMES or str(item.get("id")) == "187":
+                          return {
+                              "id": item.get("id"),
+                              "name": item.get("name"),
+                              "count": item.get("count"),
+                              "countPhysical": item.get("countPhysical"),
+                              "priceMinAvailable": item.get("priceMinAvailable"),
+                              "priceDefault": item.get("priceDefault"),
+                          }
+              return None
+
+          def discover_candidates(service_code: str, country_id: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+              payload = fetch_json(
+                  "public offer details",
+                  f"/api/v1/left-menu/service/{service_code}/country/{country_id}/offers",
+              )
+              offers = payload.get("data", {}) if isinstance(payload, dict) else {}
+              service_offer = offers.get(service_code, {}) if isinstance(offers, dict) else {}
+              operators = service_offer.get("operators", []) if isinstance(service_offer, dict) else []
+              candidates: list[dict[str, Any]] = []
+              for operator in operators:
+                  if not isinstance(operator, dict):
+                      continue
+                  physical_count = int(operator.get("countPhysical") or 0)
+                  price_offers = operator.get("freePriceOffers") or {}
+                  if physical_count <= 0 or not isinstance(price_offers, dict):
+                      continue
+                  qualifying_prices: list[tuple[Decimal, Any]] = []
+                  for price, count in price_offers.items():
+                      price_decimal = as_decimal(price)
+                      if price_decimal is not None and price_decimal <= MAX_PRICE and int(count or 0) > 0:
+                          qualifying_prices.append((price_decimal, count))
+                  if not qualifying_prices:
+                      continue
+                  best_price, best_count = sorted(qualifying_prices, key=lambda item: item[0])[0]
+                  candidates.append(
+                      {
+                          "operator": operator.get("name"),
+                          "operatorLabel": operator.get("localName"),
+                          "countPhysical": physical_count,
+                          "priceUsd": str(best_price),
+                          "priceBucketCount": best_count,
+                      }
+                  )
+              candidates.sort(key=lambda item: (Decimal(item["priceUsd"]), -int(item["countPhysical"])))
+              public_summary = {
+                  "activationFinishMinutes": service_offer.get("activationFinishTime"),
+                  "defaultUserPriceUsd": service_offer.get("userPrice"),
+                  "candidateOperators": len(candidates),
+              }
+              return public_summary, candidates[:10]
+
+          def authenticated_probe(service_code: str, country_id: Any, api_key: str) -> dict[str, Any]:
+              get_prices = fetch_json(
+                  "authenticated getPrices",
+                  "/stubs/handler_api.php",
+                  {"action": "getPrices", "service": service_code, "country": country_id},
+                  api_key=api_key,
+              )
+              status = fetch_json(
+                  "authenticated getNumbersStatus",
+                  "/stubs/handler_api.php",
+                  {"action": "getNumbersStatus", "country": country_id},
+                  api_key=api_key,
+              )
+              return {
+                  "getPrices": summarize_auth_payload(get_prices, service_code, country_id),
+                  "getNumbersStatus": summarize_auth_payload(status, service_code, country_id),
+              }
+
+          def summarize_auth_payload(payload: Any, service_code: str, country_id: Any) -> dict[str, Any]:
+              text = json.dumps(payload, sort_keys=True)
+              has_service = service_code in text
+              has_country = str(country_id) in text
+              return {
+                  "ok": True,
+                  "shape": type(payload).__name__,
+                  "containsTargetService": has_service,
+                  "containsTargetCountry": has_country,
+                  "payloadBytes": len(text.encode("utf-8")),
+              }
+
+          def write_summary(summary: dict[str, Any]) -> None:
+              SUMMARY_PATH.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(f"OUTCOME={summary['outcome']}")
+              print(f"SERVICE={summary.get('service', {}).get('service')}:{summary.get('service', {}).get('name')}")
+              print(f"COUNTRY={summary.get('country', {}).get('id')}:{summary.get('country', {}).get('name')}")
+              print(f"CANDIDATE_COUNT={len(summary.get('candidates', []))}")
+              if summary.get("candidates"):
+                  first = summary["candidates"][0]
+                  print(
+                      "BEST_CANDIDATE="
+                      f"operator={first['operator']} "
+                      f"priceUsd={first['priceUsd']} "
+                      f"countPhysical={first['countPhysical']}"
+                  )
+              print(f"SUMMARY_ARTIFACT={SUMMARY_PATH}")
+
+          def main() -> int:
+              api_key = os.environ.get("HERO_SMS_API_KEY", "")
+              summary: dict[str, Any] = {
+                  "generatedAtUtc": datetime.now(timezone.utc).isoformat(),
+                  "prdCoverage": ["PRD-PIPE-ACCT-003", "PRD-PIPE-ACCT-005"],
+                  "readOnly": True,
+                  "purchaseEndpointsCalled": False,
+                  "redaction": {
+                      "apiKeyPrinted": False,
+                      "rawPhonePrinted": False,
+                      "activationIdPrinted": False,
+                      "smsTextPrinted": False,
+                  },
+                  "endpoints": [
+                      "GET /api/v1/left-menu/services",
+                      "GET /api/v1/left-menu/service/{service}/countries",
+                      "GET /api/v1/left-menu/service/{service}/country/{country}/offers",
+                      "GET /stubs/handler_api.php?action=getPrices",
+                      "GET /stubs/handler_api.php?action=getNumbersStatus",
+                  ],
+              }
+              try:
+                  if not api_key:
+                      raise EndpointError("secret context", "MISSING_SECRET", "HERO_SMS_API_KEY is not available")
+                  service = find_service()
+                  if not service:
+                      summary["outcome"] = "DISCOVERY_BLOCKED"
+                      summary["blocker"] = "HeroSMS catalog did not return an OpenAI/ChatGPT service"
+                      write_summary(summary)
+                      return 2
+                  country = find_country(service["service"])
+                  if not country:
+                      summary["service"] = service
+                      summary["outcome"] = "DISCOVERY_BLOCKED"
+                      summary["blocker"] = "HeroSMS catalog did not return USA for target service"
+                      write_summary(summary)
+                      return 2
+                  public_summary, candidates = discover_candidates(service["service"], country["id"])
+                  authenticated = authenticated_probe(service["service"], country["id"], api_key)
+                  summary.update(
+                      {
+                          "service": service,
+                          "country": country,
+                          "publicOfferSummary": public_summary,
+                          "authenticatedReadOnlyProbe": authenticated,
+                          "candidates": candidates,
+                      }
+                  )
+                  if candidates:
+                      summary["outcome"] = "COMPLIANT_OFFER_FOUND"
+                      summary["implementationGuard"] = {
+                          "canImplementProviderGuardInIssue616": True,
+                          "requiredCountryId": country["id"],
+                          "requiredServiceCode": service["service"],
+                          "maxPriceUsd": str(MAX_PRICE),
+                          "mustRequireCountPhysicalGreaterThanZero": True,
+                          "mustNotFallback": True,
+                      }
+                      write_summary(summary)
+                      return 0
+                  summary["outcome"] = "NO_COMPLIANT_OFFER"
+                  summary["implementationGuard"] = {
+                      "canImplementProviderGuardInIssue616": False,
+                      "blockReason": "No USA physical OpenAI/ChatGPT offer at or below max price",
+                  }
+                  write_summary(summary)
+                  return 0
+              except EndpointError as exc:
+                  summary["outcome"] = "DISCOVERY_BLOCKED"
+                  summary["blocker"] = {"endpoint": exc.endpoint, "status": exc.status, "detail": exc.detail}
+                  write_summary(summary)
+                  return 2
+
+          sys.exit(main())
+          PY
+
+      - name: Upload sanitized discovery summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: herosms-discovery-summary
+          path: herosms-discovery-summary.json
+          if-no-files-found: error
+          retention-days: 7
