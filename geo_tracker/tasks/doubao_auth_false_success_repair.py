@@ -38,8 +38,10 @@ class DoubaoAuthFalseSuccessRepairReport:
 
 
 def _rollback_sql(query: Query, response: LLMResponse) -> str:
+    finished_at = _finished_at_rollback_literal(query.finished_at)
     return (
-        "UPDATE queries SET status = 'done', retry_reason = NULL "
+        "UPDATE queries SET status = 'done', retry_reason = NULL, "
+        f"finished_at = {finished_at} "
         f"WHERE id = {int(query.id)} "
         f"AND retry_reason = '{REPAIR_REASON}'; "
         "UPDATE llm_responses SET analysis_status = "
@@ -48,6 +50,15 @@ def _rollback_sql(query: Query, response: LLMResponse) -> str:
         f"-- rollback_doubao_auth_false_success query_id={int(query.id)} "
         f"response_id={int(response.id)}"
     )
+
+
+def _finished_at_rollback_literal(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, datetime):
+        value = value.replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
 
 
 def _validated_query_ids(query_ids: list[int] | tuple[int, ...]) -> tuple[int, ...]:

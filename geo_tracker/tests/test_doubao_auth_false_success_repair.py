@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -20,11 +22,13 @@ async def test_known_doubao_false_success_repair_dry_run_does_not_write():
     )
 
     async with await _session() as session:
+        finished_at = datetime(2026, 5, 12, 9, 42, 11, 123456)
         query = Query(
             id=184409,
             target_llm="doubao",
             query_text="bestCoffer",
             status=QueryStatus.DONE.value,
+            finished_at=finished_at,
         )
         response = LLMResponse(
             id=532,
@@ -47,8 +51,10 @@ async def test_known_doubao_false_success_repair_dry_run_does_not_write():
         assert report.candidate_query_ids == [184409]
         assert report.repaired_query_ids == []
         assert query.status == QueryStatus.DONE.value
+        assert query.finished_at == finished_at
         assert response.analysis_status == AnalysisStatus.DONE.value
         assert "rollback_doubao_auth_false_success" in report.rollback_sql[0]
+        assert "finished_at = '2026-05-12 09:42:11.123456'" in report.rollback_sql[0]
 
 
 async def test_known_doubao_false_success_repair_marks_failed_without_deleting_response():
@@ -82,6 +88,7 @@ async def test_known_doubao_false_success_repair_marks_failed_without_deleting_r
         await session.refresh(response)
 
         assert report.repaired_query_ids == [184518]
+        assert "finished_at = NULL" in report.rollback_sql[0]
         assert query.status == QueryStatus.FAILED.value
         assert query.retry_reason == "doubao_not_logged_in:false_success_repair:#594"
         assert response.analysis_status == AnalysisStatus.FAILED.value
