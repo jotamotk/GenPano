@@ -318,6 +318,37 @@ async def _sentiment_contract_evidence_count(
     )
 
 
+async def _sentiment_window_evidence_count(
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    fact_rows: list[dict[str, Any]] | None = None,
+) -> int:
+    """Count target sentiment evidence using the response window before repair time."""
+    if project.primary_brand_id is None:
+        return 0
+    direct_count = await _sentiment_contract_evidence_count(
+        session,
+        project.primary_brand_id,
+        from_d,
+        to_d,
+    )
+    if direct_count:
+        return direct_count
+    rows = fact_rows
+    if rows is None:
+        rows = await _admin_fact_rows(session, project, from_d, to_d)
+    return await _sentiment_contract_evidence_count(
+        session,
+        project.primary_brand_id,
+        from_d,
+        to_d,
+        response_ids=_fact_response_ids(rows),
+    )
+
+
 def _sentiment_by_engine_missing_out(
     *,
     project_id: str,
@@ -1275,9 +1306,9 @@ async def get_sentiment_trend_by_engine(
         )
     evidence_count = len(sentiment_rows)
     evidence_counts = _chart_counts(geo_score_daily_rows=evidence_count)
-    if not await _sentiment_contract_evidence_count(
+    if not await _sentiment_window_evidence_count(
         session,
-        project.primary_brand_id,
+        project,
         from_d,
         to_d,
     ):
