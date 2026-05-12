@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from genpano_models import (
     BrandMention,
@@ -30,11 +30,13 @@ from app.api.v1.projects._analytics_contract import (
     AnalyticsContractContext,
     build_contract_context,
     context_update,
+    formula_diagnostics_for,
     metric_definition,
     ratio_decimal,
     score_0_100,
 )
 from app.api.v1.projects._legacy_lookups import resolve_topic_names
+from app.api.v1.projects._mention_rollups import brand_mention_match_condition
 from app.api.v1.projects._metrics_dto import (
     CitationDomainRow,
     CitationRow,
@@ -83,6 +85,7 @@ class _FactMetricBucket(TypedDict):
     all_mentions: int
     ranks: list[float]
     sentiment_scores: list[float]
+    sentiment_label_count: int
     citation_count: int
 
 
@@ -187,6 +190,8 @@ def _series_missing_inputs(
     *,
     evidence_source: str = "geo_score_daily",
 ) -> list[str]:
+    if evidence_source == "admin_facts":
+        return []
     inputs = {*context.missing_inputs, *context.missing_sources}
     missing: list[str] = []
     if evidence_source == "geo_score_daily":
@@ -272,6 +277,7 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
         all_mentions = bucket["all_mentions"]
         if (
             all_mentions <= 0
+            or all_mentions <= bucket["target_mentions"]
             or not bucket["has_target_mention_input"]
             or not bucket["has_all_mention_input"]
         ):
@@ -285,6 +291,12 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
     if metric == "sentiment":
         scores = bucket["sentiment_scores"]
         if not scores:
+            return None
+        if (
+            bucket["has_target_mention_input"]
+            and bucket["target_mentions"] > 0
+            and bucket["sentiment_label_count"] <= 0
+        ):
             return None
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
@@ -339,6 +351,7 @@ async def _metrics_from_admin_facts(
                 "all_mentions": 0,
                 "ranks": [],
                 "sentiment_scores": [],
+                "sentiment_label_count": 0,
                 "citation_count": 0,
             },
         )
@@ -358,9 +371,18 @@ async def _metrics_from_admin_facts(
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         if rank is not None:
             bucket["ranks"].append(float(rank))
-        sentiment = _as_float(row.get("sentiment_score"))
+        sentiment = (
+            _as_float(row.get("target_sentiment_score"))
+            if target_mentions > 0
+            else _as_float(row.get("sentiment_score"))
+        )
         if sentiment is not None:
             bucket["sentiment_scores"].append(sentiment)
+        bucket["sentiment_label_count"] += (
+            int(row.get("positive_mentions") or 0)
+            + int(row.get("neutral_mentions") or 0)
+            + int(row.get("negative_mentions") or 0)
+        )
         bucket["citation_count"] += int(row.get("citation_count") or 0)
 
     out_series: list[MetricSeries] = []
@@ -645,6 +667,248 @@ async def get_topics(
 
 
 # ─── /sentiment ────────────────────────────────────────────────────
+def _empty_sentiment_distribution() -> SentimentDistribution:
+    return SentimentDistribution(
+        positive_count=0,
+        neutral_count=0,
+        negative_count=0,
+        positive_pct=0.0,
+        neutral_pct=0.0,
+        negative_pct=0.0,
+        avg_sentiment_score=0.0,
+    )
+
+
+def _fact_response_day_map(rows: list[dict[str, Any]]) -> dict[int, date]:
+    response_days: dict[int, date] = {}
+    for row in rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in response_days:
+            continue
+        day_key = _date_key(
+            row.get("response_created_at")
+            or row.get("query_finished_at")
+            or row.get("query_created_at")
+        )
+        if day_key is not None:
+            response_days[rid] = date.fromisoformat(day_key)
+    return response_days
+
+
+async def _sentiment_driver_rows_for_responses(
+    session: AsyncSession,
+    response_ids: list[int],
+) -> tuple[list[SentimentKeywordRow], list[SentimentDriverRow], int]:
+    if not response_ids:
+        return [], [], 0
+    driver_rows = (
+        await session.execute(
+            select(
+                SentimentDriver.driver_text,
+                SentimentDriver.polarity,
+                SentimentDriver.category,
+                func.count().label("cnt"),
+                func.avg(SentimentDriver.strength).label("avg_strength"),
+            )
+            .where(
+                and_(
+                    SentimentDriver.response_id.in_(response_ids),
+                    SentimentDriver.driver_text.isnot(None),
+                )
+            )
+            .group_by(
+                SentimentDriver.driver_text,
+                SentimentDriver.polarity,
+                SentimentDriver.category,
+            )
+            .order_by(desc("cnt"))
+            .limit(10)
+        )
+    ).all()
+    top_keywords = [
+        SentimentKeywordRow(
+            keyword=row[0],
+            polarity=row[1] or "neutral",
+            count=int(row[3] or 0),
+            avg_strength=round(row[4], 2) if row[4] is not None else None,
+        )
+        for row in driver_rows
+    ]
+    top_drivers = [
+        SentimentDriverRow(
+            driver_text=row[0],
+            polarity=row[1] or "neutral",
+            category=row[2],
+            count=int(row[3] or 0),
+            avg_strength=round(row[4], 2) if row[4] is not None else None,
+        )
+        for row in driver_rows
+    ]
+    driver_count = sum(item.count for item in top_drivers)
+    return top_keywords, top_drivers, driver_count
+
+
+async def _sentiment_from_admin_facts(
+    session: AsyncSession,
+    project: Project,
+    *,
+    brand_id: int,
+    from_d: date,
+    to_d: date,
+) -> SentimentOut | None:
+    rows = await _fact_rows(
+        session,
+        project,
+        filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+    )
+    response_days = _fact_response_day_map(rows)
+    if not response_days:
+        return None
+
+    score_response_ids = {
+        _as_int(row.get("response_id"))
+        for row in rows
+        if _as_int(row.get("response_id")) is not None
+        and (
+            _as_float(row.get("target_sentiment_score")) is not None
+            or _as_float(row.get("sentiment_score")) is not None
+        )
+    }
+    score_response_ids = {rid for rid in score_response_ids if rid is not None}
+    if not score_response_ids:
+        return None
+
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    sentiment_rows = (
+        await session.execute(
+            select(
+                BrandMention.response_id,
+                func.lower(BrandMention.sentiment).label("sentiment"),
+                BrandMention.sentiment_score,
+            ).where(
+                and_(
+                    BrandMention.response_id.in_(sorted(response_days)),
+                    brand_filter,
+                    BrandMention.sentiment_score.isnot(None),
+                    func.lower(BrandMention.sentiment).in_(["positive", "neutral", "negative"]),
+                )
+            )
+        )
+    ).all()
+
+    if not sentiment_rows:
+        missing_inputs = ["brand_mentions.sentiment_score", "brand_mentions.sentiment"]
+        return SentimentOut(
+            project_id=project.id,
+            brand_id=brand_id,
+            period=_period(from_d, to_d),
+            distribution=_empty_sentiment_distribution(),
+            trend_30d=[],
+            top_keywords=[],
+            top_drivers=[],
+            state="partial",
+            state_reason="missing_formula_inputs",
+            evidence_count=len(score_response_ids),
+            missing_inputs=missing_inputs,
+            missing_sources=missing_inputs,
+            evidence_counts={
+                "admin_fact_response_count": len(score_response_ids),
+                "sentiment_label_count": 0,
+            },
+            formula_status=FORMULA_MISSING_INPUTS_STATUS,
+            formula_diagnostics=formula_diagnostics_for(
+                FORMULA_MISSING_INPUTS_STATUS,
+                missing_inputs=missing_inputs,
+            ),
+            source_provenance=["brand_mentions", "response_analyses", "admin_facts"],
+        )
+
+    top_keywords, top_drivers, driver_count = await _sentiment_driver_rows_for_responses(
+        session,
+        sorted(response_days),
+    )
+    pos = neu = neg = 0
+    total_score = 0.0
+    score_count = 0
+    by_day: dict[date, dict[str, Any]] = {}
+    for response_id, sentiment, score in sentiment_rows:
+        cnt_score = _as_float(score)
+        if sentiment == "positive":
+            pos += 1
+        elif sentiment == "negative":
+            neg += 1
+        elif sentiment == "neutral":
+            neu += 1
+        if cnt_score is not None:
+            total_score += cnt_score
+            score_count += 1
+        day = response_days.get(int(response_id))
+        if day is None:
+            continue
+        bucket = by_day.setdefault(day, {"pos": 0, "neg": 0, "total": 0, "scores": []})
+        bucket["total"] += 1
+        if sentiment == "positive":
+            bucket["pos"] += 1
+        elif sentiment == "negative":
+            bucket["neg"] += 1
+        if cnt_score is not None:
+            bucket["scores"].append(cnt_score)
+
+    total = pos + neu + neg
+    trend = [
+        SentimentTrendPoint(
+            date=day,
+            positive_pct=round(bucket["pos"] / bucket["total"] * 100, 1),
+            negative_pct=round(bucket["neg"] / bucket["total"] * 100, 1),
+            avg_score=round(sum(bucket["scores"]) / len(bucket["scores"]), 3)
+            if bucket["scores"]
+            else 0.0,
+        )
+        for day, bucket in sorted(by_day.items())
+        if bucket["total"]
+    ]
+    missing_inputs = [] if driver_count else ["sentiment_drivers.source_quote"]
+    formula_status = FORMULA_OK_STATUS if driver_count else FORMULA_MISSING_INPUTS_STATUS
+    return SentimentOut(
+        project_id=project.id,
+        brand_id=brand_id,
+        period=_period(from_d, to_d),
+        distribution=SentimentDistribution(
+            positive_count=pos,
+            neutral_count=neu,
+            negative_count=neg,
+            positive_pct=round(pos / total * 100, 1) if total else 0.0,
+            neutral_pct=round(neu / total * 100, 1) if total else 0.0,
+            negative_pct=round(neg / total * 100, 1) if total else 0.0,
+            avg_sentiment_score=round(total_score / score_count, 3) if score_count else 0.0,
+        ),
+        trend_30d=trend,
+        top_keywords=top_keywords,
+        top_drivers=top_drivers,
+        state="ok" if not missing_inputs else "partial",
+        state_reason="data_available" if not missing_inputs else "missing_formula_inputs",
+        evidence_count=total,
+        missing_inputs=missing_inputs,
+        missing_sources=missing_inputs,
+        evidence_counts={
+            "admin_fact_response_count": len(response_days),
+            "sentiment_label_count": total,
+            "sentiment_driver_count": driver_count,
+        },
+        formula_status=formula_status,
+        formula_diagnostics=formula_diagnostics_for(
+            formula_status,
+            missing_inputs=missing_inputs,
+        ),
+        source_provenance=[
+            "brand_mentions",
+            "response_analyses",
+            "sentiment_drivers",
+            "admin_facts",
+        ],
+    )
+
+
 async def get_sentiment(
     session: AsyncSession,
     project: Project,
@@ -677,6 +941,16 @@ async def get_sentiment(
         )
 
     brand_id = project.primary_brand_id
+    if await _has_admin_chain(session):
+        admin_sentiment = await _sentiment_from_admin_facts(
+            session,
+            project,
+            brand_id=brand_id,
+            from_d=from_d,
+            to_d=to_d,
+        )
+        if admin_sentiment is not None:
+            return admin_sentiment
 
     # ── distribution: aggregate brand_mentions.sentiment for this brand ─
     stmt_dist = (
@@ -881,6 +1155,119 @@ async def get_citations(
         )
 
     brand_id = project.primary_brand_id
+    if await _has_admin_chain(session):
+        fact_rows = await _fact_rows(
+            session,
+            project,
+            filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        )
+        response_days = _fact_response_day_map(fact_rows)
+        if response_days:
+            brand_filter = await brand_mention_match_condition(session, brand_id)
+            target_mentions = (
+                select(BrandMention.id)
+                .where(
+                    and_(
+                        BrandMention.response_id.in_(sorted(response_days)),
+                        brand_filter,
+                    )
+                )
+                .scalar_subquery()
+            )
+            stmt = (
+                select(CitationSource)
+                .where(CitationSource.mention_id.in_(target_mentions))
+                .order_by(CitationSource.created_at.desc())
+                .limit(page_size + 1)
+            )
+            rows = list((await session.execute(stmt)).scalars().all())
+            has_more = len(rows) > page_size
+            items_raw = rows[:page_size]
+            items = [
+                CitationRow(
+                    citation_id=c.id,
+                    response_id=c.response_id,
+                    url=c.url,
+                    domain=c.domain,
+                    title=c.title,
+                    source_type=c.source_type,
+                    occurred_at=c.created_at.isoformat() if c.created_at else None,
+                )
+                for c in items_raw
+            ]
+            stmt_dom = (
+                select(
+                    CitationSource.domain,
+                    func.count().label("cnt"),
+                    func.max(DomainAuthority.tier).label("tier"),
+                )
+                .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
+                .where(
+                    and_(
+                        CitationSource.mention_id.in_(target_mentions),
+                        CitationSource.domain.isnot(None),
+                    )
+                )
+                .group_by(CitationSource.domain)
+                .order_by(desc("cnt"))
+                .limit(10)
+            )
+            dom_rows = (await session.execute(stmt_dom)).all()
+            by_domain = [
+                CitationDomainRow(
+                    domain=r[0],
+                    count=int(r[1] or 0),
+                    tier=int(r[2]) if r[2] is not None else None,
+                )
+                for r in dom_rows
+            ]
+            total = int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(CitationSource)
+                        .where(CitationSource.mention_id.in_(target_mentions))
+                    )
+                ).scalar_one()
+                or 0
+            )
+            state = "ok" if total else "empty"
+            missing_inputs = [] if total else ["citation_sources"]
+            formula_status = FORMULA_OK_STATUS if total else FORMULA_MISSING_INPUTS_STATUS
+            out = CitationsOut(
+                project_id=project.id,
+                brand_id=brand_id,
+                period=_period(from_d, to_d),
+                items=items,
+                next_cursor=str(items[-1].citation_id) if has_more and items else None,
+                total=total,
+                by_domain_top=by_domain,
+                state=state if total else "partial",
+                state_reason="data_available" if total else "missing_formula_inputs",
+                evidence_count=total if total else len(response_days),
+                missing_inputs=missing_inputs,
+                missing_sources=missing_inputs,
+                evidence_counts={
+                    "admin_fact_response_count": len(response_days),
+                    "citation_source_count": total,
+                },
+                formula_status=formula_status,
+                formula_diagnostics=formula_diagnostics_for(
+                    formula_status,
+                    missing_inputs=missing_inputs,
+                ),
+                metric_definitions={
+                    "citation_rate": metric_definition("citation_rate"),
+                    "citation_share": metric_definition("citation"),
+                },
+                selected_filters={
+                    "project_id": project.id,
+                    "brand_id": brand_id,
+                    "date_range": _period(from_d, to_d),
+                },
+                source_provenance=["citation_sources", "brand_mentions", "admin_facts"],
+            )
+            return out
 
     # JOIN citation_sources via brand_mentions.id (mention_id FK)
     stmt = (
