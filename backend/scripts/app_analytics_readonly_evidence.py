@@ -29,6 +29,7 @@ WRITE_SQL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+RESPONSE_DATE_EXPR = "COALESCE(r.collected_at, q.finished_at, q.created_at)::date"
 
 
 class EvidenceConfig(NamedTuple):
@@ -95,6 +96,7 @@ def build_db_sql(config: EvidenceConfig) -> str:
     all_brand_array = _all_brand_array(config)
     date_from = config.date_from or "1900-01-01"
     date_to = config.date_to or "2999-12-31"
+    response_date_expr = RESPONSE_DATE_EXPR
 
     sql = f"""
 \\set ON_ERROR_STOP on
@@ -134,13 +136,13 @@ WITH scoped_responses AS (
     r.id AS response_id,
     q.id AS query_id,
     COALESCE(q.target_llm, 'unknown') AS engine,
-    COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date AS response_date,
+    {response_date_expr} AS response_date,
     q.brand_id AS query_brand_id,
     r.analysis_status
   FROM llm_responses r
   JOIN queries q ON q.id = r.query_id
   WHERE q.brand_id = ANY({all_brand_array})
-    AND COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+    AND {response_date_expr}
       BETWEEN '{date_from}'::date AND '{date_to}'::date
 )
 SELECT
@@ -161,12 +163,12 @@ WITH scoped_responses AS (
   SELECT
     r.id AS response_id,
     COALESCE(q.target_llm, 'unknown') AS engine,
-    COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date AS response_date,
+    {response_date_expr} AS response_date,
     r.analysis_status
   FROM llm_responses r
   JOIN queries q ON q.id = r.query_id
   WHERE q.brand_id = ANY({all_brand_array})
-    AND COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+    AND {response_date_expr}
       BETWEEN '{date_from}'::date AND '{date_to}'::date
 )
 SELECT
@@ -194,7 +196,7 @@ WITH scoped_mentions AS (
   FROM brand_mentions bm
   JOIN llm_responses r ON r.id = bm.response_id
   JOIN queries q ON q.id = r.query_id
-  WHERE COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+  WHERE {response_date_expr}
     BETWEEN '{date_from}'::date AND '{date_to}'::date
 )
 SELECT
@@ -232,7 +234,7 @@ WITH scoped_citations AS (
   LEFT JOIN brand_mentions bm ON bm.id = cs.mention_id
   LEFT JOIN llm_responses r ON r.id = cs.response_id
   LEFT JOIN queries q ON q.id = r.query_id
-  WHERE COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+  WHERE {response_date_expr}
     BETWEEN '{date_from}'::date AND '{date_to}'::date
 )
 SELECT
@@ -271,7 +273,7 @@ WITH scoped_mentions AS (
   FROM brand_mentions bm
   JOIN llm_responses r ON r.id = bm.response_id
   JOIN queries q ON q.id = r.query_id
-  WHERE COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+  WHERE {response_date_expr}
     BETWEEN '{date_from}'::date AND '{date_to}'::date
 )
 SELECT
@@ -316,7 +318,7 @@ LEFT JOIN citation_sources cs ON cs.response_id = r.id
 WHERE COALESCE(t.brand_id, q.brand_id, bm.brand_id) = ANY({all_brand_array})
   AND (
     r.id IS NULL
-    OR COALESCE(r.collected_at, r.created_at, q.finished_at, q.created_at)::date
+    OR {response_date_expr}
        BETWEEN '{date_from}'::date AND '{date_to}'::date
   )
 GROUP BY scope_brand_id

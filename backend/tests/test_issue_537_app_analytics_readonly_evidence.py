@@ -98,6 +98,23 @@ def test_project_id_input_remains_uuid_shape_validated() -> None:
         mod.build_db_sql(cfg)
 
 
+def test_response_timestamp_filters_do_not_reference_missing_response_created_at() -> None:
+    mod = load_script()
+
+    cfg = mod.EvidenceConfig(
+        project_id="95d43022-a5c8-5944-b6d6-34b29faa18b5",
+        brand_id=12,
+        competitor_brand_ids=(2,),
+        date_from="2026-04-24",
+        date_to="2026-05-11",
+    )
+    sql = mod.build_db_sql(cfg)
+
+    assert "r.created_at" not in sql
+    assert "ra.created_at" not in sql
+    assert "COALESCE(r.collected_at, q.finished_at, q.created_at)::date" in sql
+
+
 def test_read_only_sql_guard_rejects_write_keywords() -> None:
     mod = load_script()
 
