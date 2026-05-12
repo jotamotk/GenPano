@@ -14,6 +14,7 @@ from sqlalchemy import select, and_, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.db.models import LLMAccount, AccountRotationLog, AccountStatus
+from geo_tracker.agent.sms_redaction import mask_phone
 from geo_tracker.tasks.query_failure import _should_report_account_failure
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,6 @@ class AccountPool:
         await self.db.commit()
         await self.db.refresh(account)
         logger.info(
-            f"Created new account id={account.id} llm={llm_name} phone={phone}"
+            f"Created new account id={account.id} llm={llm_name} phone={mask_phone(phone)}"
         )
         return account

@@ -18,6 +18,8 @@ import re
 
 import httpx
 
+from geo_tracker.agent.sms_redaction import mask_phone, redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 LUBANSMS_BASE = "https://lubansms.com/v2/api"
@@ -64,8 +66,8 @@ class LubanSMSClient:
         if data.get("code") != 0:
             raise RuntimeError(f"getKeywordNumber failed: {data}")
         result_phone = data["phone"]
-        action = f"复用 {phone}" if phone else "随机获取"
-        logger.info(f"获取手机号 ({action}): {result_phone}")
+        action = f"复用 {mask_phone(phone)}" if phone else "随机获取"
+        logger.info(f"获取手机号 ({action}): {mask_phone(result_phone)}")
         return result_phone
 
     async def get_keyword_sms(
@@ -97,13 +99,13 @@ class LubanSMSClient:
 
             if data.get("code") == 0 and data.get("msg"):
                 msg = data["msg"]
-                logger.info(f"收到短信: {msg}")
+                logger.info("收到短信: [sms-text-redacted]")
                 match = re.search(r"(\d{4,8})", msg)
                 if match:
                     code = match.group(1)
-                    logger.info(f"提取验证码: {code}")
+                    logger.info("提取验证码: [sms-code-redacted]")
                     return code
-                raise RuntimeError(f"无法从短信中提取验证码: {msg}")
+                raise RuntimeError("无法从短信中提取验证码: [sms-text-redacted]")
 
             # code=400 + "不正确的apikey" 是真正的错误
             if data.get("code") == 400 and "apikey" in data.get("msg", "").lower():
@@ -125,9 +127,14 @@ class LubanSMSClient:
                 params={"apikey": self.token, "phone": phone},
             )
             data = resp.json()
-            logger.info(f"释放号码: {phone} → {data}")
+            logger.info(
+                f"释放号码: {mask_phone(phone)} → "
+                f"{redact_sensitive_text(data)}"
+            )
         except Exception as e:
-            logger.warning(f"释放号码失败 ({phone}): {e}")
+            logger.warning(
+                f"释放号码失败 ({mask_phone(phone)}): {redact_sensitive_text(e)}"
+            )
 
     async def close(self) -> None:
         await self.client.aclose()

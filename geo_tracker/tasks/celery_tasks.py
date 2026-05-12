@@ -36,6 +36,7 @@ from geo_tracker.agent.sms_login.registration_lock import (
     release_new_account_lock,
     release_relogin_lock,
 )
+from geo_tracker.agent.sms_redaction import mask_phone
 from geo_tracker.db.models import (
     Query, QueryStatus, LLMResponse, LLMAccount, AccountStatus,
     AnalysisStatus, Brand, Competitor, Prompt,
@@ -1059,7 +1060,7 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
 
                 logger.info(
                     f"auto_login: re-login account #{account_id} "
-                    f"({account.llm_name}, phone={account.phone_number})"
+                    f"({account.llm_name}, phone={mask_phone(account.phone_number)})"
                 )
                 login_result = await handler.login_or_register(
                     existing_cookies=account.cookies_json,
@@ -1119,7 +1120,7 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     )
                     logger.info(
                         f"auto_login: new {platform} account #{new_account_obj.id} "
-                        f"created (phone={login_result['phone']})"
+                        f"created (phone={mask_phone(login_result['phone'])})"
                     )
                     return {
                         "status": "success",
