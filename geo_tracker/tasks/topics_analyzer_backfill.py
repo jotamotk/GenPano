@@ -443,12 +443,14 @@ async def build_topics_analyzer_backfill_report(
         apply_results.append(result)
         if result.get("status") != "done":
             after_rows = await build_evidence_rows(session, selected)
+            report["write_performed"] = True
+            report["write_attempted"] = True
             report["apply_failed"] = True
             report["failed_response_id"] = item.response_id
             report["failure_reason"] = (
                 result.get("error") or result.get("reason") or "non_done_status"
             )
-            report["partial_writes_possible"] = len(apply_results) > 1
+            report["partial_writes_possible"] = True
             report["apply_plan"] = (
                 "Apply failed before all selected responses completed with status=done. "
                 "Review apply_results and after evidence before retrying the same exact scope."

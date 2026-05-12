@@ -281,9 +281,11 @@ async def test_apply_raises_and_preserves_report_when_single_response_fails(
 
     report = exc.value.report
     assert report["mode"] == "apply"
-    assert report["write_performed"] is False
+    assert report["write_performed"] is True
+    assert report["write_attempted"] is True
     assert report["apply_failed"] is True
     assert report["failed_response_id"] == 75401
+    assert report["partial_writes_possible"] is True
     assert report["apply_results"] == [
         {"response_id": 75401, "status": "failed", "error": "llm_timeout"}
     ]
@@ -321,7 +323,8 @@ async def test_apply_raises_on_partial_failure_without_success_report(
         )
 
     report = exc.value.report
-    assert report["write_performed"] is False
+    assert report["write_performed"] is True
+    assert report["write_attempted"] is True
     assert report["apply_failed"] is True
     assert report["partial_writes_possible"] is True
     assert report["apply_plan"].startswith("Apply failed")
