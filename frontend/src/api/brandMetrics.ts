@@ -69,7 +69,7 @@ export interface SentimentTrendPoint {
   avg_score: number
 }
 
-export interface SentimentOut {
+export interface SentimentOut extends AnalyticsContractMetadata {
   project_id: string
   brand_id: number | null
   period: { from: string; to: string }
@@ -96,7 +96,7 @@ export interface CitationDomainRow {
   tier?: number | null
 }
 
-export interface CitationsOut {
+export interface CitationsOut extends AnalyticsContractMetadata {
   project_id: string
   brand_id: number | null
   period: { from: string; to: string }
@@ -117,7 +117,7 @@ export interface TopicRow {
   last_seen_at: string | null
 }
 
-export interface TopicsOut {
+export interface TopicsOut extends AnalyticsContractMetadata {
   project_id: string
   items: TopicRow[]
   total: number
@@ -156,7 +156,7 @@ export interface ProductRow {
   top_scenarios?: ProductScenarioRow[]
 }
 
-export interface ProductsOut {
+export interface ProductsOut extends AnalyticsContractMetadata {
   project_id: string
   items: ProductRow[]
   total: number

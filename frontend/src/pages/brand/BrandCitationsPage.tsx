@@ -12,6 +12,7 @@ import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
 import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandCitations } from '../../hooks/useBrandMetrics';
 import {
   useAuthorityTrend,
@@ -91,7 +92,7 @@ export default function BrandCitationsPage() {
 
   // Top domains: prefer /citations response.by_domain_top (already has tier).
   const liveDomains =
-    isLive && citationsQ.data?.state === 'ok' && Array.isArray(citationsQ.data.by_domain_top)
+    isLive && canUseMetricEvidence(citationsQ.data, 'citation') && Array.isArray(citationsQ.data.by_domain_top)
       ? citationsQ.data.by_domain_top.map((d) => ({
           domain: d.domain,
           tier: d.tier ?? null,
@@ -101,30 +102,8 @@ export default function BrandCitationsPage() {
   const topDomains = isLive ? liveDomains : TOP_CITED_DOMAINS;
   const topDomainsIsMock = !isLive;
 
-  // Top cited pages: from /citations.items
-  const livePages =
-    isLive && citationsQ.data?.state === 'ok' && Array.isArray(citationsQ.data.items)
-      ? Array.from(
-          citationsQ.data.items.reduce<Map<string, { url: string; title: string; tier: number | null; count: number }>>(
-            (acc, c) => {
-              const key = c.url;
-              const existing = acc.get(key);
-              if (existing) existing.count += 1;
-              else
-                acc.set(key, {
-                  url: c.url,
-                  title: c.title || c.domain || c.url,
-                  tier: c.tier ?? null,
-                  count: 1,
-                });
-              return acc
-            },
-            new Map(),
-          ).values(),
-        )
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 6)
-      : [];
+  // Top cited pages require an authoritative backend chart row array.
+  const livePages = [];
   const topPages = isLive ? livePages : TOP_CITED_PAGES;
   const topPagesIsMock = !isLive;
 
@@ -154,9 +133,7 @@ export default function BrandCitationsPage() {
   const prIsMock = !isLive;
 
   // Simulator
-  const liveSim = simulatorQ.data?.state === 'ok'
-    ? adaptSimulatorBaseline(simulatorQ.data)
-    : null;
+  const liveSim = adaptSimulatorBaseline(simulatorQ.data);
   const simulatorBaseline =
     isLive
       ? liveSim
@@ -269,6 +246,11 @@ export default function BrandCitationsPage() {
               {topPagesIsMock && <MockDataBadge />}
             </h3>
             <div className="space-y-2">
+              {(topPages || []).length === 0 && (
+                <div className="rounded-btn bg-themed-subtle p-3 text-sm text-themed-muted">
+                  {t('brand_citations.no_top_pages', 'No top cited pages available')}
+                </div>
+              )}
               {(topPages || []).slice(0, 6).map((p: any, i: number) => (
                 <a
                   key={i}

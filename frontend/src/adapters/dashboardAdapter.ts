@@ -20,7 +20,6 @@ import {
   contractItemLabel,
   formatRatioLikeForPercent,
   formatRatioLikeForPercentOrNull,
-  isOkAnalyticsState,
   normalizeRatioLikeOrNull,
   normalizeScore0To100OrNull,
   normalizeSentimentRawOrNull,
@@ -659,7 +658,7 @@ export function adaptCompetitorTrendsToTrendData(
   overviewTrend: BrandOverviewOut | null,
   metricsTrend: MetricsOut | null = null,
 ): TrendRowAdapted[] {
-  if (!isOkAnalyticsState(trends.state)) return []
+  if (!canUseContractMetricValue(trends.state, trends.metric_definition)) return []
   if (!Array.isArray(trends.series)) return []
   // Find primary series
   const primarySeries = trends.series.find((s) => s.is_primary)
