@@ -350,7 +350,9 @@ def test_doubao_authenticated_page_ignores_hidden_template_login_chrome():
       <button class="login-button">\u767b\u5f55</button>
     </div>
     <main>
-      <div class="flow-markdown-body">bestCoffer answer text with authenticated session chrome.</div>
+      <div class="flow-markdown-body">
+        bestCoffer answer text with authenticated session chrome.
+      </div>
     </main>
     """
 
