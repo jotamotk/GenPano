@@ -331,11 +331,12 @@ jobs:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
           CLASH_API_SECRET: ${{ secrets.CLASH_API_SECRET || vars.CLASH_API_SECRET }}
+          HERO_SMS_API_KEY: ${{ secrets.HERO_SMS_API_KEY }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET
+          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY
           script_stop: false
           command_timeout: 45m
           script: |
@@ -417,6 +418,13 @@ jobs:
                 "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('DOUBAO_COOKIES_JSON=' + s)" \
                 >> .env
             fi
+
+            python3 - <<'PY' >> .env
+            import os
+
+            value = os.getenv("HERO_SMS_API_KEY", "")
+            print('HERO_SMS_API_KEY=' + value.replace('$', '$$'))
+            PY
 
             cp /opt/genpano/clash/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh
             chmod +x /usr/local/bin/vninja-allow-lan.sh
@@ -514,6 +522,17 @@ jobs:
             docker compose run --rm backend alembic upgrade head
             docker compose up -d --remove-orphans --force-recreate
             docker compose ps
+
+            echo "=== Worker runtime secret presence diagnostic ==="
+            docker compose exec -T worker python - <<'PY'
+            import json
+            import os
+
+            print(json.dumps({
+                "HERO_SMS_API_KEY_present": bool(os.getenv("HERO_SMS_API_KEY")),
+                "service": "worker",
+            }, sort_keys=True))
+            PY
 
             check_url() {
               local label="$1"
