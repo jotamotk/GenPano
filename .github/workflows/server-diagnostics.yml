@@ -309,6 +309,17 @@ jobs:
             " > "${artifact_dir}/audit.csv"
             cat "${artifact_dir}/audit.csv"
 
+            echo "=== Collect current batch worker logs ==="
+            mkdir -p "${artifact_dir}/logs"
+            docker compose logs --since "${utc_started_at}" worker worker-analysis beat \
+              > "${artifact_dir}/logs/worker-services.log" 2>&1 || true
+            if [ -n "${ids_space}" ]; then
+              ids_regex="$(printf '%s\n' ${ids_space} | paste -sd'|' -)"
+              grep -E "(${ids_regex})|execute_query|page_load|browser_timeout|soft_time_limit|no_input|no_response|cookies_expired|page_unavailable|deepseek|doubao|chatgpt" \
+                "${artifact_dir}/logs/worker-services.log" \
+                > "${artifact_dir}/logs/selected-query-worker.log" 2>/dev/null || true
+            fi
+
             echo "=== Collect screenshot/html artifacts from worker ==="
             worker_cid="$(docker compose ps -q worker | head -n 1 || true)"
             if [ -n "${worker_cid}" ]; then
