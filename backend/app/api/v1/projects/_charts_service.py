@@ -29,6 +29,7 @@ from genpano_models import (
     ProjectCompetitor,
     TopicScoreDaily,
 )
+from pydantic import BaseModel
 from sqlalchemy import and_, case, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -269,8 +270,8 @@ async def _chart_contract_update(
     }
 
 
-async def _with_chart_contract(
-    out: Any,
+async def _with_chart_contract[ChartOutT: BaseModel](
+    out: ChartOutT,
     session: AsyncSession,
     project: Project,
     from_d: date,
@@ -278,7 +279,7 @@ async def _with_chart_contract(
     *,
     metric_keys: list[str],
     source_provenance: list[str],
-) -> Any:
+) -> ChartOutT:
     update = await _chart_contract_update(
         session,
         project,
