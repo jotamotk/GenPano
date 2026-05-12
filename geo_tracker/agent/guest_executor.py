@@ -33,7 +33,10 @@ from geo_tracker.agent.clash_api import (
     switch_to_next_node,
     CLASH_API_URL,
 )
-from geo_tracker.agent.response_validation import invalid_response_reason
+from geo_tracker.agent.response_validation import (
+    doubao_auth_state_reason,
+    invalid_response_reason,
+)
 from geo_tracker.db.models import LLMResponse, Query, QueryStatus
 from geo_tracker.tasks.query_failure import classify_execution_failure
 
@@ -972,6 +975,7 @@ class GuestQueryExecutor:
                 llm,
                 input_el,
                 query_id=query.id,
+                runtime_events=runtime_events,
             )
 
             if resp_text:
@@ -1349,6 +1353,7 @@ class GuestQueryExecutor:
         self, page: Page, cfg: dict, query_text: str, llm_name: str, input_el=None,
         _retry_count: int = 0,
         query_id: int | None = None,
+        runtime_events: list[dict] | None = None,
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
         Returns: (response_text, response_html, citations_list)"""
@@ -1701,7 +1706,17 @@ class GuestQueryExecutor:
             login_domains = cfg.get("login_redirect_domains", [])
             if any(d in current_url for d in login_domains):
                 logger.warning(f"[{llm_name}] 检测到跳转到登录页: {current_url}，中止等待")
+                self.last_error_reason = (
+                    "doubao_not_logged_in" if llm_name == "doubao" else "cookies_expired"
+                )
                 await _save_screenshot(page, debug_query_id, f"{llm_name}_login_redirect")
+                await _save_runtime_snapshot(
+                    page,
+                    debug_query_id,
+                    f"{llm_name}_login_redirect",
+                    config=cfg,
+                    runtime_events=runtime_events,
+                )
                 return "", "", []
 
             # 检查是否仍在生成中（豆包"深度思考"等状态）
@@ -1988,6 +2003,7 @@ class GuestQueryExecutor:
                                 page, cfg, query_text, llm_name, new_input,
                                 _retry_count=1,
                                 query_id=query_id,
+                                runtime_events=runtime_events,
                             )
                         logger.warning(
                             "[%s] retry aborted: no input element after reload",
@@ -1997,6 +2013,25 @@ class GuestQueryExecutor:
                         logger.warning("[%s] reload+retry failed: %s", llm_name, e)
 
                 return "", "", []
+
+            if llm_name == "doubao":
+                auth_reason = await _doubao_auth_state_reason_from_page(page)
+                if auth_reason:
+                    logger.warning(
+                        "[doubao] rejecting response because auth state is not proven (%s)",
+                        auth_reason,
+                    )
+                    self.last_error_reason = auth_reason
+                    await _save_html(page, debug_query_id, auth_reason)
+                    await _save_screenshot(page, debug_query_id, auth_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        auth_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
+                    return "", "", []
 
             # 豆包引用面板：2026 UI 触发器从 [data-testid=...] 换成
             # <div class="entry-btn-v3-XXXX"> 包裹 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
@@ -2036,6 +2071,21 @@ class GuestQueryExecutor:
         except Exception as e:
             logger.warning(f"[{llm_name}] 提取响应异常: {e}")
             return "", "", []
+
+
+async def _doubao_auth_state_reason_from_page(page: Page) -> str | None:
+    """Inspect the full Doubao page chrome before accepting an answer."""
+    body_text = ""
+    html = ""
+    try:
+        body_text = await page.evaluate("document.body?.innerText || ''")
+    except Exception:
+        pass
+    try:
+        html = await page.content()
+    except Exception:
+        pass
+    return doubao_auth_state_reason(body_text, html)
 
 
 async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
@@ -2145,12 +2195,26 @@ async def _save_runtime_snapshot(
             """,
             selector_payload,
         )
+        is_doubao_snapshot = "doubao" in suffix.lower() or "doubao" in (
+            config.get("url", "") if config else ""
+        ).lower()
+        doubao_auth_reason = (
+            doubao_auth_state_reason(
+                page_state.get("bodyText", "") if isinstance(page_state, dict) else "",
+                json.dumps(page_state.get("loginLikeNodes", []), ensure_ascii=False)
+                if isinstance(page_state, dict)
+                else "",
+            )
+            if is_doubao_snapshot
+            else None
+        )
         snapshot = {
             "savedAt": datetime.utcnow().isoformat() + "Z",
             "queryId": query_id,
             "suffix": suffix,
             "matchedSelector": matched_selector,
             "error": _redact_sensitive_text(f"{type(error).__name__}: {error}") if error else None,
+            "doubaoAuthStateReason": doubao_auth_reason,
             "runtimeEvents": runtime_events[-80:] if runtime_events else [],
             "page": page_state,
         }
