@@ -755,6 +755,13 @@ async def _admin_fact_rows(
     )
 
 
+async def _recover_after_swallowed_db_error(session: AsyncSession, project: Project) -> None:
+    # PostgreSQL keeps a transaction aborted after a statement error; reset it
+    # before fallback reads build the analyzer contract context.
+    await session.rollback()
+    await session.refresh(project)
+
+
 def _polarity_from_score(score: object) -> str:
     value = _as_float(score)
     if value is None:
@@ -1687,6 +1694,7 @@ async def get_sentiment_by_engine(
         )
         sentiment_rows = result.all()
     except Exception:
+        await _recover_after_swallowed_db_error(session, project)
         sentiment_rows = []
 
     sentiment_bucket: dict[str, dict[str, int]] = defaultdict(
