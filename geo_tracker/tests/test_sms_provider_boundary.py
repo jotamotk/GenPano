@@ -72,6 +72,28 @@ class _FakePage:
         return None
 
 
+class _VisibleElement:
+    async def is_visible(self) -> bool:
+        return True
+
+
+class _FakeDoubaoVerifyPage(_FakePage):
+    def __init__(self, *, body_text: str, html: str) -> None:
+        super().__init__(
+            url="https://www.doubao.com/chat",
+            body_text=body_text,
+        )
+        self._html = html
+
+    async def query_selector(self, selector: str):
+        if "textarea" in selector:
+            return _VisibleElement()
+        return None
+
+    async def content(self) -> str:
+        return self._html
+
+
 class _FakeContext:
     def __init__(self, page: _FakePage | None = None) -> None:
         self._page = page or _FakePage()
@@ -376,6 +398,32 @@ async def test_chatgpt_post_submit_auth_redirect_is_rejected(monkeypatch) -> Non
     result = await handler.verify_success(page)
 
     assert result == "chatgpt_auth_redirect"
+
+
+@pytest.mark.asyncio
+async def test_doubao_post_submit_login_chrome_rejects_chat_input_false_success(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    page = _FakeDoubaoVerifyPage(
+        body_text="bestCoffer answer text\n\u767b\u5f55",
+        html="""
+        <header><button data-testid="header_login_button">\u767b\u5f55</button></header>
+        <main><textarea class="semi-input-textarea"></textarea></main>
+        """,
+    )
+
+    async def _noop(_page):
+        return None
+
+    monkeypatch.setattr(handler, "_handle_captcha", _noop)
+
+    result = await handler.verify_success(page)
+
+    assert result == "doubao_not_logged_in"
 
 
 @pytest.mark.parametrize("platform", ["doubao", "deepseek"])
