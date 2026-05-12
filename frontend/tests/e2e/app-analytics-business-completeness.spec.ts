@@ -13,6 +13,24 @@ type AnalyticsPayloads = {
   sentimentTrend?: ContractPayload
 }
 
+type VisibleExpectation = {
+  source: string
+  metric: string
+  expectedText: string
+  rawValue: unknown
+  labelHints: string[]
+  reason: string
+}
+
+type RenderedOverviewSummary = {
+  route: string
+  url: string
+  bodyText: string
+  kpiCardTexts: string[]
+  chartTexts: string[]
+  genericEmptyTexts: string[]
+}
+
 const DEFAULT_PROJECT_ID = '95d43022-a5c8-5944-b6d6-34b29faa18b5'
 const DEFAULT_BRAND_ID = 12
 const DEFAULT_COMPETITOR_ID = 2
@@ -93,6 +111,281 @@ function itemCount(payload?: ContractPayload) {
   if (Array.isArray(payload?.rows)) return payload.rows.length
   if (Array.isArray(payload?.points)) return payload.points.length
   return 0
+}
+
+function numberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null
+  const next = Number(value)
+  return Number.isFinite(next) ? next : null
+}
+
+function compactText(value: unknown) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function round1(value: number) {
+  return Math.round((value + Number.EPSILON) * 10) / 10
+}
+
+function normalizeScore0To100(value: unknown, fields: ContractPayload = {}) {
+  const raw = numberOrNull(value)
+  if (raw === null) return null
+  if (lower(fields.value_scale) === 'decimal') return Math.round(raw * 100)
+  return Math.round(Math.abs(raw) <= 1 ? raw * 100 : raw)
+}
+
+function normalizeSentiment(value: unknown, fields: ContractPayload = {}) {
+  const raw = numberOrNull(value)
+  if (raw === null) return null
+  const scale = lower(fields.value_scale)
+  const unit = lower(fields.unit)
+  if (scale === 'percent' || unit === 'percent' || scale === 'score_0_100') return raw / 100
+  if (!scale && !unit && Math.abs(raw) > 1) return raw / 100
+  return raw
+}
+
+function percentText(value: unknown, fields: ContractPayload = {}) {
+  const ratio = normalizeRatio(value, fields)
+  if (ratio === null) return null
+  return `${round1(ratio * 100)}%`
+}
+
+function sentimentText(value: unknown, fields: ContractPayload = {}) {
+  const sentiment = normalizeSentiment(value, fields)
+  if (sentiment === null) return null
+  return `${Math.round(sentiment * 100)}%`
+}
+
+function scoreText(value: unknown, fields: ContractPayload = {}) {
+  const score = normalizeScore0To100(value, fields)
+  return score === null ? null : String(score)
+}
+
+function rankText(value: unknown) {
+  const rank = numberOrNull(value)
+  return rank === null ? null : `#${Math.max(1, Math.round(rank))}`
+}
+
+function labelHintsForMetric(metric: string) {
+  const key = lower(metric)
+  if (key.includes('mention')) return ['Mention Rate', 'Mention rate', '\u63d0\u53ca\u7387']
+  if (key === 'sov' || key.includes('share_of_voice')) return ['SoV', 'Share of Voice']
+  if (key.includes('sentiment')) return ['Sentiment', '\u60c5\u611f']
+  if (key.includes('rank') || key.includes('position')) return ['Rank', 'Industry rank', '\u884c\u4e1a\u6392\u540d']
+  if (key.includes('citation')) return ['Citation', '\u5f15\u7528']
+  if (key.includes('pano') || key.includes('geo') || key.includes('score')) return ['PANO', 'GEO', 'Score']
+  return [metric]
+}
+
+function expectedTextForMetric(metric: string, value: unknown, fields: ContractPayload = {}) {
+  const key = lower(metric)
+  if (key.includes('mention') || key === 'sov' || key.includes('citation')) return percentText(value, fields)
+  if (key.includes('sentiment')) return sentimentText(value, fields)
+  if (key.includes('rank') || key.includes('position')) return rankText(value)
+  if (key.includes('pano') || key.includes('geo') || key.includes('score')) return scoreText(value, fields)
+  const raw = numberOrNull(value)
+  return raw === null ? null : String(round1(raw))
+}
+
+function cardMetricKey(card: ContractPayload) {
+  return lower(card.metric_key || card.key || card.metric || '')
+}
+
+function canUseMetricLevelValue(item?: ContractPayload) {
+  return item && isOkFormula(item.formula_status) && numberOrNull(item.value) !== null
+}
+
+function pushExpectation(
+  expectations: VisibleExpectation[],
+  source: string,
+  metric: string,
+  value: unknown,
+  fields: ContractPayload,
+  reason: string,
+) {
+  const expectedText = expectedTextForMetric(metric, value, fields)
+  if (!expectedText) return
+  const duplicate = expectations.some(item => item.metric === metric && item.expectedText === expectedText)
+  if (duplicate) return
+  expectations.push({
+    source,
+    metric,
+    expectedText,
+    rawValue: value,
+    labelHints: labelHintsForMetric(metric),
+    reason,
+  })
+}
+
+function latestUsablePoint(series?: ContractPayload) {
+  if (!series || !isFullyOk(series) || !Array.isArray(series.points)) return null
+  for (const point of [...series.points].reverse()) {
+    if (numberOrNull(point?.value) !== null) return point
+  }
+  return null
+}
+
+function deriveVisibleOverviewExpectations(payloads: {
+  overview: ContractPayload
+  metrics: ContractPayload
+  competitors: ContractPayload
+}) {
+  const expectations: VisibleExpectation[] = []
+  for (const card of payloads.overview.kpi_cards || []) {
+    const metric = cardMetricKey(card)
+    if (!metric || !canUseMetricLevelValue(card)) continue
+    pushExpectation(
+      expectations,
+      'overview.kpi_cards',
+      metric,
+      card.value,
+      card,
+      `overview card formula_status=${card.formula_status || '<empty>'}`,
+    )
+  }
+
+  for (const series of payloads.metrics.series || []) {
+    const point = latestUsablePoint(series)
+    if (!point) continue
+    pushExpectation(
+      expectations,
+      'metrics.series.latest_point',
+      lower(series.metric),
+      point.value,
+      series,
+      `metrics series latest date=${point.date || '<unknown>'}`,
+    )
+  }
+
+  const primary = payloads.competitors.primary
+  if (isOkState(payloads.competitors) && primary?.avg_sov !== null && primary?.avg_sov !== undefined) {
+    pushExpectation(
+      expectations,
+      'competitors.primary.avg_sov',
+      'sov',
+      primary.avg_sov,
+      { value_scale: 'decimal', unit: 'ratio' },
+      'primary competitor metrics SoV is available',
+    )
+  }
+
+  return expectations
+}
+
+function usableCompetitorSovRows(competitors: ContractPayload) {
+  if (!isOkState(competitors)) return []
+  return [competitors.primary, ...(competitors.competitors || [])]
+    .filter(Boolean)
+    .map((row: ContractPayload) => ({
+      brand: row.brand_name || row.brand_key || `Brand #${row.brand_id ?? '?'}`,
+      sovText: percentText(row.avg_sov, { value_scale: 'decimal', unit: 'ratio' }),
+      rawValue: row.avg_sov,
+    }))
+    .filter((row: ContractPayload) => row.sovText && numberOrNull(row.rawValue) !== null)
+}
+
+function visibleReasonParts(payload: ContractPayload) {
+  return [
+    payload.state_reason,
+    payload.state_detail,
+    ...(payload.missing_inputs || []),
+    ...(payload.missing_sources || []),
+    ...(payload.missing_reasons || []),
+    ...(payload.formula_diagnostics?.details || []),
+    ...(payload.formula_diagnostics?.pending_sources || []),
+  ]
+    .map(item => compactText(typeof item === 'string' ? item : JSON.stringify(item)))
+    .filter(Boolean)
+}
+
+function renderedTextMatchesExpectation(text: string, expectation: VisibleExpectation) {
+  const normalized = compactText(text)
+  if (!normalized.includes(expectation.expectedText)) return false
+  return expectation.labelHints.some(label => normalized.toLowerCase().includes(label.toLowerCase()))
+}
+
+function assertVisibleOverviewRendering(
+  rendered: RenderedOverviewSummary,
+  expectations: VisibleExpectation[],
+  competitors: ContractPayload,
+) {
+  const body = compactText(rendered.bodyText)
+  const kpiExpectations = expectations.filter(item =>
+    ['overview.kpi_cards', 'competitors.primary.avg_sov'].includes(item.source),
+  )
+  assertCondition(kpiExpectations.length > 0, 'API returned no metric-level ok KPI values to assert')
+
+  const matched = kpiExpectations.filter(expectation =>
+    rendered.kpiCardTexts.some(text => renderedTextMatchesExpectation(text, expectation)) ||
+    rendered.chartTexts.some(text => renderedTextMatchesExpectation(text, expectation)) ||
+    body.includes(expectation.expectedText),
+  )
+  const missing = kpiExpectations.filter(expectation => !matched.includes(expectation))
+
+  assertCondition(
+    matched.length > 0,
+    `${rendered.route} rendered no API-derived KPI values although API has ok numeric values: ${JSON.stringify(kpiExpectations)}`,
+  )
+  assertCondition(
+    missing.length === 0,
+    `${rendered.route} is missing API-derived visible KPI values: ${JSON.stringify(missing)}; cards=${JSON.stringify(rendered.kpiCardTexts)}`,
+  )
+
+  const dashCards = rendered.kpiCardTexts.filter(text => /(?:^|\s)\u2014(?:\s|$)/.test(text) || text.includes('#\u2014'))
+  assertCondition(
+    dashCards.length < rendered.kpiCardTexts.length || matched.length > 0,
+    `${rendered.route} rendered all KPI cards as dashes while API has ok numeric values`,
+  )
+
+  const usableSovRows = usableCompetitorSovRows(competitors)
+  if (usableSovRows.length > 0) {
+    const sovEmpty = rendered.genericEmptyTexts.find(text => /sov|voice|\u58f0\u91cf|\u4efd\u989d|empty|no data/i.test(text))
+    assertCondition(
+      !sovEmpty,
+      `${rendered.route} showed a generic SoV empty state despite usable competitor rows: ${sovEmpty}`,
+    )
+    const brandMatches = usableSovRows.filter(row => row.brand && body.includes(row.brand))
+    assertCondition(
+      brandMatches.length > 0,
+      `${rendered.route} did not render any usable competitor SoV brand labels: ${JSON.stringify(usableSovRows)}`,
+    )
+  } else if (!isOkState(competitors)) {
+    const reasons = visibleReasonParts(competitors)
+    assertCondition(reasons.length > 0, 'competitors/metrics is non-ok without explicit reason metadata')
+    assertCondition(
+      reasons.some(reason => body.toLowerCase().includes(reason.toLowerCase())),
+      `${rendered.route} did not render an explicit competitor partial reason; expected one of ${JSON.stringify(reasons)}`,
+    )
+  }
+}
+
+async function captureRenderedOverview(page: Page, route: string): Promise<RenderedOverviewSummary> {
+  const captured = await page.evaluate(() => {
+    const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const visibleText = (selector: string) =>
+      Array.from(document.querySelectorAll(selector))
+        .map(element => clean((element as HTMLElement).innerText || element.textContent))
+        .filter(Boolean)
+    const genericEmptyTexts = visibleText('body *').filter(text =>
+      text.length <= 120 &&
+      /no data|empty|暂无|暂时没有|没有数据|声量份额数据|竞品共现数据/i.test(text)
+    )
+    return {
+      bodyText: clean(document.body.innerText),
+      kpiCardTexts: visibleText('.t-card')
+        .filter(text => text.length <= 260 && /%|#|\u2014|Mention|SoV|PANO|GEO|Sentiment|Rank|\u63d0\u53ca|\u60c5\u611f|\u6392\u540d|\u5f15\u7528/.test(text))
+        .slice(0, 16),
+      chartTexts: visibleText('.recharts-wrapper, svg, [data-testid*="chart"], [class*="chart"]')
+        .filter(text => text.length <= 500)
+        .slice(0, 16),
+      genericEmptyTexts,
+    }
+  })
+  return {
+    route,
+    url: page.url(),
+    ...captured,
+  }
 }
 
 function summarizeContract(name: string, payload: ContractPayload) {
@@ -336,6 +629,96 @@ test.describe('App analytics business completeness assertion', () => {
           missing_sources: ['queries.target_llm'],
         },
       }),
+    ).not.toThrow()
+  })
+
+  test('flags all-dash visible overview cards when API has metric-level ok values', () => {
+    const competitors = {
+      state: 'ok',
+      primary: { brand_name: 'Est\u00e9e Lauder', avg_sov: 0.31 },
+      competitors: [{ brand_name: 'Lanc\u00f4me', avg_sov: 0.22 }],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+          { metric_key: 'sentiment', value: 0, value_scale: 'raw_-1_1', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [
+          {
+            metric: 'mention_rate',
+            state: 'ok',
+            formula_status: 'ok',
+            value_scale: 'decimal',
+            points: [{ date: '2026-05-07', value: 0.42 }],
+          },
+        ],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview',
+          url: 'http://example.test/brand/overview',
+          bodyText: 'Mention Rate \u2014 SoV \u2014 Sentiment \u2014',
+          kpiCardTexts: ['Mention Rate \u2014', 'SoV \u2014', 'Sentiment \u2014'],
+          chartTexts: ['\u6682\u65e0\u58f0\u91cf\u4efd\u989d\u6570\u636e'],
+          genericEmptyTexts: ['\u6682\u65e0\u58f0\u91cf\u4efd\u989d\u6570\u636e'],
+        },
+        expectations,
+        competitors,
+      ),
+    ).toThrow(/rendered no API-derived KPI values|missing API-derived visible KPI values/)
+  })
+
+  test('accepts visible overview cards that render API-derived values', () => {
+    const competitors = {
+      state: 'ok',
+      primary: { brand_name: 'Est\u00e9e Lauder', avg_sov: 0.31 },
+      competitors: [{ brand_name: 'Lanc\u00f4me', avg_sov: 0.22 }],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+          { metric_key: 'sentiment', value: 0, value_scale: 'raw_-1_1', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [
+          {
+            metric: 'mention_rate',
+            state: 'ok',
+            formula_status: 'ok',
+            value_scale: 'decimal',
+            points: [{ date: '2026-05-07', value: 0.42 }],
+          },
+        ],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview',
+          url: 'http://example.test/brand/overview',
+          bodyText: 'Est\u00e9e Lauder Mention Rate 42% SoV 31% Sentiment 0% Lanc\u00f4me',
+          kpiCardTexts: ['Mention Rate 42%', 'SoV 31%', 'Sentiment 0%'],
+          chartTexts: ['Est\u00e9e Lauder Lanc\u00f4me'],
+          genericEmptyTexts: [],
+        },
+        expectations,
+        competitors,
+      ),
     ).not.toThrow()
   })
 })
@@ -614,14 +997,20 @@ test.describe('Live App analytics business completeness gate', () => {
       if (message.type() === 'error') runtimeErrors.push(`console: ${message.text()}`)
     })
     await seedLiveAuth(page, token, projectId, brandId)
+    const visibleExpectations = deriveVisibleOverviewExpectations({ overview, metrics, competitors })
+    const visibleOverviewSummaries: Array<RenderedOverviewSummary & {
+      expected: VisibleExpectation[]
+      competitorSovRows: ReturnType<typeof usableCompetitorSovRows>
+    }> = []
 
     const routes = [
-      '/brand/overview?brandId=12&range=30d&profileGroup=all',
-      '/brand/visibility?brandId=12&range=30d&profileGroup=all',
-      '/brand/topics?brandId=12&range=30d&profileGroup=all',
-      '/brand/sentiment?brandId=12&range=30d&profileGroup=all',
-      '/brand/citations?brandId=12&range=30d&profileGroup=all',
-      '/brand/competitors?brandId=12&range=30d&profileGroup=all',
+      `/brand/overview?brandId=${brandId}&range=30d&profileGroup=all`,
+      '/brand/overview',
+      `/brand/visibility?brandId=${brandId}&range=30d&profileGroup=all`,
+      `/brand/topics?brandId=${brandId}&range=30d&profileGroup=all`,
+      `/brand/sentiment?brandId=${brandId}&range=30d&profileGroup=all`,
+      `/brand/citations?brandId=${brandId}&range=30d&profileGroup=all`,
+      `/brand/competitors?brandId=${brandId}&range=30d&profileGroup=all`,
     ]
     const pageSummaries = []
     for (const route of routes) {
@@ -637,8 +1026,46 @@ test.describe('Live App analytics business completeness gate', () => {
       assertCondition(surfaceCount > 0, `${route} rendered no chart/table/svg surface`)
       const screenshotName = route.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'route'
       await page.screenshot({ path: `${SCREENSHOT_DIR}/${screenshotName}.png`, fullPage: true })
+      if (route === '/brand/overview' || route.startsWith('/brand/overview?')) {
+        const renderedOverview = await captureRenderedOverview(page, route)
+        assertVisibleOverviewRendering(renderedOverview, visibleExpectations, competitors)
+        visibleOverviewSummaries.push({
+          ...renderedOverview,
+          expected: visibleExpectations,
+          competitorSovRows: usableCompetitorSovRows(competitors),
+        })
+      }
       pageSummaries.push({ route, path, surfaceCount })
     }
+
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/visible-overview-summary.json`,
+      JSON.stringify(
+        {
+          projectId,
+          brandId,
+          window: { from: fromDate, to: toDate },
+          expectedValues: visibleExpectations,
+          competitorSovRows: usableCompetitorSovRows(competitors),
+          renderedRoutes: visibleOverviewSummaries.map(summary => ({
+            route: summary.route,
+            url: summary.url,
+            expected: summary.expected.map(item => ({
+              metric: item.metric,
+              source: item.source,
+              expectedText: item.expectedText,
+              rawValue: item.rawValue,
+              reason: item.reason,
+            })),
+            kpiCardTexts: summary.kpiCardTexts,
+            chartTexts: summary.chartTexts,
+            genericEmptyTexts: summary.genericEmptyTexts,
+          })),
+        },
+        null,
+        2,
+      ),
+    )
 
     const fatalRuntimeErrors = runtimeErrors.filter(
       item =>
