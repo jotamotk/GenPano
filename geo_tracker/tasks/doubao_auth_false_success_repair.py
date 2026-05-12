@@ -39,17 +39,43 @@ class DoubaoAuthFalseSuccessRepairReport:
 
 def _rollback_sql(query: Query, response: LLMResponse) -> str:
     finished_at = _finished_at_rollback_literal(query.finished_at)
-    return (
-        "UPDATE queries SET status = 'done', retry_reason = NULL, "
-        f"finished_at = {finished_at} "
-        f"WHERE id = {int(query.id)} "
-        f"AND retry_reason = '{REPAIR_REASON}'; "
-        "UPDATE llm_responses SET analysis_status = "
-        f"'{response.analysis_status or AnalysisStatus.PENDING.value}' "
-        f"WHERE id = {int(response.id)}; "
-        f"-- rollback_doubao_auth_false_success query_id={int(query.id)} "
-        f"response_id={int(response.id)}"
+    query_id = int(query.id)
+    response_id = int(response.id)
+    original_analysis_status = _sql_literal(
+        response.analysis_status or AnalysisStatus.PENDING.value
     )
+    done_status = _sql_literal(QueryStatus.DONE.value)
+    failed_status = _sql_literal(QueryStatus.FAILED.value)
+    repair_reason = _sql_literal(REPAIR_REASON)
+    return (
+        "BEGIN; "
+        "UPDATE llm_responses SET analysis_status = "
+        f"{original_analysis_status} "
+        f"WHERE id = {response_id} "
+        f"AND query_id = {query_id} "
+        f"AND analysis_status = {_sql_literal(AnalysisStatus.FAILED.value)} "
+        "AND EXISTS ("
+        "SELECT 1 FROM queries "
+        f"WHERE queries.id = {query_id} "
+        "AND queries.target_llm = 'doubao' "
+        f"AND queries.status = {failed_status} "
+        f"AND queries.retry_reason = {repair_reason}"
+        "); "
+        f"UPDATE queries SET status = {done_status}, retry_reason = NULL, "
+        f"finished_at = {finished_at} "
+        f"WHERE id = {query_id} "
+        "AND target_llm = 'doubao' "
+        f"AND status = {failed_status} "
+        f"AND retry_reason = {repair_reason}; "
+        "COMMIT; "
+        f"-- rollback_doubao_auth_false_success query_id={query_id} "
+        f"response_id={response_id}"
+    )
+
+
+def _sql_literal(value: object) -> str:
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
 
 
 def _finished_at_rollback_literal(value) -> str:
@@ -57,8 +83,7 @@ def _finished_at_rollback_literal(value) -> str:
         return "NULL"
     if isinstance(value, datetime):
         value = value.replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
-    escaped = str(value).replace("'", "''")
-    return f"'{escaped}'"
+    return _sql_literal(value)
 
 
 def _validated_query_ids(query_ids: list[int] | tuple[int, ...]) -> tuple[int, ...]:
