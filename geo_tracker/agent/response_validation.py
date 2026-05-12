@@ -30,22 +30,66 @@ _DOUBAO_LOGIN_BUTTON_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_DOUBAO_LOGIN_CHROME_RE = re.compile(
+    r"<(?:button|a|div|span)[^>]{0,240}>[\s\n\r]*\u767b\u5f55[\s\n\r]*</(?:button|a|div|span)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOUBAO_TEMPLATE_RE = re.compile(
+    r"<template\b[^>]*>.*?</template>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOUBAO_ELEMENT_WITH_ATTRS_RE = re.compile(
+    r"<(?P<tag>button|a|div|span)\b(?P<attrs>[^>]*)>.*?</(?P=tag)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOUBAO_HIDDEN_ATTR_RE = re.compile(
+    r"(?:\bhidden\b|aria-hidden\s*=\s*['\"]?true['\"]?|"
+    r"style\s*=\s*['\"][^'\"]*(?:display\s*:\s*none|visibility\s*:\s*hidden)|"
+    r"class\s*=\s*['\"][^'\"]*(?:^|\s)(?:hidden|is-hidden|sr-only)(?:\s|$))",
+    re.IGNORECASE,
+)
+
 _DOUBAO_AUTHENTICATED_RE = re.compile(
-    r"(?:user-avatar|avatar|account-menu|profile-menu|user-info|"
+    r"(?:user-avatar|account-menu|profile-menu|user-info|"
     r"\u7528\u6237\u5934\u50cf|\u8d26\u53f7\u83dc\u5355|\u6211\u7684\u8d26\u53f7)",
     re.IGNORECASE,
 )
 
+DOUBAO_AUTH_OK_MARKER = "doubao-auth-state:ok"
+
+
+def _strip_hidden_doubao_auth_chrome(html: str | None) -> str:
+    if not html:
+        return ""
+
+    visible_html = _DOUBAO_TEMPLATE_RE.sub("\n", html)
+    previous = None
+    while previous != visible_html:
+        previous = visible_html
+        visible_html = _DOUBAO_ELEMENT_WITH_ATTRS_RE.sub(
+            lambda match: "\n"
+            if _DOUBAO_HIDDEN_ATTR_RE.search(match.group("attrs") or "")
+            else match.group(0),
+            visible_html,
+        )
+    return visible_html
+
 
 def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str | None:
     """Return a Doubao auth-state failure reason, or None when auth is proven."""
-    combined = "\n".join(part for part in (text or "", html or "") if part)
+    visible_html = _strip_hidden_doubao_auth_chrome(html)
+    combined = "\n".join(part for part in (text or "", visible_html) if part)
     if not combined.strip():
         return "doubao_auth_state_missing"
 
     if any(marker in combined for marker in _DOUBAO_UNAUTH_TEXT_MARKERS):
         return "doubao_not_logged_in"
     if "\u767b\u5f55" in combined and _DOUBAO_LOGIN_BUTTON_RE.search(combined):
+        return "doubao_not_logged_in"
+    if "\u767b\u5f55" in visible_html and _DOUBAO_LOGIN_CHROME_RE.search(visible_html):
         return "doubao_not_logged_in"
 
     if _DOUBAO_AUTHENTICATED_RE.search(combined):
@@ -74,6 +118,19 @@ def chatgpt_auth_state_reason(
         if marker in lower:
             return reason
     return None
+
+
+def doubao_persistence_auth_reason(
+    llm_name: str,
+    raw_text: str | None,
+    response_html: str | None = None,
+) -> str | None:
+    """Return a Doubao auth failure that must block DONE persistence."""
+    if (llm_name or "").lower() != "doubao":
+        return None
+    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
+        return None
+    return doubao_auth_state_reason(raw_text, response_html)
 
 
 def invalid_response_reason(llm_name: str, text: str | None) -> str | None:

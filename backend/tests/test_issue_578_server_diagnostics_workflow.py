@@ -40,6 +40,31 @@ def test_bestcoffer_candidate_selection_only_retries_terminal_no_response_rows()
     assert "retry_reason = 'bestcoffer_batch_audit:${GH_RUN_ID}'" in workflow
 
 
+def test_doubao_auth_false_success_repair_mode_is_guarded_and_artifacted() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "doubao_auth_false_success_repair" in workflow
+    assert "doubao_auth_repair_apply" in workflow
+    assert 'case "${DOUBAO_AUTH_REPAIR_APPLY}" in' in workflow
+    assert '*) fail "DOUBAO_AUTH_REPAIR_APPLY must be true or false" ;;' in workflow
+    assert 'if [ "${DOUBAO_AUTH_REPAIR_APPLY}" = "true" ]; then' in workflow
+    assert (
+        "docker compose exec -T worker python -m "
+        "geo_tracker.tasks.doubao_auth_false_success_repair "
+        '--approval-ref "Refs #594 dry-run:${GH_RUN_ID}"'
+    ) in workflow
+    assert (
+        "docker compose exec -T worker python -m "
+        "geo_tracker.tasks.doubao_auth_false_success_repair --apply "
+        '--approval-ref "Refs #594:${GH_RUN_ID}"'
+    ) in workflow
+    assert "doubao-auth-false-success-repair-${{ github.run_id }}" in workflow
+    assert "doubao-auth-repair-artifacts" in workflow
+    assert "repair-output.json" in workflow
+    assert "python3 - <<'PY' > doubao-auth-repair-artifacts/rollback.sql" in workflow
+    assert "rollback" in workflow.lower()
+
+
 def test_server_diagnostics_preserves_live_app_analytics_mode() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
