@@ -1,9 +1,7 @@
 name: HeroSMS Discovery
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/herosms-discovery.yml"
+  # Secret-backed discovery must run only from trusted manual dispatch.
   workflow_dispatch:
 
 permissions:
