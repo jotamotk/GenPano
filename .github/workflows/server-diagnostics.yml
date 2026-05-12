@@ -16,9 +16,13 @@ on:
         required: false
         default: "95d43022-a5c8-5944-b6d6-34b29faa18b5"
       scraper_mode:
-        description: "diagnostics or bestcoffer_batch"
+        description: "diagnostics, bestcoffer_batch, vninja_proxy_check, or vninja_subscription_update"
         required: false
         default: "diagnostics"
+      target_llm:
+        description: "bestcoffer_batch only: optional target LLM filter, for staged per-engine batches"
+        required: false
+        default: ""
       batch_limit:
         description: "bestcoffer_batch only: number of no-response queries to dispatch"
         required: false
@@ -49,6 +53,7 @@ jobs:
           BATCH_LIMIT: ${{ inputs.batch_limit }}
           EXECUTE_BATCH: ${{ inputs.execute_batch }}
           POLL_SECONDS: ${{ inputs.poll_seconds }}
+          TARGET_LLM: ${{ inputs.target_llm }}
           GH_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -73,6 +78,9 @@ jobs:
           [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || fail "BRAND_ID must be an integer"
           [[ "${BATCH_LIMIT}" =~ ^[0-9]+$ ]] || fail "BATCH_LIMIT must be an integer"
           [[ "${POLL_SECONDS}" =~ ^[0-9]+$ ]] || fail "POLL_SECONDS must be an integer"
+          if [ -n "${TARGET_LLM}" ] && [ "${TARGET_LLM}" != "all" ] && ! [[ "${TARGET_LLM}" =~ ^[a-z0-9_-]+$ ]]; then
+            fail "TARGET_LLM must be empty, all, or a lowercase engine key"
+          fi
           [ "${BATCH_LIMIT}" -ge 1 ] || fail "BATCH_LIMIT must be >= 1"
           [ "${BATCH_LIMIT}" -le 100 ] || fail "BATCH_LIMIT must be <= 100 for staged scraper validation"
           case "${EXECUTE_BATCH}" in
@@ -106,6 +114,7 @@ jobs:
           echo "batch_limit=${BATCH_LIMIT}"
           echo "execute_batch=${EXECUTE_BATCH}"
           echo "poll_seconds=${POLL_SECONDS}"
+          echo "target_llm=${TARGET_LLM:-all}"
           utc_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "utc_started_at=${utc_started_at}"
 
@@ -118,6 +127,7 @@ jobs:
               SELECT q.id, q.target_llm, q.status
               FROM queries q
               WHERE q.brand_id = ${BRAND_ID}
+                AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
             ),
             response_counts AS (
               SELECT query_id, COUNT(*) AS responses
@@ -142,6 +152,7 @@ jobs:
               SELECT q.id, q.target_llm
               FROM queries q
               WHERE q.brand_id = ${BRAND_ID}
+                AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
                 AND NOT EXISTS (
                   SELECT 1 FROM llm_responses r WHERE r.query_id = q.id
                 )
@@ -391,8 +402,82 @@ jobs:
           name: bestcoffer-scraper-batch-${{ github.run_id }}
           path: scraper-batch-artifacts
 
+      - name: Checkout repo for V-Ninja helper
+        if: ${{ inputs.scraper_mode == 'vninja_proxy_check' || inputs.scraper_mode == 'vninja_subscription_update' }}
+        uses: actions/checkout@v4
+
+      - name: Run V-Ninja proxy check/update
+        if: ${{ inputs.scraper_mode == 'vninja_proxy_check' || inputs.scraper_mode == 'vninja_subscription_update' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          CLASH_SUBSCRIPTION_URL: ${{ secrets.CLASH_SUBSCRIPTION_URL }}
+          SCRAPER_MODE: ${{ inputs.scraper_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh vninja-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_script="/tmp/update_vninja_subscription_${GITHUB_RUN_ID}.sh"
+          remote_secret_file=""
+          local_secret_file=""
+          cleanup() {
+            if [ -n "${local_secret_file}" ] && [ -f "${local_secret_file}" ]; then
+              rm -f "${local_secret_file}"
+            fi
+          }
+          trap cleanup EXIT
+
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            scripts/update_vninja_subscription.sh \
+            "${SERVER_USER}@${SERVER_HOST}:${remote_script}"
+
+          remote_mode="check"
+          if [ "${SCRAPER_MODE}" = "vninja_subscription_update" ]; then
+            if [ -z "${CLASH_SUBSCRIPTION_URL}" ]; then
+              echo "CLASH_SUBSCRIPTION_URL GitHub secret is empty or unavailable" >&2
+              exit 1
+            fi
+            local_secret_file="$(mktemp)"
+            printf '%s' "${CLASH_SUBSCRIPTION_URL}" > "${local_secret_file}"
+            chmod 600 "${local_secret_file}"
+            remote_secret_file="/tmp/genpano_clash_sub_${GITHUB_RUN_ID}.txt"
+            scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              "${local_secret_file}" \
+              "${SERVER_USER}@${SERVER_HOST}:${remote_secret_file}"
+            remote_mode="update"
+          fi
+
+          remote_cmd="$(printf 'MODE=%q REMOTE_SCRIPT=%q SUB_URL_FILE=%q bash -s' \
+            "${remote_mode}" "${remote_script}" "${remote_secret_file}")"
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee vninja-artifacts/vninja-proxy.log
+          set -Eeuo pipefail
+          chmod +x "${REMOTE_SCRIPT}"
+          if [ "${MODE}" = "update" ]; then
+            bash "${REMOTE_SCRIPT}" update "${SUB_URL_FILE}"
+            rm -f "${SUB_URL_FILE}"
+          else
+            bash "${REMOTE_SCRIPT}" check
+          fi
+          rm -f "${REMOTE_SCRIPT}"
+          REMOTE
+
+      - name: Upload V-Ninja proxy artifacts
+        if: ${{ always() && (inputs.scraper_mode == 'vninja_proxy_check' || inputs.scraper_mode == 'vninja_subscription_update') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vninja-proxy-${{ github.run_id }}
+          path: vninja-artifacts
+
       - name: Run read-only diagnostics
-        if: ${{ inputs.scraper_mode != 'bestcoffer_batch' }}
+        if: ${{ inputs.scraper_mode == 'diagnostics' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}

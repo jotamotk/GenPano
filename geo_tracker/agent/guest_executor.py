@@ -46,6 +46,12 @@ CF_CHALLENGE_TITLES = [
     "just a moment", "attention required", "checking your browser",
     "unable to load site", "please wait", "access denied",
 ]
+DOUBAO_UNAVAILABLE_MARKERS = (
+    "\u8be5\u9875\u9762\u6682\u65f6\u4e0d\u53ef\u7528",
+    "\u9875\u9762\u6682\u65f6\u4e0d\u53ef\u7528",
+    "\u5237\u65b0\u9875\u9762",
+    "\u8fd4\u56de\u9996\u9875",
+)
 
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,6 +73,10 @@ _SENSITIVE_TEXT_PATTERNS = [
     ),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE), "Bearer [redacted]"),
 ]
+
+
+def _is_doubao_unavailable_page_text(body_text: str | None) -> bool:
+    return any(marker in (body_text or "") for marker in DOUBAO_UNAVAILABLE_MARKERS)
 
 
 def _redact_sensitive_text(text: str | None) -> str:
@@ -880,10 +890,11 @@ class GuestQueryExecutor:
                     continue
 
             if not input_el and llm == "doubao":
+                detected_unavailable = False
                 try:
                     body_text = await page_obj.evaluate("document.body?.innerText || ''")
-                    unavailable_markers = ["该页面暂时不可用", "页面暂时不可用", "刷新页面", "返回首页"]
-                    if any(marker in body_text for marker in unavailable_markers):
+                    if _is_doubao_unavailable_page_text(body_text):
+                        detected_unavailable = True
                         logger.warning("[%s] detected transient unavailable page; reloading once", llm)
                         await _save_runtime_snapshot(
                             page_obj,
@@ -912,6 +923,8 @@ class GuestQueryExecutor:
                             self.last_error_reason = "page_unavailable"
                 except Exception as reload_error:
                     logger.warning("[%s] unavailable-page reload probe failed: %s", llm, reload_error)
+                    if detected_unavailable:
+                        self.last_error_reason = "page_unavailable"
 
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
