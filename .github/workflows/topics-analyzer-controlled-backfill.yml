@@ -1,0 +1,212 @@
+name: Topics Analyzer Controlled Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry_run prints evidence; apply re-runs analyzer for selected responses"
+        type: choice
+        required: true
+        default: dry_run
+        options:
+          - dry_run
+          - apply
+      topic_id:
+        description: "Exact topic id for the live /brand/topics blocker"
+        required: false
+        default: "11"
+      prompt_id:
+        description: "Exact prompt id for the live /brand/topics blocker"
+        required: false
+        default: "36"
+      date_from:
+        description: "Inclusive response collection date start"
+        required: false
+        default: "2026-04-12"
+      date_to:
+        description: "Inclusive response collection date end"
+        required: false
+        default: "2026-05-12"
+      prompt_intent:
+        description: "Optional prompt intent filter"
+        required: false
+        default: "commercial"
+      prompt_language:
+        description: "Optional prompt language filter"
+        required: false
+        default: "zh"
+      response_ids:
+        description: "Optional comma-separated response ids; overrides topic/prompt discovery"
+        required: false
+        default: ""
+      query_ids:
+        description: "Optional comma-separated query ids; overrides topic/prompt discovery"
+        required: false
+        default: ""
+      limit:
+        description: "Maximum selected responses; hard-capped by the CLI at 50"
+        required: false
+        default: "20"
+      aggregate:
+        description: "After apply, recompute affected brand-day aggregates"
+        type: boolean
+        required: false
+        default: false
+      approval_ref:
+        description: "Required for apply: GitHub issue/comment URL recording approval"
+        required: false
+        default: ""
+
+concurrency:
+  group: topics-analyzer-controlled-backfill
+  cancel-in-progress: false
+
+jobs:
+  controlled-backfill:
+    name: Run scoped Topics analyzer backfill
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Execute controlled backfill on deployed server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          TOPIC_ID: ${{ inputs.topic_id }}
+          PROMPT_ID: ${{ inputs.prompt_id }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          PROMPT_INTENT: ${{ inputs.prompt_intent }}
+          PROMPT_LANGUAGE: ${{ inputs.prompt_language }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          LIMIT: ${{ inputs.limit }}
+          AGGREGATE: ${{ inputs.aggregate }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,TOPIC_ID,PROMPT_ID,DATE_FROM,DATE_TO,PROMPT_INTENT,PROMPT_LANGUAGE,RESPONSE_IDS,QUERY_IDS,LIMIT,AGGREGATE,APPROVAL_REF,GH_REPOSITORY,GH_RUN_ID,GH_SHA,GH_ACTOR
+          command_timeout: 45m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            require_int() {
+              local name="$1"
+              local value="$2"
+              [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be an integer, got '$value'"
+            }
+
+            case "$MODE" in
+              dry_run|apply) ;;
+              *) fail "mode must be dry_run or apply, got '$MODE'" ;;
+            esac
+            require_int LIMIT "$LIMIT"
+            [ "$LIMIT" -ge 1 ] || fail "limit must be >= 1"
+            [ "$LIMIT" -le 50 ] || fail "limit must be <= 50"
+            case "$AGGREGATE" in
+              true|false) ;;
+              *) fail "aggregate must be true or false, got '$AGGREGATE'" ;;
+            esac
+            if [ -z "$RESPONSE_IDS" ] && [ -z "$QUERY_IDS" ]; then
+              require_int TOPIC_ID "$TOPIC_ID"
+              require_int PROMPT_ID "$PROMPT_ID"
+              [[ "$DATE_FROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+              [[ "$DATE_TO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+            fi
+            if [ -n "$RESPONSE_IDS" ]; then
+              [[ "$RESPONSE_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "response_ids must be comma-separated integers"
+            fi
+            if [ -n "$QUERY_IDS" ]; then
+              [[ "$QUERY_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "query_ids must be comma-separated integers"
+            fi
+            if [ "$MODE" = "apply" ]; then
+              [ -n "$APPROVAL_REF" ] || fail "apply mode requires approval_ref"
+              [[ "$APPROVAL_REF" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+(#issuecomment-[0-9]+)?$ ]] \
+                || fail "approval_ref must be a GitHub issue/comment URL"
+            fi
+
+            cat <<AUDIT
+            === Topics Analyzer Controlled Backfill Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            mode=${MODE}
+            topic_id=${TOPIC_ID:-<empty>}
+            prompt_id=${PROMPT_ID:-<empty>}
+            date_from=${DATE_FROM:-<empty>}
+            date_to=${DATE_TO:-<empty>}
+            prompt_intent=${PROMPT_INTENT:-<empty>}
+            prompt_language=${PROMPT_LANGUAGE:-<empty>}
+            response_ids=${RESPONSE_IDS:-<empty>}
+            query_ids=${QUERY_IDS:-<empty>}
+            limit=${LIMIT}
+            aggregate=${AGGREGATE}
+            approval_ref=${APPROVAL_REF:-<empty>}
+            note=No broad date reanalysis is performed. The CLI selects successful responses only and prints exact response/query ids before any apply.
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            run_in_container() {
+              local service="$1"
+              shift
+              local cid
+              cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
+                docker compose exec -T "$service" "$@" </dev/null
+              else
+                echo "Service '$service' is not running; using docker compose run --rm -T." >&2
+                docker compose run --rm -T "$service" "$@" </dev/null
+              fi
+            }
+
+            args=(
+              -m geo_tracker.tasks.topics_analyzer_backfill
+              --limit "$LIMIT"
+            )
+            if [ -n "$RESPONSE_IDS" ]; then
+              args+=(--response-ids "$RESPONSE_IDS")
+            elif [ -n "$QUERY_IDS" ]; then
+              args+=(--query-ids "$QUERY_IDS")
+            else
+              args+=(
+                --topic-id "$TOPIC_ID"
+                --prompt-id "$PROMPT_ID"
+                --date-from "$DATE_FROM"
+                --date-to "$DATE_TO"
+              )
+            fi
+            if [ -n "$PROMPT_INTENT" ]; then
+              args+=(--prompt-intent "$PROMPT_INTENT")
+            fi
+            if [ -n "$PROMPT_LANGUAGE" ]; then
+              args+=(--prompt-language "$PROMPT_LANGUAGE")
+            fi
+            if [ "$MODE" = "apply" ]; then
+              args+=(--apply --approval-ref "$APPROVAL_REF")
+              if [ "$AGGREGATE" = "true" ]; then
+                args+=(--aggregate)
+              fi
+            fi
+
+            echo "=== Controlled analyzer backfill report ==="
+            run_in_container worker python "${args[@]}"
+            RUNBOOK
