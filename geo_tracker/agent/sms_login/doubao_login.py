@@ -18,6 +18,7 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
+from geo_tracker.agent.response_validation import doubao_auth_state_reason
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
 from geo_tracker.agent.sms_redaction import mask_phone
@@ -181,6 +182,19 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         await self._save_debug(page, "modal_timeout")
         logger.error("[doubao] 所有候选登录按钮均未能就绪登录表单")
         return False
+
+    async def _post_login_auth_failure_reason(self, page: Page) -> str | None:
+        body_text = ""
+        html = ""
+        try:
+            body_text = await page.evaluate("document.body?.innerText || ''")
+        except Exception:
+            pass
+        try:
+            html = await page.content()
+        except Exception:
+            pass
+        return doubao_auth_state_reason(body_text, html)
 
     async def _dom_reset(self, page: Page) -> bool:
         """
@@ -858,6 +872,11 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
                 logger.warning("[doubao] 登录 modal 仍然可见")
 
         # 检查聊天输入框（登录后应该可用）。2026 新版 UI 已无 testid，改用稳定 id/class
+        auth_reason = await self._post_login_auth_failure_reason(page)
+        if auth_reason:
+            logger.warning("[doubao] post-login auth proof failed: %s", auth_reason)
+            return auth_reason
+
         chat_input = await page.query_selector(
             "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
             "textarea.semi-input-textarea:not([aria-hidden='true']), "
