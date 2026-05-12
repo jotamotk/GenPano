@@ -23,6 +23,7 @@ from geo_tracker.db.models import (
 from geo_tracker.tasks.topics_analyzer_backfill import (
     TopicsAnalyzerBackfillScope,
     build_topics_analyzer_backfill_report,
+    validate_approval_ref,
 )
 
 
@@ -259,6 +260,78 @@ async def test_apply_reanalyzes_only_selected_response_ids(
 
 
 @pytest.mark.asyncio
+async def test_apply_raises_and_preserves_report_when_single_response_fails(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        return {"response_id": response.id, "status": "failed", "error": "llm_timeout"}
+
+    with pytest.raises(RuntimeError) as exc:
+        await build_topics_analyzer_backfill_report(
+            session,
+            TopicsAnalyzerBackfillScope(
+                response_ids=(75401,),
+            ),
+            apply=True,
+            approval_ref="https://github.com/jotamotk/trash_test/issues/654",
+            analyze_func=fake_analyze,
+        )
+
+    report = exc.value.report
+    assert report["mode"] == "apply"
+    assert report["write_performed"] is False
+    assert report["apply_failed"] is True
+    assert report["failed_response_id"] == 75401
+    assert report["apply_results"] == [
+        {"response_id": 75401, "status": "failed", "error": "llm_timeout"}
+    ]
+    assert report["before"]["selected_count"] == 1
+    assert report["after"]["selected_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_raises_on_partial_failure_without_success_report(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        if response.id == 75401:
+            response.analysis_status = AnalysisStatus.DONE.value
+            await session.commit()
+            return {"response_id": response.id, "status": "done"}
+        return {"response_id": response.id, "status": "failed", "error": "parse_error"}
+
+    with pytest.raises(RuntimeError) as exc:
+        await build_topics_analyzer_backfill_report(
+            session,
+            TopicsAnalyzerBackfillScope(
+                topic_id=11,
+                prompt_id=36,
+                date_from="2026-04-12",
+                date_to="2026-05-12",
+                prompt_intent="commercial",
+                prompt_language="zh",
+            ),
+            apply=True,
+            approval_ref="https://github.com/jotamotk/trash_test/issues/590#issuecomment-1",
+            analyze_func=fake_analyze,
+        )
+
+    report = exc.value.report
+    assert report["write_performed"] is False
+    assert report["apply_failed"] is True
+    assert report["partial_writes_possible"] is True
+    assert report["apply_plan"].startswith("Apply failed")
+    assert report["apply_results"] == [
+        {"response_id": 75401, "status": "done"},
+        {"response_id": 75402, "status": "failed", "error": "parse_error"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_apply_requires_github_approval_ref(session: AsyncSession) -> None:
     await _seed_scope(session)
 
@@ -273,3 +346,29 @@ async def test_apply_requires_github_approval_ref(session: AsyncSession) -> None
             ),
             apply=True,
         )
+
+
+@pytest.mark.parametrize(
+    "approval_ref",
+    [
+        "https://github.com/jotamotk/trash_test/issues/654",
+        "https://github.com/jotamotk/trash_test/issues/590#issuecomment-4432463335",
+        "https://github.com/jotamotk/trash_test/issues/585",
+    ],
+)
+def test_approval_ref_accepts_only_approved_issue_urls(approval_ref: str) -> None:
+    assert validate_approval_ref(approval_ref) == approval_ref
+
+
+@pytest.mark.parametrize(
+    "approval_ref",
+    [
+        "https://github.com/jotamotk/trash_test/issues/656",
+        "https://github.com/jotamotk/X/issues/654",
+        "https://github.com/other/trash_test/issues/654",
+        "https://github.com/jotamotk/trash_test/pull/656",
+    ],
+)
+def test_approval_ref_rejects_other_repos_and_issues(approval_ref: str) -> None:
+    with pytest.raises(ValueError, match="approval_ref"):
+        validate_approval_ref(approval_ref)

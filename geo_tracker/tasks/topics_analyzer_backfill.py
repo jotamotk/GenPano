@@ -39,7 +39,7 @@ from geo_tracker.db.models import (
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GITHUB_ISSUE_RE = re.compile(
-    r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+"
+    r"^https://github\.com/jotamotk/trash_test/issues/(654|590|585)"
     r"(#issuecomment-[0-9]+)?$"
 )
 RELATION_KEYS = (
@@ -54,6 +54,15 @@ AnalyzeFunc = Callable[
     [AsyncSession, LLMResponse, Brand, list[Competitor], str],
     Awaitable[dict],
 ]
+
+
+class AnalyzerBackfillApplyError(RuntimeError):
+    """Raised when apply mode cannot complete every selected analyzer rerun."""
+
+    def __init__(self, report: dict) -> None:
+        self.report = report
+        failed_response_id = report.get("failed_response_id")
+        super().__init__(f"analyzer apply failed for response_id={failed_response_id}")
 
 
 @dataclass(frozen=True)
@@ -141,7 +150,10 @@ def validate_scope(scope: TopicsAnalyzerBackfillScope, *, apply: bool = False) -
 def validate_approval_ref(approval_ref: str | None) -> str:
     value = (approval_ref or "").strip()
     if not value or not GITHUB_ISSUE_RE.match(value):
-        raise ValueError("apply mode requires approval_ref with a GitHub issue/comment URL")
+        raise ValueError(
+            "apply mode requires approval_ref in "
+            "https://github.com/jotamotk/trash_test/issues/{654,590,585}"
+        )
     return value
 
 
@@ -427,7 +439,23 @@ async def build_topics_analyzer_backfill_report(
     apply_results: list[dict] = []
     for item in selected:
         response, brand, competitors, intent = await _load_analyzer_inputs(session, item)
-        apply_results.append(await analyze_func(session, response, brand, competitors, intent))
+        result = await analyze_func(session, response, brand, competitors, intent)
+        apply_results.append(result)
+        if result.get("status") != "done":
+            after_rows = await build_evidence_rows(session, selected)
+            report["apply_failed"] = True
+            report["failed_response_id"] = item.response_id
+            report["failure_reason"] = (
+                result.get("error") or result.get("reason") or "non_done_status"
+            )
+            report["partial_writes_possible"] = len(apply_results) > 1
+            report["apply_plan"] = (
+                "Apply failed before all selected responses completed with status=done. "
+                "Review apply_results and after evidence before retrying the same exact scope."
+            )
+            report["apply_results"] = apply_results
+            report["after"] = summarize_evidence(after_rows)
+            raise AnalyzerBackfillApplyError(report)
     after_rows = await build_evidence_rows(session, selected)
     report["write_performed"] = True
     report["apply_plan"] = "Applied only selected response_ids."
@@ -501,9 +529,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    report = asyncio.run(run_from_args(args))
-    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0
+    try:
+        report = asyncio.run(run_from_args(args))
+    except AnalyzerBackfillApplyError as exc:
+        print(json.dumps(exc.report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    else:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
 
 
 if __name__ == "__main__":

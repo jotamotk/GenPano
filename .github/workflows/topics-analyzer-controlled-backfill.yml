@@ -136,8 +136,8 @@ jobs:
             fi
             if [ "$MODE" = "apply" ]; then
               [ -n "$APPROVAL_REF" ] || fail "apply mode requires approval_ref"
-              [[ "$APPROVAL_REF" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+(#issuecomment-[0-9]+)?$ ]] \
-                || fail "approval_ref must be a GitHub issue/comment URL"
+              [[ "$APPROVAL_REF" =~ ^https://github\.com/jotamotk/trash_test/issues/(654|590|585)(#issuecomment-[0-9]+)?$ ]] \
+                || fail "approval_ref must be https://github.com/jotamotk/trash_test/issues/{654,590,585} with optional issuecomment anchor"
             fi
 
             cat <<AUDIT
