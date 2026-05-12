@@ -202,10 +202,10 @@ async def _fact_primary_competitor_row(
             denominator_response_ids.add(rid)
         mentions = _fact_target_mention_count(row)
         total = _fact_all_mention_count(row, mentions)
+        all_mentions += total
         if mentions > 0:
             target_response_ids.add(rid)
             target_mentions += mentions
-            all_mentions += total
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         if rank is not None:
             ranks.append(float(rank))

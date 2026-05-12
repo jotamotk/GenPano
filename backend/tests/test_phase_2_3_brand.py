@@ -147,8 +147,8 @@ async def test_products_returns_aggregated(client, user, project_with_data):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "partial"
-    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
+    assert body["state"] == "ok"
+    assert body["formula_status"] == "ok"
     # 2 distinct (brand, product) pairs: (Primary, ProductA) + (Primary, ProductB)
     assert body["total"] >= 2
     names = {p["product_name"] for p in body["items"]}
@@ -176,8 +176,8 @@ async def test_competitor_metrics_includes_primary_and_competitors(client, user,
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "partial"
-    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
+    assert body["state"] == "ok"
+    assert body["formula_status"] == "ok"
     assert body["primary_brand_id"] == 42
     assert body["primary"] is not None
     assert body["primary"]["brand_id"] == 42

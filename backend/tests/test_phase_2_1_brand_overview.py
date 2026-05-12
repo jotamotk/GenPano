@@ -102,7 +102,7 @@ async def project_with_data(db_session: AsyncSession, user: User) -> Project:
 
 @pytest.mark.asyncio
 async def test_overview_empty_state(client, user, empty_project):
-    """Project without primary_brand_id → state='empty', zero KPIs."""
+    """Project without primary_brand_id → state='empty', null KPIs."""
     resp = await client.get(f"/api/v1/projects/{empty_project.id}/overview", headers=_bearer(user))
     assert resp.status_code == 200
     body = resp.json()
@@ -113,7 +113,7 @@ async def test_overview_empty_state(client, user, empty_project):
     assert body["sentiment_30d"] == []
     assert len(body["kpi_cards"]) == 4
     for c in body["kpi_cards"]:
-        assert c["value"] == 0
+        assert c["value"] is None
         assert c["delta_30d_pct"] is None
 
 

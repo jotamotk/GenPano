@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_NO_EVIDENCE_STATUS,
-    FORMULA_PENDING_STATUS,
+    FORMULA_OK_STATUS,
     FormulaDiagnostics,
     formula_diagnostics_for,
 )
@@ -36,7 +36,7 @@ class ChartState(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if not self.formula_status or self.formula_status == FORMULA_NO_EVIDENCE_STATUS:
             if self.state == "ok":
-                self.formula_status = FORMULA_PENDING_STATUS
+                self.formula_status = FORMULA_OK_STATUS
             elif self.state == "partial":
                 self.formula_status = FORMULA_MISSING_INPUTS_STATUS
             else:

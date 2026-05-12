@@ -14,7 +14,7 @@ from genpano_models import (
     ResponseAnalysis,
 )
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._mention_rollups import brand_mention_match_condition, brand_mention_names
@@ -150,7 +150,7 @@ def score_0_100(value: float | int | None) -> float | None:
 
 def metric_definition(metric_key: str, *, display_percent: bool = False) -> MetricDefinition:
     source = "geo_score_daily"
-    formula_status = FORMULA_PENDING_STATUS
+    formula_status = FORMULA_OK_STATUS
     if metric_key in {"mention_rate", "avg_mention_rate"}:
         unit = "percent" if display_percent else "ratio"
         value_scale = "percent" if display_percent else "decimal"
@@ -466,13 +466,28 @@ async def build_contract_context(
         or 0
     )
 
+    aliases = sorted(await brand_mention_names(session, brand_id))
+    name_value = func.lower(func.trim(BrandMention.brand_name))
+    name_only_competitor_conditions = [
+        BrandMention.brand_id.is_(None),
+        BrandMention.brand_name.isnot(None),
+        name_value != "",
+    ]
+    if aliases:
+        name_only_competitor_conditions.append(~name_value.in_(aliases))
+
     competitive_mention_count = int(
         (
             await session.execute(
                 select(func.count(BrandMention.id)).where(
                     and_(
-                        BrandMention.brand_id.isnot(None),
-                        BrandMention.brand_id != brand_id,
+                        or_(
+                            and_(
+                                BrandMention.brand_id.isnot(None),
+                                BrandMention.brand_id != brand_id,
+                            ),
+                            and_(*name_only_competitor_conditions),
+                        ),
                         BrandMention.created_at >= from_dt,
                         BrandMention.created_at <= to_dt,
                     )
@@ -481,8 +496,6 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
-    if has_data:
-        missing_reasons.append("upstream aggregate formula provenance is pending review")
     if repair_missing:
         missing_inputs.extend(repair_missing)
         missing_sources.extend(repair_missing)
@@ -501,7 +514,6 @@ async def build_contract_context(
         state = "ok"
         state_reason = base_state_reason or "data_available"
 
-    aliases = sorted(await brand_mention_names(session, brand_id))
     evidence_counts = {
         "geo_score_daily_rows": geo_rows,
         "brand_mention_count": mention_count,
@@ -545,8 +557,7 @@ async def build_contract_context(
         elif missing_inputs:
             resolved_formula_status = FORMULA_MISSING_INPUTS_STATUS
         else:
-            resolved_formula_status = FORMULA_PENDING_STATUS
-            missing_sources.append(FORMULA_PENDING_SOURCE)
+            resolved_formula_status = FORMULA_OK_STATUS
 
     if resolved_formula_status == FORMULA_MISSING_INPUTS_STATUS and not missing_reasons:
         missing_reasons.append("required formula inputs are missing")

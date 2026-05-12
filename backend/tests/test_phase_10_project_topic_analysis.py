@@ -332,6 +332,25 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
 
 
 @pytest.mark.asyncio
+async def test_overview_sov_includes_competitor_only_admin_fact_denominator(
+    client,
+    db_session,
+    user,
+):
+    project = await _seed_admin_chain(db_session, user)
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    sov_card = next(card for card in body["kpi_cards"] if card["metric_key"] == "sov")
+    assert sov_card["value"] == pytest.approx(50.0)
+
+
+@pytest.mark.asyncio
 async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
 

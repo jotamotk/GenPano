@@ -12,7 +12,7 @@ Query strategy:
   populate; Phase 2.1 returns [] if table empty).
 
 When project has no primary_brand_id → return `state='empty'` with all
-collections []  + KPI cards with 0 / null deltas.
+collections []  + KPI cards with null values/deltas.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
-    FORMULA_PENDING_STATUS,
+    FORMULA_NO_EVIDENCE_STATUS,
+    FORMULA_OK_STATUS,
     MetricValue,
     ValueRange,
     build_contract_context,
@@ -136,7 +137,7 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
         formula_status = card.formula_status
         if formula_status is None:
             formula_status = (
-                FORMULA_PENDING_STATUS if value is not None else FORMULA_MISSING_INPUTS_STATUS
+                FORMULA_OK_STATUS if value is not None else FORMULA_MISSING_INPUTS_STATUS
             )
         decorated.append(
             card.model_copy(
@@ -193,7 +194,7 @@ async def _score_components(
             value_scale="score_0_100",
             value_range=value_range,
             source="geo_score_daily",
-            formula_status=FORMULA_PENDING_STATUS if value is not None else None,
+            formula_status=FORMULA_OK_STATUS if value is not None else None,
         )
         for key, value in values.items()
     }
@@ -249,10 +250,10 @@ async def _overview_from_admin_facts(
         if _is_non_branded_row(row):
             bucket["denominator_ids"].add(rid)
         mentions, total = _fact_target_mentions(row)
+        bucket["all_mentions"] += total
         if mentions > 0:
             bucket["target_response_ids"].add(rid)
             bucket["target_mentions"] += mentions
-            bucket["all_mentions"] += total
             prompt_id = _as_int(row.get("prompt_id"))
             prompt_key = prompt_id if prompt_id is not None else row.get("prompt_text") or rid
             prompt_bucket = prompt_buckets.setdefault(
@@ -381,22 +382,35 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
             "to": today.isoformat(),
         },
         kpi_cards=[
-            KpiCard(label_zh="GEO 评分", label_en="GeoScore", value=0, delta_30d_pct=None),
             KpiCard(
-                label_zh="提及率", label_en="Mention Rate", value=0, unit="%", delta_30d_pct=None
+                label_zh="GEO 评分",
+                label_en="GeoScore",
+                value=None,
+                formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                delta_30d_pct=None,
+            ),
+            KpiCard(
+                label_zh="提及率",
+                label_en="Mention Rate",
+                value=None,
+                unit="%",
+                formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                delta_30d_pct=None,
             ),
             KpiCard(
                 label_zh="声量份额",
                 label_en="Share of Voice",
-                value=0,
+                value=None,
                 unit="%",
+                formula_status=FORMULA_NO_EVIDENCE_STATUS,
                 delta_30d_pct=None,
             ),
             KpiCard(
                 label_zh="情感分",
                 label_en="Sentiment",
                 metric_key="sentiment",
-                value=0,
+                value=None,
+                formula_status=FORMULA_NO_EVIDENCE_STATUS,
                 delta_30d_pct=None,
             ),
         ],

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
-    FORMULA_PENDING_STATUS,
+    FORMULA_OK_STATUS,
     build_contract_context,
     context_update,
     metric_definition,
@@ -137,7 +137,7 @@ def _decorate_metric_series(
             else item.metric
         )
         spec = metric_definition(definition_key)
-        formula_status = FORMULA_PENDING_STATUS if item.points else FORMULA_MISSING_INPUTS_STATUS
+        formula_status = FORMULA_OK_STATUS if item.points else FORMULA_MISSING_INPUTS_STATUS
         missing_inputs: list[str] = []
         if not item.points:
             if item.metric == "mention_rate":
