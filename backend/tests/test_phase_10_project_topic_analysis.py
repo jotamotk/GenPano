@@ -362,19 +362,21 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["state"] == "ok"
-    assert body["summary"]["topic_count"] == 2
-    assert body["summary"]["prompt_count"] == 3
-    assert body["summary"]["query_count"] == 4
+    assert body["summary"]["topic_count"] == 1
+    assert body["summary"]["prompt_count"] == 2
+    assert body["summary"]["query_count"] == 3
     assert body["summary"]["response_count"] == 3
     barrier = next(row for row in body["topics"] if row["topic_id"] == 101)
     assert barrier["prompt_count"] == 2
-    assert barrier["query_count"] == 4
+    assert barrier["query_count"] == 3
     assert barrier["response_count"] == 3
-    assert barrier["success_rate"] == pytest.approx(3 / 4, rel=0.01)
-    assert barrier["engine_coverage"] == ["chatgpt", "deepseek", "doubao"]
+    assert barrier["success_rate"] == pytest.approx(1.0, rel=0.01)
+    assert barrier["engine_coverage"] == ["chatgpt", "deepseek"]
     assert barrier["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
+    assert barrier["visibility_rate"] == pytest.approx(1 / 2, rel=0.01)
     assert barrier["sov"] == pytest.approx(2 / 4, rel=0.01)
     assert barrier["sentiment_distribution"] == {"positive": 1, "neutral": 0, "negative": 1}
+    assert barrier["citation_count"] == 1
     assert barrier["citation_rate"] == pytest.approx(1 / 3, rel=0.01)
     assert {row["intent"] for row in body["intent_matrix"]} == {
         "commercial",
@@ -386,7 +388,7 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
         headers=_bearer(user),
     )
     assert scoped.status_code == 200, scoped.text
-    assert scoped.json()["summary"]["query_count"] == 4
+    assert scoped.json()["summary"]["query_count"] == 3
 
     empty = await client.get(
         f"/api/v1/projects/{project.id}/topics/monitoring?segment_id=SEG-MISSING",
@@ -426,11 +428,12 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
     )
     assert queries.status_code == 200, queries.text
     query_body = queries.json()
-    assert query_body["total"] == 3
-    assert {row["status"] for row in query_body["items"]} == {"done", "failed"}
+    assert query_body["total"] == 2
+    assert {row["status"] for row in query_body["items"]} == {"done"}
     done_query = next(row for row in query_body["items"] if row["query_id"] == 301)
     assert done_query["target_mentioned"] is True
     assert done_query["citation_count"] == 1
+    assert done_query["daily_latest"][0]["query_id"] == 301
 
     response = await client.get(
         f"/api/v1/projects/{project.id}/queries/301/response",
@@ -685,13 +688,13 @@ async def test_project_query_activity_is_project_scoped(client, db_session, user
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["totals"]["queries"] == 4
+    assert body["totals"]["queries"] == 3
     assert body["totals"]["responses"] == 3
     assert body["totals"]["analyzed"] == 3
     assert body["totals"]["mentions_target"] == 1
     assert body["totals"]["mention_denominator"] == 2
     assert body["by_status"]["done"] == 3
-    assert body["by_status"]["failed"] == 1
+    assert "failed" not in body["by_status"]
     assert body["by_topic"][0]["topic_id"] == 101
     assert body["by_topic"][0]["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
 

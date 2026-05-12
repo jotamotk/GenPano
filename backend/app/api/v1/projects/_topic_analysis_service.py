@@ -20,12 +20,15 @@ from app.api.v1.projects._legacy_lookups import (
     resolve_brand_names,
 )
 from app.api.v1.projects._topic_analysis_dto import (
+    AnalyzerFacts,
     BrandMentionDetail,
     CitationDetail,
+    ProductFeatureAttributeDetail,
     ProjectProfileRow,
     ProjectSegmentRow,
     ProjectSegmentsOut,
     PromptQueriesOut,
+    PromptQueryDailyRow,
     PromptQueryRow,
     QueryActivityDailyRow,
     QueryActivityEngineRow,
@@ -34,7 +37,10 @@ from app.api.v1.projects._topic_analysis_dto import (
     QueryDetail,
     QueryResponseDetailOut,
     ResponseAnalysisDetail,
+    ResponseAttemptDetail,
     ResponseDetail,
+    ResponseRelationDetail,
+    SentimentDriverDetail,
     TopicIntentMatrixRow,
     TopicMonitoringOut,
     TopicMonitoringRow,
@@ -114,6 +120,14 @@ def _date_key(value: Any) -> str | None:
     return str(value)[:10]
 
 
+def _timestamp_key(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -152,6 +166,40 @@ def _normalize_key(value: Any) -> str | None:
         return None
     norm = str(value).strip().lower().replace("-", "_")
     return norm or None
+
+
+def _success_status_condition(cols: set[str], alias: str = "q") -> str | None:
+    if "status" not in cols:
+        return None
+    return (
+        f"LOWER(COALESCE({alias}.status, '')) "
+        "IN ('done', 'success', 'completed')"
+    )
+
+
+def _logical_query_key(row: dict[str, Any]) -> str:
+    query_text = " ".join(str(row.get("query_text") or "").strip().lower().split())
+    prompt = str(row.get("prompt_id") or "")
+    return "|".join([prompt, query_text])
+
+
+def _row_attempt_time(row: dict[str, Any]) -> Any:
+    return (
+        row.get("query_executed_at")
+        or row.get("query_finished_at")
+        or row.get("response_created_at")
+        or row.get("query_created_at")
+    )
+
+
+def _row_attempt_sort_key(row: dict[str, Any]) -> tuple[str, int]:
+    return (_timestamp_key(_row_attempt_time(row)), int(row.get("query_id") or 0))
+
+
+def _profile_name(profile_id: Any, profile_names: dict[str, str]) -> str:
+    if profile_id is None:
+        return "Unknown profile"
+    return profile_names.get(str(profile_id), "Unknown profile")
 
 
 def _clean_fact_term(value: Any) -> str | None:
@@ -342,6 +390,58 @@ async def legacy_table_columns(session: AsyncSession, name: str) -> set[str]:
         return {str(r[1]) for r in rows}
     except Exception:
         return set()
+
+
+async def _profile_names_for_ids(
+    session: AsyncSession,
+    profile_ids: set[str],
+) -> dict[str, str]:
+    wanted = {str(pid) for pid in profile_ids if pid is not None and str(pid)}
+    if not wanted or not await legacy_table_exists(session, "profiles"):
+        return {}
+    cols = await legacy_table_columns(session, "profiles")
+    if "id" not in cols:
+        return {}
+    name_expr = "name" if "name" in cols else None
+    if name_expr is None:
+        return {}
+    placeholders: list[str] = []
+    params: dict[str, Any] = {}
+    for i, pid in enumerate(sorted(wanted)):
+        key = f"profile_id_{i}"
+        placeholders.append(f":{key}")
+        params[key] = pid
+    rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT CAST(id AS TEXT) AS id, {name_expr} AS name
+                    FROM profiles
+                    WHERE CAST(id AS TEXT) IN ({', '.join(placeholders)})
+                    """
+                ),
+                params,
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        str(row["id"]): str(row["name"])
+        for row in rows
+        if row.get("id") is not None and row.get("name")
+    }
+
+
+async def _profile_names_for_rows(
+    session: AsyncSession,
+    rows: list[dict[str, Any]],
+) -> dict[str, str]:
+    return await _profile_names_for_ids(
+        session,
+        {str(row["profile_id"]) for row in rows if row.get("profile_id") is not None},
+    )
 
 
 def _select_col(
@@ -590,6 +690,8 @@ async def _fact_rows(
     has_mentions = await legacy_table_exists(session, "brand_mentions")
     has_citations = await legacy_table_exists(session, "citation_sources")
     mention_cols = await legacy_table_columns(session, "brand_mentions") if has_mentions else set()
+    if not has_responses or "id" not in response_cols:
+        return []
 
     scope_brand_id = (
         int(brand_id_override)
@@ -631,6 +733,9 @@ async def _fact_rows(
     )
     query_join_conditions.extend(scoped_conditions)
     params.update(scoped_params)
+    success_condition = _success_status_condition(query_cols)
+    if success_condition:
+        query_join_conditions.append(success_condition)
 
     response_join = ""
     response_selects = [
@@ -641,22 +746,22 @@ async def _fact_rows(
         "NULL AS response_llm_version",
         "NULL AS response_created_at",
     ]
-    if has_responses:
-        response_on: list[str] = []
-        if "query_id" in response_cols:
-            response_on.append("r.query_id = q.id")
-        if not response_on and "prompt_id" in response_cols:
-            response_on.append("r.prompt_id = p.id")
-        if response_on:
-            response_join = f"LEFT JOIN llm_responses r ON {' OR '.join(response_on)}"
-            response_selects = [
-                "r.id AS response_id",
-                f"{_response_text_expr(response_cols)} AS response_raw_text",
-                _select_col(response_cols, "r", "target_llm", "response_target_llm"),
-                _select_col(response_cols, "r", "intent", "response_intent"),
-                _select_col(response_cols, "r", "llm_version", "response_llm_version"),
-                _select_col(response_cols, "r", "created_at", "response_created_at"),
-            ]
+    response_on: list[str] = []
+    if "query_id" in response_cols:
+        response_on.append("r.query_id = q.id")
+    if not response_on and "prompt_id" in response_cols:
+        response_on.append("r.prompt_id = p.id")
+    if not response_on:
+        return []
+    response_join = f"JOIN llm_responses r ON {' OR '.join(response_on)}"
+    response_selects = [
+        "r.id AS response_id",
+        f"{_response_text_expr(response_cols)} AS response_raw_text",
+        _select_col(response_cols, "r", "target_llm", "response_target_llm"),
+        _select_col(response_cols, "r", "intent", "response_intent"),
+        _select_col(response_cols, "r", "llm_version", "response_llm_version"),
+        _select_col(response_cols, "r", "created_at", "response_created_at"),
+    ]
 
     brand_scope_match_select = "0 AS brand_scope_matched"
     if scope_brand_id is not None:
@@ -772,16 +877,7 @@ async def _fact_rows(
         ]
 
     citation_select = "0 AS citation_count"
-    if has_citations and response_join and has_mentions and primary is not None:
-        citation_select = (
-            "(SELECT COUNT(*) FROM citation_sources cs "
-            "WHERE cs.response_id = r.id "
-            "AND cs.mention_id IN ("
-            "SELECT bm.id FROM brand_mentions bm "
-            f"WHERE bm.response_id = r.id AND {target_mention_condition}"
-            ")) AS citation_count"
-        )
-    elif has_citations and response_join:
+    if has_citations and response_join:
         citation_select = (
             "(SELECT COUNT(*) FROM citation_sources cs WHERE cs.response_id = r.id) "
             "AS citation_count"
@@ -963,6 +1059,7 @@ def _topic_aggregates(
         citations = int(bucket["citation_count"])
         mention_denominator = len(bucket["mention_denominator_response_ids"])
         target_mention_responses = len(bucket["target_mention_response_ids"])
+        visibility_rate = _pct(target_mention_responses, mention_denominator)
         items.append(
             TopicMonitoringRow(
                 topic_id=tid,
@@ -975,11 +1072,13 @@ def _topic_aggregates(
                 response_count=response_count,
                 success_rate=_pct(bucket["success_count"], query_count),
                 engine_coverage=sorted(bucket["engines"]),
-                mention_rate=_pct(target_mention_responses, mention_denominator),
+                mention_rate=visibility_rate,
+                visibility_rate=visibility_rate,
                 sov=_pct(target_mentions, all_mentions),
                 avg_rank=_mean(bucket["ranks"]),
                 avg_geo_score=_mean(bucket["geo_scores"]),
                 sentiment_distribution=bucket["sentiment"],
+                citation_count=citations,
                 citation_rate=_pct(citations, response_count),
                 last_collected=_iso(bucket["last_collected"]),
             )
@@ -1095,6 +1194,7 @@ async def get_topic_prompts(
                 "citations": 0,
                 "ranks": [],
                 "geo_scores": [],
+                "sentiment": {"positive": 0, "neutral": 0, "negative": 0},
                 "last_collected": None,
             }
         bucket = by_prompt[pid]
@@ -1130,6 +1230,9 @@ async def get_topic_prompts(
             geo = _as_float(row.get("geo_score"))
             if geo is not None:
                 bucket["geo_scores"].append(geo)
+            bucket["sentiment"]["positive"] += int(row.get("positive_mentions") or 0)
+            bucket["sentiment"]["neutral"] += int(row.get("neutral_mentions") or 0)
+            bucket["sentiment"]["negative"] += int(row.get("negative_mentions") or 0)
 
     buckets = list(by_prompt.values())
     if filters.explicit:
@@ -1150,8 +1253,14 @@ async def get_topic_prompts(
                 len(b["target_mention_response_ids"]),
                 len(b["mention_denominator_response_ids"]),
             ),
+            visibility_rate=_pct(
+                len(b["target_mention_response_ids"]),
+                len(b["mention_denominator_response_ids"]),
+            ),
             avg_rank=_mean(b["ranks"]),
             avg_geo_score=_mean(b["geo_scores"]),
+            sentiment_distribution=b["sentiment"],
+            citation_count=int(b["citations"]),
             citation_rate=_pct(b["citations"], len(b["responses"])),
             last_collected=_iso(b["last_collected"]),
         )
@@ -1186,32 +1295,73 @@ async def get_prompt_queries(
         if brand_id is not None
         else []
     )
-    by_query: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    rows = [row for row in rows if _as_int(row.get("response_id")) is not None]
+    rows.sort(key=_row_attempt_sort_key, reverse=True)
+    profile_names = await _profile_names_for_rows(session, rows)
+
+    by_group: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for row in rows:
         qid = _as_int(row.get("query_id"))
-        if qid is None:
+        rid = _as_int(row.get("response_id"))
+        if qid is None or rid is None:
             continue
-        if qid not in by_query:
-            by_query[qid] = row
+        group_key = _logical_query_key(row)
+        date_key = _date_key(_row_attempt_time(row)) or ""
+        if group_key not in by_group:
+            by_group[group_key] = {"rows": [], "daily": OrderedDict()}
+        bucket = by_group[group_key]
+        bucket["rows"].append(row)
+        if date_key and date_key not in bucket["daily"]:
+            bucket["daily"][date_key] = row
+
     items = [
         PromptQueryRow(
-            query_id=qid,
+            query_id=int(row["query_id"]),
             prompt_id=_as_int(row.get("prompt_id")),
+            query_group_key=group_key,
             query_text=row.get("query_text"),
             target_llm=row.get("target_llm"),
             status=(str(row.get("query_status")).lower() if row.get("query_status") else None),
             profile_id=str(row.get("profile_id")) if row.get("profile_id") is not None else None,
+            profile_name=_profile_name(row.get("profile_id"), profile_names),
             created_at=_iso(row.get("query_created_at")),
             executed_at=_iso(row.get("query_executed_at")),
             finished_at=_iso(row.get("query_finished_at")),
             latency_ms=_as_int(row.get("latency_ms")),
             response_id=_as_int(row.get("response_id")),
+            date=_date_key(_row_attempt_time(row)),
+            attempt_count=len(bucket["rows"]),
+            daily_latest=[
+                PromptQueryDailyRow(
+                    date=date_key,
+                    query_id=int(day_row["query_id"]),
+                    response_id=int(day_row["response_id"]),
+                    query_text=day_row.get("query_text"),
+                    target_llm=day_row.get("target_llm"),
+                    status=str(day_row.get("query_status")).lower()
+                    if day_row.get("query_status")
+                    else None,
+                    profile_id=str(day_row.get("profile_id"))
+                    if day_row.get("profile_id") is not None
+                    else None,
+                    profile_name=_profile_name(day_row.get("profile_id"), profile_names),
+                    executed_at=_iso(day_row.get("query_executed_at")),
+                    finished_at=_iso(day_row.get("query_finished_at")),
+                    latency_ms=_as_int(day_row.get("latency_ms")),
+                    target_mentioned=_fact_target_mention_count(day_row) > 0,
+                    citation_count=int(day_row.get("citation_count") or 0),
+                    geo_score=_round(day_row.get("geo_score")),
+                    sentiment_score=_round(day_row.get("sentiment_score")),
+                )
+                for date_key, day_row in bucket["daily"].items()
+            ],
             target_mentioned=_fact_target_mention_count(row) > 0,
             citation_count=int(row.get("citation_count") or 0),
             geo_score=_round(row.get("geo_score")),
             sentiment_score=_round(row.get("sentiment_score")),
         )
-        for qid, row in by_query.items()
+        for group_key, bucket in by_group.items()
+        for row in [next(iter(bucket["daily"].values()))]
     ]
     return PromptQueriesOut(
         project_id=project.id,
@@ -1219,6 +1369,387 @@ async def get_prompt_queries(
         items=items,
         total=len(items),
         state="ok" if items else "empty",
+    )
+
+
+async def _response_analysis_detail(
+    session: AsyncSession,
+    response_id: int,
+) -> ResponseAnalysisDetail | None:
+    if not await legacy_table_exists(session, "response_analyses"):
+        return None
+    arow = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, target_brand_mentioned, target_brand_rank,
+                           target_brand_sentiment, visibility_score, sentiment_score,
+                           sov_score, citation_score, geo_score, analyzed_at
+                    FROM response_analyses
+                    WHERE response_id = :response_id
+                    LIMIT 1
+                    """
+                ),
+                {"response_id": response_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not arow:
+        return None
+    a = dict(arow)
+    return ResponseAnalysisDetail(
+        analysis_id=_as_int(a.get("id")),
+        target_brand_mentioned=bool(a.get("target_brand_mentioned"))
+        if a.get("target_brand_mentioned") is not None
+        else None,
+        target_brand_rank=_as_int(a.get("target_brand_rank")),
+        target_brand_sentiment=a.get("target_brand_sentiment"),
+        visibility_score=_round(a.get("visibility_score")),
+        sentiment_score=_round(a.get("sentiment_score")),
+        sov_score=_round(a.get("sov_score")),
+        citation_score=_round(a.get("citation_score")),
+        geo_score=_round(a.get("geo_score")),
+        analyzed_at=_iso(a.get("analyzed_at")),
+    )
+
+
+async def _brand_mentions_for_response(
+    session: AsyncSession,
+    response_id: int,
+) -> list[BrandMentionDetail]:
+    if not await legacy_table_exists(session, "brand_mentions"):
+        return []
+    mrows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, response_id, brand_id, brand_name, product_name, is_target,
+                           position_rank, sentiment, sentiment_score, context_snippet,
+                           mention_count, created_at
+                    FROM brand_mentions
+                    WHERE response_id = :response_id
+                    ORDER BY COALESCE(position_rank, 9999), id
+                    """
+                ),
+                {"response_id": response_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        BrandMentionDetail(
+            mention_id=int(m["id"]),
+            response_id=int(m["response_id"]),
+            brand_id=_as_int(m.get("brand_id")),
+            brand_name=m.get("brand_name") or "",
+            product_name=m.get("product_name"),
+            is_target=bool(m.get("is_target")) if m.get("is_target") is not None else None,
+            position_rank=_as_int(m.get("position_rank")),
+            sentiment=m.get("sentiment"),
+            sentiment_score=_round(m.get("sentiment_score")),
+            context_snippet=m.get("context_snippet"),
+            mention_count=_as_int(m.get("mention_count")),
+            created_at=_iso(m.get("created_at")),
+        )
+        for m in mrows
+    ]
+
+
+async def _citations_for_response(
+    session: AsyncSession,
+    response_id: int,
+) -> list[CitationDetail]:
+    if not await legacy_table_exists(session, "citation_sources"):
+        return []
+    crows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, response_id, mention_id, url, domain, title,
+                           citation_index, source_type, created_at
+                    FROM citation_sources
+                    WHERE response_id = :response_id
+                    ORDER BY COALESCE(citation_index, 9999), id
+                    """
+                ),
+                {"response_id": response_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        CitationDetail(
+            citation_id=int(c["id"]),
+            response_id=int(c["response_id"]),
+            mention_id=_as_int(c.get("mention_id")),
+            url=c.get("url") or "",
+            domain=c.get("domain"),
+            title=c.get("title"),
+            citation_index=_as_int(c.get("citation_index")),
+            source_type=c.get("source_type"),
+            created_at=_iso(c.get("created_at")),
+        )
+        for c in crows
+    ]
+
+
+async def _product_features_for_analysis(
+    session: AsyncSession,
+    analysis_id: int | None,
+) -> list[ProductFeatureAttributeDetail]:
+    if analysis_id is None or not await legacy_table_exists(session, "product_feature_mentions"):
+        return []
+    frows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, analysis_id, brand_name, product_name, feature_name,
+                           feature_sentiment, context_snippet, scenario,
+                           price_positioning, created_at
+                    FROM product_feature_mentions
+                    WHERE analysis_id = :analysis_id
+                    ORDER BY id
+                    """
+                ),
+                {"analysis_id": analysis_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        ProductFeatureAttributeDetail(
+            feature_id=int(row["id"]),
+            analysis_id=_as_int(row.get("analysis_id")),
+            brand_name=row.get("brand_name"),
+            product_name=row.get("product_name"),
+            feature_name=row.get("feature_name"),
+            feature_sentiment=row.get("feature_sentiment"),
+            context_snippet=row.get("context_snippet"),
+            scenario=row.get("scenario"),
+            price_positioning=row.get("price_positioning"),
+            created_at=_iso(row.get("created_at")),
+        )
+        for row in frows
+    ]
+
+
+async def _sentiment_drivers_for_response(
+    session: AsyncSession,
+    response_id: int,
+) -> list[SentimentDriverDetail]:
+    if not await legacy_table_exists(session, "sentiment_drivers"):
+        return []
+    drows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, mention_id, response_id, brand_name, driver_text,
+                           polarity, category, strength, source_quote, created_at
+                    FROM sentiment_drivers
+                    WHERE response_id = :response_id
+                    ORDER BY COALESCE(strength, 0) DESC, id
+                    """
+                ),
+                {"response_id": response_id},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        SentimentDriverDetail(
+            driver_id=int(row["id"]),
+            mention_id=_as_int(row.get("mention_id")),
+            response_id=_as_int(row.get("response_id")),
+            brand_name=row.get("brand_name"),
+            driver_text=row.get("driver_text") or "",
+            polarity=row.get("polarity"),
+            category=row.get("category"),
+            strength=_round(row.get("strength")),
+            source_quote=row.get("source_quote"),
+            created_at=_iso(row.get("created_at")),
+        )
+        for row in drows
+    ]
+
+
+def _coerce_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _relation_response_matches(item: dict[str, Any], response_id: int) -> bool:
+    raw_id = item.get("response_id") or item.get("responseId") or item.get("llm_response_id")
+    if raw_id is None:
+        return True
+    return _as_int(raw_id) == response_id
+
+
+def _json_mentions_response_id(value: Any, response_id: int) -> bool:
+    if isinstance(value, dict):
+        for key, raw in value.items():
+            if key in {"response_id", "responseId", "llm_response_id"}:
+                if _as_int(raw) == response_id:
+                    return True
+            if _json_mentions_response_id(raw, response_id):
+                return True
+    elif isinstance(value, list):
+        return any(_json_mentions_response_id(item, response_id) for item in value)
+    return False
+
+
+def _relation_from_mapping(
+    item: dict[str, Any],
+    *,
+    source: str,
+    response_id: int,
+) -> ResponseRelationDetail | None:
+    relation_type = item.get("type") or item.get("relation_type") or item.get("relationType")
+    if not relation_type:
+        return None
+    return ResponseRelationDetail(
+        source=source,
+        entity_kind=item.get("entity_kind") or item.get("entityKind"),
+        type=str(relation_type),
+        a_id=_as_int(item.get("a_id") or item.get("source_id") or item.get("from_id")),
+        b_id=_as_int(item.get("b_id") or item.get("target_id") or item.get("to_id")),
+        a_name=item.get("a_name") or item.get("source_name") or item.get("from_name"),
+        b_name=item.get("b_name") or item.get("target_name") or item.get("to_name"),
+        confidence=_round(item.get("confidence")),
+        evidence=item.get("evidence") or item.get("quote") or item,
+        response_id=response_id,
+    )
+
+
+async def _raw_analysis_relations(
+    session: AsyncSession,
+    response_id: int,
+) -> list[ResponseRelationDetail]:
+    if not await legacy_table_exists(session, "response_analyses"):
+        return []
+    raw = (
+        await session.execute(
+            text(
+                """
+                SELECT raw_analysis_json
+                FROM response_analyses
+                WHERE response_id = :response_id
+                LIMIT 1
+                """
+            ),
+            {"response_id": response_id},
+        )
+    ).scalar_one_or_none()
+    payload = _coerce_json(raw)
+    relation_items: list[Any] = []
+    for key in (
+        "relations",
+        "response_relations",
+        "brand_relations",
+        "product_relations",
+        "relation_facts",
+    ):
+        relation_items.extend(_coerce_list(payload.get(key)))
+
+    relations: list[ResponseRelationDetail] = []
+    for item in relation_items:
+        if not isinstance(item, dict) or not _relation_response_matches(item, response_id):
+            continue
+        relation = _relation_from_mapping(
+            item,
+            source="response_analyses.raw_analysis_json",
+            response_id=response_id,
+        )
+        if relation is not None:
+            relations.append(relation)
+    return relations
+
+
+async def _kg_candidate_relations(
+    session: AsyncSession,
+    response_id: int,
+) -> list[ResponseRelationDetail]:
+    if not await legacy_table_exists(session, "kg_relation_candidates"):
+        return []
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT entity_kind, a_id, b_id, type, confidence, evidence
+                    FROM kg_relation_candidates
+                    ORDER BY created_at DESC, id
+                    """
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    relations: list[ResponseRelationDetail] = []
+    for row in rows:
+        evidence = _coerce_json(row.get("evidence"))
+        if not _json_mentions_response_id(evidence, response_id):
+            continue
+        relations.append(
+            ResponseRelationDetail(
+                source="kg_relation_candidates",
+                entity_kind=row.get("entity_kind"),
+                type=str(row.get("type") or ""),
+                a_id=_as_int(row.get("a_id")),
+                b_id=_as_int(row.get("b_id")),
+                confidence=_round(row.get("confidence")),
+                evidence=evidence,
+                response_id=response_id,
+            )
+        )
+    return relations
+
+
+async def _analyzer_facts_for_response(
+    session: AsyncSession,
+    response_id: int,
+    *,
+    brand_mentions: list[BrandMentionDetail] | None = None,
+    citations: list[CitationDetail] | None = None,
+    analysis: ResponseAnalysisDetail | None = None,
+) -> AnalyzerFacts:
+    mentions = (
+        brand_mentions
+        if brand_mentions is not None
+        else await _brand_mentions_for_response(session, response_id)
+    )
+    citation_rows = (
+        citations
+        if citations is not None
+        else await _citations_for_response(session, response_id)
+    )
+    features = await _product_features_for_analysis(
+        session,
+        analysis.analysis_id if analysis is not None else None,
+    )
+    drivers = await _sentiment_drivers_for_response(session, response_id)
+    relations = await _raw_analysis_relations(session, response_id)
+    relations.extend(await _kg_candidate_relations(session, response_id))
+    return AnalyzerFacts(
+        citations=citation_rows,
+        brands_mentioned=mentions,
+        products_features_attributes=features,
+        relations=relations,
+        sentiment_drivers=drivers,
     )
 
 
@@ -1292,7 +1823,11 @@ async def get_query_response_detail(
         prompt_id=prompt_scope_id,
         brand_id_override=brand_id,
     )
-    if not any(_as_int(row.get("query_id")) == int(query_id) for row in scoped_rows):
+    selected_scope_row = next(
+        (row for row in scoped_rows if _as_int(row.get("query_id")) == int(query_id)),
+        None,
+    )
+    if selected_scope_row is None:
         raise not_found("query not found")
 
     response: ResponseDetail | None = None
@@ -1459,6 +1994,85 @@ async def get_query_response_detail(
             for c in crows
         ]
 
+    profile_names = await _profile_names_for_ids(
+        session,
+        {
+            str(row["profile_id"])
+            for row in [q, *scoped_rows]
+            if row.get("profile_id") is not None
+        },
+    )
+    analyzer_facts = (
+        await _analyzer_facts_for_response(
+            session,
+            response_id,
+            brand_mentions=brand_mentions,
+            citations=citations,
+            analysis=analysis,
+        )
+        if response_id is not None
+        else AnalyzerFacts()
+    )
+
+    attempt_date = _date_key(_row_attempt_time(selected_scope_row))
+    attempt_key = _logical_query_key(selected_scope_row)
+    attempt_rows = [
+        row
+        for row in scoped_rows
+        if _logical_query_key(row) == attempt_key
+        and _date_key(_row_attempt_time(row)) == attempt_date
+        and _as_int(row.get("response_id")) is not None
+    ]
+    attempt_rows.sort(key=_row_attempt_sort_key, reverse=True)
+    attempts: list[ResponseAttemptDetail] = []
+    for row in attempt_rows:
+        attempt_response_id = _as_int(row.get("response_id"))
+        attempt_query_id = _as_int(row.get("query_id"))
+        if attempt_response_id is None or attempt_query_id is None:
+            continue
+        attempt_analysis = await _response_analysis_detail(session, attempt_response_id)
+        attempt_citations = await _citations_for_response(session, attempt_response_id)
+        attempt_mentions = await _brand_mentions_for_response(session, attempt_response_id)
+        attempt_facts = await _analyzer_facts_for_response(
+            session,
+            attempt_response_id,
+            brand_mentions=attempt_mentions,
+            citations=attempt_citations,
+            analysis=attempt_analysis,
+        )
+        attempts.append(
+            ResponseAttemptDetail(
+                query_id=attempt_query_id,
+                response_id=attempt_response_id,
+                query_text=row.get("query_text"),
+                target_llm=row.get("target_llm") or row.get("response_target_llm"),
+                status=str(row.get("query_status")).lower()
+                if row.get("query_status")
+                else None,
+                profile_id=str(row.get("profile_id"))
+                if row.get("profile_id") is not None
+                else None,
+                profile_name=_profile_name(row.get("profile_id"), profile_names),
+                executed_at=_iso(row.get("query_executed_at")),
+                finished_at=_iso(row.get("query_finished_at")),
+                latency_ms=_as_int(row.get("latency_ms")),
+                response=ResponseDetail(
+                    response_id=attempt_response_id,
+                    query_id=attempt_query_id,
+                    prompt_id=_as_int(row.get("prompt_id")),
+                    raw_text=row.get("response_raw_text"),
+                    target_llm=row.get("response_target_llm") or row.get("target_llm"),
+                    intent=row.get("response_intent"),
+                    llm_version=row.get("response_llm_version"),
+                    citations_json=None,
+                    created_at=_iso(row.get("response_created_at")),
+                ),
+                analysis=attempt_analysis,
+                citations=attempt_citations,
+                analyzer_facts=attempt_facts,
+            )
+        )
+
     query = QueryDetail(
         query_id=int(q["query_id"]),
         prompt_id=_as_int(q.get("prompt_id")),
@@ -1467,6 +2081,7 @@ async def get_query_response_detail(
         target_llm=q.get("target_llm"),
         status=(str(q.get("status")).lower() if q.get("status") else None),
         profile_id=str(q.get("profile_id")) if q.get("profile_id") is not None else None,
+        profile_name=_profile_name(q.get("profile_id"), profile_names),
         created_at=_iso(q.get("created_at")),
         executed_at=_iso(q.get("executed_at")),
         finished_at=_iso(q.get("finished_at")),
@@ -1479,6 +2094,8 @@ async def get_query_response_detail(
         analysis=analysis,
         brand_mentions=brand_mentions,
         citations=citations,
+        analyzer_facts=analyzer_facts,
+        attempts=attempts,
         state="ok" if response is not None else "partial",
     )
 
