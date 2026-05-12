@@ -30,6 +30,7 @@ from playwright.async_api import Page, ElementHandle
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
+from geo_tracker.agent.sms_redaction import mask_phone
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,10 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.error("[deepseek] 未找到手机号输入框")
             return False
 
-        logger.info(f"[deepseek] 输入手机号: {clean_phone} (原始: {phone})")
+        logger.info(
+            f"[deepseek] 输入手机号: {mask_phone(clean_phone)} "
+            f"(原始: {mask_phone(phone)})"
+        )
         # 先点击输入框
         await self._human_click(page, phone_input)
         await page.wait_for_timeout(random.randint(300, 600))
@@ -221,7 +225,7 @@ class DeepseekLoginHandler(BaseSMSLoginHandler):
             logger.error("[deepseek] 未找到验证码输入框")
             return False
 
-        logger.info(f"[deepseek] 输入验证码: {code}")
+        logger.info("[deepseek] 输入验证码: [sms-code-redacted]")
         await self._human_click(page, code_input)
         await page.wait_for_timeout(random.randint(200, 500))
         await self._type_slowly(page, code_input, code, delay=random.randint(100, 180))

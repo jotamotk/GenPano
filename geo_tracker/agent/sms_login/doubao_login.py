@@ -20,6 +20,7 @@ from playwright.async_api import Page
 
 from geo_tracker.agent.sms_login import register
 from geo_tracker.agent.sms_login.base import BaseSMSLoginHandler
+from geo_tracker.agent.sms_redaction import mask_phone
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +619,10 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             logger.error("[doubao] 未找到手机号输入框")
             return False
 
-        logger.info(f"[doubao] 输入手机号: {clean_phone} (原始: {phone})")
+        logger.info(
+            f"[doubao] 输入手机号: {mask_phone(clean_phone)} "
+            f"(原始: {mask_phone(phone)})"
+        )
         await self._type_slowly(page, phone_input, clean_phone)
         return True
 
