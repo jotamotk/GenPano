@@ -36,3 +36,38 @@ def test_admin_accounts_recovery_copy_is_pending_and_redacted() -> None:
     assert "需要人工处理" in html
     assert "redactAccountUiText" in html
     assert "r.phone ? ' (' + r.phone + ')'" not in html
+
+
+def test_admin_accounts_task_failure_panel_payload_is_redacted() -> None:
+    html = _admin_html()
+
+    assert "function accountTaskFailureErrorBody(body)" in html
+    assert "const taskFailure = accountTaskFailureErrorBody(body);" in html
+    assert "code: taskFailure.code" in html
+    assert "title: taskFailure.title" in html
+    assert "detail: taskFailure.detail" in html
+    assert "payload.copyText = this.formatErrorCopy(payload);" in html
+
+    redaction_helper = html[
+        html.index("function redactAccountUiText(value)")
+        : html.index("function accountTaskResultMessage(result)")
+    ]
+    for pattern in (
+        "api[_-]?key",
+        "provider[_-]?secret",
+        "sms[_-]?text",
+        "verification[_-]?code",
+        "cookies?",
+        "localStorage",
+        "token",
+        "activation[_-]?id",
+    ):
+        assert pattern in redaction_helper
+
+    failure_branch = html[
+        html.index("const taskFailure = accountTaskFailureErrorBody(body);")
+        : html.index("path: 'task:' + (body.task_id || '')")
+    ]
+    assert "body.code || body.error" not in failure_branch
+    assert "body.title || body.error" not in failure_branch
+    assert "body.traceback || body.detail || body.message" not in failure_branch

@@ -9411,9 +9411,21 @@ function redactAccountUiText(value) {
   if (value === null || value === undefined || value === '') return '';
   let text = String(value).slice(0, 180);
   text = text.replace(/(?:api[_-]?key|provider[_-]?secret)\s*[:=]\s*[^,\s}]+/gi, '[已隐藏]');
+  text = text.replace(/(?:sms[_-]?text|sms|otp|verification[_-]?code)\s*[:=]\s*[^,\s}]+/gi, '[已隐藏]');
   text = text.replace(/\+?\d[\d\s().-]{6,}\d/g, '[已隐藏手机号]');
   text = text.replace(/(cookies?|localStorage|token|sms|activation[_-]?id)\s*[:=]\s*[^,\s}]+/gi, '$1=[已隐藏]');
   return text;
+}
+
+function accountTaskFailureErrorBody(body) {
+  const raw = body && typeof body === 'object' ? body : {};
+  const detail = formatAdminErrorDetail(raw.traceback || raw.detail || raw.message || '');
+  return {
+    code: redactAccountUiText(raw.code || raw.error || 'task_failed') || 'task_failed',
+    title: redactAccountUiText(raw.title || raw.error || '账号任务失败') || '账号任务失败',
+    detail: redactAccountUiText(detail),
+    request_id: raw.request_id || '',
+  };
 }
 
 function accountTaskResultMessage(result) {
@@ -13516,15 +13528,16 @@ function adminApp() {
             // Full traceback / structured payload is offered via the
             // sticky error panel where it can be copied wholesale.
             updateStatus('任务失败: ' + redactAccountUiText(body.error || body.code || '未知错误'));
+            const taskFailure = accountTaskFailureErrorBody(body);
             this.showErrorFrom({
               body: {
-                code: body.code || body.error || 'task_failed',
-                title: body.title || body.error || '账号任务失败',
-                detail: body.traceback || body.detail || body.message || '',
-                request_id: body.request_id || '',
+                code: taskFailure.code,
+                title: taskFailure.title,
+                detail: taskFailure.detail,
+                request_id: taskFailure.request_id,
               },
               status: 0,
-              requestId: body.request_id || '',
+              requestId: taskFailure.request_id,
               path: 'task:' + (body.task_id || ''),
             });
             this.accountBusy = false;
