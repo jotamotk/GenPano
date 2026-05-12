@@ -210,7 +210,13 @@ class AccountPool:
 
         # cookies 过期 / 响应太短 只设 cooldown，不增加失败计数（避免误封）
         # 这些通常是平台侧或网络问题，不是账号本身的问题
-        if reason in ("cookies_expired", "response_too_short", "token_invalidated") or (
+        if reason in (
+            "cookies_expired",
+            "response_too_short",
+            "token_invalidated",
+            "chatgpt_not_logged_in",
+            "chatgpt_auth_redirect",
+        ) or (
             account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
         ):
             account.status = AccountStatus.COOLDOWN.value

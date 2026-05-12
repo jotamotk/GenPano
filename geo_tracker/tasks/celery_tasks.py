@@ -615,7 +615,13 @@ def execute_query(self, query_id: int) -> dict:
                         )
                         await db.commit()
                         if (
-                            failure_reason in {"cookies_expired", "token_invalidated"}
+                            failure_reason
+                            in {
+                                "cookies_expired",
+                                "token_invalidated",
+                                "chatgpt_not_logged_in",
+                                "chatgpt_auth_redirect",
+                            }
                             and account_id
                             and query.target_llm != "doubao"
                         ):
@@ -681,7 +687,13 @@ def execute_query(self, query_id: int) -> dict:
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
                     if (
-                        failure_reason in {"cookies_expired", "token_invalidated"}
+                        failure_reason
+                        in {
+                            "cookies_expired",
+                            "token_invalidated",
+                            "chatgpt_not_logged_in",
+                            "chatgpt_auth_redirect",
+                        }
                         and account_id
                         and query.target_llm != "doubao"
                     ):

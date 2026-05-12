@@ -18,6 +18,30 @@ _CHATGPT_TOKEN_INVALIDATED_MARKERS = (
     "your authentication token has been invalidated",
 )
 
+_CHATGPT_AUTH_REDIRECT_HOST_MARKERS = (
+    "appleid.apple.com",
+    "auth0.openai.com",
+    "auth.openai.com",
+    "login.openai.com",
+)
+
+_CHATGPT_AUTH_REDIRECT_TEXT_MARKERS = (
+    "use your apple account to sign in to chatgpt",
+    "sign in to apple account",
+    "sign in to chatgpt",
+    "log in to chatgpt",
+    "continue with apple",
+    "continue with google",
+    "continue with microsoft",
+)
+
+_CHATGPT_LOGGED_OUT_SHELL_MARKERS = (
+    "log in to get answers based on saved chats",
+    "sign up for free",
+    "stay logged out",
+    "log in to try chatgpt",
+)
+
 _DOUBAO_UNAUTH_TEXT_MARKERS = (
     "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
     "\u514d\u767b\u5f55",  # 免登录
@@ -103,10 +127,12 @@ def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str |
 def chatgpt_auth_state_reason(
     text: str | None,
     *,
+    url: str | None = None,
+    title: str | None = None,
     runtime_events: list[dict] | None = None,
 ) -> str | None:
     """Return a ChatGPT auth/session failure reason, if page/runtime proves one."""
-    parts = [text or ""]
+    parts = [text or "", url or "", title or ""]
     for event in runtime_events or []:
         if isinstance(event, dict):
             parts.append(str(event.get("text") or ""))
@@ -119,6 +145,20 @@ def chatgpt_auth_state_reason(
     for marker, reason in _GENERIC_INVALID_MARKERS.items():
         if marker in lower:
             return reason
+    if any(marker in lower for marker in _CHATGPT_AUTH_REDIRECT_HOST_MARKERS):
+        return "chatgpt_auth_redirect"
+    redirect_markers = sum(
+        marker in lower for marker in _CHATGPT_AUTH_REDIRECT_TEXT_MARKERS
+    )
+    if redirect_markers >= 2:
+        return "chatgpt_auth_redirect"
+    logged_out_markers = sum(
+        marker in lower for marker in _CHATGPT_LOGGED_OUT_SHELL_MARKERS
+    )
+    if logged_out_markers >= 2:
+        return "chatgpt_not_logged_in"
+    if _looks_like_chatgpt_logged_out_shell(lower):
+        return "chatgpt_not_logged_in"
     return None
 
 
@@ -186,6 +226,28 @@ def _looks_like_chatgpt_home_shell(lower: str) -> bool:
         or "what\u9225\u6a9as on your mind today" in lower
     )
     return prompt_markers and nav_markers >= 2
+
+
+def _looks_like_chatgpt_logged_out_shell(lower: str) -> bool:
+    login_markers = sum(
+        marker in lower
+        for marker in (
+            "log in",
+            "sign up",
+            "sign up for free",
+            "saved chats",
+            "uploaded files",
+            "accept all cookies",
+        )
+    )
+    prompt_markers = (
+        "#prompt-textarea" in lower
+        or "message chatgpt" in lower
+        or "what are you working on" in lower
+        or "what's on your mind today" in lower
+        or "what\u2019s on your mind today" in lower
+    )
+    return prompt_markers and login_markers >= 3
 
 
 def _looks_like_chatgpt_login_page(lower: str) -> bool:
