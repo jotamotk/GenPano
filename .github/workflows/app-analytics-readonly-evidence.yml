@@ -50,6 +50,8 @@ jobs:
       SERVER_USER: ${{ secrets.SERVER_USER }}
       SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
       APP_ANALYTICS_BEARER_TOKEN: ${{ secrets.APP_ANALYTICS_BEARER_TOKEN }}
+      USER_JWT_SECRET: ${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
+      OWNER_USER_ID: fe25eff1-8462-43eb-a027-bc8eb2c3db81
 
     steps:
       - name: Checkout
@@ -62,6 +64,9 @@ jobs:
           if [ -n "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
             echo "::add-mask::${APP_ANALYTICS_BEARER_TOKEN}"
           fi
+          if [ -n "${USER_JWT_SECRET}" ]; then
+            echo "::add-mask::${USER_JWT_SECRET}"
+          fi
 
       - name: Secret preflight
         id: preflight
@@ -69,26 +74,32 @@ jobs:
         run: |
           set -euo pipefail
           db_ready=true
+          api_ready=true
+          api_auth_source=""
           for secret_name in SERVER_HOST SERVER_USER SERVER_SSH_KEY; do
             if [ -z "${!secret_name}" ]; then
               echo "::notice::Missing required secret for DB probe: ${secret_name}"
               db_ready=false
             fi
           done
-          if [ -z "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
-            echo "::notice::Missing optional secret for authenticated API GET probes: APP_ANALYTICS_BEARER_TOKEN"
-            api_ready=false
+          if [ -n "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
+            api_auth_source="APP_ANALYTICS_BEARER_TOKEN"
+          elif [ -n "${USER_JWT_SECRET}" ]; then
+            api_auth_source="USER_JWT_SECRET"
           else
-            api_ready=true
+            echo "::notice::Missing API auth source for authenticated API GET probes: APP_ANALYTICS_BEARER_TOKEN or USER_JWT_SECRET/JWT_SECRET"
+            api_ready=false
           fi
           echo "db_ready=${db_ready}" >> "${GITHUB_OUTPUT}"
           echo "api_ready=${api_ready}" >> "${GITHUB_OUTPUT}"
+          echo "api_auth_source=${api_auth_source}" >> "${GITHUB_OUTPUT}"
           python backend/scripts/app_analytics_readonly_evidence.py secrets-report \
-            SERVER_HOST SERVER_USER SERVER_SSH_KEY APP_ANALYTICS_BEARER_TOKEN
+            SERVER_HOST SERVER_USER SERVER_SSH_KEY APP_ANALYTICS_BEARER_TOKEN USER_JWT_SECRET
           {
             echo "### App analytics evidence preflight"
             echo "- DB probe secrets present: ${db_ready}"
             echo "- API token present: ${api_ready}"
+            echo "- API auth source: ${api_auth_source:-<blocked>}"
             echo "- Project: ${PROJECT_ID}"
             echo "- Brand: ${BRAND_ID}"
             echo "- Competitors: ${COMPETITOR_BRAND_IDS:-<empty>}"
@@ -155,6 +166,8 @@ jobs:
             --date-to "${DATE_TO}" \
             --base-url "${BASE_URL}" \
             --bearer-token-env APP_ANALYTICS_BEARER_TOKEN \
+            --jwt-secret-env USER_JWT_SECRET \
+            --owner-user-id "${OWNER_USER_ID}" \
             | tee "${RUNNER_TEMP}/app_analytics_readonly_evidence_api.jsonl"
 
       - name: Record API probe blocker
@@ -164,5 +177,5 @@ jobs:
           set -euo pipefail
           {
             echo "### Authenticated App API GET probes"
-            echo "Blocked by missing secret: APP_ANALYTICS_BEARER_TOKEN."
+            echo "Blocked by missing API auth source: configure APP_ANALYTICS_BEARER_TOKEN or USER_JWT_SECRET/JWT_SECRET."
           } >> "${GITHUB_STEP_SUMMARY}"

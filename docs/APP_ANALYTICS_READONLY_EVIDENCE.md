@@ -21,8 +21,8 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 - The API probe sends authenticated `GET` requests only.
 - There is no repair, backfill, aggregation refresh, mutation, or production
   write mode.
-- Secrets are never printed. `APP_ANALYTICS_BEARER_TOKEN` is masked before any
-  probe runs.
+- Secrets are never printed. `APP_ANALYTICS_BEARER_TOKEN` and
+  `USER_JWT_SECRET` are masked before any probe runs.
 - If a secret is unavailable, the workflow reports the exact missing secret and
   skips that probe family safely.
 
@@ -32,8 +32,13 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 - `SERVER_USER`: SSH user.
 - `SERVER_SSH_KEY`: SSH private key.
 - `APP_ANALYTICS_BEARER_TOKEN`: App user Bearer token for authenticated API
-  `GET` probes. If this is absent, DB probes can still run, and API probes are
-  reported as blocked by this exact secret.
+  `GET` probes.
+- `USER_JWT_SECRET` or `JWT_SECRET`: fallback for authenticated API `GET`
+  probes. When `APP_ANALYTICS_BEARER_TOKEN` is absent, the workflow mints the
+  same short-lived owner-user JWT used by the live App E2E gate.
+
+If neither API auth source is present, DB probes can still run, and API probes
+are reported as blocked by the missing auth source.
 
 ## Example Dispatch
 
@@ -110,6 +115,22 @@ py backend/scripts/app_analytics_readonly_evidence.py api-probes `
   --date-from 2026-04-24 `
   --date-to 2026-05-11 `
   --base-url http://116.62.36.173
+```
+
+Or use the read-only live E2E JWT fallback when the owner user id and JWT secret
+are already available in the current shell:
+
+```powershell
+$env:USER_JWT_SECRET = "<masked secret from approved secret source>"
+py backend/scripts/app_analytics_readonly_evidence.py api-probes `
+  --project-id 95d43022-a5c8-5944-b6d6-34b29faa18b5 `
+  --brand-id 12 `
+  --competitor-brand-ids 2 `
+  --date-from 2026-04-24 `
+  --date-to 2026-05-11 `
+  --base-url http://116.62.36.173 `
+  --jwt-secret-env USER_JWT_SECRET `
+  --owner-user-id fe25eff1-8462-43eb-a027-bc8eb2c3db81
 ```
 
 ## Reporting
