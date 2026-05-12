@@ -107,6 +107,14 @@ function EmptyState({
   )
 }
 
+function MetadataState({ title, text }: { title: string; text: string }) {
+  return (
+    <Card className="p-0">
+      <EmptyState title={title} text={text} />
+    </Card>
+  )
+}
+
 function StateBadge({ state }: { state?: string }) {
   const normalized = String(state || '').toLowerCase()
   if (!normalized || normalized === 'ok') return null
@@ -284,6 +292,7 @@ function urlTopic(topicId: number | null) {
     topic_name: topicId == null ? 'Topic' : `Topic ${topicId}`,
     dimension: null,
     associated_brand: null,
+    __urlPlaceholder: true,
   }
 }
 
@@ -294,7 +303,12 @@ function urlPrompt(promptId: number, topicId: number | null) {
     prompt_text: `Prompt ${promptId}`,
     intent: null,
     language: null,
+    __urlPlaceholder: true,
   }
+}
+
+function isUrlPlaceholder(value: LooseRecord | null | undefined) {
+  return Boolean(value?.__urlPlaceholder)
 }
 
 function csvCell(value: unknown) {
@@ -1447,6 +1461,36 @@ export default function TopicsPage() {
   const brandIdParam = searchParams.get('brandId')
   const brandIdOverride =
     brandIdParam && /^\d+$/.test(brandIdParam) ? Number(brandIdParam) : null
+  const baseAnalysisParams = useMemo(
+    () => analysisParamsWithBrand(filters, brandIdOverride),
+    [brandIdOverride, filters],
+  )
+  const needsUrlMetadata = topicIdFromUrl != null || promptIdFromUrl != null
+  const metadataProjectId = needsUrlMetadata ? liveProjectId : null
+  const topicMetadataQ = useTopicMonitoring(metadataProjectId, baseAnalysisParams)
+  const promptMetadataQ = useTopicPrompts(
+    metadataProjectId,
+    topicIdFromUrl,
+    baseAnalysisParams,
+  )
+  const hydratedTopic = useMemo(
+    () =>
+      topicIdFromUrl == null
+        ? null
+        : (topicMetadataQ.data?.topics || []).find(
+            (topic: LooseRecord) => topic.topic_id === topicIdFromUrl,
+          ) || null,
+    [topicIdFromUrl, topicMetadataQ.data?.topics],
+  )
+  const hydratedPrompt = useMemo(
+    () =>
+      promptIdFromUrl == null
+        ? null
+        : (promptMetadataQ.data?.items || []).find(
+            (prompt: LooseRecord) => prompt.prompt_id === promptIdFromUrl,
+          ) || null,
+    [promptIdFromUrl, promptMetadataQ.data?.items],
+  )
 
   useEffect(() => {
     if (topicIdFromUrl == null && promptIdFromUrl == null) {
@@ -1474,6 +1518,24 @@ export default function TopicsPage() {
     }
     setResponseModal(null)
   }, [promptIdFromUrl, topicIdFromUrl])
+
+  useEffect(() => {
+    if (!hydratedTopic) return
+    setSelectedTopic((current: any) =>
+      current?.topic_id === hydratedTopic.topic_id && !isUrlPlaceholder(current)
+        ? current
+        : hydratedTopic,
+    )
+  }, [hydratedTopic])
+
+  useEffect(() => {
+    if (!hydratedPrompt) return
+    setSelectedPrompt((current: any) =>
+      current?.prompt_id === hydratedPrompt.prompt_id && !isUrlPlaceholder(current)
+        ? current
+        : hydratedPrompt,
+    )
+  }, [hydratedPrompt])
 
   const updateDrilldownParams = (updates: Record<string, string | number | null>) => {
     const params = new URLSearchParams(searchParams)
@@ -1540,13 +1602,59 @@ export default function TopicsPage() {
     }
   }
 
+  const topicPlaceholderPending =
+    topicIdFromUrl != null &&
+    selectedTopic?.topic_id === topicIdFromUrl &&
+    isUrlPlaceholder(selectedTopic)
+  const promptPlaceholderPending =
+    promptIdFromUrl != null &&
+    selectedPrompt?.prompt_id === promptIdFromUrl &&
+    isUrlPlaceholder(selectedPrompt)
+  const promptUrlMissingTopic = promptIdFromUrl != null && topicIdFromUrl == null
+  const topicMetadataLoading =
+    topicPlaceholderPending &&
+    (topicMetadataQ.isLoading || (!topicMetadataQ.data && !topicMetadataQ.isError))
+  const promptMetadataLoading =
+    !promptUrlMissingTopic &&
+    promptPlaceholderPending &&
+    (promptMetadataQ.isLoading || (!promptMetadataQ.data && !promptMetadataQ.isError))
+  const topicMetadataFailed =
+    topicPlaceholderPending &&
+    (topicMetadataQ.isError ||
+      (!topicMetadataQ.isLoading && Boolean(topicMetadataQ.data) && !hydratedTopic))
+  const promptMetadataFailed =
+    !promptUrlMissingTopic &&
+    promptPlaceholderPending &&
+    (promptMetadataQ.isError ||
+      (!promptMetadataQ.isLoading && Boolean(promptMetadataQ.data) && !hydratedPrompt))
+  const metadataLoading = topicMetadataLoading || promptMetadataLoading
+  const metadataError = promptUrlMissingTopic
+    ? 'Prompt metadata could not be loaded because this URL is missing a topicId.'
+    : topicMetadataFailed
+      ? 'Topic metadata could not be loaded for this URL. Go back to Topics and select the topic again.'
+      : promptMetadataFailed
+        ? 'Prompt metadata could not be loaded for this URL. Go back to the topic and select the prompt again.'
+        : ''
+
   return (
     <div>
       <ProjectRequiredBanner />
 
-      {view !== 'topics' && <Breadcrumb items={breadcrumb} onNavigate={onBreadcrumb} />}
+      {metadataLoading && (
+        <MetadataState
+          title="Loading drilldown metadata"
+          text="Restoring topic and prompt labels from the latest analysis data."
+        />
+      )}
+      {!metadataLoading && metadataError && (
+        <MetadataState title="Drilldown metadata unavailable" text={metadataError} />
+      )}
 
-      {view === 'topics' && (
+      {!metadataLoading && !metadataError && view !== 'topics' && (
+        <Breadcrumb items={breadcrumb} onNavigate={onBreadcrumb} />
+      )}
+
+      {!metadataLoading && !metadataError && view === 'topics' && (
         <TopicsView
           projectId={liveProjectId}
           filters={filters}
@@ -1555,7 +1663,7 @@ export default function TopicsPage() {
           onSwitchTo30Days={() => setRange('30d')}
         />
       )}
-      {view === 'prompts' && selectedTopic && (
+      {!metadataLoading && !metadataError && view === 'prompts' && selectedTopic && (
         <PromptsView
           projectId={liveProjectId}
           topic={selectedTopic}
@@ -1564,16 +1672,20 @@ export default function TopicsPage() {
           onSelectPrompt={(prompt) => goTo.queries(prompt)}
         />
       )}
-      {view === 'queries' && selectedTopic && selectedPrompt && (
-        <QueriesView
-          projectId={liveProjectId}
-          topic={selectedTopic}
-          prompt={selectedPrompt}
-          filters={filters}
-          brandIdOverride={brandIdOverride}
-          onOpenAttempts={(query, attempts) => setResponseModal({ query, attempts })}
-        />
-      )}
+      {!metadataLoading &&
+        !metadataError &&
+        view === 'queries' &&
+        selectedTopic &&
+        selectedPrompt && (
+          <QueriesView
+            projectId={liveProjectId}
+            topic={selectedTopic}
+            prompt={selectedPrompt}
+            filters={filters}
+            brandIdOverride={brandIdOverride}
+            onOpenAttempts={(query, attempts) => setResponseModal({ query, attempts })}
+          />
+        )}
 
       {responseModal && (
         <ResponseAttemptsModal

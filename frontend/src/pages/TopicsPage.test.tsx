@@ -116,6 +116,55 @@ function readBlobText(blob: Blob) {
   })
 }
 
+const urlHydrationTopic = {
+  topic_id: 101,
+  topic_name: 'Ingredient safety',
+  dimension: 'product',
+  associated_brand: 'Acme',
+  prompt_count: 1,
+  query_count: 1,
+  response_count: 1,
+  sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+}
+
+const urlHydrationPrompt = {
+  prompt_id: 201,
+  topic_id: 101,
+  prompt_text: 'Which serum is safest?',
+  intent: 'commercial',
+  language: 'zh',
+  query_count: 1,
+  response_count: 1,
+}
+
+function topicMonitoringState(topics = [urlHydrationTopic]) {
+  return {
+    data: {
+      summary: {
+        topic_count: topics.length,
+        prompt_count: 1,
+        query_count: 1,
+        response_count: 1,
+      },
+      topics,
+      intent_matrix: [],
+      state: topics.length ? 'ok' : 'empty',
+    },
+    isLoading: false,
+  }
+}
+
+function topicPromptsState(items = [urlHydrationPrompt]) {
+  return {
+    data: {
+      items,
+      total: items.length,
+      state: items.length ? 'ok' : 'empty',
+    },
+    isLoading: false,
+  }
+}
+
 describe('TopicsPage live brand override', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -1026,6 +1075,8 @@ describe('TopicsPage live brand override', () => {
   })
 
   it('hydrates topic and prompt drilldown from URL params on refresh', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue(topicMonitoringState())
+    topicHooks.useTopicPrompts.mockReturnValue(topicPromptsState())
     topicHooks.usePromptQueries.mockReturnValue({
       data: {
         items: [
@@ -1065,8 +1116,97 @@ describe('TopicsPage live brand override', () => {
       expect.objectContaining({ brand_id: 12 }),
     )
     expect(screen.getByText(/Daily latest successful responses/i)).toBeInTheDocument()
+    expect(screen.getByText('Topic: Ingredient safety')).toBeInTheDocument()
+    expect(screen.getAllByText('Which serum is safest?').length).toBeGreaterThan(0)
+    expect(screen.getByText('Commercial')).toBeInTheDocument()
+    expect(screen.getByText('ZH')).toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
     expect(screen.getByText('What is the safest vitamin C serum?')).toBeInTheDocument()
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
+  })
+
+  it('shows a metadata loading state while URL topic and prompt labels are restoring', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: null,
+      isLoading: true,
+      isError: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: null,
+      isLoading: true,
+      isError: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(screen.getByText(/Loading drilldown metadata/i)).toBeInTheDocument()
+    expect(screen.getByText(/Restoring topic and prompt labels/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Daily latest successful responses/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
+  })
+
+  it('shows an explicit unavailable state when topic metadata API fails', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: true,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue(topicPromptsState())
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(screen.getByText(/Drilldown metadata unavailable/i)).toBeInTheDocument()
+    expect(screen.getByText(/Topic metadata could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
+  })
+
+  it('shows an explicit unavailable state when prompt metadata API fails', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue(topicMonitoringState())
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: true,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(screen.getByText(/Drilldown metadata unavailable/i)).toBeInTheDocument()
+    expect(screen.getByText(/Prompt metadata could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
+  })
+
+  it('shows unavailable state when topic metadata does not include the requested URL topic', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue(topicMonitoringState([]))
+    topicHooks.useTopicPrompts.mockReturnValue(topicPromptsState())
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(screen.getByText(/Drilldown metadata unavailable/i)).toBeInTheDocument()
+    expect(screen.getByText(/Topic metadata could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
+  })
+
+  it('shows unavailable state when prompt metadata does not include the requested URL prompt', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue(topicMonitoringState())
+    topicHooks.useTopicPrompts.mockReturnValue(topicPromptsState([]))
+
+    renderTopicsPage('/brand/topics?brandId=12&topicId=101&promptId=201')
+
+    expect(screen.getByText(/Drilldown metadata unavailable/i)).toBeInTheDocument()
+    expect(screen.getByText(/Prompt metadata could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Topic 101/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
   })
 
   it('opens response attempts from backend payload, switches attempts, and renders analyzer_facts', () => {
