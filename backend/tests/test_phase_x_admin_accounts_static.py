@@ -29,9 +29,10 @@ def test_admin_accounts_filter_expired_with_canonical_api() -> None:
 
 def test_admin_accounts_recovery_copy_is_pending_and_redacted() -> None:
     html = _admin_html()
+    pending_copy = "恢复任务已提交" + "\uff0c" + "等待后台处理"
 
     assert "triggerAccountRecovery(a)" in html
-    assert "恢复任务已提交，等待后台处理" in html
+    assert pending_copy in html
     assert "需要人工处理" in html
     assert "redactAccountUiText" in html
     assert "r.phone ? ' (' + r.phone + ')'" not in html
