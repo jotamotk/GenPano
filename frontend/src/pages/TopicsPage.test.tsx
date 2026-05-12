@@ -107,6 +107,15 @@ function renderTopicsPage(initialEntry = '/brand/topics?brandId=12') {
   return { ...result, getSearch: () => search }
 }
 
+function readBlobText(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = reject
+    reader.readAsText(blob)
+  })
+}
+
 describe('TopicsPage live brand override', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -282,6 +291,88 @@ describe('TopicsPage live brand override', () => {
     expect(screen.queryByText('13.0%')).not.toBeInTheDocument()
   })
 
+  it('exports backend visibility_rate instead of legacy visibility fields', async () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            visibility_rate: 0.83,
+            mention_rate: 0.12,
+            sov: 0.24,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+            visibility_rate: 0.71,
+            mention_rate: 0.13,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    const createObjectURL = vi.fn(() => 'blob:topics-export')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    renderTopicsPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /Export topics/i }))
+
+    const blob = createObjectURL.mock.calls[0][0] as Blob
+    const csv = await readBlobText(blob)
+    const dataRow = csv.split('\n').find((line) => line.includes('Ingredient safety')) || ''
+    expect(dataRow).toContain('0.83')
+    expect(dataRow).not.toContain('0.24')
+    expect(dataRow).not.toContain('0.12')
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByRole('button', { name: /Export prompts/i }))
+
+    const promptBlob = createObjectURL.mock.calls[1][0] as Blob
+    const promptCsv = await readBlobText(promptBlob)
+    const promptRow = promptCsv.split('\n').find((line) => line.includes('Which serum is safest?')) || ''
+    expect(promptRow).toContain('0.71')
+    expect(promptRow).not.toContain('0.13')
+  })
+
   it('does not borrow summary citations for topic rows without per-topic citation counts', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
@@ -437,6 +528,27 @@ describe('TopicsPage live brand override', () => {
             citation_count: 2,
             geo_score: 0.9,
             sentiment_score: 0.72,
+            query_group_key: 'safest-vitamin-c-sensitive-skin',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                query_id: 301,
+                prompt_id: 201,
+                query_text: 'What is the safest vitamin C serum for sensitive skin?',
+                target_llm: 'chatgpt',
+                profile_id: 'profile-sensitive',
+                profile_name: 'Sensitive skin buyer',
+                created_at: '2026-05-10T09:00:00Z',
+                executed_at: '2026-05-10T09:00:00Z',
+                finished_at: '2026-05-10T09:01:00Z',
+                response_id: 401,
+                target_mentioned: true,
+                citation_count: 2,
+                geo_score: 0.9,
+                sentiment_score: 0.72,
+                date: '2026-05-10',
+              },
+            ],
           },
         ],
         total: 1,
@@ -584,6 +696,27 @@ describe('TopicsPage live brand override', () => {
             citation_count: 0,
             geo_score: 0.82,
             sentiment_score: 0.74,
+            query_group_key: 'safest-vitamin-c-sensitive-skin',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                query_id: 301,
+                prompt_id: 201,
+                query_text: 'What is the safest vitamin C serum for sensitive skin?',
+                target_llm: 'chatgpt',
+                profile_id: 'profile-sensitive',
+                profile_name: 'Sensitive skin buyer',
+                created_at: '2026-05-10T09:00:00Z',
+                executed_at: '2026-05-10T09:00:00Z',
+                finished_at: '2026-05-10T09:01:00Z',
+                response_id: 401,
+                target_mentioned: true,
+                citation_count: 0,
+                geo_score: 0.82,
+                sentiment_score: 0.74,
+                date: '2026-05-10',
+              },
+            ],
           },
         ],
         total: 1,
@@ -814,6 +947,82 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getByText('Unknown profile')).toBeInTheDocument()
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
+  })
+
+  it('does not reconstruct query groups from legacy raw execution rows without daily_latest', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 1, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which serum is safest?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 301,
+            prompt_id: 201,
+            query_text: 'Legacy raw successful execution',
+            target_llm: 'chatgpt',
+            status: 'success',
+            profile_name: 'Leaked profile',
+            response_id: 401,
+            citation_count: 9,
+            finished_at: '2026-05-10T10:02:00Z',
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage()
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which serum is safest?'))
+
+    expect(screen.getByText(/Query groups are unavailable/i)).toBeInTheDocument()
+    expect(screen.queryByText('Legacy raw successful execution')).not.toBeInTheDocument()
+    expect(screen.queryByText('Leaked profile')).not.toBeInTheDocument()
+    expect(screen.queryByText('9')).not.toBeInTheDocument()
   })
 
   it('hydrates topic and prompt drilldown from URL params on refresh', () => {

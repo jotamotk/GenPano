@@ -196,14 +196,6 @@ function dayKey(value: unknown) {
   return date.toISOString().slice(0, 10)
 }
 
-function isSuccessfulQuery(query: LooseRecord) {
-  const status = String(query.status || '').toLowerCase()
-  if (['failed', 'error', 'pending', 'running', 'cancelled', 'timeout'].includes(status)) {
-    return false
-  }
-  return status === 'success' || status === 'succeeded' || status === 'completed' || !!query.response_id
-}
-
 function latestTimestamp(query: LooseRecord) {
   return query.finished_at || query.executed_at || query.created_at || ''
 }
@@ -859,51 +851,24 @@ function PromptsView({
 }
 
 function groupSuccessfulQueries(queries: LooseRecord[]) {
-  if (queries.some((query) => Array.isArray(query.daily_latest))) {
-    return queries
-      .map((query) => {
-        const dailyRows = (Array.isArray(query.daily_latest) ? query.daily_latest : [])
-          .filter((attempt: LooseRecord) => attempt?.response_id != null)
-          .map((attempt: LooseRecord) => ({
-            date: attempt.date || dayKey(latestTimestamp(attempt)),
-            attempt,
-          }))
-        return {
-          key: query.query_group_key || query.query_text || `Query ${query.query_id}`,
-          queryText: query.query_text || dailyRows[0]?.attempt?.query_text || `Query ${query.query_id}`,
-          attempts: dailyRows.map(({ attempt }) => attempt),
-          attemptCount: asNumber(query.attempt_count) ?? dailyRows.length,
-          dailyRows,
-        }
-      })
-      .filter((group) => group.dailyRows.length > 0)
-  }
-
-  const groups = new Map<string, LooseRecord[]>()
-  queries.filter(isSuccessfulQuery).forEach((query) => {
-    const key = query.query_text || `Query ${query.query_id}`
-    const items = groups.get(key) || []
-    items.push(query)
-    groups.set(key, items)
-  })
-
-  return Array.from(groups.entries()).map(([queryText, attempts]) => {
-    const sorted = attempts
-      .slice()
-      .sort((a, b) => String(latestTimestamp(b)).localeCompare(String(latestTimestamp(a))))
-    const latestByDay = new Map<string, LooseRecord>()
-    sorted.forEach((attempt) => {
-      const key = dayKey(latestTimestamp(attempt))
-      if (!latestByDay.has(key)) latestByDay.set(key, attempt)
+  return queries
+    .filter((query) => Array.isArray(query.daily_latest))
+    .map((query) => {
+      const dailyRows = query.daily_latest
+        .filter((attempt: LooseRecord) => attempt?.response_id != null)
+        .map((attempt: LooseRecord) => ({
+          date: attempt.date || dayKey(latestTimestamp(attempt)),
+          attempt,
+        }))
+      return {
+        key: query.query_group_key || query.query_text || `Query ${query.query_id}`,
+        queryText: query.query_text || dailyRows[0]?.attempt?.query_text || `Query ${query.query_id}`,
+        attempts: dailyRows.map(({ attempt }) => attempt),
+        attemptCount: asNumber(query.attempt_count) ?? dailyRows.length,
+        dailyRows,
+      }
     })
-    return {
-      key: queryText,
-      queryText,
-      attempts: sorted,
-      attemptCount: sorted.length,
-      dailyRows: Array.from(latestByDay.entries()).map(([date, attempt]) => ({ date, attempt })),
-    }
-  })
+    .filter((group) => group.dailyRows.length > 0)
 }
 
 function QueriesView({
@@ -927,6 +892,7 @@ function QueriesView({
   )
   const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, analysisParams)
   const queries = queriesQ.data?.items || []
+  const missingDailyLatest = queries.some((query) => !Array.isArray(query.daily_latest))
   const groups = useMemo(() => groupSuccessfulQueries(queries), [queries])
   const successfulAttempts = groups.reduce((count, group) => count + group.attemptCount, 0)
 
@@ -1044,7 +1010,14 @@ function QueriesView({
         ))}
         {!queriesQ.isLoading && groups.length === 0 && (
           <Card>
-            <EmptyState text="No successful query responses for the current filters." />
+            {missingDailyLatest ? (
+              <EmptyState
+                title="Query groups are unavailable"
+                text="The backend response is missing daily latest successful rows for this prompt."
+              />
+            ) : (
+              <EmptyState text="No successful query responses for the current filters." />
+            )}
           </Card>
         )}
         {queriesQ.isLoading && (
