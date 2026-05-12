@@ -217,6 +217,71 @@ DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
 )
 
 
+async def _requeue_doubao_query_after_reauth(
+    db,
+    *,
+    account_id: int,
+    query_id: int | None,
+) -> bool:
+    if not query_id:
+        return False
+
+    retry_max = _env_int("DOUBAO_REAUTH_QUERY_RETRY_MAX", 1)
+    if retry_max <= 0:
+        return False
+
+    result = await db.execute(select(Query).where(Query.id == query_id))
+    query = result.scalar_one_or_none()
+    if not query:
+        return False
+
+    if query.target_llm != "doubao" or query.account_id != account_id:
+        return False
+    if query.status != QueryStatus.FAILED.value:
+        return False
+    if query.retry_reason not in DOUBAO_REAUTH_FAILURE_REASONS:
+        return False
+    if int(query.retry_count or 0) >= retry_max:
+        logger.warning(
+            "Query %s: Doubao reauth retry budget exhausted "
+            "account_id=%s retry_count=%s retry_max=%s",
+            query_id,
+            account_id,
+            query.retry_count or 0,
+            retry_max,
+        )
+        return False
+
+    response_result = await db.execute(
+        select(LLMResponse.id).where(LLMResponse.query_id == query_id)
+    )
+    if response_result.scalar_one_or_none() is not None:
+        return False
+
+    from datetime import datetime as dt
+
+    query.status = QueryStatus.PENDING.value
+    query.retry_count = int(query.retry_count or 0) + 1
+    query.retry_reason = f"doubao_reauth_retry:{account_id}"
+    query.queued_at = dt.utcnow()
+    query.started_at = None
+    query.finished_at = None
+    query.executed_at = None
+    query.latency_ms = None
+    await db.commit()
+
+    execute_query.apply_async(args=[query_id], queue="llm_doubao")
+    logger.warning(
+        "Query %s: requeued after Doubao account %s reauth success "
+        "(retry_count=%s/%s)",
+        query_id,
+        account_id,
+        query.retry_count,
+        retry_max,
+    )
+    return True
+
+
 async def _handle_doubao_account_failure_handoff(
     *,
     db,
@@ -237,7 +302,7 @@ async def _handle_doubao_account_failure_handoff(
 
     if await should_enqueue_relogin(account_id):
         auto_login.apply_async(
-            kwargs={"account_id": account_id},
+            kwargs={"account_id": account_id, "query_id": query.id},
             queue="account_login",
         )
         logger.warning(
@@ -1211,7 +1276,13 @@ def cookie_keep_alive() -> dict:
 
 
 @app.task(queue="account_login", bind=True, max_retries=1)
-def auto_login(self, account_id: int = None, platform: str = None, new_account: bool = False) -> dict:
+def auto_login(
+    self,
+    account_id: int = None,
+    platform: str = None,
+    new_account: bool = False,
+    query_id: int | None = None,
+) -> dict:
     """
     自动 SMS 登录/注册，独立于 query 执行。
 
@@ -1310,7 +1381,16 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                             f"id:{account_id}",
                         )
                     logger.info(f"auto_login: account #{account_id} re-login SUCCESS")
-                    return {"status": "success", "account_id": account_id}
+                    result_payload = {"status": "success", "account_id": account_id}
+                    if account.llm_name == "doubao":
+                        requeued = await _requeue_doubao_query_after_reauth(
+                            db,
+                            account_id=account_id,
+                            query_id=query_id,
+                        )
+                        if requeued:
+                            result_payload["requeued_query_id"] = query_id
+                    return result_payload
                 else:
                     reason = (login_result or {}).get("reason", "unknown")
                     logger.warning(f"auto_login: account #{account_id} re-login FAILED: {reason}")
