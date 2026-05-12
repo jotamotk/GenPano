@@ -14,12 +14,12 @@ SECRET_ASSIGN_RE = re.compile(
     r"\b("
     r"api[_-]?key|apikey|"
     r"access[_-]?token|refresh[_-]?token|token|secret|"
-    r"authorization|cookie|set[_-]?cookie"
+    r"authorization|auth|cookie|set[_-]?cookie"
     r")\s*[:=]\s*"
     r"(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
 )
 HERO_SMS_ENV_RE = re.compile(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+")
-AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization)\s*:\s*(?:bearer\s+)?[^\s;]+")
+AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization|auth)\s*:\s*(?:bearer\s+)?[^\s;]+")
 COOKIE_HEADER_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^;\r\n]+;?")
 PHONE_FIELD_RE = re.compile(
     r"(?ix)"

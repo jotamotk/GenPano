@@ -146,12 +146,12 @@ jobs:
               r"\b("
               r"api[_-]?key|apikey|"
               r"access[_-]?token|refresh[_-]?token|token|secret|"
-              r"authorization|cookie|set[_-]?cookie"
+              r"authorization|auth|cookie|set[_-]?cookie"
               r")\s*[:=]\s*"
               r"(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
           )
           HERO_SMS_ENV_RE = re.compile(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+")
-          AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization)\s*:\s*(?:bearer\s+)?[^\s;]+")
+          AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization|auth)\s*:\s*(?:bearer\s+)?[^\s;]+")
           COOKIE_HEADER_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^;\r\n]+;?")
           PHONE_FIELD_RE = re.compile(
               r"(?ix)"
@@ -218,7 +218,9 @@ jobs:
           }
           sanitizer_probe="$(sanitize_herosms_stream <<'EOF'
           https://hero-sms.example/stubs/handler_api.php?action=getNumber&api_key=selftest-secret&phone=+15551234567
+          auth=selftest-auth-short
           Authorization: Bearer selftest-token
+          Auth: Bearer selftest-auth-header
           Cookie: session=selftest-cookie
           Set-Cookie: hero=selftest-set-cookie
           sms_text='Your selftest code is 654321'
@@ -226,7 +228,7 @@ jobs:
           EOF
           )"
           case "${sanitizer_probe}" in
-            *hero-sms.example*|*handler_api.php*|*api_key=*|*selftest-secret*|*selftest-token*|*selftest-cookie*|*selftest-set-cookie*|*+15551234567*|*654321*|*selftest-ref*|*selftest-activation-secret*|*112233*)
+            *hero-sms.example*|*handler_api.php*|*api_key=*|*selftest-secret*|*selftest-auth-short*|*selftest-token*|*selftest-auth-header*|*selftest-cookie*|*selftest-set-cookie*|*+15551234567*|*654321*|*selftest-ref*|*selftest-activation-secret*|*112233*)
               fail "HeroSMS sanitizer self-test failed before worker log capture"
               ;;
           esac
@@ -1103,12 +1105,12 @@ jobs:
                 r"\b("
                 r"api[_-]?key|apikey|"
                 r"access[_-]?token|refresh[_-]?token|token|secret|"
-                r"authorization|cookie|set[_-]?cookie"
+                r"authorization|auth|cookie|set[_-]?cookie"
                 r")\s*[:=]\s*"
                 r"(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
             )
             HERO_SMS_ENV_RE = re.compile(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+")
-            AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization)\s*:\s*(?:bearer\s+)?[^\s;]+")
+            AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization|auth)\s*:\s*(?:bearer\s+)?[^\s;]+")
             COOKIE_HEADER_RE = re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^;\r\n]+;?")
             PHONE_FIELD_RE = re.compile(
                 r"(?ix)"
@@ -1172,7 +1174,9 @@ jobs:
             }
             sanitizer_probe="$(sanitize_herosms_stream <<'EOF'
             https://hero-sms.example/stubs/handler_api.php?action=getNumber&api_key=selftest-secret&phone=+15551234567
+            auth=selftest-auth-short
             Authorization: Bearer selftest-token
+            Auth: Bearer selftest-auth-header
             Cookie: session=selftest-cookie
             Set-Cookie: hero=selftest-set-cookie
             sms_text='Your selftest code is 654321'
@@ -1180,7 +1184,7 @@ jobs:
             EOF
             )"
             case "${sanitizer_probe}" in
-              *hero-sms.example*|*handler_api.php*|*api_key=*|*selftest-secret*|*selftest-token*|*selftest-cookie*|*selftest-set-cookie*|*+15551234567*|*654321*|*selftest-ref*|*selftest-activation-secret*|*112233*)
+              *hero-sms.example*|*handler_api.php*|*api_key=*|*selftest-secret*|*selftest-auth-short*|*selftest-token*|*selftest-auth-header*|*selftest-cookie*|*selftest-set-cookie*|*+15551234567*|*654321*|*selftest-ref*|*selftest-activation-secret*|*112233*)
                 fail "HeroSMS sanitizer self-test failed before worker log capture"
                 ;;
             esac

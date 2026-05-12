@@ -12,9 +12,10 @@ GATE4_UNSAFE_SAMPLE = (
     "action=getNumber&service=dr&country=187&api_key=unit-secret"
     "&phone=+15551234567 "
     "apikey=unit-apikey token=unit-token secret=unit-secret "
-    "authorization=unit-auth cookie=unit-cookie-assignment "
+    "authorization=unit-auth auth=unit-auth-short cookie=unit-cookie-assignment "
     "set-cookie=unit-set-cookie-assignment "
-    "Authorization: Bearer unit-bearer Cookie: session=unit-cookie; "
+    "Authorization: Bearer unit-bearer Auth: Bearer unit-auth-header "
+    "Cookie: session=unit-cookie; "
     "Set-Cookie: hero=unit-set-cookie; phone=+15551234567 "
     "msisdn=15551234567 sms_text='Your login code is 654321' "
     'message="Use 112233" body=BodySecret code=998877 '
@@ -31,6 +32,8 @@ GATE4_FORBIDDEN_SUBSTRINGS = [
     "unit-apikey",
     "unit-token",
     "unit-auth",
+    "unit-auth-short",
+    "unit-auth-header",
     "unit-cookie-assignment",
     "unit-set-cookie-assignment",
     "unit-bearer",
@@ -145,6 +148,8 @@ def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     assert sanitizer_selftest in run_script
     assert "handler_api.php" in run_script
     assert "selftest-activation-secret" in run_script
+    assert "selftest-auth-short" in run_script
+    assert "selftest-auth-header" in run_script
     assert "selftest-cookie" in run_script
     assert "+15551234567" in run_script
     assert "654321" in run_script
@@ -209,6 +214,8 @@ def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
     assert sanitizer_selftest in run_script
     assert "handler_api.php" in run_script
     assert "selftest-activation-secret" in run_script
+    assert "selftest-auth-short" in run_script
+    assert "selftest-auth-header" in run_script
     assert "selftest-cookie" in run_script
     assert "+15551234567" in run_script
     assert "654321" in run_script
