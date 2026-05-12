@@ -45,8 +45,17 @@ Expected healthy counter shape for the Estee Lauder project dataset:
 - SoV is complete only when `brand_mentions` includes target rows plus at least
   one non-target configured, unconfigured, or unresolved competitive mention in
   the same eligible universe.
+- Canonical alias repair must scan the same response for configured
+  competitive brands. `--competitive-brand-id` rows are written with canonical
+  IDs when the brand exists; configured `competitors` names are written as
+  name-only `brand_mentions.brand_id IS NULL` evidence when no canonical ID is
+  available.
 - `citation_sources.mention_id` is populated when citation title/domain can be
   attributed to a persisted brand mention.
+- If citation, sentiment, position, or complete PANO/GEO component evidence is
+  unavailable, `response_analyses.raw_analysis_json.metric_input_status` must
+  carry explicit `partial` or `empty` states and `missing_inputs`; do not infer
+  missing evidence from zeros.
 - `sentiment_drivers.source_quote` is populated for brand-linked sentiment
   drivers when LLM sentiment extraction supplies drivers.
 - topic coverage is complete only when `llm_responses -> queries -> prompts ->
@@ -156,6 +165,16 @@ Expected counter shape after this PR:
 
 - `geo_score_daily_removed`, `topic_score_removed`, and `product_score_removed`
   report how many stale daily rows were cleared before recomputation.
+- `mentions_inserted` or `mentions_existing` covers the canonical Estee Lauder
+  target evidence for brand `12`.
+- `competitive_mentions_inserted` / `competitive_mentions_existing` should
+  become non-zero when source-owner brand `2` or configured competitor names are
+  actually mentioned in the repaired response text. If these remain zero, SoV
+  must stay `partial`; do not accept target-only 100%.
+- `citations_seen`, `citations_attributed`, and `citations_unattributed`
+  describe whether response `citations_json` could be converted into
+  `citation_sources`. Unattributed citations are explicit partial evidence, not
+  a real zero.
 - `geo_score_daily=0` is acceptable when the PRD mention-rate denominator is
   missing; the important postcondition is that stale `mention_rate=1.0000` rows
   are no longer present for that brand/date.
@@ -194,6 +213,14 @@ ORDER BY date, product_name;
 If the rows are absent after recomputation, treat that as an explicit missing
 aggregate state for Backend/API and Frontend Integration follow-up. Do not
 recreate rows manually with zero, one, or target-only values.
+
+For #489's live blocker, the root cause was target-only canonical repair
+evidence: the old repair wrote brand `12` mentions from owner brand `2`
+responses, but did not preserve same-response competitor denominator rows and
+stored partial position/sentiment/citation/PANO inputs as neutral or zero-like
+values. After this fix, rerunning the repair command above should either write
+real response-level competitor/citation rows or leave machine-readable
+`metric_input_status` partial/empty handoff for Backend/API #533.
 
 ## Rollback
 
