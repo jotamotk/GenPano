@@ -79,6 +79,7 @@ _SENSITIVE_TEXT_PATTERNS = [
         r'\1[redacted]\2',
     ),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE), "Bearer [redacted]"),
+    (re.compile(r"(https?://)[^/@\s:]+:[^/@\s]+@", re.IGNORECASE), r"\1[redacted]@"),
 ]
 
 
@@ -141,6 +142,33 @@ def _block_heavy_resources() -> bool:
 
 def _force_global_proxy_route() -> bool:
     return _env_flag("CLASH_FORCE_GLOBAL_PROXY_ROUTE", True)
+
+
+def _doubao_proxy_enabled() -> bool:
+    return _env_flag("DOUBAO_USE_PROXY", True)
+
+
+def _should_use_proxy_for_llm(llm_name: str, proxy_url: str | None) -> bool:
+    if not proxy_url:
+        return False
+    if llm_name == "doubao":
+        return _doubao_proxy_enabled()
+    return llm_name not in DOMESTIC_LLMS
+
+
+def _requires_global_proxy_route(llm_name: str) -> bool:
+    return llm_name in {"chatgpt", "doubao"} and _force_global_proxy_route()
+
+
+def _proxy_runtime_diagnostic(llm_name: str, proxy_url: str | None, use_proxy: bool) -> dict:
+    return {
+        "llm": llm_name,
+        "proxyConfigured": bool(proxy_url),
+        "useProxy": bool(use_proxy),
+        "proxyUrl": _redact_sensitive_text(proxy_url or ""),
+        "forceGlobalRoute": _force_global_proxy_route(),
+        "doubaoUseProxy": _doubao_proxy_enabled() if llm_name == "doubao" else None,
+    }
 
 
 async def _install_resource_blocker(context: BrowserContext) -> None:
@@ -338,13 +366,13 @@ class GuestQueryExecutor:
             self.last_error_reason = "unknown_llm"
             return None
 
-        use_proxy = self.proxy_url and llm not in DOMESTIC_LLMS
+        use_proxy = _should_use_proxy_for_llm(llm, self.proxy_url)
 
         # 国内 LLM 或不使用代理时，直接执行一次，无需重试换节点
         if not use_proxy:
             return await self._execute_once(query, config, use_proxy=False)
 
-        if llm == "chatgpt" and _force_global_proxy_route():
+        if _requires_global_proxy_route(llm):
             route = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
             if not route.ok:
                 self.last_error_reason = route.reason or "proxy_global_route_unavailable"
@@ -409,6 +437,7 @@ class GuestQueryExecutor:
         """执行一次查询尝试（可能因 Cloudflare 拦截返回 None）"""
         llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
+        proxy_diagnostic = _proxy_runtime_diagnostic(llm, self.proxy_url, bool(use_proxy))
 
         if use_proxy:
             logger.info(f"[{llm}] 使用代理: {self.proxy_url}")
@@ -1015,6 +1044,7 @@ class GuestQueryExecutor:
                             f"{llm}_page_unavailable_before_reload",
                             config=config,
                             runtime_events=runtime_events,
+                            proxy_diagnostic=proxy_diagnostic,
                         )
                         await page_obj.reload(wait_until="domcontentloaded", timeout=60000)
                         await page_obj.wait_for_timeout(5000)
@@ -1055,6 +1085,7 @@ class GuestQueryExecutor:
                         f"{llm}_no_input",
                         config=config,
                         runtime_events=runtime_events,
+                        proxy_diagnostic=proxy_diagnostic,
                     )
                     try:
                         content = await page_obj.content()
@@ -2303,6 +2334,7 @@ async def _save_runtime_snapshot(
     error: BaseException | str | None = None,
     matched_selector: str | None = None,
     runtime_events: list[dict] | None = None,
+    proxy_diagnostic: dict | None = None,
 ) -> Optional[Path]:
     """Save a redacted DOM/runtime snapshot for scraper triage."""
     try:
@@ -2378,6 +2410,7 @@ async def _save_runtime_snapshot(
             "suffix": suffix,
             "matchedSelector": matched_selector,
             "error": _redact_sensitive_text(f"{type(error).__name__}: {error}") if error else None,
+            "proxy": proxy_diagnostic,
             "doubaoAuthStateReason": doubao_auth_reason,
             "runtimeEvents": runtime_events[-80:] if runtime_events else [],
             "page": page_state,
