@@ -32,6 +32,16 @@ FORMULA_PENDING_STATUS = "formula_pending_upstream"
 FORMULA_MISSING_INPUTS_STATUS = "missing_required_inputs"
 FORMULA_NO_EVIDENCE_STATUS = "no_evidence"
 FORMULA_PENDING_SOURCE = "upstream_formula_provenance"
+PROJECT_UNBOUND_REASON = "project_unbound"
+MISSING_PROJECT_BRAND_BINDING_REASON = "missing_project_brand_binding"
+ANALYSIS_MISSING_REASON = "analysis_missing"
+NO_AGGREGATE_ROWS_REASON = "no_aggregate_rows"
+_BLOCKING_REASON_CODES = {
+    PROJECT_UNBOUND_REASON,
+    MISSING_PROJECT_BRAND_BINDING_REASON,
+    ANALYSIS_MISSING_REASON,
+    NO_AGGREGATE_ROWS_REASON,
+}
 
 
 class ValueRange(BaseModel):
@@ -404,6 +414,27 @@ def _metric_evidence_template(metric_key: str, status: str) -> dict[str, Any]:
         "formula_status": status,
         "reason_codes": [],
         "sample_response_ids": [],
+    }
+
+
+def _blocking_metric_evidence(
+    reason_codes: list[str],
+    *,
+    source_tables: list[str],
+    sample_response_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    sample_ids = sorted({int(value) for value in sample_response_ids or []})[:20]
+    reasons = _unique(reason_codes)
+    return {
+        key: {
+            "metric_key": key,
+            "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+            "reason_codes": reasons,
+            "source_tables": source_tables,
+            "fact_classes": [key],
+            "sample_response_ids": sample_ids,
+        }
+        for key in ("coverage", "sov", "sentiment", "citation", "pano_geo")
     }
 
 
@@ -962,6 +993,15 @@ async def build_contract_context(
     missing_sources = list(base_missing_sources or [])
     missing_inputs = list(base_missing_inputs or [])
     missing_reasons = list(base_missing_reasons or [])
+    scope_missing_reason: str | None = None
+    if brand_id is not None and project.primary_brand_id is None:
+        scope_missing_reason = MISSING_PROJECT_BRAND_BINDING_REASON
+        missing_inputs.append("project.primary_brand_id")
+        missing_sources.append("project.primary_brand_id")
+        missing_reasons.extend([PROJECT_UNBOUND_REASON, MISSING_PROJECT_BRAND_BINDING_REASON])
+        if not competitor_ids:
+            missing_inputs.append("project_competitors.brand_id")
+            missing_sources.append("project_competitors.brand_id")
     filters_payload: dict[str, Any] = {
         "project_id": project.id,
         "brand_id": brand_id,
@@ -1057,6 +1097,13 @@ async def build_contract_context(
     mentioned_response_count = int(mention_row[1] or 0)
     normalized_mentions = int(mention_row[2] or 0)
 
+    has_admin_chain = all(
+        [
+            await legacy_table_exists(session, "topics"),
+            await legacy_table_exists(session, "prompts"),
+            await legacy_table_exists(session, "queries"),
+        ]
+    )
     target_response_ids = await _project_eligible_response_ids(
         session,
         project,
@@ -1073,6 +1120,7 @@ async def build_contract_context(
             )
         )
     ).all()
+    admin_fact_response_count = len(target_response_ids)
 
     repair_count = 0
     owner_brand_ids: set[int] = set()
@@ -1108,6 +1156,28 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
+    raw_response_without_app_facts = (
+        has_admin_chain
+        and admin_fact_response_count > 0
+        and (project.primary_brand_id is None or project.primary_brand_id == brand_id)
+        and len(analysis_rows) == 0
+        and mention_count == 0
+        and citation_count == 0
+    )
+    analysis_missing = raw_response_without_app_facts
+    no_aggregate_rows = raw_response_without_app_facts and geo_rows == 0
+    if analysis_missing:
+        missing_inputs.extend(
+            ["response_analyses", "response_analyses.raw_analysis_json.analyzer_fact_packages"]
+        )
+        missing_sources.extend(
+            ["response_analyses", "response_analyses.raw_analysis_json.analyzer_fact_packages"]
+        )
+        missing_reasons.append(ANALYSIS_MISSING_REASON)
+    if no_aggregate_rows:
+        missing_inputs.append("geo_score_daily")
+        missing_sources.append("geo_score_daily")
+        missing_reasons.append(NO_AGGREGATE_ROWS_REASON)
 
     aliases = sorted(await brand_mention_names(session, brand_id))
     name_value = func.lower(func.trim(BrandMention.brand_name))
@@ -1144,9 +1214,18 @@ async def build_contract_context(
         missing_sources.extend(repair_missing)
         missing_reasons.append("canonical alias repair has partial analyzer evidence")
 
-    if repair_missing:
+    if scope_missing_reason is not None:
+        state = "empty"
+        state_reason = scope_missing_reason
+    elif repair_missing:
         state = "partial"
         state_reason = "partial_analyzer_data"
+    elif analysis_missing:
+        state = "partial"
+        state_reason = ANALYSIS_MISSING_REASON
+    elif no_aggregate_rows and not has_data:
+        state = "partial"
+        state_reason = NO_AGGREGATE_ROWS_REASON
     elif not has_data or base_state == "empty":
         state = "empty"
         state_reason = base_state_reason or "no_metric_data"
@@ -1166,6 +1245,7 @@ async def build_contract_context(
         "citation_source_count": citation_count,
         "competitor_brand_count": len(competitor_ids),
         "eligible_response_count": eligible_response_count,
+        "admin_fact_response_count": admin_fact_response_count,
         "competitive_mention_count": competitive_mention_count,
         "canonical_alias_repair_count": repair_count,
     }
@@ -1180,6 +1260,7 @@ async def build_contract_context(
             "normalized_brand_mention_count",
             "response_analysis_count",
             "citation_source_count",
+            "admin_fact_response_count",
         }
     )
 
@@ -1206,6 +1287,35 @@ async def build_contract_context(
         missing_inputs.extend(analyzer_reason_codes)
         missing_sources.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
         provenance.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
+    blocking_reasons = [
+        reason
+        for reason in [
+            scope_missing_reason,
+            ANALYSIS_MISSING_REASON if analysis_missing else None,
+            NO_AGGREGATE_ROWS_REASON if no_aggregate_rows else None,
+        ]
+        if reason
+    ]
+    if scope_missing_reason:
+        blocking_reasons.insert(0, PROJECT_UNBOUND_REASON)
+    if blocking_reasons:
+        metric_formula_evidence = {
+            **metric_formula_evidence,
+            **_blocking_metric_evidence(
+                blocking_reasons,
+                source_tables=_unique(
+                    [
+                        "projects.primary_brand_id" if scope_missing_reason else "",
+                        "project_competitors"
+                        if scope_missing_reason and not competitor_ids
+                        else "",
+                        "response_analyses" if analysis_missing else "",
+                        "geo_score_daily" if no_aggregate_rows else "",
+                    ]
+                ),
+                sample_response_ids=sorted(target_response_ids),
+            ),
+        }
 
     resolved_formula_status = formula_status
     if resolved_formula_status is None:
@@ -1216,11 +1326,21 @@ async def build_contract_context(
         else:
             resolved_formula_status = FORMULA_OK_STATUS
 
-    if metric_formula_evidence and any(
-        evidence.get("formula_status") != FORMULA_OK_STATUS
-        for evidence in metric_formula_evidence.values()
-    ):
-        resolved_formula_status = FORMULA_PARTIAL_STATUS
+    if metric_formula_evidence:
+        metric_statuses = [
+            str(evidence.get("formula_status") or FORMULA_NO_EVIDENCE_STATUS)
+            for evidence in metric_formula_evidence.values()
+        ]
+        metric_reason_codes = {
+            str(reason)
+            for evidence in metric_formula_evidence.values()
+            for reason in evidence.get("reason_codes", [])
+            if reason
+        }
+        if metric_reason_codes & _BLOCKING_REASON_CODES:
+            resolved_formula_status = FORMULA_MISSING_INPUTS_STATUS
+        elif any(status != FORMULA_OK_STATUS for status in metric_statuses):
+            resolved_formula_status = FORMULA_PARTIAL_STATUS
 
     if resolved_formula_status == FORMULA_MISSING_INPUTS_STATUS and not missing_reasons:
         missing_reasons.append("required formula inputs are missing")
@@ -1230,7 +1350,10 @@ async def build_contract_context(
     ):
         missing_sources.append(FORMULA_PENDING_SOURCE)
     if resolved_formula_status != FORMULA_OK_STATUS:
-        if has_any_evidence:
+        if scope_missing_reason is not None:
+            state = "empty"
+            state_reason = scope_missing_reason
+        elif has_any_evidence:
             state = "partial"
             if state_reason in {"data_available", "no_metric_data"}:
                 state_reason = (
@@ -1251,12 +1374,19 @@ async def build_contract_context(
             primary_brand_id=project.primary_brand_id,
             requested_brand_id=brand_id,
             competitor_brand_ids=competitor_ids,
-            missing_reason=None,
+            missing_reason=scope_missing_reason,
         ),
         brand_aliases=aliases,
         state=state,
         state_reason=state_reason,
-        state_detail=None if state != "partial" else "Some analyzer evidence is partial.",
+        state_detail=(
+            "Project is not bound to the requested brand; configure project.primary_brand_id "
+            "before accepting App analytics metrics."
+            if scope_missing_reason
+            else None
+            if state != "partial"
+            else "Some analyzer evidence is partial."
+        ),
         missing_inputs=_unique(missing_inputs),
         missing_sources=_unique(missing_sources),
         missing_reasons=_unique(missing_reasons),
@@ -1291,6 +1421,7 @@ def _empty_evidence(competitor_ids: list[int]) -> dict[str, int]:
         "citation_source_count": 0,
         "competitor_brand_count": len(competitor_ids),
         "eligible_response_count": 0,
+        "admin_fact_response_count": 0,
         "competitive_mention_count": 0,
         "canonical_alias_repair_count": 0,
     }
