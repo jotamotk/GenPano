@@ -292,12 +292,14 @@ async def build_quota_repair_report(
         unsafe_reasons: list[str] = []
         if account is None:
             unsafe_reasons.append("missing_account")
+        if current < 0:
+            unsafe_reasons.append("current_counter_negative")
         if real_account_engine and engine != real_account_engine:
             unsafe_reasons.append("engine_mismatch")
         if current - candidate_delta < 0:
             unsafe_reasons.append("counter_underflow")
         proposed_delta = 0 if unsafe_reasons else candidate_delta
-        after = current - proposed_delta
+        after = max(current - proposed_delta, 0)
         plans.append(
             AccountRepairPlan(
                 engine=engine,
