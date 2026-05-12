@@ -15,6 +15,9 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 - `project_id` input is still validated as UUID-shaped, but DB probes compare
   it as text so production `projects.id` columns stored as varchar/text do not
   fail before evidence collection starts.
+- Response date filters use `llm_responses.collected_at`, then
+  `queries.finished_at`, then `queries.created_at`; they do not reference
+  `llm_responses.created_at` or `response_analyses.created_at`.
 - The API probe sends authenticated `GET` requests only.
 - There is no repair, backfill, aggregation refresh, mutation, or production
   write mode.
