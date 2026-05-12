@@ -8,7 +8,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from geo_tracker.db.models import AccountStatus, LLMAccount, Query
-from geo_tracker.agent.response_validation import invalid_response_reason
+from geo_tracker.agent.response_validation import (
+    doubao_auth_state_reason,
+    invalid_response_reason,
+)
 from geo_tracker.tasks.account_assignment import (
     account_unavailable_reason_from_accounts,
     acquire_query_account,
@@ -104,6 +107,56 @@ def test_doubao_unavailable_page_text_is_detected(monkeypatch):
     assert _is_doubao_unavailable_page_text("该页面暂时不可用\n请尝试刷新此页面")
     assert _is_doubao_unavailable_page_text("刷新页面")
     assert not _is_doubao_unavailable_page_text("你好，欢迎使用豆包")
+
+
+def test_doubao_answer_like_page_with_free_login_state_is_rejected():
+    text = (
+        "bestCoffer 在咖啡机品类中主要覆盖便携浓缩、车载场景和露营人群。\n"
+        "登录\n"
+        "7天免登录"
+    )
+    html = """
+    <header>
+      <button class="login-button">登录</button>
+      <span class="trial-copy">7天免登录</span>
+    </header>
+    <main>
+      <div class="flow-markdown-body">bestCoffer 的差异化在于便携和即热能力。</div>
+    </main>
+    """
+
+    assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
+
+
+def test_doubao_answer_like_page_with_login_button_is_rejected():
+    text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。\n登录"
+    html = """
+    <header>
+      <button data-testid="login-button" aria-label="登录">登录</button>
+    </header>
+    <main>
+      <div class="flow-markdown-body">bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。</div>
+    </main>
+    """
+
+    assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
+
+
+def test_doubao_authenticated_completed_answer_is_allowed():
+    text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。"
+    html = """
+    <header>
+      <button class="user-avatar" aria-label="账号菜单">
+        <img alt="用户头像" src="https://lf-doubao.com/avatar/user.png" />
+      </button>
+    </header>
+    <main>
+      <div class="send-msg-bubble-bg">bestCoffer 在咖啡机领域有哪些优势？</div>
+      <div class="flow-markdown-body">bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。</div>
+    </main>
+    """
+
+    assert doubao_auth_state_reason(text, html) is None
 
 
 def test_query_execution_debug_fields_are_populated():

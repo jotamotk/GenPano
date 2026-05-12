@@ -13,6 +13,41 @@ _GENERIC_INVALID_MARKERS = {
     "please log in again to continue using the app": "cookies_expired",
 }
 
+_DOUBAO_UNAUTH_TEXT_MARKERS = (
+    "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
+    "\u514d\u767b\u5f55",  # 免登录
+)
+
+_DOUBAO_LOGIN_BUTTON_RE = re.compile(
+    r"<(?:button|a|div|span)[^>]*(?:login|passport|signin|sign-in|data-testid=[\"'][^\"']*login)[^>]*>"
+    r"[^<]{0,80}\u767b\u5f55"
+    r"|(?:aria-label|title)=[\"']\u767b\u5f55[\"']",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOUBAO_AUTHENTICATED_RE = re.compile(
+    r"(?:user-avatar|avatar|account-menu|profile-menu|user-info|"
+    r"\u7528\u6237\u5934\u50cf|\u8d26\u53f7\u83dc\u5355|\u6211\u7684\u8d26\u53f7)",
+    re.IGNORECASE,
+)
+
+
+def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str | None:
+    """Return a Doubao auth-state failure reason, or None when auth is proven."""
+    combined = "\n".join(part for part in (text or "", html or "") if part)
+    if not combined.strip():
+        return "doubao_auth_state_missing"
+
+    if any(marker in combined for marker in _DOUBAO_UNAUTH_TEXT_MARKERS):
+        return "doubao_not_logged_in"
+    if "\u767b\u5f55" in combined and _DOUBAO_LOGIN_BUTTON_RE.search(combined):
+        return "doubao_not_logged_in"
+
+    if _DOUBAO_AUTHENTICATED_RE.search(combined):
+        return None
+
+    return "doubao_auth_state_missing"
+
 
 def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
     """Return a reason when extracted page text is not an LLM answer."""
