@@ -79,15 +79,15 @@ def test_bestcoffer_batch_failure_path_still_fetches_manifest(tmp_path: Path) ->
     bin_dir.mkdir()
     trace = tmp_path / "trace.log"
     fake_commands = {
-        "ssh-keyscan": "echo keyscan >> \"$TRACE_FILE\"\nexit 0\n",
-        "ssh": "cat >/dev/null\necho ssh >> \"$TRACE_FILE\"\nexit 2\n",
+        "ssh-keyscan": 'echo keyscan >> "$TRACE_FILE"\nexit 0\n',
+        "ssh": 'cat >/dev/null\necho ssh >> "$TRACE_FILE"\nexit 2\n',
         "scp": (
-            "echo scp >> \"$TRACE_FILE\"\n"
+            'echo scp >> "$TRACE_FILE"\n'
             "mkdir -p scraper-batch-artifacts\n"
             "touch scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz\n"
             "exit 0\n"
         ),
-        "tar": "echo manifest >> \"$TRACE_FILE\"\necho audit.csv\nexit 0\n",
+        "tar": 'echo manifest >> "$TRACE_FILE"\necho audit.csv\nexit 0\n',
     }
     for name, body in fake_commands.items():
         command = bin_dir / name
