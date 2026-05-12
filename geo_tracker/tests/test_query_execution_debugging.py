@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -108,6 +109,87 @@ def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("soft_time_limit") is False
 
 
+@pytest.mark.asyncio
+async def test_deepseek_account_session_lock_serializes_same_account(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    class FakeRedisClient:
+        store: dict[str, str] = {}
+
+        async def set(self, key, value, *, nx=False, ex=None):
+            if nx and key in self.store:
+                return False
+            self.store[key] = value
+            return True
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def delete(self, key):
+            self.store.pop(key, None)
+            return 1
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        celery_tasks.aioredis,
+        "from_url",
+        lambda *args, **kwargs: FakeRedisClient(),
+    )
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    events: list[str] = []
+
+    async def first_browser_section():
+        events.append("first:start")
+        first_started.set()
+        await release_first.wait()
+        events.append("first:end")
+        return "first"
+
+    async def second_browser_section():
+        events.append("second:start")
+        events.append("second:end")
+        return "second"
+
+    first = asyncio.create_task(
+        celery_tasks._run_with_account_session_lock(
+            "deepseek",
+            42,
+            184414,
+            first_browser_section,
+            poll_interval_s=0.01,
+            wait_timeout_s=1.0,
+            lock_ttl_s=30,
+        )
+    )
+    await first_started.wait()
+    second = asyncio.create_task(
+        celery_tasks._run_with_account_session_lock(
+            "deepseek",
+            42,
+            184417,
+            second_browser_section,
+            poll_interval_s=0.01,
+            wait_timeout_s=1.0,
+            lock_ttl_s=30,
+        )
+    )
+
+    await asyncio.sleep(0.05)
+    assert events == ["first:start"]
+
+    release_first.set()
+
+    assert await first == "first"
+    assert await second == "second"
+    assert events == ["first:start", "first:end", "second:start", "second:end"]
+
+
 def test_account_unavailability_classifies_daily_limit_exhaustion():
     accounts = [
         LLMAccount(
@@ -140,6 +222,7 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(mon
     playwright_async = types.ModuleType("playwright.async_api")
     playwright_async.async_playwright = object
     playwright_async.BrowserContext = object
+    playwright_async.ElementHandle = object
     playwright_async.Page = object
     monkeypatch.setitem(sys.modules, "playwright", playwright)
     monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)
@@ -183,6 +266,7 @@ def _install_fake_playwright(monkeypatch):
     playwright_async = types.ModuleType("playwright.async_api")
     playwright_async.async_playwright = object
     playwright_async.BrowserContext = object
+    playwright_async.ElementHandle = object
     playwright_async.Page = object
     monkeypatch.setitem(sys.modules, "playwright", playwright)
     monkeypatch.setitem(sys.modules, "playwright.async_api", playwright_async)

@@ -12,10 +12,13 @@ import asyncio
 import json as json_mod
 import logging
 import os
+import time
+import uuid
 
 from celery import Celery
 from celery.schedules import crontab
 from billiard.exceptions import SoftTimeLimitExceeded
+import redis.asyncio as aioredis
 from sqlalchemy import delete as sa_delete, select
 
 from geo_tracker.agent.browser_lifecycle import (
@@ -62,6 +65,141 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def _keep_alive_auto_relogin_enabled() -> bool:
     return _env_flag("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", False)
+
+
+class AccountSessionLockTimeout(TimeoutError):
+    """Raised when a query cannot enter a serialized account browser session."""
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer env %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid float env %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _session_lock_llms() -> set[str]:
+    raw = os.getenv("SCRAPER_SESSION_LOCK_LLMS", "deepseek")
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def _should_lock_account_session(llm_name: str | None, account_id: int | None) -> bool:
+    if not account_id:
+        return False
+    return str(llm_name or "").lower() in _session_lock_llms()
+
+
+def _account_session_lock_key(llm_name: str, account_id: int) -> str:
+    llm = str(llm_name or "").lower()
+    return f"genpano:scraper:session:{llm}:{int(account_id)}"
+
+
+async def _release_account_session_lock(client, key: str, token: str) -> None:
+    try:
+        current = await client.get(key)
+        if current == token:
+            await client.delete(key)
+    except Exception as exc:
+        logger.warning("Failed to release scraper session lock %s: %s", key, exc)
+
+
+async def _run_with_account_session_lock(
+    llm_name: str,
+    account_id: int | None,
+    query_id: int,
+    operation,
+    *,
+    poll_interval_s: float | None = None,
+    wait_timeout_s: float | None = None,
+    lock_ttl_s: int | None = None,
+):
+    """Serialize browser sessions for account-backed engines that need it."""
+    if not _should_lock_account_session(llm_name, account_id):
+        return await operation()
+
+    ttl_s = lock_ttl_s or _env_int("SCRAPER_SESSION_LOCK_TTL_S", 600)
+    timeout_s = (
+        wait_timeout_s
+        if wait_timeout_s is not None
+        else _env_float("SCRAPER_SESSION_LOCK_WAIT_TIMEOUT_S", 420.0)
+    )
+    poll_s = (
+        poll_interval_s
+        if poll_interval_s is not None
+        else _env_float("SCRAPER_SESSION_LOCK_POLL_S", 1.0)
+    )
+    key = _account_session_lock_key(llm_name, int(account_id))
+    token = f"{os.getpid()}:{query_id}:{uuid.uuid4().hex}"
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    try:
+        client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    except Exception as exc:
+        logger.warning(
+            "Query %s: could not create scraper session lock client for %s "
+            "account=%s; continuing fail-open: %s",
+            query_id,
+            llm_name,
+            account_id,
+            exc,
+        )
+        return await operation()
+    acquired = False
+
+    try:
+        while True:
+            try:
+                acquired = bool(await client.set(key, token, nx=True, ex=ttl_s))
+            except Exception as exc:
+                logger.warning(
+                    "Query %s: scraper session lock unavailable for %s account=%s; "
+                    "continuing fail-open: %s",
+                    query_id,
+                    llm_name,
+                    account_id,
+                    exc,
+                )
+                return await operation()
+
+            if acquired:
+                logger.info(
+                    "Query %s: acquired scraper session lock for %s account=%s",
+                    query_id,
+                    llm_name,
+                    account_id,
+                )
+                return await operation()
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AccountSessionLockTimeout(
+                    f"{llm_name} account {account_id} session lock wait timed out"
+                )
+
+            await asyncio.sleep(min(max(poll_s, 0.01), remaining))
+    finally:
+        try:
+            if acquired:
+                await _release_account_session_lock(client, key, token)
+        finally:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
 
 app = Celery("geo_tracker", broker=REDIS_URL, backend=REDIS_URL)
@@ -328,14 +466,26 @@ def execute_query(self, query_id: int) -> dict:
 
             logger.info(f"Query {query_id}: Using {'account' if account_cookies else 'guest'} mode for {query.target_llm}")
 
+            guest_executor: GuestQueryExecutor | None = None
+
             try:
                 proxy_url = os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
                 logger.info(f"Query {query_id}: Using proxy URL: {proxy_url}")
-                guest_executor = GuestQueryExecutor(
-                    proxy_url=proxy_url,
-                    account_cookies=account_cookies,
+
+                async def _execute_browser_session() -> LLMResponse | None:
+                    nonlocal guest_executor
+                    guest_executor = GuestQueryExecutor(
+                        proxy_url=proxy_url,
+                        account_cookies=account_cookies,
+                    )
+                    return await guest_executor.execute(query)
+
+                response: LLMResponse | None = await _run_with_account_session_lock(
+                    query.target_llm,
+                    account_id,
+                    query_id,
+                    _execute_browser_session,
                 )
-                response: LLMResponse | None = await guest_executor.execute(query)
                 if response is not None:
                     quota_settlement.mark_platform_consumed()
 
@@ -421,6 +571,31 @@ def execute_query(self, query_id: int) -> dict:
                             )
                     logger.warning(f"Query {query_id} failed ({failure_reason}: {resp_len} chars)")
                     return {"query_id": query_id, "status": "failed", "reason": f"{failure_reason}:{resp_len}"}
+
+            except AccountSessionLockTimeout as e:
+                failure_reason = "browser_timeout"
+                logger.warning(
+                    "Query %s delayed by scraper account session lock: %s",
+                    query_id,
+                    e,
+                )
+                mark_query_finished(
+                    query,
+                    status=QueryStatus.FAILED.value,
+                    started_at=started_at,
+                    reason=failure_reason,
+                )
+                await quota_settlement.settle_failure(
+                    db,
+                    pool,
+                    reason=failure_reason,
+                )
+                await db.commit()
+                return {
+                    "query_id": query_id,
+                    "status": "failed",
+                    "reason": failure_reason,
+                }
 
             except Exception as e:
                 logger.exception(f"Query {query_id} exception: {e}")
