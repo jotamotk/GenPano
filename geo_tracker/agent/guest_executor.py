@@ -1216,6 +1216,7 @@ class GuestQueryExecutor:
             "",
             "no_response",
             "no_input",
+            "browser_timeout",
             "submit_failed",
         ):
             self.last_error_reason = auth_reason

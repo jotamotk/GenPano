@@ -663,6 +663,37 @@ async def test_doubao_submit_failed_promotes_auth_failure_reason(monkeypatch):
     assert executor.last_error_reason == "doubao_not_logged_in"
 
 
+@pytest.mark.asyncio
+async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return (
+                "bestCoffer 的核心优势包括协同、权限和审计。\n"
+                "登录"
+            )
+
+        async def content(self):
+            return """
+            <main>
+              <section>bestCoffer 的核心优势包括协同、权限和审计。</section>
+              <header><button class="login-button">登录</button></header>
+            </main>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "browser_timeout"
+
+    reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
 def test_query_execution_debug_fields_are_populated():
     query = Query(query_text="hello", target_llm="doubao")
     started_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=2)
