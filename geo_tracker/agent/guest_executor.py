@@ -29,11 +29,14 @@ except ImportError:
 from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
+    ensure_global_proxy_route,
+    get_last_error_reason,
     get_current_node,
     switch_to_next_node,
     CLASH_API_URL,
 )
 from geo_tracker.agent.response_validation import (
+    chatgpt_auth_state_reason,
     doubao_auth_state_reason,
     invalid_response_reason,
 )
@@ -133,6 +136,10 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 def _block_heavy_resources() -> bool:
     return _env_flag("BROWSER_BLOCK_HEAVY_RESOURCES", True)
+
+
+def _force_global_proxy_route() -> bool:
+    return _env_flag("CLASH_FORCE_GLOBAL_PROXY_ROUTE", True)
 
 
 async def _install_resource_blocker(context: BrowserContext) -> None:
@@ -330,6 +337,30 @@ class GuestQueryExecutor:
         if not use_proxy:
             return await self._execute_once(query, config, use_proxy=False)
 
+        if llm == "chatgpt" and _force_global_proxy_route():
+            route = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
+            if not route.ok:
+                self.last_error_reason = route.reason or "proxy_global_route_unavailable"
+                logger.error(
+                    "[%s] proxy route preflight failed: reason=%s global=%s:%s source=%s:%s",
+                    llm,
+                    self.last_error_reason,
+                    route.global_group,
+                    route.global_now,
+                    route.source_group,
+                    route.source_now,
+                )
+                return None
+            logger.info(
+                "[%s] proxy route preflight ok: global=%s selected=%s source=%s:%s changed=%s",
+                llm,
+                route.global_group,
+                route.selected_node,
+                route.source_group,
+                route.source_now,
+                route.changed,
+            )
+
         # 海外 LLM：支持 Cloudflare 拦截后切换节点重试
         failed_nodes: set[str] = set()
 
@@ -339,8 +370,15 @@ class GuestQueryExecutor:
                     CLASH_API_URL, CLASH_PROXY_GROUP, exclude=failed_nodes
                 )
                 if not new_node:
-                    self.last_error_reason = self.last_error_reason or "proxy_unavailable"
-                    logger.error(f"[{llm}] 没有更多可用代理节点，放弃重试")
+                    proxy_reason = get_last_error_reason() or "proxy_unavailable"
+                    self.last_error_reason = proxy_reason
+                    logger.error(
+                        "[%s] proxy rotation stopped: %s (api=%s group=%s)",
+                        llm,
+                        proxy_reason,
+                        CLASH_API_URL,
+                        CLASH_PROXY_GROUP,
+                    )
                     break
                 logger.info(f"[{llm}] 第 {attempt + 1} 次重试，已切换到节点: {new_node}")
 
@@ -872,7 +910,11 @@ class GuestQueryExecutor:
                     except Exception as probe_error:
                         logger.warning(f"[{llm}] runtime probe after load error failed: {probe_error}")
                 if not recovered_after_load_error:
-                    self.last_error_reason = "page_load_failed"
+                    if page_obj:
+                        await self._prefer_chatgpt_auth_failure_reason(
+                            llm, page_obj, runtime_events=runtime_events
+                        )
+                    self.last_error_reason = self.last_error_reason or "page_load_failed"
                     return None
 
             # 页面加载后检查是否被重定向到登录页
@@ -949,6 +991,9 @@ class GuestQueryExecutor:
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
                 if page_obj:
+                    await self._prefer_chatgpt_auth_failure_reason(
+                        llm, page_obj, runtime_events=runtime_events
+                    )
                     await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_input"
                 if page_obj:
@@ -996,6 +1041,9 @@ class GuestQueryExecutor:
             else:
                 logger.error(f"[{llm}] 未能获取响应")
                 if page_obj:
+                    await self._prefer_chatgpt_auth_failure_reason(
+                        llm, page_obj, runtime_events=runtime_events
+                    )
                     await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
@@ -1041,6 +1089,31 @@ class GuestQueryExecutor:
         if not auth_reason:
             return None
         if self.last_error_reason in (None, "", "no_response", "no_input"):
+            self.last_error_reason = auth_reason
+        return auth_reason
+
+    async def _prefer_chatgpt_auth_failure_reason(
+        self,
+        llm_name: str,
+        page: Page | None,
+        *,
+        runtime_events: list[dict] | None = None,
+    ) -> str | None:
+        """Promote ChatGPT token/session failures over generic scraper reasons."""
+        if llm_name != "chatgpt" or page is None:
+            return None
+        body_text = ""
+        try:
+            body_text = await page.evaluate("document.body?.innerText || ''")
+        except Exception:
+            pass
+        auth_reason = chatgpt_auth_state_reason(
+            body_text,
+            runtime_events=runtime_events,
+        )
+        if not auth_reason:
+            return None
+        if self.last_error_reason in (None, "", "no_response", "no_input", "page_load_failed"):
             self.last_error_reason = auth_reason
         return auth_reason
 

@@ -301,6 +301,40 @@ jobs:
               RETURNING q.id, q.target_llm, q.status, q.retry_reason;
             "
 
+            if [ "${TARGET_LLM}" = "chatgpt" ]; then
+              echo "=== ChatGPT proxy route preflight ==="
+              docker compose exec -T worker python - <<'PY' || true
+          import asyncio
+          import json
+          import os
+          from dataclasses import asdict
+
+          from geo_tracker.agent.clash_api import (
+              CLASH_API_URL,
+              ensure_global_proxy_route,
+          )
+          from geo_tracker.agent.guest_executor import CLASH_PROXY_GROUP
+
+          async def main():
+              diagnostic = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
+              print(json.dumps({
+                  "clash_api_url": CLASH_API_URL,
+                  "clash_proxy_url": os.getenv("CLASH_PROXY_URL"),
+                  "clash_proxy_group": CLASH_PROXY_GROUP,
+                  "clash_global_proxy_group": os.getenv("CLASH_GLOBAL_PROXY_GROUP", "GLOBAL"),
+                  "clash_api_secret_present": bool(os.getenv("CLASH_API_SECRET")),
+                  "route": asdict(diagnostic),
+              }, ensure_ascii=False))
+
+          asyncio.run(main())
+          PY
+              docker compose exec -T worker sh -lc '
+                code="$(curl -sS --max-time 12 --proxy "${CLASH_PROXY_URL}" \
+                  https://chatgpt.com/ -o /dev/null -w "%{http_code}" || true)"
+                echo "chatgpt_proxy_http_code=${code:-curl_failed}"
+              ' </dev/null || true
+            fi
+
             echo "=== Dispatch selected queries ==="
             batch_rows_b64="$(printf '%s' "${batch_rows}" | base64 | tr -d '\n')"
             docker compose exec -T -e BATCH_ROWS_B64="${batch_rows_b64}" worker python - <<'PY'
@@ -469,7 +503,7 @@ jobs:
               > "${artifact_dir}/logs/worker-services.log" 2>&1 || true
             if [ -n "${ids_space}" ]; then
               ids_regex="$(printf '%s\n' ${ids_space} | paste -sd'|' -)"
-              grep -E "(${ids_regex})|execute_query|page_load|browser_timeout|soft_time_limit|no_input|no_response|cookies_expired|page_unavailable|deepseek|doubao|chatgpt" \
+              grep -E "(${ids_regex})|execute_query|page_load|browser_timeout|soft_time_limit|no_input|no_response|cookies_expired|token_invalidated|proxy_api|proxy_global|proxy_route|page_unavailable|deepseek|doubao|chatgpt" \
                 "${artifact_dir}/logs/worker-services.log" \
                 > "${artifact_dir}/logs/selected-query-worker.log" 2>/dev/null || true
             fi
@@ -583,10 +617,13 @@ jobs:
       - name: Run read-only diagnostics
         if: ${{ inputs.scraper_mode == 'diagnostics' }}
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          CLASH_API_SECRET: ${{ secrets.CLASH_API_SECRET || vars.CLASH_API_SECRET }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: CLASH_API_SECRET
           script: |
             set -euo pipefail
             cd /opt/genpano
@@ -694,7 +731,11 @@ jobs:
             systemctl is-active vninja || true
             systemctl status --no-pager -l vninja || true
             ss -ltnp | grep -E ':(6789|9097|9098)\b' || true
-            curl -fsS --max-time 5 http://127.0.0.1:9097/configs -H 'Authorization: Bearer set-your-secret' | head -c 2000 || true
+            vninja_config_headers=()
+            if [ -n "${CLASH_API_SECRET:-}" ]; then
+              vninja_config_headers=(-H "Authorization: Bearer ${CLASH_API_SECRET}")
+            fi
+            curl -fsS --max-time 5 http://127.0.0.1:9097/configs "${vninja_config_headers[@]}" | head -c 2000 || true
             echo
             curl -fsS --max-time 8 --proxy http://127.0.0.1:6789 https://www.gstatic.com/generate_204 -o /dev/null -w 'proxy_generate_204_http_code=%{http_code} total=%{time_total}\n' || true
             docker compose exec -T worker python - <<'PY' || true
