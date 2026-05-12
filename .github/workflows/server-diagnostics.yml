@@ -310,6 +310,46 @@ jobs:
             " > "${artifact_dir}/audit.csv"
             cat "${artifact_dir}/audit.csv"
 
+            echo "=== Export current batch responses JSONL ==="
+            psql_cmd -At -c "
+              WITH selected AS (
+                SELECT unnest(string_to_array('${ids_csv}', ',')::int[]) AS id
+              ),
+              latest AS (
+                SELECT DISTINCT ON (r.query_id)
+                  r.query_id,
+                  r.id AS response_id,
+                  r.raw_text,
+                  r.citations_json,
+                  r.screenshot_path,
+                  r.collected_at
+                FROM llm_responses r
+                JOIN selected s ON s.id = r.query_id
+                ORDER BY r.query_id, r.id DESC
+              )
+              SELECT jsonb_build_object(
+                'query_id', q.id,
+                'target_llm', q.target_llm,
+                'status', q.status,
+                'retry_reason', q.retry_reason,
+                'query_text', q.query_text,
+                'response_id', latest.response_id,
+                'response_text', latest.raw_text,
+                'citations', COALESCE(latest.citations_json::jsonb, '[]'::jsonb),
+                'citation_count', CASE
+                  WHEN jsonb_typeof(latest.citations_json::jsonb) = 'array'
+                  THEN jsonb_array_length(latest.citations_json::jsonb)
+                  ELSE 0
+                END,
+                'screenshot_path', latest.screenshot_path,
+                'collected_at', latest.collected_at
+              )::text
+              FROM queries q
+              JOIN selected s ON s.id = q.id
+              LEFT JOIN latest ON latest.query_id = q.id
+              ORDER BY q.id;
+            " > "${artifact_dir}/responses.jsonl"
+
             echo "=== Collect current batch worker logs ==="
             mkdir -p "${artifact_dir}/logs"
             docker compose logs --since "${utc_started_at}" worker worker-analysis beat \
