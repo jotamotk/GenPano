@@ -61,9 +61,18 @@ def test_server_diagnostics_has_readonly_hero_sms_runtime_check() -> None:
 
 def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+    sanitizer_selftest = (
+        'sanitize_herosms_stream <<< "$(printf \'api_key=unit-secret '
+        "HERO_SMS_%s=unit-secret' 'API_KEY')\""
+    )
+    collect_worker_logs = 'docker compose logs --since "${utc_started_at}" worker worker-analysis beat'
 
     assert "sanitize_herosms_logs" in workflow_text
-    assert "scripts/sanitize_herosms_logs.py" in workflow_text
+    assert "scripts/sanitize_herosms_logs.py" not in run_script
+    assert sanitizer_selftest in run_script
+    assert run_script.index(sanitizer_selftest) < run_script.index(collect_worker_logs)
     assert "HERO_SMS_API_KEY=" not in workflow_text
 
 
@@ -90,8 +99,26 @@ def test_herosms_log_sanitizer_redacts_sample_stdout_and_artifact_text() -> None
 
 def test_server_diagnostics_worker_stdout_log_streams_are_sanitized() -> None:
     workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    diagnostic_step = next(
+        step
+        for step in workflow["jobs"]["diagnostics"]["steps"]
+        if step.get("name") == "Run read-only diagnostics"
+    )
+    run_script = diagnostic_step["with"]["script"]
+    sanitizer_selftest = (
+        'sanitize_herosms_stream <<< "$(printf \'api_key=unit-secret '
+        "HERO_SMS_%s=unit-secret' 'API_KEY')\""
+    )
+    first_worker_log = (
+        "docker compose logs --since '2026-05-11T08:07:00' "
+        "--until '2026-05-11T08:11:00' worker worker-analysis backend nginx"
+    )
 
     assert "sanitize_herosms_stream()" in workflow_text
+    assert "scripts/sanitize_herosms_logs.py" not in run_script
+    assert sanitizer_selftest in run_script
+    assert run_script.index(sanitizer_selftest) < run_script.index(first_worker_log)
     assert (
         "docker compose logs --since '2026-05-11T08:07:00' "
         "--until '2026-05-11T08:11:00' worker worker-analysis backend nginx "
