@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select, and_, delete, null
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +29,8 @@ from geo_tracker.analyzer.geo_scorer import GEOScorer
 logger = logging.getLogger(__name__)
 
 PRD_CATEGORY_DIMENSIONS = {"品类", "category"}
-PRD_NON_BRAND_INTENTS = {"non_brand"}
+PRD_NON_BRAND_INTENTS = {"nonbrand", "nonbranded", "informational"}
+PRD_NON_BRAND_SCOPES = {"nonbrand", "nonbranded", "category"}
 
 
 def _nullable_metric(value):
@@ -170,7 +173,7 @@ class Aggregator:
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
         citation_response_ids_by_brand: dict[int, set[int]],
-        prompts_by_query: dict[int, tuple[str | None, str | None, str | None]],
+        prompts_by_query: dict[int, tuple[str | None, str | None, str | None, Any]],
         competitive_brand_ids: set[int],
     ) -> int:
         """Aggregate GEOScoreDaily for one brand on one day.
@@ -203,7 +206,10 @@ class Aggregator:
             q = queries.get(a.response_id)
             if not q:
                 continue
-            intent, language, _category = prompts_by_query.get(q.id, (None, None, None))
+            intent, language, _category, _tags = prompts_by_query.get(
+                q.id,
+                (None, None, None, None),
+            )
             key = (q.target_llm, intent, language)
             if key == (None, None, None):
                 continue
@@ -229,7 +235,7 @@ class Aggregator:
         mentions: dict[int, list[BrandMention]],
         queries: dict[int, Query],
         citation_response_ids_by_brand: dict[int, set[int]],
-        prompts_by_query: dict[int, tuple[str | None, str | None, str | None]],
+        prompts_by_query: dict[int, tuple[str | None, str | None, str | None, Any]],
         competitive_brand_ids: set[int],
         target_llm: str | None,
         intent: str | None,
@@ -869,8 +875,8 @@ class Aggregator:
 
     async def _get_prompts_for_queries(
         self, queries,
-    ) -> dict[int, tuple[str | None, str | None, str | None]]:
-        """Map query.id -> (intent, language, topic_category) by joining Prompt.
+    ) -> dict[int, tuple[str | None, str | None, str | None, Any]]:
+        """Map query.id -> (intent, language, topic_category, tags) by joining Prompt.
 
         Used to drive the dimension split when writing per-(llm/intent/language)
         rows in geo_score_daily and to keep default KPI denominators in PRD
@@ -880,13 +886,13 @@ class Aggregator:
         if not prompt_ids:
             return {}
         result = await self.session.execute(
-            select(Prompt.id, Prompt.intent, Prompt.language, Topic.category)
+            select(Prompt.id, Prompt.intent, Prompt.language, Topic.category, Prompt.tags)
             .join(Topic, Topic.id == Prompt.topic_id)
             .where(Prompt.id.in_(prompt_ids))
         )
-        prompt_attrs = {row[0]: (row[1], row[2], row[3]) for row in result.all()}
+        prompt_attrs = {row[0]: (row[1], row[2], row[3], row[4]) for row in result.all()}
         return {
-            q.id: prompt_attrs.get(q.prompt_id, (None, None, None))
+            q.id: prompt_attrs.get(q.prompt_id, (None, None, None, None))
             for q in queries
             if q.prompt_id is not None
         }
@@ -894,15 +900,23 @@ class Aggregator:
     @staticmethod
     def _is_default_mention_rate_eligible(
         query: Query,
-        prompts_by_query: dict[int, tuple[str | None, str | None, str | None]],
+        prompts_by_query: dict[int, tuple[str | None, str | None, str | None, Any]],
     ) -> bool:
-        intent, _language, topic_category = prompts_by_query.get(
+        intent, _language, topic_category, tags = prompts_by_query.get(
             query.id,
-            (None, None, None),
+            (None, None, None, None),
         )
+        prompt_scope = _prompt_scope_from_tags(tags)
+        topic_dimension = _topic_dimension_from_tags(tags)
         return (
-            _normalize_dimension(intent) in PRD_NON_BRAND_INTENTS
-            and _normalize_dimension(topic_category) in PRD_CATEGORY_DIMENSIONS
+            (
+                _normalize_dimension(intent) in PRD_NON_BRAND_INTENTS
+                or prompt_scope in PRD_NON_BRAND_SCOPES
+            )
+            and (
+                _is_prd_category_dimension(topic_category)
+                or topic_dimension in PRD_CATEGORY_DIMENSIONS
+            )
         )
 
     @staticmethod
@@ -969,4 +983,58 @@ class Aggregator:
 def _normalize_dimension(value: str | None) -> str | None:
     if value is None:
         return None
-    return str(value).strip().lower() or None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    return "".join(ch for ch in normalized if ch not in {" ", "-", "_"})
+
+
+def _is_prd_category_dimension(value: str | None) -> bool:
+    normalized = _normalize_dimension(value)
+    if normalized in PRD_CATEGORY_DIMENSIONS:
+        return True
+    raw = str(value or "").strip().lower()
+    return "品类" in raw or "category" in raw
+
+
+def _prompt_scope_from_tags(tags: Any) -> str | None:
+    payload = _coerce_tags(tags)
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        candidates.extend(
+            payload.get(key)
+            for key in ("prompt_scope", "scope", "query_scope", "intent")
+        )
+    elif isinstance(payload, list | tuple | set):
+        candidates.extend(payload)
+    elif payload:
+        candidates.append(payload)
+    for candidate in candidates:
+        normalized = _normalize_dimension(str(candidate)) if candidate is not None else None
+        if normalized:
+            return normalized
+    return None
+
+
+def _topic_dimension_from_tags(tags: Any) -> str | None:
+    payload = _coerce_tags(tags)
+    if not isinstance(payload, dict):
+        return None
+    for key in ("topic_dimension", "topicDimension", "dimension", "category_dimension"):
+        value = payload.get(key)
+        normalized = _normalize_dimension(str(value)) if value is not None else None
+        if normalized:
+            return normalized
+    return None
+
+
+def _coerce_tags(tags: Any) -> Any:
+    if isinstance(tags, str):
+        text = tags.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return text
+    return tags
