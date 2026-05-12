@@ -40,6 +40,7 @@ import BrandSentimentPage from './pages/brand/BrandSentimentPage'
 import BrandCitationsPage from './pages/brand/BrandCitationsPage'
 import BrandProductsPage from './pages/brand/BrandProductsPage'
 import BrandCompetitorsPage from './pages/brand/BrandCompetitorsPage'
+import AppAnalyzerContractPage from './pages/brand/AppAnalyzerContractPage'
 import IndustryRankingPage from './pages/industry/IndustryRankingPage'
 import IndustryTopicsPage from './pages/industry/IndustryTopicsPage'
 
@@ -220,6 +221,7 @@ export default function App() {
           <Route path="/brand/products"            element={<BrandProductsPage />} />
           <Route path="/brand/products/:productId" element={<BrandProductDetailPage />} />
           <Route path="/brand/competitors"         element={<BrandCompetitorsPage />} />
+          <Route path="/brand/analyzer-contract"   element={<AppAnalyzerContractPage />} />
           <Route path="/brand/diagnostics"         element={<DiagnosticsPage />} />
           <Route path="/brand/reports"             element={<ReportsPage />} />
 
