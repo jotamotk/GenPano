@@ -275,6 +275,45 @@ def _response_input_from_pipeline(
     )
 
 
+def _scope_raw_relation_evidence(
+    raw_analysis_json: dict,
+    *,
+    response_id: int,
+    query_id: int | None,
+    prompt_id: int | None,
+    topic_id: int | None,
+) -> dict:
+    relation_keys = (
+        "relations",
+        "response_relations",
+        "brand_relations",
+        "product_relations",
+        "relation_facts",
+    )
+    scoped = dict(raw_analysis_json)
+    for key in relation_keys:
+        value = scoped.get(key)
+        if not isinstance(value, list):
+            continue
+        scoped_items = []
+        for item in value:
+            if not isinstance(item, dict):
+                scoped_items.append(item)
+                continue
+            relation = dict(item)
+            relation.setdefault("response_id", response_id)
+            if query_id is not None:
+                relation.setdefault("query_id", query_id)
+            if prompt_id is not None:
+                relation.setdefault("prompt_id", prompt_id)
+            if topic_id is not None:
+                relation.setdefault("topic_id", topic_id)
+            relation.setdefault("source", "current_response_analyzer")
+            scoped_items.append(relation)
+        scoped[key] = scoped_items
+    return scoped
+
+
 async def analyze_single_response(
     session,
     response: LLMResponse,
@@ -739,7 +778,13 @@ async def analyze_single_response(
             target_aliases=brand.aliases or [],
             configured_competitors=_competitor_contracts_from_competitors(competitors),
         )
-        raw_analysis_json = dict(llm_result.raw_json or {})
+        raw_analysis_json = _scope_raw_relation_evidence(
+            dict(llm_result.raw_json or {}),
+            response_id=response.id,
+            query_id=response.query_id,
+            prompt_id=prompt_id,
+            topic_id=topic_id,
+        )
         raw_analysis_json["brand_mention_facts"] = mention_facts
         raw_analysis_json["citation_facts"] = citation_facts
         raw_analysis_json["metric_input_status"] = metric_input_status

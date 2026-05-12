@@ -479,6 +479,11 @@ def execute_query(self, query_id: int) -> dict:
                 account_id = account.id
                 quota_settlement.reserve(account_id)
                 query.account_id = account_id
+                if (
+                    query.profile_id is None
+                    and getattr(account, "profile_id", None) is not None
+                ):
+                    query.profile_id = account.profile_id
                 await db.commit()
                 logger.info(
                     f"Query {query_id}: acquired account id={account_id} "

@@ -45,6 +45,7 @@ ANALYSIS_USER = """\
 - **sentiment 必须准确**：根据AI回答的上下文判断整体情感，sentiment_score 在 -1.0（极负面）到 1.0（极正面）之间
 - **sentiment_drivers 必须全面**：列出AI回答中该品牌/产品的所有正面和负面评价因素，包括功能特性、价格、体验、品牌形象等各方面。每个 driver 需要附带原文引用（source_quote）
 - **product_features 必须全面**：列出AI回答中提到的该产品的所有特性、卖点、场景和价格感知
+- **response_relations must be response-scoped**: extract relations stated in the current AI response only, such as product recommended_for profile/skin concern, brand compared_with brand, product has_attribute attribute, or product addresses_need need. Do not use global inference. Each relation must include evidence quoted from the current AI response.
 
 输出JSON（严格遵循此格式）：
 {{
@@ -82,6 +83,16 @@ ANALYSIS_USER = """\
     "company": "公司标签（如：Nike Inc.、Apple Inc.）",
     "product": "产品标签（如：Air Max 90、iPhone 16）",
     "category": "产品品类（如：跑步鞋、旗舰手机、中型SUV）"
-  }}
+  }},
+  "response_relations": [
+    {{
+      "entity_kind": "brand|product|attribute|profile_need",
+      "type": "recommended_for|compared_with|has_attribute|addresses_need|avoid_for",
+      "a_name": "source entity from the current AI response",
+      "b_name": "target entity from the current AI response",
+      "confidence": 0.8,
+      "evidence": "quote from the current AI response"
+    }}
+  ]
 }}
 """
