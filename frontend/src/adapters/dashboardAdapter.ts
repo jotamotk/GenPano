@@ -594,6 +594,19 @@ export interface TrendRowAdapted {
   [brand: string]: number | string | null
 }
 
+export interface TrendLineAdapted {
+  key: string
+  label: string
+  color: string
+  area?: boolean
+  dashed?: boolean
+}
+
+export interface VisibilityPanoTrendAdapted {
+  rows: Array<TrendRowAdapted & { name: string }>
+  lines: TrendLineAdapted[]
+}
+
 function metricSeriesPercentValue(
   metrics: MetricsOut | null | undefined,
   metric: MetricsOut['series'][number]['metric'],
@@ -660,6 +673,69 @@ export function adaptCompetitorTrendsToTrendData(
   })
 }
 
+
+// Visibility page PANO trend from the competitor geo trend contract.
+const VISIBILITY_TREND_RESERVED_KEYS = new Set([
+  'day',
+  'name',
+  'panoScore',
+  'mentionRate',
+  'sentiment',
+])
+
+const VISIBILITY_COMPETITOR_TREND_COLORS = [
+  'var(--color-chart-3)',
+  'var(--color-chart-7)',
+  'var(--color-chart-4)',
+  'var(--color-chart-5)',
+  'var(--color-chart-line-grid)',
+]
+
+function rowHasValue(row: TrendRowAdapted, key: string): boolean {
+  return typeof row[key] === 'number' && Number.isFinite(row[key] as number)
+}
+
+export function adaptCompetitorTrendsToVisibilityPanoTrend(
+  trends: CompetitorTrendsOut | null | undefined,
+  primaryLabel: string,
+): VisibilityPanoTrendAdapted {
+  if (!trends) return { rows: [], lines: [] }
+
+  const rows = adaptCompetitorTrendsToTrendData(trends, null).map((row, idx) => ({
+    name: row.day != null ? `D${row.day}` : `D${idx + 1}`,
+    ...row,
+  }))
+  if (!rows.length) return { rows: [], lines: [] }
+
+  const hasPrimary = rows.some((row) => rowHasValue(row, 'panoScore'))
+  const competitorKeys = Array.from(new Set(
+    rows.flatMap((row) =>
+      Object.keys(row).filter((key) =>
+        !VISIBILITY_TREND_RESERVED_KEYS.has(key) && rowHasValue(row, key),
+      ),
+    ),
+  ))
+
+  const lines: TrendLineAdapted[] = [
+    ...(hasPrimary
+      ? [{
+          key: 'panoScore',
+          label: primaryLabel || 'PANO Score',
+          color: 'var(--color-accent)',
+          area: true,
+        }]
+      : []),
+    ...competitorKeys.map((key, index) => ({
+      key,
+      label: key,
+      color: VISIBILITY_COMPETITOR_TREND_COLORS[index % VISIBILITY_COMPETITOR_TREND_COLORS.length],
+      area: false,
+      dashed: true,
+    })),
+  ]
+
+  return { rows, lines }
+}
 
 // ── Industry average GEO (for hero comparison bar) ──
 

@@ -6,6 +6,7 @@ import {
   adaptCompetitorMetricsToList,
   adaptCompetitorMetricsToSov,
   adaptCompetitorTrendsToTrendData,
+  adaptCompetitorTrendsToVisibilityPanoTrend,
   adaptOverviewToPrimary,
   adaptOverviewToSov,
   adaptOverviewToTrend,
@@ -392,6 +393,70 @@ describe('dashboard adapter', () => {
     expect(adaptCompetitorTrendsToTrendData(trends, overview)).toEqual([
       { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72, Lancome: 73 },
     ])
+  })
+
+  it('does not build live visibility PANO trends from mention metric rows', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      engines: null,
+      state: 'ok',
+      series: [
+        {
+          metric: 'mention_rate',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          formula_status: 'ok',
+          points: [{ date: '2026-05-11', value: 0.162 }],
+        },
+      ],
+    } as MetricsOut
+
+    expect(adaptMetricsToSparklines(metrics).mention).toEqual([16.2])
+    expect(adaptCompetitorTrendsToVisibilityPanoTrend(null, 'Estee Lauder')).toEqual({
+      rows: [],
+      lines: [],
+    })
+  })
+
+  it('passes real geo trend rows through for live visibility PANO trends', () => {
+    const trends = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      metric: 'geo_score',
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'ok',
+      series: [
+        {
+          brand_id: 12,
+          brand_key: 'estee_lauder',
+          brand_name: 'Estee Lauder',
+          is_primary: true,
+          points: [
+            { date: '2026-05-10', value: 80 },
+            { date: '2026-05-11', value: null },
+          ],
+        },
+        {
+          brand_id: 34,
+          brand_key: 'lancome',
+          brand_name: 'Lancome',
+          is_primary: false,
+          points: [
+            { date: '2026-05-10', value: 73 },
+            { date: '2026-05-11', value: null },
+          ],
+        },
+      ],
+    } as CompetitorTrendsOut
+
+    const trend = adaptCompetitorTrendsToVisibilityPanoTrend(trends, 'Estee Lauder')
+
+    expect(trend.rows).toEqual([
+      { name: 'D1', day: 1, panoScore: 80, mentionRate: null, sentiment: null, Lancome: 73 },
+      { name: 'D2', day: 2, panoScore: null, mentionRate: null, sentiment: null, Lancome: null },
+    ])
+    expect(trend.lines.map((line) => line.key)).toEqual(['panoScore', 'Lancome'])
   })
 
   it('does not append frontend Others slices to backend competitor SoV rows', () => {

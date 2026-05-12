@@ -14,7 +14,7 @@ import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
 import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
-import { useBrandMetrics, useCompetitorMetrics } from '../../hooks/useBrandMetrics';
+import { useBrandMetrics, useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
 import {
   useEngineMetrics,
   usePositionDistribution,
@@ -22,6 +22,7 @@ import {
 } from '../../hooks/useCharts';
 import {
   adaptCompetitorMetricsToSov,
+  adaptCompetitorTrendsToVisibilityPanoTrend,
   adaptMetricsToSparklines,
 } from '../../adapters/dashboardAdapter';
 import {
@@ -69,6 +70,7 @@ export default function BrandVisibilityPage() {
     'sov',
   ], null, chartFilters);
   const competitorsQ = useCompetitorMetrics(isLive ? liveProjectId : null, null, chartFilters);
+  const trendsQ = useCompetitorTrends(isLive ? liveProjectId : null, 'geo_score', null, chartFilters);
   const engineQ = useEngineMetrics(isLive ? liveProjectId : null, chartFilters);
   const positionQ = usePositionDistribution(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
@@ -179,15 +181,17 @@ export default function BrandVisibilityPage() {
   const heatmapIsMock = !isLive;
 
   // Trend chart for PANO trend
-  const trendDataLive = liveSparklines?.mention.length
-    ? liveSparklines.mention.map((v, idx) => ({
-        name: `D${idx + 1}`,
-        mentionRate: v,
-        panoScore: null,
-        competitorScore: null,
-      }))
-    : null;
-  const trendData = isLive ? (trendDataLive ?? []) : TREND_DATA;
+  const liveTrend = isLive
+    ? adaptCompetitorTrendsToVisibilityPanoTrend(trendsQ.data, primary.name)
+    : { rows: [], lines: [] };
+  const trendData = isLive ? liveTrend.rows : TREND_DATA;
+  const trendLines = isLive
+    ? liveTrend.lines
+    : [
+        { key: 'mentionRate', label: t('brand_visibility.mention_rate'), color: 'var(--color-accent)', area: true },
+        { key: 'panoScore', label: 'PANO Score', color: 'var(--color-chart-3)', area: false, dashed: true },
+        { key: 'competitorScore', label: t('brand_visibility.competitor_score'), color: 'var(--color-chart-line-grid)', area: false, dashed: true },
+      ];
   const trendIsMock = !isLive;
 
   return (
@@ -317,15 +321,21 @@ export default function BrandVisibilityPage() {
             {trendIsMock && <MockDataBadge />}
           </h3>
         </div>
-        <TrendChart
-          data={trendData}
-          lines={[
-            { key: 'mentionRate', label: t('brand_visibility.mention_rate'), color: 'var(--color-accent)', area: true },
-            { key: 'panoScore', label: 'PANO Score', color: 'var(--color-chart-3)', area: false, dashed: true },
-            { key: 'competitorScore', label: t('brand_visibility.competitor_score'), color: 'var(--color-chart-line-grid)', area: false, dashed: true },
-          ]}
-          height={200}
-        />
+        {isLive && trendsQ.isLoading ? (
+          <div className="h-[200px] flex items-center justify-center text-xs text-themed-muted">
+            Loading analytics
+          </div>
+        ) : trendData.length > 0 && trendLines.length > 0 ? (
+          <TrendChart
+            data={trendData}
+            lines={trendLines}
+            height={200}
+          />
+        ) : (
+          <div className="h-[200px] flex items-center justify-center text-xs text-themed-muted">
+            PANO trend unavailable
+          </div>
+        )}
       </Card>
     </div>
   );
