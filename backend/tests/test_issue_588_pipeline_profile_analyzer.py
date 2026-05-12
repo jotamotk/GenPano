@@ -144,6 +144,7 @@ def _run_query_execution_case(
     account_profile_id: int,
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
     _install_fake_playwright(monkeypatch)
+    monkeypatch.setenv("SCREENSHOT_DIR", str(tmp_path / "screenshots"))
 
     from geo_tracker.tasks import celery_tasks
 
