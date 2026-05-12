@@ -78,7 +78,10 @@ from app.api.v1.projects._legacy_lookups import (
     resolve_brand_names,
     resolve_topic_names,
 )
-from app.api.v1.projects._mention_rollups import brand_mention_match_condition
+from app.api.v1.projects._mention_rollups import (
+    brand_mention_match_condition,
+    brand_mention_names,
+)
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
     _as_float,
@@ -88,6 +91,8 @@ from app.api.v1.projects._topic_analysis_service import (
     _fact_rows,
     _fact_target_mention_count,
     get_topic_monitoring,
+    legacy_table_columns,
+    legacy_table_exists,
 )
 
 DEFAULT_WINDOW_DAYS = 30
@@ -148,6 +153,18 @@ def _response_evidence_count(rows: list[dict[str, Any]]) -> int:
 
 def _chart_counts(**counts: int) -> dict[str, int]:
     return {key: int(value or 0) for key, value in counts.items()}
+
+
+def _sentiment_label_sql() -> str:
+    return "LOWER(TRIM(COALESCE(bm.sentiment, '')))"
+
+
+def _coalesce_sql(expressions: list[str]) -> str | None:
+    if not expressions:
+        return None
+    if len(expressions) == 1:
+        return expressions[0]
+    return f"COALESCE({', '.join(expressions)})"
 
 
 def _fact_response_ids(rows: list[dict[str, Any]]) -> list[int]:
@@ -355,8 +372,12 @@ def _sentiment_by_engine_missing_out(
     period: dict[str, str],
     evidence_count: int,
     evidence_counts: dict[str, int],
+    missing_inputs: list[str] | None = None,
 ) -> SentimentByEngineOut:
-    missing_inputs = ["brand_mentions.sentiment_score", "brand_mentions.sentiment"]
+    missing_inputs = missing_inputs or [
+        "brand_mentions.sentiment_score",
+        "brand_mentions.sentiment",
+    ]
     return SentimentByEngineOut(
         project_id=project_id,
         period=period,
@@ -372,7 +393,7 @@ def _sentiment_by_engine_missing_out(
             FORMULA_MISSING_INPUTS_STATUS,
             missing_inputs=missing_inputs,
         ),
-        source_provenance=["brand_mentions", "geo_score_daily"],
+        source_provenance=["brand_mentions", "llm_responses", "geo_score_daily"],
     )
 
 
@@ -676,6 +697,150 @@ def _sentiment_by_engine_from_facts(
         if v["positive"] or v["neutral"] or v["negative"]
     ]
     return items, len(seen)
+
+
+async def _sentiment_by_engine_from_response_window(
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    engines: list[str] | None = None,
+) -> tuple[list[SentimentByEngineRow], int, dict[str, int], list[str]]:
+    if project.primary_brand_id is None:
+        return [], 0, {}, []
+    if not await legacy_table_exists(session, "llm_responses"):
+        return [], 0, {}, []
+
+    response_cols = await legacy_table_columns(session, "llm_responses")
+    if "id" not in response_cols:
+        return [], 0, {}, []
+
+    joins = ["JOIN llm_responses r ON r.id = bm.response_id"]
+    timestamp_exprs: list[str] = []
+    engine_exprs: list[str] = []
+    if "created_at" in response_cols:
+        timestamp_exprs.append("r.created_at")
+    if "target_llm" in response_cols:
+        engine_exprs.append("r.target_llm")
+
+    query_cols: set[str] = set()
+    if "query_id" in response_cols and await legacy_table_exists(session, "queries"):
+        query_cols = await legacy_table_columns(session, "queries")
+        if "id" in query_cols:
+            joins.append("LEFT JOIN queries q ON q.id = r.query_id")
+            for column in ("finished_at", "executed_at", "created_at"):
+                if column in query_cols:
+                    timestamp_exprs.append(f"q.{column}")
+            if "target_llm" in query_cols:
+                engine_exprs.insert(0, "q.target_llm")
+
+    timestamp_expr = _coalesce_sql(timestamp_exprs)
+    if timestamp_expr is None:
+        return [], 0, {}, ["llm_responses.created_at"]
+
+    params: dict[str, Any] = {
+        "brand_id": project.primary_brand_id,
+        "from_dt": datetime.combine(from_d, datetime.min.time()),
+        "to_dt": datetime.combine(to_d, datetime.max.time()),
+    }
+    match_conditions = ["bm.brand_id = :brand_id"]
+    names = await brand_mention_names(session, project.primary_brand_id)
+    if names:
+        placeholders: list[str] = []
+        for idx, name in enumerate(sorted(names)):
+            key = f"brand_name_{idx}"
+            params[key] = name
+            placeholders.append(f":{key}")
+        match_conditions.append(
+            f"LOWER(TRIM(COALESCE(bm.brand_name, ''))) IN ({', '.join(placeholders)})"
+        )
+
+    label_expr = _sentiment_label_sql()
+    where_sql = f"""
+        ({" OR ".join(match_conditions)})
+        AND bm.sentiment_score IS NOT NULL
+        AND {label_expr} IN ('positive', 'neutral', 'negative')
+        AND {timestamp_expr} >= :from_dt
+        AND {timestamp_expr} <= :to_dt
+    """
+    joins_sql = "\n".join(joins)
+    evidence_count = int(
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM brand_mentions bm
+                    {joins_sql}
+                    WHERE {where_sql}
+                    """
+                ),
+                params,
+            )
+        ).scalar_one()
+        or 0
+    )
+    evidence_counts = _chart_counts(sentiment_label_count=evidence_count)
+    if evidence_count <= 0:
+        return [], 0, evidence_counts, []
+
+    engine_expr = _coalesce_sql(engine_exprs)
+    if engine_expr is None:
+        return [], evidence_count, evidence_counts, ["llm_responses.target_llm"]
+
+    rows = (
+        await session.execute(
+            text(
+                f"""
+                SELECT {engine_expr} AS engine, {label_expr} AS sentiment, COUNT(*) AS cnt
+                FROM brand_mentions bm
+                {joins_sql}
+                WHERE {where_sql}
+                GROUP BY {engine_expr}, {label_expr}
+                """
+            ),
+            params,
+        )
+    ).all()
+
+    allowed_engines = {engine.lower() for engine in engines or []}
+    buckets: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"positive": 0, "neutral": 0, "negative": 0}
+    )
+    attributed_count = 0
+    missing_engine_count = 0
+    for engine_value, sentiment, count in rows:
+        count_int = int(count or 0)
+        engine = str(engine_value).strip() if engine_value is not None else ""
+        if not engine:
+            missing_engine_count += count_int
+            continue
+        if allowed_engines and engine.lower() not in allowed_engines:
+            continue
+        if sentiment not in buckets[engine]:
+            continue
+        buckets[engine][sentiment] += count_int
+        attributed_count += count_int
+
+    items = [
+        SentimentByEngineRow(
+            engine=engine,
+            positive=values["positive"],
+            neutral=values["neutral"],
+            negative=values["negative"],
+        )
+        for engine, values in sorted(buckets.items())
+        if values["positive"] or values["neutral"] or values["negative"]
+    ]
+    evidence_counts = _chart_counts(
+        sentiment_label_count=evidence_count,
+        engine_attributed_sentiment_label_count=attributed_count,
+        engine_missing_sentiment_label_count=missing_engine_count,
+    )
+    if not items and evidence_count > 0:
+        return [], evidence_count, evidence_counts, ["llm_responses.target_llm"]
+    return items, attributed_count, evidence_counts, []
 
 
 def _sentiment_trend_by_engine_from_facts(
@@ -1112,6 +1277,37 @@ async def get_sentiment_by_engine(
         )
     # JOIN brand_mentions → llm_responses to get target_llm. SQLite tests fall
     # back to "all" engine bucket if join unavailable.
+    (
+        response_items,
+        response_evidence,
+        response_counts,
+        response_missing,
+    ) = await _sentiment_by_engine_from_response_window(
+        session,
+        project,
+        from_d,
+        to_d,
+        engines=engines,
+    )
+    if response_items:
+        return SentimentByEngineOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=response_items,
+            state="ok",
+            state_reason="data_available",
+            evidence_count=response_evidence,
+            evidence_counts=response_counts,
+            source_provenance=["brand_mentions", "llm_responses"],
+        )
+    if response_missing and response_evidence:
+        return _sentiment_by_engine_missing_out(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            evidence_count=response_evidence,
+            evidence_counts=response_counts,
+            missing_inputs=response_missing,
+        )
     try:
         result = await session.execute(
             text(
