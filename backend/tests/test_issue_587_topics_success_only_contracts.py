@@ -21,6 +21,7 @@ from genpano_models import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects import _topic_analysis_service as topic_service
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -33,6 +34,14 @@ def _new_id() -> str:
 def _bearer(user: User) -> dict[str, str]:
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_latest_response_order_places_null_created_at_after_dated_rows() -> None:
+    assert (
+        topic_service._response_latest_order_sql({"id", "created_at"})
+        == "r2.created_at IS NULL ASC, r2.created_at DESC, r2.id DESC"
+    )
+    assert topic_service._response_latest_order_sql({"id"}) == "r2.id DESC"
 
 
 @pytest_asyncio.fixture
@@ -570,7 +579,6 @@ async def test_response_detail_uses_daily_latest_response_id_with_backfilled_dup
     user: User,
 ) -> None:
     project, ids = await _seed_success_only_workspace(db_session, user)
-    backfill_time = datetime.fromisoformat(str(ids["success_day"]))
     await db_session.execute(
         text(
             """
@@ -579,11 +587,10 @@ async def test_response_detail_uses_daily_latest_response_id_with_backfilled_dup
                  citations_json, created_at)
             VALUES
                 (587299, 587102, 58702,
-                 'Backfilled stale duplicate answer without citations.',
-                 'chatgpt', 'commercial', 'gpt-test', '[]', :backfill_time)
+                 'Backfilled stale duplicate answer with null timestamp.',
+                 'chatgpt', 'commercial', 'gpt-test', '[]', NULL)
             """
-        ),
-        {"backfill_time": backfill_time},
+        )
     )
     await db_session.commit()
     headers = _bearer(user)

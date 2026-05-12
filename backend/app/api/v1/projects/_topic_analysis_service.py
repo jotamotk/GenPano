@@ -516,6 +516,14 @@ def _response_text_expr(cols: set[str]) -> str:
     return "NULL"
 
 
+def _response_latest_order_sql(cols: set[str]) -> str:
+    order = []
+    if "created_at" in cols:
+        order.extend(["r2.created_at IS NULL ASC", "r2.created_at DESC"])
+    order.append("r2.id DESC")
+    return ", ".join(order)
+
+
 def _false_condition() -> str:
     return "1 = 0"
 
@@ -751,11 +759,7 @@ async def _fact_rows(
     ]
     response_match_condition = ""
     if has_responses and "id" in response_cols:
-        response_order = []
-        if "created_at" in response_cols:
-            response_order.append("r2.created_at DESC")
-        response_order.append("r2.id DESC")
-        response_order_sql = ", ".join(response_order)
+        response_order_sql = _response_latest_order_sql(response_cols)
         if "query_id" in response_cols:
             response_match_condition = (
                 "r.id = ("
