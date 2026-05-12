@@ -560,6 +560,20 @@ def execute_query(self, query_id: int) -> dict:
                             reason=failure_reason,
                         )
                         await db.commit()
+                        if failure_reason in {"cookies_expired", "token_invalidated"} and account_id:
+                            if query.target_llm == "chatgpt":
+                                logger.warning(
+                                    "Query %s: ChatGPT account %s requires manual reauth "
+                                    "after %s; no SMS auto-login handler is registered",
+                                    query_id,
+                                    account_id,
+                                    failure_reason,
+                                )
+                            elif await should_enqueue_relogin(account_id):
+                                auto_login.apply_async(
+                                    kwargs={"account_id": account_id},
+                                    queue="account_login",
+                                )
                         logger.warning(
                             f"Query {query_id} failed: invalid response ({invalid_reason}), "
                             f"account {account_id}"
@@ -601,8 +615,16 @@ def execute_query(self, query_id: int) -> dict:
                     )
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
-                    if failure_reason == "cookies_expired" and account_id:
-                        if await should_enqueue_relogin(account_id):
+                    if failure_reason in {"cookies_expired", "token_invalidated"} and account_id:
+                        if query.target_llm == "chatgpt":
+                            logger.warning(
+                                "Query %s: ChatGPT account %s requires manual reauth "
+                                "after %s; no SMS auto-login handler is registered",
+                                query_id,
+                                account_id,
+                                failure_reason,
+                            )
+                        elif await should_enqueue_relogin(account_id):
                             auto_login.apply_async(
                                 kwargs={"account_id": account_id},
                                 queue="account_login",

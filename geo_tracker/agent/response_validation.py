@@ -13,6 +13,11 @@ _GENERIC_INVALID_MARKERS = {
     "please log in again to continue using the app": "cookies_expired",
 }
 
+_CHATGPT_TOKEN_INVALIDATED_MARKERS = (
+    "token_invalidated",
+    "your authentication token has been invalidated",
+)
+
 _DOUBAO_UNAUTH_TEXT_MARKERS = (
     "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
     "\u514d\u767b\u5f55",  # 免登录
@@ -95,6 +100,28 @@ def doubao_auth_state_reason(text: str | None, html: str | None = None) -> str |
     return "doubao_auth_state_missing"
 
 
+def chatgpt_auth_state_reason(
+    text: str | None,
+    *,
+    runtime_events: list[dict] | None = None,
+) -> str | None:
+    """Return a ChatGPT auth/session failure reason, if page/runtime proves one."""
+    parts = [text or ""]
+    for event in runtime_events or []:
+        if isinstance(event, dict):
+            parts.append(str(event.get("text") or ""))
+        else:
+            parts.append(str(event))
+    lower = "\n".join(parts).lower()
+
+    if any(marker in lower for marker in _CHATGPT_TOKEN_INVALIDATED_MARKERS):
+        return "token_invalidated"
+    for marker, reason in _GENERIC_INVALID_MARKERS.items():
+        if marker in lower:
+            return reason
+    return None
+
+
 def doubao_persistence_auth_reason(
     llm_name: str,
     raw_text: str | None,
@@ -114,11 +141,16 @@ def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
         return None
 
     lower = text.lower()
+    llm = (llm_name or "").lower()
+    if llm == "chatgpt":
+        auth_reason = chatgpt_auth_state_reason(text)
+        if auth_reason:
+            return auth_reason
+
     for marker, reason in _GENERIC_INVALID_MARKERS.items():
         if marker in lower:
             return reason
 
-    llm = (llm_name or "").lower()
     if llm == "chatgpt":
         if _looks_like_chatgpt_login_page(lower):
             return "chatgpt_login_page"

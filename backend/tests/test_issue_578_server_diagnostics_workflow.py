@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/server-diagnostics.yml"
+DEPLOY_WORKFLOW = REPO_ROOT / ".github/workflows/deploy.yml"
 
 
 def test_bestcoffer_batch_repair_preserves_response_rows_and_records_reason() -> None:
@@ -69,3 +72,25 @@ def test_server_diagnostics_preserves_live_app_analytics_mode() -> None:
     assert "live-app-analytics-business-completeness-e2e" in workflow
     assert "FROM_DATE" in workflow
     assert "TO_DATE" in workflow
+
+
+def test_deploy_does_not_write_placeholder_clash_api_secret_to_worker_env() -> None:
+    deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    diagnostics = WORKFLOW.read_text(encoding="utf-8")
+    placeholder_secret_env = (
+        "CLASH_API_SECRET=${{ secrets.CLASH_API_SECRET || "
+        "vars.CLASH_API_SECRET || 'set-your-secret' }}"
+    )
+
+    assert placeholder_secret_env not in deploy
+    assert "CLASH_API_SECRET=${{ secrets.CLASH_API_SECRET || vars.CLASH_API_SECRET }}" in deploy
+    assert "Authorization: Bearer set-your-secret" not in deploy
+    assert "Authorization: Bearer set-your-secret" not in diagnostics
+
+
+def test_chatgpt_proxy_preflight_heredoc_starts_at_column_zero() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+
+    assert "docker compose exec -T worker python - <<'PY' || true\nimport asyncio" in run_script
+    assert "\nPY\n    docker compose exec -T worker sh -lc" in run_script

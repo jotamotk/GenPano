@@ -18,6 +18,7 @@ from geo_tracker.db.models import (
     QueryStatus,
 )
 from geo_tracker.agent.response_validation import (
+    chatgpt_auth_state_reason,
     doubao_auth_state_reason,
     invalid_response_reason,
 )
@@ -86,6 +87,174 @@ def test_chatgpt_session_log_summary_excludes_sensitive_body(monkeypatch):
     assert "access_token_present=True" in summary
     assert "user_present=True" in summary
     assert "expires_present=True" in summary
+
+
+def test_chatgpt_token_invalidated_runtime_event_is_detected():
+    reason = chatgpt_auth_state_reason(
+        "Your session has expired. Please log in again to continue using the app.",
+        runtime_events=[
+            {
+                "kind": "console",
+                "text": (
+                    "401 token_invalidated Your authentication token has been "
+                    "invalidated. Please try signing in again."
+                ),
+            }
+        ],
+    )
+
+    assert reason == "token_invalidated"
+
+
+def test_invalid_response_reason_detects_chatgpt_token_invalidated_message():
+    text = "Your authentication token has been invalidated. Please try signing in again."
+
+    assert invalid_response_reason("chatgpt", text) == "token_invalidated"
+
+
+@pytest.mark.asyncio
+async def test_clash_proxy_group_401_sets_auth_diagnostic(monkeypatch):
+    from geo_tracker.agent import clash_api
+
+    captured_headers: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 401
+        text = "Unauthorized"
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None):
+            captured_headers.update(headers or {})
+            return FakeResponse()
+
+    monkeypatch.setenv("CLASH_API_SECRET", "test-secret")
+    monkeypatch.setattr(clash_api.httpx, "AsyncClient", FakeClient)
+    clash_api.clear_last_error_reason()
+
+    group = await clash_api.get_proxy_group("http://clash.local:9098", "Ai")
+
+    assert group is None
+    assert captured_headers["Authorization"] == "Bearer test-secret"
+    assert clash_api.get_last_error_reason() == "proxy_api_unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_global_direct_route_switches_to_ai_platform_node(monkeypatch):
+    from geo_tracker.agent import clash_api
+
+    calls: list[tuple[str, str, dict | None]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None):
+            calls.append(("GET", url, None))
+            if url.endswith("/proxies/GLOBAL"):
+                return FakeResponse(
+                    200,
+                    {"now": "DIRECT", "all": ["DIRECT", "node-a", "node-b"]},
+                )
+            if url.endswith("/proxies/Ai"):
+                return FakeResponse(200, {"now": "node-b", "all": ["node-a", "node-b"]})
+            raise AssertionError(url)
+
+        async def put(self, url, json=None, headers=None):
+            calls.append(("PUT", url, json))
+            return FakeResponse(204)
+
+    monkeypatch.setattr(clash_api.httpx, "AsyncClient", FakeClient)
+
+    diagnostic = await clash_api.ensure_global_proxy_route(
+        "http://clash.local:9098",
+        "Ai",
+    )
+
+    assert diagnostic.ok is True
+    assert diagnostic.changed is True
+    assert diagnostic.selected_node == "node-b"
+    assert ("PUT", "http://clash.local:9098/proxies/GLOBAL", {"name": "node-b"}) in calls
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_global_wrong_route_switches_to_ai_platform_group(monkeypatch):
+    from geo_tracker.agent import clash_api
+
+    calls: list[tuple[str, str, dict | None]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None):
+            calls.append(("GET", url, None))
+            if url.endswith("/proxies/GLOBAL"):
+                return FakeResponse(
+                    200,
+                    {"now": "Domestic", "all": ["DIRECT", "Domestic", "Ai"]},
+                )
+            if url.endswith("/proxies/Ai"):
+                return FakeResponse(200, {"now": "node-b", "all": ["node-a", "node-b"]})
+            raise AssertionError(url)
+
+        async def put(self, url, json=None, headers=None):
+            calls.append(("PUT", url, json))
+            return FakeResponse(204)
+
+    monkeypatch.setattr(clash_api.httpx, "AsyncClient", FakeClient)
+
+    diagnostic = await clash_api.ensure_global_proxy_route(
+        "http://clash.local:9098",
+        "Ai",
+    )
+
+    assert diagnostic.ok is True
+    assert diagnostic.changed is True
+    assert diagnostic.global_now == "Ai"
+    assert diagnostic.selected_node == "Ai"
+    assert ("PUT", "http://clash.local:9098/proxies/GLOBAL", {"name": "Ai"}) in calls
 
 
 def test_session_debug_text_redacts_tokens(monkeypatch):
@@ -183,7 +352,9 @@ def test_doubao_authenticated_page_ignores_hidden_template_login_chrome():
       <button class="login-button">\u767b\u5f55</button>
     </div>
     <main>
-      <div class="flow-markdown-body">bestCoffer answer text with authenticated session chrome.</div>
+      <div class="flow-markdown-body">
+        bestCoffer answer text with authenticated session chrome.
+      </div>
     </main>
     """
 
@@ -365,8 +536,11 @@ def test_empty_response_preserves_executor_failure_reason():
 
 def test_browser_failures_do_not_penalize_llm_accounts():
     assert _should_report_account_failure("cookies_expired") is True
+    assert _should_report_account_failure("token_invalidated") is True
     assert _should_report_account_failure("browser_launch_timeout") is False
     assert _should_report_account_failure("page_unavailable") is False
+    assert _should_report_account_failure("proxy_api_unauthorized") is False
+    assert _should_report_account_failure("proxy_global_no_candidate") is False
     assert _should_report_account_failure("soft_time_limit") is False
 
 
@@ -516,6 +690,7 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(
         "switch_to_next_node",
         fake_switch_to_next_node,
     )
+    monkeypatch.setenv("CLASH_FORCE_GLOBAL_PROXY_ROUTE", "0")
 
     executor = GuestQueryExecutor(proxy_url="http://proxy.internal:6789")
 
