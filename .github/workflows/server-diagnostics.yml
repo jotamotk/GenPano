@@ -97,6 +97,7 @@ jobs:
           remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q REPAIR_STALE_RUNNING=%q STALE_RUNNING_TTL_SECONDS=%q GH_RUN_ID=%q bash -s' \
             "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${REPAIR_STALE_RUNNING}" "${STALE_RUNNING_TTL_SECONDS}" "${GH_RUN_ID}")"
 
+          set +e
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
           set -Eeuo pipefail
           cd /opt/genpano
@@ -129,6 +130,52 @@ jobs:
           artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
           rm -rf "${artifact_dir}"
           mkdir -p "${artifact_dir}/screenshots"
+          sanitizer_py="${artifact_dir}/sanitize_herosms_logs.py"
+          cat > "${sanitizer_py}" <<'PY'
+          from __future__ import annotations
+
+          import re
+          import sys
+          from pathlib import Path
+
+          API_KEY_QUERY_RE = re.compile(r"(?i)([?&])api_key=[^&\s\"'<>]+")
+          API_KEY_ASSIGN_RE = re.compile(r"(?i)\bapi[_-]?key\s*=\s*[^&\s\"'<>]+")
+          HERO_SMS_ENV_RE = re.compile(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+")
+
+          def sanitize_text(text: str) -> str:
+              sanitized = API_KEY_QUERY_RE.sub(r"\1api key [redacted]", text)
+              sanitized = API_KEY_ASSIGN_RE.sub("api key [redacted]", sanitized)
+              return HERO_SMS_ENV_RE.sub("HERO_SMS_API_KEY_present=true", sanitized)
+
+          def sanitize_file(path: Path) -> None:
+              text = path.read_text(encoding="utf-8", errors="replace")
+              path.write_text(sanitize_text(text), encoding="utf-8")
+
+          def main(argv: list[str]) -> int:
+              if argv:
+                  for arg in argv:
+                      sanitize_file(Path(arg))
+                  return 0
+              sys.stdout.write(sanitize_text(sys.stdin.read()))
+              return 0
+
+          if __name__ == "__main__":
+              raise SystemExit(main(sys.argv[1:]))
+          PY
+          chmod 700 "${sanitizer_py}"
+          sanitize_herosms_stream() {
+            python3 "${sanitizer_py}"
+          }
+          sanitize_herosms_logs() {
+            python3 "${sanitizer_py}" "$1"
+          }
+          sanitizer_probe="$(sanitize_herosms_stream <<< "$(printf 'api_key=unit-secret HERO_SMS_%s=unit-secret' 'API_KEY')")"
+          equals="="
+          case "${sanitizer_probe}" in
+            *unit-secret*|*api_key=*|*HERO_SMS_API_KEY${equals}*)
+              fail "HeroSMS sanitizer self-test failed before worker log capture"
+              ;;
+          esac
           worker_artifact_marker="/tmp/scraper-artifact-marker-${GH_RUN_ID}"
           summary_file="${artifact_dir}/summary.txt"
           exec > >(tee "${summary_file}") 2>&1
@@ -513,12 +560,6 @@ jobs:
             mkdir -p "${artifact_dir}/logs"
             docker compose logs --since "${utc_started_at}" worker worker-analysis beat \
               > "${artifact_dir}/logs/worker-services.log" 2>&1 || true
-            sanitize_herosms_stream() {
-              python3 scripts/sanitize_herosms_logs.py
-            }
-            sanitize_herosms_logs() {
-              python3 scripts/sanitize_herosms_logs.py "$1"
-            }
             sanitize_herosms_logs "${artifact_dir}/logs/worker-services.log"
             if [ -n "${ids_space}" ]; then
               ids_regex="$(printf '%s\n' ${ids_space} | paste -sd'|' -)"
@@ -545,11 +586,35 @@ jobs:
           fi
 
           REMOTE
+          remote_status=${PIPESTATUS[0]}
+          set -e
 
+          scp_status=0
           scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
             "${SERVER_USER}@${SERVER_HOST}:/tmp/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" \
-            scraper-batch-artifacts/
-          tar -tzf "scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz" | tee scraper-batch-artifacts/artifact-manifest.txt
+            scraper-batch-artifacts/ || scp_status=$?
+
+          manifest_status=0
+          artifact_archive="scraper-batch-artifacts/genpano_scraper_batch_${GH_RUN_ID}.tar.gz"
+          if [ -f "${artifact_archive}" ]; then
+            tar -tzf "${artifact_archive}" | tee scraper-batch-artifacts/artifact-manifest.txt \
+              || manifest_status=$?
+          else
+            {
+              echo "artifact_archive_missing=${artifact_archive}"
+              echo "scp_status=${scp_status}"
+            } | tee scraper-batch-artifacts/artifact-manifest.txt
+          fi
+
+          if [ "${remote_status}" -ne 0 ]; then
+            exit "${remote_status}"
+          fi
+          if [ "${scp_status}" -ne 0 ]; then
+            exit "${scp_status}"
+          fi
+          if [ "${manifest_status}" -ne 0 ]; then
+            exit "${manifest_status}"
+          fi
 
       - name: Upload bestCoffer scraper batch artifacts
         if: ${{ always() && inputs.scraper_mode == 'bestcoffer_batch' }}
@@ -962,9 +1027,55 @@ jobs:
             BRAND_ID='${{ inputs.brand_id }}'
             BRAND_QUERY='${{ inputs.brand_query }}'
             PROJECT_ID='${{ inputs.project_id }}'
-            sanitize_herosms_stream() {
-              python3 scripts/sanitize_herosms_logs.py
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
             }
+            sanitizer_dir="$(mktemp -d /tmp/genpano_server_diagnostics_sanitizer.XXXXXX)"
+            sanitizer_py="${sanitizer_dir}/sanitize_herosms_logs.py"
+            trap 'rm -rf "${sanitizer_dir}"' EXIT
+            cat > "${sanitizer_py}" <<'PY'
+            from __future__ import annotations
+
+            import re
+            import sys
+            from pathlib import Path
+
+            API_KEY_QUERY_RE = re.compile(r"(?i)([?&])api_key=[^&\s\"'<>]+")
+            API_KEY_ASSIGN_RE = re.compile(r"(?i)\bapi[_-]?key\s*=\s*[^&\s\"'<>]+")
+            HERO_SMS_ENV_RE = re.compile(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+")
+
+            def sanitize_text(text: str) -> str:
+                sanitized = API_KEY_QUERY_RE.sub(r"\1api key [redacted]", text)
+                sanitized = API_KEY_ASSIGN_RE.sub("api key [redacted]", sanitized)
+                return HERO_SMS_ENV_RE.sub("HERO_SMS_API_KEY_present=true", sanitized)
+
+            def sanitize_file(path: Path) -> None:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                path.write_text(sanitize_text(text), encoding="utf-8")
+
+            def main(argv: list[str]) -> int:
+                if argv:
+                    for arg in argv:
+                        sanitize_file(Path(arg))
+                    return 0
+                sys.stdout.write(sanitize_text(sys.stdin.read()))
+                return 0
+
+            if __name__ == "__main__":
+                raise SystemExit(main(sys.argv[1:]))
+            PY
+            chmod 700 "${sanitizer_py}"
+            sanitize_herosms_stream() {
+              python3 "${sanitizer_py}"
+            }
+            sanitizer_probe="$(sanitize_herosms_stream <<< "$(printf 'api_key=unit-secret HERO_SMS_%s=unit-secret' 'API_KEY')")"
+            equals="="
+            case "${sanitizer_probe}" in
+              *unit-secret*|*api_key=*|*HERO_SMS_API_KEY${equals}*)
+                fail "HeroSMS sanitizer self-test failed before worker log capture"
+                ;;
+            esac
             : "${BRAND_ID:=12}"
             : "${BRAND_QUERY:=雅诗兰黛}"
             : "${PROJECT_ID:=95d43022-a5c8-5944-b6d6-34b29faa18b5}"
