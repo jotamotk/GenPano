@@ -16,6 +16,14 @@ on:
         description: "Dedicated staging brand id for real-generation E2E. Required when real_generation is true."
         required: false
         type: string
+      tracker_retry_query_id:
+        description: "Optional single query id for the live Admin Tracker controlled retry mutation. Leave empty for the default read-only gate."
+        required: false
+        type: string
+      tracker_retry_expected_engine:
+        description: "Optional expected target_llm for tracker_retry_query_id, for example deepseek."
+        required: false
+        type: string
 
 jobs:
   staging-admin-e2e:
@@ -27,9 +35,12 @@ jobs:
       ADMIN_E2E_CORE_SPEC: tests/e2e/admin-staging-smoke.spec.ts
       ADMIN_E2E_BUSINESS_FLOW_SPEC: tests/e2e/admin-real-business-flow.spec.ts
       ADMIN_E2E_TRACKER_SPEC: tests/e2e/admin-tracker-smoke.spec.ts
+      ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC: tests/e2e/admin-tracker-controlled-retry.spec.ts
       ADMIN_E2E_INPUT_REAL_GENERATION: ${{ inputs.real_generation }}
       ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
       ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
+      ADMIN_E2E_TRACKER_RETRY_QUERY_ID: ${{ inputs.tracker_retry_query_id }}
+      ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE: ${{ inputs.tracker_retry_expected_engine }}
       E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
       PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
     defaults:
@@ -60,8 +71,12 @@ jobs:
 
           real_generation="${ADMIN_E2E_INPUT_REAL_GENERATION}"
           brand_id="${ADMIN_E2E_BRAND_ID}"
+          tracker_retry_query_id="$(echo "${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}" | xargs)"
+          tracker_retry_expected_engine="$(echo "${ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE}" | xargs)"
           tracker_state="not included"
           tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
+          controlled_retry_state="skipped by default"
+          controlled_retry_note="No \`tracker_retry_query_id\` input was provided; no Tracker retry mutation will run."
           business_state="included but expected to skip"
           business_note="\`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation will run."
           mutation_mode="read-only core smoke"
@@ -75,8 +90,30 @@ jobs:
             echo "ADMIN_E2E_TRACKER_INCLUDED=0" >> "${GITHUB_ENV}"
           fi
 
+          echo "ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED=0" >> "${GITHUB_ENV}"
+          if [[ -n "${tracker_retry_query_id}" ]]; then
+            mutation_mode="controlled Tracker retry mutation"
+            controlled_retry_state="included and expected to execute"
+            controlled_retry_note="\`tracker_retry_query_id=${tracker_retry_query_id}\`; mutates exactly this one query via Tracker retry. No batch retry will run."
+            if ! [[ "${tracker_retry_query_id}" =~ ^[0-9]+$ ]]; then
+              input_error="tracker_retry_query_id must be a positive integer."
+              controlled_retry_state="blocked before Playwright"
+              controlled_retry_note="${input_error}"
+            elif [[ ! -f "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}" ]]; then
+              input_error="\`${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}\` is not present in this checkout."
+              controlled_retry_state="blocked before Playwright"
+              controlled_retry_note="${input_error}"
+            else
+              echo "ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED=1" >> "${GITHUB_ENV}"
+            fi
+          fi
+
           if [[ "${real_generation}" == "true" ]]; then
-            mutation_mode="controlled real business-flow mutation"
+            if [[ -n "${tracker_retry_query_id}" ]]; then
+              mutation_mode="controlled business-flow and Tracker retry mutations"
+            else
+              mutation_mode="controlled real business-flow mutation"
+            fi
             business_state="included and expected to execute"
             business_note="\`ADMIN_E2E_BRAND_ID=${brand_id}\`; real flow mutates the dedicated staging brand only."
             if [[ -z "${brand_id}" ]]; then
@@ -96,12 +133,15 @@ jobs:
             echo "| Base URL | \`${PLAYWRIGHT_BASE_URL}\` |"
             echo "| Mutation mode | ${mutation_mode} |"
             echo "| E2E run id | \`${E2E_RUN_ID}\` |"
+            echo "| Tracker retry query id | \`${tracker_retry_query_id:-none}\` |"
+            echo "| Tracker retry expected engine | \`${tracker_retry_expected_engine:-not enforced}\` |"
             echo ""
             echo "| Coverage category | Spec | Gate state | Notes |"
             echo "| --- | --- | --- | --- |"
             echo "| Core Admin smoke | \`${ADMIN_E2E_CORE_SPEC}\` | included and expected to execute | Pages: \`/admin/planner-topics\`, \`/admin/planner-prompt-matrix\`, \`/admin/planner-query-pool\`, \`/admin/planner-llm-extraction\`. |"
             echo "| Controlled business flow | \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` | ${business_state} | ${business_note} |"
             echo "| Tracker smoke | \`${ADMIN_E2E_TRACKER_SPEC}\` | ${tracker_state} | ${tracker_note} |"
+            echo "| Controlled Tracker retry | \`${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}\` | ${controlled_retry_state} | ${controlled_retry_note} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if [[ -n "${input_error}" ]]; then
@@ -124,6 +164,10 @@ jobs:
 
           if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
             specs+=("${ADMIN_E2E_TRACKER_SPEC}")
+          fi
+          if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
+            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}; no batch retry will run."
+            specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
           fi
 
           set +e
@@ -150,10 +194,18 @@ jobs:
             if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "1" ]]; then
               invoked_categories="${invoked_categories}; controlled Topic -> Prompt Matrix -> Query Pool -> Extraction mutation"
             fi
+            if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
+              invoked_categories="${invoked_categories}; controlled Tracker retry mutation"
+            fi
             if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "0" ]]; then
               echo "- Skipped business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` is intentionally skipped by the test annotation."
             else
               echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
+            fi
+            if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
+              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; this run mutates exactly one query and asserts \`dispatched=true\` plus no immediate quota exhaustion."
+            else
+              echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi
             if [[ "${status}" -eq 0 ]]; then
               echo "- Coverage categories this result can claim: ${invoked_categories}."
