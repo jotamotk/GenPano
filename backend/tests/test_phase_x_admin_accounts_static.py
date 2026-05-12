@@ -49,14 +49,16 @@ def test_admin_accounts_task_failure_panel_payload_is_redacted() -> None:
     assert "payload.copyText = this.formatErrorCopy(payload);" in html
 
     redaction_helper = html[
-        html.index("function redactAccountUiText(value)")
-        : html.index("function accountTaskResultMessage(result)")
+        html.index("function redactAccountUiText(value)") : html.index(
+            "function accountTaskResultMessage(result)"
+        )
     ]
     for pattern in (
         "api[_-]?key",
         "provider[_-]?secret",
         "sms[_-]?text",
         "verification[_-]?code",
+        r"\+?\d[\d\s().-]{6,}\d",
         "cookies?",
         "localStorage",
         "token",
@@ -64,9 +66,23 @@ def test_admin_accounts_task_failure_panel_payload_is_redacted() -> None:
     ):
         assert pattern in redaction_helper
 
+    task_failure_helper = html[
+        html.index("function accountTaskFailureErrorBody(body)") : html.index(
+            "function accountTaskResultMessage(result)"
+        )
+    ]
+    assert "code: redactAccountUiText(raw.code || raw.error || 'task_failed')" in (
+        task_failure_helper
+    )
+    assert "title: redactAccountUiText(raw.title || raw.error || '账号任务失败')" in (
+        task_failure_helper
+    )
+    assert "detail: redactAccountUiText(detail)" in task_failure_helper
+
     failure_branch = html[
-        html.index("const taskFailure = accountTaskFailureErrorBody(body);")
-        : html.index("path: 'task:' + (body.task_id || '')")
+        html.index("const taskFailure = accountTaskFailureErrorBody(body);") : html.index(
+            "path: 'task:' + (body.task_id || '')"
+        )
     ]
     assert "body.code || body.error" not in failure_branch
     assert "body.title || body.error" not in failure_branch
