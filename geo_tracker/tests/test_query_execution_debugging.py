@@ -6,8 +6,17 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from geo_tracker.db.models import AccountStatus, LLMAccount, Query
+from geo_tracker.db.models import (
+    AccountStatus,
+    Base,
+    LLMAccount,
+    LLMResponse,
+    Query,
+    QueryStatus,
+)
 from geo_tracker.agent.response_validation import (
     doubao_auth_state_reason,
     invalid_response_reason,
@@ -155,6 +164,28 @@ def test_doubao_top_right_login_overrides_generic_avatar_markup():
     """
 
     assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
+
+
+def test_doubao_authenticated_page_ignores_hidden_template_login_chrome():
+    text = "bestCoffer answer text with authenticated session chrome."
+    html = """
+    <header>
+      <button class="user-avatar" aria-label="\u8d26\u53f7\u83dc\u5355">
+        <img alt="\u7528\u6237\u5934\u50cf" src="https://lf-doubao.com/avatar/user.png" />
+      </button>
+    </header>
+    <template id="login-dialog">
+      <button data-testid="login-button">\u767b\u5f55</button>
+    </template>
+    <div style="display:none">
+      <button class="login-button">\u767b\u5f55</button>
+    </div>
+    <main>
+      <div class="flow-markdown-body">bestCoffer answer text with authenticated session chrome.</div>
+    </main>
+    """
+
+    assert doubao_auth_state_reason(text, html) is None
 
 
 def test_doubao_authenticated_completed_answer_is_allowed():
@@ -623,6 +654,122 @@ class _RecordingPool:
             }
         )
         return self.account
+
+
+class _TaskSessionContext:
+    def __init__(self, maker):
+        self.maker = maker
+        self.session = None
+
+    async def __aenter__(self):
+        self.session = self.maker()
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.session.close()
+        return False
+
+
+def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp_path):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-auth-gate.db'}"
+    query_id = 184595
+    account_id = 595
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.ACTIVE.value,
+                        cookies_json='[{"name":"session"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                    ),
+                    Query(
+                        id=query_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.PENDING.value,
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return LLMAccount(
+            id=account_id,
+            llm_name="doubao",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+        )
+
+    class FakeGuestQueryExecutor:
+        def __init__(self, *args, **kwargs):
+            self.last_error_reason = None
+
+        async def execute(self, query):
+            return LLMResponse(
+                query_id=query.id,
+                raw_text="bestCoffer has portable coffee advantages in outdoor travel.",
+                response_html=(
+                    "<header><div class='toolbar-action'>\u767b\u5f55</div></header>"
+                    "<main><div class='flow-markdown-body'>bestCoffer answer text</div></main>"
+                ),
+            )
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    async def load_query_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            response_result = await session.execute(
+                select(LLMResponse).where(LLMResponse.query_id == query_id)
+            )
+            response = response_result.scalar_one_or_none()
+            state = {
+                "status": query.status,
+                "retry_reason": query.retry_reason,
+                "response": response,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_query_state())
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "doubao_not_logged_in",
+    }
+    assert state["status"] == QueryStatus.FAILED.value
+    assert state["retry_reason"] == "doubao_not_logged_in"
+    assert state["response"] is None
 
 
 @pytest.mark.asyncio

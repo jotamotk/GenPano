@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from geo_tracker.db.models import AnalysisStatus, Base, LLMResponse, Query, QueryStatus
@@ -85,3 +86,41 @@ async def test_known_doubao_false_success_repair_marks_failed_without_deleting_r
         assert query.retry_reason == "doubao_not_logged_in:false_success_repair:#594"
         assert response.analysis_status == AnalysisStatus.FAILED.value
         assert response.raw_text == "answer-like unauthenticated text"
+
+
+async def test_repair_rejects_unknown_query_id_override_without_writing():
+    from geo_tracker.tasks.doubao_auth_false_success_repair import (
+        repair_known_doubao_auth_false_successes,
+    )
+
+    async with await _session() as session:
+        query = Query(
+            id=999999,
+            target_llm="doubao",
+            query_text="unreviewed query",
+            status=QueryStatus.DONE.value,
+        )
+        response = LLMResponse(
+            id=999001,
+            query_id=999999,
+            raw_text="answer-like text from a query that is not in #594 evidence",
+            response_html="<header><div>\u767b\u5f55</div></header>",
+            analysis_status=AnalysisStatus.DONE.value,
+        )
+        session.add_all([query, response])
+        await session.commit()
+
+        with pytest.raises(ValueError, match="unsupported query_id"):
+            await repair_known_doubao_auth_false_successes(
+                session,
+                apply=True,
+                approval_ref="Refs #594",
+                query_ids=[999999],
+            )
+
+        await session.refresh(query)
+        await session.refresh(response)
+
+        assert query.status == QueryStatus.DONE.value
+        assert query.retry_reason is None
+        assert response.analysis_status == AnalysisStatus.DONE.value

@@ -50,6 +50,23 @@ def _rollback_sql(query: Query, response: LLMResponse) -> str:
     )
 
 
+def _validated_query_ids(query_ids: list[int] | tuple[int, ...]) -> tuple[int, ...]:
+    ids = tuple(int(query_id) for query_id in query_ids)
+    unsupported = [
+        query_id
+        for query_id in ids
+        if query_id not in KNOWN_FALSE_SUCCESS_QUERY_IDS
+    ]
+    if unsupported:
+        allowed = ", ".join(str(query_id) for query_id in KNOWN_FALSE_SUCCESS_QUERY_IDS)
+        requested = ", ".join(str(query_id) for query_id in unsupported)
+        raise ValueError(
+            "unsupported query_id override without #594 evidence mapping: "
+            f"{requested}; allowed query_ids: {allowed}"
+        )
+    return ids
+
+
 async def repair_known_doubao_auth_false_successes(
     session: AsyncSession,
     *,
@@ -60,11 +77,12 @@ async def repair_known_doubao_auth_false_successes(
     if not approval_ref.strip():
         raise ValueError("approval_ref is required for auditability")
 
+    evidence_query_ids = _validated_query_ids(query_ids)
     stmt = (
         select(Query, LLMResponse)
         .join(LLMResponse, LLMResponse.query_id == Query.id)
         .where(
-            Query.id.in_(list(query_ids)),
+            Query.id.in_(list(evidence_query_ids)),
             Query.target_llm == "doubao",
             Query.status == QueryStatus.DONE.value,
         )
@@ -141,7 +159,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--query-id",
         action="append",
         type=int,
-        help="Optional known query ID override. Can be repeated.",
+        help="Optional #594 evidence query ID subset. Can be repeated.",
     )
     return parser.parse_args(argv)
 
