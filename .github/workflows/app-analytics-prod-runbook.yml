@@ -23,6 +23,10 @@ on:
         description: "Approved App project name"
         required: false
         default: "Estee Lauder / 雅诗兰黛 App Analytics"
+      brand_aliases:
+        description: "Optional target brand aliases for project lookup; comma/newline separated"
+        required: false
+        default: ""
       owner_user_id:
         description: "Required in write mode; approved production App owner user_id"
         required: false
@@ -68,6 +72,7 @@ jobs:
           BRAND_ID: ${{ inputs.brand_id }}
           PROJECT_ID: ${{ inputs.project_id }}
           PROJECT_NAME: ${{ inputs.project_name }}
+          BRAND_ALIASES: ${{ inputs.brand_aliases }}
           OWNER_USER_ID: ${{ inputs.owner_user_id }}
           COMPETITOR_BRAND_ID: ${{ inputs.competitor_brand_id }}
           APPROVAL_REF: ${{ inputs.approval_ref }}
@@ -83,7 +88,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: MODE,BRAND_ID,PROJECT_ID,PROJECT_NAME,OWNER_USER_ID,COMPETITOR_BRAND_ID,APPROVAL_REF,RUN_CANONICAL_REPAIR,REPAIR_DATE,SOURCE_BRAND_ID,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
+          envs: MODE,BRAND_ID,PROJECT_ID,PROJECT_NAME,BRAND_ALIASES,OWNER_USER_ID,COMPETITOR_BRAND_ID,APPROVAL_REF,RUN_CANONICAL_REPAIR,REPAIR_DATE,SOURCE_BRAND_ID,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
           command_timeout: 45m
           script: |
             bash <<'RUNBOOK'
@@ -142,6 +147,7 @@ jobs:
             brand_id=${BRAND_ID}
             project_id=${PROJECT_ID}
             project_name=${PROJECT_NAME}
+            brand_aliases=${BRAND_ALIASES:-<script-default>}
             owner_user_id=${OWNER_USER_ID:-<empty>}
             competitor_brand_id=${COMPETITOR_BRAND_ID}
             source_brand_id=${SOURCE_BRAND_ID}
@@ -176,6 +182,15 @@ jobs:
                 --project-name "$PROJECT_NAME"
                 --competitor-brand-id "$COMPETITOR_BRAND_ID"
               )
+              if [ -n "$BRAND_ALIASES" ]; then
+                normalized_aliases="$(printf '%s' "$BRAND_ALIASES" | tr ',;' '\n')"
+                while IFS= read -r alias; do
+                  alias="$(printf '%s' "$alias" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                  if [ -n "$alias" ]; then
+                    args+=(--brand-alias "$alias")
+                  fi
+                done <<< "$normalized_aliases"
+              fi
               if [ -n "$OWNER_USER_ID" ]; then
                 args+=(--user-id "$OWNER_USER_ID")
               fi
