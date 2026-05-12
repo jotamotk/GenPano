@@ -38,6 +38,7 @@ from geo_tracker.analyzer.fact_contract import (
 from geo_tracker.analyzer.geo_scorer import GEOScorer
 from geo_tracker.analyzer.aggregator import Aggregator
 from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
+from geo_tracker.analyzer.position_type import normalize_position_type
 
 logging.basicConfig(
     level=logging.INFO,
@@ -459,8 +460,8 @@ async def analyze_single_response(
                     brand_name=canonical_brand_name,
                     product_name=product_name,
                     is_target=is_target,
-                    position_type=(
-                        llm_brand.position_type if llm_brand else "mentioned_only"
+                    position_type=normalize_position_type(
+                        llm_brand.position_type if llm_brand else None
                     ),
                     position_rank=(
                         llm_brand.position_rank if llm_brand else None
@@ -550,7 +551,7 @@ async def analyze_single_response(
                 brand_name=canonical_brand_name,
                 product_name=llm_brand.product_name,
                 is_target=is_target,
-                position_type=llm_brand.position_type,
+                position_type=normalize_position_type(llm_brand.position_type),
                 position_rank=llm_brand.position_rank,
                 detail_level=llm_brand.detail_level,
                 sentiment=llm_brand.sentiment,

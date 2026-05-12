@@ -25,6 +25,7 @@ except ImportError:
     HAS_JSON_REPAIR = False
 
 from geo_tracker.analyzer.brand_detector import DetectedBrand
+from geo_tracker.analyzer.position_type import normalize_position_type
 from geo_tracker.analyzer.prompts import ANALYSIS_SYSTEM, ANALYSIS_USER
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ class LLMAnalyzer:
             result.brands.append(BrandAnalysis(
                 brand_name=b.get("brand_name", ""),
                 product_name=b.get("product_name"),
-                position_type=b.get("position_type", "mentioned_only"),
+                position_type=normalize_position_type(b.get("position_type")),
                 position_rank=b.get("position_rank"),
                 detail_level=b.get("detail_level", "passing"),
                 sentiment=b.get("sentiment", "neutral"),
