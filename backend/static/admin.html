@@ -9410,6 +9410,10 @@ function accountStatusMeta(status) {
 function redactAccountUiText(value) {
   if (value === null || value === undefined || value === '') return '';
   let text = String(value).slice(0, 180);
+  text = text.replace(
+    /(["']?)(cookies?|localStorage|token|sms|sms[_-]?text|otp|verification[_-]?code|activation[_-]?id|api[_-]?key|provider[_-]?secret)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\{(?:[^{}]|\{[^{}]*\})*\}|\[(?:[^\[\]]|\[[^\[\]]*\])*\]|[^,\s}]+)/gi,
+    (_match, quote, key) => (quote || '') + key + (quote || '') + ':"[已隐藏]"'
+  );
   text = text.replace(/(?:api[_-]?key|provider[_-]?secret)\s*[:=]\s*[^,\s}]+/gi, '[已隐藏]');
   text = text.replace(/(?:sms[_-]?text|sms|otp|verification[_-]?code)\s*[:=]\s*[^,\s}]+/gi, '[已隐藏]');
   text = text.replace(/\+?\d[\d\s().-]{6,}\d/g, '[已隐藏手机号]');

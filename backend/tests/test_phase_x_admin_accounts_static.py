@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -5,6 +7,30 @@ def _admin_html() -> str:
     return (Path(__file__).resolve().parents[1] / "static" / "admin.html").read_text(
         encoding="utf-8"
     )
+
+
+def _admin_account_redaction_helper(html: str) -> str:
+    return html[
+        html.index("function redactAccountUiText(value)") : html.index(
+            "function accountTaskFailureErrorBody(body)"
+        )
+    ]
+
+
+def _redact_with_admin_helper(html: str, value: str) -> str:
+    script = (
+        _admin_account_redaction_helper(html)
+        + "\nconst input = "
+        + json.dumps(value, ensure_ascii=False)
+        + ";\nprocess.stdout.write(JSON.stringify(redactAccountUiText(input)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def test_admin_accounts_surface_expired_recovery_state() -> None:
@@ -87,3 +113,34 @@ def test_admin_accounts_task_failure_panel_payload_is_redacted() -> None:
     assert "body.code || body.error" not in failure_branch
     assert "body.title || body.error" not in failure_branch
     assert "body.traceback || body.detail || body.message" not in failure_branch
+
+
+def test_admin_accounts_redaction_masks_json_quoted_task_payloads() -> None:
+    html = _admin_html()
+
+    samples = {
+        (
+            '{"cookies":"raw-cookie","token":"raw-token",'
+            '"activation_id":"raw-activation","api_key":"raw-api",'
+            '"provider_secret":"raw-provider"}'
+        ): (
+            "raw-cookie",
+            "raw-token",
+            "raw-activation",
+            "raw-api",
+            "raw-provider",
+        ),
+        '{"localStorage":{"auth":"raw-local","nested":{"token":"raw-nested"}}}': (
+            "raw-local",
+            "raw-nested",
+        ),
+        "HERO_SMS_API_KEY=raw-key sms_text=123456 +14155552671": (
+            "raw-key",
+            "123456",
+            "+14155552671",
+        ),
+    }
+    for raw_text, raw_values in samples.items():
+        redacted = _redact_with_admin_helper(html, raw_text)
+        for raw_value in raw_values:
+            assert raw_value not in redacted
