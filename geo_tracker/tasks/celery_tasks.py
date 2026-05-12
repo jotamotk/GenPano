@@ -1081,6 +1081,7 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
 
                 if login_result and login_result.get("cookies"):
                     from datetime import datetime as dt
+                    previous_status = str(account.status or "")
                     # 打包 cookies + localStorage（如有）为新格式
                     cookies_data = login_result["cookies"]
                     local_storage = login_result.get("localStorage", {})
@@ -1098,6 +1099,19 @@ def auto_login(self, account_id: int = None, platform: str = None, new_account: 
                     if login_result.get("phone"):
                         account.phone_number = login_result["phone"]
                     await db.commit()
+                    if previous_status != AccountStatus.ACTIVE.value:
+                        logger.info(
+                            "Account lifecycle transition account_id=%s engine=%s "
+                            "previous_status=%s new_status=%s reason=%s evidence=%s "
+                            "provider=shared_login price_bucket=none run_id=none account_ref=%s",
+                            account_id,
+                            account.llm_name,
+                            previous_status or "unknown",
+                            AccountStatus.ACTIVE.value,
+                            "auto_login_success",
+                            "cookie_write_back",
+                            f"id:{account_id}",
+                        )
                     logger.info(f"auto_login: account #{account_id} re-login SUCCESS")
                     return {"status": "success", "account_id": account_id}
                 else:

@@ -15,6 +15,7 @@ class AccountStatus(str, enum.Enum):
     ACTIVE = "active"
     COOLDOWN = "cooldown"
     BANNED = "banned"
+    EXPIRED = "expired"
 
 
 class QueryStatus(str, enum.Enum):

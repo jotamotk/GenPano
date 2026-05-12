@@ -817,6 +817,29 @@ def test_account_unavailability_classifies_daily_limit_exhaustion():
     )
 
 
+def test_account_unavailability_classifies_all_expired_accounts():
+    accounts = [
+        LLMAccount(
+            id=61,
+            llm_name="chatgpt",
+            status=AccountStatus.EXPIRED.value,
+            cookies_json='[{"name":"session"}]',
+            query_count_today=0,
+            daily_limit=20,
+        ),
+        LLMAccount(
+            id=62,
+            llm_name="chatgpt",
+            status=AccountStatus.EXPIRED.value,
+            cookies_json='[{"name":"session"}]',
+            query_count_today=0,
+            daily_limit=20,
+        ),
+    ]
+
+    assert account_unavailable_reason_from_accounts(accounts) == "account_all_expired"
+
+
 @pytest.mark.asyncio
 async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(
     monkeypatch,
@@ -1230,11 +1253,120 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
     assert state["status"] == QueryStatus.FAILED.value
     assert state["retry_reason"] == "doubao_not_logged_in"
     assert state["response"] is None
-    assert state["account_status"] == AccountStatus.COOLDOWN.value
-    assert state["account_cooldown_until"] is not None
+    assert state["account_status"] == AccountStatus.EXPIRED.value
+    assert state["account_cooldown_until"] is None
     assert relogin_calls == [
         {"kwargs": {"account_id": account_id}, "queue": "account_login"}
     ]
+
+
+def test_execute_query_rejects_chatgpt_login_page_and_expires_account(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'chatgpt-login-page.db'}"
+    query_id = 184615
+    account_id = 615
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="chatgpt",
+                        status=AccountStatus.ACTIVE.value,
+                        cookies_json='[{"name":"session"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                    ),
+                    Query(
+                        id=query_id,
+                        target_llm="chatgpt",
+                        query_text="coffee brand advantages",
+                        status=QueryStatus.PENDING.value,
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return LLMAccount(
+            id=account_id,
+            llm_name="chatgpt",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+        )
+
+    class FakeGuestQueryExecutor:
+        def __init__(self, *args, **kwargs):
+            self.last_error_reason = None
+
+        async def execute(self, query):
+            return LLMResponse(
+                query_id=query.id,
+                raw_text=(
+                    "Sign in to ChatGPT. Continue with Google. "
+                    "Continue with Microsoft. Continue with Apple."
+                ),
+            )
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    async def load_query_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            response_result = await session.execute(
+                select(LLMResponse).where(LLMResponse.query_id == query_id)
+            )
+            response = response_result.scalar_one_or_none()
+            account = await session.get(LLMAccount, account_id)
+            state = {
+                "status": query.status,
+                "retry_reason": query.retry_reason,
+                "response": response,
+                "account_status": account.status,
+                "account_cooldown_until": account.cooldown_until,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_query_state())
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "chatgpt_auth_redirect",
+    }
+    assert state["status"] == QueryStatus.FAILED.value
+    assert state["retry_reason"] == "chatgpt_auth_redirect"
+    assert state["response"] is None
+    assert state["account_status"] == AccountStatus.EXPIRED.value
+    assert state["account_cooldown_until"] is None
 
 
 def test_execute_query_cools_doubao_account_on_page_unavailable(monkeypatch, tmp_path):

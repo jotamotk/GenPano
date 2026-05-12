@@ -22,13 +22,42 @@ logger = logging.getLogger(__name__)
 MAX_CONSECUTIVE_FAILS = 3      # 连续失败N次 → banned
 COOLDOWN_HOURS        = 12     # 超配额冷却时间
 DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
-DOUBAO_SESSION_COOLDOWN_REASONS = frozenset(
+EXPIRED_ACCOUNT_REASONS = frozenset(
     {
+        "chatgpt_auth_redirect",
+        "chatgpt_login_page",
+        "chatgpt_not_logged_in",
+        "cookies_expired",
         "doubao_not_logged_in",
         "doubao_auth_state_missing",
-        "doubao_page_unavailable",
+        "login_redirect",
+        "session_expired",
+        "token_invalidated",
     }
 )
+DOUBAO_SESSION_COOLDOWN_REASONS = frozenset({"doubao_page_unavailable"})
+
+
+def _log_account_state_transition(
+    account: LLMAccount,
+    *,
+    previous_status: str | None,
+    new_status: str,
+    reason: str,
+    evidence: str,
+) -> None:
+    logger.info(
+        "Account lifecycle transition account_id=%s engine=%s "
+        "previous_status=%s new_status=%s reason=%s evidence=%s "
+        "provider=none price_bucket=none run_id=none account_ref=%s",
+        account.id,
+        account.llm_name,
+        previous_status or "unknown",
+        new_status,
+        reason,
+        evidence,
+        f"id:{account.id}",
+    )
 
 
 async def reserve_account_quota(
@@ -209,19 +238,33 @@ class AccountPool:
         if not account:
             return
 
-        # cookies 过期 / 响应太短 只设 cooldown，不增加失败计数（避免误封）
-        # 这些通常是平台侧或网络问题，不是账号本身的问题
-        if reason in (
-            "cookies_expired",
-            "response_too_short",
-            "token_invalidated",
-            "chatgpt_not_logged_in",
-            "chatgpt_auth_redirect",
-        ) or (
+        # Expired login material waits for re-login/import; transient response
+        # failures stay on cooldown so they can retry later without a ban.
+        previous_status = str(account.status or "")
+
+        if reason in EXPIRED_ACCOUNT_REASONS:
+            account.status = AccountStatus.EXPIRED.value
+            account.cooldown_until = None
+            account.consecutive_fails = 0
+            _log_account_state_transition(
+                account,
+                previous_status=previous_status,
+                new_status=AccountStatus.EXPIRED.value,
+                reason=reason,
+                evidence="expired_login_material",
+            )
+        elif reason == "response_too_short" or (
             account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
         ):
             account.status = AccountStatus.COOLDOWN.value
             account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
+            _log_account_state_transition(
+                account,
+                previous_status=previous_status,
+                new_status=AccountStatus.COOLDOWN.value,
+                reason=reason,
+                evidence="temporary_platform_failure",
+            )
             logger.warning(
                 f"Account id={account_id} {reason}, cooldown until {account.cooldown_until}"
             )
@@ -230,12 +273,26 @@ class AccountPool:
 
             if is_ban or account.consecutive_fails >= MAX_CONSECUTIVE_FAILS:
                 account.status = AccountStatus.BANNED.value
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.BANNED.value,
+                    reason=reason,
+                    evidence="ban_threshold",
+                )
                 logger.warning(
                     f"Account id={account_id} BANNED after {account.consecutive_fails} fails"
                 )
             elif reason == "rate_limit":
                 account.status = AccountStatus.COOLDOWN.value
                 account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.COOLDOWN.value,
+                    reason=reason,
+                    evidence="rate_limit",
+                )
                 logger.info(f"Account id={account_id} cooldown until {account.cooldown_until}")
 
         # 记录轮换日志
@@ -256,8 +313,20 @@ class AccountPool:
         """Agent执行成功后持久化登录态"""
         account = await self.db.get(LLMAccount, account_id)
         if account:
+            previous_status = str(account.status or "")
             account.cookies_json = cookies_json
             account.cookies_updated_at = datetime.utcnow()
+            account.status = AccountStatus.ACTIVE.value
+            account.cooldown_until = None
+            account.consecutive_fails = 0
+            if previous_status != AccountStatus.ACTIVE.value:
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.ACTIVE.value,
+                    reason="cookies_imported",
+                    evidence="cookie_write_back",
+                )
             await self.db.commit()
 
     async def create_account(

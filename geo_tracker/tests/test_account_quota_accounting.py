@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 import types
+from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from geo_tracker.db.models import AccountStatus, Base, LLMAccount, Query
+from geo_tracker.db.models import AccountRotationLog, AccountStatus, Base, LLMAccount, Query
 from geo_tracker.pool.account_pool import (
     AccountPool,
 )
@@ -35,11 +38,13 @@ async def _create_account(
     llm_name: str = "chatgpt",
     query_count_today: int = 0,
     daily_limit: int = 1,
+    status: str = AccountStatus.ACTIVE.value,
+    cookies_json: str = '[{"name":"session","value":"ok"}]',
 ) -> LLMAccount:
     account = LLMAccount(
         llm_name=llm_name,
-        status=AccountStatus.ACTIVE.value,
-        cookies_json='[{"name":"session","value":"ok"}]',
+        status=status,
+        cookies_json=cookies_json,
         query_count_today=query_count_today,
         daily_limit=daily_limit,
     )
@@ -171,11 +176,107 @@ async def test_consuming_failure_followed_by_exception_does_not_refund(
 
     assert settlement.settled is True
     assert account.query_count_today == 1
-    assert account.status == AccountStatus.COOLDOWN.value
+    assert account.status == AccountStatus.EXPIRED.value
+    assert account.cooldown_until is None
 
 
 @pytest.mark.asyncio
-async def test_chatgpt_logged_out_auth_failure_cools_down_account(
+@pytest.mark.parametrize(
+    ("llm_name", "reason"),
+    [
+        ("chatgpt", "cookies_expired"),
+        ("chatgpt", "token_invalidated"),
+        ("chatgpt", "chatgpt_login_page"),
+        ("chatgpt", "chatgpt_not_logged_in"),
+        ("chatgpt", "chatgpt_auth_redirect"),
+        ("deepseek", "cookies_expired"),
+        ("doubao", "doubao_not_logged_in"),
+        ("doubao", "doubao_auth_state_missing"),
+    ],
+)
+async def test_expired_login_failures_mark_account_expired_across_llms(
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+    llm_name: str,
+    reason: str,
+):
+    account = await _create_account(
+        session,
+        llm_name=llm_name,
+        daily_limit=3,
+        cookies_json='[{"name":"session","value":"fixture-cookie-value"}]',
+    )
+    account.phone_number = "fixture-phone-1234"
+    account.cooldown_until = datetime.utcnow() + timedelta(hours=1)
+    await session.commit()
+
+    pool = AccountPool(session)
+    caplog.set_level(logging.INFO, logger="geo_tracker.pool.account_pool")
+
+    await pool.report_failure(account.id, reason=reason)
+    await session.refresh(account)
+    rotation = (
+        await session.execute(
+            select(AccountRotationLog).where(AccountRotationLog.account_id == account.id)
+        )
+    ).scalar_one()
+
+    assert account.status == AccountStatus.EXPIRED.value
+    assert account.cooldown_until is None
+    assert account.consecutive_fails == 0
+    assert rotation.reason == reason
+    assert "previous_status=active" in caplog.text
+    assert "new_status=expired" in caplog.text
+    assert f"reason={reason}" in caplog.text
+    assert f"engine={llm_name}" in caplog.text
+    assert "fixture-cookie-value" not in caplog.text
+    assert "fixture-phone-1234" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_expired_accounts_are_not_acquired(session: AsyncSession):
+    expired = await _create_account(
+        session,
+        llm_name="deepseek",
+        status=AccountStatus.EXPIRED.value,
+        daily_limit=5,
+    )
+    active = await _create_account(
+        session,
+        llm_name="deepseek",
+        daily_limit=5,
+    )
+
+    acquired = await AccountPool(session).acquire("deepseek")
+
+    assert acquired.id == active.id
+    assert acquired.id != expired.id
+
+
+@pytest.mark.asyncio
+async def test_save_cookies_reactivates_expired_account(session: AsyncSession):
+    account = await _create_account(
+        session,
+        status=AccountStatus.EXPIRED.value,
+        daily_limit=5,
+    )
+    account.consecutive_fails = 2
+    account.cooldown_until = datetime.utcnow() + timedelta(hours=2)
+    await session.commit()
+
+    await AccountPool(session).save_cookies(
+        account.id,
+        '[{"name":"session","value":"fresh"}]',
+    )
+    await session.refresh(account)
+
+    assert account.status == AccountStatus.ACTIVE.value
+    assert account.cooldown_until is None
+    assert account.consecutive_fails == 0
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_logged_out_auth_failure_marks_account_expired(
     session: AsyncSession,
 ):
     account = await _create_account(session)
@@ -194,8 +295,8 @@ async def test_chatgpt_logged_out_auth_failure_cools_down_account(
     assert refunded is False
     assert settlement.settled is True
     assert account.query_count_today == 1
-    assert account.status == AccountStatus.COOLDOWN.value
-    assert account.cooldown_until is not None
+    assert account.status == AccountStatus.EXPIRED.value
+    assert account.cooldown_until is None
 
 
 @pytest.mark.asyncio
