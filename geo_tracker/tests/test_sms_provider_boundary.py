@@ -426,6 +426,31 @@ async def test_doubao_post_submit_login_chrome_rejects_chat_input_false_success(
     assert result == "doubao_not_logged_in"
 
 
+def test_doubao_sms_login_uses_configured_proxy(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    proxy_url = _sms_login_proxy_url()
+
+    assert proxy_url == "http://proxy.internal:6789"
+    assert _should_use_proxy_for_sms_login("doubao", proxy_url) is True
+
+
+def test_sms_login_keeps_deepseek_direct_when_doubao_proxy_enabled(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    proxy_url = _sms_login_proxy_url()
+
+    assert _should_use_proxy_for_sms_login("deepseek", proxy_url) is False
+
+
 @pytest.mark.parametrize("platform", ["doubao", "deepseek"])
 @pytest.mark.asyncio
 async def test_existing_handlers_reject_false_success_and_release_number(

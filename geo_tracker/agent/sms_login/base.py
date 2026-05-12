@@ -43,8 +43,31 @@ try:
 except ImportError:
     HAS_CAMOUFOX = False
 
-# 国内 LLM 直连不走代理
+# Most domestic LLMs stay direct; Doubao follows the execution proxy toggle.
 DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _sms_login_proxy_url() -> str | None:
+    return (
+        os.getenv("CLASH_PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+        or None
+    )
+
+
+def _should_use_proxy_for_sms_login(platform: str, proxy_url: str | None) -> bool:
+    if not proxy_url:
+        return False
+    return platform == "doubao" and _env_flag("DOUBAO_USE_PROXY", True)
+
 
 # CAPTCHA 检测选择器（数美/字节跳动/通用）
 CAPTCHA_SELECTORS = [
@@ -563,6 +586,14 @@ class BaseSMSLoginHandler(ABC):
         优先用 Camoufox 反指纹，降级到 Playwright Chromium。
         """
         is_domestic = self.platform in DOMESTIC_LLMS
+        proxy_url = _sms_login_proxy_url()
+        use_proxy = _should_use_proxy_for_sms_login(self.platform, proxy_url)
+        if use_proxy:
+            logger.info(
+                "[%s] SMS login using proxy: %s",
+                self.platform,
+                redact_sensitive_text(proxy_url or ""),
+            )
 
         if HAS_CAMOUFOX:
             logger.info(f"[{self.platform}] 启动 Camoufox...")
@@ -573,16 +604,17 @@ class BaseSMSLoginHandler(ABC):
                 "os": "windows",
                 "locale": "zh-CN" if is_domestic else "en-US",
             }
+            if use_proxy:
+                camoufox_kwargs["proxy"] = {"server": proxy_url}
             ctx = AsyncCamoufox(**camoufox_kwargs)
             browser = await ctx.__aenter__()
             context = await browser.new_context()
             return browser, ctx, None, context
         else:
             logger.info(f"[{self.platform}] 启动 Playwright Chromium...")
-            pw = await async_playwright().start()
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=[
+            launch_kwargs = {
+                "headless": True,
+                "args": [
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-blink-features=AutomationControlled",
@@ -591,7 +623,11 @@ class BaseSMSLoginHandler(ABC):
                     "--no-zygote",
                     "--window-size=1920,1080",
                 ],
-            )
+            }
+            if use_proxy:
+                launch_kwargs["proxy"] = {"server": proxy_url}
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(**launch_kwargs)
             context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 locale="zh-CN" if is_domestic else "en-US",
