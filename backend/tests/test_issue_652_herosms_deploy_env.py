@@ -34,5 +34,20 @@ def test_server_diagnostics_has_readonly_hero_sms_runtime_check() -> None:
     assert "hero-sms-env-artifacts/runtime-env.json" in workflow_text
     assert "docker compose exec -T worker python - <<'PY'" in run_script
     assert '"HERO_SMS_API_KEY_present": bool(os.getenv("HERO_SMS_API_KEY"))' in run_script
+    assert '"service": "dr"' in run_script
+    assert '"country": "187"' in run_script
+    assert '"operator": "physic"' in run_script
+    assert '"price_bucket": "usd<=0.60"' in run_script
+    assert '"countPhysical": None' in run_script
+    assert '"purchaseAttempted": False' in run_script
+    assert '"purchaseEndpointsCalled": False' in run_script
     assert 'print(os.getenv("HERO_SMS_API_KEY"' not in run_script
     assert "HERO_SMS_API_KEY=" not in run_script
+
+
+def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
+    workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "sanitize_herosms_logs" in workflow_text
+    assert "api key [redacted]" in workflow_text
+    assert "HERO_SMS_API_KEY=" not in workflow_text

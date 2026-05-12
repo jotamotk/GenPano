@@ -513,11 +513,27 @@ jobs:
             mkdir -p "${artifact_dir}/logs"
             docker compose logs --since "${utc_started_at}" worker worker-analysis beat \
               > "${artifact_dir}/logs/worker-services.log" 2>&1 || true
+            sanitize_herosms_logs() {
+              python3 - "$1" <<'PY'
+            import re
+            import sys
+            from pathlib import Path
+
+            path = Path(sys.argv[1])
+            text = path.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"(?i)([?&])api_key=[^&\s\"'<>]+", r"\1api key [redacted]", text)
+            text = re.sub(r"(?i)\bapi[_-]?key\s*=\s*[^&\s\"'<>]+", "api key [redacted]", text)
+            text = re.sub(r"(?i)\bHERO_SMS_API_KEY\s*=\s*\S+", "HERO_SMS_API_KEY_present=true", text)
+            path.write_text(text, encoding="utf-8")
+            PY
+            }
+            sanitize_herosms_logs "${artifact_dir}/logs/worker-services.log"
             if [ -n "${ids_space}" ]; then
               ids_regex="$(printf '%s\n' ${ids_space} | paste -sd'|' -)"
               grep -E "(${ids_regex})|execute_query|page_load|browser_timeout|soft_time_limit|no_input|no_response|cookies_expired|token_invalidated|proxy_api|proxy_global|proxy_route|page_unavailable|deepseek|doubao|chatgpt" \
                 "${artifact_dir}/logs/worker-services.log" \
                 > "${artifact_dir}/logs/selected-query-worker.log" 2>/dev/null || true
+              sanitize_herosms_logs "${artifact_dir}/logs/selected-query-worker.log"
             fi
 
             echo "=== Collect screenshot/html artifacts from worker ==="
@@ -916,7 +932,15 @@ jobs:
 
           print(json.dumps({
               "HERO_SMS_API_KEY_present": bool(os.getenv("HERO_SMS_API_KEY")),
-              "service": "worker",
+              "country": "187",
+              "countPhysical": None,
+              "operator": "physic",
+              "price_bucket": "usd<=0.60",
+              "purchaseAttempted": False,
+              "purchaseEndpointsCalled": False,
+              "readOnly": True,
+              "runtime_service": "worker",
+              "service": "dr",
           }, sort_keys=True))
           PY
           REMOTE

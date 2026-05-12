@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ import httpx
 from geo_tracker.agent.sms_redaction import mask_phone, redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+_SECRET_TRANSPORT_LOGGERS = ("httpx", "httpcore")
 
 HEROSMS_BASE_URL = "https://hero-sms.com"
 HEROSMS_SERVICE_CODE = "dr"
@@ -86,6 +88,21 @@ def _redact_diagnostics(value: Any) -> Any:
     if isinstance(value, str):
         return redact_sensitive_text(value)
     return value
+
+
+@contextlib.contextmanager
+def _suppress_secret_transport_logs():
+    """Prevent dependency request loggers from emitting secret-bearing URLs."""
+    previous_levels = []
+    for logger_name in _SECRET_TRANSPORT_LOGGERS:
+        transport_logger = logging.getLogger(logger_name)
+        previous_levels.append((transport_logger, transport_logger.level))
+        transport_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        for transport_logger, previous_level in previous_levels:
+            transport_logger.setLevel(previous_level)
 
 
 def _as_decimal(value: Any) -> Decimal | None:
@@ -333,13 +350,14 @@ class HeroSMSClient:
     async def _public_json(self, path: str) -> Any:
         url = f"{self.base_url}{path}"
         try:
-            response = await self.http_client.get(
-                url,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "genpano-herosms-provider/1.0",
-                },
-            )
+            with _suppress_secret_transport_logs():
+                response = await self.http_client.get(
+                    url,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "genpano-herosms-provider/1.0",
+                    },
+                )
             response.raise_for_status()
             return response.json()
         except HeroSMSProviderBlocked:
@@ -351,14 +369,24 @@ class HeroSMSClient:
             ) from None
 
     async def _handler_text(self, params: dict[str, Any]) -> str:
-        safe_params = dict(params)
-        safe_params["api_key"] = self.api_key
+        request_params = dict(params)
+        request_params["api_key"] = self.api_key
+        logger.debug(
+            "HeroSMS handler request: action=%s service=%s country=%s "
+            "operator=%s price_bucket=%s api key [redacted]",
+            request_params.get("action"),
+            request_params.get("service"),
+            request_params.get("country"),
+            request_params.get("operator"),
+            HEROSMS_PRICE_BUCKET if request_params.get("action") == "getNumber" else None,
+        )
         try:
-            response = await self.http_client.get(
-                f"{self.base_url}/stubs/handler_api.php",
-                params=safe_params,
-                headers={"User-Agent": "genpano-herosms-provider/1.0"},
-            )
+            with _suppress_secret_transport_logs():
+                response = await self.http_client.get(
+                    f"{self.base_url}/stubs/handler_api.php",
+                    params=request_params,
+                    headers={"User-Agent": "genpano-herosms-provider/1.0"},
+                )
             response.raise_for_status()
             return str(response.text).strip()
         except Exception as exc:
