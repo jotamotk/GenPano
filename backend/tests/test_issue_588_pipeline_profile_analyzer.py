@@ -12,6 +12,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+
+class _FakeAsyncOpenAI:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+openai = types.ModuleType("openai")
+openai.AsyncOpenAI = _FakeAsyncOpenAI
+sys.modules.setdefault("openai", openai)
+
 import geo_tracker.analyzer.cli as analyzer_cli  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
