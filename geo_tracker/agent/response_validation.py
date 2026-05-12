@@ -21,12 +21,14 @@ _DOUBAO_UNAUTH_TEXT_MARKERS = (
 _DOUBAO_LOGIN_BUTTON_RE = re.compile(
     r"<(?:button|a|div|span)[^>]*(?:login|passport|signin|sign-in|data-testid=[\"'][^\"']*login)[^>]*>"
     r"[^<]{0,80}\u767b\u5f55"
+    r"|<(?:button|a)[^>]{0,500}>\s*(?:<[^>]+>\s*)*\u767b\u5f55\s*(?:</[^>]+>\s*)*</(?:button|a)>"
+    r"|<[^>]+role=[\"']button[\"'][^>]{0,500}>\s*(?:<[^>]+>\s*)*\u767b\u5f55"
     r"|(?:aria-label|title)=[\"']\u767b\u5f55[\"']",
     re.IGNORECASE | re.DOTALL,
 )
 
 _DOUBAO_AUTHENTICATED_RE = re.compile(
-    r"(?:user-avatar|avatar|account-menu|profile-menu|user-info|"
+    r"(?:user-avatar|account-menu|profile-menu|user-account|"
     r"\u7528\u6237\u5934\u50cf|\u8d26\u53f7\u83dc\u5355|\u6211\u7684\u8d26\u53f7)",
     re.IGNORECASE,
 )
