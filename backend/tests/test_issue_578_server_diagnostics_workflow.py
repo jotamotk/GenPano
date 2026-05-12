@@ -46,13 +46,13 @@ def test_doubao_auth_false_success_repair_mode_is_guarded_and_artifacted() -> No
     assert '*) fail "DOUBAO_AUTH_REPAIR_APPLY must be true or false" ;;' in workflow
     assert 'if [ "${DOUBAO_AUTH_REPAIR_APPLY}" = "true" ]; then' in workflow
     assert (
-        'docker compose exec -T worker python -m '
-        'geo_tracker.tasks.doubao_auth_false_success_repair '
+        "docker compose exec -T worker python -m "
+        "geo_tracker.tasks.doubao_auth_false_success_repair "
         '--approval-ref "Refs #594 dry-run:${GH_RUN_ID}"'
     ) in workflow
     assert (
-        'docker compose exec -T worker python -m '
-        'geo_tracker.tasks.doubao_auth_false_success_repair --apply '
+        "docker compose exec -T worker python -m "
+        "geo_tracker.tasks.doubao_auth_false_success_repair --apply "
         '--approval-ref "Refs #594:${GH_RUN_ID}"'
     ) in workflow
     assert "doubao-auth-false-success-repair-${{ github.run_id }}" in workflow
