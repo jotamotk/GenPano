@@ -1,5 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import {
+  BarChart3,
+  CalendarRange,
+  ChevronRight,
+  Download,
+  ExternalLink,
+  FileText,
+  MessageSquare,
+  Search,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react'
 
 import { Badge, Button, Card } from '../components/ui'
 import BrandAnalysisFilterBar from '../components/filters/BrandAnalysisFilterBar'
@@ -41,6 +53,8 @@ const DIMENSION_VARIANTS: Record<string, string> = {
   scenario: 'orange',
 }
 
+type LooseRecord = Record<string, any>
+
 function analysisParamsWithBrand(
   filters: any,
   brandIdOverride: number | null,
@@ -57,7 +71,7 @@ function Breadcrumb({ items, onNavigate }: { items: any[]; onNavigate: (view: st
     <div className="flex items-center gap-1.5 text-sm mb-5">
       {items.map((item, i) => (
         <span key={`${item.view}-${i}`} className="flex items-center gap-1.5">
-          {i > 0 && <span className="text-themed-muted">/</span>}
+          {i > 0 && <ChevronRight size={14} className="text-themed-faint" aria-hidden />}
           {i < items.length - 1 ? (
             <button
               type="button"
@@ -75,14 +89,231 @@ function Breadcrumb({ items, onNavigate }: { items: any[]; onNavigate: (view: st
   )
 }
 
-function EmptyState({ text }: { text: string }) {
-  return <div className="text-center text-[12px] text-themed-muted py-12">{text}</div>
+function EmptyState({
+  title,
+  text,
+  action,
+}: {
+  title?: string
+  text: string
+  action?: ReactNode
+}) {
+  return (
+    <div className="text-center py-12 px-4">
+      {title && <div className="text-sm font-semibold text-themed-primary mb-1">{title}</div>}
+      <div className="text-[12px] text-themed-muted">{text}</div>
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  )
+}
+
+function StateBadge({ state }: { state?: string }) {
+  const normalized = String(state || '').toLowerCase()
+  if (!normalized || normalized === 'ok') return null
+  const display =
+    normalized === 'partial'
+      ? { label: 'Limited data', variant: 'orange' }
+      : normalized === 'empty'
+        ? { label: 'No data yet', variant: 'secondary' }
+        : { label: 'Data unavailable', variant: 'secondary' }
+  return (
+    <Badge variant={display.variant} size="sm">
+      {display.label}
+    </Badge>
+  )
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+  tone = 'primary',
+}: {
+  label: string
+  value: ReactNode
+  detail?: ReactNode
+  tone?: 'primary' | 'accent' | 'success' | 'warning'
+}) {
+  const valueClass =
+    tone === 'accent'
+      ? 'text-themed-accent'
+      : tone === 'success'
+        ? 'text-themed-success'
+        : tone === 'warning'
+          ? 'text-themed-warning'
+          : 'text-themed-primary'
+
+  return (
+    <Card className="p-4 min-h-[108px]">
+      <div className="text-xs text-themed-muted mb-1">{label}</div>
+      <div className={`text-2xl font-brand font-bold tabular-nums ${valueClass}`}>{value}</div>
+      {detail && <div className="text-[11px] text-themed-muted mt-2">{detail}</div>}
+    </Card>
+  )
+}
+
+function asNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const next = Number(value)
+  return Number.isFinite(next) ? next : null
 }
 
 function formatEvidenceCount(value: unknown) {
-  if (value === null || value === undefined || value === '') return '--'
-  const next = Number(value)
-  return Number.isFinite(next) ? next : '--'
+  const next = asNumber(value)
+  return next == null ? '--' : next.toLocaleString()
+}
+
+function formatPercent(value: unknown, digits = 1) {
+  const next = asNumber(value)
+  if (next == null) return '--'
+  const normalized = Math.abs(next) <= 1 ? next * 100 : next
+  return `${normalized.toFixed(digits)}%`
+}
+
+function formatScore(value: unknown) {
+  const next = asNumber(value)
+  if (next == null) return '--'
+  return Math.abs(next) <= 1 ? (next * 100).toFixed(1) : next.toFixed(1)
+}
+
+function formatDateTime(value: unknown) {
+  if (!value) return '-'
+  const date = new Date(String(value))
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function dayKey(value: unknown) {
+  if (!value) return 'No date'
+  const text = String(value)
+  const date = new Date(text)
+  if (Number.isNaN(date.getTime())) return text.slice(0, 10) || 'No date'
+  return date.toISOString().slice(0, 10)
+}
+
+function isSuccessfulQuery(query: LooseRecord) {
+  const status = String(query.status || '').toLowerCase()
+  if (['failed', 'error', 'pending', 'running', 'cancelled', 'timeout'].includes(status)) {
+    return false
+  }
+  return status === 'success' || status === 'succeeded' || status === 'completed' || !!query.response_id
+}
+
+function latestTimestamp(query: LooseRecord) {
+  return query.finished_at || query.executed_at || query.created_at || ''
+}
+
+function averageMetric(rows: LooseRecord[], keys: string[]) {
+  const values = rows
+    .map((row) => keys.map((key) => asNumber(row[key])).find((value) => value != null))
+    .filter((value): value is number => value != null)
+  if (!values.length) return null
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+function sentimentTotals(rows: LooseRecord[]) {
+  return rows.reduce(
+    (acc, row) => {
+      const sentiment = row.sentiment_distribution || {}
+      acc.positive += asNumber(sentiment.positive) || 0
+      acc.neutral += asNumber(sentiment.neutral) || 0
+      acc.negative += asNumber(sentiment.negative) || 0
+      return acc
+    },
+    { positive: 0, neutral: 0, negative: 0 },
+  )
+}
+
+function SentimentMix({ value }: { value?: LooseRecord }) {
+  const sentiment = value || { positive: 0, neutral: 0, negative: 0 }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <span className="text-[11px] px-2 py-1 rounded-pill bg-themed-subtle text-themed-success">
+        Positive {formatEvidenceCount(sentiment.positive)}
+      </span>
+      <span className="text-[11px] px-2 py-1 rounded-pill bg-themed-subtle text-themed-muted">
+        Neutral {formatEvidenceCount(sentiment.neutral)}
+      </span>
+      <span className="text-[11px] px-2 py-1 rounded-pill bg-themed-subtle text-themed-danger">
+        Negative {formatEvidenceCount(sentiment.negative)}
+      </span>
+    </div>
+  )
+}
+
+function miniMetric(label: string, value: ReactNode) {
+  return (
+    <div className="min-w-[86px]">
+      <div className="text-[11px] text-themed-muted">{label}</div>
+      <div className="text-sm font-semibold text-themed-primary tabular-nums mt-0.5">{value}</div>
+    </div>
+  )
+}
+
+function uniqueValues(rows: LooseRecord[], key: string) {
+  return Array.from(
+    new Set(
+      rows
+        .map((row) => row[key])
+        .filter((value) => value !== null && value !== undefined && value !== '')
+        .map((value) => String(value)),
+    ),
+  )
+}
+
+function ListFilter({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: string[]
+  onChange: (next: string) => void
+}) {
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <span className="text-xs text-themed-muted shrink-0">{label}</span>
+      <div className="inline-flex flex-wrap gap-1.5">
+        {['all', ...options].map((option) => {
+          const active = value === option
+          const text = option === 'all' ? 'All' : INTENT_LABELS[option] || option.toUpperCase()
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onChange(option)}
+              className="px-2.5 py-1 rounded-pill text-[11px] font-medium transition-colors"
+              style={{
+                background: active ? 'var(--color-accent-bg-light)' : 'var(--color-bg-card)',
+                color: active ? 'var(--color-accent)' : 'var(--color-text-muted)',
+                border: `1px solid ${
+                  active ? 'var(--color-accent-alpha-27)' : 'var(--color-border-subtle)'
+                }`,
+              }}
+            >
+              {text}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function isSevenDayWindow(filters: any) {
+  if (!filters?.from || !filters?.to) return true
+  const from = new Date(filters.from).getTime()
+  const to = new Date(filters.to).getTime()
+  if (Number.isNaN(from) || Number.isNaN(to)) return false
+  const days = Math.round((to - from) / 86_400_000)
+  return days <= 7
 }
 
 function TopicsView({
@@ -90,11 +321,13 @@ function TopicsView({
   filters,
   brandIdOverride,
   onSelectTopic,
+  onSwitchTo30Days,
 }: {
   projectId: string | null
   filters: any
   brandIdOverride: number | null
   onSelectTopic: (topic: any) => void
+  onSwitchTo30Days: () => void
 }) {
   const [search, setSearch] = useState('')
   const analysisParams = useMemo(
@@ -126,9 +359,27 @@ function TopicsView({
   }, [filters.dimensions, filters.intents, intentRows, rows, search])
 
   const summary = monitoringQ.data?.summary
+  const avgVisibility = averageMetric(rows, ['mention_rate', 'sov'])
+  const avgCitationCoverage = averageMetric(rows, ['citation_rate'])
+  const sentiment = sentimentTotals(rows)
+  const isEmpty = !monitoringQ.isLoading && rows.length === 0
+  const sevenDayEmpty = isEmpty && isSevenDayWindow(filters)
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      <header className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-xl font-brand font-bold text-themed-primary">Topics</h2>
+          <p className="text-sm text-themed-muted mt-1">
+            Topics, prompts, queries, and successful response evidence.
+          </p>
+        </div>
+        <div className="inline-flex items-center gap-2 text-xs text-themed-muted">
+          <CalendarRange size={15} aria-hidden />
+          {filters.from} to {filters.to}
+        </div>
+      </header>
+
       <BrandAnalysisFilterBar sticky={false} />
       <ProfileGroupSampleWarning />
 
@@ -136,6 +387,7 @@ function TopicsView({
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex-1 min-w-[240px] max-w-[420px]">
             <div className="flex items-center gap-2 h-10 px-3 rounded-btn bg-themed-subtle border border-themed-subtle">
+              <Search size={16} className="text-themed-muted" aria-hidden />
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
@@ -144,98 +396,135 @@ function TopicsView({
               />
             </div>
           </div>
-          <Button variant="outline" size="sm">
-            Export CSV
-          </Button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 t-btn-secondary py-1.5 px-3 text-xs font-medium"
+            aria-label="Export topics"
+          >
+            <Download size={14} aria-hidden />
+            Export
+          </button>
         </div>
       </Card>
 
-      <div className="grid grid-cols-4 gap-4">
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Topics</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {formatEvidenceCount(summary?.topic_count)}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Prompts</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {formatEvidenceCount(summary?.prompt_count)}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Queries</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {formatEvidenceCount(summary?.query_count)}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-themed-muted mb-1">Responses</div>
-          <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-            {formatEvidenceCount(summary?.response_count)}
-          </div>
-        </Card>
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+        <MetricCard label="Visible Topics" value={formatEvidenceCount(summary?.topic_count)} />
+        <MetricCard
+          label="Successful responses"
+          value={formatEvidenceCount(summary?.response_count)}
+          detail="Only successful answers are included."
+          tone="success"
+        />
+        <MetricCard label="Avg Visibility" value={formatPercent(avgVisibility)} tone="accent" />
+        <MetricCard
+          label="Sentiment Mix"
+          value={`${formatEvidenceCount(sentiment.positive)} / ${formatEvidenceCount(
+            sentiment.neutral,
+          )} / ${formatEvidenceCount(sentiment.negative)}`}
+          detail="Positive / neutral / negative"
+        />
+        <MetricCard
+          label="Citation Coverage"
+          value={formatPercent(avgCitationCoverage)}
+          detail={`${formatEvidenceCount(summary?.citation_count)} citations`}
+        />
+        <MetricCard
+          label="Analyzed answers"
+          value={formatEvidenceCount(summary?.analyzed_count)}
+          detail={`Last success ${summary?.last_collected || '-'}`}
+        />
       </div>
 
       <Card className="p-0 overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-themed-card">
-          <h3 className="text-sm font-semibold text-themed-primary">Monitoring Topics</h3>
-          <span className="text-xs text-themed-muted">{monitoringQ.data?.state || 'empty'}</span>
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-themed-card">
+          <div>
+            <h3 className="text-sm font-semibold text-themed-primary">Topic evidence</h3>
+            <div className="text-xs text-themed-muted mt-1">
+              Visibility, sentiment, and citations are shown from eligible answers.
+            </div>
+          </div>
+          <StateBadge state={monitoringQ.data?.state} />
         </div>
-        <table className="t-table w-full">
-          <thead>
-            <tr>
-              <th>Topic</th>
-              <th>Dimension</th>
-              <th>Associated brand</th>
-              <th className="text-right">Prompts</th>
-              <th className="text-right">Queries</th>
-              <th className="text-right">Responses</th>
-              <th>Last collected</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((topic) => (
-              <tr
-                key={topic.topic_id}
-                className="cursor-pointer"
-                onClick={() => onSelectTopic(topic)}
-              >
-                <td className="font-medium text-themed-primary">{topic.topic_name}</td>
-                <td>
-                  <Badge variant={DIMENSION_VARIANTS[topic.dimension || ''] || 'blue'} size="sm">
-                    {topic.dimension || '-'}
-                  </Badge>
-                </td>
-                <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
-                <td className="text-right tabular-nums font-semibold text-themed-primary">
-                  {topic.prompt_count}
-                </td>
-                <td className="text-right tabular-nums text-themed-primary">
-                  {topic.query_count}
-                </td>
-                <td className="text-right tabular-nums text-themed-muted">
-                  {topic.response_count}
-                </td>
-                <td className="text-themed-muted text-xs">{topic.last_collected || '-'}</td>
-              </tr>
-            ))}
-            {!monitoringQ.isLoading && filtered.length === 0 && (
+        <div className="overflow-x-auto">
+          <table className="t-table w-full min-w-[980px]">
+            <thead>
               <tr>
-                <td colSpan={7}>
-                  <EmptyState text="No topics match the current filters." />
-                </td>
+                <th>Topic</th>
+                <th>Dimension</th>
+                <th>Associated brand</th>
+                <th className="text-right">Visibility</th>
+                <th>Sentiment</th>
+                <th className="text-right">Citation Coverage</th>
+                <th className="text-right">Citations</th>
+                <th className="text-right">Prompts</th>
+                <th className="text-right">Queries</th>
+                <th>Last success</th>
               </tr>
-            )}
-            {monitoringQ.isLoading && (
-              <tr>
-                <td colSpan={7}>
-                  <EmptyState text="Loading topics..." />
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((topic) => (
+                <tr
+                  key={topic.topic_id}
+                  className="cursor-pointer"
+                  onClick={() => onSelectTopic(topic)}
+                >
+                  <td className="font-medium text-themed-primary">{topic.topic_name}</td>
+                  <td>
+                    <Badge variant={DIMENSION_VARIANTS[topic.dimension || ''] || 'blue'} size="sm">
+                      {topic.dimension || '-'}
+                    </Badge>
+                  </td>
+                  <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
+                  <td className="text-right tabular-nums font-semibold text-themed-primary">
+                    {formatPercent(topic.sov ?? topic.mention_rate)}
+                  </td>
+                  <td>
+                    <SentimentMix value={topic.sentiment_distribution} />
+                  </td>
+                  <td className="text-right tabular-nums text-themed-primary">
+                    {formatPercent(topic.citation_rate)}
+                  </td>
+                  <td className="text-right tabular-nums text-themed-muted">
+                    {formatEvidenceCount((topic as LooseRecord).citation_count)}
+                  </td>
+                  <td className="text-right tabular-nums font-semibold text-themed-primary">
+                    {formatEvidenceCount(topic.prompt_count)}
+                  </td>
+                  <td className="text-right tabular-nums text-themed-primary">
+                    {formatEvidenceCount(topic.query_count)}
+                  </td>
+                  <td className="text-themed-muted text-xs">{topic.last_collected || '-'}</td>
+                </tr>
+              ))}
+              {!monitoringQ.isLoading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={10}>
+                    {sevenDayEmpty ? (
+                      <EmptyState
+                        title="No successful responses in the current 7-day view"
+                        text="This view only shows successful answers. Expand the range to see older evidence."
+                        action={
+                          <Button variant="outline" size="sm" onClick={onSwitchTo30Days}>
+                            Switch to 30 days
+                          </Button>
+                        }
+                      />
+                    ) : (
+                      <EmptyState text="No topics match the current filters." />
+                    )}
+                  </td>
+                </tr>
+              )}
+              {monitoringQ.isLoading && (
+                <tr>
+                  <td colSpan={10}>
+                    <EmptyState text="Loading topics..." />
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   )
@@ -254,18 +543,35 @@ function PromptsView({
   brandIdOverride: number | null
   onSelectPrompt: (prompt: any) => void
 }) {
+  const [intent, setIntent] = useState('all')
+  const [language, setLanguage] = useState('all')
   const analysisParams = useMemo(
     () => analysisParamsWithBrand(filters, brandIdOverride),
     [brandIdOverride, filters],
   )
   const promptsQ = useTopicPrompts(projectId, topic?.topic_id, analysisParams)
   const prompts = promptsQ.data?.items || []
+  const promptIntents = uniqueValues(prompts, 'intent')
+  const languages = uniqueValues(prompts, 'language')
+  const filteredPrompts = useMemo(
+    () =>
+      prompts.filter((prompt) => {
+        if (intent !== 'all' && prompt.intent !== intent) return false
+        if (language !== 'all' && prompt.language !== language) return false
+        return true
+      }),
+    [intent, language, prompts],
+  )
+  const topicVisibility = topic.sov ?? topic.mention_rate
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <Card className="p-5">
         <div className="flex items-start justify-between gap-6 flex-wrap">
-          <div>
+          <div className="max-w-3xl">
+            <div className="text-xs font-semibold uppercase tracking-wide text-themed-muted mb-2">
+              Topic summary
+            </div>
             <h2 className="text-xl font-brand font-bold text-themed-primary mb-2">
               {topic.topic_name}
             </h2>
@@ -273,75 +579,124 @@ function PromptsView({
               <Badge variant={DIMENSION_VARIANTS[topic.dimension || ''] || 'blue'} size="sm">
                 {topic.dimension || '-'}
               </Badge>
-              <span className="text-xs text-themed-muted">Last collected {topic.last_collected || '-'}</span>
+              {topic.associated_brand && <Badge size="sm">{topic.associated_brand}</Badge>}
+              <span className="text-xs text-themed-muted">
+                Last success {topic.last_collected || '-'}
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <div className="text-2xl font-brand font-bold text-themed-accent tabular-nums">
-                {prompts.length}
-              </div>
-              <div className="text-xs text-themed-muted">Prompts</div>
-            </div>
-            <div className="text-right">
-              <div className="text-2xl font-brand font-bold text-themed-primary tabular-nums">
-                {topic.query_count}
-              </div>
-              <div className="text-xs text-themed-muted">Queries</div>
-            </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+            {miniMetric('Prompts', formatEvidenceCount(promptsQ.data?.total ?? prompts.length))}
+            {miniMetric('Queries', formatEvidenceCount(topic.query_count))}
+            {miniMetric('Visibility', formatPercent(topicVisibility))}
+            {miniMetric('Citation coverage', formatPercent(topic.citation_rate))}
           </div>
         </div>
       </Card>
 
-      <Card className="p-0 overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-themed-card">
-          <h3 className="text-sm font-semibold text-themed-primary">Prompts</h3>
-          <span className="text-xs text-themed-muted">{promptsQ.data?.state || 'empty'}</span>
+      <Card className="p-3">
+        <div className="flex items-center gap-4 flex-wrap">
+          <SlidersHorizontal size={15} className="text-themed-muted" aria-hidden />
+          <ListFilter
+            label="Intent"
+            value={intent}
+            options={promptIntents}
+            onChange={setIntent}
+          />
+          <ListFilter
+            label="Language"
+            value={language}
+            options={languages}
+            onChange={setLanguage}
+          />
         </div>
-        <table className="t-table w-full">
-          <thead>
-            <tr>
-              <th>Prompt</th>
-              <th>Intent</th>
-              <th className="text-right">Queries</th>
-              <th className="text-right">Responses</th>
-              <th>Last collected</th>
-            </tr>
-          </thead>
-          <tbody>
-            {prompts.map((prompt) => (
-              <tr
-                key={prompt.prompt_id}
-                className="cursor-pointer"
-                onClick={() => onSelectPrompt(prompt)}
-              >
-                <td className="font-medium text-themed-primary">{prompt.prompt_text || '-'}</td>
-                <td>
+      </Card>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        {filteredPrompts.map((prompt) => (
+          <Card
+            key={prompt.prompt_id}
+            hover
+            onClick={() => onSelectPrompt(prompt)}
+            className="p-4"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <Badge variant={INTENT_VARIANTS[prompt.intent || ''] || 'blue'} size="sm">
                     {INTENT_LABELS[prompt.intent || ''] || prompt.intent || '-'}
                   </Badge>
-                </td>
-                <td className="text-right tabular-nums font-semibold text-themed-accent">
-                  {prompt.query_count}
-                </td>
-                <td className="text-right tabular-nums text-themed-primary">
-                  {prompt.response_count}
-                </td>
-                <td className="text-themed-muted text-xs">{prompt.last_collected || '-'}</td>
-              </tr>
-            ))}
-            {!promptsQ.isLoading && prompts.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <EmptyState text="No prompts for the current filters." />
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </Card>
+                  <Badge size="sm">{(prompt.language || 'unknown').toUpperCase()}</Badge>
+                  {(prompt.engine_coverage || []).slice(0, 3).map((engine: string) => (
+                    <span
+                      key={engine}
+                      className="text-[11px] px-2 py-0.5 rounded-pill bg-themed-subtle text-themed-muted"
+                    >
+                      {engine}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-sm font-semibold leading-relaxed text-themed-primary">
+                  {prompt.prompt_text || '-'}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-sm font-semibold text-themed-accent tabular-nums">
+                  {formatEvidenceCount(prompt.query_count)} queries
+                </div>
+                <div className="text-[11px] text-themed-muted mt-1">
+                  Last success {prompt.last_collected || '-'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 pt-4 border-t border-themed-card grid grid-cols-2 md:grid-cols-4 gap-3">
+              {miniMetric('Success rate', formatPercent(prompt.success_rate))}
+              {miniMetric('Visibility', formatPercent(prompt.mention_rate))}
+              {miniMetric('Avg rank', formatScore(prompt.avg_rank))}
+              {miniMetric('Citation coverage', formatPercent(prompt.citation_rate))}
+            </div>
+          </Card>
+        ))}
+        {!promptsQ.isLoading && filteredPrompts.length === 0 && (
+          <Card className="xl:col-span-2">
+            <EmptyState text="No prompts for the current filters." />
+          </Card>
+        )}
+        {promptsQ.isLoading && (
+          <Card className="xl:col-span-2">
+            <EmptyState text="Loading prompts..." />
+          </Card>
+        )}
+      </div>
     </div>
   )
+}
+
+function groupSuccessfulQueries(queries: LooseRecord[]) {
+  const groups = new Map<string, LooseRecord[]>()
+  queries.filter(isSuccessfulQuery).forEach((query) => {
+    const key = query.query_text || `Query ${query.query_id}`
+    const items = groups.get(key) || []
+    items.push(query)
+    groups.set(key, items)
+  })
+
+  return Array.from(groups.entries()).map(([queryText, attempts]) => {
+    const sorted = attempts
+      .slice()
+      .sort((a, b) => String(latestTimestamp(b)).localeCompare(String(latestTimestamp(a))))
+    const latestByDay = new Map<string, LooseRecord>()
+    sorted.forEach((attempt) => {
+      const key = dayKey(latestTimestamp(attempt))
+      if (!latestByDay.has(key)) latestByDay.set(key, attempt)
+    })
+    return {
+      key: queryText,
+      queryText,
+      attempts: sorted,
+      dailyRows: Array.from(latestByDay.entries()).map(([date, attempt]) => ({ date, attempt })),
+    }
+  })
 }
 
 function QueriesView({
@@ -350,14 +705,14 @@ function QueriesView({
   prompt,
   filters,
   brandIdOverride,
-  onSelectQuery,
+  onOpenAttempts,
 }: {
   projectId: string | null
   topic: any
   prompt: any
   filters: any
   brandIdOverride: number | null
-  onSelectQuery: (query: any) => void
+  onOpenAttempts: (query: any, attempts: any[]) => void
 }) {
   const analysisParams = useMemo(
     () => analysisParamsWithBrand(filters, brandIdOverride),
@@ -365,183 +720,443 @@ function QueriesView({
   )
   const queriesQ = usePromptQueries(projectId, prompt?.prompt_id, analysisParams)
   const queries = queriesQ.data?.items || []
+  const groups = useMemo(() => groupSuccessfulQueries(queries), [queries])
+  const successfulAttempts = groups.reduce((count, group) => count + group.attempts.length, 0)
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <Card className="p-5">
         <div className="text-xs text-themed-muted mb-2">Topic: {topic.topic_name}</div>
         <p className="text-base font-medium text-themed-primary mb-3 leading-relaxed">
           {prompt.prompt_text || '-'}
         </p>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <Badge variant={INTENT_VARIANTS[prompt.intent || ''] || 'blue'} size="sm">
             {INTENT_LABELS[prompt.intent || ''] || prompt.intent || '-'}
           </Badge>
+          <Badge size="sm">{(prompt.language || 'unknown').toUpperCase()}</Badge>
+          <span className="text-xs text-themed-muted">
+            {formatEvidenceCount(successfulAttempts)} successful attempts
+          </span>
         </div>
       </Card>
 
-      <Card className="p-0 overflow-hidden">
-        <div className="px-5 py-4 border-b border-themed-card">
-          <h3 className="text-sm font-semibold text-themed-primary">Query executions</h3>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold text-themed-primary">
+            Daily latest successful responses
+          </h3>
+          <p className="text-xs text-themed-muted mt-1">
+            Query groups show the latest successful answer for each day.
+          </p>
         </div>
-        <table className="t-table w-full">
-          <thead>
-            <tr>
-              <th>Engine</th>
-              <th>Profile</th>
-              <th>Executed</th>
-              <th>Status</th>
-              <th className="text-right">Citations</th>
-            </tr>
-          </thead>
-          <tbody>
-            {queries.map((query) => {
-              const hasResponse = !!query.response_id
-              return (
-                <tr
-                  key={query.query_id}
-                  className={hasResponse ? 'cursor-pointer' : 'opacity-60'}
-                  onClick={() => hasResponse && onSelectQuery(query)}
+        <StateBadge state={queriesQ.data?.state} />
+      </div>
+
+      <div className="space-y-3">
+        {groups.map((group) => (
+          <Card key={group.key} className="p-0 overflow-hidden">
+            <div className="px-4 py-3 border-b border-themed-card flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 text-xs text-themed-muted mb-1">
+                  <MessageSquare size={14} aria-hidden />
+                  Logical query group
+                </div>
+                <div className="text-sm font-semibold text-themed-primary leading-relaxed">
+                  {group.queryText}
+                </div>
+              </div>
+              <Badge size="sm">{group.dailyRows.length} days</Badge>
+            </div>
+            <div className="divide-y divide-[var(--color-border-subtle)]">
+              {group.dailyRows.map(({ date, attempt }) => (
+                <div
+                  key={`${group.key}-${date}-${attempt.query_id}`}
+                  className="grid grid-cols-1 lg:grid-cols-[120px_1fr_120px_120px_150px] gap-3 px-4 py-3 items-center"
                 >
-                  <td className="font-medium text-themed-primary">{query.target_llm || '-'}</td>
-                  <td className="text-themed-muted">{query.profile_id || '-'}</td>
-                  <td className="text-themed-muted text-xs tabular-nums">
-                    {query.finished_at || query.created_at || '-'}
-                  </td>
-                  <td className="text-xs font-semibold text-themed-primary">
-                    {query.status || '-'}
-                  </td>
-                  <td className="text-right tabular-nums font-semibold text-themed-primary">
-                    {query.citation_count}
-                  </td>
-                </tr>
-              )
-            })}
-            {!queriesQ.isLoading && queries.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <EmptyState text="No queries for the current filters." />
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </Card>
+                  <div className="text-xs font-semibold text-themed-primary tabular-nums">
+                    {date}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="accent" size="sm">
+                        {attempt.target_llm || '-'}
+                      </Badge>
+                      <span className="text-sm text-themed-primary">
+                        {attempt.profile_id || 'All profiles'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-themed-muted mt-1">
+                      Finished {formatDateTime(latestTimestamp(attempt))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-themed-muted">Visibility</div>
+                    <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                      {attempt.target_mentioned ? 'Mentioned' : 'Not mentioned'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-themed-muted">Citations</div>
+                    <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                      {formatEvidenceCount(attempt.citation_count)}
+                    </div>
+                  </div>
+                  <div className="lg:text-right">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenAttempts(attempt, group.attempts)}
+                    >
+                      Open response attempts
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        ))}
+        {!queriesQ.isLoading && groups.length === 0 && (
+          <Card>
+            <EmptyState text="No successful query responses for the current filters." />
+          </Card>
+        )}
+        {queriesQ.isLoading && (
+          <Card>
+            <EmptyState text="Loading query groups..." />
+          </Card>
+        )}
+      </div>
     </div>
   )
 }
 
-function ResponseView({
+function toDisplayList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object') {
+          const row = item as LooseRecord
+          return row.name || row.label || row.value || row.text || JSON.stringify(row)
+        }
+        return item == null ? '' : String(item)
+      })
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') return value ? [value] : []
+  return []
+}
+
+function analysisList(analysis: LooseRecord | null | undefined, keys: string[]) {
+  if (!analysis) return []
+  for (const key of keys) {
+    const list = toDisplayList(analysis[key])
+    if (list.length) return list
+  }
+  return []
+}
+
+function titleCase(value: unknown) {
+  const text = value == null ? '' : String(value)
+  if (!text) return ''
+  return text
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function analysisSummaryFacts(analysis: LooseRecord | null | undefined) {
+  if (!analysis) return []
+  const facts: Array<{ label: string; value: string }> = []
+  const targetMentioned = analysis.target_brand_mentioned
+  if (typeof targetMentioned === 'boolean') {
+    facts.push({ label: 'Target brand', value: targetMentioned ? 'Mentioned' : 'Not mentioned' })
+  }
+  const rank = asNumber(analysis.target_brand_rank)
+  if (rank != null) facts.push({ label: 'Target rank', value: `#${formatEvidenceCount(rank)}` })
+  if (analysis.target_brand_sentiment) {
+    facts.push({ label: 'Target sentiment', value: titleCase(analysis.target_brand_sentiment) })
+  }
+  const scoreFields = [
+    ['Visibility score', analysis.visibility_score],
+    ['Sentiment score', analysis.sentiment_score],
+    ['Share of voice', analysis.sov_score],
+    ['Citation score', analysis.citation_score],
+    ['GEO score', analysis.geo_score],
+  ] as const
+  scoreFields.forEach(([label, value]) => {
+    if (asNumber(value) != null) facts.push({ label, value: formatScore(value) })
+  })
+  if (analysis.analyzed_at) facts.push({ label: 'Analyzed', value: formatDateTime(analysis.analyzed_at) })
+  return facts
+}
+
+function AnalysisSummaryGrid({ facts }: { facts: Array<{ label: string; value: string }> }) {
+  if (!facts.length) {
+    return <div className="text-xs text-themed-muted">No analyzer summary is available for this response.</div>
+  }
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {facts.map((fact) => (
+        <div key={fact.label} className="p-2.5 rounded-btn bg-themed-subtle">
+          <div className="text-[11px] text-themed-muted">{fact.label}</div>
+          <div className="text-sm font-semibold text-themed-primary mt-0.5">{fact.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FactList({ items, emptyText }: { items: string[]; emptyText: string }) {
+  if (!items.length) return <div className="text-xs text-themed-muted">{emptyText}</div>
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.slice(0, 12).map((item) => (
+        <span
+          key={item}
+          className="text-[11px] px-2 py-1 rounded-pill bg-themed-subtle text-themed-primary"
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function FactSection({
+  title,
+  children,
+}: {
+  title: string
+  children: ReactNode
+}) {
+  return (
+    <section className="space-y-2">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-themed-muted">{title}</h4>
+      {children}
+    </section>
+  )
+}
+
+function ResponseAttemptsModal({
   projectId,
-  query,
   brandIdOverride,
+  query,
+  attempts,
+  onClose,
 }: {
   projectId: string | null
-  query: any
   brandIdOverride: number | null
+  query: any
+  attempts: any[]
+  onClose: () => void
 }) {
+  const orderedAttempts = attempts.length ? attempts : [query]
+  const [activeId, setActiveId] = useState(orderedAttempts[0]?.query_id)
+  useEffect(() => {
+    setActiveId(orderedAttempts[0]?.query_id)
+  }, [orderedAttempts[0]?.query_id])
+
+  const activeAttempt =
+    orderedAttempts.find((attempt) => attempt.query_id === activeId) || orderedAttempts[0]
   const responseParams = useMemo<ProjectAnalysisParams>(
     () => (brandIdOverride != null ? { brand_id: brandIdOverride } : {}),
     [brandIdOverride],
   )
-  const detailQ = useQueryResponse(projectId, query?.query_id, responseParams)
+  const detailQ = useQueryResponse(projectId, activeAttempt?.query_id, responseParams)
   const detail = detailQ.data
-  const response = detail?.response as any
+  const response = detail?.response as LooseRecord | null | undefined
+  const analysis = detail?.analysis as LooseRecord | null | undefined
   const mentions = detail?.brand_mentions || []
   const citations = detail?.citations || []
-
-  if (detailQ.isLoading) {
-    return (
-      <Card className="p-8 text-center">
-        <p className="text-sm text-themed-muted">Loading response...</p>
-      </Card>
-    )
-  }
-
-  if (!response) {
-    return (
-      <Card className="p-8 text-center">
-        <p className="text-sm text-themed-muted">This query has no response yet.</p>
-      </Card>
-    )
-  }
+  const products = analysisList(analysis, ['products', 'product_mentions', 'product_names'])
+  const features = analysisList(analysis, ['features', 'product_features', 'feature_mentions'])
+  const attributes = analysisList(analysis, ['attributes', 'attribute_mentions'])
+  const relations = analysisList(analysis, ['relations', 'response_relations'])
+  const drivers = analysisList(analysis, ['sentiment_drivers', 'drivers'])
+  const productFacts = [...products, ...features, ...attributes]
+  const summaryFacts = analysisSummaryFacts(analysis)
+  const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
 
   return (
-    <div className="space-y-6">
-      <Card className="p-5">
-        <div className="flex items-center gap-4 mb-3 flex-wrap">
-          <Badge variant="accent" size="sm">
-            {response.target_llm || query.target_llm || '-'}
-          </Badge>
-          <span className="text-xs text-themed-muted">{query.profile_id || '-'}</span>
-          <span className="text-xs text-themed-muted tabular-nums">
-            {response.created_at || query.finished_at || '-'}
-          </span>
-        </div>
-        <div className="p-3 rounded-btn bg-themed-subtle">
-          <div className="text-xs text-themed-muted">Query</div>
-          <p className="text-sm font-medium text-themed-primary mt-1">
-            {query.query_text || '-'}
-          </p>
-        </div>
-      </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <Card className="p-5">
-            <div className="flex items-center justify-between border-b border-themed-card pb-3 mb-4">
-              <h3 className="text-sm font-semibold text-themed-primary">Raw response</h3>
+    <div
+      className="fixed inset-0 z-50 bg-black/35 flex items-center justify-center p-4"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Response attempts"
+        className="w-full max-w-[1180px] max-h-[88vh] overflow-hidden rounded-card bg-themed-card shadow-elevated border border-themed-card"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-themed-card">
+          <div>
+            <h3 className="text-sm font-semibold text-themed-primary">Response attempts</h3>
+            <div className="text-xs text-themed-muted mt-1">
+              Successful answers and scoped facts for the selected query group.
             </div>
-            <div className="text-sm leading-relaxed whitespace-pre-wrap text-themed-body">
-              {response.raw_text || '-'}
-            </div>
-          </Card>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close response attempts"
+            className="w-8 h-8 inline-flex items-center justify-center rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle transition-colors"
+          >
+            <X size={16} aria-hidden />
+          </button>
         </div>
 
-        <div className="space-y-4">
-          <Card className="p-4">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-themed-muted mb-3">
-              Brand mentions
-            </h4>
-            <div className="space-y-3">
-              {mentions.map((mention: any) => (
-                <div key={mention.mention_id} className="p-2.5 rounded-btn bg-themed-subtle">
-                  <div className="text-sm font-medium text-themed-primary">
-                    {mention.brand_name}
-                  </div>
-                  <div className="text-[11px] text-themed-muted mt-1">
-                    Rank {mention.position_rank || '-'} - {mention.sentiment || 'neutral'}
-                  </div>
-                  {mention.context_snippet && (
-                    <div className="text-[11px] text-themed-muted mt-1 line-clamp-2">
-                      {mention.context_snippet}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {!mentions.length && <div className="text-xs text-themed-muted">No mentions</div>}
-            </div>
-          </Card>
-
-          <Card className="p-4">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-themed-muted mb-3">
-              Citations
-            </h4>
+        <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)_320px] max-h-[calc(88vh-73px)] overflow-hidden">
+          <aside className="border-b lg:border-b-0 lg:border-r border-themed-card p-3 overflow-y-auto">
+            <div className="text-xs font-semibold text-themed-muted mb-3">Attempts</div>
             <div className="space-y-2">
-              {citations.map((cite: any) => (
-                <a
-                  key={cite.citation_id}
-                  href={cite.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block text-xs truncate text-themed-accent hover:underline"
-                >
-                  {cite.domain || cite.url}
-                </a>
-              ))}
-              {!citations.length && <div className="text-xs text-themed-muted">No citations</div>}
+              {orderedAttempts.map((attempt, index) => {
+                const active = attempt.query_id === activeAttempt?.query_id
+                return (
+                  <button
+                    key={attempt.query_id || index}
+                    type="button"
+                    onClick={() => setActiveId(attempt.query_id)}
+                    className="w-full text-left p-3 rounded-btn border transition-colors"
+                    style={{
+                      background: active ? 'var(--color-accent-bg-light)' : 'var(--color-bg-card)',
+                      borderColor: active
+                        ? 'var(--color-accent-alpha-27)'
+                        : 'var(--color-border-subtle)',
+                    }}
+                  >
+                    <div className="text-sm font-semibold text-themed-primary">
+                      Attempt {index + 1}
+                    </div>
+                    <div className="text-[11px] text-themed-muted mt-1">
+                      {attempt.target_llm || '-'} / {formatDateTime(latestTimestamp(attempt))}
+                    </div>
+                  </button>
+                )
+              })}
             </div>
-          </Card>
+          </aside>
+
+          <main className="p-5 overflow-y-auto">
+            <div className="space-y-4">
+              <section className="p-4 rounded-card bg-themed-subtle border border-themed-subtle">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-themed-muted mb-2">
+                  <FileText size={14} aria-hidden />
+                  Exact query
+                </div>
+                <p className="text-sm font-medium text-themed-primary leading-relaxed">
+                  {activeAttempt?.query_text || query?.query_text || '-'}
+                </p>
+                <div className="flex items-center gap-2 flex-wrap mt-3 text-xs text-themed-muted">
+                  <Badge variant="accent" size="sm">
+                    {activeAttempt?.target_llm || '-'}
+                  </Badge>
+                  <span>{activeAttempt?.profile_id || 'All profiles'}</span>
+                  <span>{formatDateTime(response?.created_at || latestTimestamp(activeAttempt))}</span>
+                </div>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h4 className="text-sm font-semibold text-themed-primary">Full LLM answer</h4>
+                  <StateBadge state={detail?.state} />
+                </div>
+                <div className="min-h-[260px] whitespace-pre-wrap text-sm leading-relaxed text-themed-body p-4 rounded-card border border-themed-card bg-themed-card">
+                  {detailQ.isLoading
+                    ? 'Loading response...'
+                    : response?.raw_text || 'No answer text is available for this attempt.'}
+                </div>
+              </section>
+            </div>
+          </main>
+
+          <aside className="border-t lg:border-t-0 lg:border-l border-themed-card p-5 overflow-y-auto space-y-5">
+            <div className="flex items-center gap-2">
+              <BarChart3 size={16} className="text-themed-accent" aria-hidden />
+              <h4 className="text-sm font-semibold text-themed-primary">Analyzer facts</h4>
+            </div>
+
+            <FactSection title="Analyzer summary">
+              <AnalysisSummaryGrid facts={summaryFacts} />
+            </FactSection>
+
+            <FactSection title="Citations">
+              <div className="space-y-2">
+                {citations.slice(0, 6).map((cite: LooseRecord, index: number) => (
+                  <a
+                    key={cite.citation_id || cite.url || index}
+                    href={cite.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-xs text-themed-accent hover:underline min-w-0"
+                  >
+                    <ExternalLink size={12} className="shrink-0" aria-hidden />
+                    <span className="truncate">{cite.domain || cite.url || 'Citation'}</span>
+                  </a>
+                ))}
+                {!citations.length && (
+                  <div className="text-xs text-themed-muted">No citations for this response.</div>
+                )}
+              </div>
+            </FactSection>
+
+            <FactSection title="Brands">
+              <div className="space-y-2">
+                {mentions.slice(0, 6).map((mention: LooseRecord, index: number) => (
+                  <div
+                    key={mention.mention_id || `${mention.brand_name}-${index}`}
+                    className="p-2.5 rounded-btn bg-themed-subtle"
+                  >
+                    <div className="text-sm font-medium text-themed-primary">
+                      {mention.brand_name || 'Brand'}
+                    </div>
+                    <div className="text-[11px] text-themed-muted mt-1">
+                      Rank {mention.position_rank || '-'} / {mention.sentiment || 'neutral'}
+                    </div>
+                    {mention.context_snippet && (
+                      <div className="text-[11px] text-themed-muted mt-1 line-clamp-2">
+                        {mention.context_snippet}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!mentions.length && (
+                  <div className="text-xs text-themed-muted">No brand mentions for this response.</div>
+                )}
+              </div>
+            </FactSection>
+
+            {productFacts.length > 0 && (
+              <FactSection title="Products and features">
+                <FactList
+                  items={productFacts}
+                  emptyText="No products, features, or attributes for this response."
+                />
+              </FactSection>
+            )}
+
+            {relations.length > 0 && (
+              <FactSection title="Response relations">
+                <FactList items={relations} emptyText="No response-scoped relations for this response." />
+              </FactSection>
+            )}
+
+            {drivers.length > 0 && (
+              <FactSection title="Sentiment drivers">
+                <FactList items={drivers} emptyText="No sentiment drivers for this response." />
+              </FactSection>
+            )}
+
+            {analysis && !hasFutureAnalyzerFacts && (
+              <FactSection title="Additional analyzer fields">
+                <div className="text-xs text-themed-muted">
+                  Product, relation, and driver details are not available for this response yet.
+                </div>
+              </FactSection>
+            )}
+          </aside>
         </div>
       </div>
     </div>
@@ -552,10 +1167,10 @@ export default function TopicsPage() {
   const [view, setView] = useState('topics')
   const [selectedTopic, setSelectedTopic] = useState<any>(null)
   const [selectedPrompt, setSelectedPrompt] = useState<any>(null)
-  const [selectedQuery, setSelectedQuery] = useState<any>(null)
+  const [responseModal, setResponseModal] = useState<{ query: any; attempts: any[] } | null>(null)
   const { activeProject } = useProject()
   const { data: liveProjects } = useProjects()
-  const { filters } = useBrandAnalysisFilters()
+  const { filters, setRange } = useBrandAnalysisFilters()
   const [searchParams] = useSearchParams()
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject)
   const brandIdParam = searchParams.get('brandId')
@@ -567,22 +1182,18 @@ export default function TopicsPage() {
       setView('topics')
       setSelectedTopic(null)
       setSelectedPrompt(null)
-      setSelectedQuery(null)
+      setResponseModal(null)
     },
     prompts: (topic: any) => {
       setView('prompts')
       setSelectedTopic(topic)
       setSelectedPrompt(null)
-      setSelectedQuery(null)
+      setResponseModal(null)
     },
     queries: (prompt: any) => {
       setView('queries')
       setSelectedPrompt(prompt)
-      setSelectedQuery(null)
-    },
-    response: (query: any) => {
-      setView('response')
-      setSelectedQuery(query)
+      setResponseModal(null)
     },
   }
 
@@ -590,15 +1201,9 @@ export default function TopicsPage() {
   if (selectedTopic && view !== 'topics') {
     breadcrumb.push({ label: selectedTopic.topic_name, view: 'prompts' })
   }
-  if (selectedPrompt && (view === 'queries' || view === 'response')) {
+  if (selectedPrompt && view === 'queries') {
     const text = selectedPrompt.prompt_text || 'Prompt'
     breadcrumb.push({ label: text.length > 30 ? `${text.slice(0, 30)}...` : text, view: 'queries' })
-  }
-  if (selectedQuery && view === 'response') {
-    breadcrumb.push({
-      label: `${selectedQuery.target_llm || 'engine'} - ${selectedQuery.profile_id || 'profile'}`,
-      view: 'response',
-    })
   }
 
   const onBreadcrumb = (target: string) => {
@@ -606,10 +1211,10 @@ export default function TopicsPage() {
     else if (target === 'prompts') {
       setView('prompts')
       setSelectedPrompt(null)
-      setSelectedQuery(null)
+      setResponseModal(null)
     } else if (target === 'queries') {
       setView('queries')
-      setSelectedQuery(null)
+      setResponseModal(null)
     }
   }
 
@@ -625,6 +1230,7 @@ export default function TopicsPage() {
           filters={filters}
           brandIdOverride={brandIdOverride}
           onSelectTopic={(topic) => goTo.prompts(topic)}
+          onSwitchTo30Days={() => setRange('30d')}
         />
       )}
       {view === 'prompts' && selectedTopic && (
@@ -643,14 +1249,17 @@ export default function TopicsPage() {
           prompt={selectedPrompt}
           filters={filters}
           brandIdOverride={brandIdOverride}
-          onSelectQuery={(query) => goTo.response(query)}
+          onOpenAttempts={(query, attempts) => setResponseModal({ query, attempts })}
         />
       )}
-      {view === 'response' && selectedQuery && (
-        <ResponseView
+
+      {responseModal && (
+        <ResponseAttemptsModal
           projectId={liveProjectId}
-          query={selectedQuery}
           brandIdOverride={brandIdOverride}
+          query={responseModal.query}
+          attempts={responseModal.attempts}
+          onClose={() => setResponseModal(null)}
         />
       )}
     </div>
