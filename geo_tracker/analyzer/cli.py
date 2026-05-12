@@ -18,7 +18,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
@@ -345,7 +345,19 @@ async def analyze_single_response(
                 ResponseAnalysis.response_id == response.id
             )
         )
-    # Delete old mentions (cascade deletes sentiment_drivers)
+    old_mention_ids = select(BrandMention.id).where(
+        BrandMention.response_id == response.id
+    )
+    await session.execute(
+        delete(SentimentDriver).where(
+            or_(
+                SentimentDriver.response_id == response.id,
+                SentimentDriver.mention_id.in_(old_mention_ids),
+            )
+        )
+    )
+    # Delete old mention dependents before old mentions; production FKs do not
+    # cascade for this bulk delete path.
     await session.execute(
         delete(CitationSource).where(CitationSource.response_id == response.id)
     )
