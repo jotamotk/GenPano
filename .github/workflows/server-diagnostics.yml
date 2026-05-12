@@ -649,7 +649,8 @@ jobs:
           }
 
           case "${ACCOUNT_QUOTA_RESET_LLM}" in
-            doubao|chatgpt) ;;
+            doubao) target_llm_sql="'doubao'" ;;
+            chatgpt) target_llm_sql="'chatgpt'" ;;
             *) fail "ACCOUNT_QUOTA_RESET_LLM must be doubao or chatgpt" ;;
           esac
           case "${ACCOUNT_QUOTA_RESET_APPLY}" in
@@ -690,7 +691,7 @@ jobs:
           docker compose ps
 
           echo "=== Before aggregates for target engine ==="
-          psql_cmd -v target_llm="${ACCOUNT_QUOTA_RESET_LLM}" -c "
+          psql_cmd -c "
             SELECT
               llm_name,
               status,
@@ -701,13 +702,13 @@ jobs:
               SUM(daily_limit) AS daily_limit,
               MAX(consecutive_fails) AS max_consecutive_fails
             FROM llm_accounts
-            WHERE llm_name = :'target_llm'
+            WHERE llm_name = ${target_llm_sql}
             GROUP BY llm_name, status
             ORDER BY llm_name, status;
           "
 
           echo "=== Candidate active/cooldown accounts (masked) ==="
-          psql_cmd -v target_llm="${ACCOUNT_QUOTA_RESET_LLM}" -c "
+          psql_cmd -c "
             SELECT
               id,
               llm_name,
@@ -722,13 +723,13 @@ jobs:
               consecutive_fails,
               cooldown_until
             FROM llm_accounts
-            WHERE llm_name = :'target_llm'
+            WHERE llm_name = ${target_llm_sql}
               AND status IN ('active', 'cooldown')
             ORDER BY status, id;
           "
 
           rollback_sql="${artifact_dir}/rollback.sql"
-          psql_cmd -v target_llm="${ACCOUNT_QUOTA_RESET_LLM}" -At -c "
+          psql_cmd -At -c "
             SELECT format(
               'UPDATE llm_accounts SET status=%L, query_count_today=%s, consecutive_fails=%s, cooldown_until=%s WHERE id=%s AND llm_name=%L;',
               status,
@@ -742,7 +743,7 @@ jobs:
               llm_name
             )
             FROM llm_accounts
-            WHERE llm_name = :'target_llm'
+            WHERE llm_name = ${target_llm_sql}
               AND status IN ('active', 'cooldown')
             ORDER BY id;
           " > "${rollback_sql}"
@@ -756,11 +757,11 @@ jobs:
 
           if [ "${ACCOUNT_QUOTA_RESET_APPLY}" = "true" ]; then
             echo "=== Applying reset ==="
-            psql_cmd -v target_llm="${ACCOUNT_QUOTA_RESET_LLM}" -c "
+            psql_cmd -c "
               WITH candidates AS (
                 SELECT id
                 FROM llm_accounts
-                WHERE llm_name = :'target_llm'
+                WHERE llm_name = ${target_llm_sql}
                   AND status IN ('active', 'cooldown')
               ),
               updated AS (
@@ -787,7 +788,7 @@ jobs:
           fi
 
           echo "=== After aggregates for target engine ==="
-          psql_cmd -v target_llm="${ACCOUNT_QUOTA_RESET_LLM}" -c "
+          psql_cmd -c "
             SELECT
               llm_name,
               status,
@@ -798,7 +799,7 @@ jobs:
               SUM(daily_limit) AS daily_limit,
               MAX(consecutive_fails) AS max_consecutive_fails
             FROM llm_accounts
-            WHERE llm_name = :'target_llm'
+            WHERE llm_name = ${target_llm_sql}
             GROUP BY llm_name, status
             ORDER BY llm_name, status;
           "
