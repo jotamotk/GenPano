@@ -355,6 +355,28 @@ def test_doubao_unavailable_page_text_is_detected(monkeypatch):
     assert not _is_doubao_unavailable_page_text("你好，欢迎使用豆包")
 
 
+def test_doubao_proxy_runtime_diagnostic_records_proxy_path(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import _proxy_runtime_diagnostic
+
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
+    monkeypatch.setenv("CLASH_FORCE_GLOBAL_PROXY_ROUTE", "1")
+
+    payload = _proxy_runtime_diagnostic(
+        "doubao",
+        "http://user:secret@proxy.internal:6789",
+        True,
+    )
+
+    assert payload["llm"] == "doubao"
+    assert payload["proxyConfigured"] is True
+    assert payload["useProxy"] is True
+    assert "secret" not in payload["proxyUrl"]
+    assert payload["forceGlobalRoute"] is True
+    assert payload["doubaoUseProxy"] is True
+
+
 def test_doubao_answer_like_page_with_free_login_state_is_rejected():
     text = (
         "bestCoffer 在咖啡机品类中主要覆盖便携浓缩、车载场景和露营人群。\n"
@@ -767,6 +789,97 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(
     assert result is None
     assert attempts == 3
     assert executor.last_error_reason == "no_response"
+
+
+@pytest.mark.asyncio
+async def test_doubao_account_mode_uses_proxy_and_global_route(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    import geo_tracker.agent.guest_executor as guest_executor_module
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    route_calls: list[tuple[str, str]] = []
+    execute_calls: list[bool] = []
+
+    async def fake_ensure_global_proxy_route(api_url, group_name):
+        route_calls.append((api_url, group_name))
+        return types.SimpleNamespace(
+            ok=True,
+            reason=None,
+            global_group="GLOBAL",
+            global_now="Ai",
+            source_group=group_name,
+            source_now="node-a",
+            selected_node="Ai",
+            changed=False,
+        )
+
+    async def fake_execute_once(self, query, config, *, use_proxy):
+        execute_calls.append(use_proxy)
+        return LLMResponse(query_id=query.id, raw_text="authenticated Doubao answer text")
+
+    monkeypatch.setattr(
+        guest_executor_module,
+        "ensure_global_proxy_route",
+        fake_ensure_global_proxy_route,
+    )
+    monkeypatch.setattr(GuestQueryExecutor, "_execute_once", fake_execute_once)
+
+    executor = GuestQueryExecutor(
+        proxy_url="http://proxy.internal:6789",
+        account_cookies='[{"name":"session"}]',
+    )
+
+    response = await executor.execute(
+        Query(id=184610, query_text="bestCoffer", target_llm="doubao")
+    )
+
+    assert response is not None
+    assert route_calls == [(guest_executor_module.CLASH_API_URL, guest_executor_module.CLASH_PROXY_GROUP)]
+    assert execute_calls == [True]
+    assert executor.last_error_reason is None
+
+
+@pytest.mark.asyncio
+async def test_doubao_proxy_route_failure_blocks_before_page_open(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    import geo_tracker.agent.guest_executor as guest_executor_module
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def fake_ensure_global_proxy_route(api_url, group_name):
+        return types.SimpleNamespace(
+            ok=False,
+            reason="proxy_global_no_candidate",
+            global_group="GLOBAL",
+            global_now="DIRECT",
+            source_group=group_name,
+            source_now=None,
+            selected_node=None,
+            changed=False,
+        )
+
+    async def fake_execute_once(self, query, config, *, use_proxy):
+        raise AssertionError("Doubao page should not open when proxy route preflight fails")
+
+    monkeypatch.setattr(
+        guest_executor_module,
+        "ensure_global_proxy_route",
+        fake_ensure_global_proxy_route,
+    )
+    monkeypatch.setattr(GuestQueryExecutor, "_execute_once", fake_execute_once)
+
+    executor = GuestQueryExecutor(
+        proxy_url="http://proxy.internal:6789",
+        account_cookies='[{"name":"session"}]',
+    )
+
+    response = await executor.execute(
+        Query(id=184611, query_text="bestCoffer", target_llm="doubao")
+    )
+
+    assert response is None
+    assert executor.last_error_reason == "proxy_global_no_candidate"
 
 
 def _install_fake_playwright(monkeypatch):
