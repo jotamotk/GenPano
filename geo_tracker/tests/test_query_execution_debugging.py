@@ -907,6 +907,17 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
             cookies_json='[{"name":"session"}]',
         )
 
+    relogin_calls: list[dict] = []
+
+    async def fake_should_enqueue_relogin(enqueued_account_id):
+        assert enqueued_account_id == account_id
+        return True
+
+    class FakeAutoLogin:
+        @staticmethod
+        def apply_async(*, kwargs, queue):
+            relogin_calls.append({"kwargs": kwargs, "queue": queue})
+
     class FakeGuestQueryExecutor:
         def __init__(self, *args, **kwargs):
             self.last_error_reason = None
@@ -927,6 +938,8 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
         celery_tasks, "acquire_query_account", fake_acquire_query_account
     )
     monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+    monkeypatch.setattr(celery_tasks, "should_enqueue_relogin", fake_should_enqueue_relogin)
+    monkeypatch.setattr(celery_tasks, "auto_login", FakeAutoLogin)
 
     result = celery_tasks.execute_query.run(query_id)
 
@@ -939,10 +952,13 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
                 select(LLMResponse).where(LLMResponse.query_id == query_id)
             )
             response = response_result.scalar_one_or_none()
+            account = await session.get(LLMAccount, account_id)
             state = {
                 "status": query.status,
                 "retry_reason": query.retry_reason,
                 "response": response,
+                "account_status": account.status,
+                "account_cooldown_until": account.cooldown_until,
             }
         await engine.dispose()
         return state
@@ -957,6 +973,111 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
     assert state["status"] == QueryStatus.FAILED.value
     assert state["retry_reason"] == "doubao_not_logged_in"
     assert state["response"] is None
+    assert state["account_status"] == AccountStatus.COOLDOWN.value
+    assert state["account_cooldown_until"] is not None
+    assert relogin_calls == [
+        {"kwargs": {"account_id": account_id}, "queue": "account_login"}
+    ]
+
+
+def test_execute_query_cools_doubao_account_on_page_unavailable(monkeypatch, tmp_path):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-page-unavailable.db'}"
+    query_id = 184610
+    account_id = 610
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.ACTIVE.value,
+                        cookies_json='[{"name":"session"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                    ),
+                    Query(
+                        id=query_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.PENDING.value,
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return LLMAccount(
+            id=account_id,
+            llm_name="doubao",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+        )
+
+    class FakeGuestQueryExecutor:
+        def __init__(self, *args, **kwargs):
+            self.last_error_reason = "page_unavailable"
+
+        async def execute(self, query):
+            return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    async def load_query_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            response_result = await session.execute(
+                select(LLMResponse).where(LLMResponse.query_id == query_id)
+            )
+            response = response_result.scalar_one_or_none()
+            account = await session.get(LLMAccount, account_id)
+            state = {
+                "status": query.status,
+                "retry_reason": query.retry_reason,
+                "response": response,
+                "account_status": account.status,
+                "account_cooldown_until": account.cooldown_until,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_query_state())
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "page_unavailable:0",
+    }
+    assert state["status"] == QueryStatus.FAILED.value
+    assert state["retry_reason"] == "page_unavailable"
+    assert state["response"] is None
+    assert state["account_status"] == AccountStatus.COOLDOWN.value
+    assert state["account_cooldown_until"] is not None
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 MAX_CONSECUTIVE_FAILS = 3      # 连续失败N次 → banned
 COOLDOWN_HOURS        = 12     # 超配额冷却时间
 DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
+DOUBAO_SESSION_COOLDOWN_REASONS = frozenset(
+    {
+        "doubao_not_logged_in",
+        "doubao_auth_state_missing",
+        "doubao_page_unavailable",
+    }
+)
 
 
 async def reserve_account_quota(
@@ -203,7 +210,9 @@ class AccountPool:
 
         # cookies 过期 / 响应太短 只设 cooldown，不增加失败计数（避免误封）
         # 这些通常是平台侧或网络问题，不是账号本身的问题
-        if reason in ("cookies_expired", "response_too_short", "token_invalidated"):
+        if reason in ("cookies_expired", "response_too_short", "token_invalidated") or (
+            account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
+        ):
             account.status = AccountStatus.COOLDOWN.value
             account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
             logger.warning(

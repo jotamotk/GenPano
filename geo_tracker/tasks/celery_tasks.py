@@ -74,6 +74,46 @@ def _keep_alive_auto_relogin_enabled() -> bool:
     return _env_flag("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", False)
 
 
+DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
+    {
+        "cookies_expired",
+        "doubao_not_logged_in",
+        "doubao_auth_state_missing",
+    }
+)
+
+
+async def _handle_doubao_account_failure_handoff(
+    *,
+    db,
+    pool: AccountPool | None,
+    query: Query,
+    account_id: int | None,
+    failure_reason: str | None,
+) -> None:
+    if query.target_llm != "doubao" or not account_id or not failure_reason:
+        return
+
+    if failure_reason == "page_unavailable" and pool is not None:
+        await pool.report_failure(account_id, reason="doubao_page_unavailable")
+        await db.commit()
+
+    if failure_reason not in DOUBAO_REAUTH_FAILURE_REASONS:
+        return
+
+    if await should_enqueue_relogin(account_id):
+        auto_login.apply_async(
+            kwargs={"account_id": account_id},
+            queue="account_login",
+        )
+        logger.warning(
+            "Query %s: Doubao account %s queued for reauth after %s",
+            query.id,
+            account_id,
+            failure_reason,
+        )
+
+
 class AccountSessionLockTimeout(TimeoutError):
     """Raised when a query cannot enter a serialized account browser session."""
 
@@ -530,6 +570,13 @@ def execute_query(self, query_id: int) -> dict:
                             pool,
                             reason=auth_failure_reason,
                         )
+                        await _handle_doubao_account_failure_handoff(
+                            db=db,
+                            pool=pool,
+                            query=query,
+                            account_id=account_id,
+                            failure_reason=auth_failure_reason,
+                        )
                         await db.commit()
                         logger.warning(
                             "Query %s failed: Doubao auth state rejected before DONE (%s), "
@@ -559,8 +606,19 @@ def execute_query(self, query_id: int) -> dict:
                             pool,
                             reason=failure_reason,
                         )
+                        await _handle_doubao_account_failure_handoff(
+                            db=db,
+                            pool=pool,
+                            query=query,
+                            account_id=account_id,
+                            failure_reason=failure_reason,
+                        )
                         await db.commit()
-                        if failure_reason in {"cookies_expired", "token_invalidated"} and account_id:
+                        if (
+                            failure_reason in {"cookies_expired", "token_invalidated"}
+                            and account_id
+                            and query.target_llm != "doubao"
+                        ):
                             if query.target_llm == "chatgpt":
                                 logger.warning(
                                     "Query %s: ChatGPT account %s requires manual reauth "
@@ -613,9 +671,20 @@ def execute_query(self, query_id: int) -> dict:
                         pool,
                         reason=failure_reason,
                     )
+                    await _handle_doubao_account_failure_handoff(
+                        db=db,
+                        pool=pool,
+                        query=query,
+                        account_id=account_id,
+                        failure_reason=failure_reason,
+                    )
                     await db.commit()
                     # 触发自动重新登录 (re-login 用已存号码不花 SMS, 但仍需去重锁)
-                    if failure_reason in {"cookies_expired", "token_invalidated"} and account_id:
+                    if (
+                        failure_reason in {"cookies_expired", "token_invalidated"}
+                        and account_id
+                        and query.target_llm != "doubao"
+                    ):
                         if query.target_llm == "chatgpt":
                             logger.warning(
                                 "Query %s: ChatGPT account %s requires manual reauth "
