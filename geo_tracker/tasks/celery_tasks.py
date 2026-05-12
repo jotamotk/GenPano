@@ -369,6 +369,23 @@ async def _cleanup_previous_response(db, query_id: int) -> None:
     )
 
 
+def _enqueue_response_analysis(response_id: int | None) -> bool:
+    """Queue analysis for a saved response without failing the scraper result."""
+    if not response_id:
+        return False
+    try:
+        analyze_response.apply_async(args=[response_id], queue="analysis")
+        logger.info("Queued analysis for response_id=%s", response_id)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to queue analysis for response_id=%s: %s",
+            response_id,
+            exc,
+        )
+        return False
+
+
 async def _mark_query_failed_after_task_abort_async(
     query_id: int,
     reason: str,
@@ -649,6 +666,8 @@ def execute_query(self, query_id: int) -> dict:
                     # citations/analyses/feature_mentions），避免 FK 违约
                     await _cleanup_previous_response(db, query_id)
                     db.add(response)
+                    await db.flush()
+                    response_id = response.id
                     mark_query_finished(
                         query,
                         status=QueryStatus.DONE.value,
@@ -657,8 +676,14 @@ def execute_query(self, query_id: int) -> dict:
                     )
                     await quota_settlement.settle_success(pool)
                     await db.commit()
+                    analysis_enqueued = _enqueue_response_analysis(response_id)
                     logger.info(f"Query {query_id} DONE, response len={len(response.raw_text)}")
-                    return {"query_id": query_id, "status": "done", "mode": "guest"}
+                    return {
+                        "query_id": query_id,
+                        "status": "done",
+                        "mode": "guest",
+                        "analysis_enqueued": analysis_enqueued,
+                    }
                 else:
                     resp_len = len(response.raw_text) if response else 0
                     failure_reason = _empty_response_failure_reason(
