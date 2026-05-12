@@ -42,6 +42,17 @@ import {
   SIMULATOR_PRESETS,
 } from '../../data/mock';
 
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function formatMaybeNumber(value) {
+  const next = finiteNumberOrNull(value);
+  return next == null ? '--' : next;
+}
+
 /* ─────────────────────────────────────────────────────────────
    BrandCitationsPage — /brand/citations (§4.6-IA-v2.C.2.2 + §4.2.7)
    ─────────────────────────────────────────────────────────────
@@ -80,10 +91,10 @@ export default function BrandCitationsPage() {
 
   // Top domains: prefer /citations response.by_domain_top (already has tier).
   const liveDomains =
-    isLive && citationsQ.data
-      ? citationsQ.data.by_domain_top.map((d, i) => ({
+    isLive && citationsQ.data?.state === 'ok' && Array.isArray(citationsQ.data.by_domain_top)
+      ? citationsQ.data.by_domain_top.map((d) => ({
           domain: d.domain,
-          tier: d.tier ?? (i < 3 ? 1 : i < 6 ? 2 : 3),
+          tier: d.tier ?? null,
           count: d.count,
         }))
       : [];
@@ -92,9 +103,9 @@ export default function BrandCitationsPage() {
 
   // Top cited pages: from /citations.items
   const livePages =
-    isLive && citationsQ.data
+    isLive && citationsQ.data?.state === 'ok' && Array.isArray(citationsQ.data.items)
       ? Array.from(
-          citationsQ.data.items.reduce<Map<string, { url: string; title: string; tier: number; count: number }>>(
+          citationsQ.data.items.reduce<Map<string, { url: string; title: string; tier: number | null; count: number }>>(
             (acc, c) => {
               const key = c.url;
               const existing = acc.get(key);
@@ -103,7 +114,7 @@ export default function BrandCitationsPage() {
                 acc.set(key, {
                   url: c.url,
                   title: c.title || c.domain || c.url,
-                  tier: 2,
+                  tier: c.tier ?? null,
                   count: 1,
                 });
               return acc
@@ -143,12 +154,14 @@ export default function BrandCitationsPage() {
   const prIsMock = !isLive;
 
   // Simulator
-  const liveSim = adaptSimulatorBaseline(simulatorQ.data);
+  const liveSim = simulatorQ.data?.state === 'ok'
+    ? adaptSimulatorBaseline(simulatorQ.data)
+    : null;
   const simulatorBaseline =
     isLive
       ? liveSim
       : SIMULATOR_BASELINE;
-  const simulatorPresets = isLive ? liveSim.presets : SIMULATOR_PRESETS;
+  const simulatorPresets = isLive ? (liveSim?.presets ?? []) : SIMULATOR_PRESETS;
   const simulatorIsMock = !isLive;
 
   const setSub = (next) => {
@@ -307,7 +320,13 @@ export default function BrandCitationsPage() {
           {simulatorIsMock && (
             <div className="mb-2"><MockDataBadge reason="缺少 geo_score_weekly 真实数据" /></div>
           )}
-          <AuthoritySimulator baseline={simulatorBaseline} presets={simulatorPresets} />
+          {simulatorBaseline ? (
+            <AuthoritySimulator baseline={simulatorBaseline} presets={simulatorPresets} />
+          ) : (
+            <Card className="p-4 text-sm text-themed-muted">
+              暂无模拟器基线数据。
+            </Card>
+          )}
         </div>
       )}
     </div>
@@ -331,8 +350,8 @@ function AuthoritySimulator({ baseline, presets }) {
     let panoDelta = 0;
 
     tiers.forEach((tier, i) => {
-      const weight = weights[tier] || 0;
-      const conf = confidence[tier] || 0.5;
+      const weight = weights[tier] ?? 0;
+      const conf = confidence[tier] ?? 0;
       const delta = deltas[i] || 0;
       // Contribution = weight × (delta count) × confidence
       panoDelta += weight * delta * conf;
@@ -366,10 +385,13 @@ function AuthoritySimulator({ baseline, presets }) {
 
   const panoStatus = useMemo(() => {
     const delta = calculated.panoDelta;
-    if (delta >= baseline.industryTop3Avg - baseline.currentPanoA) {
+    const current = finiteNumberOrNull(baseline.currentPanoA);
+    const top3 = finiteNumberOrNull(baseline.industryTop3Avg);
+    const median = finiteNumberOrNull(baseline.industryMedian);
+    if (current != null && top3 != null && delta >= top3 - current) {
       return { label: '超越 Top 3 平均', color: 'var(--color-success)' };
     }
-    if (delta >= baseline.industryMedian - baseline.currentPanoA) {
+    if (current != null && median != null && delta >= median - current) {
       return { label: '达到行业中位', color: 'var(--color-accent)' };
     }
     if (delta > 0) {
@@ -399,13 +421,13 @@ function AuthoritySimulator({ baseline, presets }) {
               <div className="flex items-center justify-between">
                 <span className="text-xs text-themed-muted">行业中位</span>
                 <span className="text-sm text-themed-primary tabular-nums">
-                  {baseline.industryMedian}
+                  {formatMaybeNumber(baseline.industryMedian)}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs text-themed-muted">Top 3 平均</span>
                 <span className="text-sm text-themed-primary tabular-nums">
-                  {baseline.industryTop3Avg}
+                  {formatMaybeNumber(baseline.industryTop3Avg)}
                 </span>
               </div>
             </div>
@@ -422,7 +444,7 @@ function AuthoritySimulator({ baseline, presets }) {
                 <div key={tier} className="flex items-center justify-between">
                   <span className="text-xs text-themed-muted">Tier {tier}</span>
                   <span className="text-sm font-medium text-themed-primary tabular-nums">
-                    {baseline.currentByTier[tier] || 0}
+                    {baseline.currentByTier[tier] ?? '--'}
                   </span>
                 </div>
               ))}
@@ -491,7 +513,7 @@ function AuthoritySimulator({ baseline, presets }) {
               />
               <div className="flex items-center justify-between mt-1 text-[10px] text-themed-muted">
                 <span>-5</span>
-                <span className="tabular-nums">{baseline.currentByTier[tier]}</span>
+                <span className="tabular-nums">{baseline.currentByTier[tier] ?? '--'}</span>
                 <span>+10</span>
               </div>
             </div>

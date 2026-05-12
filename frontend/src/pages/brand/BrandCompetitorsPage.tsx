@@ -36,6 +36,19 @@ import {
   TIER2_COVERAGE_MATRIX,
 } from '../../data/mock';
 
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function positiveGap(left, right) {
+  const a = finiteNumberOrNull(left);
+  const b = finiteNumberOrNull(right);
+  if (a == null || b == null) return null;
+  return Math.max(0, a - b);
+}
+
 /* ─────────────────────────────────────────────────────────────
    BrandCompetitorsPage — /brand/competitors (§4.6-IA-v2.C.2.2 + M)
    ─────────────────────────────────────────────────────────────
@@ -73,9 +86,13 @@ export default function BrandCompetitorsPage() {
     filters: chartFilters,
   });
 
-  const liveCompetitors = competitorsQ.data
-    ? adaptCompetitorMetricsToList(competitorsQ.data).competitors
-    : [];
+  const liveCompetitorPayload = competitorsQ.data
+    ? adaptCompetitorMetricsToList(competitorsQ.data)
+    : null;
+  const liveCompetitors = liveCompetitorPayload?.competitors ?? [];
+  const analyticsPrimary = isLive && liveCompetitorPayload?.primary
+    ? liveCompetitorPayload.primary
+    : primary;
   const competitors = useMemo(
     () =>
       isLive
@@ -96,25 +113,40 @@ export default function BrandCompetitorsPage() {
   // Higher = more threatening.
   // ──────────────────────────────────────────────────────────────
   const threatCards = useMemo(() => {
-    const bubbleByName = new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
+    const bubbleByName = isLive
+      ? new Map()
+      : new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
     return competitors
       .map((c) => {
         const bubble = bubbleByName.get(c.name);
-        const sov = bubble?.sov ?? (c.mentionRate || 0) * 100;
-        const panoGap = Math.max(0, (c.panoScore || 0) - (primary.panoScore || 0));
-        const sentGap = Math.max(0, (c.sentiment || 0) - (primary.sentiment || 0));
-        const threatScore = 0.45 * panoGap + 0.35 * sov + 0.20 * sentGap * 100;
+        const sov = isLive
+          ? finiteNumberOrNull(c.sov)
+          : bubble?.sov ?? (finiteNumberOrNull(c.mentionRate) ?? 0) * 100;
+        const panoGap = positiveGap(c.panoScore, analyticsPrimary.panoScore);
+        const sentGap = positiveGap(c.sentiment, analyticsPrimary.sentiment);
+        const scoreParts = [
+          panoGap == null ? null : 0.45 * panoGap,
+          sov == null ? null : 0.35 * sov,
+          sentGap == null ? null : 0.20 * sentGap * 100,
+        ].filter((value) => value != null);
+        const threatScore = scoreParts.length
+          ? scoreParts.reduce((sum, value) => sum + value, 0)
+          : null;
 
         // Identify which dimension they're beating us on hardest
         const wins = [];
-        if (panoGap >= 2) wins.push({ key: 'pano', label: 'PANO', delta: panoGap.toFixed(1) });
-        if (sov > (primary.mentionRate || 0) * 100) wins.push({ key: 'sov', label: 'SoV', delta: `+${(sov - (primary.mentionRate || 0) * 100).toFixed(1)}%` });
-        if (sentGap >= 0.05) wins.push({ key: 'sentiment', label: '情感', delta: `+${Math.round(sentGap * 100)}pt` });
+        if (panoGap != null && panoGap >= 2) wins.push({ key: 'pano', label: 'PANO', delta: panoGap.toFixed(1) });
+        const primarySov = isLive
+          ? finiteNumberOrNull(analyticsPrimary.sov)
+          : (finiteNumberOrNull(analyticsPrimary.mentionRate) ?? 0) * 100;
+        if (sov != null && primarySov != null && sov > primarySov) wins.push({ key: 'sov', label: 'SoV', delta: `+${(sov - primarySov).toFixed(1)}%` });
+        if (sentGap != null && sentGap >= 0.05) wins.push({ key: 'sentiment', label: '情感', delta: `+${Math.round(sentGap * 100)}pt` });
         return { brand: c, sov, panoGap, sentGap, threatScore, wins };
       })
-      .sort((a, b) => b.threatScore - a.threatScore)
+      .filter((card) => !isLive || card.threatScore != null)
+      .sort((a, b) => (b.threatScore ?? -Infinity) - (a.threatScore ?? -Infinity))
       .slice(0, 3);
-  }, [competitors, primary]);
+  }, [competitors, analyticsPrimary, isLive]);
 
   const [focusCompetitorId, setFocusCompetitorId] = useState(
     threatCards[0]?.brand?.id || competitors[0]?.id,
@@ -204,7 +236,7 @@ export default function BrandCompetitorsPage() {
   const trendLines = focus
     ? liveTrendData
       ? [
-          { key: 'panoScore', label: primary.name, color: 'var(--color-accent)', area: true },
+          { key: 'panoScore', label: analyticsPrimary.name, color: 'var(--color-accent)', area: true },
           { key: focus.name, label: focus.name, color: 'var(--color-chart-3)', area: false, dashed: true },
         ]
       : [
@@ -225,7 +257,7 @@ export default function BrandCompetitorsPage() {
   // ──────────────────────────────────────────────────────────────
   // ④ Tier 2 权威媒体覆盖矩阵 (我 vs 3 主要竞品)
   // ──────────────────────────────────────────────────────────────
-  const tier2Matrix = TIER2_COVERAGE_MATRIX;
+  const tier2Matrix = isLive ? null : TIER2_COVERAGE_MATRIX;
   const tier2MaxCount = useMemo(() => {
     if (!tier2Matrix?.brands) return 1;
     let max = 0;
@@ -287,7 +319,7 @@ export default function BrandCompetitorsPage() {
                       <h4 className="text-sm font-semibold text-themed-primary mt-0.5">{card.brand.name}</h4>
                     </div>
                     <span className="text-lg font-brand font-bold text-themed-primary tabular-nums leading-none">
-                      {card.threatScore.toFixed(0)}
+                      {card.threatScore == null ? '--' : card.threatScore.toFixed(0)}
                     </span>
                   </div>
                   <p className="text-[11px] text-themed-muted mb-1.5">在以下维度领先主品牌:</p>

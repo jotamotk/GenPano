@@ -234,7 +234,7 @@ export default function DashboardPage() {
     // Prefer per-competitor 30d trends when available — gives real
     // competitor lines on the trend chart instead of synthetic sin curves.
     const trend =
-      competitorTrendsQ.data && competitorTrendsQ.data.series.length > 0
+      competitorTrendsQ.data && Array.isArray(competitorTrendsQ.data.series) && competitorTrendsQ.data.series.length > 0
         ? adaptCompetitorTrendsToTrendData(
             competitorTrendsQ.data,
             overviewQ.data ?? null,
@@ -262,7 +262,7 @@ export default function DashboardPage() {
         ? adaptIndustryAvgGeo(industryAvgQ.data)
         : null,
       diagnostics: diagnosticsQ.data
-        ? adaptDiagnostics(diagnosticsQ.data.items)
+        ? adaptDiagnostics(diagnosticsQ.data.items ?? [])
         : [],
     };
   }, [
@@ -276,8 +276,8 @@ export default function DashboardPage() {
   ]);
 
   /* ── primary / industry / competitors props for the panel ──
-     Live mode prefers backend-derived; fall back to mock to keep the
-     panel from crashing if Project is misconfigured. */
+     Live mode prefers backend-derived identity only; metric gaps stay null so
+     the panel renders unavailable states instead of mock/zero values. */
   const project = activeProject;
   const defaultPrimary = BRANDS[1] || BRANDS[0] || {
     id: 'fallback-brand',
@@ -300,19 +300,18 @@ export default function DashboardPage() {
     .filter(Boolean)
     .slice(0, 3);
 
-  // Augment backend primary with id/industryId so panel competitor
-  // fallback by industry still works in live mode (if industry id matches
-  // mock), without losing the live KPIs.
+  // Augment backend primary with id/industryId while keeping live metric gaps
+  // unavailable unless the backend supplied usable values.
   const liveEmptyPrimary = {
     ...defaultPrimary,
     id: String(activeProject?.primaryBrandId || liveProjectId || 'live-brand'),
     name: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
     nameZh: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
     nameEn: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
-    panoScore: 0,
-    mentionRate: 0,
-    sentiment: 0,
-    ranking: 1,
+    panoScore: null,
+    mentionRate: null,
+    sentiment: null,
+    ranking: null,
   };
   const primaryForPanel =
     adapted?.primary
@@ -326,8 +325,7 @@ export default function DashboardPage() {
         ? liveEmptyPrimary
         : mockPrimary;
 
-  // Live competitors come from /competitors/metrics; if backend returned
-  // any rows, use them. Otherwise fall back to mock pinned competitors.
+  // Live competitors come only from /competitors/metrics; missing rows stay empty.
   const competitorsForPanel =
     adapted && adapted.competitors.length > 0
       ? adapted.competitors.map((c) => ({

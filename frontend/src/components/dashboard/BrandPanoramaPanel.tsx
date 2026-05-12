@@ -58,6 +58,25 @@ const KPI_TONE = {
 };
 
 /* ─── Hero ─── */
+function asMetricNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function formatMaybePercent(value) {
+  return value == null ? '—' : `${value}%`;
+}
+
+function formatMaybeRank(value, t) {
+  return value == null ? '—' : t('dashboard.ranking_format', { rank: value });
+}
+
+function metricWidth(value) {
+  const next = asMetricNumber(value);
+  return next == null ? 0 : Math.max(0, Math.min(100, next));
+}
+
 function getPanoGrade(score, t) {
   if (score >= 80) return { label: t('dashboard.hero.grade_excellent'), color: 'var(--color-success)' };
   if (score >= 65) return { label: t('dashboard.hero.grade_good'),      color: 'var(--color-chart-7)' };
@@ -66,9 +85,11 @@ function getPanoGrade(score, t) {
   return { label: t('dashboard.hero.grade_attention'), color: 'var(--color-danger)' };
 }
 
-function HeroBlock({ primary, industry, industryAvgScore, t, formatBrand, onScoreClick, onRankClick }) {
-  const grade = getPanoGrade(primary.panoScore, t);
-  const delta = 3.2;
+function HeroBlock({ primary, industry, industryAvgScore, t, formatBrand, onScoreClick, onRankClick, isLive }) {
+  const panoScore = asMetricNumber(primary.panoScore);
+  const rank = asMetricNumber(primary.ranking);
+  const grade = panoScore == null ? null : getPanoGrade(panoScore, t);
+  const delta = isLive ? null : 3.2;
 
   return (
     <Card className="p-5">
@@ -89,11 +110,11 @@ function HeroBlock({ primary, industry, industryAvgScore, t, formatBrand, onScor
               onClick={onRankClick}
               className="text-xs font-semibold text-themed-accent hover:underline"
             >
-              #{primary.ranking}
+              {rank == null ? '#—' : `#${rank}`}
             </button>
-            <span className={`text-xs font-medium tabular-nums ${delta >= 0 ? 'text-themed-success' : 'text-themed-danger'}`}>
+            {delta != null && <span className={`text-xs font-medium tabular-nums ${delta >= 0 ? 'text-themed-success' : 'text-themed-danger'}`}>
               {delta >= 0 ? '▲' : '▼'} {delta >= 0 ? '+' : ''}{delta} {t('dashboard.hero.vs_last_period')}
-            </span>
+            </span>}
           </div>
         </div>
 
@@ -103,38 +124,38 @@ function HeroBlock({ primary, industry, industryAvgScore, t, formatBrand, onScor
             onClick={onScoreClick}
           >
             <span className="text-4xl font-brand font-bold tabular-nums text-themed-primary leading-none">
-              {primary.panoScore}
+              {panoScore == null ? '—' : panoScore}
             </span>
-            <span
+            {grade && <span
               className="text-xs font-semibold mt-1 px-2 py-0.5 rounded-pill"
               style={{ background: grade.color, color: 'var(--color-text-inverse)', opacity: 0.9 }}
             >
               {grade.label}
-            </span>
+            </span>}
           </div>
 
           <div className="flex flex-col gap-2 w-40">
             <div>
               <div className="flex justify-between text-[10px] text-themed-muted mb-0.5">
                 <span>{t('dashboard.hero.industry_avg')}</span>
-                <span className="tabular-nums">{industryAvgScore}</span>
+                <span className="tabular-nums">{industryAvgScore == null ? '—' : industryAvgScore}</span>
               </div>
               <div className="h-2 rounded-pill overflow-hidden" style={{ background: 'var(--color-bg-subtle)' }}>
                 <div
                   className="h-full rounded-pill transition-all"
-                  style={{ width: `${industryAvgScore}%`, background: 'var(--color-chart-line-grid)' }}
+                  style={{ width: `${metricWidth(industryAvgScore)}%`, background: 'var(--color-chart-line-grid)' }}
                 />
               </div>
             </div>
             <div>
               <div className="flex justify-between text-[10px] text-themed-muted mb-0.5">
                 <span>{t('dashboard.hero.my_brand')}</span>
-                <span className="tabular-nums font-semibold">{primary.panoScore}</span>
+                <span className="tabular-nums font-semibold">{panoScore == null ? '—' : panoScore}</span>
               </div>
               <div className="h-2 rounded-pill overflow-hidden" style={{ background: 'var(--color-bg-subtle)' }}>
                 <div
                   className="h-full rounded-pill transition-all"
-                  style={{ width: `${primary.panoScore}%`, background: 'var(--color-accent)' }}
+                  style={{ width: `${metricWidth(panoScore)}%`, background: 'var(--color-accent)' }}
                 />
               </div>
             </div>
@@ -309,8 +330,9 @@ function PanelToolbar({
 
 /* ─── KPI Card ─── */
 function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsRank, onClick }) {
-  const positive = trendIsRank ? delta > 0 : delta > 0;
-  const negative = trendIsRank ? delta < 0 : delta < 0;
+  const hasDelta = delta !== undefined && delta !== null;
+  const positive = hasDelta && (trendIsRank ? delta > 0 : delta > 0);
+  const negative = hasDelta && (trendIsRank ? delta < 0 : delta < 0);
   const tone = positive ? KPI_TONE.pos : negative ? KPI_TONE.neg : KPI_TONE.flat;
   const arrow = positive ? '↗' : negative ? '↘' : '→';
   const deltaStr = trendIsRank
@@ -330,7 +352,7 @@ function KpiCard({ label, fullLabel, value, delta, helpText, sparkData, trendIsR
       </div>
       <div className="flex items-end justify-between mb-2">
         <span className="text-2xl font-brand font-bold text-themed-primary tabular-nums leading-none">{value}</span>
-        <span className={`text-xs font-medium tabular-nums ${tone}`}>{arrow} {deltaStr}</span>
+        {hasDelta && <span className={`text-xs font-medium tabular-nums ${tone}`}>{arrow} {deltaStr}</span>}
       </div>
       {sparkData && sparkData.length > 0 && (
         <div className="h-7 -mx-1">
@@ -689,8 +711,15 @@ const PANEL_FALLBACK_BRAND = {
 };
 
 function finiteNumber(value, fallback = 0) {
+  if (value === null || value === undefined || value === '') return fallback;
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
+}
+
+function finiteMetric(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
 }
 
 function normalizePanelBrand(brand, fallback = PANEL_FALLBACK_BRAND) {
@@ -720,10 +749,12 @@ function normalizePanelBrand(brand, fallback = PANEL_FALLBACK_BRAND) {
     nameEn: brandFields.nameEn || brandFields.name || displayName,
     primaryName: brandFields.primaryName || brandFields.nameZh || brandFields.name || displayName,
     industryId: merged.industryId != null ? String(merged.industryId) : '',
-    panoScore: finiteNumber(merged.panoScore),
-    mentionRate: finiteNumber(merged.mentionRate),
-    sentiment: finiteNumber(merged.sentiment),
-    ranking: Math.max(1, Math.round(finiteNumber(merged.ranking, 1))),
+    panoScore: finiteMetric(merged.panoScore),
+    mentionRate: finiteMetric(merged.mentionRate),
+    sentiment: finiteMetric(merged.sentiment),
+    ranking: finiteMetric(merged.ranking) == null
+      ? null
+      : Math.max(1, Math.round(finiteMetric(merged.ranking))),
   };
 }
 
@@ -761,6 +792,7 @@ export default function BrandPanoramaPanel({
       .map((brand) => normalizePanelBrand(brand, primary))
       .slice(0, 3);
     if (provided.length) return provided;
+    if (isLive) return [];
     const sameIndustry = BRANDS.filter((b) =>
       b.industryId === primary.industryId && b.id !== primary.id
     );
@@ -768,7 +800,7 @@ export default function BrandPanoramaPanel({
       .sort((a, b) => b.panoScore - a.panoScore)
       .map((brand) => normalizePanelBrand(brand, primary))
       .slice(0, 3);
-  }, [competitorsProp, primary]);
+  }, [competitorsProp, primary, isLive]);
 
   /* ── Industry fallback: 若外部没传, 从 primary.industryId 查表 ── */
   const resolvedIndustry = useMemo(() => {
@@ -834,36 +866,36 @@ export default function BrandPanoramaPanel({
   const bubbleData  = isLive ? (bubbleDataOverride ?? []) : COMPETITOR_SENTIMENT_BUBBLE;
   const trendData   = isLive ? (trendDataOverride ?? []) : TREND_DATA;
 
-  const mentionRateDec   = primary.mentionRate || 0;
-  const mentionRateValue = +(mentionRateDec * 100).toFixed(1);
+  const mentionRateDec   = asMetricNumber(primary.mentionRate);
+  const mentionRateValue = mentionRateDec == null ? null : +(mentionRateDec * 100).toFixed(1);
   const sovEntry         = sovData.find((s) => s.name === primary.name);
-  const sovValue         = sovEntry ? sovEntry.value : 0;
-  const sentimentValue   = primary.sentiment;
+  const sovValue         = sovEntry ? sovEntry.value : null;
+  const sentimentValue   = asMetricNumber(primary.sentiment);
   const citationShare    = isLive
-    ? (sparklineOverride?.citation?.at(-1) ?? 0)
+    ? (sparklineOverride?.citation?.at(-1) ?? null)
     : 18.2;
-  const industryRank     = primary.ranking;
+  const industryRank     = asMetricNumber(primary.ranking);
 
   /* ── Sparklines ── (live: from /v1/projects/:id/metrics; mock: synthesized) */
-  const sparkMention = isLive && sparklineOverride
-    ? sparklineOverride.mention
+  const sparkMention = isLive
+    ? (sparklineOverride?.mention ?? [])
     : trendData.map((d) => d.mentionRate ?? 0);
-  const sparkSov = isLive && sparklineOverride
-    ? sparklineOverride.sov
+  const sparkSov = isLive
+    ? (sparklineOverride?.sov ?? [])
     : trendData.map((d, i) => Math.max(0, Math.round(
         (sovValue || (d.mentionRate ?? 0) * 0.6) + Math.sin(i / 4) * 2 + (i % 7 === 0 ? -1.5 : 0.4)
       )));
-  const sparkSent = isLive && sparklineOverride
-    ? sparklineOverride.sentiment
+  const sparkSent = isLive
+    ? (sparklineOverride?.sentiment ?? [])
     : trendData.map((d) => Math.round((d.sentiment ?? 0) * 100));
-  const sparkCite = isLive && sparklineOverride
-    ? sparklineOverride.citation
+  const sparkCite = isLive
+    ? (sparklineOverride?.citation ?? [])
     : trendData.map((_, i) => Math.round(15 + Math.sin(i / 5) * 2));
-  const sparkRank = isLive && sparklineOverride
-    ? sparklineOverride.rank
+  const sparkRank = isLive
+    ? (sparklineOverride?.rank ?? [])
     : trendData.map((_, i) => {
         const progress = i / Math.max(trendData.length - 1, 1);
-        const base     = primary.ranking + 2 * (1 - progress);
+        const base     = (industryRank ?? 1) + 2 * (1 - progress);
         const jitter   = Math.sin(i / 3) * 0.35;
         return Math.max(1, Math.round((base + jitter) * 10) / 10);
       });
@@ -876,40 +908,40 @@ export default function BrandPanoramaPanel({
     {
       label: t('dashboard.kpi.mention_rate'),
       fullLabel: t('dashboard.kpi.mention_rate_full'),
-      value: `${mentionRateValue}%`,
-      delta: 3.8,
+      value: formatMaybePercent(mentionRateValue),
+      delta: isLive ? undefined : 3.8,
       helpText: t('dashboard.kpi.mention_rate_help'),
       sparkData: sparkMention,
     },
     {
       label: t('dashboard.kpi.sov'),
       fullLabel: t('dashboard.kpi.sov_full'),
-      value: `${sovValue}%`,
-      delta: 2.1,
+      value: formatMaybePercent(sovValue),
+      delta: isLive ? undefined : 2.1,
       helpText: t('dashboard.kpi.sov_help'),
       sparkData: sparkSov,
     },
     {
       label: t('dashboard.kpi.sentiment'),
       fullLabel: '',
-      value: `${Math.round(sentimentValue * 100)}%`,
-      delta: -2,
+      value: formatMaybePercent(sentimentValue == null ? null : Math.round(sentimentValue * 100)),
+      delta: isLive ? undefined : -2,
       helpText: t('dashboard.kpi.sentiment_help'),
       sparkData: sparkSent,
     },
     {
       label: t('dashboard.kpi.citation_share'),
       fullLabel: '',
-      value: `${citationShare}%`,
-      delta: 1.5,
+      value: formatMaybePercent(citationShare),
+      delta: isLive ? undefined : 1.5,
       helpText: t('dashboard.kpi.citation_share_help'),
       sparkData: sparkCite,
     },
     {
       label: t('dashboard.kpi.industry_rank'),
       fullLabel: '',
-      value: t('dashboard.ranking_format', { rank: industryRank }),
-      delta: 1,
+      value: formatMaybeRank(industryRank, t),
+      delta: isLive ? undefined : 1,
       trendIsRank: true,
       helpText: t('dashboard.kpi.industry_rank_help'),
       sparkData: sparkRank,
@@ -926,18 +958,18 @@ export default function BrandPanoramaPanel({
   }, [isLive, diagnosticsOverride]);
 
   const sparklineRows = [
-    { label: t('dashboard.kpi.mention_rate'),   spark: sparkMention, value: `${mentionRateValue}%`,    color: 'var(--color-chart-2)' },
-    { label: t('dashboard.kpi.sov'),            spark: sparkSov,     value: `${sovValue}%`,            color: 'var(--color-accent)' },
-    { label: t('dashboard.kpi.sentiment'),      spark: sparkSent,    value: `${Math.round(sentimentValue * 100)}%`, color: 'var(--color-chart-3)' },
-    { label: t('dashboard.kpi.citation_share'), spark: sparkCite,    value: `${citationShare}%`,       color: 'var(--color-chart-4)' },
-    { label: t('dashboard.kpi.industry_rank'),  spark: sparkRank,    value: `#${industryRank}`,        color: 'var(--color-chart-5)' },
+    { label: t('dashboard.kpi.mention_rate'),   spark: sparkMention, value: formatMaybePercent(mentionRateValue),    color: 'var(--color-chart-2)' },
+    { label: t('dashboard.kpi.sov'),            spark: sparkSov,     value: formatMaybePercent(sovValue),            color: 'var(--color-accent)' },
+    { label: t('dashboard.kpi.sentiment'),      spark: sparkSent,    value: formatMaybePercent(sentimentValue == null ? null : Math.round(sentimentValue * 100)), color: 'var(--color-chart-3)' },
+    { label: t('dashboard.kpi.citation_share'), spark: sparkCite,    value: formatMaybePercent(citationShare),       color: 'var(--color-chart-4)' },
+    { label: t('dashboard.kpi.industry_rank'),  spark: sparkRank,    value: industryRank == null ? '#—' : `#${industryRank}`,        color: 'var(--color-chart-5)' },
   ];
 
   const industryAvgScore = useMemo(() => {
     if (isLive && industryAvgScoreOverride != null) {
       return Math.round(industryAvgScoreOverride);
     }
-    if (isLive) return 0;
+    if (isLive) return null;
     const sameBrands = BRANDS.filter((b) => b.industryId === primary.industryId);
     if (!sameBrands.length) return 60;
     return Math.round(sameBrands.reduce((sum, b) => sum + b.panoScore, 0) / sameBrands.length);
@@ -954,6 +986,7 @@ export default function BrandPanoramaPanel({
         industryAvgScore={industryAvgScore}
         t={t}
         formatBrand={formatBrand}
+        isLive={isLive}
         onScoreClick={() => navigate(`/brands/${primary.id}?tab=overview`)}
         onRankClick={() => {
           document.getElementById(scrollAnchorId)?.scrollIntoView({ behavior: 'smooth' });
