@@ -163,9 +163,7 @@ async def _sentiment_contract_evidence_count(
                     and_(
                         BrandMention.brand_id == brand_id,
                         BrandMention.sentiment_score.isnot(None),
-                        func.lower(BrandMention.sentiment).in_(
-                            ["positive", "neutral", "negative"]
-                        ),
+                        func.lower(BrandMention.sentiment).in_(["positive", "neutral", "negative"]),
                         BrandMention.created_at >= f,
                         BrandMention.created_at <= t,
                     )

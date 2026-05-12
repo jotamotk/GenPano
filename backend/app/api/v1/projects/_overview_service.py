@@ -287,7 +287,6 @@ def _unique(values: list[str]) -> list[str]:
     return out
 
 
-
 async def _overview_from_admin_facts(
     session: AsyncSession,
     project: Project,
