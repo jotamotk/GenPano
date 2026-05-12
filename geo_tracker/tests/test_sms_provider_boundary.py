@@ -249,6 +249,135 @@ async def test_chatgpt_manual_challenge_does_not_return_cookies(monkeypatch) -> 
     assert provider.closed is True
 
 
+@pytest.mark.asyncio
+async def test_chatgpt_pre_login_logged_out_shell_can_reach_phone_entry(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _FakePage(
+        url="https://chatgpt.com/",
+        body_text=(
+            "Log in to get answers based on saved chats. "
+            "Sign up for free. Stay logged out."
+        ),
+    )
+
+    async def _authenticated(_page):
+        return False
+
+    async def _phone_ready(_page):
+        return True
+
+    monkeypatch.setattr(handler, "_authenticated", _authenticated)
+    monkeypatch.setattr(handler, "_phone_input_ready", _phone_ready)
+
+    result = await handler.navigate_to_login(page)
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_pre_login_auth_redirect_can_reach_phone_entry(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _FakePage(
+        url="https://auth0.openai.com/u/login/identifier",
+        title="Log in | OpenAI",
+        body_text="Continue with phone Log in to OpenAI",
+    )
+
+    async def _authenticated(_page):
+        return False
+
+    async def _phone_ready(_page):
+        return True
+
+    monkeypatch.setattr(handler, "_authenticated", _authenticated)
+    monkeypatch.setattr(handler, "_phone_input_ready", _phone_ready)
+
+    result = await handler.navigate_to_login(page)
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_pre_login_manual_challenge_still_blocks_navigation(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _FakePage(
+        url="https://chatgpt.com/",
+        body_text="Verify you are human before continuing.",
+    )
+
+    async def _authenticated(_page):
+        return False
+
+    monkeypatch.setattr(handler, "_authenticated", _authenticated)
+
+    result = await handler.navigate_to_login(page)
+
+    assert result == "requires_manual_challenge"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_post_submit_logged_out_shell_is_rejected(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _FakePage(
+        url="https://chatgpt.com/",
+        body_text=(
+            "Log in to get answers based on saved chats. "
+            "Sign up for free. Stay logged out."
+        ),
+    )
+
+    async def _authenticated(_page):
+        return False
+
+    monkeypatch.setattr(handler, "_authenticated", _authenticated)
+
+    result = await handler.verify_success(page)
+
+    assert result == "chatgpt_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_post_submit_auth_redirect_is_rejected(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _FakePage(
+        url="https://auth0.openai.com/u/login/identifier",
+        title="Log in | OpenAI",
+        body_text="Log in to ChatGPT. Continue with phone.",
+    )
+
+    async def _authenticated(_page):
+        return False
+
+    monkeypatch.setattr(handler, "_authenticated", _authenticated)
+
+    result = await handler.verify_success(page)
+
+    assert result == "chatgpt_auth_redirect"
+
+
 @pytest.mark.parametrize("platform", ["doubao", "deepseek"])
 @pytest.mark.asyncio
 async def test_existing_handlers_reject_false_success_and_release_number(
