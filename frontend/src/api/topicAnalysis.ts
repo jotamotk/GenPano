@@ -115,6 +115,8 @@ export interface PromptQueryDailyRow {
   profile_name: string
   executed_at: string | null
   finished_at: string | null
+  response_created_at: string | null
+  response_preview: string | null
   latency_ms: number | null
   target_mentioned: boolean
   citation_count: number
