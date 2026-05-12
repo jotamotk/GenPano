@@ -10,6 +10,7 @@ from app.api.v1.projects._analytics_contract import (
     DataFreshness,
     FormulaDiagnostics,
     IdentityDiagnostics,
+    MetricDefinition,
     ProjectScope,
     ValueRange,
 )
@@ -31,6 +32,7 @@ class MetricSeries(BaseModel):
     numerator_label: str | None = None
     source: str | None = None
     formula_status: str | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
     state: str = "ok"
     state_reason: str = "data_available"
     evidence_count: int = 0
@@ -47,12 +49,16 @@ class MetricsOut(BaseModel):
     state_detail: str | None = None
     project_scope: ProjectScope | None = None
     brand_aliases: list[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
     missing_sources: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    formula_status: str = "no_evidence"
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
     request_id: str | None = None
     data_freshness: DataFreshness = Field(default_factory=DataFreshness)
 
@@ -77,6 +83,14 @@ class TopicsOut(BaseModel):
     state: str = "ok"
     state_reason: str = "data_available"
     evidence_count: int = 0
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
 
 
 # ── /sentiment ────────────────────────────────────────────────────
@@ -123,6 +137,14 @@ class SentimentOut(BaseModel):
     state: str = "ok"
     state_reason: str = "data_available"
     evidence_count: int = 0
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
 
 
 # ── /citations ────────────────────────────────────────────────────
@@ -153,3 +175,12 @@ class CitationsOut(BaseModel):
     state: str = "ok"
     state_reason: str = "data_available"
     evidence_count: int = 0
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    metric_definitions: dict[str, MetricDefinition] = Field(default_factory=dict)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)

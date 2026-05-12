@@ -139,10 +139,20 @@ async def test_overview_contract_exposes_units_evidence_and_percent_scale(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
-    assert body["state_reason"] == "data_available"
-    assert body["formula_diagnostics"]["status"] == "formula_pending_upstream"
-    assert "upstream_formula_provenance" in body["missing_sources"]
+    assert body["state"] == "partial"
+    assert body["state_reason"] in {
+        "formula_pending_upstream",
+        "missing_formula_inputs",
+    }
+    assert body["formula_status"] in {
+        "formula_pending_upstream",
+        "missing_required_inputs",
+    }
+    assert body["formula_diagnostics"]["status"] in {
+        "formula_pending_upstream",
+        "missing_required_inputs",
+    }
+    assert "brand_mentions.competitive_set" in body["missing_sources"]
     assert body["project_scope"] == {
         "exists": True,
         "project_id": p.id,
@@ -161,7 +171,7 @@ async def test_overview_contract_exposes_units_evidence_and_percent_scale(
     assert cards["mention_rate"]["unit"] == "percent"
     assert cards["mention_rate"]["value_scale"] == "percent"
     assert cards["mention_rate"]["value_range"] == {"min": 0.0, "max": 100.0}
-    assert cards["mention_rate"]["formula_status"] == "formula_pending_upstream"
+    assert cards["mention_rate"]["formula_status"] == "ok"
     assert "eligible" in cards["mention_rate"]["denominator_label"]
 
     assert cards["sov"]["value"] == pytest.approx(38.4)
@@ -262,12 +272,14 @@ async def test_metrics_contract_uses_decimal_values_and_distinct_denominators(
     assert by_metric["mention_rate"]["unit"] == "ratio"
     assert by_metric["mention_rate"]["value_scale"] == "decimal"
     assert by_metric["mention_rate"]["value_range"] == {"min": 0.0, "max": 1.0}
-    assert by_metric["mention_rate"]["formula_status"] == "formula_pending_upstream"
+    assert by_metric["mention_rate"]["formula_status"] == "ok"
     assert "eligible" in by_metric["mention_rate"]["denominator_label"]
     assert "competitive" in by_metric["sov"]["denominator_label"]
     assert by_metric["mention_rate"]["denominator_label"] != by_metric["sov"]["denominator_label"]
+    assert body["state"] == "ok"
     assert body["state_reason"] == "data_available"
-    assert body["formula_diagnostics"]["status"] == "formula_pending_upstream"
+    assert body["formula_status"] == "ok"
+    assert body["formula_diagnostics"]["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -380,13 +392,11 @@ async def test_competitor_chart_endpoints_expose_contract_metadata(
 
     assert metrics.status_code == 200
     metrics_body = metrics.json()
+    assert metrics_body["state"] == "ok"
     assert metrics_body["state_reason"] == "data_available"
     assert metrics_body["metric_definitions"]["avg_sov"]["unit"] == "ratio"
     assert metrics_body["metric_definitions"]["avg_sov"]["value_scale"] == "decimal"
-    assert (
-        metrics_body["metric_definitions"]["avg_sov"]["formula_status"]
-        == "formula_pending_upstream"
-    )
+    assert metrics_body["metric_definitions"]["avg_sov"]["formula_status"] == "ok"
     assert metrics_body["primary"]["avg_sov"] == pytest.approx(0.384)
     assert metrics_body["competitors"][0]["avg_sov"] == pytest.approx(0.216)
     assert metrics_body["evidence_counts"]["competitor_brand_count"] == 1

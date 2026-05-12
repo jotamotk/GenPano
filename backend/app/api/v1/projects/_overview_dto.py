@@ -24,7 +24,7 @@ class KpiCard(BaseModel):
     label_zh: str
     label_en: str
     metric_key: str | None = None
-    value: float | int
+    value: float | int | None
     unit: str | None = None
     value_scale: str | None = None
     value_range: ValueRange | None = None
@@ -81,12 +81,16 @@ class BrandOverviewOut(BaseModel):
     state_detail: str | None = None
     project_scope: ProjectScope | None = None
     brand_aliases: list[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
     missing_sources: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    formula_status: str = "no_evidence"
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
     score_components: dict[str, MetricValue] = Field(default_factory=dict)
     request_id: str | None = None
     data_freshness: DataFreshness = Field(default_factory=DataFreshness)

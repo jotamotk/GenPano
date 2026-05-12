@@ -48,16 +48,9 @@ from app.api.v1.projects._brand_dto import (
 )
 from app.api.v1.projects._legacy_lookups import resolve_brand_names
 from app.api.v1.projects._mention_rollups import (
-    MentionRollup,
-    brand_mention_daily_rollups,
     brand_mention_match_condition,
     brand_mention_names,
-    brand_mention_window_rollup,
     discover_related_brand_ids,
-    geo_score,
-    mention_rate,
-    metric_value,
-    share_of_voice,
 )
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
@@ -130,6 +123,61 @@ def _competitor_metric_definitions() -> dict[str, MetricDefinition]:
     return metric_definitions(["avg_geo_score", "avg_mention_rate", "avg_sov", "avg_sentiment"])
 
 
+async def _hydrate_competitor_rows_from_daily_scores(
+    session: AsyncSession,
+    rows: list[CompetitorBrandRow],
+    from_d: date,
+    to_d: date,
+) -> list[CompetitorBrandRow]:
+    brand_ids = sorted({row.brand_id for row in rows if row.brand_id is not None})
+    if not brand_ids:
+        return rows
+    stmt = (
+        select(
+            GeoScoreDaily.brand_id,
+            func.avg(GeoScoreDaily.avg_geo_score),
+            func.avg(GeoScoreDaily.mention_rate),
+            func.avg(GeoScoreDaily.avg_sov),
+            func.avg(GeoScoreDaily.avg_sentiment),
+        )
+        .where(
+            and_(
+                GeoScoreDaily.brand_id.in_(brand_ids),
+                GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                GeoScoreDaily.date <= datetime.combine(to_d, datetime.max.time()),
+            )
+        )
+        .group_by(GeoScoreDaily.brand_id)
+    )
+    aggregates = {int(r[0]): r for r in (await session.execute(stmt)).all() if r[0] is not None}
+    hydrated: list[CompetitorBrandRow] = []
+    for row in rows:
+        if row.brand_id is None:
+            hydrated.append(row)
+            continue
+        aggregate = aggregates.get(row.brand_id)
+        if aggregate is None:
+            hydrated.append(row)
+            continue
+        hydrated.append(
+            row.model_copy(
+                update={
+                    "avg_geo_score": row.avg_geo_score
+                    if row.avg_geo_score is not None
+                    else aggregate[1],
+                    "avg_mention_rate": row.avg_mention_rate
+                    if row.avg_mention_rate is not None
+                    else aggregate[2],
+                    "avg_sov": row.avg_sov if row.avg_sov is not None else aggregate[3],
+                    "avg_sentiment": row.avg_sentiment
+                    if row.avg_sentiment is not None
+                    else aggregate[4],
+                }
+            )
+        )
+    return hydrated
+
+
 async def _fact_primary_competitor_row(
     session: AsyncSession,
     primary_id: int,
@@ -154,10 +202,10 @@ async def _fact_primary_competitor_row(
             denominator_response_ids.add(rid)
         mentions = _fact_target_mention_count(row)
         total = _fact_all_mention_count(row, mentions)
+        all_mentions += total
         if mentions > 0:
             target_response_ids.add(rid)
             target_mentions += mentions
-            all_mentions += total
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         if rank is not None:
             ranks.append(float(rank))
@@ -170,27 +218,22 @@ async def _fact_primary_competitor_row(
 
     if not response_ids:
         return None
-    mention_denominator = len(denominator_response_ids) or len(response_ids)
+    mention_denominator = len(denominator_response_ids)
     name_map = await resolve_brand_names(session, [primary_id])
     avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else None
-    avg_rank = sum(ranks) / len(ranks) if ranks else None
-    rollup = MentionRollup(
-        mention_count=target_mentions,
-        response_count=len(target_response_ids),
-        total_response_count=mention_denominator,
-        total_mention_count=all_mentions or max(target_mentions, len(response_ids)),
-        avg_position_rank=avg_rank,
-        avg_sentiment_score=avg_sentiment,
-    )
     return CompetitorBrandRow(
         brand_id=primary_id,
         brand_key=_brand_entity_key(primary_id, None),
         brand_name=name_map.get(primary_id),
-        avg_geo_score=round(sum(geo_scores) / len(geo_scores), 2)
-        if geo_scores
-        else geo_score(rollup),
-        avg_mention_rate=round(mention_rate(rollup), 4),
-        avg_sov=round(share_of_voice(rollup), 4),
+        avg_geo_score=round(sum(geo_scores) / len(geo_scores), 2) if geo_scores else None,
+        avg_mention_rate=(
+            round(len(target_response_ids) / mention_denominator, 4)
+            if mention_denominator > 0
+            else None
+        ),
+        avg_sov=round(target_mentions / all_mentions, 4)
+        if all_mentions > target_mentions
+        else None,
         avg_sentiment=round(avg_sentiment, 3) if avg_sentiment is not None else None,
         co_mention_count=0,
         delta_30d_pct=None,
@@ -256,7 +299,7 @@ async def _response_entity_competitor_metrics(
         name_key = str(brand_name or "").strip().lower()
         is_primary = bid == primary_id or (bool(name_key) and name_key in primary_names)
         bucket_brand_id = primary_id if is_primary else bid
-        amount = int(mention_count or 1)
+        amount = int(mention_count) if mention_count is not None else 1
         key = _brand_entity_key(bucket_brand_id, None if is_primary else brand_name)
         bucket = buckets.setdefault(
             key,
@@ -286,26 +329,14 @@ async def _response_entity_competitor_metrics(
 
     brand_ids = [b["brand_id"] for b in buckets.values() if b["brand_id"] is not None]
     name_map = await resolve_brand_names(session, brand_ids)
-    total_responses = len(all_response_ids) or 1
+    total_responses = len(scoped_response_ids)
+    has_competitive_mentions = len(buckets) > 1 and total_mentions > 0
 
     def make_row(bucket: dict[str, Any]) -> CompetitorBrandRow:
         response_count = len(bucket["response_ids"])
         mention_count = int(bucket["mention_count"])
-        avg_rank = (
-            sum(bucket["position_ranks"]) / len(bucket["position_ranks"])
-            if bucket["position_ranks"]
-            else None
-        )
         avg_sentiment = (
             sum(bucket["sentiments"]) / len(bucket["sentiments"]) if bucket["sentiments"] else None
-        )
-        rollup = MentionRollup(
-            mention_count=mention_count,
-            response_count=response_count,
-            total_response_count=total_responses,
-            total_mention_count=total_mentions,
-            avg_position_rank=avg_rank,
-            avg_sentiment_score=avg_sentiment,
         )
         bid = bucket["brand_id"]
         co_count = 0
@@ -318,9 +349,11 @@ async def _response_entity_competitor_metrics(
             brand_id=bid,
             brand_key=bucket["brand_key"],
             brand_name=brand_name,
-            avg_geo_score=geo_score(rollup),
-            avg_mention_rate=round(mention_rate(rollup), 4),
-            avg_sov=round(share_of_voice(rollup), 4),
+            avg_geo_score=None,
+            avg_mention_rate=round(response_count / total_responses, 4)
+            if total_responses > 0
+            else None,
+            avg_sov=round(mention_count / total_mentions, 4) if has_competitive_mentions else None,
             avg_sentiment=round(float(avg_sentiment), 3) if avg_sentiment is not None else None,
             co_mention_count=co_count,
             delta_30d_pct=None,
@@ -396,17 +429,15 @@ async def get_products(
         .limit(50)
     )
     # Tuple of (name, category, mentions, mention_rate, rank, geo, sent, sov,
-    # category_rank, win) — None for fields the legacy fallback can't fill.
+    # category_rank, win) — None for fields the product evidence cannot fill.
     product_rows: list[tuple[Any, ...]] = []
     try:
         product_rows = [tuple(r) for r in (await session.execute(stmt)).all()]
     except Exception:
         product_rows = []
 
-    # Fallback path: when no product_score_daily rows exist (e.g. fresh DB or
-    # legacy fixtures), aggregate ProductFeatureMention so the endpoint still
-    # returns names + counts. Sparkline / trend / sov / sentiment stay null in
-    # this mode — they require the daily rollup.
+    # ProductFeatureMention can expose product names and counts as partial
+    # evidence. Rate/trend/sov/sentiment remain null without product_score_daily.
     if not product_rows:
         legacy_stmt = (
             select(
@@ -454,9 +485,9 @@ async def get_products(
         sparkline = [round(float(p[1] or 0), 4) for p in spark_rows]
         trend_30d: float | None = None
         if len(sparkline) >= 14:
-            first = sum(sparkline[:7]) / 7 or 1e-6
+            first = sum(sparkline[:7]) / 7
             last = sum(sparkline[-7:]) / 7
-            trend_30d = round((last - first) / first, 4)
+            trend_30d = round((last - first) / first, 4) if first > 0 else None
 
         # Top features (from product_feature_mentions).
         feat_stmt = (
@@ -543,9 +574,23 @@ async def get_products(
             state="empty",
             state_reason="product_aggregates_pending" if evidence_count else "no_product_data",
             evidence_count=evidence_count,
+        ).model_copy(
+            update=context_update(
+                await build_contract_context(
+                    session,
+                    project,
+                    brand_id=primary_id,
+                    from_date=from_d,
+                    to_date=to_d,
+                    has_data=False,
+                    base_state="empty",
+                    base_missing_inputs=["product_score_daily"],
+                    source_provenance=["product_score_daily", "product_feature_mentions"],
+                )
+            )
         )
 
-    return ProductsOut(
+    out = ProductsOut(
         project_id=project.id,
         items=items,
         total=len(items),
@@ -553,6 +598,17 @@ async def get_products(
         state_reason="data_available",
         evidence_count=len(items),
     )
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=primary_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=True,
+        base_state="ok",
+        source_provenance=["product_score_daily", "product_feature_mentions"],
+    )
+    return out.model_copy(update=context_update(context))
 
 
 # ─── /competitors/metrics ──────────────────────────────────────────
@@ -604,6 +660,15 @@ async def get_competitor_metrics(
     )
     if response_entities is not None:
         primary_row, competitor_rows, entity_state = response_entities
+        hydrated_rows = await _hydrate_competitor_rows_from_daily_scores(
+            session,
+            [row for row in [primary_row, *competitor_rows] if row is not None],
+            from_d,
+            to_d,
+        )
+        if hydrated_rows:
+            primary_row = hydrated_rows[0] if primary_row is not None else None
+            competitor_rows = hydrated_rows[1:] if primary_row is not None else hydrated_rows
         primary_row = _normalize_competitor_row(primary_row)
         competitor_rows = _normalize_competitor_rows(competitor_rows)
         has_data = primary_row is not None or bool(competitor_rows)
@@ -697,13 +762,6 @@ async def get_competitor_metrics(
         avg_mention = r[1] if r else None
         avg_sov = r[2] if r else None
         avg_sentiment = r[3] if r else None
-        if not any(v is not None for v in (avg_geo, avg_mention, avg_sov, avg_sentiment)):
-            rollup = await brand_mention_window_rollup(session, brand_id, from_d, to_d)
-            if rollup.has_data:
-                avg_geo = geo_score(rollup)
-                avg_mention = mention_rate(rollup)
-                avg_sov = share_of_voice(rollup)
-                avg_sentiment = rollup.avg_sentiment_score
 
         delta = None
         if avg_geo is not None and prior_geo is not None and prior_geo != 0:
@@ -910,22 +968,7 @@ def _fact_trend_value(metric: str, row: dict[str, Any]) -> float | None:
         score = _fact_geo_score(row.get("geo_score"))
         if score is not None:
             return score
-        mentions = _fact_target_mention_count(row)
-        if mentions <= 0:
-            return None
-        total = _fact_all_mention_count(row, mentions)
-        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
-        sentiment = _as_float(row.get("sentiment_score"))
-        return geo_score(
-            MentionRollup(
-                mention_count=mentions,
-                response_count=1,
-                total_response_count=1,
-                total_mention_count=total or mentions,
-                avg_position_rank=rank,
-                avg_sentiment_score=sentiment,
-            )
-        )
+        return None
     if metric == "rank":
         rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
         return float(rank) if rank is not None else None
@@ -935,8 +978,8 @@ def _fact_trend_value(metric: str, row: dict[str, Any]) -> float | None:
         mentions = _fact_target_mention_count(row)
         total = _fact_all_mention_count(row, mentions)
         if metric == "mention_rate":
-            return 1.0 if mentions > 0 else 0.0
-        return round(mentions / total, 4) if total else None
+            return None
+        return round(mentions / total, 4) if total > mentions else None
     if metric == "citation":
         return float(row.get("citation_count") or 0)
     return None
@@ -1101,20 +1144,6 @@ async def get_competitor_trends(
                 value=_normalize_trend_metric(metric, value),
             )
         )
-    fallback_metric = "geo_score" if metric == "geo_score" else metric
-    for bid in brand_ids:
-        if series_by_brand[bid]:
-            continue
-        rollups = await brand_mention_daily_rollups(session, bid, from_d, to_d)
-        series_by_brand[bid] = [
-            CompetitorTrendPoint(
-                date=day,
-                value=_normalize_trend_metric(metric, metric_value(rollup, fallback_metric)),
-            )
-            for day, rollup in sorted(rollups.items())
-            if rollup.has_data
-        ]
-
     name_map = await resolve_brand_names(session, brand_ids)
     output_series = [
         CompetitorTrendSeries(

@@ -148,6 +148,7 @@ async def test_products_returns_aggregated(client, user, project_with_data):
     assert resp.status_code == 200
     body = resp.json()
     assert body["state"] == "ok"
+    assert body["formula_status"] == "ok"
     # 2 distinct (brand, product) pairs: (Primary, ProductA) + (Primary, ProductB)
     assert body["total"] >= 2
     names = {p["product_name"] for p in body["items"]}
@@ -176,6 +177,7 @@ async def test_competitor_metrics_includes_primary_and_competitors(client, user,
     assert resp.status_code == 200
     body = resp.json()
     assert body["state"] == "ok"
+    assert body["formula_status"] == "ok"
     assert body["primary_brand_id"] == 42
     assert body["primary"] is not None
     assert body["primary"]["brand_id"] == 42
@@ -188,7 +190,9 @@ async def test_competitor_metrics_includes_primary_and_competitors(client, user,
 
 
 @pytest.mark.asyncio
-async def test_competitor_metrics_brand_override_uses_mention_fallback(client, user, db_session):
+async def test_competitor_metrics_brand_override_keeps_missing_rollup_values_partial(
+    client, user, db_session
+):
     p = Project(user_id=user.id, name="Override Mentions", primary_brand_id=42, industry_id=1)
     db_session.add(p)
     await db_session.commit()
@@ -227,8 +231,10 @@ async def test_competitor_metrics_brand_override_uses_mention_fallback(client, u
     )
     assert metrics_resp.status_code == 200
     metrics_body = metrics_resp.json()
+    assert metrics_body["state"] == "partial"
     assert metrics_body["primary_brand_id"] == 12
-    assert metrics_body["primary"]["avg_geo_score"] > 0
+    assert metrics_body["primary"]["avg_geo_score"] is None
+    assert metrics_body["primary"]["avg_mention_rate"] is None
     assert metrics_body["primary"]["avg_sov"] > 0
     assert [c["brand_id"] for c in metrics_body["competitors"]] == [99]
     assert metrics_body["competitors"][0]["co_mention_count"] == 4
@@ -240,10 +246,10 @@ async def test_competitor_metrics_brand_override_uses_mention_fallback(client, u
     )
     assert trends_resp.status_code == 200
     trends_body = trends_resp.json()
+    assert trends_body["state"] == "partial"
     primary_series = next(s for s in trends_body["series"] if s["is_primary"])
     assert primary_series["brand_id"] == 12
-    assert primary_series["points"]
-    assert primary_series["points"][0]["value"] > 0
+    assert primary_series["points"] == []
 
 
 @pytest.mark.asyncio
@@ -299,8 +305,8 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
     overview_body = overview_resp.json()
     assert overview_body["brand_id"] == 12
     assert overview_body["brand_name"] == "雅诗兰黛"
-    assert overview_body["state"] == "ok"
-    assert any(card["value"] > 0 for card in overview_body["kpi_cards"])
+    assert overview_body["state"] == "partial"
+    assert all(card["value"] is None for card in overview_body["kpi_cards"])
 
     metrics_resp = await client.get(
         f"/api/v1/projects/{p.id}/metrics",
@@ -309,8 +315,8 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
     )
     assert metrics_resp.status_code == 200
     metrics_body = metrics_resp.json()
-    assert metrics_body["state"] == "ok"
-    assert all(series["points"] for series in metrics_body["series"])
+    assert metrics_body["state"] == "partial"
+    assert all(series["points"] == [] for series in metrics_body["series"])
 
     competitors_resp = await client.get(
         f"/api/v1/projects/{p.id}/competitors/metrics",
@@ -319,6 +325,7 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
     )
     assert competitors_resp.status_code == 200
     competitors_body = competitors_resp.json()
+    assert competitors_body["state"] == "partial"
     assert competitors_body["primary_brand_id"] == 12
     assert competitors_body["primary"]["avg_sov"] > 0
     assert [c["brand_id"] for c in competitors_body["competitors"]] == [99]
@@ -332,7 +339,7 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
     assert trends_resp.status_code == 200
     trends_body = trends_resp.json()
     primary_series = next(s for s in trends_body["series"] if s["is_primary"])
-    assert primary_series["points"]
+    assert primary_series["points"] == []
 
 
 @pytest.mark.asyncio
@@ -370,7 +377,8 @@ async def test_competitor_metrics_uses_response_extracted_brand_entities(client,
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["state"] == "ok"
+    assert body["state"] == "partial"
+    assert body["formula_status"] in {"missing_required_inputs", "formula_pending_upstream"}
     assert body["primary"]["brand_id"] == 42
     assert body["primary"]["avg_sov"] == pytest.approx(2 / 6, rel=0.01)
     names = {row["brand_name"]: row for row in body["competitors"]}

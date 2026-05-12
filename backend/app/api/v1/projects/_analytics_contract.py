@@ -14,12 +14,15 @@ from genpano_models import (
     ResponseAnalysis,
 )
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._mention_rollups import brand_mention_match_condition, brand_mention_names
 
+FORMULA_OK_STATUS = "ok"
 FORMULA_PENDING_STATUS = "formula_pending_upstream"
+FORMULA_MISSING_INPUTS_STATUS = "missing_required_inputs"
+FORMULA_NO_EVIDENCE_STATUS = "no_evidence"
 FORMULA_PENDING_SOURCE = "upstream_formula_provenance"
 
 
@@ -85,12 +88,16 @@ class AnalyticsContractContext(BaseModel):
     state: str
     state_reason: str
     state_detail: str | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
     missing_sources: list[str] = Field(default_factory=list)
     missing_reasons: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
     evidence_counts: dict[str, int] = Field(default_factory=dict)
     identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
     formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
+    formula_status: str = FORMULA_NO_EVIDENCE_STATUS
+    selected_filters: dict[str, Any] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
     request_id: str | None = None
     data_freshness: DataFreshness = Field(default_factory=DataFreshness)
 
@@ -143,7 +150,7 @@ def score_0_100(value: float | int | None) -> float | None:
 
 def metric_definition(metric_key: str, *, display_percent: bool = False) -> MetricDefinition:
     source = "geo_score_daily"
-    formula_status = FORMULA_PENDING_STATUS
+    formula_status = FORMULA_OK_STATUS
     if metric_key in {"mention_rate", "avg_mention_rate"}:
         unit = "percent" if display_percent else "ratio"
         value_scale = "percent" if display_percent else "decimal"
@@ -239,9 +246,24 @@ def metric_definitions(
     return {key: metric_definition(key, display_percent=display_percent) for key in metric_keys}
 
 
-def formula_pending_diagnostics(has_data: bool) -> FormulaDiagnostics:
-    if not has_data:
-        return FormulaDiagnostics()
+def formula_diagnostics_for(
+    status: str,
+    *,
+    missing_inputs: list[str] | None = None,
+) -> FormulaDiagnostics:
+    if status == FORMULA_OK_STATUS:
+        return FormulaDiagnostics(status=FORMULA_OK_STATUS)
+    if status == FORMULA_NO_EVIDENCE_STATUS:
+        return FormulaDiagnostics(
+            status=FORMULA_NO_EVIDENCE_STATUS,
+            details=["No eligible evidence exists for the selected analytics filters."],
+        )
+    if status == FORMULA_MISSING_INPUTS_STATUS:
+        return FormulaDiagnostics(
+            status=FORMULA_MISSING_INPUTS_STATUS,
+            pending_sources=list(missing_inputs or []),
+            details=["Required formula inputs are missing; metric values are withheld."],
+        )
     return FormulaDiagnostics(
         status=FORMULA_PENDING_STATUS,
         pending_sources=[FORMULA_PENDING_SOURCE],
@@ -285,14 +307,37 @@ async def build_contract_context(
     base_state: str,
     base_state_reason: str | None = None,
     base_missing_sources: list[str] | None = None,
+    base_missing_inputs: list[str] | None = None,
     base_missing_reasons: list[str] | None = None,
+    formula_status: str | None = None,
+    selected_filters: dict[str, Any] | None = None,
+    source_provenance: list[str] | None = None,
 ) -> AnalyticsContractContext:
     competitor_ids = await _competitor_ids(session, project)
     missing_sources = list(base_missing_sources or [])
+    missing_inputs = list(base_missing_inputs or [])
     missing_reasons = list(base_missing_reasons or [])
+    filters_payload: dict[str, Any] = {
+        "project_id": project.id,
+        "brand_id": brand_id,
+        "date_range": {"from": from_date.isoformat(), "to": to_date.isoformat()},
+        "competitor_brand_ids": competitor_ids,
+    }
+    if selected_filters:
+        filters_payload.update(selected_filters)
+    provenance = list(
+        source_provenance
+        or [
+            "geo_score_daily",
+            "brand_mentions",
+            "response_analyses",
+            "citation_sources",
+        ]
+    )
 
     if brand_id is None:
         missing_sources.append("project.primary_brand_id")
+        missing_inputs.append("project.primary_brand_id")
         reason = "no_primary_brand"
         return AnalyticsContractContext(
             project_scope=ProjectScope(
@@ -306,10 +351,14 @@ async def build_contract_context(
             state="empty",
             state_reason=reason,
             state_detail="Project has no primary brand configured.",
+            missing_inputs=_unique(missing_inputs),
             missing_sources=_unique(missing_sources),
             missing_reasons=_unique(missing_reasons or [reason]),
             evidence_counts=_empty_evidence(competitor_ids),
-            formula_diagnostics=FormulaDiagnostics(),
+            formula_diagnostics=formula_diagnostics_for(FORMULA_NO_EVIDENCE_STATUS),
+            formula_status=FORMULA_NO_EVIDENCE_STATUS,
+            selected_filters=filters_payload,
+            source_provenance=provenance,
         )
 
     from_dt = datetime.combine(from_date, datetime.min.time())
@@ -417,13 +466,28 @@ async def build_contract_context(
         or 0
     )
 
-    project_brand_ids = [brand_id, *competitor_ids]
+    aliases = sorted(await brand_mention_names(session, brand_id))
+    name_value = func.lower(func.trim(BrandMention.brand_name))
+    name_only_competitor_conditions = [
+        BrandMention.brand_id.is_(None),
+        BrandMention.brand_name.isnot(None),
+        name_value != "",
+    ]
+    if aliases:
+        name_only_competitor_conditions.append(~name_value.in_(aliases))
+
     competitive_mention_count = int(
         (
             await session.execute(
-                select(func.count(func.distinct(BrandMention.response_id))).where(
+                select(func.count(BrandMention.id)).where(
                     and_(
-                        BrandMention.brand_id.in_(project_brand_ids),
+                        or_(
+                            and_(
+                                BrandMention.brand_id.isnot(None),
+                                BrandMention.brand_id != brand_id,
+                            ),
+                            and_(*name_only_competitor_conditions),
+                        ),
                         BrandMention.created_at >= from_dt,
                         BrandMention.created_at <= to_dt,
                     )
@@ -432,13 +496,8 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
-    if eligible_response_count == 0:
-        eligible_response_count = mentioned_response_count
-
-    if has_data:
-        missing_sources.append(FORMULA_PENDING_SOURCE)
-        missing_reasons.append("upstream aggregate formula provenance is pending review")
     if repair_missing:
+        missing_inputs.extend(repair_missing)
         missing_sources.extend(repair_missing)
         missing_reasons.append("canonical alias repair has partial analyzer evidence")
 
@@ -455,7 +514,6 @@ async def build_contract_context(
         state = "ok"
         state_reason = base_state_reason or "data_available"
 
-    aliases = sorted(await brand_mention_names(session, brand_id))
     evidence_counts = {
         "geo_score_daily_rows": geo_rows,
         "brand_mention_count": mention_count,
@@ -468,6 +526,58 @@ async def build_contract_context(
         "competitive_mention_count": competitive_mention_count,
         "canonical_alias_repair_count": repair_count,
     }
+    has_any_evidence = has_data or any(
+        count > 0
+        for key, count in evidence_counts.items()
+        if key
+        in {
+            "geo_score_daily_rows",
+            "brand_mention_count",
+            "brand_mentioned_response_count",
+            "normalized_brand_mention_count",
+            "response_analysis_count",
+            "citation_source_count",
+        }
+    )
+
+    if has_any_evidence and eligible_response_count <= 0:
+        missing_inputs.append("eligible_response_denominator")
+        missing_sources.append("eligible_response_denominator")
+        if geo_rows:
+            missing_inputs.append("geo_score_daily.total_queries")
+            missing_sources.append("geo_score_daily.total_queries")
+    if has_any_evidence and normalized_mentions > 0 and competitive_mention_count <= 0:
+        missing_inputs.append("brand_mentions.competitive_set")
+        missing_sources.append("brand_mentions.competitive_set")
+
+    resolved_formula_status = formula_status
+    if resolved_formula_status is None:
+        if not has_any_evidence:
+            resolved_formula_status = FORMULA_NO_EVIDENCE_STATUS
+        elif missing_inputs:
+            resolved_formula_status = FORMULA_MISSING_INPUTS_STATUS
+        else:
+            resolved_formula_status = FORMULA_OK_STATUS
+
+    if resolved_formula_status == FORMULA_MISSING_INPUTS_STATUS and not missing_reasons:
+        missing_reasons.append("required formula inputs are missing")
+    if (
+        resolved_formula_status == FORMULA_PENDING_STATUS
+        and FORMULA_PENDING_SOURCE not in missing_sources
+    ):
+        missing_sources.append(FORMULA_PENDING_SOURCE)
+    if resolved_formula_status != FORMULA_OK_STATUS:
+        if has_any_evidence:
+            state = "partial"
+            if state_reason in {"data_available", "no_metric_data"}:
+                state_reason = (
+                    "missing_formula_inputs"
+                    if resolved_formula_status == FORMULA_MISSING_INPUTS_STATUS
+                    else "formula_pending_upstream"
+                )
+        else:
+            state = "empty"
+            state_reason = base_state_reason or "no_metric_data"
 
     return AnalyticsContractContext(
         project_scope=ProjectScope(
@@ -482,6 +592,7 @@ async def build_contract_context(
         state=state,
         state_reason=state_reason,
         state_detail=None if state != "partial" else "Some analyzer evidence is partial.",
+        missing_inputs=_unique(missing_inputs),
         missing_sources=_unique(missing_sources),
         missing_reasons=_unique(missing_reasons),
         evidence_counts=evidence_counts,
@@ -494,7 +605,13 @@ async def build_contract_context(
             raw_text_owner_brand_ids=sorted(owner_brand_ids),
             repair_missing_sources=_unique(repair_missing),
         ),
-        formula_diagnostics=formula_pending_diagnostics(has_data),
+        formula_diagnostics=formula_diagnostics_for(
+            resolved_formula_status,
+            missing_inputs=_unique(missing_inputs),
+        ),
+        formula_status=resolved_formula_status,
+        selected_filters=filters_payload,
+        source_provenance=provenance,
     )
 
 

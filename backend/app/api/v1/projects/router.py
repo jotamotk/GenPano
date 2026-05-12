@@ -607,7 +607,7 @@ async def project_competitor_trends(
     """Per-brand 30-day trend for primary + each pinned competitor.
 
     Reads geo_score_daily so the FE PanoTrendChart can plot real
-    pipeline data instead of synthetic per-competitor lines.
+    pipeline data with one series per available competitor.
     """
     project = await service.get_project_for_user(session, user, project_id)
     return await get_competitor_trends(
