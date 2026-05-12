@@ -27,6 +27,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.accounts.lib import redact_account_row
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +123,9 @@ async def _isoformat_or_none(value: Any) -> str | None:
     return str(value)
 
 
-async def fetch_accounts(session: AsyncSession) -> list[dict[str, Any]]:
+async def fetch_accounts(
+    session: AsyncSession, *, status: str | None = None
+) -> list[dict[str, Any]]:
     """List llm_accounts (without exposing the cookies_json blob).
 
     Mirrors admin_console wire shape: id, llm_name, phone_number, status,
@@ -134,8 +138,13 @@ async def fetch_accounts(session: AsyncSession) -> list[dict[str, Any]]:
     if not await _table_exists(session, "llm_accounts"):
         return []
     await assert_llm_accounts_schema(session)
+    params: dict[str, Any] = {}
+    where = ""
+    if status:
+        where = "WHERE status = :status"
+        params["status"] = status
     sql = text(
-        """
+        f"""
         SELECT id,
                llm_name,
                phone_number,
@@ -148,7 +157,7 @@ async def fetch_accounts(session: AsyncSession) -> list[dict[str, Any]]:
                  THEN CASE
                    WHEN cookies_json::text LIKE '[%'
                      THEN json_array_length(cookies_json::json)
-                   WHEN cookies_json::text LIKE '{%'
+                   WHEN cookies_json::text LIKE '{{%'
                      THEN json_array_length((cookies_json::json->'cookies'))
                    ELSE 0
                  END
@@ -157,16 +166,17 @@ async def fetch_accounts(session: AsyncSession) -> list[dict[str, Any]]:
                cookies_updated_at,
                created_at AS updated_at
         FROM llm_accounts
+        {where}
         ORDER BY llm_name, id
         """
     )
-    rows = (await session.execute(sql)).mappings().all()
+    rows = (await session.execute(sql, params)).mappings().all()
     out: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
         item["updated_at"] = await _isoformat_or_none(item.get("updated_at"))
         item["cookies_updated_at"] = await _isoformat_or_none(item.get("cookies_updated_at"))
-        out.append(item)
+        out.append(redact_account_row(item))
     return out
 
 
@@ -352,7 +362,7 @@ async def get_account(session: AsyncSession, *, account_id: int) -> dict[str, An
     item = dict(row)
     item["updated_at"] = await _isoformat_or_none(item.get("updated_at"))
     item["cookies_updated_at"] = await _isoformat_or_none(item.get("cookies_updated_at"))
-    return item
+    return redact_account_row(item)
 
 
 # ─── Profile-binding helpers (account_profile_map) ────────────────────────
@@ -413,7 +423,7 @@ async def fetch_account_basics(session: AsyncSession, *, account_id: int) -> dic
         """
     )
     row = (await session.execute(sql, {"id": account_id})).mappings().first()
-    return dict(row) if row else None
+    return redact_account_row(dict(row)) if row else None
 
 
 async def fetch_account_profile_bindings(

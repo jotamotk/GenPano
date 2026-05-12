@@ -45,8 +45,11 @@ from app.admin.accounts import db as accounts_db
 from app.admin.accounts.lib import (
     ACCOUNT_STATUSES,
     CookieImportError,
+    mask_phone_reference,
     normalize_account_status,
     parse_cookies_payload,
+    redact_account_row,
+    redact_sensitive_text,
     safe_email_for_label,
 )
 from app.admin.audit import emit_audit
@@ -110,19 +113,33 @@ def _maybe_schema_error_response(error: RuntimeError) -> JSONResponse | None:
 
 @router.get("", response_model=None)
 async def list_accounts(
+    request: Request,
     operator: Annotated[AdminUser, Depends(current_admin)],
     session: AsyncSession = _DependsDb,
 ) -> Any:
     """List llm_accounts. Wire shape matches admin_console (cookies
     blob is never returned; only the cookie_count derived in SQL)."""
+    raw_status = (request.query_params.get("status") or "").strip()
+    status_filter: str | None = None
+    if raw_status and raw_status.lower() != "all":
+        status_filter = normalize_account_status(raw_status)
+        if status_filter is None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "invalid_status",
+                    "message": f"status must be one of {sorted(ACCOUNT_STATUSES)}",
+                },
+            )
     try:
-        rows = await accounts_db.fetch_accounts(session)
+        rows = await accounts_db.fetch_accounts(session, status=status_filter)
     except RuntimeError as error:
         response = _maybe_schema_error_response(error)
         if response is not None:
             return response
         raise
-    return rows
+    return [redact_account_row(row) for row in rows]
 
 
 @router.post("/import_cookies", response_model=None)
@@ -184,12 +201,12 @@ async def import_cookies(
         resource_id=str(account_id),
         after={
             "platform": platform,
-            "label": label,
+            "label": mask_phone_reference(label),
             "cookie_count": cookie_count,
             "local_storage_count": ls_count,
             "outcome": outcome,
         },
-        reason=str(payload.get("reason") or "import_cookies"),
+        reason=redact_sensitive_text(payload.get("reason") or "import_cookies"),
         request=request,
     )
     return JSONResponse(
@@ -205,9 +222,11 @@ async def update_status(
     operator: Annotated[AdminUser, Depends(current_admin)],
     session: AsyncSession = _DependsDb,
 ) -> JSONResponse:
-    """Flip account status (active / banned / cooldown). emit_audit
-    severity HIGH for banned/cooldown; med for active (de-restriction
-    is less destructive)."""
+    """Flip account status (active / banned / cooldown / expired).
+
+    emit_audit severity HIGH for restrictive states; med for active
+    (de-restriction is less destructive).
+    """
     try:
         payload = await request.json()
     except Exception:
@@ -242,7 +261,7 @@ async def update_status(
         raise not_found("account_not_found")
 
     severity: Literal["low", "med", "high"] = (
-        "high" if new_status in {"banned", "cooldown"} else "med"
+        "high" if new_status in {"banned", "cooldown", "expired"} else "med"
     )
     await emit_audit(
         session,
@@ -253,7 +272,7 @@ async def update_status(
         resource_id=str(account_id),
         before={"status": before.get("status")},
         after={"status": new_status},
-        reason=str(payload.get("reason") or "update_account_status"),
+        reason=redact_sensitive_text(payload.get("reason") or "update_account_status"),
         request=request,
     )
     return JSONResponse(status_code=200, content={"success": True})
@@ -295,13 +314,15 @@ async def reset_fails(
         severity="med",
         resource_type="llm_account",
         resource_id=str(account_id),
-        before={
-            "status": before.get("status"),
-            "consecutive_fails": before.get("consecutive_fails"),
-            "daily_used": before.get("daily_used"),
-        },
+        before=redact_account_row(
+            {
+                "status": before.get("status"),
+                "consecutive_fails": before.get("consecutive_fails"),
+                "daily_used": before.get("daily_used"),
+            }
+        ),
         after={"status": "active", "consecutive_fails": 0, "daily_used": 0},
-        reason=str(payload.get("reason") or "reset_account_fails"),
+        reason=redact_sensitive_text(payload.get("reason") or "reset_account_fails"),
         request=request,
     )
     return JSONResponse(status_code=200, content={"success": True})
@@ -344,9 +365,9 @@ async def delete_account(
         severity="high",
         resource_type="llm_account",
         resource_id=str(account_id),
-        before=before,
+        before=redact_account_row(before),
         after={"deleted": True},
-        reason=str(payload.get("reason") or "delete_account"),
+        reason=redact_sensitive_text(payload.get("reason") or "delete_account"),
         request=request,
     )
     return JSONResponse(status_code=200, content={"success": True})
@@ -409,7 +430,7 @@ async def trigger_auto_login(
         resource_type="llm_account",
         resource_id=str(account_id),
         after={"task_id": getattr(result, "id", None)},
-        reason=str(payload.get("reason") or "trigger_auto_login"),
+        reason=redact_sensitive_text(payload.get("reason") or "trigger_auto_login"),
         request=request,
     )
     return JSONResponse(
@@ -564,7 +585,7 @@ async def auto_assign_profiles(
             "bindings_inserted": inserted_total,
             "method": summary["method"],
         },
-        reason=str(payload.get("reason") or "auto_assign_profiles"),
+        reason=redact_sensitive_text(payload.get("reason") or "auto_assign_profiles"),
         request=request,
     )
 
@@ -654,7 +675,7 @@ async def list_account_profiles(
         "account": {
             "id": account.get("id"),
             "llm_name": account.get("llm_name"),
-            "phone_number": account.get("phone_number"),
+            "phone_number": mask_phone_reference(account.get("phone_number")),
             "daily_limit": int(account.get("daily_limit") or 0),
             "query_count_today": int(account.get("query_count_today") or 0),
             "status": account.get("status"),
@@ -764,7 +785,7 @@ async def upsert_account_profiles(
                 else {}
             ),
         },
-        reason=str(payload.get("reason") or "update_account_profiles"),
+        reason=redact_sensitive_text(payload.get("reason") or "update_account_profiles"),
         request=request,
     )
     return JSONResponse(

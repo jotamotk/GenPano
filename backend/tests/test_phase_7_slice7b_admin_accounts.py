@@ -142,12 +142,13 @@ def _account_row(account_id: int = 1) -> dict:
 
 
 def test_account_statuses_constant():
-    assert ACCOUNT_STATUSES == ("active", "banned", "cooldown")
+    assert ACCOUNT_STATUSES == ("active", "banned", "cooldown", "expired")
 
 
 def test_normalize_account_status_valid():
     assert normalize_account_status("active") == "active"
     assert normalize_account_status("BANNED") == "banned"
+    assert normalize_account_status("EXPIRED") == "expired"
 
 
 def test_normalize_account_status_invalid():
@@ -330,6 +331,57 @@ async def test_list_returns_rows_no_cookies_blob(client, admin_operator, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_list_accepts_expired_status_filter_and_redacts_phone(
+    client, admin_operator, monkeypatch
+):
+    """#619: expired is first-class, but sensitive account material is not."""
+    row = {
+        **_account_row(3),
+        "status": "expired",
+        "phone_number": "+14155552671",
+        "cookie_count": 2,
+        "cookies_updated_at": "2026-05-12T13:30:00",
+        "cookies_json": [{"name": "session", "value": "secret-cookie"}],
+        "sms_text": "Your code is 654321",
+        "provider_api_key": "secret-provider-key",
+    }
+    _patch_db(monkeypatch, accounts=[row])
+    a = _accounts_router_module()
+
+    resp = await client.get("/api/admin/accounts?status=expired")
+
+    assert resp.status_code == 200
+    a.accounts_db.fetch_accounts.assert_awaited_once()
+    _, kwargs = a.accounts_db.fetch_accounts.await_args
+    assert kwargs["status"] == "expired"
+    body = resp.json()
+    assert body[0]["status"] == "expired"
+    assert body[0]["phone_number"] == "141****2671"
+    assert body[0]["cookie_count"] == 2
+    assert body[0]["cookies_updated_at"] == "2026-05-12T13:30:00"
+    rendered = json.dumps(body)
+    assert "+14155552671" not in rendered
+    assert "secret-cookie" not in rendered
+    assert "654321" not in rendered
+    assert "secret-provider-key" not in rendered
+    assert "cookies_json" not in body[0]
+    assert "sms_text" not in body[0]
+    assert "provider_api_key" not in body[0]
+
+
+@pytest.mark.asyncio
+async def test_list_rejects_invalid_status_filter(client, admin_operator, monkeypatch):
+    _patch_db(monkeypatch)
+    a = _accounts_router_module()
+
+    resp = await client.get("/api/admin/accounts?status=revoked")
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_status"
+    a.accounts_db.fetch_accounts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_via_legacy_alias(client, admin_operator, monkeypatch):
     _patch_db(monkeypatch, accounts=[_account_row(7)])
     resp = await client.get("/api/accounts")
@@ -497,6 +549,49 @@ async def test_status_banned_audits_high(
 
 
 # ── POST /{id}/reset ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_status_expired_updates_and_redacts_audit_reason(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    _patch_db(monkeypatch, detail={**_account_row(1), "status": "active"})
+    a = _accounts_router_module()
+
+    resp = await client.post(
+        "/api/admin/accounts/1/status",
+        json={
+            "status": "expired",
+            "reason": "cookies_expired phone=13812345678 code=654321 cookie=abc123",
+        },
+    )
+
+    assert resp.status_code == 200
+    a.accounts_db.update_account_status.assert_awaited_once()
+    _, kwargs = a.accounts_db.update_account_status.await_args
+    assert kwargs["status"] == "expired"
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "update_account_status")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audit) == 1
+    assert audit[0].severity == "high"
+    assert audit[0].after == {"status": "expired"}
+    rendered_audit = json.dumps(
+        {
+            "before": audit[0].before,
+            "after": audit[0].after,
+            "reason": audit[0].reason,
+        }
+    )
+    assert "13812345678" not in rendered_audit
+    assert "654321" not in rendered_audit
+    assert "abc123" not in rendered_audit
 
 
 @pytest.mark.asyncio
@@ -913,10 +1008,10 @@ async def test_get_profiles_returns_bindings_and_quota(client, admin_operator, m
         account={
             "id": 1,
             "llm_name": "doubao",
-            "phone_number": "label-1",
+            "phone_number": "13812345678",
             "daily_limit": 20,
             "query_count_today": 3,
-            "status": "active",
+            "status": "expired",
         },
         bindings=[
             {
@@ -940,6 +1035,9 @@ async def test_get_profiles_returns_bindings_and_quota(client, admin_operator, m
     assert resp.status_code == 200
     body = resp.json()
     assert body["account"]["expected_geo"] == "CN"  # doubao
+    assert body["account"]["status"] == "expired"
+    assert body["account"]["phone_number"] == "138****5678"
+    assert "13812345678" not in json.dumps(body)
     assert body["quota_total"] == 4
     assert body["total"] == 1
     binding = body["bindings"][0]
