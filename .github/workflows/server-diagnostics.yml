@@ -97,14 +97,21 @@ jobs:
           [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || fail "BRAND_ID must be an integer"
           [[ "${BATCH_LIMIT}" =~ ^[0-9]+$ ]] || fail "BATCH_LIMIT must be an integer"
           [[ "${POLL_SECONDS}" =~ ^[0-9]+$ ]] || fail "POLL_SECONDS must be an integer"
+          [[ "${STALE_RUNNING_TTL_SECONDS}" =~ ^[0-9]+$ ]] || fail "STALE_RUNNING_TTL_SECONDS must be an integer"
           if [ -n "${TARGET_LLM}" ] && [ "${TARGET_LLM}" != "all" ] && ! [[ "${TARGET_LLM}" =~ ^[a-z0-9_-]+$ ]]; then
             fail "TARGET_LLM must be empty, all, or a lowercase engine key"
           fi
           [ "${BATCH_LIMIT}" -ge 1 ] || fail "BATCH_LIMIT must be >= 1"
           [ "${BATCH_LIMIT}" -le 100 ] || fail "BATCH_LIMIT must be <= 100 for staged scraper validation"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -ge 60 ] || fail "STALE_RUNNING_TTL_SECONDS must be >= 60"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -le 604800 ] || fail "STALE_RUNNING_TTL_SECONDS must be <= 604800"
           case "${EXECUTE_BATCH}" in
             true|false) ;;
             *) fail "EXECUTE_BATCH must be true or false" ;;
+          esac
+          case "${REPAIR_STALE_RUNNING}" in
+            true|false) ;;
+            *) fail "REPAIR_STALE_RUNNING must be true or false" ;;
           esac
 
           artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
