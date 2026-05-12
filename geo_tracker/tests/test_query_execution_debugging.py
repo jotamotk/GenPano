@@ -159,6 +159,64 @@ def test_doubao_authenticated_completed_answer_is_allowed():
     assert doubao_auth_state_reason(text, html) is None
 
 
+@pytest.mark.asyncio
+async def test_doubao_no_response_login_dialog_sets_auth_failure_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return "登录以解锁更多功能\n手机号\n扫码登录\n登录"
+
+        async def content(self):
+            return """
+            <div role="dialog">
+              <h2>登录以解锁更多功能</h2>
+              <input placeholder="手机号" />
+              <button class="login-button">登录</button>
+            </div>
+            <header><button class="login-button">登录</button></header>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "no_response"
+
+    reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_doubao_no_response_login_dialog_missing_state_overrides_generic_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return "登录以解锁更多功能\n手机号\n扫码登录"
+
+        async def content(self):
+            return """
+            <div role="dialog">
+              <h2>登录以解锁更多功能</h2>
+              <input placeholder="手机号" />
+            </div>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "no_response"
+
+    reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_auth_state_missing"
+    assert executor.last_error_reason == "doubao_auth_state_missing"
+
+
 def test_query_execution_debug_fields_are_populated():
     query = Query(query_text="hello", target_llm="doubao")
     started_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=2)
