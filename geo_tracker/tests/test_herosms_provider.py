@@ -60,6 +60,16 @@ def _offer_payload(
     }
 
 
+def _multi_operator_offer_payload(*, operators: list[dict]) -> dict:
+    return {
+        "data": {
+            "dr": {
+                "operators": operators,
+            }
+        }
+    }
+
+
 class _FakeResponse:
     def __init__(self, *, json_data=None, text: str = "", status_code: int = 200):
         self._json_data = json_data
@@ -138,6 +148,77 @@ async def test_reserve_number_requires_compliant_us_physical_openai_offer():
         "operator": "physic",
         "maxPrice": "0.60",
     }
+
+
+@pytest.mark.asyncio
+async def test_reserve_number_requires_physic_operator_when_any_has_more_inventory():
+    from geo_tracker.agent.sms_login.herosms_client import HeroSMSClient
+    from geo_tracker.agent.sms_login.providers import HeroSMSProvider
+
+    fake = _FakeHTTPClient(
+        [
+            _FakeResponse(
+                json_data=_multi_operator_offer_payload(
+                    operators=[
+                        {
+                            "name": "any",
+                            "countPhysical": 12000,
+                            "freePriceOffers": {"0.2200": 12000},
+                        },
+                        {
+                            "name": "physic",
+                            "countPhysical": 100,
+                            "freePriceOffers": {"0.2200": 100},
+                        },
+                    ]
+                )
+            ),
+            _FakeResponse(text=_access_number_response()),
+        ]
+    )
+    provider = HeroSMSProvider(
+        client=HeroSMSClient(api_key=_api_key(), http_client=fake)
+    )
+
+    await provider.reserve_number()
+
+    get_number_calls = _handler_calls(fake, "getNumber")
+    assert len(get_number_calls) == 1
+    assert get_number_calls[0]["params"]["operator"] == "physic"
+
+
+@pytest.mark.asyncio
+async def test_reserve_number_blocks_any_only_inventory_as_ambiguous():
+    from geo_tracker.agent.sms_login.herosms_client import (
+        HeroSMSClient,
+        HeroSMSProviderBlocked,
+    )
+    from geo_tracker.agent.sms_login.providers import HeroSMSProvider
+
+    fake = _FakeHTTPClient(
+        [
+            _FakeResponse(
+                json_data=_multi_operator_offer_payload(
+                    operators=[
+                        {
+                            "name": "any",
+                            "countPhysical": 12000,
+                            "freePriceOffers": {"0.2200": 12000},
+                        },
+                    ]
+                )
+            ),
+        ]
+    )
+    provider = HeroSMSProvider(
+        client=HeroSMSClient(api_key=_api_key(), http_client=fake)
+    )
+
+    with pytest.raises(HeroSMSProviderBlocked) as excinfo:
+        await provider.reserve_number()
+
+    assert excinfo.value.diagnostics["reason"] == "physical_operator_missing"
+    assert _handler_calls(fake, "getNumber") == []
 
 
 @pytest.mark.parametrize(

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 HEROSMS_BASE_URL = "https://hero-sms.com"
 HEROSMS_SERVICE_CODE = "dr"
 HEROSMS_COUNTRY_ID = "187"
+HEROSMS_PHYSICAL_OPERATOR = "physic"
 HEROSMS_MAX_PRICE_USD = Decimal("0.60")
 HEROSMS_PRICE_BUCKET = "usd<=0.60"
 
@@ -145,6 +146,7 @@ class HeroSMSClient:
             )
 
         saw_physical = False
+        saw_ambiguous_physical = False
         saw_price = False
         candidates: list[HeroSMSOffer] = []
         for operator in operators:
@@ -153,6 +155,9 @@ class HeroSMSClient:
             name = str(operator.get("name") or "").strip()
             count_physical = _as_positive_int(operator.get("countPhysical"))
             if count_physical <= 0:
+                continue
+            if name != HEROSMS_PHYSICAL_OPERATOR:
+                saw_ambiguous_physical = True
                 continue
             saw_physical = True
             price_offers = operator.get("freePriceOffers")
@@ -177,7 +182,7 @@ class HeroSMSClient:
         if candidates:
             offer = sorted(
                 candidates,
-                key=lambda item: (item.price_usd, -item.count_physical, item.operator),
+                key=lambda item: (item.price_usd, -item.count_physical),
             )[0]
             logger.info(
                 "HeroSMS compliant offer found: service=%s country=%s "
@@ -190,12 +195,24 @@ class HeroSMSClient:
             )
             return offer
 
+        if not saw_physical and saw_ambiguous_physical:
+            raise HeroSMSProviderBlocked(
+                "physical_operator_missing",
+                {
+                    "service": HEROSMS_SERVICE_CODE,
+                    "country": HEROSMS_COUNTRY_ID,
+                    "required_operator": HEROSMS_PHYSICAL_OPERATOR,
+                    "ambiguous_inventory_seen": True,
+                    "fallback_allowed": False,
+                },
+            )
         reason = "price_above_guard" if saw_physical and saw_price else "no_physical_inventory"
         raise HeroSMSProviderBlocked(
             reason,
             {
                 "service": HEROSMS_SERVICE_CODE,
                 "country": HEROSMS_COUNTRY_ID,
+                "required_operator": HEROSMS_PHYSICAL_OPERATOR,
                 "max_price_usd": HEROSMS_MAX_PRICE_USD,
                 "must_require_physical": True,
                 "fallback_allowed": False,
