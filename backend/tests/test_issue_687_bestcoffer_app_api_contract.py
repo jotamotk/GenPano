@@ -9,7 +9,14 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from genpano_models import GeoScoreDaily, Project, User
+from genpano_models import (
+    BrandMention,
+    CitationSource,
+    GeoScoreDaily,
+    Project,
+    ProjectTopicPin,
+    User,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +63,7 @@ async def _project(
     p = Project(
         id=_new_id(),
         user_id=user.id,
-        name="BestCoffer project",
+        name=f"BestCoffer project {uuid.uuid4().hex[:6]}",
         primary_brand_id=primary_brand_id,
         industry_id=7,
     )
@@ -171,8 +178,93 @@ async def _seed_bestcoffer_response(db_session: AsyncSession) -> None:
     await db_session.commit()
 
 
+async def _seed_unrelated_bestcoffer_facts(db_session: AsyncSession) -> None:
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (68711, :brand_id, 'BestCoffer unrelated project topic',
+                    'product', 'active', :day)
+            """
+        ),
+        {"brand_id": BESTCOFFER_BRAND_ID, "day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES (68712, 68711, 'BestCoffer unrelated project prompt',
+                    'commercial', 'non_branded', 'en', 'active', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES (68713, 'deepseek', 'done', 'BestCoffer other project comparison',
+                    :brand_id, 'PROF-OTHER-687', 68712, :day, :day, :day, 100)
+            """
+        ),
+        {"brand_id": BESTCOFFER_BRAND_ID, "day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES (68714, 68713, 68712, 'BestCoffer unrelated App facts exist.',
+                    'deepseek', 'commercial', 'deepseek-v3', '[]', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    mention = BrandMention(
+        response_id=68714,
+        brand_id=BESTCOFFER_BRAND_ID,
+        brand_name="BestCoffer",
+        mention_count=3,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add(
+        CitationSource(
+            response_id=68714,
+            mention_id=mention.id,
+            url="https://example.com/bestcoffer-other-project",
+            domain="example.com",
+            title="BestCoffer other project evidence",
+            source_type="article",
+            created_at=DAY,
+        )
+    )
+    await db_session.commit()
+
+
 def _card_values(body: dict[str, Any]) -> list[float | None]:
     return [card["value"] for card in body["kpi_cards"]]
+
+
+def _assert_selected_project_missing_contract(body: dict[str, Any]) -> None:
+    assert body["brand_id"] == BESTCOFFER_BRAND_ID
+    assert body["state"] == "partial"
+    assert body["state_reason"] == "analysis_missing"
+    assert body["formula_status"] == "missing_required_inputs"
+    assert "analysis_missing" in body["missing_reasons"]
+    assert "no_aggregate_rows" in body["missing_reasons"]
+    assert body["evidence_counts"]["admin_fact_response_count"] == 1
+    assert body["evidence_counts"]["response_analysis_count"] == 0
+    assert body["evidence_counts"]["brand_mention_count"] == 1
+    assert body["evidence_counts"]["citation_source_count"] == 1
+    assert body["metric_formula_evidence"]["coverage"]["sample_response_ids"] == [68704]
 
 
 @pytest.mark.asyncio
@@ -264,3 +356,45 @@ async def test_raw_responses_without_analyzer_or_aggregate_rows_report_missing_c
     )
     assert "analysis_missing" in body["metric_formula_evidence"]["coverage"]["reason_codes"]
     assert all(series["points"] == [] for series in body["series"])
+
+
+@pytest.mark.asyncio
+async def test_unrelated_brand_facts_do_not_hide_selected_project_missing_state(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user, primary_brand_id=BESTCOFFER_BRAND_ID)
+    other_project = await _project(db_session, user, primary_brand_id=BESTCOFFER_BRAND_ID)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_bestcoffer_response(db_session)
+    await _seed_unrelated_bestcoffer_facts(db_session)
+    db_session.add_all(
+        [
+            ProjectTopicPin(project_id=project.id, topic_id=68701, state="tracked"),
+            ProjectTopicPin(project_id=other_project.id, topic_id=68711, state="tracked"),
+        ]
+    )
+    await db_session.commit()
+
+    params = {
+        "brand_id": BESTCOFFER_BRAND_ID,
+        "from": DAY.date().isoformat(),
+        "to": DAY.date().isoformat(),
+    }
+
+    metrics = await client.get(
+        f"/api/v1/projects/{project.id}/metrics",
+        headers=_bearer(user),
+        params={**params, "series": "mention_rate,sov,sentiment,citation"},
+    )
+    overview = await client.get(
+        f"/api/v1/projects/{project.id}/overview",
+        headers=_bearer(user),
+        params=params,
+    )
+
+    assert metrics.status_code == 200, metrics.text
+    assert overview.status_code == 200, overview.text
+    _assert_selected_project_missing_contract(metrics.json())
+    _assert_selected_project_missing_contract(overview.json())

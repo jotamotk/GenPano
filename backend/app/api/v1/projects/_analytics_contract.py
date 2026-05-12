@@ -1121,6 +1121,37 @@ async def build_contract_context(
         )
     ).all()
     admin_fact_response_count = len(target_response_ids)
+    target_mention_count = 0
+    target_citation_count = 0
+    if target_response_ids:
+        target_mention_count = int(
+            (
+                await session.execute(
+                    select(func.count(BrandMention.id)).where(
+                        and_(
+                            brand_filter,
+                            BrandMention.response_id.in_(target_response_ids),
+                        )
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        target_citation_count = int(
+            (
+                await session.execute(
+                    select(func.count(CitationSource.id))
+                    .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+                    .where(
+                        and_(
+                            brand_filter,
+                            BrandMention.response_id.in_(target_response_ids),
+                        )
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
 
     repair_count = 0
     owner_brand_ids: set[int] = set()
@@ -1161,8 +1192,8 @@ async def build_contract_context(
         and admin_fact_response_count > 0
         and (project.primary_brand_id is None or project.primary_brand_id == brand_id)
         and len(analysis_rows) == 0
-        and mention_count == 0
-        and citation_count == 0
+        and target_mention_count == 0
+        and target_citation_count == 0
     )
     analysis_missing = raw_response_without_app_facts
     no_aggregate_rows = raw_response_without_app_facts and geo_rows == 0
