@@ -13,6 +13,7 @@
 
 import { apiClient } from '../lib/apiClient'
 import { ProjectAnalysisParams, buildQuery } from '../lib/projectAnalysisFilters'
+import type { AnalyticsContractMetadata } from './analyticsContract'
 
 // ── /metrics/by-engine ──────────────────────────────────────────────
 export interface EngineMetricRow {
@@ -23,7 +24,7 @@ export interface EngineMetricRow {
   sentiment: number | null
 }
 
-export interface EngineMetricsOut {
+export interface EngineMetricsOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   items: EngineMetricRow[]
@@ -37,7 +38,7 @@ export interface PositionBucketRow {
   pct: number
 }
 
-export interface PositionDistributionOut {
+export interface PositionDistributionOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   items: PositionBucketRow[]
@@ -59,7 +60,7 @@ export interface HeatmapRow {
   values: HeatmapCell[]
 }
 
-export interface TopicHeatmapOut {
+export interface TopicHeatmapOut extends AnalyticsContractMetadata {
   project_id: string
   metric: 'mention_rate' | 'sentiment'
   rows: HeatmapRow[]
@@ -74,7 +75,7 @@ export interface SentimentByEngineRow {
   negative: number
 }
 
-export interface SentimentByEngineOut {
+export interface SentimentByEngineOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   items: SentimentByEngineRow[]
@@ -87,7 +88,7 @@ export interface SentimentTrendByEngineRow {
   by_engine: Record<string, number | null>
 }
 
-export interface SentimentTrendByEngineOut {
+export interface SentimentTrendByEngineOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   engines: string[]
@@ -104,7 +105,7 @@ export interface TopicAttributionRow {
   sample_snippet: string | null
 }
 
-export interface TopicAttributionOut {
+export interface TopicAttributionOut extends AnalyticsContractMetadata {
   project_id: string
   items: TopicAttributionRow[]
   state: 'ok' | 'empty' | 'partial'
@@ -123,7 +124,7 @@ export interface MentionSampleRow {
   occurred_at: string | null
 }
 
-export interface MentionSamplesOut {
+export interface MentionSamplesOut extends AnalyticsContractMetadata {
   project_id: string
   items: MentionSampleRow[]
   state: 'ok' | 'empty' | 'partial'
@@ -139,7 +140,7 @@ export interface AuthorityTrendPoint {
   untiered_pct: number
 }
 
-export interface AuthorityTrendOut {
+export interface AuthorityTrendOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   points: AuthorityTrendPoint[]
@@ -154,7 +155,7 @@ export interface CitationCompositionRow {
   pct: number
 }
 
-export interface CitationCompositionOut {
+export interface CitationCompositionOut extends AnalyticsContractMetadata {
   project_id: string
   period: { from: string; to: string }
   segments: CitationCompositionRow[]
@@ -178,7 +179,7 @@ export interface ContentGapPageTypeRow {
   pct: number
 }
 
-export interface ContentGapOut {
+export interface ContentGapOut extends AnalyticsContractMetadata {
   project_id: string
   topics: ContentGapTopicRow[]
   page_type_distribution: ContentGapPageTypeRow[]
@@ -215,7 +216,7 @@ export interface Tier2MatrixOut {
   brands: Tier2MatrixRow[]
 }
 
-export interface PrTargetsOut {
+export interface PrTargetsOut extends AnalyticsContractMetadata {
   project_id: string
   targets: PrTargetRow[]
   kol_scorecards: KolScorecard[]
@@ -237,7 +238,7 @@ export interface SimulatorPreset {
   delta_by_tier: Record<string, number>
 }
 
-export interface SimulatorBaselineOut {
+export interface SimulatorBaselineOut extends AnalyticsContractMetadata {
   project_id: string
   current_pano: number
   industry_median: number | null
@@ -257,7 +258,7 @@ export interface AuthorityRadarRow {
   top_competitor_name: string | null
 }
 
-export interface AuthorityRadarOut {
+export interface AuthorityRadarOut extends AnalyticsContractMetadata {
   project_id: string
   rows: AuthorityRadarRow[]
   state: 'ok' | 'empty' | 'partial'
@@ -273,7 +274,7 @@ export interface GroupSharedDomainEntry {
   sister_brand_names: string[]
 }
 
-export interface GroupSharedDomainsOut {
+export interface GroupSharedDomainsOut extends AnalyticsContractMetadata {
   project_id: string
   group_id: number | null
   group_name: string | null
@@ -292,7 +293,7 @@ export interface ProductRelationRow {
   confidence: number | null
 }
 
-export interface ProductRelationsOut {
+export interface ProductRelationsOut extends AnalyticsContractMetadata {
   project_id: string
   items: ProductRelationRow[]
   state: 'ok' | 'empty' | 'partial'

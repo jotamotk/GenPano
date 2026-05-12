@@ -11,6 +11,7 @@ import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
 import { toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
+import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandSentiment } from '../../hooks/useBrandMetrics';
 import {
   useSentimentByEngine,
@@ -86,7 +87,9 @@ export default function BrandSentimentPage() {
   let neutralPct: number | null;
   let distributionIsMock = !isLive;
   if (isLive) {
-    const distribution = sentimentQ.data?.state === 'ok' ? sentimentQ.data.distribution : null;
+    const distribution = canUseMetricEvidence(sentimentQ.data, 'sentiment')
+      ? sentimentQ.data?.distribution
+      : null;
     positivePct = distribution ? Math.round(distribution.positive_pct) : null;
     negativePct = distribution ? Math.round(distribution.negative_pct) : null;
     neutralPct = distribution ? Math.round(distribution.neutral_pct) : null;
@@ -206,12 +209,12 @@ export default function BrandSentimentPage() {
   const samplesData = isLive ? liveSamples : SENTIMENT_DETAIL_LIST || [];
   const samplesIsMock = !isLive;
   const positiveKeywords = isLive
-    ? (sentimentQ.data?.top_keywords || [])
+    ? (canUseMetricEvidence(sentimentQ.data, 'sentiment') ? sentimentQ.data?.top_keywords || [] : [])
         .filter((kw) => kw.polarity === 'positive')
         .map((kw) => ({ word: kw.keyword, weight: kw.count }))
     : SENTIMENT_KEYWORDS.positive || [];
   const negativeKeywords = isLive
-    ? (sentimentQ.data?.top_keywords || [])
+    ? (canUseMetricEvidence(sentimentQ.data, 'sentiment') ? sentimentQ.data?.top_keywords || [] : [])
         .filter((kw) => kw.polarity === 'negative')
         .map((kw) => ({ word: kw.keyword, weight: kw.count }))
     : SENTIMENT_KEYWORDS.negative || [];

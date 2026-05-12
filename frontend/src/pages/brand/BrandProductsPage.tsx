@@ -9,6 +9,7 @@ import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
+import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandProducts } from '../../hooks/useBrandMetrics';
 import { useProductRelations } from '../../hooks/useCharts';
 import { adaptProductRelations } from '../../adapters/chartAdapters';
@@ -88,7 +89,12 @@ export default function BrandProductsPage() {
   }, [primary.id, primary.name, primary.nameEn]);
 
   const liveProducts = useMemo(() => {
-    if (!isLive || !productsQ.data || productsQ.data.state !== 'ok') return null;
+    if (!isLive || !productsQ.data || !canUseMetricEvidence(productsQ.data, 'product')) return null;
+    const canUseMention = canUseMetricEvidence(productsQ.data, ['product', 'mention_rate']);
+    const canUseSov = canUseMetricEvidence(productsQ.data, 'sov');
+    const canUseSentiment = canUseMetricEvidence(productsQ.data, 'sentiment');
+    const canUseRank = canUseMetricEvidence(productsQ.data, 'rank');
+    const canUsePano = canUseMetricEvidence(productsQ.data, 'pano_score');
     return productsQ.data.items.map((p) => ({
       id: p.product_id,
       primaryName: p.product_name,
@@ -97,14 +103,14 @@ export default function BrandProductsPage() {
       brandId: p.brand_id ?? primary.id,
       category: p.category,
       categoryName: p.category,
-      mentionRate: p.mention_rate ?? null,
+      mentionRate: canUseMention ? p.mention_rate ?? null : null,
       mentionCount: p.mention_count ?? null,
-      sov: p.sov ?? null,
-      sentiment: p.avg_sentiment ?? null,
-      ranking: p.ranking ?? null,
+      sov: canUseSov ? p.sov ?? null : null,
+      sentiment: canUseSentiment ? p.avg_sentiment ?? null : null,
+      ranking: canUseRank ? p.ranking ?? null : null,
       trend: p.trend_30d ?? null,
       sparkData: p.sparkline ?? [],
-      panoScore: p.avg_geo_score ?? null,
+      panoScore: canUsePano ? p.avg_geo_score ?? null : null,
     }));
   }, [isLive, productsQ.data, primary]);
   const products = isLive ? (liveProducts ?? []) : mockProducts;

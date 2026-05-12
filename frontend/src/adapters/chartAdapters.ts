@@ -38,6 +38,18 @@ import type {
   IndustryTopDomainsOut,
   TopicIntentMatrixOut,
 } from '../api/industries'
+import {
+  canUseMetricEvidence,
+  type AnalyticsContractMetadata,
+} from '../api/analyticsContract'
+
+function canUseChartMetrics(
+  out: (AnalyticsContractMetadata & { state?: string }) | null | undefined,
+  metricKeys: string[],
+): boolean {
+  if (!out) return false
+  return metricKeys.every((key) => canUseMetricEvidence(out, key))
+}
 
 // ── Engine breakdown bar (BrandVisibilityPage) ──────────────────────
 export interface EngineBreakdownBar {
@@ -53,10 +65,18 @@ export function adaptEngineMetricsToBreakdown(
   if (!out || !Array.isArray(out.items)) return []
   return out.items.map((row) => ({
     engine: row.engine,
-    mentionRate: row.mention_rate != null ? +(row.mention_rate * 100).toFixed(1) : null,
-    sov: row.sov != null ? +(row.sov * 100).toFixed(1) : null,
+    mentionRate:
+      canUseChartMetrics(out, ['mention_rate']) && row.mention_rate != null
+        ? +(row.mention_rate * 100).toFixed(1)
+        : null,
+    sov:
+      canUseChartMetrics(out, ['sov']) && row.sov != null
+        ? +(row.sov * 100).toFixed(1)
+        : null,
     citationShare:
-      row.citation_rate != null ? +(row.citation_rate * 100).toFixed(1) : null,
+      canUseChartMetrics(out, ['citation']) && row.citation_rate != null
+        ? +(row.citation_rate * 100).toFixed(1)
+        : null,
   }))
 }
 
@@ -69,7 +89,7 @@ export interface PositionBarRow {
 export function adaptPositionDistribution(
   out: PositionDistributionOut | undefined,
 ): PositionBarRow[] {
-  if (!out || !Array.isArray(out.items)) return []
+  if (!out || !canUseChartMetrics(out, ['rank']) || !Array.isArray(out.items)) return []
   return out.items.map((it) => ({ name: it.bucket, value: it.pct }))
 }
 
@@ -89,7 +109,7 @@ export function adaptHeatmap(
   out: TopicHeatmapOut | undefined,
   primaryBrandId: number | string | null,
 ): FrontendHeatmapRow[] {
-  if (!out || !Array.isArray(out.rows)) return []
+  if (!out || !canUseChartMetrics(out, [out.metric]) || !Array.isArray(out.rows)) return []
   return out.rows.map((r: ApiHeatmapRow) => ({
     brandId: r.brand_id,
     brandName: r.brand_name ?? `#${r.brand_id}`,
@@ -113,7 +133,7 @@ export interface SentimentStackBarRow {
 export function adaptSentimentByEngine(
   out: SentimentByEngineOut | undefined,
 ): SentimentStackBarRow[] {
-  if (!out || !Array.isArray(out.items)) return []
+  if (!out || !canUseChartMetrics(out, ['sentiment']) || !Array.isArray(out.items)) return []
   return out.items.map((it) => ({
     engine: it.engine,
     positive: it.positive,
@@ -131,7 +151,12 @@ export interface SentimentTrendRow {
 export function adaptSentimentTrend(
   out: SentimentTrendByEngineOut | undefined,
 ): { rows: SentimentTrendRow[]; engines: string[] } {
-  if (!out || !Array.isArray(out.items) || !Array.isArray(out.engines)) {
+  if (
+    !out ||
+    !canUseChartMetrics(out, ['sentiment']) ||
+    !Array.isArray(out.items) ||
+    !Array.isArray(out.engines)
+  ) {
     return { rows: [], engines: [] }
   }
   return {
@@ -157,7 +182,7 @@ export interface SentimentTopicAttributionRow {
 export function adaptTopicAttribution(
   out: TopicAttributionOut | undefined,
 ): SentimentTopicAttributionRow[] {
-  if (!out || !Array.isArray(out.items)) return []
+  if (!out || !canUseChartMetrics(out, ['sentiment']) || !Array.isArray(out.items)) return []
   return out.items.map((r) => ({
     topicName: r.topic_name,
     negativeCount: r.negative_count,
@@ -178,7 +203,7 @@ export interface SentimentSampleRow {
 export function adaptMentionSamples(
   out: MentionSamplesOut | undefined,
 ): SentimentSampleRow[] {
-  if (!out || !Array.isArray(out.items)) return []
+  if (!out || !canUseChartMetrics(out, ['sentiment']) || !Array.isArray(out.items)) return []
   return out.items.map((m) => ({
     label: m.label,
     topic: m.topic ?? '—',
@@ -199,7 +224,7 @@ export interface AuthorityShareSeriesRow {
 export function adaptAuthorityTrend(
   out: AuthorityTrendOut | undefined,
 ): AuthorityShareSeriesRow[] {
-  if (!out || out.state !== 'ok' || !Array.isArray(out.points)) return []
+  if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.points)) return []
   return out.points.map((p) => ({
     date: p.date,
     // Tier1 = official, Tier2 = authoritative media (co-occurrence proxy),
@@ -230,7 +255,7 @@ const TIER_COLORS = [
 export function adaptCitationComposition(
   out: CitationCompositionOut | undefined,
 ): DonutSegment[] {
-  if (!out || out.state !== 'ok' || !Array.isArray(out.segments)) return []
+  if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.segments)) return []
   return out.segments.map((s, i) => ({
     name: s.label,
     value: +s.pct.toFixed(1),
@@ -251,7 +276,7 @@ export function adaptContentGap(out: ContentGapOut | undefined): {
   topics: ContentGapTopicMockShape[]
   pageTypeDistribution: { type: string; count: number; pct: number }[]
 } {
-  if (!out || out.state !== 'ok' || !Array.isArray(out.topics))
+  if (!out || !canUseChartMetrics(out, ['citation', 'topic']) || !Array.isArray(out.topics))
     return { topics: [], pageTypeDistribution: [] }
   return {
     topics: out.topics.map((t) => ({
@@ -275,7 +300,7 @@ export function adaptContentGap(out: ContentGapOut | undefined): {
 // existing `PrTargetsPanel` mock. Keep unavailable formula fields null so the
 // UI can render them as missing instead of inventing production scores.
 export function adaptPrTargets(out: PrTargetsOut | undefined) {
-  if (!out || out.state !== 'ok' || !Array.isArray(out.targets))
+  if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.targets))
     return {
       targets: [],
       kolScorecards: [],
@@ -328,16 +353,7 @@ export function adaptPrTargets(out: PrTargetsOut | undefined) {
 
 // ── Simulator baseline ──────────────────────────────────────────────
 export function adaptSimulatorBaseline(out: SimulatorBaselineOut | undefined) {
-  if (!out)
-    return {
-      currentPanoA: 0,
-      industryMedian: 0,
-      industryTop3Avg: 0,
-      currentByTier: {} as Record<number, number>,
-      tierWeights: {} as Record<number, number>,
-      defaultConfidence: {} as Record<number, number>,
-      presets: [] as { id: string; label: string; deltaByTier: Record<number, number> }[],
-    }
+  if (!out || !canUseChartMetrics(out, ['citation', 'pano_score'])) return null
   const currentByTier: Record<number, number> = {}
   const tierWeights: Record<number, number> = {}
   const defaultConfidence: Record<number, number> = {}
@@ -374,7 +390,7 @@ export interface AuthorityRadarMockRow {
 export function adaptAuthorityRadar(
   out: AuthorityRadarOut | undefined,
 ): AuthorityRadarMockRow[] {
-  if (!out || !Array.isArray(out.rows)) return []
+  if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.rows)) return []
   return out.rows.map((r) => ({
     tier: r.tier,
     me: r.me,
@@ -385,7 +401,7 @@ export function adaptAuthorityRadar(
 
 // ── Group shared domains ────────────────────────────────────────────
 export function adaptGroupSharedDomains(out: GroupSharedDomainsOut | undefined) {
-  if (!out)
+  if (!out || !canUseChartMetrics(out, ['citation']))
     return {
       group: null as string | null,
       sharedRatio: null as number | null,
@@ -408,7 +424,7 @@ export function adaptGroupSharedDomains(out: GroupSharedDomainsOut | undefined) 
 
 // ── Product relations ───────────────────────────────────────────────
 export function adaptProductRelations(out: ProductRelationsOut | undefined) {
-  if (!out || !Array.isArray(out.items)) return [] as { productA: number; productB: number; type: string; confidence: number }[]
+  if (!out || !canUseChartMetrics(out, ['product']) || !Array.isArray(out.items)) return [] as { productA: number; productB: number; type: string; confidence: number }[]
   return out.items.map((r) => ({
     productA: r.product_a_id,
     productAName: r.product_a_name,

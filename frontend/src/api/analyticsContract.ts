@@ -32,6 +32,13 @@ export interface FormulaDiagnostics {
   [key: string]: unknown
 }
 
+export interface MetricFormulaEvidence extends MetricContractFields {
+  status?: string | null
+  reason_codes?: string[]
+  missing_inputs?: string[]
+  [key: string]: unknown
+}
+
 export interface DataFreshness {
   generated_at?: string | null
 }
@@ -53,11 +60,14 @@ export interface AnalyticsContractMetadata {
   project_scope?: ProjectScope | null
   brand_aliases?: string[]
   missing_sources?: ContractListItem[]
+  missing_inputs?: ContractListItem[]
   missing_reasons?: ContractListItem[]
   invalid_fields?: ContractListItem[]
   evidence_counts?: Record<string, number>
   identity_diagnostics?: IdentityDiagnostics | null
   formula_diagnostics?: FormulaDiagnostics | null
+  formula_status?: string | null
+  metric_formula_evidence?: Record<string, MetricFormulaEvidence>
   request_id?: string | null
   data_freshness?: DataFreshness | null
 }
@@ -126,6 +136,81 @@ export function canUseContractMetricValue(
   const metricState = lower(fields?.state)
   if (metricState && metricState !== 'ok') return false
   return isOkFormulaStatus(fields?.formula_status)
+}
+
+const METRIC_EVIDENCE_ALIASES: Record<string, string[]> = {
+  mention_rate: ['mention_rate', 'coverage', 'visibility'],
+  avg_mention_rate: ['mention_rate', 'coverage', 'visibility'],
+  sov: ['sov'],
+  avg_sov: ['sov'],
+  sentiment: ['sentiment'],
+  avg_sentiment: ['sentiment'],
+  citation: ['citation', 'citations'],
+  citation_rate: ['citation', 'citations'],
+  citation_share: ['citation', 'citations'],
+  rank: ['rank', 'pano_geo'],
+  avg_position_rank: ['rank', 'pano_geo'],
+  geo_score: ['pano_geo', 'geo_score', 'pano_score'],
+  avg_geo_score: ['pano_geo', 'geo_score', 'pano_score'],
+  pano_score: ['pano_geo', 'geo_score', 'pano_score'],
+  product: ['topic_product', 'product'],
+  topic: ['topic_product', 'topic'],
+}
+
+function uniqueStrings(items: Array<unknown>): string[] {
+  return Array.from(
+    new Set(
+      items
+        .flatMap((item) => (Array.isArray(item) ? item : [item]))
+        .filter((item) => item !== null && item !== undefined && item !== '')
+        .map((item) => contractItemLabel(item as ContractListItem))
+        .filter(Boolean),
+    ),
+  )
+}
+
+export function metricEvidenceFor(
+  source: AnalyticsContractMetadata | null | undefined,
+  metricKeys: string | string[],
+): MetricFormulaEvidence | null {
+  const evidence = source?.metric_formula_evidence
+  if (!evidence) return null
+  const keys = Array.isArray(metricKeys) ? metricKeys : [metricKeys]
+  const expanded = keys.flatMap((key) => {
+    const normalized = lower(key)
+    return [normalized, ...(METRIC_EVIDENCE_ALIASES[normalized] ?? [])]
+  })
+  const wanted = new Set(expanded.filter(Boolean))
+  for (const [key, item] of Object.entries(evidence)) {
+    if (wanted.has(lower(key))) return item
+  }
+  return null
+}
+
+export function canUseMetricEvidence(
+  source: AnalyticsContractMetadata | null | undefined,
+  metricKeys: string | string[],
+): boolean {
+  if (!source || !isUsableAnalyticsEndpointState(source.state)) return false
+  const evidence = metricEvidenceFor(source, metricKeys)
+  if (evidence) return canUseContractMetricValue(source.state, evidence)
+  if (lower(source.state) === 'partial') return false
+  return isOkFormulaStatus(source.formula_status)
+}
+
+export function contractEvidenceReasons(
+  source: AnalyticsContractMetadata | null | undefined,
+  metricKeys?: string | string[],
+): string[] {
+  if (!source) return []
+  const evidence = metricKeys ? metricEvidenceFor(source, metricKeys) : null
+  return uniqueStrings([
+    evidence?.reason_codes,
+    evidence?.missing_inputs,
+    source.missing_reasons,
+    source.missing_inputs,
+    source.missing_sources,
+  ])
 }
 
 export function asContractMetricNumber(
