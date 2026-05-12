@@ -155,11 +155,14 @@ def classify_citation_extraction(
     raw_text: str | None,
     response_html: str | None,
     citations: list[dict[str, Any]] | None,
+    source_ui_seen: bool = False,
+    source_ui_clicked: bool = False,
 ) -> dict[str, Any]:
     llm = (llm_name or "").lower()
     citation_count = len(citations or [])
     html_candidates = extract_citations_from_html(response_html, llm_name=llm)
     source_marker_count = len(_SOURCE_UI_RE.findall(response_html or ""))
+    saw_source_ui = bool(source_ui_seen or source_ui_clicked or source_marker_count > 0)
 
     if citation_count > 0:
         status = "citations_present"
@@ -167,7 +170,7 @@ def classify_citation_extraction(
     elif html_candidates:
         status = "citation_extractor_gap"
         reason = "external_urls_in_html_not_persisted"
-    elif llm == "chatgpt" and source_marker_count > 0:
+    elif llm == "chatgpt" and saw_source_ui:
         status = "citation_extractor_gap"
         reason = "source_markers_without_extractable_urls"
     elif llm == "chatgpt":
@@ -183,5 +186,7 @@ def classify_citation_extraction(
         "citation_count": citation_count,
         "html_candidate_count": len(html_candidates),
         "source_marker_count": source_marker_count,
+        "source_ui_seen": saw_source_ui,
+        "source_ui_clicked": bool(source_ui_clicked),
         "response_len": len(raw_text or ""),
     }

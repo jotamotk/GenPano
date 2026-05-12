@@ -1267,9 +1267,10 @@ class GuestQueryExecutor:
             self.last_error_reason = auth_reason
         return auth_reason
 
-    async def _extract_citations(self, page: Page, cfg: dict, llm_name: str) -> list:
+    async def _extract_citations(self, page: Page, cfg: dict, llm_name: str) -> tuple[list, dict]:
         """从响应区域提取引用链接"""
         citations = []
+        metadata: dict = {}
         try:
             response_selectors = [s.strip() for s in cfg["response_selector"].split(",") if s.strip()]
 
@@ -1278,18 +1279,20 @@ class GuestQueryExecutor:
                 citations = await self._extract_doubao_citations(page)
                 if citations:
                     logger.info(f"[{llm_name}] 从引用面板提取到 {len(citations)} 个引用链接")
-                    return citations
+                    return citations, metadata
 
             # 通用提取：在响应区域内查找所有链接
             if llm_name == "chatgpt":
-                citations = await self._extract_chatgpt_citations(page)
+                chatgpt_result = await self._extract_chatgpt_citations(page)
+                metadata.update(chatgpt_result.get("metadata") or {})
+                citations = chatgpt_result.get("citations") or []
                 if citations:
                     logger.info(
                         "[%s] extracted %s source links from ChatGPT Sources UI",
                         llm_name,
                         len(citations),
                     )
-                    return citations
+                    return citations, metadata
 
             js_citations = await page.evaluate("""
                 (selectors) => {
@@ -1347,10 +1350,17 @@ class GuestQueryExecutor:
                 logger.info(f"[{llm_name}] 页面无引用链接")
         except Exception as e:
             logger.warning(f"[{llm_name}] 引用提取失败: {e}")
-        return citations
+        return citations, metadata
 
-    async def _extract_chatgpt_citations(self, page: Page) -> list:
+    async def _extract_chatgpt_citations(self, page: Page) -> dict:
         """Open ChatGPT's collapsed Sources UI and extract external links."""
+        result = {
+            "citations": [],
+            "metadata": {
+                "source_ui_seen": False,
+                "source_ui_clicked": False,
+            },
+        }
         try:
             clicked = False
             try:
@@ -1362,6 +1372,7 @@ class GuestQueryExecutor:
                 )
                 count = await buttons.count()
                 if count:
+                    result["metadata"]["source_ui_seen"] = True
                     button = buttons.nth(count - 1)
                     await button.scroll_into_view_if_needed(timeout=2000)
                     await button.click(timeout=3000)
@@ -1388,6 +1399,7 @@ class GuestQueryExecutor:
                     )
                     element = handle.as_element() if handle else None
                     if element:
+                        result["metadata"]["source_ui_seen"] = True
                         await element.scroll_into_view_if_needed(timeout=2000)
                         await element.click(timeout=3000)
                         clicked = True
@@ -1395,6 +1407,7 @@ class GuestQueryExecutor:
                     logger.debug("[chatgpt] source button JS click failed: %s", e)
 
             if clicked:
+                result["metadata"]["source_ui_clicked"] = True
                 await page.wait_for_timeout(1200)
 
             citations = await page.evaluate(
@@ -1463,10 +1476,11 @@ class GuestQueryExecutor:
                 }
                 """
             )
-            return citations or []
+            result["citations"] = citations or []
+            return result
         except Exception as e:
             logger.warning("[chatgpt] source panel extraction failed: %s", e)
-            return []
+            return result
 
     async def _extract_doubao_citations(self, page: Page) -> list:
         """从豆包引用面板提取引用链接。
@@ -2437,7 +2451,7 @@ class GuestQueryExecutor:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 
             # 提取引用链接
-            citations = await self._extract_citations(page, cfg, llm_name)
+            citations, citation_metadata = await self._extract_citations(page, cfg, llm_name)
             html_citations = extract_citations_from_html(resp_html, llm_name=llm_name)
             if html_citations:
                 citations = merge_citations(citations, html_citations)
@@ -2447,16 +2461,21 @@ class GuestQueryExecutor:
                     raw_text=resp_text,
                     response_html=resp_html,
                     citations=citations,
+                    source_ui_seen=bool(citation_metadata.get("source_ui_seen")),
+                    source_ui_clicked=bool(citation_metadata.get("source_ui_clicked")),
                 )
                 logger.info(
                     "[%s] citation extraction status=%s reason=%s "
-                    "citations=%s html_candidates=%s source_markers=%s",
+                    "citations=%s html_candidates=%s source_markers=%s "
+                    "source_ui_seen=%s source_ui_clicked=%s",
                     llm_name,
                     citation_state["status"],
                     citation_state["reason"],
                     citation_state["citation_count"],
                     citation_state["html_candidate_count"],
                     citation_state["source_marker_count"],
+                    citation_state["source_ui_seen"],
+                    citation_state["source_ui_clicked"],
                 )
             return resp_text, resp_html, citations
         except Exception as e:

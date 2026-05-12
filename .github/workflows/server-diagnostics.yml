@@ -51,6 +51,10 @@ on:
         description: "bestcoffer_batch only: age threshold for stale running repair"
         required: false
         default: "3600"
+      redact_bestcoffer_payload_artifacts:
+        description: "bestcoffer_batch only: true omits raw query/response/citation payload artifacts"
+        required: false
+        default: "true"
       doubao_auth_repair_apply:
         description: "doubao_auth_false_success_repair only: true applies the #594 repair; false is dry-run"
         required: false
@@ -85,6 +89,7 @@ jobs:
           TARGET_LLM: ${{ inputs.target_llm }}
           REPAIR_STALE_RUNNING: ${{ inputs.repair_stale_running }}
           STALE_RUNNING_TTL_SECONDS: ${{ inputs.stale_running_ttl_seconds }}
+          REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS: ${{ inputs.redact_bestcoffer_payload_artifacts }}
           GH_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -94,8 +99,8 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
-          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q REPAIR_STALE_RUNNING=%q STALE_RUNNING_TTL_SECONDS=%q GH_RUN_ID=%q bash -s' \
-            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${REPAIR_STALE_RUNNING}" "${STALE_RUNNING_TTL_SECONDS}" "${GH_RUN_ID}")"
+          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q REPAIR_STALE_RUNNING=%q STALE_RUNNING_TTL_SECONDS=%q REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS=%q GH_RUN_ID=%q bash -s' \
+            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${REPAIR_STALE_RUNNING}" "${STALE_RUNNING_TTL_SECONDS}" "${REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS}" "${GH_RUN_ID}")"
 
           set +e
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
@@ -125,6 +130,10 @@ jobs:
           case "${REPAIR_STALE_RUNNING}" in
             true|false) ;;
             *) fail "REPAIR_STALE_RUNNING must be true or false" ;;
+          esac
+          case "${REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS}" in
+            true|false) ;;
+            *) fail "REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS must be true or false" ;;
           esac
 
           artifact_dir="/tmp/genpano_scraper_batch_${GH_RUN_ID}"
@@ -258,6 +267,7 @@ jobs:
           echo "target_llm=${TARGET_LLM:-all}"
           echo "repair_stale_running=${REPAIR_STALE_RUNNING}"
           echo "stale_running_ttl_seconds=${STALE_RUNNING_TTL_SECONDS}"
+          echo "redact_bestcoffer_payload_artifacts=${REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS}"
           utc_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "utc_started_at=${utc_started_at}"
 
@@ -546,8 +556,12 @@ jobs:
                     THEN jsonb_array_length(latest.citations_json::jsonb)
                     ELSE 0
                   END AS citation_count,
-                  latest.screenshot_path,
+                  latest.screenshot_path IS NOT NULL AS screenshot_present,
                   latest.collected_at,
+                  CASE
+                    WHEN latest.response_id IS NULL THEN NULL
+                    ELSE MD5(COALESCE(latest.raw_text, ''))
+                  END AS response_text_hash,
                   CASE
                     WHEN latest.response_id IS NULL THEN 'FAIL_NO_RESPONSE'
                     WHEN LENGTH(BTRIM(COALESCE(latest.raw_text, ''))) < 80 THEN 'SUSPECT_SHORT_RESPONSE'
@@ -562,8 +576,7 @@ jobs:
                       OR COALESCE(latest.raw_text, '') ILIKE '%失败%'
                     THEN 'SUSPECT_RUNTIME_TEXT'
                     ELSE 'REVIEW_RESPONSE_SCREENSHOT'
-                  END AS qa_auto_verdict,
-                  REGEXP_REPLACE(LEFT(COALESCE(latest.raw_text, ''), 500), '[[:space:]]+', ' ', 'g') AS response_preview
+                  END AS qa_auto_verdict
                 FROM queries q
                 JOIN selected s ON s.id = q.id
                 LEFT JOIN latest ON latest.query_id = q.id
@@ -594,16 +607,24 @@ jobs:
                 'target_llm', q.target_llm,
                 'status', q.status,
                 'retry_reason', q.retry_reason,
-                'query_text', q.query_text,
+                'query_text_len', LENGTH(COALESCE(q.query_text, '')),
+                'query_text_hash', MD5(COALESCE(q.query_text, '')),
                 'response_id', latest.response_id,
-                'response_text', latest.raw_text,
-                'citations', COALESCE(latest.citations_json::jsonb, '[]'::jsonb),
+                'response_len', LENGTH(COALESCE(latest.raw_text, '')),
+                'response_text_hash', CASE
+                  WHEN latest.response_id IS NULL THEN NULL
+                  ELSE MD5(COALESCE(latest.raw_text, ''))
+                END,
                 'citation_count', CASE
                   WHEN jsonb_typeof(latest.citations_json::jsonb) = 'array'
                   THEN jsonb_array_length(latest.citations_json::jsonb)
                   ELSE 0
                 END,
-                'screenshot_path', latest.screenshot_path,
+                'citation_payload_hash', CASE
+                  WHEN latest.citations_json IS NULL THEN NULL
+                  ELSE MD5(latest.citations_json::text)
+                END,
+                'screenshot_present', latest.screenshot_path IS NOT NULL,
                 'collected_at', latest.collected_at
               )::text
               FROM queries q
@@ -756,6 +777,22 @@ jobs:
                       )
                   )
           PY
+            if [ "${REDACT_BESTCOFFER_PAYLOAD_ARTIFACTS}" = "true" ]; then
+              echo "=== Redact payload-bearing bestCoffer artifacts ==="
+              {
+                echo "redacted=true"
+                echo "reason=Refs #697 safe live gate: omit raw query, response, citation URL, screenshot, and HTML payloads"
+                echo "preserved=audit.csv responses.jsonl citation_review.jsonl logs artifact manifest"
+              } > "${artifact_dir}/payload_artifacts_redacted.txt"
+              if [ -d "${artifact_dir}/screenshots" ]; then
+                find "${artifact_dir}/screenshots" -type f \( -name '*.html' -o -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.webp' \) -delete || true
+                find "${artifact_dir}/screenshots" -maxdepth 1 -type f | sort > "${artifact_dir}/artifact_files.txt" || true
+              fi
+              if [ -d "${artifact_dir}/logs" ]; then
+                rm -f "${artifact_dir}/logs/worker-services.log" "${artifact_dir}/logs/selected-query-worker.log" || true
+                echo "raw worker logs redacted for Refs #697 safe live gate" > "${artifact_dir}/logs/payload_logs_redacted.txt"
+              fi
+            fi
           fi
 
           REMOTE
