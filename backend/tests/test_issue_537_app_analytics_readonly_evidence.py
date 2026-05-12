@@ -64,6 +64,40 @@ def test_db_sql_is_read_only_and_covers_required_evidence() -> None:
     assert "delete" not in lowered
 
 
+def test_project_context_does_not_compare_project_id_to_uuid_literal() -> None:
+    mod = load_script()
+
+    project_id = "95d43022-a5c8-5944-b6d6-34b29faa18b5"
+    cfg = mod.EvidenceConfig(
+        project_id=project_id,
+        brand_id=12,
+        competitor_brand_ids=(2,),
+        date_from="2026-04-24",
+        date_to="2026-05-11",
+    )
+    sql = mod.build_db_sql(cfg)
+
+    assert f"WHERE p.id = '{project_id}'::uuid" not in sql
+    assert f"ORDER BY (p.id = '{project_id}'::uuid)" not in sql
+    assert f"WHERE p.id::text = '{project_id}'" in sql
+    assert f"ORDER BY (p.id::text = '{project_id}')" in sql
+
+
+def test_project_id_input_remains_uuid_shape_validated() -> None:
+    mod = load_script()
+
+    cfg = mod.EvidenceConfig(
+        project_id="not-a-uuid",
+        brand_id=12,
+        competitor_brand_ids=(2,),
+        date_from="2026-04-24",
+        date_to="2026-05-11",
+    )
+
+    with pytest.raises(ValueError, match="project_id must be UUID-shaped"):
+        mod.build_db_sql(cfg)
+
+
 def test_read_only_sql_guard_rejects_write_keywords() -> None:
     mod = load_script()
 

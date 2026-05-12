@@ -12,6 +12,9 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 - The workflow is manual only: `App Analytics Readonly Evidence`.
 - The DB probe emits and runs `SELECT` statements inside
   `BEGIN TRANSACTION READ ONLY`.
+- `project_id` input is still validated as UUID-shaped, but DB probes compare
+  it as text so production `projects.id` columns stored as varchar/text do not
+  fail before evidence collection starts.
 - The API probe sends authenticated `GET` requests only.
 - There is no repair, backfill, aggregation refresh, mutation, or production
   write mode.
