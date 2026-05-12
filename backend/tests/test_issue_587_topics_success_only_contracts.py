@@ -588,12 +588,22 @@ async def test_response_detail_uses_daily_latest_response_id_with_backfilled_dup
     await db_session.commit()
     headers = _bearer(user)
 
+    prompts = await client.get(
+        f"/api/v1/projects/{project.id}/topics/{ids['topic_id']}/prompts",
+        headers=headers,
+    )
+    assert prompts.status_code == 200, prompts.text
+    prompt = prompts.json()["items"][0]
+    assert prompt["query_count"] == 3
+    assert prompt["success_rate"] == pytest.approx(1.0)
+
     queries = await client.get(
         f"/api/v1/projects/{project.id}/prompts/{ids['prompt_id']}/queries",
         headers=headers,
     )
     assert queries.status_code == 200, queries.text
     group = queries.json()["items"][0]
+    assert sum(item["attempt_count"] for item in queries.json()["items"]) == prompt["query_count"]
     daily_latest = group["daily_latest"][0]
     assert daily_latest["response_id"] == ids["latest_response_id"]
 
