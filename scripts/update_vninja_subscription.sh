@@ -137,10 +137,12 @@ for name in sorted(data.get("providers", {})):
     if name != "default":
         print(name)
 PY
+      provider_name="${provider_name%$'\r'}"
       [ -n "${provider_name}" ] || continue
+      encoded_provider_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${provider_name}")"
       status="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 -X PUT \
         -H "Authorization: Bearer ${VNINJA_API_SECRET}" \
-        "http://127.0.0.1:9097/providers/proxies/${provider_name}" || true)"
+        "http://127.0.0.1:9097/providers/proxies/${encoded_provider_name}" || true)"
       echo "provider_refresh=${provider_name} http_code=${status}"
     done
   else
@@ -209,7 +211,7 @@ current = []
 in_items = False
 
 for line in lines:
-    if re.match(r"^-\s+uid:\s*", line):
+    if re.match(r"^\s*-\s+uid:\s*", line):
         if in_items:
             blocks.append(current)
         else:
@@ -241,6 +243,7 @@ for block in blocks:
 
     out = []
     url_replaced = False
+    updated_replaced = False
     for line in block:
         url_match = re.match(r"^(\s*)url:\s*", line)
         updated_match = re.match(r"^(\s*)updated:\s*", line)
@@ -250,6 +253,7 @@ for block in blocks:
             changed = True
         elif updated_match:
             out.append(f"{updated_match.group(1)}updated: 0\n")
+            updated_replaced = True
             changed = True
         else:
             out.append(line)
@@ -262,6 +266,18 @@ for block in blocks:
             if not inserted and re.match(r"^\s*type:\s*remote\s*$", line):
                 indent = re.match(r"^(\s*)", line).group(1)
                 injected.append(f"{indent}url: {json.dumps(new_url, ensure_ascii=False)}\n")
+                inserted = True
+                changed = True
+        out = injected
+
+    if not updated_replaced:
+        inserted = False
+        injected = []
+        for line in out:
+            injected.append(line)
+            if not inserted and re.match(r"^\s*url:\s*", line):
+                indent = re.match(r"^(\s*)", line).group(1)
+                injected.append(f"{indent}updated: 0\n")
                 inserted = True
                 changed = True
         out = injected

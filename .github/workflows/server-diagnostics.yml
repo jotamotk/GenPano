@@ -63,8 +63,8 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
-          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q GH_RUN_ID=%q bash -s' \
-            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${GH_RUN_ID}")"
+          remote_cmd="$(printf 'BRAND_ID=%q BATCH_LIMIT=%q EXECUTE_BATCH=%q POLL_SECONDS=%q TARGET_LLM=%q GH_RUN_ID=%q bash -s' \
+            "${BRAND_ID}" "${BATCH_LIMIT}" "${EXECUTE_BATCH}" "${POLL_SECONDS}" "${TARGET_LLM}" "${GH_RUN_ID}")"
 
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee scraper-batch-artifacts/scraper-batch.log
           set -Eeuo pipefail
@@ -459,14 +459,16 @@ jobs:
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
             "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee vninja-artifacts/vninja-proxy.log
           set -Eeuo pipefail
+          cleanup() {
+            rm -f "${SUB_URL_FILE:-}" "${REMOTE_SCRIPT:-}"
+          }
+          trap cleanup EXIT
           chmod +x "${REMOTE_SCRIPT}"
           if [ "${MODE}" = "update" ]; then
             bash "${REMOTE_SCRIPT}" update "${SUB_URL_FILE}"
-            rm -f "${SUB_URL_FILE}"
           else
             bash "${REMOTE_SCRIPT}" check
           fi
-          rm -f "${REMOTE_SCRIPT}"
           REMOTE
 
       - name: Upload V-Ninja proxy artifacts
