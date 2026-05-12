@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -170,6 +174,62 @@ def test_missing_secret_report_names_exact_secret() -> None:
     assert "SERVER_USER" not in report
 
 
+def test_build_user_jwt_uses_live_app_e2e_claims_and_signature() -> None:
+    mod = load_script()
+
+    token = mod.build_user_jwt(
+        user_id="fe25eff1-8462-43eb-a027-bc8eb2c3db81",
+        secret="unit-secret",
+        email="app-analytics-e2e@example.invalid",
+        now=1_700_000_000,
+    )
+    header_raw, payload_raw, signature = token.split(".")
+    payload = json.loads(base64.urlsafe_b64decode(payload_raw + "=="))
+
+    assert payload["sub"] == "fe25eff1-8462-43eb-a027-bc8eb2c3db81"
+    assert payload["aud"] == "genpano-user-access"
+    assert payload["iss"] == "genpano"
+    assert payload["exp"] - payload["iat"] == 30 * 60
+
+    body = f"{header_raw}.{payload_raw}".encode("ascii")
+    expected_signature = (
+        base64.urlsafe_b64encode(hmac.new(b"unit-secret", body, hashlib.sha256).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+    assert signature == expected_signature
+
+
+def test_resolve_api_token_prefers_configured_bearer_then_jwt_fallback() -> None:
+    mod = load_script()
+
+    direct = mod.resolve_api_bearer_token(
+        bearer_token="configured-token",
+        jwt_secret="unit-secret",
+        owner_user_id="fe25eff1-8462-43eb-a027-bc8eb2c3db81",
+        now=1_700_000_000,
+    )
+    fallback = mod.resolve_api_bearer_token(
+        bearer_token="",
+        jwt_secret="unit-secret",
+        owner_user_id="fe25eff1-8462-43eb-a027-bc8eb2c3db81",
+        now=1_700_000_000,
+    )
+    blocked = mod.resolve_api_bearer_token(
+        bearer_token="",
+        jwt_secret="",
+        owner_user_id="fe25eff1-8462-43eb-a027-bc8eb2c3db81",
+        now=1_700_000_000,
+    )
+
+    assert direct.source == "APP_ANALYTICS_BEARER_TOKEN"
+    assert direct.token == "configured-token"
+    assert fallback.source == "USER_JWT_SECRET"
+    assert fallback.token.count(".") == 2
+    assert blocked.source == ""
+    assert blocked.token == ""
+
+
 def test_workflow_is_manual_read_only_and_has_no_write_mode() -> None:
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     lowered = text.lower()
@@ -179,6 +239,7 @@ def test_workflow_is_manual_read_only_and_has_no_write_mode() -> None:
     assert "dry_run" not in lowered
     assert "app_analytics_readonly_evidence.py" in text
     assert "APP_ANALYTICS_BEARER_TOKEN" in text
+    assert "USER_JWT_SECRET" in text
     assert "SERVER_HOST" in text
     assert "docker compose exec -T postgres psql" in text
     assert "python backend/scripts/app_analytics_readonly_evidence.py db-sql" in text

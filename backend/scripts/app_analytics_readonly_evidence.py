@@ -7,11 +7,14 @@ performs authenticated GET requests for App analytics payload evidence.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +49,11 @@ class ApiProbe(NamedTuple):
     name: str
     method: str
     path: str
+
+
+class ApiToken(NamedTuple):
+    token: str
+    source: str
 
 
 def _require_uuid(value: str, name: str) -> str:
@@ -547,6 +555,69 @@ def missing_secret_report(env: dict[str, str]) -> str:
     return "Missing secret(s): " + ", ".join(missing)
 
 
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def build_user_jwt(
+    *,
+    user_id: str,
+    secret: str,
+    email: str = "app-analytics-e2e@example.invalid",
+    now: int | None = None,
+    ttl_seconds: int = 30 * 60,
+) -> str:
+    """Mint the same short-lived read-only App auth token used by live E2E."""
+
+    if not user_id:
+        raise ValueError("owner user id is required to mint App analytics JWT")
+    if not secret:
+        raise ValueError("JWT secret is required to mint App analytics JWT")
+    issued_at = int(time.time() if now is None else now)
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "iat": issued_at,
+        "exp": issued_at + ttl_seconds,
+        "iss": "genpano",
+        "aud": "genpano-user-access",
+    }
+    body = ".".join(
+        (
+            _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8")),
+            _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+        )
+    )
+    signature = _b64url(
+        hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    )
+    return f"{body}.{signature}"
+
+
+def resolve_api_bearer_token(
+    *,
+    bearer_token: str,
+    jwt_secret: str = "",
+    owner_user_id: str = "",
+    jwt_email: str = "app-analytics-e2e@example.invalid",
+    now: int | None = None,
+) -> ApiToken:
+    if bearer_token:
+        return ApiToken(bearer_token, "APP_ANALYTICS_BEARER_TOKEN")
+    if jwt_secret and owner_user_id:
+        return ApiToken(
+            build_user_jwt(
+                user_id=owner_user_id,
+                secret=jwt_secret,
+                email=jwt_email,
+                now=now,
+            ),
+            "USER_JWT_SECRET",
+        )
+    return ApiToken("", "")
+
+
 def _summarize_json(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {}
@@ -572,14 +643,15 @@ def _body_snippet(body: bytes) -> str:
     return " ".join(text.split())[:600]
 
 
-def run_api_probes(config: EvidenceConfig, bearer_token: str) -> int:
+def run_api_probes(config: EvidenceConfig, bearer_token: str, *, token_source: str = "") -> int:
     config = _validate_config(config)
     if not bearer_token:
-        print("BLOCKED: missing secret APP_ANALYTICS_BEARER_TOKEN")
+        print("BLOCKED: missing API auth source APP_ANALYTICS_BEARER_TOKEN or USER_JWT_SECRET")
         return 0
 
     base_url = config.base_url.rstrip("/")
-    print(f"API probe token={mask_secret(bearer_token)}")
+    source = token_source or "configured_token"
+    print(f"API probe token={mask_secret(bearer_token)} source={source}")
     failures = 0
     for probe in build_api_probe_plan(config):
         url = base_url + probe.path
@@ -681,6 +753,9 @@ def main(argv: list[str] | None = None) -> int:
     api_probes = subparsers.add_parser("api-probes", help="Run authenticated GET probes")
     add_common(api_probes)
     api_probes.add_argument("--bearer-token-env", default="APP_ANALYTICS_BEARER_TOKEN")
+    api_probes.add_argument("--jwt-secret-env", default="USER_JWT_SECRET")
+    api_probes.add_argument("--owner-user-id", default="")
+    api_probes.add_argument("--jwt-email", default="app-analytics-e2e@example.invalid")
 
     secrets = subparsers.add_parser("secrets-report", help="Report missing named env vars")
     secrets.add_argument("names", nargs="+")
@@ -691,8 +766,17 @@ def main(argv: list[str] | None = None) -> int:
         print(build_db_sql(_config_from_args(args)), end="")
         return 0
     if args.command == "api-probes":
-        token = os.environ.get(args.bearer_token_env, "")
-        return run_api_probes(_config_from_args(args), token)
+        api_token = resolve_api_bearer_token(
+            bearer_token=os.environ.get(args.bearer_token_env, ""),
+            jwt_secret=os.environ.get(args.jwt_secret_env, ""),
+            owner_user_id=args.owner_user_id,
+            jwt_email=args.jwt_email,
+        )
+        return run_api_probes(
+            _config_from_args(args),
+            api_token.token,
+            token_source=api_token.source,
+        )
     if args.command == "secrets-report":
         print(missing_secret_report({name: os.environ.get(name, "") for name in args.names}))
         return 0
