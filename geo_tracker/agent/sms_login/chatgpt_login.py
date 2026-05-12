@@ -30,7 +30,7 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
         if await self._authenticated(page):
             return True
 
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
 
@@ -63,13 +63,13 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
             await phone_entry.click()
             await page.wait_for_timeout(1000)
 
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
         return await self._phone_input_ready(page)
 
     async def input_phone(self, page: Page, phone: str) -> bool | str:
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
 
@@ -97,7 +97,7 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
         return True
 
     async def click_send_sms(self, page: Page) -> bool | str:
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
 
@@ -115,11 +115,11 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
             return False
         await send_button.click()
         await page.wait_for_timeout(1500)
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         return block_reason or True
 
     async def input_code(self, page: Page, code: str) -> bool | str:
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
 
@@ -144,7 +144,7 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
         return True
 
     async def submit_login(self, page: Page) -> bool | str:
-        block_reason = await self._blocked_reason(page)
+        block_reason = await self._blocked_reason(page, include_auth_state=False)
         if block_reason:
             return block_reason
 
@@ -266,7 +266,9 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
                         state.hasUser = Boolean(data && data.user);
                         return state;
                     } catch (err) {
-                        state.error = err && err.message ? String(err.message) : 'session_probe_failed';
+                        state.error = err && err.message
+                            ? String(err.message)
+                            : 'session_probe_failed';
                         return state;
                     }
                 }
@@ -296,7 +298,12 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
         except Exception:
             return False
 
-    async def _blocked_reason(self, page: Page) -> str | None:
+    async def _blocked_reason(
+        self,
+        page: Page,
+        *,
+        include_auth_state: bool = True,
+    ) -> str | None:
         try:
             text = await page.evaluate("document.body?.innerText || ''")
         except Exception:
@@ -305,13 +312,14 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
             title = await page.title()
         except Exception:
             title = ""
-        auth_reason = chatgpt_auth_state_reason(
-            text,
-            url=getattr(page, "url", ""),
-            title=title,
-        )
-        if auth_reason:
-            return auth_reason
+        if include_auth_state:
+            auth_reason = chatgpt_auth_state_reason(
+                text,
+                url=getattr(page, "url", ""),
+                title=title,
+            )
+            if auth_reason:
+                return auth_reason
         lower = f"{getattr(page, 'url', '')}\n{title}\n{text}".lower()
         if any(
             marker in lower
