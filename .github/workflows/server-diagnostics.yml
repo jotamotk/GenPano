@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, bestcoffer_batch, doubao_auth_false_success_repair, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -51,6 +51,10 @@ on:
         description: "bestcoffer_batch only: age threshold for stale running repair"
         required: false
         default: "3600"
+      doubao_auth_repair_apply:
+        description: "doubao_auth_false_success_repair only: true applies the #594 repair; false is dry-run"
+        required: false
+        default: "false"
 
 jobs:
   diagnostics:
@@ -503,6 +507,73 @@ jobs:
         with:
           name: bestcoffer-scraper-batch-${{ github.run_id }}
           path: scraper-batch-artifacts
+
+      - name: Run Doubao auth false-success repair
+        if: ${{ inputs.scraper_mode == 'doubao_auth_false_success_repair' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DOUBAO_AUTH_REPAIR_APPLY: ${{ inputs.doubao_auth_repair_apply }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh doubao-auth-repair-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_cmd="$(printf 'DOUBAO_AUTH_REPAIR_APPLY=%q GH_RUN_ID=%q bash -s' \
+            "${DOUBAO_AUTH_REPAIR_APPLY}" "${GH_RUN_ID}")"
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' \
+            | tee doubao-auth-repair-artifacts/repair-output.json
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          case "${DOUBAO_AUTH_REPAIR_APPLY}" in
+            true|false) ;;
+            *) fail "DOUBAO_AUTH_REPAIR_APPLY must be true or false" ;;
+          esac
+
+          if [ "${DOUBAO_AUTH_REPAIR_APPLY}" = "true" ]; then
+            docker compose exec -T worker python -m geo_tracker.tasks.doubao_auth_false_success_repair --apply --approval-ref "Refs #594:${GH_RUN_ID}"
+          else
+            docker compose exec -T worker python -m geo_tracker.tasks.doubao_auth_false_success_repair --approval-ref "Refs #594 dry-run:${GH_RUN_ID}"
+          fi
+          REMOTE
+
+          cp doubao-auth-repair-artifacts/repair-output.json \
+            doubao-auth-repair-artifacts/repair-output.log
+          python3 - <<'PY' > doubao-auth-repair-artifacts/rollback.sql
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("doubao-auth-repair-artifacts/repair-output.json").read_text(encoding="utf-8-sig"))
+          rollback = payload.get("rollback_sql") or []
+          if rollback:
+              print("-- Rollback SQL emitted by doubao_auth_false_success_repair")
+              for item in rollback:
+                  print(item)
+          else:
+              print("-- No rollback SQL emitted; no matching DONE false-success rows were repaired or repair was a dry-run with no candidates.")
+          PY
+          cat doubao-auth-repair-artifacts/rollback.sql
+
+      - name: Upload Doubao auth repair artifacts
+        if: ${{ always() && inputs.scraper_mode == 'doubao_auth_false_success_repair' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: doubao-auth-false-success-repair-${{ github.run_id }}
+          path: doubao-auth-repair-artifacts
 
       - name: Checkout repo for V-Ninja helper
         if: ${{ inputs.scraper_mode == 'vninja_proxy_check' || inputs.scraper_mode == 'vninja_subscription_update' }}
