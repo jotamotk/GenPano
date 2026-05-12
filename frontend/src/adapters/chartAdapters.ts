@@ -424,14 +424,14 @@ export function adaptGroupSharedDomains(out: GroupSharedDomainsOut | undefined) 
 
 // ── Product relations ───────────────────────────────────────────────
 export function adaptProductRelations(out: ProductRelationsOut | undefined) {
-  if (!out || !canUseChartMetrics(out, ['product']) || !Array.isArray(out.items)) return [] as { productA: number; productB: number; type: string; confidence: number }[]
+  if (!out || !canUseChartMetrics(out, ['product']) || !Array.isArray(out.items)) return [] as { productA: number; productB: number; type: string; confidence: number | null }[]
   return out.items.map((r) => ({
     productA: r.product_a_id,
     productAName: r.product_a_name,
     productB: r.product_b_id,
     productBName: r.product_b_name,
     type: r.type,
-    confidence: r.confidence ?? 0.5,
+    confidence: r.confidence ?? null,
   }))
 }
 

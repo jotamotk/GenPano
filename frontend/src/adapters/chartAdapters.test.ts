@@ -4,6 +4,8 @@ import {
   adaptCitationComposition,
   adaptEngineMetricsToBreakdown,
   adaptMentionSamples,
+  adaptProductRelations,
+  adaptSimulatorBaseline,
   adaptSentimentByEngine,
   adaptTopicAttribution,
 } from './chartAdapters'
@@ -123,5 +125,55 @@ describe('chart adapters analyzer formula-status guards', () => {
         segments: [{ label: 'Tier 1', tier: 1, count: 1, pct: 100 }],
       }),
     ).toEqual([])
+  })
+
+  it('does not render simulator baseline when pano_geo evidence is missing', () => {
+    expect(
+      adaptSimulatorBaseline({
+        project_id: 'p1',
+        state: 'ok',
+        formula_status: 'ok',
+        metric_formula_evidence: {
+          citation: { formula_status: 'ok' },
+        },
+        current_pano: 72,
+        industry_median: 70,
+        industry_top3_avg: 82,
+        tiers: [{ tier: 1, current_count: 2, weight: 0.4, confidence: 1 }],
+        presets: [],
+      }),
+    ).toBeNull()
+  })
+
+  it('does not synthesize product relation confidence when backend omits it', () => {
+    expect(
+      adaptProductRelations({
+        project_id: 'p1',
+        state: 'ok',
+        formula_status: 'ok',
+        metric_formula_evidence: {
+          product: { formula_status: 'ok' },
+        },
+        items: [
+          {
+            product_a_id: 1,
+            product_a_name: 'A',
+            product_b_id: 2,
+            product_b_name: 'B',
+            type: 'COMPETES_WITH',
+            confidence: null,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        productA: 1,
+        productAName: 'A',
+        productB: 2,
+        productBName: 'B',
+        type: 'COMPETES_WITH',
+        confidence: null,
+      },
+    ])
   })
 })

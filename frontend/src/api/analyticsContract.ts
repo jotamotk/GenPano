@@ -118,7 +118,7 @@ function hasUsableMetricEvidence(fields: MetricContractFields | null | undefined
 
 export function isOkFormulaStatus(status: string | null | undefined): boolean {
   const normalized = lower(status)
-  if (!normalized) return true
+  if (!normalized) return false
   return normalized === 'ok' ||
     normalized === 'valid' ||
     normalized === 'ready' ||
@@ -132,10 +132,7 @@ export function canUseContractMetricValue(
   fields: MetricContractFields | null | undefined,
 ): boolean {
   if (!isUsableAnalyticsEndpointState(state)) return false
-  if (lower(state) === 'partial') return hasUsableMetricEvidence(fields)
-  const metricState = lower(fields?.state)
-  if (metricState && metricState !== 'ok') return false
-  return isOkFormulaStatus(fields?.formula_status)
+  return hasUsableMetricEvidence(fields)
 }
 
 const METRIC_EVIDENCE_ALIASES: Record<string, string[]> = {
@@ -150,6 +147,8 @@ const METRIC_EVIDENCE_ALIASES: Record<string, string[]> = {
   citation_share: ['citation', 'citations'],
   rank: ['rank', 'pano_geo'],
   avg_position_rank: ['rank', 'pano_geo'],
+  trend: ['trend', 'trend_30d'],
+  trend_30d: ['trend_30d', 'trend'],
   geo_score: ['pano_geo', 'geo_score', 'pano_score'],
   avg_geo_score: ['pano_geo', 'geo_score', 'pano_score'],
   pano_score: ['pano_geo', 'geo_score', 'pano_score'],
@@ -194,8 +193,7 @@ export function canUseMetricEvidence(
   if (!source || !isUsableAnalyticsEndpointState(source.state)) return false
   const evidence = metricEvidenceFor(source, metricKeys)
   if (evidence) return canUseContractMetricValue(source.state, evidence)
-  if (lower(source.state) === 'partial') return false
-  return isOkFormulaStatus(source.formula_status)
+  return false
 }
 
 export function contractEvidenceReasons(

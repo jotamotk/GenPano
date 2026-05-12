@@ -64,4 +64,25 @@ describe('analytics formula-status guards', () => {
   it('does not treat missing metric fields as ok for a partial endpoint', () => {
     expect(canUseContractMetricValue('partial', undefined)).toBe(false)
   })
+
+  it('does not treat endpoint ok as metric ok when metric evidence is missing', () => {
+    expect(
+      canUseMetricEvidence(
+        {
+          state: 'ok',
+          formula_status: 'ok',
+          metric_formula_evidence: {
+            coverage: { formula_status: 'ok' },
+          },
+        },
+        ['sov'],
+      ),
+    ).toBe(false)
+  })
+
+  it('requires an explicit metric object before using a live contract value', () => {
+    expect(canUseContractMetricValue('ok', undefined)).toBe(false)
+    expect(canUseContractMetricValue('ok', { state: 'ok' })).toBe(true)
+    expect(canUseContractMetricValue('ok', { formula_status: 'ok' })).toBe(true)
+  })
 })

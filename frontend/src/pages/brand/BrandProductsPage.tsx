@@ -90,11 +90,12 @@ export default function BrandProductsPage() {
 
   const liveProducts = useMemo(() => {
     if (!isLive || !productsQ.data || !canUseMetricEvidence(productsQ.data, 'product')) return null;
-    const canUseMention = canUseMetricEvidence(productsQ.data, ['product', 'mention_rate']);
+    const canUseMention = canUseMetricEvidence(productsQ.data, 'mention_rate');
     const canUseSov = canUseMetricEvidence(productsQ.data, 'sov');
     const canUseSentiment = canUseMetricEvidence(productsQ.data, 'sentiment');
     const canUseRank = canUseMetricEvidence(productsQ.data, 'rank');
     const canUsePano = canUseMetricEvidence(productsQ.data, 'pano_score');
+    const canUseTrend = canUseMetricEvidence(productsQ.data, 'trend_30d');
     return productsQ.data.items.map((p) => ({
       id: p.product_id,
       primaryName: p.product_name,
@@ -104,12 +105,12 @@ export default function BrandProductsPage() {
       category: p.category,
       categoryName: p.category,
       mentionRate: canUseMention ? p.mention_rate ?? null : null,
-      mentionCount: p.mention_count ?? null,
+      mentionCount: canUseMention ? p.mention_count ?? null : null,
       sov: canUseSov ? p.sov ?? null : null,
       sentiment: canUseSentiment ? p.avg_sentiment ?? null : null,
       ranking: canUseRank ? p.ranking ?? null : null,
-      trend: p.trend_30d ?? null,
-      sparkData: p.sparkline ?? [],
+      trend: canUseTrend ? p.trend_30d ?? null : null,
+      sparkData: canUseTrend ? p.sparkline ?? [] : [],
       panoScore: canUsePano ? p.avg_geo_score ?? null : null,
     }));
   }, [isLive, productsQ.data, primary]);
@@ -416,7 +417,7 @@ export default function BrandProductsPage() {
                     {relationTypeLabel(rel.type)}
                   </Badge>
                   <span className="text-[10px] text-themed-muted shrink-0">
-                    {Math.round(rel.confidence * 100)}%
+                    {rel.confidence == null ? '--' : `${Math.round(rel.confidence * 100)}%`}
                   </span>
                 </div>
               );
