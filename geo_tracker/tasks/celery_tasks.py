@@ -26,7 +26,10 @@ from geo_tracker.agent.browser_lifecycle import (
     install_resource_blocker,
 )
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
-from geo_tracker.agent.response_validation import invalid_response_reason
+from geo_tracker.agent.response_validation import (
+    doubao_persistence_auth_reason,
+    invalid_response_reason,
+)
 from geo_tracker.agent.sms_login.registration_lock import (
     should_enqueue_new_account,
     should_enqueue_relogin,
@@ -510,6 +513,37 @@ def execute_query(self, query_id: int) -> dict:
                     return None
 
                 if response and len(response.raw_text) >= MIN_RESPONSE_LEN:
+                    auth_failure_reason = doubao_persistence_auth_reason(
+                        query.target_llm,
+                        response.raw_text,
+                        response.response_html,
+                    )
+                    if auth_failure_reason:
+                        mark_query_finished(
+                            query,
+                            status=QueryStatus.FAILED.value,
+                            started_at=started_at,
+                            reason=auth_failure_reason,
+                        )
+                        await quota_settlement.settle_failure(
+                            db,
+                            pool,
+                            reason=auth_failure_reason,
+                        )
+                        await db.commit()
+                        logger.warning(
+                            "Query %s failed: Doubao auth state rejected before DONE (%s), "
+                            "account %s",
+                            query_id,
+                            auth_failure_reason,
+                            account_id,
+                        )
+                        return {
+                            "query_id": query_id,
+                            "status": "failed",
+                            "reason": auth_failure_reason,
+                        }
+
                     invalid_reason = invalid_response_reason(query.target_llm, response.raw_text)
                     if invalid_reason:
                         # 响应内容是登录页/过期页，不是 AI 回答
