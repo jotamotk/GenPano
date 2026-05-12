@@ -948,6 +948,8 @@ class GuestQueryExecutor:
 
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
+                if page_obj:
+                    await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_input"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_input")
@@ -993,6 +995,8 @@ class GuestQueryExecutor:
                 )
             else:
                 logger.error(f"[{llm}] 未能获取响应")
+                if page_obj:
+                    await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
@@ -1026,6 +1030,19 @@ class GuestQueryExecutor:
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,
             )
+
+    async def _prefer_doubao_auth_failure_reason(
+        self, llm_name: str, page: Page | None
+    ) -> str | None:
+        """Promote Doubao login/auth chrome over generic no-response reasons."""
+        if llm_name != "doubao" or page is None:
+            return None
+        auth_reason = await _doubao_auth_state_reason_from_page(page)
+        if not auth_reason:
+            return None
+        if self.last_error_reason in (None, "", "no_response", "no_input"):
+            self.last_error_reason = auth_reason
+        return auth_reason
 
     async def _extract_citations(self, page: Page, cfg: dict, llm_name: str) -> list:
         """从响应区域提取引用链接"""
@@ -1682,7 +1699,8 @@ class GuestQueryExecutor:
                     else:
                         logger.warning(f"[{llm_name}] 重试后仍未检测到发送的消息")
                         await _save_html(page, debug_query_id, f"{llm_name}_submit_failed")
-                        self.last_error_reason = "no_response"
+                        await self._prefer_doubao_auth_failure_reason(llm_name, page)
+                        self.last_error_reason = self.last_error_reason or "no_response"
                         return "", "", []
                 except Exception as e:
                     logger.warning(f"[{llm_name}] 重试提交异常: {e}")
