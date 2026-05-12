@@ -1,6 +1,6 @@
 # App Analytics Extraction Provenance Runbook
 
-Scope: GitHub issue #532, Pipeline/Data Agent.
+Scope: GitHub issues #532 and #563, Pipeline/Data Agent.
 
 This runbook covers the no-fallback analyzer and aggregate inputs for
 `docs/PRD_APP_ANALYTICS_CORRECTION.md`.
@@ -50,14 +50,17 @@ Expected healthy counter shape for the Estee Lauder project dataset:
   IDs when the brand exists; configured `competitors` names are written as
   name-only `brand_mentions.brand_id IS NULL` evidence when no canonical ID is
   available.
-- `citation_sources.mention_id` is populated when citation title/domain can be
-  attributed to a persisted brand mention.
+- `citation_sources.mention_id` is populated when citation title/domain,
+  citation payload text, or unambiguous response citation-marker context can be
+  attributed to a persisted brand mention. Ambiguous same-response citation
+  context stays unresolved.
 - If citation, sentiment, position, or complete PANO/GEO component evidence is
   unavailable, `response_analyses.raw_analysis_json.metric_input_status` must
   carry explicit `partial` or `empty` states and `missing_inputs`; do not infer
   missing evidence from zeros.
 - `sentiment_drivers.source_quote` is populated for brand-linked sentiment
-  drivers when LLM sentiment extraction supplies drivers.
+  drivers only when raw LLM sentiment extraction supplies driver text and source
+  quote. Do not synthesize drivers from snippets alone.
 - topic coverage is complete only when `llm_responses -> queries -> prompts ->
   topics` linkage exists.
 - daily PANO/GEO component columns remain `NULL` for missing SoV, citation, or
@@ -220,7 +223,95 @@ responses, but did not preserve same-response competitor denominator rows and
 stored partial position/sentiment/citation/PANO inputs as neutral or zero-like
 values. After this fix, rerunning the repair command above should either write
 real response-level competitor/citation rows or leave machine-readable
-`metric_input_status` partial/empty handoff for Backend/API #533.
+`metric_input_status` partial/empty handoff for Backend/API #562.
+
+## Issue #563 Attribution Rerun
+
+Production evidence before #563:
+
+- `2026-04-24`: 125 scanned responses, 56 target response matches, 6
+  response-level competitor mentions, 170 citation rows inserted, only 2
+  attributed citations, `geo_score_daily=0`.
+- `2026-05-06`: 2 scanned responses, 1 target response match, no citation rows,
+  `geo_score_daily=0`.
+- `2026-05-07`: 3 scanned responses, 1 target response match, 7 citation rows
+  inserted, 0 attributed citations, `geo_score_daily=0`.
+- Readonly evidence after the approved writes: target brand `12` has 58 mention
+  rows/responses, competitor brand `2` has 6 mention rows, target citations=2,
+  unresolved citations=175, target sentiment rows=58, sentiment driver rows=0,
+  `geo_score_daily` rows=0.
+
+Before any write, run the dry-run form for each approved date. #563 dry-run is
+idempotent: it inspects existing competitor/citation rows and reports
+`citations_seen`, `citations_existing`, `citations_repairable`,
+`citations_attributed_by_context`, `sentiment_drivers_seen`, and
+`sentiment_drivers_inserted` without changing production data.
+
+```powershell
+$dates = @("2026-04-24", "2026-05-06", "2026-05-07")
+foreach ($d in $dates) {
+  python -m geo_tracker.analyzer.cli repair-canonical-brand `
+    --brand-id 12 `
+    --source-brand-id 2 `
+    --competitive-brand-id 2 `
+    --date $d
+}
+```
+
+After AI Lead approval, run the write + aggregate path for the same three dates:
+
+```powershell
+$dates = @("2026-04-24", "2026-05-06", "2026-05-07")
+foreach ($d in $dates) {
+  python -m geo_tracker.analyzer.cli repair-canonical-brand `
+    --brand-id 12 `
+    --source-brand-id 2 `
+    --competitive-brand-id 2 `
+    --date $d `
+    --write `
+    --aggregate
+}
+```
+
+Expected #563 counter interpretation:
+
+- `competitive_mentions_existing` should be non-zero on reruns after the #559
+  write; new competitor rows should only appear when response text contains a
+  configured or name-only competitor not already stored.
+- `citations_repairable` is the maximum safe citation attribution delta for a
+  date. Write mode should move those existing unresolved rows to a supported
+  `mention_id`; ambiguous marker contexts remain counted as
+  `citations_unattributed`.
+- `sentiment_mentions_updated` and `sentiment_drivers_inserted` are allowed only
+  when raw `response_analyses.raw_analysis_json` contains matching brand
+  sentiment and quoted driver payloads.
+- `geo_score_daily` can now materialize for Admin prompt rows whose default
+  denominator is evidenced by `intent` aliases such as `non_brand` or
+  `informational`, or by `prompts.tags.prompt_scope` values such as
+  `non_branded`, plus category dimension evidence such as `topics.category =
+  '品类'` or `category`.
+- If `geo_score_daily` remains absent after #563, preserve the explicit
+  no-evidence state and hand the prompt/endpoint semantics to #562 instead of
+  creating fallback rows.
+
+Optional read-only prompt eligibility check:
+
+```sql
+SELECT p.intent,
+       p.tags,
+       t.category,
+       COUNT(DISTINCT r.id) AS responses,
+       COUNT(DISTINCT bm.id) FILTER (WHERE bm.brand_id = 12) AS target_mentions
+FROM llm_responses r
+JOIN queries q ON q.id = r.query_id
+LEFT JOIN prompts p ON p.id = q.prompt_id
+LEFT JOIN topics t ON t.id = p.topic_id
+LEFT JOIN brand_mentions bm ON bm.response_id = r.id
+WHERE q.brand_id = 2
+  AND r.collected_at::date IN ('2026-04-24', '2026-05-06', '2026-05-07')
+GROUP BY p.intent, p.tags, t.category
+ORDER BY responses DESC;
+```
 
 ## Rollback
 
@@ -231,6 +322,16 @@ Rollback options:
 - Revert the application commit if extraction or aggregation behavior regresses.
 - Re-run aggregation for the affected date range from the pre-revert code path
   if daily aggregate rows were regenerated.
+- For #563 write reruns, capture repaired `citation_sources.id`,
+  inserted `sentiment_drivers.id`, and any `brand_mentions` whose sentiment
+  fields changed from `NULL` before committing the production audit note. Data
+  rollback is:
+  - set `citation_sources.mention_id = NULL` for only the captured repaired
+    citation IDs;
+  - delete only the captured inserted sentiment driver IDs;
+  - restore captured `brand_mentions.sentiment` / `sentiment_score` values only
+    for rows changed by #563;
+  - rerun aggregation for the three approved dates.
 - Daily aggregate cleanup only removes derived `geo_score_daily`,
   `topic_score_daily`, and `product_score_daily` rows for the recomputed scope.
   Roll forward by rerunning the repaired aggregation. Roll back by reverting the
