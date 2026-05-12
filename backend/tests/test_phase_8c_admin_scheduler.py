@@ -701,8 +701,10 @@ async def test_reconcile_stale_running_queries_marks_old_rows_failed(monkeypatch
     assert session.params == [{"seconds": 600}]
     sql = session.sql[0]
     assert "LOWER(status) = 'running'" in sql
-    assert "retry_reason = 'stale_running'" in sql
+    assert "retry_reason = 'stale_running_timeout'" in sql
     assert "finished_at = NOW()" in sql
+    assert "NOT EXISTS" in sql
+    assert "FROM llm_responses" in sql
 
 
 @pytest.mark.asyncio
