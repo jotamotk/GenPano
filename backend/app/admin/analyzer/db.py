@@ -151,9 +151,7 @@ async def fetch_response_analyzer_status(
         else "NULL AS analysis_id, NULL AS analyzer_model, NULL AS analysis_analyzed_at"
     )
     analysis_join = (
-        "LEFT JOIN response_analyses ra ON ra.response_id = lr.id"
-        if has_response_analyses
-        else ""
+        "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
     )
     row = (
         (
@@ -272,9 +270,7 @@ async def preview_batch_analyzer_candidates(
         else "NULL AS analysis_id, NULL AS analyzer_model, NULL AS analysis_analyzed_at"
     )
     analysis_join = (
-        "LEFT JOIN response_analyses ra ON ra.response_id = lr.id"
-        if has_response_analyses
-        else ""
+        "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
     )
     sql = text(
         f"""

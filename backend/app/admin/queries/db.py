@@ -275,9 +275,7 @@ async def list_queries(
         """
     )
     analysis_join = (
-        "LEFT JOIN response_analyses ra ON ra.response_id = r.id"
-        if has_response_analyses
-        else ""
+        "LEFT JOIN response_analyses ra ON ra.response_id = r.id" if has_response_analyses else ""
     )
     mentions_count_select = (
         "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id) as mentions_count,"

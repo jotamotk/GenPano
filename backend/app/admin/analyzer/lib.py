@@ -269,9 +269,10 @@ def _append_sample(
 
 
 def _is_done(row: dict[str, Any]) -> bool:
-    return str(row.get("analysis_status") or "").strip().lower() == "done" and row.get(
-        "analysis_id"
-    ) is not None
+    return (
+        str(row.get("analysis_status") or "").strip().lower() == "done"
+        and row.get("analysis_id") is not None
+    )
 
 
 def _is_running_or_queued(row: dict[str, Any]) -> bool:
@@ -327,9 +328,7 @@ def build_batch_dry_run_result(
             unique_requested.append(response_id)
 
     row_by_response_id = {
-        int(row["response_id"]): row
-        for row in rows
-        if row.get("response_id") is not None
+        int(row["response_id"]): row for row in rows if row.get("response_id") is not None
     }
     for response_id in unique_requested:
         if response_id not in row_by_response_id:
@@ -356,9 +355,7 @@ def build_batch_dry_run_result(
 
         if response_id is None:
             reason = (
-                "failed_attempt_without_response"
-                if attempt_status == "failed"
-                else "no_response"
+                "failed_attempt_without_response" if attempt_status == "failed" else "no_response"
             )
             skipped_counts[reason] += 1
             _append_sample(skipped_samples, reason, row, sample_limit=sample_limit)
