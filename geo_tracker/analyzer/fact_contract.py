@@ -181,7 +181,7 @@ def build_response_fact_package_v3(
             "query_id": response.query_id,
         },
         "products": _v3_products(legacy["entities"]["facts"]),
-        "topic_metrics": _v3_topic_metrics(response, legacy),
+        "topic_metrics": _v3_topic_metrics(response, legacy, target_brand_id),
         "geo_pano": _v3_geo_pano(legacy),
     }
     package["coverage"]["validation_errors"].extend(validate_response_fact_package_v3(package))
@@ -472,16 +472,39 @@ def _v3_products(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _v3_topic_metrics(response: AnalyzerResponseInput, legacy: dict[str, Any]) -> dict[str, Any]:
+def _target_entity_facts(
+    facts: list[dict[str, Any]],
+    target_brand_id: int,
+) -> list[dict[str, Any]]:
+    return [
+        fact for fact in facts
+        if fact["entity_role"] == "target" or fact["canonical_brand_id"] == target_brand_id
+    ]
+
+
+def _v3_topic_metrics(
+    response: AnalyzerResponseInput,
+    legacy: dict[str, Any],
+    target_brand_id: int,
+) -> dict[str, Any]:
     has_chain = response.topic_id is not None and response.prompt_id is not None and response.query_id is not None
+    target_facts = _target_entity_facts(legacy["entities"]["facts"], target_brand_id)
+    target_rank_facts = [
+        fact for fact in target_facts if fact.get("position_rank") is not None
+    ]
+    reason_codes = [] if has_chain else ["missing_topic_prompt_query_chain"]
+    if not target_facts:
+        reason_codes.append("missing_target_visibility_evidence")
+    if target_facts and not target_rank_facts:
+        reason_codes.append("missing_target_rank_evidence")
     return {
-        "visible": legacy["entities"]["status"] != STATUS_EMPTY,
+        "visible": bool(target_facts),
         "visibility_rate_basis": 1 if response.raw_text else 0,
         "sentiment_basis": legacy["sentiment"].get("score_count"),
         "citation_basis": legacy["citations"].get("citation_count"),
-        "rank_basis": 1 if legacy["entities"]["facts"] else 0,
-        "formula_status": "ok" if has_chain else "partial",
-        "reason_codes": [] if has_chain else ["missing_topic_prompt_query_chain"],
+        "rank_basis": 1 if target_rank_facts else 0,
+        "formula_status": "ok" if has_chain and target_facts else "partial",
+        "reason_codes": reason_codes,
     }
 
 

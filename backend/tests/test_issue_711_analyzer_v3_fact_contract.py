@@ -206,3 +206,36 @@ def test_v3_package_marks_target_only_sov_unresolved_citations_and_parse_failure
     assert "unresolved_citation_attribution" in package["citations"]["reason_codes"]
     assert package["geo_pano"]["formula_status"] == "partial"
     assert validate_response_fact_package_v3(package) == []
+
+
+def test_v3_topic_metrics_do_not_treat_competitor_only_evidence_as_visibility() -> None:
+    package = build_response_fact_package_v3(
+        _response(
+            mentions=[
+                _mention(
+                    mention_id=2,
+                    brand_id=25,
+                    brand_name="AcmeGrind",
+                    position_type="ranked_list",
+                    position_rank=1,
+                )
+            ],
+        ),
+        target_brand_id=24,
+        target_brand_name="BestCoffer",
+        target_aliases=[],
+        configured_competitors=[
+            {"brand_id": 25, "brand_name": "AcmeGrind", "aliases": ["Acme Grind"]},
+        ],
+        provider="openai",
+        model="gpt-4.1-mini",
+        prompt_version="issue-711-test",
+        raw_output={"brands": ["AcmeGrind"]},
+    )
+
+    assert package["visibility"]["is_visible"] is False
+    assert package["rank"]["rank_basis"] is None
+    assert package["topic_metrics"]["visible"] is False
+    assert package["topic_metrics"]["rank_basis"] == 0
+    assert package["topic_metrics"]["formula_status"] == "partial"
+    assert "missing_target_visibility_evidence" in package["topic_metrics"]["reason_codes"]

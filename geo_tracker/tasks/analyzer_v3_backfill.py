@@ -555,6 +555,7 @@ async def build_analyzer_v3_backfill_report(
             "successful_responses_only": True,
             "versioned_analyzer_artifacts_only": True,
             "production_apply_requires_approval_ref": True,
+            "non_destructive_v3_apply_required": True,
             "project_scope": scope.project_id,
             "project_scope_enforced": project_scope_enforced,
             "project_filter_note": project_scope_note if scope.project_id else None,
@@ -599,9 +600,21 @@ async def build_analyzer_v3_backfill_report(
         return report
 
     if analyze_func is None:
-        from geo_tracker.analyzer.cli import analyze_single_response
-
-        analyze_func = analyze_single_response
+        report.update(
+            {
+                "apply_blocked": True,
+                "block_reason": "non_destructive_v3_apply_not_implemented",
+                "write_performed": False,
+                "write_attempted": False,
+                "apply_plan": (
+                    "Production apply is blocked because the legacy analyzer "
+                    "replacement path deletes existing evidence before the LLM "
+                    "pass completes. Implement a v3 staging/commit path before "
+                    "enabling writes."
+                ),
+            }
+        )
+        return report
 
     apply_results: list[dict] = []
     for candidate in selected:
