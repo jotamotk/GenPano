@@ -36,6 +36,97 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _v3_package(
+    *,
+    response_id: int,
+    query_id: int,
+    prompt_id: int,
+    topic_id: int,
+    collected_at: datetime,
+) -> dict:
+    return {
+        "analyzer_version": "v3",
+        "response_id": response_id,
+        "query_id": query_id,
+        "prompt_id": prompt_id,
+        "topic_id": topic_id,
+        "project_ids": [],
+        "source_brand_id": 12,
+        "target_brand_id": 12,
+        "engine": "chatgpt",
+        "collected_at": collected_at.isoformat(),
+        "analysis_started_at": collected_at.isoformat(),
+        "analysis_completed_at": collected_at.isoformat(),
+        "provider": "openai",
+        "model": "gpt-4.1-mini",
+        "prompt_version": "test",
+        "raw_output_sha256": f"sha-{response_id}",
+        "idempotency_key": f"{response_id}:v3:sha",
+        "eligibility": {"eligible": True, "success_response": True, "invalid_reason": None},
+        "coverage": {
+            "eligible_response_count_basis": 1,
+            "analyzed": True,
+            "parse_status": "ok",
+            "validation_errors": [],
+        },
+        "entities": {
+            "target": {
+                "brand_id": 12,
+                "canonical_name": "Test Brand",
+                "mentioned": True,
+                "mention_count": 1,
+                "position_rank": 1,
+            },
+            "configured_competitors": [],
+            "response_named_brands": [],
+        },
+        "visibility": {
+            "is_visible": True,
+            "rank": 1,
+            "position_type": "ranked_list",
+            "visibility_score": 1.0,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "sov": {
+            "numerator_target_mentions": 1,
+            "denominator_competitive_mentions": 2,
+            "denominator_brand_ids": [88],
+            "denominator_raw_names": ["Rival Lab"],
+            "formula_status": "ok",
+            "reason_codes": [],
+            "sample_response_ids": [response_id],
+        },
+        "sentiment": {
+            "label": "positive",
+            "score": 0.8,
+            "drivers": [{"driver_text": "proof", "source_quote": "quoted proof"}],
+            "source_quotes": ["quoted proof"],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "citations": {
+            "total_citations": 1,
+            "attributed_citations": [{"domain": "example.com"}],
+            "unresolved_citations": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "rank": {"best_rank": 1, "formula_status": "ok", "reason_codes": []},
+        "topic": {"topic_id": topic_id, "prompt_id": prompt_id, "query_id": query_id},
+        "products": [],
+        "topic_metrics": {"formula_status": "ok", "reason_codes": []},
+        "geo_pano": {
+            "visibility_component": "ok",
+            "sentiment_component": "ok",
+            "sov_component": "ok",
+            "citation_component": "ok",
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+    }
+
+
 def test_latest_response_order_places_null_created_at_after_dated_rows() -> None:
     assert (
         topic_service._response_latest_order_sql({"id", "created_at"})
@@ -230,6 +321,13 @@ Rival Lab, and Retinol Pro.',
         sentiment_score=0.1,
         geo_score=0.55,
         raw_analysis_json={
+            "analyzer_fact_package_v3": _v3_package(
+                response_id=587201,
+                query_id=587101,
+                prompt_id=58702,
+                topic_id=58701,
+                collected_at=older_time,
+            ),
             "relations": [
                 {
                     "entity_kind": "brand",
@@ -238,7 +336,7 @@ Rival Lab, and Retinol Pro.',
                     "type": "COMPETES_WITH",
                     "response_id": 587201,
                 }
-            ]
+            ],
         },
         analyzed_at=older_time,
     )
@@ -252,6 +350,13 @@ Rival Lab, and Retinol Pro.',
         citation_score=1.0,
         geo_score=0.91,
         raw_analysis_json={
+            "analyzer_fact_package_v3": _v3_package(
+                response_id=587202,
+                query_id=587102,
+                prompt_id=58702,
+                topic_id=58701,
+                collected_at=latest_time,
+            ),
             "relations": [
                 {
                     "entity_kind": "brand",
@@ -270,7 +375,7 @@ Rival Lab, and Retinol Pro.',
                     "response_id": 999999,
                     "evidence": "wrong response relation",
                 },
-            ]
+            ],
         },
         analyzed_at=latest_time,
     )
@@ -281,7 +386,15 @@ Rival Lab, and Retinol Pro.',
         target_brand_sentiment="positive",
         sentiment_score=0.7,
         geo_score=0.8,
-        raw_analysis_json={},
+        raw_analysis_json={
+            "analyzer_fact_package_v3": _v3_package(
+                response_id=587203,
+                query_id=587106,
+                prompt_id=58702,
+                topic_id=58701,
+                collected_at=middle_time,
+            )
+        },
         analyzed_at=middle_time,
     )
     db_session.add_all([older_analysis, latest_analysis, middle_analysis])

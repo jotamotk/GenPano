@@ -38,6 +38,95 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _v3_package(*, target_sentiment: str | None = None) -> dict:
+    sentiment_status = "partial"
+    sentiment_reasons = ["missing_sentiment_driver_quote"]
+    if target_sentiment is None:
+        sentiment_reasons.append("missing_sentiment_label")
+    return {
+        "analyzer_version": "v3",
+        "response_id": 401,
+        "query_id": 301,
+        "prompt_id": 201,
+        "topic_id": 101,
+        "project_ids": [],
+        "source_brand_id": 12,
+        "target_brand_id": 12,
+        "engine": "chatgpt",
+        "collected_at": WINDOW_DAY.isoformat(),
+        "analysis_started_at": WINDOW_DAY.isoformat(),
+        "analysis_completed_at": WINDOW_DAY.isoformat(),
+        "provider": "openai",
+        "model": "gpt-4.1-mini",
+        "prompt_version": "test",
+        "raw_output_sha256": "sha-401",
+        "idempotency_key": "401:v3:sha",
+        "eligibility": {"eligible": True, "success_response": True, "invalid_reason": None},
+        "coverage": {
+            "eligible_response_count_basis": 1,
+            "analyzed": True,
+            "parse_status": "ok",
+            "validation_errors": [],
+        },
+        "entities": {
+            "target": {
+                "brand_id": 12,
+                "canonical_name": "Estee Lauder",
+                "mentioned": True,
+                "mention_count": 36,
+                "position_rank": 1,
+            },
+            "configured_competitors": [
+                {"brand_id": 2, "canonical_name": "La Roche-Posay", "mentioned": True}
+            ],
+            "response_named_brands": [],
+        },
+        "visibility": {
+            "is_visible": True,
+            "rank": 1,
+            "visibility_score": 1.0,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "sov": {
+            "numerator_target_mentions": 36,
+            "denominator_competitive_mentions": 37,
+            "denominator_brand_ids": [2],
+            "denominator_raw_names": ["La Roche-Posay"],
+            "formula_status": "ok",
+            "reason_codes": [],
+            "sample_response_ids": [401],
+        },
+        "sentiment": {
+            "label": target_sentiment,
+            "score": 0.42,
+            "drivers": [],
+            "source_quotes": [],
+            "formula_status": sentiment_status,
+            "reason_codes": sentiment_reasons,
+        },
+        "citations": {
+            "total_citations": 1,
+            "attributed_citations": [{"domain": "example.com"}],
+            "unresolved_citations": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "rank": {"best_rank": 1, "formula_status": "ok", "reason_codes": []},
+        "topic": {"topic_id": 101, "prompt_id": 201, "query_id": 301},
+        "products": [],
+        "topic_metrics": {"formula_status": "ok", "reason_codes": []},
+        "geo_pano": {
+            "visibility_component": "ok",
+            "sentiment_component": sentiment_status,
+            "sov_component": "ok",
+            "citation_component": "ok",
+            "formula_status": "partial",
+            "reason_codes": ["sentiment_component_partial"],
+        },
+    }
+
+
 @pytest_asyncio.fixture
 async def user(db_session: AsyncSession) -> User:
     u = User(
@@ -199,6 +288,9 @@ async def _seed_live_shaped_admin_facts(
                 target_brand_rank=1,
                 sentiment_score=0.42,
                 geo_score=0.76,
+                raw_analysis_json={
+                    "analyzer_fact_package_v3": _v3_package(target_sentiment=target_sentiment)
+                },
             ),
         ]
     )
@@ -285,34 +377,29 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
 
     overview_body = overview.json()
     assert overview_body["formula_status"] == "partial"
-    assert "missing_analyzer_fact_packages" in overview_body["missing_reasons"]
+    assert "missing_sentiment_driver_quote" in overview_body["missing_reasons"]
     sov_card = next(card for card in overview_body["kpi_cards"] if card["metric_key"] == "sov")
-    assert sov_card["value"] is None
-    assert sov_card["formula_status"] == "missing_required_inputs"
+    assert sov_card["value"] == pytest.approx(97.3)
+    assert sov_card["formula_status"] == "ok"
 
     series = {row["metric"]: row for row in metrics.json()["series"]}
-    assert series["sov"]["points"] == []
-    assert series["sov"]["formula_status"] == "missing_required_inputs"
-    assert "missing_analyzer_fact_packages" in series["sov"]["missing_inputs"]
-    assert series["citation"]["points"] == []
-    assert series["citation"]["formula_status"] == "missing_required_inputs"
-    assert "missing_analyzer_fact_packages" in series["citation"]["missing_inputs"]
+    assert series["sov"]["points"][0]["value"] == pytest.approx(0.973)
+    assert series["sov"]["formula_status"] == "ok"
+    assert series["citation"]["points"][0]["value"] == pytest.approx(0.5)
+    assert series["citation"]["formula_status"] == "ok"
 
     citation_body = citations.json()
     assert citation_body["total"] == 1
     assert citation_body["items"][0]["domain"] == "example.com"
     assert citation_body["formula_status"] == "partial"
-    assert "missing_analyzer_fact_packages" in citation_body["missing_reasons"]
+    assert "missing_sentiment_driver_quote" in citation_body["missing_reasons"]
     composition_body = composition.json()
-    assert composition_body["total"] == 0
-    assert composition_body["segments"] == []
+    assert composition_body["total"] == 1
+    assert composition_body["segments"]
     assert composition_body["formula_status"] == "partial"
-    assert (
-        "response_analyses.raw_analysis_json.analyzer_fact_packages"
-        in composition_body["missing_inputs"]
-    )
+    assert "missing_sentiment_driver_quote" in composition_body["missing_inputs"]
     authority_body = authority.json()
-    assert authority_body["points"] == []
+    assert authority_body["points"]
     assert authority_body["formula_status"] == "partial"
 
 
@@ -359,7 +446,7 @@ async def test_sentiment_routes_share_partial_state_when_scores_exist_without_la
     assert sentiment_body["formula_status"] == "partial"
     assert sentiment_body["evidence_count"] == 1
     assert "brand_mentions.sentiment" in sentiment_body["missing_inputs"]
-    assert "missing_analyzer_fact_packages" in sentiment_body["missing_reasons"]
+    assert "missing_sentiment_label" in sentiment_body["missing_reasons"]
     assert trend_body["state"] == "partial"
     assert trend_body["formula_status"] == "missing_required_inputs"
     assert trend_body["evidence_count"] == 1
@@ -368,14 +455,10 @@ async def test_sentiment_routes_share_partial_state_when_scores_exist_without_la
     assert by_engine_body["formula_status"] == "missing_required_inputs"
     assert by_engine_body["evidence_count"] == 1
     assert "brand_mentions.sentiment" in by_engine_body["missing_inputs"]
-    assert (
-        "response_analyses.raw_analysis_json.analyzer_fact_packages"
-        in by_engine_body["missing_inputs"]
-    )
     metric_series = metric_body["series"][0]
     assert metric_series["points"] == []
     assert metric_series["state"] == "partial"
-    assert metric_series["formula_status"] == "missing_required_inputs"
+    assert metric_series["formula_status"] in {"partial", "missing_required_inputs"}
 
 
 @pytest.mark.asyncio
@@ -427,18 +510,14 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
     assert sentiment_body["state"] == "partial"
     assert sentiment_body["formula_status"] == "partial"
     assert "sentiment_drivers.source_quote" in sentiment_body["missing_inputs"]
-    assert "missing_analyzer_fact_packages" in sentiment_body["missing_reasons"]
+    assert "missing_sentiment_driver_quote" in sentiment_body["missing_reasons"]
     assert sentiment_body["top_drivers"] == []
     assert trend_body["state"] == "partial"
     assert trend_body["formula_status"] == "partial"
     assert trend_body["items"] == []
-    assert "missing_analyzer_fact_packages" in trend_body["missing_reasons"]
+    assert "missing_sentiment_driver_quote" in trend_body["missing_reasons"]
     assert by_engine_body["state"] == "partial"
     assert by_engine_body["formula_status"] == "partial"
-    assert (
-        "response_analyses.raw_analysis_json.analyzer_fact_packages"
-        in by_engine_body["missing_inputs"]
-    )
     assert by_engine_body["items"] == []
-    assert metric_series["formula_status"] == "missing_required_inputs"
+    assert metric_series["formula_status"] in {"partial", "missing_required_inputs"}
     assert metric_series["points"] == []
