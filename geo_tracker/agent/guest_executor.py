@@ -65,6 +65,21 @@ DOUBAO_UNAVAILABLE_MARKERS = (
     "\u5237\u65b0\u9875\u9762",
     "\u8fd4\u56de\u9996\u9875",
 )
+DOUBAO_VISUAL_CHALLENGE_REASON = "doubao_visual_challenge"
+DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_REASON = "doubao_image_challenge_load_failed"
+DOUBAO_VISUAL_CHALLENGE_MARKERS = (
+    "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247",
+    "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9",
+    "\u62d6\u62fd\u5230\u4e0b\u65b9",
+    "\u9009\u62e9\u6240\u6709\u7b26\u5408",
+    "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f",
+)
+DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_MARKERS = (
+    "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25",
+    "\u8bf7\u5237\u65b0\u91cd\u8bd5",
+    "[5202]",
+    "5202",
+)
 
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -91,6 +106,56 @@ _SENSITIVE_TEXT_PATTERNS = [
 
 def _is_doubao_unavailable_page_text(body_text: str | None) -> bool:
     return any(marker in (body_text or "") for marker in DOUBAO_UNAVAILABLE_MARKERS)
+
+
+def _doubao_visual_challenge_state_from_text(text: str | None) -> dict:
+    """Return sanitized Doubao visual challenge evidence from page/dialog text."""
+    raw_text = _redact_sensitive_text(text or "")
+    if not raw_text:
+        return {}
+
+    matched_markers = [
+        marker for marker in DOUBAO_VISUAL_CHALLENGE_MARKERS if marker in raw_text
+    ]
+    button_markers = [
+        marker for marker in ("\u5237\u65b0", "\u53cd\u9988", "\u63d0\u4ea4") if marker in raw_text
+    ]
+    image_load_failed = any(
+        marker in raw_text for marker in DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_MARKERS
+    )
+    if len(matched_markers) < 2 and not (
+        matched_markers and image_load_failed and len(button_markers) >= 2
+    ):
+        return {}
+
+    reason = (
+        DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_REASON
+        if image_load_failed
+        else DOUBAO_VISUAL_CHALLENGE_REASON
+    )
+    return {
+        "reason": reason,
+        "imageLoadFailed": image_load_failed,
+        "matchedMarkers": matched_markers[:6],
+        "buttonMarkers": button_markers[:3],
+        "modalText": raw_text[:1000],
+    }
+
+
+async def _doubao_visual_challenge_state_from_page(page: Page | None) -> dict:
+    if page is None:
+        return {}
+    body_text = ""
+    html = ""
+    try:
+        body_text = await page.evaluate("document.body?.innerText || ''")
+    except Exception:
+        pass
+    try:
+        html = await page.content()
+    except Exception:
+        pass
+    return _doubao_visual_challenge_state_from_text(f"{body_text}\n{html}")
 
 
 def _redact_sensitive_text(text: str | None) -> str:
@@ -1172,6 +1237,7 @@ class GuestQueryExecutor:
                     await self._prefer_chatgpt_auth_failure_reason(
                         llm, page_obj, runtime_events=runtime_events
                     )
+                    await self._prefer_doubao_visual_challenge_reason(llm, page_obj)
                     await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
@@ -1207,6 +1273,32 @@ class GuestQueryExecutor:
                 playwright=_playwright,
             )
 
+    async def _prefer_doubao_visual_challenge_reason(
+        self, llm_name: str, page: Page | None
+    ) -> str | None:
+        """Promote Doubao image-selection challenge over generic no-response/homepage reasons."""
+        if llm_name != "doubao" or page is None:
+            return None
+        state = await _doubao_visual_challenge_state_from_page(page)
+        reason = state.get("reason")
+        if not reason:
+            return None
+        if self.last_error_reason in (
+            None,
+            "",
+            "no_response",
+            "no_input",
+            "browser_timeout",
+            "submit_failed",
+            "doubao_homepage_content",
+        ):
+            self.last_error_reason = str(reason)
+        logger.warning(
+            "[doubao] visual challenge detected (%s); failing without challenge solving",
+            reason,
+        )
+        return str(reason)
+
     async def _prefer_doubao_auth_failure_reason(
         self, llm_name: str, page: Page | None
     ) -> str | None:
@@ -1223,6 +1315,8 @@ class GuestQueryExecutor:
             "no_input",
             "browser_timeout",
             "submit_failed",
+            DOUBAO_VISUAL_CHALLENGE_REASON,
+            DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_REASON,
         ):
             self.last_error_reason = auth_reason
         return auth_reason
@@ -2258,6 +2352,34 @@ class GuestQueryExecutor:
                 )
                 await _save_html(page, debug_query_id, f"{llm_name}_submit_failed_no_user_msg")
 
+            if llm_name == "doubao" and not resp_text:
+                auth_reason = await self._prefer_doubao_auth_failure_reason(llm_name, page)
+                if auth_reason:
+                    await _save_html(page, debug_query_id, auth_reason)
+                    await _save_screenshot(page, debug_query_id, auth_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        auth_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
+                    return "", "", []
+                challenge_reason = await self._prefer_doubao_visual_challenge_reason(
+                    llm_name, page
+                )
+                if challenge_reason:
+                    await _save_html(page, debug_query_id, challenge_reason)
+                    await _save_screenshot(page, debug_query_id, challenge_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        challenge_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
+                    return "", "", []
+
             if not resp_text and user_msg_present:
                 # fallback 1：拼接所有 <p> 标签文本
                 logger.warning(f"[{llm_name}] 响应选择器未匹配，使用 JS fallback 提取")
@@ -2303,6 +2425,34 @@ class GuestQueryExecutor:
                 if js_text and len(js_text) > 20:
                     logger.info(f"[{llm_name}] JS fallback 提取成功 ({len(js_text)} chars)")
                     resp_text = js_text[:5000]
+
+            if llm_name == "doubao" and resp_text:
+                auth_reason = await self._prefer_doubao_auth_failure_reason(llm_name, page)
+                if auth_reason:
+                    await _save_html(page, debug_query_id, auth_reason)
+                    await _save_screenshot(page, debug_query_id, auth_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        auth_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
+                    return "", "", []
+                challenge_reason = await self._prefer_doubao_visual_challenge_reason(
+                    llm_name, page
+                )
+                if challenge_reason:
+                    await _save_html(page, debug_query_id, challenge_reason)
+                    await _save_screenshot(page, debug_query_id, challenge_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        challenge_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
+                    return "", "", []
 
             if not resp_text:
                 try:
@@ -2601,6 +2751,7 @@ async def _save_runtime_snapshot(
                     inputSelectors: inspect(selectors.input),
                     responseSelectors: inspect(selectors.response),
                     loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
+                    challengeLikeNodes: inspect("[role='dialog'], [class*='captcha'], [class*='verify'], [class*='challenge'], [class*='modal']"),
                 };
             }
             """,
@@ -2619,6 +2770,19 @@ async def _save_runtime_snapshot(
             if is_doubao_snapshot
             else None
         )
+        doubao_visual_challenge = None
+        if is_doubao_snapshot and isinstance(page_state, dict):
+            doubao_visual_challenge = _doubao_visual_challenge_state_from_text(
+                "\n".join(
+                    [
+                        str(page_state.get("bodyText", "")),
+                        json.dumps(
+                            page_state.get("challengeLikeNodes", []),
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+            ) or None
         snapshot = {
             "savedAt": datetime.utcnow().isoformat() + "Z",
             "queryId": query_id,
@@ -2627,6 +2791,7 @@ async def _save_runtime_snapshot(
             "error": _redact_sensitive_text(f"{type(error).__name__}: {error}") if error else None,
             "proxy": proxy_diagnostic,
             "doubaoAuthStateReason": doubao_auth_reason,
+            "doubaoVisualChallenge": doubao_visual_challenge,
             "runtimeEvents": runtime_events[-80:] if runtime_events else [],
             "page": page_state,
         }
