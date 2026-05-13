@@ -930,23 +930,25 @@ def _parse_int_csv(value: str | None) -> tuple[int, ...]:
 
 async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
     engine = create_task_engine()
-    session_factory = get_task_async_session(engine)
-    async with session_factory() as session:
-        return await build_bestcoffer_v4_coverage_report(
-            session,
-            BestCofferV4CoverageScope(
-                project_id=args.project_id,
-                brand_id=int(args.brand_id),
-                competitor_brand_ids=_parse_int_csv(args.competitor_brand_ids),
-                date_from=args.date_from or None,
-                date_to=args.date_to or None,
-                response_ids=_parse_int_csv(args.response_ids),
-                query_ids=_parse_int_csv(args.query_ids),
-                limit=int(args.limit),
-            ),
-            mode=args.mode,
-            approval_ref=args.approval_ref or None,
-        )
+    try:
+        async with get_task_async_session(engine) as session:
+            return await build_bestcoffer_v4_coverage_report(
+                session,
+                BestCofferV4CoverageScope(
+                    project_id=args.project_id,
+                    brand_id=int(args.brand_id),
+                    competitor_brand_ids=_parse_int_csv(args.competitor_brand_ids),
+                    date_from=args.date_from or None,
+                    date_to=args.date_to or None,
+                    response_ids=_parse_int_csv(args.response_ids),
+                    query_ids=_parse_int_csv(args.query_ids),
+                    limit=int(args.limit),
+                ),
+                mode=args.mode,
+                approval_ref=args.approval_ref or None,
+            )
+    finally:
+        await engine.dispose()
 
 
 def main() -> None:
