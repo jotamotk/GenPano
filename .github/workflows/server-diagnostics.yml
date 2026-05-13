@@ -793,6 +793,78 @@ jobs:
                 echo "raw worker logs redacted for Refs #697 safe live gate" > "${artifact_dir}/logs/payload_logs_redacted.txt"
               fi
             fi
+
+            if [ "${EXECUTE_BATCH}" = "true" ]; then
+              echo "=== Enforce selected batch status semantics ==="
+              python3 - "${artifact_dir}/audit.csv" "${artifact_dir}/batch_status_semantics_failed.txt" <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import sys
+          from pathlib import Path
+
+          audit_path = Path(sys.argv[1])
+          failure_path = Path(sys.argv[2])
+
+          def as_int(value: str | None) -> int:
+              try:
+                  return int(str(value or "").strip() or "0")
+              except ValueError:
+                  return 0
+
+          failures: list[str] = []
+          with audit_path.open(newline="", encoding="utf-8") as handle:
+              for row in csv.DictReader(handle):
+                  query_id = str(row.get("query_id") or "").strip() or "<unknown>"
+                  status = str(row.get("status") or "").strip().lower()
+                  verdict = str(row.get("qa_auto_verdict") or "").strip().upper()
+                  response_id = str(row.get("response_id") or "").strip()
+                  response_len = as_int(row.get("response_len"))
+                  reasons: list[str] = []
+
+                  if status == "failed":
+                      reasons.append("terminal_failed_status")
+                  if verdict.startswith("FAIL"):
+                      reasons.append("failing_qa_auto_verdict")
+                  if not response_id:
+                      reasons.append("missing_response_id")
+                  if response_len <= 0:
+                      reasons.append("missing_response_text")
+
+                  if reasons:
+                      failures.append(
+                          ",".join(
+                              [
+                                  f"query_id={query_id}",
+                                  f"status={status or '<empty>'}",
+                                  f"qa_auto_verdict={verdict or '<empty>'}",
+                                  f"response_id_present={bool(response_id)}",
+                                  f"response_len={response_len}",
+                                  "reasons=" + "|".join(reasons),
+                              ]
+                          )
+                      )
+
+          if failures:
+              failure_path.write_text("\n".join(failures) + "\n", encoding="utf-8")
+              print("Selected batch status semantics failed:")
+              for failure in failures:
+                  print(failure)
+              sys.exit(3)
+
+          failure_path.write_text(
+              "selected batch status semantics passed\n",
+              encoding="utf-8",
+          )
+          print("Selected batch status semantics passed.")
+          PY
+            else
+              echo "=== Skip selected batch status semantics for preview ==="
+              {
+                echo "status_semantics_enforced=false"
+                echo "reason=execute_batch=false candidate preview does not dispatch selected rows"
+              } > "${artifact_dir}/batch_status_semantics_skipped.txt"
+            fi
           fi
 
           REMOTE
