@@ -1422,10 +1422,11 @@ jobs:
           rm -rf "${artifact_dir}"
           mkdir -p "${artifact_dir}"
           summary_file="${artifact_dir}/summary.txt"
+          main_bash_pid="${BASHPID}"
           exec > >(tee "${summary_file}") 2>&1
           finish() {
             status=$?
-            if [ "${BASH_SUBSHELL:-0}" != "0" ]; then
+            if [ "${BASHPID}" != "${main_bash_pid}" ]; then
               exit "${status}"
             fi
             echo "=== Artifact manifest ==="
