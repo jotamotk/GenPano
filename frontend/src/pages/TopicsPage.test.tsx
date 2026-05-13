@@ -367,13 +367,12 @@ describe('TopicsPage live brand override', () => {
 
     renderTopicsPage()
 
-    expect(screen.getAllByText('Coverage incomplete').length).toBeGreaterThan(0)
     expect(screen.getAllByText('34 of 56 analyzed').length).toBeGreaterThan(0)
     expect(screen.getAllByText('22 missing').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Analyzer v3').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Analysis coverage missing').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Citation attribution unresolved').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Sentiment quote missing').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Analysis coverage missing')).not.toBeInTheDocument()
+    expect(screen.queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sentiment quote missing')).not.toBeInTheDocument()
 
     const analyzedCard = screen.getByText('Analyzed answers').parentElement as HTMLElement
     expect(within(analyzedCard).getByText('34')).toBeInTheDocument()
@@ -381,8 +380,10 @@ describe('TopicsPage live brand override', () => {
     expect(within(analyzedCard).queryByText('--')).not.toBeInTheDocument()
 
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Needs review').length).toBeGreaterThan(0)
+    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
+    expect(within(row).queryByText('Needs review')).not.toBeInTheDocument()
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
+    expect(within(row).getByText('183')).toBeInTheDocument()
   })
 
   it('withholds ok zero topic metrics when numerator denominator proof is absent', () => {
@@ -440,12 +441,13 @@ describe('TopicsPage live brand override', () => {
 
     renderTopicsPage('/brand/topics?brandId=24')
 
-    expect(screen.getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Limited proof').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Valid zero proof missing')).not.toBeInTheDocument()
     expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
     expect(screen.queryByText('0 / 0 / 0')).not.toBeInTheDocument()
 
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
     expect(within(row).queryByText('Positive 0')).not.toBeInTheDocument()
   })
@@ -979,7 +981,8 @@ describe('TopicsPage live brand override', () => {
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
     expect(within(modal).getByText(/Analyzer summary/i)).toBeInTheDocument()
-    expect(within(modal).getByText('Target brand')).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand')).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand mention')).toBeInTheDocument()
     expect(within(modal).getByText('Mentioned')).toBeInTheDocument()
     expect(within(modal).getByText('Target rank')).toBeInTheDocument()
     expect(within(modal).getByText('#2')).toBeInTheDocument()
@@ -1742,7 +1745,15 @@ describe('TopicsPage live brand override', () => {
           target_llm: 'chatgpt',
           created_at: '2026-05-13T10:02:00Z',
         },
-        analysis: null,
+        analysis: {
+          target_brand_mentioned: false,
+          visibility_score: 0,
+          sentiment_score: 0,
+          sov_score: 0,
+          citation_score: 80,
+          geo_score: 0,
+          analyzed_at: '2026-05-13T06:21:00Z',
+        },
         analyzer_facts: {
           citations: [
             {
@@ -1807,15 +1818,25 @@ describe('TopicsPage live brand override', () => {
     )
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
-    expect(within(modal).getByText('Needs review')).toBeInTheDocument()
+    expect(within(modal).getByText('Limited evidence')).toBeInTheDocument()
+    expect(within(modal).queryByText('Needs review')).not.toBeInTheDocument()
     expect(within(modal).getByText('34 of 56 analyzed')).toBeInTheDocument()
     expect(within(modal).getByText('22 missing')).toBeInTheDocument()
-    expect(within(modal).getByText('Citation attribution unresolved')).toBeInTheDocument()
-    expect(within(modal).getByText('Sentiment quote missing')).toBeInTheDocument()
+    expect(within(modal).queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
+    expect(within(modal).queryByText('Sentiment quote missing')).not.toBeInTheDocument()
+    expect(
+      within(modal).getByText(/Citation domains extracted; attribution is still being verified/i),
+    ).toBeInTheDocument()
     expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
     expect(within(modal).getByText('reviews.example')).toBeInTheDocument()
-    expect(within(modal).getByText('BestCoffer')).toBeInTheDocument()
-    expect(within(modal).getByText(/Brand #24/)).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand')).toBeInTheDocument()
+    expect(within(modal).getAllByText('BestCoffer').length).toBeGreaterThan(0)
+    expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
+    const analyzerSummary = within(modal)
+      .getByText('Analyzer summary')
+      .closest('section') as HTMLElement
+    expect(within(analyzerSummary).queryByText('0.0')).not.toBeInTheDocument()
+    expect(within(analyzerSummary).getByText('80.0')).toBeInTheDocument()
     expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
   })
 
