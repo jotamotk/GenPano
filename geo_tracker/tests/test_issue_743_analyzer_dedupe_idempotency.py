@@ -319,20 +319,14 @@ async def test_analyzer_transaction_error_marks_failed_without_pending_rollback_
     target, response = await _seed_response(session)
     response_id = response.id
 
-    def _bypass_dedupe(llm_brands, _brand_index):
-        rows = {}
-        duplicate_counts = {}
-        display_keys = {}
-        raw_names = {}
-        for llm_brand in llm_brands:
-            key = (llm_brand.brand_name.lower(), (llm_brand.product_name or "").lower())
-            rows[key] = llm_brand
-            duplicate_counts[key] = 1
-            display_keys[key] = f"{llm_brand.brand_name}|{llm_brand.product_name or ''}"
-            raw_names[key] = [llm_brand.brand_name]
-        return rows, duplicate_counts, display_keys, raw_names
+    identity_calls = 0
 
-    monkeypatch.setattr(analyzer_cli, "_dedupe_llm_brand_products", _bypass_dedupe)
+    def _unique_in_memory_key(response_id, brand_name, product_name):
+        nonlocal identity_calls
+        identity_calls += 1
+        return (int(response_id), brand_name, product_name or "", identity_calls)
+
+    monkeypatch.setattr(analyzer_cli, "_mention_identity_key", _unique_in_memory_key)
 
     result = await analyzer_cli.analyze_single_response(
         session,
