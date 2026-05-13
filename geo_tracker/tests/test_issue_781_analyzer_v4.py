@@ -31,6 +31,7 @@ from geo_tracker.db.models import (
     BrandMention,
     CitationSource,
     LLMResponse,
+    ProductFeatureMention,
     Prompt,
     Query,
     QueryStatus,
@@ -595,6 +596,60 @@ async def test_analyzer_v4_partial_output_persists_safe_facts_and_quality_flags(
     }
 
 
+@pytest.mark.asyncio
+async def test_analyzer_v4_category_product_features_are_not_persisted_as_feature_rows(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["product_features"].append(
+        {
+            "feature_key": "feature_category_sensitive_serum",
+            "product_entity_key": "ent_product_calm",
+            "brand_entity_key": "ent_brand_acme",
+            "feature_type": "category",
+            "feature_name": "sensitive skin serum",
+            "feature_value": None,
+            "evidence_quote": "AcmeBeauty Calm Serum",
+            "confidence": 0.82,
+            "quality_flags": [],
+        }
+    )
+    parsed = object.__new__(LLMAnalyzer)._parse_result(package)
+    _patch_pipeline(monkeypatch, parsed)
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    feature_names = (
+        await session.execute(
+            select(ProductFeatureMention.feature_name)
+            .join(ResponseAnalysis, ProductFeatureMention.analysis_id == ResponseAnalysis.id)
+            .where(
+                ResponseAnalysis.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert feature_names == ["ceramides"]
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "unsupported_product_feature_type_dropped" in flag_codes
+
+
 def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
     package = _valid_v4_package()
     package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
@@ -714,6 +769,65 @@ def test_analyzer_v4_normalizes_missing_optional_collections_and_drops_null_ment
     ) in flags
     for key in ("sentiment_drivers", "product_features", "relations", "citations"):
         assert ("missing_optional_collection", "collection", key) in flags
+
+
+def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["product_features"].extend(
+        [
+            {
+                "feature_key": "feature_category_sensitive_serum",
+                "product_entity_key": "ent_product_calm",
+                "brand_entity_key": "ent_brand_acme",
+                "feature_type": "category",
+                "feature_name": "sensitive skin serum",
+                "feature_value": None,
+                "evidence_quote": "AcmeBeauty Calm Serum",
+                "confidence": 0.82,
+                "quality_flags": [],
+            },
+            {
+                "feature_key": "feature_category_ceramide_serum",
+                "product_entity_key": "ent_product_calm",
+                "brand_entity_key": "ent_brand_acme",
+                "feature_type": "category",
+                "feature_name": "ceramide serum",
+                "feature_value": None,
+                "evidence_quote": "uses gentle ceramides",
+                "confidence": 0.78,
+                "quality_flags": [],
+            },
+        ]
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    assert result.package["product_features"] == [package["product_features"][0]]
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "unsupported_product_feature_type_dropped",
+        "feature",
+        "feature_category_sensitive_serum",
+    ) in flags
+    assert (
+        "unsupported_product_feature_type_dropped",
+        "feature",
+        "feature_category_ceramide_serum",
+    ) in flags
 
 
 @pytest.mark.asyncio

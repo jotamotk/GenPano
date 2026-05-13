@@ -27,6 +27,7 @@ except ImportError:
 from geo_tracker.analyzer.brand_detector import DetectedBrand
 from geo_tracker.analyzer.position_type import normalize_position_type
 from geo_tracker.analyzer.prompts import ANALYSIS_SYSTEM, ANALYSIS_USER
+from geo_tracker.analyzer.v4_contract import CATEGORY_PRODUCT_FEATURE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +370,10 @@ class LLMAnalyzer:
                 drivers_by_mention.setdefault(str(driver.get("mention_key")), []).append(driver)
         features_by_product: dict[str, list[dict]] = {}
         for feature in data.get("product_features", []):
-            if isinstance(feature, dict):
+            if (
+                isinstance(feature, dict)
+                and feature.get("feature_type") not in CATEGORY_PRODUCT_FEATURE_TYPES
+            ):
                 features_by_product.setdefault(str(feature.get("product_entity_key")), []).append(feature)
 
         for mention in data.get("mentions", []):

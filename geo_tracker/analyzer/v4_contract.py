@@ -81,6 +81,7 @@ FEATURE_TYPES = {
     "availability",
     "other",
 }
+CATEGORY_PRODUCT_FEATURE_TYPES = {"category"}
 RELATION_TYPES = {
     "recommended_for",
     "compared_with",
@@ -196,6 +197,7 @@ def validate_analyzer_v4_package(
             errors.append(f"schema_validation_failed: {key} must be a list")
             raw_package[key] = []
     _drop_malformed_mentions(raw_package, flags)
+    _drop_category_product_features(raw_package, flags)
 
     entity_keys: set[str] = set()
     for index, entity in enumerate(_objects(raw_package["entities"])):
@@ -795,6 +797,39 @@ def _drop_malformed_mentions(package: dict[str, Any], flags: list[dict[str, Any]
             blocks_metric_readiness=True,
         )
     package["mentions"] = kept
+
+
+def _drop_category_product_features(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    features = package.get("product_features")
+    if not isinstance(features, list):
+        return
+
+    kept: list[dict[str, Any]] = []
+    for index, feature in enumerate(features):
+        if not isinstance(feature, dict):
+            continue
+        if feature.get("feature_type") not in CATEGORY_PRODUCT_FEATURE_TYPES:
+            kept.append(feature)
+            continue
+
+        key = str(feature.get("feature_key") or f"feature_{index}")
+        feature["feature_key"] = key
+        _append_flag(
+            flags,
+            code="unsupported_product_feature_type_dropped",
+            severity="error",
+            message=(
+                "Product feature was dropped because feature_type='category' "
+                "belongs in category entities, mentions, or relations."
+            ),
+            target_type="feature",
+            target_key=key,
+            blocks_metric_readiness=True,
+        )
+    package["product_features"] = kept
 
 
 def _quality_codes(item: dict[str, Any]) -> set[str]:
