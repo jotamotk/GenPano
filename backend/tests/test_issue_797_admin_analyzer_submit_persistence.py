@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 from genpano_models import AdminUser, AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -166,6 +167,58 @@ async def test_single_analyze_duplicate_active_run_is_idempotent_without_dispatc
     assert body["run_id"] == 702
     assert body["task_id"] == "task-existing"
     dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_single_analyze_idempotent_queued_run_without_task_is_redispatched(
+    client,
+    admin_operator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _admin_analyzer_router_module()
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "fetch_response_analyzer_status",
+        AsyncMock(return_value=_status_row(analysis_status="queued")),
+    )
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "create_or_get_queued_analyzer_run",
+        AsyncMock(
+            return_value={
+                "run_id": 704,
+                "response_id": 101,
+                "status": "queued",
+                "task_id": None,
+                "idempotent": True,
+                "previous_analysis_status": "queued",
+            }
+        ),
+    )
+    mark_enqueued = AsyncMock(return_value=None)
+    monkeypatch.setattr(module.analyzer_db, "mark_analyzer_run_enqueued", mark_enqueued)
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "mark_analyzer_run_enqueue_failed",
+        AsyncMock(return_value=None),
+    )
+    dispatch = Mock(return_value="task-recovered-704")
+    monkeypatch.setattr(module, "dispatch_analyze_response", dispatch)
+
+    resp = await client.post(
+        "/admin/api/analyzer/responses/101/analyze",
+        json={"mode": "missing_or_failed_only", "idempotency_key": "retry-101"},
+    )
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["success"] is True
+    assert body["accepted"] is True
+    assert body["idempotent"] is True
+    assert body["run_id"] == 704
+    assert body["task_id"] == "task-recovered-704"
+    dispatch.assert_called_once_with(101, analyzer_run_id=704)
+    mark_enqueued.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -468,6 +521,87 @@ async def test_batch_submit_reused_active_run_with_task_id_is_not_redispatched(
 
 
 @pytest.mark.asyncio
+async def test_batch_submit_reused_queued_run_without_task_is_redispatched(
+    client,
+    admin_operator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _admin_analyzer_router_module()
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "preview_batch_analyzer_candidates",
+        AsyncMock(return_value=[_status_row(response_id=101, query_id=9001)]),
+    )
+    existing_item = {
+        "item_id": 1,
+        "response_id": 101,
+        "run_id": 801,
+        "task_id": None,
+        "status": "queued",
+        "dispatch_required": False,
+        "reused_active_run": True,
+    }
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "create_analyzer_batch_submission",
+        AsyncMock(
+            return_value={
+                "batch_id": "batch-reused-missing-task",
+                "dry_run_id": "dry-reused-missing-task",
+                "status": "queued",
+                "submitted_count": 1,
+                "accepted_count": 0,
+                "skipped_count": 0,
+                "items": [existing_item],
+            }
+        ),
+    )
+    mark_item = AsyncMock(return_value=None)
+    monkeypatch.setattr(module.analyzer_db, "mark_analyzer_batch_item_enqueued", mark_item)
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "mark_analyzer_batch_item_enqueue_failed",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "refresh_analyzer_batch_status",
+        AsyncMock(
+            return_value={
+                "batch_id": "batch-reused-missing-task",
+                "status": "queued",
+                "submitted_count": 1,
+                "accepted_count": 1,
+                "submitted_response_ids": [101],
+                "accepted_response_ids": [101],
+                "items": [{**existing_item, "task_id": "task-recovered-801"}],
+            }
+        ),
+    )
+    dispatch = Mock(return_value="task-recovered-801")
+    monkeypatch.setattr(module, "dispatch_analyze_response", dispatch)
+
+    resp = await client.post(
+        "/admin/api/analyzer/responses/batch",
+        json={
+            "scope": {"response_ids": [101]},
+            "mode": "missing_or_failed_only",
+            "max_count": 10,
+            "confirm": True,
+            "idempotency_key": "batch-reused-missing-task",
+        },
+    )
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["accepted_count"] == 1
+    assert body["submitted_response_ids"] == [101]
+    assert body["accepted_response_ids"] == [101]
+    dispatch.assert_called_once_with(101, analyzer_run_id=801)
+    mark_item.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_batch_submit_all_enqueue_failed_is_clear_and_preserves_done_status(
     client,
     admin_operator,
@@ -532,7 +666,9 @@ async def test_batch_submit_all_enqueue_failed_is_clear_and_preserves_done_statu
                 "submitted_count": 2,
                 "accepted_count": 0,
                 "failed_count": 2,
-                "submitted_response_ids": [],
+                "submitted_response_ids": [101, 102],
+                "accepted_response_ids": [],
+                "failed_response_ids": [101, 102],
                 "items": [
                     {"item_id": 1, "response_id": 101, "run_id": 801, "status": "failed"},
                     {"item_id": 2, "response_id": 102, "run_id": 802, "status": "failed"},
@@ -559,7 +695,9 @@ async def test_batch_submit_all_enqueue_failed_is_clear_and_preserves_done_statu
     assert body["accepted"] is False
     assert body["error"] == "analyzer_batch_enqueue_failed"
     assert body["accepted_count"] == 0
-    assert body["submitted_response_ids"] == []
+    assert body["submitted_response_ids"] == [101, 102]
+    assert body["accepted_response_ids"] == []
+    assert body["failed_response_ids"] == [101, 102]
     assert mark_failed.await_count == 2
     assert mark_failed.await_args_list[0].kwargs["previous_analysis_status"] == "done"
     assert mark_failed.await_args_list[1].kwargs["previous_analysis_status"] == "failed"
@@ -598,6 +736,37 @@ async def test_batch_submit_returns_dependency_gate_when_batch_tables_missing(
     preview.assert_not_awaited()
     create_batch.assert_not_awaited()
     dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_submit_requires_idempotency_key_for_confirmed_mutation(
+    client,
+    admin_operator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _admin_analyzer_router_module()
+    readiness = AsyncMock(return_value=True)
+    preview = AsyncMock(return_value=[_status_row(response_id=101)])
+    create_batch = AsyncMock(return_value={"batch_id": "batch-without-key"})
+    monkeypatch.setattr(module.analyzer_db, "analyzer_batch_submit_ready", readiness, raising=False)
+    monkeypatch.setattr(module.analyzer_db, "preview_batch_analyzer_candidates", preview)
+    monkeypatch.setattr(module.analyzer_db, "create_analyzer_batch_submission", create_batch)
+
+    resp = await client.post(
+        "/admin/api/analyzer/responses/batch",
+        json={
+            "scope": {"response_ids": [101]},
+            "mode": "missing_or_failed_only",
+            "max_count": 10,
+            "confirm": True,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "idempotency_key_required"
+    readiness.assert_not_awaited()
+    preview.assert_not_awaited()
+    create_batch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -932,3 +1101,138 @@ async def test_db_batch_submission_reused_active_run_does_not_require_dispatch(
     assert batch["items"][0]["reused_active_run"] is True
     assert batch["items"][0]["dispatch_required"] is False
     assert await db_session.scalar(select(func.count(AnalyzerRun.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_db_batch_submission_reused_queued_run_without_task_requires_dispatch(
+    db_session: AsyncSession,
+) -> None:
+    from app.admin.analyzer import db as analyzer_db
+
+    existing_run = AnalyzerRun(
+        response_id=79731,
+        status="queued",
+        task_id=None,
+        trigger_source="admin_batch",
+    )
+    db_session.add(existing_run)
+    await db_session.commit()
+    await db_session.refresh(existing_run)
+
+    normalized = {
+        "scope": {"response_ids": [79731], "query_ids": [], "filters": {}},
+        "mode": "missing_or_failed_only",
+        "max_count": 10,
+        "sample_limit": 10,
+        "reason": "operator batch",
+        "idempotency_key": "batch-reuse-run-no-task-797",
+        "confirm": True,
+    }
+    preview = {
+        "success": True,
+        "dry_run": True,
+        "dry_run_id": "dry-reuse-run-no-task-797",
+        "mode": "missing_or_failed_only",
+        "eligible_response_ids": [79731],
+        "will_enqueue_count": 1,
+        "skipped_counts": {},
+        "skipped_samples": {},
+        "_candidate_rows": [{"response_id": 79731, "query_id": 99731}],
+    }
+
+    batch = await analyzer_db.create_analyzer_batch_submission(
+        db_session,
+        normalized=normalized,
+        preview=preview,
+        operator_id="admin-797",
+    )
+
+    assert batch["items"][0]["run_id"] == existing_run.id
+    assert batch["items"][0]["task_id"] is None
+    assert batch["items"][0]["reused_active_run"] is True
+    assert batch["items"][0]["dispatch_required"] is True
+    assert await db_session.scalar(select(func.count(AnalyzerRun.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_db_unique_constraints_prevent_duplicate_idempotency_and_active_runs(
+    db_session: AsyncSession,
+) -> None:
+    db_session.add_all(
+        [
+            AnalyzerRun(
+                response_id=79740,
+                status="failed",
+                trigger_source="admin_single",
+                idempotency_key="single-unique-79740",
+            ),
+            AnalyzerRun(
+                response_id=79740,
+                status="failed",
+                trigger_source="admin_single",
+                idempotency_key="single-unique-79740",
+            ),
+        ]
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    db_session.add_all(
+        [
+            AnalyzerRun(response_id=79741, status="queued", trigger_source="admin_single"),
+            AnalyzerRun(response_id=79741, status="queued", trigger_source="admin_batch"),
+        ]
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    db_session.add_all(
+        [
+            AnalyzerBatch(
+                batch_id="batch-unique-a-79742",
+                mode="missing_or_failed_only",
+                status="failed",
+                idempotency_key="batch-unique-79742",
+                dry_run_id="dry-unique-a-79742",
+            ),
+            AnalyzerBatch(
+                batch_id="batch-unique-b-79742",
+                mode="missing_or_failed_only",
+                status="failed",
+                idempotency_key="batch-unique-79742",
+                dry_run_id="dry-unique-b-79742",
+            ),
+        ]
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_db_batch_submit_ready_requires_all_written_columns(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.admin.analyzer import db as analyzer_db
+
+    async def _exists(_session: AsyncSession, _name: str) -> bool:
+        return True
+
+    async def _columns(_session: AsyncSession, name: str) -> set[str]:
+        if name == "analyzer_runs":
+            return set(analyzer_db.REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS)
+        if name == "analyzer_batches":
+            return set(analyzer_db.REQUIRED_ANALYZER_BATCH_COLUMNS) - {
+                "submitted_response_ids_json"
+            }
+        if name == "analyzer_batch_items":
+            return set(analyzer_db.REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS)
+        return set()
+
+    monkeypatch.setattr(analyzer_db, "_table_exists", _exists)
+    monkeypatch.setattr(analyzer_db, "_table_columns", _columns)
+
+    assert await analyzer_db.analyzer_batch_submit_ready(db_session) is False

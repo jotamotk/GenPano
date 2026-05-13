@@ -52,6 +52,10 @@ def _dependency_blocked(content: dict[str, Any] | None = None) -> JSONResponse:
     return JSONResponse(status_code=409, content=body)
 
 
+def _queued_without_task(item: dict[str, Any]) -> bool:
+    return str(item.get("status") or "").lower() == "queued" and not item.get("task_id")
+
+
 @router.post("/analyzer/responses/batch/dry-run", response_model=None)
 async def analyzer_batch_dry_run(
     request: Request,
@@ -161,7 +165,8 @@ async def analyze_response(
         previous_analysis_status=status.get("analysis_status"),
         idempotency_key=normalized.get("idempotency_key"),
     )
-    if run.get("idempotent"):
+    idempotent_reuse = bool(run.get("idempotent"))
+    if idempotent_reuse and not _queued_without_task(run):
         run_status = str(run.get("status") or "").lower()
         if run_status == "failed":
             return JSONResponse(
@@ -239,7 +244,7 @@ async def analyze_response(
         content={
             "success": True,
             "accepted": True,
-            "idempotent": False,
+            "idempotent": idempotent_reuse,
             "response_id": response_id,
             "mode": normalized["mode"],
             "run_id": run.get("run_id"),
@@ -274,6 +279,16 @@ async def analyzer_batch_submit(
             },
         )
 
+    if not normalized.get("idempotency_key"):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "idempotency_key_required",
+                "message": "idempotency_key is required when confirm=true submits analyzer work.",
+            },
+        )
+
     if not await analyzer_db.analyzer_batch_submit_ready(session):
         return _dependency_blocked(
             {
@@ -302,10 +317,6 @@ async def analyzer_batch_submit(
     accepted_response_ids: list[int] = []
     for item in batch.get("items") or []:
         if item.get("status") != "queued" or not item.get("run_id") or not item.get("response_id"):
-            continue
-        if not item.get("dispatch_required", True):
-            if item.get("task_id"):
-                accepted_response_ids.append(int(item["response_id"]))
             continue
         if item.get("task_id"):
             accepted_response_ids.append(int(item["response_id"]))
@@ -336,13 +347,25 @@ async def analyzer_batch_submit(
     batch["success"] = True
     response_items = list(batch.get("items") or [])
     if response_items:
+        submitted_response_ids = [
+            int(item["response_id"])
+            for item in response_items
+            if item.get("response_id") is not None and item.get("status") != "skipped"
+        ]
         accepted_response_ids = [
             int(item["response_id"])
             for item in response_items
             if item.get("response_id") is not None and item.get("task_id")
         ]
+        failed_response_ids = [
+            int(item["response_id"])
+            for item in response_items
+            if item.get("response_id") is not None
+            and str(item.get("status") or "").lower() == "failed"
+        ]
+        batch["submitted_response_ids"] = submitted_response_ids
+        batch["failed_response_ids"] = failed_response_ids
     batch["accepted_response_ids"] = accepted_response_ids
-    batch["submitted_response_ids"] = accepted_response_ids
     batch["accepted_count"] = len(accepted_response_ids)
     submitted_count = int(batch.get("submitted_count") or 0)
     if submitted_count > 0 and not accepted_response_ids:

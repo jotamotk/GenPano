@@ -81,12 +81,23 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_task_id ON analyzer_runs (task_id);")
     op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_batch_id ON analyzer_runs (batch_id);")
     op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_response_idempotency "
+        "ON analyzer_runs (response_id, idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL;"
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_admin_active_response "
+        "ON analyzer_runs (response_id) "
+        "WHERE status IN ('queued','running') "
+        "AND trigger_source IN ('admin_single','admin_batch');"
+    )
+    op.execute(
         "CREATE INDEX IF NOT EXISTS idx_analyzer_batches_status "
         "ON analyzer_batches (status, created_at DESC);"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_analyzer_batches_idempotency "
-        "ON analyzer_batches (idempotency_key);"
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_batches_idempotency "
+        "ON analyzer_batches (idempotency_key) WHERE idempotency_key IS NOT NULL;"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_analyzer_batch_items_batch "
@@ -98,6 +109,9 @@ def downgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
 
+    op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_admin_active_response;")
+    op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_response_idempotency;")
+    op.execute("DROP INDEX IF EXISTS uq_analyzer_batches_idempotency;")
     op.execute("DROP TABLE IF EXISTS analyzer_batch_items;")
     op.execute("DROP TABLE IF EXISTS analyzer_batches;")
     if _table_exists("analyzer_runs"):

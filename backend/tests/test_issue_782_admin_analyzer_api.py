@@ -641,7 +641,11 @@ async def test_batch_submit_with_no_candidates_completes_and_unknown_status_404(
 ) -> None:
     submit = await client.post(
         "/admin/api/analyzer/responses/batch",
-        json={"scope": {"response_ids": [101]}, "confirm": True},
+        json={
+            "scope": {"response_ids": [101]},
+            "confirm": True,
+            "idempotency_key": "batch-no-candidates-101",
+        },
     )
     status = await client.get("/admin/api/analyzer/batches/batch-123")
 

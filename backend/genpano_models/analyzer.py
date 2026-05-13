@@ -18,11 +18,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -172,6 +174,26 @@ class ProductFeatureMention(Base):
 
 class AnalyzerRun(Base):
     __tablename__ = "analyzer_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "response_id",
+            "idempotency_key",
+            name="uq_analyzer_runs_response_idempotency",
+        ),
+        Index(
+            "uq_analyzer_runs_admin_active_response",
+            "response_id",
+            unique=True,
+            sqlite_where=text(
+                "status IN ('queued','running') "
+                "AND trigger_source IN ('admin_single','admin_batch')"
+            ),
+            postgresql_where=text(
+                "status IN ('queued','running') "
+                "AND trigger_source IN ('admin_single','admin_batch')"
+            ),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     response_id: Mapped[int] = mapped_column(
@@ -201,6 +223,7 @@ class AnalyzerRun(Base):
 
 class AnalyzerBatch(Base):
     __tablename__ = "analyzer_batches"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_analyzer_batches_idempotency"),)
 
     batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)

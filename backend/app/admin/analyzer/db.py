@@ -16,6 +16,7 @@ from typing import Any
 
 from genpano_models import AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun
 from sqlalchemy import bindparam, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.analyzer.lib import BatchPreviewRows
@@ -25,24 +26,54 @@ logger = logging.getLogger(__name__)
 BATCH_DRY_RUN_QUERY_LIMIT = 5000
 ACTIVE_ANALYZER_RUN_STATUSES = {"queued", "running"}
 ACTIVE_ANALYZER_BATCH_STATUSES = {"queued", "running"}
-REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS = {"task_id", "batch_id", "batch_item_id"}
+REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS = {
+    "id",
+    "response_id",
+    "schema_version",
+    "status",
+    "trigger_source",
+    "idempotency_key",
+    "task_id",
+    "batch_id",
+    "batch_item_id",
+    "validator_summary_json",
+    "started_at",
+    "completed_at",
+    "failure_code",
+    "failure_message",
+}
 REQUIRED_ANALYZER_BATCH_COLUMNS = {
     "batch_id",
     "mode",
     "status",
+    "trigger_source",
     "idempotency_key",
     "dry_run_id",
+    "request_json",
+    "preview_json",
+    "submitted_response_ids_json",
+    "skipped_counts_json",
+    "skipped_reasons_json",
     "submitted_count",
     "skipped_count",
+    "created_by",
+    "reason",
+    "created_at",
+    "updated_at",
+    "completed_at",
 }
 REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS = {
     "id",
     "batch_id",
     "response_id",
+    "query_id",
     "run_id",
     "task_id",
     "status",
+    "skipped_reason",
     "detail_json",
+    "created_at",
+    "updated_at",
 }
 
 
@@ -599,36 +630,45 @@ async def create_or_get_queued_analyzer_run(
     batch_id: str | None = None,
     batch_item_id: int | None = None,
 ) -> dict[str, Any]:
-    existing, is_idempotent = await _find_existing_analyzer_run(
-        session,
-        response_id=response_id,
-        idempotency_key=idempotency_key,
-    )
-    if existing is not None:
-        payload = _run_payload(existing, idempotent=is_idempotent)
+    for attempt in range(2):
+        existing, is_idempotent = await _find_existing_analyzer_run(
+            session,
+            response_id=response_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            payload = _run_payload(existing, idempotent=is_idempotent)
+            payload["previous_analysis_status"] = previous_analysis_status
+            return payload
+
+        run = AnalyzerRun(
+            response_id=int(response_id),
+            schema_version="analyzer_v4",
+            status="queued",
+            trigger_source=trigger_source,
+            idempotency_key=idempotency_key,
+            batch_id=batch_id,
+            batch_item_id=batch_item_id,
+            started_at=_utcnow_naive(),
+            validator_summary_json={"mode": mode, "queued_by": trigger_source},
+        )
+        session.add(run)
+        try:
+            await session.flush()
+            if str(previous_analysis_status or "").lower() != "done":
+                await _set_response_analysis_status(session, response_id, "queued")
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 0:
+                continue
+            raise
+        await session.refresh(run)
+        payload = _run_payload(run, idempotent=False)
         payload["previous_analysis_status"] = previous_analysis_status
         return payload
 
-    run = AnalyzerRun(
-        response_id=int(response_id),
-        schema_version="analyzer_v4",
-        status="queued",
-        trigger_source=trigger_source,
-        idempotency_key=idempotency_key,
-        batch_id=batch_id,
-        batch_item_id=batch_item_id,
-        started_at=_utcnow_naive(),
-        validator_summary_json={"mode": mode, "queued_by": trigger_source},
-    )
-    session.add(run)
-    await session.flush()
-    if str(previous_analysis_status or "").lower() != "done":
-        await _set_response_analysis_status(session, response_id, "queued")
-    await session.commit()
-    await session.refresh(run)
-    payload = _run_payload(run, idempotent=False)
-    payload["previous_analysis_status"] = previous_analysis_status
-    return payload
+    raise RuntimeError("failed to create or retrieve analyzer run")
 
 
 async def mark_analyzer_run_enqueued(
@@ -680,6 +720,11 @@ def _batch_payload(batch: AnalyzerBatch, items: list[AnalyzerBatchItem]) -> dict
         for item in items
         if item.response_id is not None and item.status != "skipped" and item.task_id is not None
     ]
+    failed_response_ids = [
+        int(item.response_id)
+        for item in items
+        if item.response_id is not None and str(item.status or "").lower() == "failed"
+    ]
     return {
         "success": True,
         "batch_id": batch.batch_id,
@@ -691,6 +736,7 @@ def _batch_payload(batch: AnalyzerBatch, items: list[AnalyzerBatchItem]) -> dict
         "skipped_count": int(batch.skipped_count or 0),
         "submitted_response_ids": submitted_response_ids,
         "accepted_response_ids": accepted_response_ids,
+        "failed_response_ids": failed_response_ids,
         "items": item_payloads,
         "preview": batch.preview_json,
         "idempotent": False,
@@ -745,16 +791,42 @@ async def create_analyzer_batch_submission(
     operator_id: str | None,
 ) -> dict[str, Any]:
     dry_run_id = str(preview["dry_run_id"])
-    existing = await _find_existing_batch(
-        session,
-        idempotency_key=normalized.get("idempotency_key"),
-        dry_run_id=dry_run_id,
-    )
-    if existing is not None:
-        status = await fetch_analyzer_batch_status(session, existing.batch_id)
-        if status is not None:
-            status["idempotent"] = True
-            return status
+    for attempt in range(2):
+        existing = await _find_existing_batch(
+            session,
+            idempotency_key=normalized.get("idempotency_key"),
+            dry_run_id=dry_run_id,
+        )
+        if existing is not None:
+            status = await fetch_analyzer_batch_status(session, existing.batch_id)
+            if status is not None:
+                status["idempotent"] = True
+                return status
+        try:
+            return await _insert_analyzer_batch_submission(
+                session,
+                normalized=normalized,
+                preview=preview,
+                operator_id=operator_id,
+                dry_run_id=dry_run_id,
+            )
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 0:
+                continue
+            raise
+
+    raise RuntimeError("failed to create or retrieve analyzer batch")
+
+
+async def _insert_analyzer_batch_submission(
+    session: AsyncSession,
+    *,
+    normalized: dict[str, Any],
+    preview: dict[str, Any],
+    operator_id: str | None,
+    dry_run_id: str,
+) -> dict[str, Any]:
 
     submitted_response_ids = [int(v) for v in preview.get("eligible_response_ids") or []]
     candidate_rows = list(preview.get("_candidate_rows") or [])
@@ -807,6 +879,9 @@ async def create_analyzer_batch_submission(
             session.add(run)
             await session.flush()
         reused_active_run = not created_run
+        dispatch_required = created_run or (
+            str(run.status or "").lower() == "queued" and not run.task_id
+        )
         item = AnalyzerBatchItem(
             batch_id=batch.batch_id,
             response_id=response_id,
@@ -817,7 +892,7 @@ async def create_analyzer_batch_submission(
             detail_json={
                 "mode": batch.mode,
                 "previous_analysis_status": previous_analysis_status,
-                "dispatch_required": created_run,
+                "dispatch_required": dispatch_required,
                 "reused_active_run": reused_active_run,
             },
             created_at=now,
