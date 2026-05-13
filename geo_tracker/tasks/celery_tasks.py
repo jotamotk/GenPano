@@ -1474,10 +1474,16 @@ def auto_login(
                 return {"status": "error", "reason": "invalid arguments"}
 
     succeeded = False
+    cooldown_skipped = False
     try:
         result = loop.run_until_complete(_run())
         # success 判断: status 字段 == 'success'. skipped/failed/error 都视为非成功.
         succeeded = isinstance(result, dict) and result.get("status") == "success"
+        cooldown_skipped = (
+            isinstance(result, dict)
+            and result.get("status") == "skipped"
+            and result.get("reason") == "cooldown_active"
+        )
         return result
     except Exception as exc:
         logger.exception(f"auto_login exception: {exc}")
@@ -1490,7 +1496,10 @@ def auto_login(
                 loop.run_until_complete(release_relogin_lock(account_id))
             elif new_account and platform:
                 loop.run_until_complete(
-                    release_new_account_lock(platform, failed=not succeeded)
+                    release_new_account_lock(
+                        platform,
+                        failed=not succeeded and not cooldown_skipped,
+                    )
                 )
         except Exception as e:
             logger.warning(f"auto_login: lock release best-effort failed: {e}")
