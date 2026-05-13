@@ -1860,6 +1860,7 @@ jobs:
       PLAYWRIGHT_BASE_URL: http://116.62.36.173
       PROJECT_ID: ${{ inputs.project_id }}
       BRAND_ID: ${{ inputs.brand_id }}
+      BRAND_NAME: ${{ inputs.brand_query }}
       COMPETITOR_ID: "2"
       FROM_DATE: ${{ inputs.from_date }}
       TO_DATE: ${{ inputs.to_date }}
