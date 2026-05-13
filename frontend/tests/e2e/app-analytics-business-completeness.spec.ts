@@ -37,6 +37,7 @@ type TopicReadabilityExpectation = {
   brandLabel: string
   metricTexts: string[]
   proofTexts: string[]
+  partialMetricKeys: string[]
   reason: string
 }
 
@@ -54,6 +55,7 @@ type RenderedAnalyzerFactsSummary = {
   modalText: string
   analyzerFactsText: string
   citationDomainTexts: string[]
+  selectionFallbackReason?: string
 }
 
 type TopicDrilldownProbe = {
@@ -61,6 +63,13 @@ type TopicDrilldownProbe = {
   promptId: unknown
   queryText?: string
   citationCount?: number
+  partialProof: boolean
+}
+
+type OpenAttemptsSelection = {
+  index: number
+  fallbackReason?: string
+  error?: string
 }
 
 const DEFAULT_PROJECT_ID = '95d43022-a5c8-5944-b6d6-34b29faa18b5'
@@ -443,6 +452,75 @@ function topicsRows(payload: ContractPayload) {
   return []
 }
 
+const TOPICS_METRIC_ALIASES: Record<string, string[]> = {
+  visibility: ['visibility', 'mention_rate', 'coverage', 'sov'],
+  citation: ['citation', 'citations', 'citation_rate'],
+  sentiment: ['sentiment'],
+  pano_geo: ['pano_geo', 'geo_score', 'pano_score', 'geo'],
+}
+
+function topicMetricEvidence(payload: ContractPayload | null | undefined, metric: string) {
+  const evidence = payload?.metric_formula_evidence
+  if (!evidence || typeof evidence !== 'object') return null
+  const aliases = new Set((TOPICS_METRIC_ALIASES[metric] || [metric]).map(item => item.toLowerCase()))
+  for (const [key, item] of Object.entries(evidence)) {
+    if (aliases.has(key.toLowerCase())) return item as ContractPayload
+  }
+  return null
+}
+
+function statusImpliesPartialOrMissing(status: unknown) {
+  const normalized = lower(status)
+  if (!normalized) return false
+  return !['ok', 'valid', 'ready', 'complete', 'computed', 'formula_ok', 'data_available'].includes(normalized)
+}
+
+function hasPartialOrMissingProof(payload: ContractPayload | null | undefined, metric?: string) {
+  if (!payload) return false
+  const source = metric ? topicMetricEvidence(payload, metric) : payload
+  const reasonValues = [
+    source?.state,
+    source?.status,
+    source?.formula_status,
+    source?.state_reason,
+    source?.reason,
+    ...(source?.reason_codes || []),
+    ...(source?.missing_inputs || []),
+    ...(source?.missing_sources || []),
+    ...(source?.missing_reasons || []),
+    ...(source?.formula_diagnostics?.details || []),
+    ...(source?.formula_diagnostics?.pending_sources || []),
+  ]
+  return reasonValues.some(value => {
+    const normalized = lower(typeof value === 'string' ? value : JSON.stringify(value))
+    return (
+      statusImpliesPartialOrMissing(value) ||
+      /missing|partial|empty|unresolved|pending|not_ready|no_evidence|incomplete|insufficient/.test(normalized)
+    )
+  })
+}
+
+function metricTextIfDisplayable(
+  topic: ContractPayload,
+  metric: string,
+  value: unknown,
+  formatter: (value: unknown) => string | null,
+) {
+  if (numberOrNull(value) === null || hasPartialOrMissingProof(topic, metric)) return null
+  return formatter(value)
+}
+
+function sentimentProofTexts(topic: ContractPayload) {
+  const distribution = topic.sentiment_distribution || {}
+  return ['positive', 'neutral', 'negative']
+    .map(key => countText(distribution[key]))
+    .filter(Boolean) as string[]
+}
+
+function topicPartialMetricKeys(topic: ContractPayload) {
+  return Object.keys(TOPICS_METRIC_ALIASES).filter(metric => hasPartialOrMissingProof(topic, metric))
+}
+
 function deriveTopicReadabilityExpectations(payload: ContractPayload, brandLabels: string[]) {
   const fallbackBrand = readableBrandLabel(brandLabels)
   return topicsRows(payload)
@@ -450,8 +528,9 @@ function deriveTopicReadabilityExpectations(payload: ContractPayload, brandLabel
       const topicName = compactText(topic.topic_name || topic.name || topic.topic || `Topic ${topic.topic_id ?? ''}`)
       const brandLabel = compactText(topic.associated_brand || topic.brand_name || topic.brand || fallbackBrand)
       const visibility = topic.visibility_rate ?? topic.sov ?? topic.mention_rate
-      const visibilityText = fixedPercentText(visibility)
-      const metricTexts = [visibilityText].filter(Boolean) as string[]
+      const visibilityText = metricTextIfDisplayable(topic, 'visibility', visibility, fixedPercentText)
+      const citationText = metricTextIfDisplayable(topic, 'citation', topic.citation_rate, fixedPercentText)
+      const metricTexts = [visibilityText, citationText].filter(Boolean) as string[]
       const proofTexts = [
         topic.prompt_count,
         topic.query_count,
@@ -461,6 +540,7 @@ function deriveTopicReadabilityExpectations(payload: ContractPayload, brandLabel
         topic.citation_count,
       ]
         .map(countText)
+        .concat(sentimentProofTexts(topic))
         .filter(Boolean) as string[]
       if (!topicName || (!metricTexts.length && !proofTexts.length)) return null
       return {
@@ -469,6 +549,7 @@ function deriveTopicReadabilityExpectations(payload: ContractPayload, brandLabel
         brandLabel,
         metricTexts,
         proofTexts: Array.from(new Set(proofTexts)),
+        partialMetricKeys: topicPartialMetricKeys(topic),
         reason: `topic_id=${topic.topic_id ?? '<unknown>'}`,
       }
     })
@@ -526,8 +607,9 @@ function assertVisibleTopicsReadability(
     const metricMatches = expectation.metricTexts.filter(text => compactIncludes(rowText, text))
     const proofMatches = expectation.proofTexts.filter(text => compactIncludes(rowText, text))
     if (expectation.metricTexts.length > 0) {
+      const requiredMetricMatches = Math.min(2, expectation.metricTexts.length)
       assertCondition(
-        metricMatches.length > 0,
+        metricMatches.length >= requiredMetricMatches,
         `${rendered.route} row ${expectation.topicName} hides concrete API topic metric values ${JSON.stringify(expectation.metricTexts)}; row=${rowText}`,
       )
     }
@@ -539,12 +621,17 @@ function assertVisibleTopicsReadability(
       !(expectation.metricTexts.length > 0 && /(?:^|\s)--(?:\s|$)/.test(rowText) && metricMatches.length === 0),
       `${rendered.route} row ${expectation.topicName} renders -- while API has concrete topic metric values ${JSON.stringify(expectation.metricTexts)}`,
     )
+    const zeroPlaceholders = rowText.match(/\b0\.0%?\b/g) || []
+    assertCondition(
+      !(expectation.partialMetricKeys.length > 0 && zeroPlaceholders.length >= 3),
+      `${rendered.route} row ${expectation.topicName} renders a 0.0 placeholder wall for partial metrics ${JSON.stringify(expectation.partialMetricKeys)}; row=${rowText}`,
+    )
   }
 }
 
 function assertAnalyzerFactsReadability(
   rendered: RenderedAnalyzerFactsSummary,
-  options: { brandId: number; brandLabels: string[] },
+  options: { brandId: number; brandLabels: string[]; partialProof?: boolean },
 ) {
   const factsText = compactText(rendered.analyzerFactsText)
   assertCondition(factsText, `${rendered.route} did not expose Analyzer facts panel text`)
@@ -564,10 +651,12 @@ function assertAnalyzerFactsReadability(
   }
 
   const zeroPlaceholders = factsText.match(/\b0\.0\b/g) || []
-  assertCondition(
-    zeroPlaceholders.length < 3,
-    `${rendered.route} Analyzer facts panel shows a misleading 0.0 placeholder wall while proof is partial/missing: ${factsText}`,
-  )
+  if (options.partialProof) {
+    assertCondition(
+      zeroPlaceholders.length < 3,
+      `${rendered.route} Analyzer facts panel shows a misleading 0.0 placeholder wall while proof is partial/missing: ${factsText}`,
+    )
+  }
 
   if (rendered.citationDomainTexts.length > 0) {
     assertCondition(
@@ -610,10 +699,30 @@ async function captureRenderedTopics(page: Page, route: string): Promise<Rendere
   }
 }
 
+function resolveOpenAttemptsButtonIndex(rowTexts: string[], queryText?: string): OpenAttemptsSelection {
+  const query = compactText(queryText)
+  if (!rowTexts.length) {
+    return { index: 0, error: 'No visible Open response attempts rows were available' }
+  }
+  if (!query) {
+    return {
+      index: 0,
+      fallbackReason: 'No sampled query text was available from the prompt queries API; using first response-attempt row',
+    }
+  }
+  const index = rowTexts.findIndex(row => compactIncludes(row, query))
+  if (index >= 0) return { index }
+  return {
+    index: 0,
+    error: `Sampled query text was not found in visible response-attempt rows: ${query}`,
+  }
+}
+
 function topicDrilldownProbe(
   topic: ContractPayload | null | undefined,
   prompt: ContractPayload | null | undefined,
   queriesPayload: ContractPayload | null | undefined,
+  partialProof: boolean,
 ): TopicDrilldownProbe | null {
   if (!topic?.topic_id || !prompt?.prompt_id) return null
   const queryItems = Array.isArray(queriesPayload?.items) ? queriesPayload.items : []
@@ -630,6 +739,7 @@ function topicDrilldownProbe(
     promptId: prompt.prompt_id,
     queryText: firstAttempt?.queryText,
     citationCount: firstAttempt?.citationCount,
+    partialProof,
   }
 }
 
@@ -642,7 +752,25 @@ async function captureTopicsAnalyzerFactsModal(
   const route = `/brand/topics?brandId=${brandId}&range=30d&profileGroup=all&topicId=${probe.topicId}&promptId=${probe.promptId}`
   await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
-  const openButton = page.getByRole('button', { name: /Open response attempts/i }).first()
+  const openButtons = page.getByRole('button', { name: /Open response attempts/i })
+  const buttonRowTexts = await openButtons.evaluateAll(buttons => {
+    const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    return buttons.map(button => {
+      let element: HTMLElement | null = button.parentElement
+      while (element && element !== document.body) {
+        const text = clean(element.innerText || element.textContent)
+        if (/Exact query/i.test(text) && /Latest response/i.test(text)) return text
+        element = element.parentElement
+      }
+      return clean((button.parentElement as HTMLElement | null)?.innerText || button.textContent)
+    })
+  })
+  const selection = resolveOpenAttemptsButtonIndex(buttonRowTexts, probe.queryText)
+  assertCondition(!selection.error, `${route} could not select sampled response attempt: ${selection.error}; rows=${JSON.stringify(buttonRowTexts)}`)
+  if (selection.fallbackReason) {
+    console.log(`TOPICS_MODAL_SELECTION_FALLBACK ${selection.fallbackReason}`)
+  }
+  const openButton = openButtons.nth(selection.index)
   await expect(openButton).toBeVisible({ timeout: 25_000 })
   await openButton.click()
   const modal = page.getByRole('dialog', { name: /Response attempts/i })
@@ -660,6 +788,7 @@ async function captureTopicsAnalyzerFactsModal(
     modalText: await modal.innerText(),
     analyzerFactsText: await analyzerPanel.innerText(),
     citationDomainTexts,
+    selectionFallbackReason: selection.fallbackReason,
   }
 }
 
@@ -1062,10 +1191,12 @@ test.describe('App analytics business completeness assertion', () => {
           topic_name: 'Unstructured data AI masking',
           associated_brand: 'bestCoffer',
           sov: 0.4607,
+          citation_rate: 0.25,
           prompt_count: 4,
           query_count: 36,
           response_count: 36,
           citation_count: 12,
+          sentiment_distribution: { positive: 3, neutral: 1, negative: 0 },
         },
       ],
     }
@@ -1097,10 +1228,12 @@ test.describe('App analytics business completeness assertion', () => {
           topic_name: 'Unstructured data AI masking',
           associated_brand: 'bestCoffer',
           sov: 0.4607,
+          citation_rate: 0.25,
           prompt_count: 4,
           query_count: 36,
           response_count: 36,
           citation_count: 12,
+          sentiment_distribution: { positive: 3, neutral: 1, negative: 0 },
         },
       ],
     }
@@ -1113,15 +1246,85 @@ test.describe('App analytics business completeness assertion', () => {
           url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all',
           bodyText: '',
           primaryTableText:
-            'Topic Visibility Sentiment Citation Coverage Citations Prompts Queries Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Limited data 12 4 36',
+            'Topic Visibility Sentiment Citation Coverage Citations Prompts Queries Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Citation Coverage 25.0% Limited data 12 4 36',
           primaryRowTexts: [
-            'Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Limited data 12 4 36',
+            'Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Citation Coverage 25.0% Limited data 12 4 36',
           ],
         },
         expectations,
         { brandId: 24, brandLabels: ['bestCoffer'] },
       ),
     ).not.toThrow()
+  })
+
+  test('flags Topics primary table 0.0 placeholder walls only for partial metrics', () => {
+    const topicMonitoring = {
+      topics: [
+        {
+          topic_id: 153,
+          topic_name: 'Unstructured data AI masking',
+          associated_brand: 'bestCoffer',
+          sov: 0.4607,
+          citation_rate: 0,
+          prompt_count: 4,
+          query_count: 36,
+          response_count: 36,
+          citation_count: 12,
+          metric_formula_evidence: {
+            citation: {
+              formula_status: 'partial',
+              reason_codes: ['unresolved_citation_attribution'],
+            },
+          },
+        },
+      ],
+    }
+    const expectations = deriveTopicReadabilityExpectations(topicMonitoring, ['bestCoffer'])
+
+    expect(() =>
+      assertVisibleTopicsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all',
+          bodyText: '',
+          primaryTableText:
+            'Topic Visibility Sentiment Citation Coverage Citations Prompts Queries Unstructured data AI masking bestCoffer 46.1% Citation 0.0 Sentiment 0.0 GEO 0.0 12 4 36',
+          primaryRowTexts: [
+            'Unstructured data AI masking bestCoffer 46.1% Citation 0.0 Sentiment 0.0 GEO 0.0 12 4 36',
+          ],
+        },
+        expectations,
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).toThrow(/0\.0 placeholder wall/)
+  })
+
+  test('selects the sampled query row before opening Response attempts', () => {
+    const selection = resolveOpenAttemptsButtonIndex(
+      [
+        'Exact query How does BestCoffer compare on uptime? Latest response First answer Open response attempts',
+        'Exact query 测试非结构化数据AI脱敏的准确率，有哪些可用的参考依据? Latest response Cited answer Open response attempts',
+      ],
+      '测试非结构化数据AI脱敏的准确率，有哪些可用的参考依据?',
+    )
+
+    expect(selection).toEqual({ index: 1 })
+  })
+
+  test('allows first-row modal fallback only when sampled query text is unavailable', () => {
+    const selection = resolveOpenAttemptsButtonIndex(
+      ['Exact query Fallback row Latest response Cited answer Open response attempts'],
+      '',
+    )
+
+    expect(selection.index).toBe(0)
+    expect(selection.fallbackReason).toMatch(/No sampled query text/)
+    expect(
+      resolveOpenAttemptsButtonIndex(
+        ['Exact query Fallback row Latest response Cited answer Open response attempts'],
+        'Missing sampled query',
+      ).error,
+    ).toMatch(/not found/)
   })
 
   test('flags Analyzer facts modal reason-wall and Brand-number primary label', () => {
@@ -1151,9 +1354,25 @@ test.describe('App analytics business completeness assertion', () => {
             'Analyzer facts bestCoffer Target brand Not mentioned Visibility score 0.0 Sentiment score 0.0 Share of voice 0.0 Citation score 80.0 GEO score 0.0 Citations (6) pmc.ncbi.nlm.nih.gov',
           citationDomainTexts: ['pmc.ncbi.nlm.nih.gov'],
         },
-        { brandId: 24, brandLabels: ['bestCoffer'] },
+        { brandId: 24, brandLabels: ['bestCoffer'], partialProof: true },
       ),
     ).toThrow(/0\.0 placeholder wall/)
+  })
+
+  test('accepts Analyzer facts modal concrete zero values when proof context is ok', () => {
+    expect(() =>
+      assertAnalyzerFactsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          modalText: '',
+          analyzerFactsText:
+            'Analyzer facts bestCoffer Formula ok Target brand Not mentioned Visibility score 0.0 Sentiment score 0.0 Share of voice 0.0 Citation score 0.0 GEO score 0.0 Citations (1) official.example',
+          citationDomainTexts: ['official.example'],
+        },
+        { brandId: 24, brandLabels: ['bestCoffer'], partialProof: false },
+      ),
+    ).not.toThrow()
   })
 
   test('accepts Analyzer facts modal with readable partial state and citation domains', () => {
@@ -1381,7 +1600,12 @@ test.describe('Live App analytics business completeness gate', () => {
         `/api/v1/projects/${projectId}/prompts/${promptWithQueries.prompt_id}/queries?${brandDateParams}`,
       )
       assertCondition(queriesPayload.total > 0, `prompt ${promptWithQueries.prompt_id} has query_count but queries endpoint returned none`)
-      topicModalProbe = topicDrilldownProbe(topicWithPrompts, promptWithQueries, queriesPayload)
+      const modalPartialProof =
+        hasPartialOrMissingProof(topicMonitoring) ||
+        hasPartialOrMissingProof(topicWithPrompts) ||
+        hasPartialOrMissingProof(promptPayload) ||
+        hasPartialOrMissingProof(queriesPayload)
+      topicModalProbe = topicDrilldownProbe(topicWithPrompts, promptWithQueries, queriesPayload, modalPartialProof)
     } else if (isFullyOk(topicMonitoring)) {
       throw new Error('topics monitoring is fully ok but no topic exposes prompt/query evidence')
     }
@@ -1501,7 +1725,7 @@ test.describe('Live App analytics business completeness gate', () => {
         let modalSummary: RenderedAnalyzerFactsSummary | undefined
         if (topicModalProbe) {
           modalSummary = await captureTopicsAnalyzerFactsModal(page, baseUrl, brandId, topicModalProbe)
-          assertAnalyzerFactsReadability(modalSummary, { brandId, brandLabels })
+          assertAnalyzerFactsReadability(modalSummary, { brandId, brandLabels, partialProof: topicModalProbe.partialProof })
         }
         visibleTopicsSummaries.push({
           ...renderedTopics,
@@ -1559,6 +1783,7 @@ test.describe('Live App analytics business completeness gate', () => {
                   url: summary.modal.url,
                   analyzerFactsText: summary.modal.analyzerFactsText,
                   citationDomainTexts: summary.modal.citationDomainTexts,
+                  selectionFallbackReason: summary.modal.selectionFallbackReason,
                 }
               : null,
           })),
