@@ -93,7 +93,7 @@ RELATION_TYPES = {
     "complements",
     "other",
 }
-RELATION_TYPE_ALIASES = {"belongs_to"}
+RELATION_TYPE_ALIASES = {"belongs_to", "belongs_to_category"}
 DIRECTIONS = {"directed", "undirected", "unknown"}
 CITATION_SOURCE_TYPES = {
     "official",
@@ -199,7 +199,10 @@ def validate_analyzer_v4_package(
             raw_package[key] = []
     _drop_malformed_mentions(raw_package, flags)
     _drop_malformed_sentiment_drivers(raw_package, flags)
+    _drop_unsupported_sentiment_driver_types(raw_package, flags)
     _drop_category_product_features(raw_package, flags)
+    _drop_malformed_citations(raw_package, flags)
+    _normalize_or_drop_relation_types(raw_package, flags)
 
     entity_keys: set[str] = set()
     for index, entity in enumerate(_objects(raw_package["entities"])):
@@ -345,7 +348,6 @@ def validate_analyzer_v4_package(
         key = str(relation.get("relation_key") or f"relation_{index}")
         relation["relation_key"] = key
         fact_keys[key] = "relation"
-        _normalize_relation_type_alias(relation, flags, raw_package["entities"])
         unresolved = False
         if relation.get("subject_entity_key") not in entity_keys:
             unresolved = True
@@ -800,6 +802,24 @@ def _drop_malformed_sentiment_drivers(
     )
 
 
+def _drop_malformed_citations(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    _drop_malformed_required_fact_rows(
+        package,
+        flags,
+        collection_key="citations",
+        key_field="citation_key",
+        fallback_prefix="citation",
+        target_type="citation",
+        flag_code="malformed_citation_dropped",
+        label="Citation",
+        required_fields=("source_type", "attribution_method", "confidence"),
+        numeric_fields=("confidence",),
+    )
+
+
 def _drop_malformed_required_fact_rows(
     package: dict[str, Any],
     flags: list[dict[str, Any]],
@@ -850,6 +870,39 @@ def _drop_malformed_required_fact_rows(
     package[collection_key] = kept
 
 
+def _drop_unsupported_sentiment_driver_types(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    drivers = package.get("sentiment_drivers")
+    if not isinstance(drivers, list):
+        return
+
+    kept: list[dict[str, Any]] = []
+    for index, driver in enumerate(drivers):
+        if not isinstance(driver, dict):
+            continue
+        if driver.get("driver_type") in DRIVER_TYPES:
+            kept.append(driver)
+            continue
+
+        key = str(driver.get("driver_key") or f"driver_{index}")
+        driver["driver_key"] = key
+        _append_flag(
+            flags,
+            code="unsupported_sentiment_driver_type_dropped",
+            severity="error",
+            message=(
+                "Sentiment driver was dropped because driver_type="
+                f"{driver.get('driver_type')!r} is not supported by analyzer_v4."
+            ),
+            target_type="driver",
+            target_key=key,
+            blocks_metric_readiness=True,
+        )
+    package["sentiment_drivers"] = kept
+
+
 def _drop_category_product_features(
     package: dict[str, Any],
     flags: list[dict[str, Any]],
@@ -883,35 +936,66 @@ def _drop_category_product_features(
     package["product_features"] = kept
 
 
-def _normalize_relation_type_alias(
-    relation: dict[str, Any],
+def _normalize_or_drop_relation_types(
+    package: dict[str, Any],
     flags: list[dict[str, Any]],
-    entities: list[Any],
 ) -> None:
-    if relation.get("relation_type") not in RELATION_TYPE_ALIASES:
+    relations = package.get("relations")
+    if not isinstance(relations, list):
         return
 
     entity_types = {
         str(entity.get("entity_key") or ""): str(entity.get("entity_type") or "")
-        for entity in _objects(entities)
+        for entity in _objects(package.get("entities") or [])
     }
-    object_type = entity_types.get(str(relation.get("object_entity_key") or ""))
-    normalized = "belongs_to_brand" if object_type == "brand" else "has_attribute"
-    key = str(relation.get("relation_key") or "")
-    relation["relation_type"] = normalized
-    _append_flag(
-        flags,
-        code="relation_type_normalized",
-        severity="warning",
-        message=(
-            "Relation type 'belongs_to' was normalized to "
-            f"{normalized!r} to match analyzer_v4 relation schema."
-        ),
-        target_type="relation",
-        target_key=key,
-        blocks_metric_readiness=True,
-        flag_key=f"flag_relation_type_normalized_relation_{_slug(key)}",
-    )
+
+    kept: list[dict[str, Any]] = []
+    for index, relation in enumerate(relations):
+        if not isinstance(relation, dict):
+            continue
+        key = str(relation.get("relation_key") or f"relation_{index}")
+        relation["relation_key"] = key
+        relation_type = relation.get("relation_type")
+        if relation_type in RELATION_TYPES:
+            kept.append(relation)
+            continue
+        if relation_type in RELATION_TYPE_ALIASES:
+            object_type = entity_types.get(str(relation.get("object_entity_key") or ""))
+            normalized = (
+                "belongs_to_brand"
+                if relation_type == "belongs_to" and object_type == "brand"
+                else "has_attribute"
+            )
+            relation["relation_type"] = normalized
+            _append_flag(
+                flags,
+                code="relation_type_normalized",
+                severity="warning",
+                message=(
+                    f"Relation type {relation_type!r} was normalized to "
+                    f"{normalized!r} to match analyzer_v4 relation schema."
+                ),
+                target_type="relation",
+                target_key=key,
+                blocks_metric_readiness=True,
+                flag_key=f"flag_relation_type_normalized_relation_{_slug(key)}",
+            )
+            kept.append(relation)
+            continue
+
+        _append_flag(
+            flags,
+            code="unsupported_relation_type_dropped",
+            severity="error",
+            message=(
+                "Relation was dropped because relation_type="
+                f"{relation_type!r} is not supported by analyzer_v4."
+            ),
+            target_type="relation",
+            target_key=key,
+            blocks_metric_readiness=True,
+        )
+    package["relations"] = kept
 
 
 def _quality_codes(item: dict[str, Any]) -> set[str]:

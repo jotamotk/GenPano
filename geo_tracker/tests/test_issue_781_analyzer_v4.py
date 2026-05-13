@@ -704,6 +704,144 @@ async def test_analyzer_v4_malformed_sentiment_drivers_are_not_persisted(
     assert "malformed_sentiment_driver_dropped" in flag_codes
 
 
+@pytest.mark.asyncio
+async def test_analyzer_v4_issue_812_drifts_are_not_persisted(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["entities"].extend(
+        [
+            {
+                "entity_key": "ent_category_sensitive_serum",
+                "entity_type": "category",
+                "raw_name": "sensitive skin serum",
+                "canonical_id": None,
+                "canonical_name": None,
+                "canonicalization_status": "not_applicable",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.84,
+                "quality_flags": [],
+            },
+            {
+                "entity_key": "ent_scenario_daily",
+                "entity_type": "scenario",
+                "raw_name": "daily routine",
+                "canonical_id": None,
+                "canonical_name": None,
+                "canonicalization_status": "not_applicable",
+                "evidence_quote": "Acme official guidance supports the serum",
+                "confidence": 0.78,
+                "quality_flags": [],
+            },
+        ]
+    )
+    package["sentiment_drivers"].append(
+        {
+            "driver_key": "driver_brand_image",
+            "mention_key": "mention_acme_calm",
+            "target_entity_key": "ent_product_calm",
+            "sentiment_label": "positive",
+            "driver_type": "brand_image",
+            "driver_summary": "Brand image drift",
+            "evidence_quote": "Acme official guidance supports the serum",
+            "confidence": 0.74,
+            "quality_flags": [],
+        }
+    )
+    package["relations"].extend(
+        [
+            {
+                "relation_key": "relation_belongs_to_category",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "belongs_to_category",
+                "object_entity_key": "ent_category_sensitive_serum",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.81,
+                "quality_flags": [],
+            },
+            {
+                "relation_key": "relation_applicable_to",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "applicable_to",
+                "object_entity_key": "ent_scenario_daily",
+                "direction": "directed",
+                "evidence_quote": "Acme official guidance supports the serum",
+                "confidence": 0.73,
+                "quality_flags": [],
+            },
+        ]
+    )
+    package["citations"].append(
+        {
+            "citation_key": "citation_bad_confidence",
+            "url": "https://acme.example/guide",
+            "domain": "acme.example",
+            "title": "Acme Guide",
+            "source_type": "official",
+            "attribution_method": "official_domain",
+            "mentioned_entity_keys": ["ent_brand_acme", "ent_product_calm"],
+            "linked_fact_keys": ["mention_acme_calm"],
+            "evidence_quote": "Acme official guidance supports the serum",
+            "confidence": None,
+            "quality_flags": [],
+        }
+    )
+    _patch_pipeline(monkeypatch, object.__new__(LLMAnalyzer)._parse_result(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    persisted_drivers = (
+        await session.execute(
+            select(SentimentDriver.driver_text).where(
+                SentimentDriver.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "Brand image drift" not in persisted_drivers
+    persisted_relation_types = (
+        await session.execute(
+            select(ResponseRelationFact.relation_type).where(
+                ResponseRelationFact.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "belongs_to_category" not in persisted_relation_types
+    assert "applicable_to" not in persisted_relation_types
+    links = (
+        await session.execute(
+            select(AnalysisFactLink.fact_key).where(
+                AnalysisFactLink.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "citation_bad_confidence" not in links
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert {
+        "unsupported_sentiment_driver_type_dropped",
+        "relation_type_normalized",
+        "unsupported_relation_type_dropped",
+        "malformed_citation_dropped",
+    } <= flag_codes
+
+
 def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
     package = _valid_v4_package()
     package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
@@ -944,6 +1082,138 @@ def test_analyzer_v4_drops_malformed_sentiment_drivers_with_quality_flags() -> N
         "malformed_sentiment_driver_dropped",
         "driver",
         "driver_malformed_confidence",
+    ) in flags
+
+
+def test_analyzer_v4_handles_issue_812_schema_drifts_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["entities"].extend(
+        [
+            {
+                "entity_key": "ent_category_sensitive_serum",
+                "entity_type": "category",
+                "raw_name": "sensitive skin serum",
+                "canonical_id": None,
+                "canonical_name": None,
+                "canonicalization_status": "not_applicable",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.84,
+                "quality_flags": [],
+            },
+            {
+                "entity_key": "ent_scenario_daily",
+                "entity_type": "scenario",
+                "raw_name": "daily routine",
+                "canonical_id": None,
+                "canonical_name": None,
+                "canonicalization_status": "not_applicable",
+                "evidence_quote": "Acme official guidance supports the serum",
+                "confidence": 0.78,
+                "quality_flags": [],
+            },
+        ]
+    )
+    package["sentiment_drivers"].append(
+        {
+            "driver_key": "driver_brand_image",
+            "mention_key": "mention_acme_calm",
+            "target_entity_key": "ent_product_calm",
+            "sentiment_label": "positive",
+            "driver_type": "brand_image",
+            "driver_summary": "Brand image drift",
+            "evidence_quote": "Acme official guidance supports the serum",
+            "confidence": 0.74,
+            "quality_flags": [],
+        }
+    )
+    package["relations"].extend(
+        [
+            {
+                "relation_key": "relation_belongs_to_category",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "belongs_to_category",
+                "object_entity_key": "ent_category_sensitive_serum",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.81,
+                "quality_flags": [],
+            },
+            {
+                "relation_key": "relation_applicable_to",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "applicable_to",
+                "object_entity_key": "ent_scenario_daily",
+                "direction": "directed",
+                "evidence_quote": "Acme official guidance supports the serum",
+                "confidence": 0.73,
+                "quality_flags": [],
+            },
+        ]
+    )
+    package["citations"].append(
+        {
+            "citation_key": "citation_bad_confidence",
+            "url": "https://acme.example/guide",
+            "domain": "acme.example",
+            "title": "Acme Guide",
+            "source_type": "official",
+            "attribution_method": "official_domain",
+            "mentioned_entity_keys": ["ent_brand_acme", "ent_product_calm"],
+            "linked_fact_keys": ["mention_acme_calm"],
+            "evidence_quote": "Acme official guidance supports the serum",
+            "confidence": "high",
+            "quality_flags": [],
+        }
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    driver_keys = {driver["driver_key"] for driver in result.package["sentiment_drivers"]}
+    assert "driver_brand_image" not in driver_keys
+    relation_types = {
+        relation["relation_key"]: relation["relation_type"]
+        for relation in result.package["relations"]
+    }
+    assert relation_types["relation_belongs_to_category"] == "has_attribute"
+    assert "relation_applicable_to" not in relation_types
+    citation_keys = {
+        citation["citation_key"] for citation in result.package["citations"]
+    }
+    assert "citation_bad_confidence" not in citation_keys
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "unsupported_sentiment_driver_type_dropped",
+        "driver",
+        "driver_brand_image",
+    ) in flags
+    assert (
+        "relation_type_normalized",
+        "relation",
+        "relation_belongs_to_category",
+    ) in flags
+    assert (
+        "unsupported_relation_type_dropped",
+        "relation",
+        "relation_applicable_to",
+    ) in flags
+    assert (
+        "malformed_citation_dropped",
+        "citation",
+        "citation_bad_confidence",
     ) in flags
 
 
