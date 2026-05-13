@@ -1,0 +1,279 @@
+name: BestCoffer V4 Coverage Repair
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "export is read-only; dry_run plans exact-ID repair; apply migrates approved raw v4 packages"
+        type: choice
+        required: true
+        default: export
+        options:
+          - export
+          - dry_run
+          - apply
+      project_id:
+        description: "Scoped App project UUID for #827"
+        required: true
+        default: "7380c0e0-8798-4a5f-998f-42010a7d9caa"
+      brand_id:
+        description: "BestCoffer canonical brand id"
+        required: false
+        default: "24"
+      competitor_brand_ids:
+        description: "Optional comma-separated competitor brand ids"
+        required: false
+        default: "2"
+      date_from:
+        description: "Inclusive query created date start (YYYY-MM-DD)"
+        required: false
+        default: "2026-05-06"
+      date_to:
+        description: "Inclusive query created date end (YYYY-MM-DD)"
+        required: false
+        default: "2026-05-13"
+      response_ids:
+        description: "Comma-separated exact response ids; required for apply"
+        required: false
+        default: ""
+      query_ids:
+        description: "Optional comma-separated query ids for export/dry_run only"
+        required: false
+        default: ""
+      limit:
+        description: "Maximum selected responses; hard-capped at 500"
+        required: false
+        default: "500"
+      approval_ref:
+        description: "Required for apply: exact #827 issue-comment URL with trusted exact-ID approval"
+        required: false
+        default: ""
+
+concurrency:
+  group: bestcoffer-v4-coverage-repair
+  cancel-in-progress: false
+
+jobs:
+  bestcoffer-v4-coverage-repair:
+    name: Run scoped BestCoffer v4 coverage repair task
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate workflow inputs before SSH
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          COMPETITOR_BRAND_IDS: ${{ inputs.competitor_brand_ids }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          LIMIT: ${{ inputs.limit }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+        run: |
+          set -Eeuo pipefail
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          compact() {
+            printf '%s' "$1" | tr -d '[:space:]'
+          }
+
+          require_positive_int() {
+            local name="$1"
+            local value="$2"
+            [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a positive integer, got '$value'"
+            [ "$value" -ge 1 ] || fail "$name must be >= 1"
+          }
+
+          require_optional_int_csv() {
+            local name="$1"
+            local value
+            value="$(compact "$2")"
+            [ -z "$value" ] && return 0
+            [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "$name must be comma-separated positive integers"
+          }
+
+          MODE_VALUE="${MODE:-}"
+          PROJECT_ID_VALUE="$(compact "${PROJECT_ID:-}")"
+          BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+          COMPETITOR_BRAND_IDS_CLEAN="$(compact "${COMPETITOR_BRAND_IDS:-}")"
+          DATE_FROM_VALUE="${DATE_FROM:-}"
+          DATE_TO_VALUE="${DATE_TO:-}"
+          RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+          QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+          LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+          APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+
+          case "$MODE_VALUE" in
+            export|dry_run|apply) ;;
+            *) fail "mode must be export, dry_run, or apply, got '$MODE_VALUE'" ;;
+          esac
+
+          [[ "$PROJECT_ID_VALUE" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+            || fail "project_id must be UUID-shaped"
+          require_positive_int brand_id "$BRAND_ID_CLEAN"
+          require_positive_int limit "$LIMIT_CLEAN"
+          [ "$LIMIT_CLEAN" -le 500 ] || fail "limit must be <= 500"
+          require_optional_int_csv competitor_brand_ids "$COMPETITOR_BRAND_IDS_CLEAN"
+          require_optional_int_csv response_ids "$RESPONSE_IDS_CLEAN"
+          require_optional_int_csv query_ids "$QUERY_IDS_CLEAN"
+
+          if [ -z "$RESPONSE_IDS_CLEAN" ] && [ -z "$QUERY_IDS_CLEAN" ]; then
+            [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD when response_ids/query_ids are empty"
+            [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD when response_ids/query_ids are empty"
+          else
+            [ -z "$DATE_FROM_VALUE" ] || [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+            [ -z "$DATE_TO_VALUE" ] || [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+          fi
+          if [ -n "$DATE_FROM_VALUE" ] && [ -n "$DATE_TO_VALUE" ]; then
+            [[ "$DATE_FROM_VALUE" < "$DATE_TO_VALUE" || "$DATE_FROM_VALUE" == "$DATE_TO_VALUE" ]] || fail "date_from must be on or before date_to"
+          fi
+
+          if [ "$MODE_VALUE" = "apply" ]; then
+            [ -n "$RESPONSE_IDS_CLEAN" ] || fail "apply mode requires exact response_ids"
+            [ -z "$QUERY_IDS_CLEAN" ] || fail "apply mode does not accept query_ids; use exact response_ids"
+            [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+            [[ "$APPROVAL_REF_VALUE" =~ ^https://github\.com/jotamotk/trash_test/issues/827#issuecomment-[0-9]+$ ]] \
+              || fail "approval_ref must be the exact #827 issue comment URL"
+          fi
+          if [ "$MODE_VALUE" = "dry_run" ]; then
+            [ -n "$RESPONSE_IDS_CLEAN" ] || fail "dry_run mode requires exact response_ids"
+            [ -z "$QUERY_IDS_CLEAN" ] || fail "dry_run mode does not accept query_ids; use exact response_ids"
+          fi
+
+      - name: Execute #827 v4 coverage task on deployed worker
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          COMPETITOR_BRAND_IDS: ${{ inputs.competitor_brand_ids }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          LIMIT: ${{ inputs.limit }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,PROJECT_ID,BRAND_ID,COMPETITOR_BRAND_IDS,DATE_FROM,DATE_TO,RESPONSE_IDS,QUERY_IDS,LIMIT,APPROVAL_REF,GH_TOKEN,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
+          command_timeout: 45m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            compact() {
+              printf '%s' "$1" | tr -d '[:space:]'
+            }
+
+            MODE_VALUE="${MODE:-}"
+            PROJECT_ID_VALUE="$(compact "${PROJECT_ID:-}")"
+            BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+            COMPETITOR_BRAND_IDS_CLEAN="$(compact "${COMPETITOR_BRAND_IDS:-}")"
+            DATE_FROM_VALUE="${DATE_FROM:-}"
+            DATE_TO_VALUE="${DATE_TO:-}"
+            RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+            QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+            LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+            APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+
+            case "$MODE_VALUE" in
+              export|dry_run|apply) ;;
+              *) fail "mode must be export, dry_run, or apply, got '$MODE_VALUE'" ;;
+            esac
+            if [ "$MODE_VALUE" = "apply" ]; then
+              [ -n "$RESPONSE_IDS_CLEAN" ] || fail "apply mode requires exact response_ids"
+              [ -z "$QUERY_IDS_CLEAN" ] || fail "apply mode does not accept query_ids"
+              [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+            fi
+            if [ "$MODE_VALUE" = "dry_run" ]; then
+              [ -n "$RESPONSE_IDS_CLEAN" ] || fail "dry_run mode requires exact response_ids"
+              [ -z "$QUERY_IDS_CLEAN" ] || fail "dry_run mode does not accept query_ids"
+            fi
+
+            cat <<AUDIT
+            === BestCoffer V4 Coverage Repair Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            run_number=${GH_RUN_NUMBER}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            module=geo_tracker.tasks.bestcoffer_v4_coverage_repair
+            mode=${MODE_VALUE}
+            scope=project_id=${PROJECT_ID_VALUE};brand_id=${BRAND_ID_CLEAN};competitor_brand_ids=${COMPETITOR_BRAND_IDS_CLEAN:-<empty>};date_from=${DATE_FROM_VALUE:-<empty>};date_to=${DATE_TO_VALUE:-<empty>};response_ids=${RESPONSE_IDS_CLEAN:-<empty>};query_ids=${QUERY_IDS_CLEAN:-<empty>};limit=${LIMIT_CLEAN}
+            approval_ref=${APPROVAL_REF_VALUE:-<empty>}
+            no_broad_scraper_expansion=true
+            no_scraper_enqueue=true
+            no_fake_citation_geo_rows=true
+            note=Apply mode migrates only valid raw analyzer_v4 packages for exact response_ids. It does not rerun the scraper, fabricate rows, or mark failed v4 runs done without first-class facts.
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            run_in_container() {
+              local service="$1"
+              shift
+              local cid
+              cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
+                docker compose exec -T "$service" "$@" </dev/null
+              else
+                echo "Service '$service' is not running; using deployed image via docker compose run --rm -T." >&2
+                docker compose run --rm -T "$service" "$@" </dev/null
+              fi
+            }
+
+            args=(
+              -m geo_tracker.tasks.bestcoffer_v4_coverage_repair
+              --mode "$MODE_VALUE"
+              --project-id "$PROJECT_ID_VALUE"
+              --brand-id "$BRAND_ID_CLEAN"
+              --limit "$LIMIT_CLEAN"
+            )
+            if [ -n "$COMPETITOR_BRAND_IDS_CLEAN" ]; then
+              args+=(--competitor-brand-ids "$COMPETITOR_BRAND_IDS_CLEAN")
+            fi
+            if [ -n "$DATE_FROM_VALUE" ]; then
+              args+=(--date-from "$DATE_FROM_VALUE")
+            fi
+            if [ -n "$DATE_TO_VALUE" ]; then
+              args+=(--date-to "$DATE_TO_VALUE")
+            fi
+            if [ -n "$RESPONSE_IDS_CLEAN" ]; then
+              args+=(--response-ids "$RESPONSE_IDS_CLEAN")
+            fi
+            if [ -n "$QUERY_IDS_CLEAN" ]; then
+              args+=(--query-ids "$QUERY_IDS_CLEAN")
+            fi
+            if [ -n "$APPROVAL_REF_VALUE" ]; then
+              args+=(--approval-ref "$APPROVAL_REF_VALUE")
+            fi
+
+            echo "=== BestCoffer v4 coverage repair report ==="
+            run_in_container worker python "${args[@]}"
+            RUNBOOK
