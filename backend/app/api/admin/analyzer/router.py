@@ -144,6 +144,15 @@ async def analyze_response(
             },
         )
 
+    if not await analyzer_db.analyzer_single_submit_ready(session):
+        return _dependency_blocked(
+            {
+                "response_id": response_id,
+                "mode": normalized["mode"],
+                "error": "analyzer_run_persistence_required",
+            }
+        )
+
     run = await analyzer_db.create_or_get_queued_analyzer_run(
         session,
         response_id=response_id,
@@ -153,11 +162,30 @@ async def analyze_response(
         idempotency_key=normalized.get("idempotency_key"),
     )
     if run.get("idempotent"):
+        run_status = str(run.get("status") or "").lower()
+        if run_status == "failed":
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "accepted": False,
+                    "idempotent": True,
+                    "error": "analyzer_run_already_failed",
+                    "message": "Use a new idempotency_key to retry a failed analyzer submission.",
+                    "response_id": response_id,
+                    "mode": normalized["mode"],
+                    "run_id": run.get("run_id"),
+                    "task_id": run.get("task_id"),
+                    "status": run.get("status"),
+                    "failure_code": run.get("failure_code"),
+                    "failure_message": run.get("failure_message"),
+                },
+            )
         return JSONResponse(
             status_code=200,
             content={
                 "success": True,
-                "accepted": True,
+                "accepted": run_status in {"queued", "running"},
                 "idempotent": True,
                 "response_id": response_id,
                 "mode": normalized["mode"],
@@ -246,6 +274,14 @@ async def analyzer_batch_submit(
             },
         )
 
+    if not await analyzer_db.analyzer_batch_submit_ready(session):
+        return _dependency_blocked(
+            {
+                "mode": normalized["mode"],
+                "error": "analyzer_batch_persistence_required",
+            }
+        )
+
     rows = await analyzer_db.preview_batch_analyzer_candidates(
         session,
         scope=normalized["scope"],
@@ -263,9 +299,16 @@ async def analyzer_batch_submit(
     if batch.get("idempotent"):
         return JSONResponse(status_code=200, content=batch)
 
-    submitted_response_ids: list[int] = []
+    accepted_response_ids: list[int] = []
     for item in batch.get("items") or []:
         if item.get("status") != "queued" or not item.get("run_id") or not item.get("response_id"):
+            continue
+        if not item.get("dispatch_required", True):
+            if item.get("task_id"):
+                accepted_response_ids.append(int(item["response_id"]))
+            continue
+        if item.get("task_id"):
+            accepted_response_ids.append(int(item["response_id"]))
             continue
         response_id = int(item["response_id"])
         run_id = int(item["run_id"])
@@ -275,6 +318,7 @@ async def analyzer_batch_submit(
                 session,
                 item_id=int(item["item_id"]),
                 run_id=run_id,
+                previous_analysis_status=item.get("previous_analysis_status"),
             )
             continue
         await analyzer_db.mark_analyzer_batch_item_enqueued(
@@ -284,16 +328,35 @@ async def analyzer_batch_submit(
             task_id=task_id,
         )
         item["task_id"] = task_id
-        submitted_response_ids.append(response_id)
+        accepted_response_ids.append(response_id)
 
     refreshed = await analyzer_db.refresh_analyzer_batch_status(session, str(batch["batch_id"]))
     if refreshed:
         batch.update(refreshed)
     batch["success"] = True
-    batch["submitted_response_ids"] = submitted_response_ids or batch.get(
-        "submitted_response_ids", []
-    )
-    batch["accepted_count"] = len(submitted_response_ids)
+    response_items = list(batch.get("items") or [])
+    if response_items:
+        accepted_response_ids = [
+            int(item["response_id"])
+            for item in response_items
+            if item.get("response_id") is not None and item.get("task_id")
+        ]
+    batch["accepted_response_ids"] = accepted_response_ids
+    batch["submitted_response_ids"] = accepted_response_ids
+    batch["accepted_count"] = len(accepted_response_ids)
+    submitted_count = int(batch.get("submitted_count") or 0)
+    if submitted_count > 0 and not accepted_response_ids:
+        batch.update(
+            {
+                "success": False,
+                "accepted": False,
+                "error": "analyzer_batch_enqueue_failed",
+            }
+        )
+        status_code = 503
+    else:
+        batch["accepted"] = bool(accepted_response_ids)
+        status_code = 202 if accepted_response_ids else 200
     await emit_audit(
         session,
         operator=operator,
@@ -311,7 +374,7 @@ async def analyzer_batch_submit(
         request=request,
     )
     return JSONResponse(
-        status_code=202 if batch["accepted_count"] else 200,
+        status_code=status_code,
         content=batch,
     )
 

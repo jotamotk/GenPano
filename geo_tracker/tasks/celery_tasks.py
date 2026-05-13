@@ -1524,17 +1524,54 @@ def analyze_response(self, response_id: int, analyzer_run_id: int | None = None)
 
     async def _run():
         from geo_tracker.analyzer.cli import analyze_single_response
+        from geo_tracker.tasks.analyzer_handoff import mark_analyzer_run_handoff_failed
 
         async with get_task_async_session(task_engine) as db:
             resp = await db.get(LLMResponse, response_id)
             if not resp:
+                if analyzer_run_id is not None:
+                    return await mark_analyzer_run_handoff_failed(
+                        db,
+                        analyzer_run_id=int(analyzer_run_id),
+                        response_id=response_id,
+                        failure_code="response_not_found",
+                        failure_message=(
+                            f"LLMResponse {response_id} was not found before analyzer handoff."
+                        ),
+                    )
                 return {"skipped": True, "reason": "response_not_found"}
 
             if resp.analysis_status == AnalysisStatus.DONE.value and analyzer_run_id is None:
                 return {"skipped": True, "reason": "already_analyzed"}
 
             query = await db.get(Query, resp.query_id)
+            if not query:
+                if analyzer_run_id is not None:
+                    return await mark_analyzer_run_handoff_failed(
+                        db,
+                        analyzer_run_id=int(analyzer_run_id),
+                        response_id=response_id,
+                        failure_code="query_not_found",
+                        failure_message=(
+                            f"Query {resp.query_id} was not found before analyzer handoff."
+                        ),
+                        previous_analysis_status=resp.analysis_status,
+                    )
+                return {"skipped": True, "reason": "query_not_found"}
             brand = await db.get(Brand, query.brand_id)
+            if not brand:
+                if analyzer_run_id is not None:
+                    return await mark_analyzer_run_handoff_failed(
+                        db,
+                        analyzer_run_id=int(analyzer_run_id),
+                        response_id=response_id,
+                        failure_code="brand_not_found",
+                        failure_message=(
+                            f"Brand {query.brand_id} was not found before analyzer handoff."
+                        ),
+                        previous_analysis_status=resp.analysis_status,
+                    )
+                return {"skipped": True, "reason": "brand_not_found"}
 
             comp_result = await db.execute(
                 select(Competitor).where(Competitor.brand_id == brand.id)

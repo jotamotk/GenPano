@@ -74,3 +74,37 @@ async def test_analyze_single_response_consumes_api_created_run_without_duplicat
     assert refreshed.status in {"done", "partial"}
     assert refreshed.trigger_source == "admin_single"
     assert response.analysis_status == AnalysisStatus.DONE.value
+
+
+@pytest.mark.asyncio
+async def test_worker_handoff_failure_marks_supplied_run_failed_before_analysis(
+    session: AsyncSession,
+) -> None:
+    from geo_tracker.tasks.analyzer_handoff import mark_analyzer_run_handoff_failed
+
+    queued_run = AnalyzerRun(
+        response_id=987654,
+        status="queued",
+        trigger_source="admin_single",
+        idempotency_key="missing-response-797",
+    )
+    session.add(queued_run)
+    await session.commit()
+    await session.refresh(queued_run)
+
+    result = await mark_analyzer_run_handoff_failed(
+        session,
+        analyzer_run_id=queued_run.id,
+        response_id=987654,
+        failure_code="response_not_found",
+        failure_message="LLMResponse 987654 was not found before analyzer handoff.",
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "response_not_found"
+    refreshed = await session.get(AnalyzerRun, queued_run.id)
+    assert refreshed is not None
+    assert refreshed.status == "failed"
+    assert refreshed.failure_code == "response_not_found"
+    assert "987654" in (refreshed.failure_message or "")
+    assert refreshed.completed_at is not None
