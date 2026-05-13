@@ -526,6 +526,10 @@ async def analyze_single_response(
     detector = BrandDetector()
     llm_analyzer = LLMAnalyzer()
     citation_mapper = CitationMapper()
+    previous_analysis_status = response.analysis_status or AnalysisStatus.PENDING.value
+    preserve_current_success = (
+        str(previous_analysis_status).lower() == AnalysisStatus.DONE.value
+    )
 
     analyzer_run = AnalyzerRun(
         response_id=response_id,
@@ -538,7 +542,8 @@ async def analyze_single_response(
         started_at=_utcnow_naive(),
     )
     session.add(analyzer_run)
-    response.analysis_status = AnalysisStatus.RUNNING.value
+    if not preserve_current_success:
+        response.analysis_status = AnalysisStatus.RUNNING.value
     await session.commit()
     await session.refresh(analyzer_run)
     analyzer_run_id = int(analyzer_run.id)
@@ -598,7 +603,11 @@ async def analyze_single_response(
                 package=v4_stage.package,
                 include_current_facts=False,
             )
-            response.analysis_status = AnalysisStatus.FAILED.value
+            response.analysis_status = (
+                previous_analysis_status
+                if preserve_current_success
+                else AnalysisStatus.FAILED.value
+            )
             await session.commit()
             return {
                 "response_id": response_id,
@@ -1212,11 +1221,18 @@ async def analyze_single_response(
         logger.exception(f"Analysis failed for response {response_id}: {e}")
         try:
             await session.rollback()
-            await session.execute(
-                update(LLMResponse)
-                .where(LLMResponse.id == response_id)
-                .values(analysis_status=AnalysisStatus.FAILED.value)
-            )
+            if preserve_current_success:
+                await session.execute(
+                    update(LLMResponse)
+                    .where(LLMResponse.id == response_id)
+                    .values(analysis_status=previous_analysis_status)
+                )
+            else:
+                await session.execute(
+                    update(LLMResponse)
+                    .where(LLMResponse.id == response_id)
+                    .values(analysis_status=AnalysisStatus.FAILED.value)
+                )
             await session.execute(
                 update(AnalyzerRun)
                 .where(AnalyzerRun.id == analyzer_run_id)
@@ -1225,6 +1241,24 @@ async def analyze_single_response(
                     completed_at=_utcnow_naive(),
                     failure_code="persistence_failed",
                     failure_message=str(e),
+                )
+            )
+            session.add(
+                AnalyzerQualityFlag(
+                    run_id=analyzer_run_id,
+                    response_id=response_id,
+                    flag_key="flag_persistence_failed_analysis",
+                    severity="error",
+                    code="persistence_failed",
+                    message=str(e),
+                    target_type="analysis",
+                    target_key=None,
+                    blocks_metric_readiness=True,
+                    evidence_json={
+                        "preserved_response_status": previous_analysis_status
+                    }
+                    if preserve_current_success
+                    else None,
                 )
             )
             await session.commit()

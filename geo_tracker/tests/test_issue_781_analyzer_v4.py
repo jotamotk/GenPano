@@ -17,6 +17,7 @@ from geo_tracker.analyzer.llm_analyzer import (
     DimensionResult,
     DriverResult,
     LLMAnalysisResult,
+    LLMAnalyzer,
     ProductFeatureResult,
 )
 from geo_tracker.analyzer.v4_contract import validate_analyzer_v4_package
@@ -418,6 +419,8 @@ async def test_analyzer_v4_rejects_invalid_json_without_deleting_current_facts(
     assert await session.scalar(select(func.count(BrandMention.id))) == 1
     assert await session.scalar(select(func.count(SentimentDriver.id))) == 1
     assert await session.scalar(select(func.count(CitationSource.id))) == 1
+    await session.refresh(response)
+    assert response.analysis_status == AnalysisStatus.DONE.value
     run = await session.scalar(select(AnalyzerRun).where(AnalyzerRun.response_id == response.id))
     assert run is not None
     assert run.status == "failed"
@@ -427,6 +430,70 @@ async def test_analyzer_v4_rejects_invalid_json_without_deleting_current_facts(
         )
     ).scalars().all()
     assert "invalid_json" in flag_codes
+
+
+@pytest.mark.asyncio
+async def test_analyzer_v4_persistence_failure_preserves_prior_current_status_and_facts(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    old_analysis = ResponseAnalysis(
+        response_id=response.id,
+        total_brands_mentioned=1,
+        target_brand_mentioned=True,
+        raw_analysis_json={"legacy": "still-current"},
+    )
+    old_mention = BrandMention(
+        response_id=response.id,
+        brand_id=target.id,
+        brand_name="AcmeBeauty",
+        product_name="Calm Serum",
+        is_target=True,
+        mention_count=1,
+    )
+    session.add_all([old_analysis, old_mention])
+    await session.commit()
+
+    package = _valid_v4_package(response.id, response.query_id)
+    _patch_pipeline(monkeypatch, _legacy_projection(package))
+
+    async def _raise_persistence_failure(*_args, **_kwargs):
+        raise RuntimeError("simulated fact write failure")
+
+    monkeypatch.setattr(analyzer_cli, "_persist_analyzer_v4_facts", _raise_persistence_failure)
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "failed"
+    await session.refresh(response)
+    assert response.analysis_status == AnalysisStatus.DONE.value
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
+    )
+    assert analysis is not None
+    assert analysis.raw_analysis_json == {"legacy": "still-current"}
+    mention = await session.scalar(
+        select(BrandMention).where(BrandMention.response_id == response.id)
+    )
+    assert mention is not None
+    assert mention.brand_name == "AcmeBeauty"
+    run = await session.scalar(select(AnalyzerRun).where(AnalyzerRun.response_id == response.id))
+    assert run is not None
+    assert run.status == "failed"
+    assert run.failure_code == "persistence_failed"
+    flag_codes = (
+        await session.execute(
+            select(AnalyzerQualityFlag.code).where(AnalyzerQualityFlag.response_id == response.id)
+        )
+    ).scalars().all()
+    assert "persistence_failed" in flag_codes
 
 
 @pytest.mark.asyncio
@@ -467,6 +534,158 @@ async def test_analyzer_v4_flags_missing_evidence_and_unlinked_citation(
     )
     assert analysis is not None
     assert analysis.raw_analysis_json["analysis_meta"]["validator_status"] == "passed_with_flags"
+
+
+def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
+    package = _valid_v4_package()
+    package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert ("evidence_quote_mismatch", "mention", "mention_acme_calm") in flags
+
+
+def test_analyzer_v4_projection_resolves_each_product_to_its_explicit_brand() -> None:
+    analyzer = object.__new__(LLMAnalyzer)
+    package = _valid_v4_package()
+    package["entities"] = [
+        {
+            "entity_key": "ent_brand_acme",
+            "entity_type": "brand",
+            "raw_name": "AcmeBeauty",
+            "canonical_id": "7811",
+            "canonical_name": "AcmeBeauty",
+            "canonicalization_status": "matched",
+            "evidence_quote": "AcmeBeauty Calm Serum",
+            "confidence": 0.97,
+            "quality_flags": [],
+        },
+        {
+            "entity_key": "ent_product_calm",
+            "entity_type": "product",
+            "raw_name": "Calm Serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "unresolved",
+            "evidence_quote": "AcmeBeauty Calm Serum",
+            "confidence": 0.88,
+            "quality_flags": ["product_unresolved"],
+        },
+        {
+            "entity_key": "ent_brand_beta",
+            "entity_type": "brand",
+            "raw_name": "BetaBeauty",
+            "canonical_id": None,
+            "canonical_name": "BetaBeauty",
+            "canonicalization_status": "suggested",
+            "evidence_quote": "BetaBeauty Bright Serum",
+            "confidence": 0.91,
+            "quality_flags": [],
+        },
+        {
+            "entity_key": "ent_product_bright",
+            "entity_type": "product",
+            "raw_name": "Bright Serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "unresolved",
+            "evidence_quote": "BetaBeauty Bright Serum",
+            "confidence": 0.82,
+            "quality_flags": ["product_unresolved"],
+        },
+    ]
+    package["mentions"] = [
+        {
+            "mention_key": "mention_acme_calm",
+            "entity_key": "ent_product_calm",
+            "response_id": 7815,
+            "raw_text": "AcmeBeauty Calm Serum",
+            "normalized_text": "AcmeBeauty Calm Serum",
+            "mention_type": "product",
+            "position": "top",
+            "sentiment_label": "positive",
+            "sentiment_score": 0.72,
+            "evidence_quote": "AcmeBeauty Calm Serum is recommended",
+            "confidence": 0.93,
+            "quality_flags": [],
+        },
+        {
+            "mention_key": "mention_beta_bright",
+            "entity_key": "ent_product_bright",
+            "response_id": 7815,
+            "raw_text": "BetaBeauty Bright Serum",
+            "normalized_text": "BetaBeauty Bright Serum",
+            "mention_type": "product",
+            "position": "listed",
+            "sentiment_label": "neutral",
+            "sentiment_score": 0.0,
+            "evidence_quote": "BetaBeauty Bright Serum is listed",
+            "confidence": 0.86,
+            "quality_flags": [],
+        },
+    ]
+    package["product_features"] = [
+        {
+            "feature_key": "feature_ceramide",
+            "product_entity_key": "ent_product_calm",
+            "brand_entity_key": "ent_brand_acme",
+            "feature_type": "ingredient",
+            "feature_name": "ceramides",
+            "feature_value": "gentle",
+            "evidence_quote": "uses gentle ceramides",
+            "confidence": 0.87,
+            "quality_flags": [],
+        },
+        {
+            "feature_key": "feature_glow",
+            "product_entity_key": "ent_product_bright",
+            "brand_entity_key": "ent_brand_beta",
+            "feature_type": "benefit",
+            "feature_name": "glow",
+            "feature_value": "brightening",
+            "evidence_quote": "helps brighten tone",
+            "confidence": 0.79,
+            "quality_flags": [],
+        },
+    ]
+
+    result = analyzer._parse_result(package)
+
+    projected = {(item.brand_name, item.product_name) for item in result.brands}
+    assert ("AcmeBeauty", "Calm Serum") in projected
+    assert ("BetaBeauty", "Bright Serum") in projected
+    assert ("AcmeBeauty", "Bright Serum") not in projected
+
+
+def test_analyzer_v4_projection_flags_unresolved_product_brand_without_fallback() -> None:
+    analyzer = object.__new__(LLMAnalyzer)
+    package = _valid_v4_package()
+    package["product_features"] = []
+    package["relations"] = []
+
+    result = analyzer._parse_result(package)
+
+    assert result.brands == []
+    assert any(
+        flag.get("code") == "brand_unresolved"
+        and flag.get("target_type") == "product"
+        and flag.get("target_key") == "ent_product_calm"
+        for flag in package["quality_flags"]
+    )
 
 
 @pytest.mark.asyncio

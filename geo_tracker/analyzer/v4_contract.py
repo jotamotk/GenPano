@@ -182,7 +182,7 @@ def validate_analyzer_v4_package(
             f"entities[{index}]",
         )
         _validate_confidence(entity, errors, f"entities[{index}]")
-        _flag_missing_evidence(flags, entity, "entity", key)
+        _flag_missing_evidence(flags, entity, "entity", key, response_text=response_text)
         if entity.get("canonicalization_status") == "unresolved":
             code = "brand_unresolved" if entity.get("entity_type") == "brand" else "product_unresolved"
             _append_flag(
@@ -216,7 +216,7 @@ def validate_analyzer_v4_package(
             mention, "sentiment_label", SENTIMENT_LABELS, errors, f"mentions[{index}]"
         )
         _validate_confidence(mention, errors, f"mentions[{index}]")
-        _flag_missing_evidence(flags, mention, "mention", key)
+        _flag_missing_evidence(flags, mention, "mention", key, response_text=response_text)
         if mention.get("sentiment_label") == "unknown":
             _append_flag(
                 flags,
@@ -257,7 +257,7 @@ def validate_analyzer_v4_package(
         )
         _validate_enum(driver, "driver_type", DRIVER_TYPES, errors, f"sentiment_drivers[{index}]")
         _validate_confidence(driver, errors, f"sentiment_drivers[{index}]")
-        _flag_missing_evidence(flags, driver, "driver", key)
+        _flag_missing_evidence(flags, driver, "driver", key, response_text=response_text)
         if driver.get("sentiment_label") == "mixed":
             _append_flag(
                 flags,
@@ -295,7 +295,7 @@ def validate_analyzer_v4_package(
             )
         _validate_enum(feature, "feature_type", FEATURE_TYPES, errors, f"product_features[{index}]")
         _validate_confidence(feature, errors, f"product_features[{index}]")
-        _flag_missing_evidence(flags, feature, "feature", key)
+        _flag_missing_evidence(flags, feature, "feature", key, response_text=response_text)
 
     for index, relation in enumerate(_objects(raw_package["relations"])):
         key = str(relation.get("relation_key") or f"relation_{index}")
@@ -321,7 +321,7 @@ def validate_analyzer_v4_package(
         _validate_enum(relation, "relation_type", RELATION_TYPES, errors, f"relations[{index}]")
         _validate_enum(relation, "direction", DIRECTIONS, errors, f"relations[{index}]")
         _validate_confidence(relation, errors, f"relations[{index}]")
-        _flag_missing_evidence(flags, relation, "relation", key)
+        _flag_missing_evidence(flags, relation, "relation", key, response_text=response_text)
 
     for index, citation in enumerate(_objects(raw_package["citations"])):
         key = str(citation.get("citation_key") or f"citation_{index}")
@@ -332,7 +332,7 @@ def validate_analyzer_v4_package(
             citation, "attribution_method", ATTRIBUTION_METHODS, errors, f"citations[{index}]"
         )
         _validate_confidence(citation, errors, f"citations[{index}]")
-        _flag_missing_evidence(flags, citation, "citation", key)
+        _flag_missing_evidence(flags, citation, "citation", key, response_text=response_text)
         linked = [str(value) for value in citation.get("linked_fact_keys") or [] if value]
         if not linked:
             _append_flag(
@@ -774,9 +774,26 @@ def _dedupe_flags(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _flag_missing_evidence(
-    flags: list[dict[str, Any]], item: dict[str, Any], target_type: str, target_key: str
+    flags: list[dict[str, Any]],
+    item: dict[str, Any],
+    target_type: str,
+    target_key: str,
+    *,
+    response_text: str | None,
 ) -> None:
-    if str(item.get("evidence_quote") or "").strip():
+    evidence_quote = str(item.get("evidence_quote") or "").strip()
+    if evidence_quote:
+        if _evidence_quote_matches_response(evidence_quote, response_text):
+            return
+        _append_flag(
+            flags,
+            code="evidence_quote_mismatch",
+            severity="warning",
+            message=f"{target_type} evidence_quote is not present in response_text.",
+            target_type=target_type,
+            target_key=target_key,
+            blocks_metric_readiness=True,
+        )
         return
     _append_flag(
         flags,
@@ -787,6 +804,16 @@ def _flag_missing_evidence(
         target_key=target_key,
         blocks_metric_readiness=True,
     )
+
+
+def _evidence_quote_matches_response(evidence_quote: str, response_text: str | None) -> bool:
+    quote = _normalize_evidence_text(evidence_quote)
+    text = _normalize_evidence_text(response_text)
+    return bool(quote and text and quote in text)
+
+
+def _normalize_evidence_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").casefold()).strip()
 
 
 def _validate_enum(

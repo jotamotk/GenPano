@@ -273,14 +273,96 @@ class LLMAnalyzer:
             for entity in data.get("entities", [])
             if isinstance(entity, dict) and entity.get("entity_key")
         }
-        first_brand = next(
-            (
-                entity
-                for entity in entities.values()
-                if entity.get("entity_type") == "brand"
-            ),
-            None,
-        )
+        product_brand_entities: dict[str, dict] = {}
+
+        def brand_display_name(entity: dict | None) -> str:
+            return str(
+                (entity or {}).get("canonical_name")
+                or (entity or {}).get("raw_name")
+                or ""
+            ).strip()
+
+        def link_product_brand(product_key: object, brand_key: object) -> None:
+            product_entity = entities.get(str(product_key or ""))
+            brand_entity = entities.get(str(brand_key or ""))
+            if (
+                not product_entity
+                or not brand_entity
+                or product_entity.get("entity_type") != "product"
+                or brand_entity.get("entity_type") != "brand"
+            ):
+                return
+            product_brand_entities[str(product_key)] = brand_entity
+
+        for entity_key, entity in entities.items():
+            if entity.get("entity_type") == "product":
+                link_product_brand(entity_key, entity.get("brand_entity_key"))
+
+        for feature in data.get("product_features", []):
+            if isinstance(feature, dict):
+                link_product_brand(
+                    feature.get("product_entity_key"),
+                    feature.get("brand_entity_key"),
+                )
+
+        for relation in data.get("relations", []):
+            if (
+                not isinstance(relation, dict)
+                or relation.get("relation_type") != "belongs_to_brand"
+            ):
+                continue
+            subject_key = str(relation.get("subject_entity_key") or "")
+            object_key = str(relation.get("object_entity_key") or "")
+            subject_entity = entities.get(subject_key)
+            object_entity = entities.get(object_key)
+            if (
+                subject_entity
+                and object_entity
+                and subject_entity.get("entity_type") == "product"
+                and object_entity.get("entity_type") == "brand"
+            ):
+                link_product_brand(subject_key, object_key)
+            elif (
+                subject_entity
+                and object_entity
+                and subject_entity.get("entity_type") == "brand"
+                and object_entity.get("entity_type") == "product"
+            ):
+                link_product_brand(object_key, subject_key)
+
+        def append_projection_flag(code: str, message: str, target_key: str) -> None:
+            flags = data.setdefault("quality_flags", [])
+            if not isinstance(flags, list):
+                flags = []
+                data["quality_flags"] = flags
+            target = str(target_key or "")
+            for flag in flags:
+                if (
+                    isinstance(flag, dict)
+                    and flag.get("code") == code
+                    and str(flag.get("target_key") or "") == target
+                ):
+                    return
+            flags.append(
+                {
+                    "flag_key": f"flag_{code}_product_{target}",
+                    "severity": "warning",
+                    "code": code,
+                    "message": message,
+                    "target_type": "product",
+                    "target_key": target,
+                    "blocks_metric_readiness": True,
+                }
+            )
+
+        def append_entity_quality_code(entity: dict, code: str) -> None:
+            flags = entity.setdefault("quality_flags", [])
+            if isinstance(flags, list) and code not in {
+                str(flag.get("code") or flag) if isinstance(flag, dict) else str(flag)
+                for flag in flags
+            }:
+                flags.append(code)
+
         drivers_by_mention: dict[str, list[dict]] = {}
         for driver in data.get("sentiment_drivers", []):
             if isinstance(driver, dict):
@@ -301,12 +383,22 @@ class LLMAnalyzer:
             product_name = None
             if entity_type == "product":
                 product_name = raw_name
-                brand_name = str(
-                    (first_brand or {}).get("canonical_name")
-                    or (first_brand or {}).get("raw_name")
-                    or mention.get("normalized_text")
-                    or raw_name
-                )
+                brand_entity = None
+                mention_brand_key = mention.get("brand_entity_key")
+                if mention_brand_key:
+                    candidate = entities.get(str(mention_brand_key))
+                    if candidate and candidate.get("entity_type") == "brand":
+                        brand_entity = candidate
+                brand_entity = brand_entity or product_brand_entities.get(entity_key)
+                brand_name = brand_display_name(brand_entity)
+                if not brand_name:
+                    append_entity_quality_code(entity, "brand_unresolved")
+                    append_projection_flag(
+                        "brand_unresolved",
+                        "Product mention has no explicit resolved brand link.",
+                        entity_key,
+                    )
+                    continue
             drivers = [
                 DriverResult(
                     driver_text=str(driver.get("driver_summary") or ""),
