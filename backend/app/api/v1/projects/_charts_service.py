@@ -1556,8 +1556,7 @@ async def get_topic_heatmap(
         )
         compare_with = [r[0] for r in (await session.execute(comp_stmt)).all()][:4]
 
-    brand_ids = _unique([str(primary), *[str(value) for value in compare_with]])
-    brand_ids = [int(value) for value in brand_ids]
+    brand_ids = list(dict.fromkeys([primary, *compare_with]))
     f, t = _dt_range(from_d, to_d)
 
     # Pick top N topics by total mention count for this brand set.
