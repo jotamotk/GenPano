@@ -58,6 +58,8 @@ from genpano_models.alert import (
 )
 from genpano_models.analyzer import (
     AnalysisFactLink,
+    AnalyzerBatch,
+    AnalyzerBatchItem,
     AnalyzerQualityFlag,
     AnalyzerRun,
     BrandMention,
@@ -112,6 +114,8 @@ __all__ = [
     "Alert",
     "AlertRule",
     "AnalysisFactLink",
+    "AnalyzerBatch",
+    "AnalyzerBatchItem",
     "AnalyzerQualityFlag",
     "AnalyzerRun",
     "Base",

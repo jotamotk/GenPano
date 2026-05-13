@@ -10,9 +10,13 @@ sqlite test fixtures.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import bindparam, text
+from genpano_models import AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun
+from sqlalchemy import bindparam, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.analyzer.lib import BatchPreviewRows
@@ -20,6 +24,94 @@ from app.admin.queries.lib import split_pending_status
 
 logger = logging.getLogger(__name__)
 BATCH_DRY_RUN_QUERY_LIMIT = 5000
+ACTIVE_ANALYZER_RUN_STATUSES = {"queued", "running"}
+ACTIVE_ANALYZER_BATCH_STATUSES = {"queued", "running"}
+ANALYZER_RUN_DISPATCH_CLAIM_TIMEOUT_SECONDS = 300
+REQUIRED_ANALYZER_RUN_SUBMIT_INDEXES = {
+    "uq_analyzer_runs_response_idempotency",
+    "uq_analyzer_runs_active_response",
+}
+REQUIRED_ANALYZER_BATCH_SUBMIT_INDEXES = {"uq_analyzer_batches_idempotency"}
+REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS = {
+    "id",
+    "response_id",
+    "schema_version",
+    "status",
+    "trigger_source",
+    "idempotency_key",
+    "task_id",
+    "batch_id",
+    "batch_item_id",
+    "validator_summary_json",
+    "started_at",
+    "completed_at",
+    "failure_code",
+    "failure_message",
+    "dispatch_claim_token",
+    "dispatch_claimed_at",
+}
+REQUIRED_ANALYZER_BATCH_COLUMNS = {
+    "batch_id",
+    "mode",
+    "status",
+    "trigger_source",
+    "idempotency_key",
+    "dry_run_id",
+    "request_json",
+    "preview_json",
+    "submitted_response_ids_json",
+    "skipped_counts_json",
+    "skipped_reasons_json",
+    "submitted_count",
+    "skipped_count",
+    "created_by",
+    "reason",
+    "created_at",
+    "updated_at",
+    "completed_at",
+}
+REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS = {
+    "id",
+    "batch_id",
+    "response_id",
+    "query_id",
+    "run_id",
+    "task_id",
+    "status",
+    "skipped_reason",
+    "detail_json",
+    "created_at",
+    "updated_at",
+}
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def analyzer_single_submit_ready(session: AsyncSession) -> bool:
+    if not await _table_exists(session, "analyzer_runs"):
+        return False
+    columns = await _table_columns(session, "analyzer_runs")
+    if not REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS.issubset(columns):
+        return False
+    return await _submit_unique_indexes_ready(session, REQUIRED_ANALYZER_RUN_SUBMIT_INDEXES)
+
+
+async def analyzer_batch_submit_ready(session: AsyncSession) -> bool:
+    if not await analyzer_single_submit_ready(session):
+        return False
+    if not await _table_exists(session, "analyzer_batches"):
+        return False
+    if not await _table_exists(session, "analyzer_batch_items"):
+        return False
+    batch_columns = await _table_columns(session, "analyzer_batches")
+    item_columns = await _table_columns(session, "analyzer_batch_items")
+    if not REQUIRED_ANALYZER_BATCH_COLUMNS.issubset(
+        batch_columns
+    ) or not REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS.issubset(item_columns):
+        return False
+    return await _submit_unique_indexes_ready(session, REQUIRED_ANALYZER_BATCH_SUBMIT_INDEXES)
 
 
 def _isoformat(value: Any) -> str | None:
@@ -41,6 +133,17 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
                 {"n": name},
             )
         ).first()
+        if row is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        row = (
+            await session.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n LIMIT 1"),
+                {"n": name},
+            )
+        ).first()
     except Exception:
         return False
     return row is not None
@@ -57,9 +160,40 @@ async def _table_columns(session: AsyncSession, name: str) -> set[str]:
                 {"n": name},
             )
         ).all()
+        if rows:
+            return {str(r[0]) for r in rows}
+    except Exception:
+        pass
+    if not name.replace("_", "").isalnum():
+        return set()
+    try:
+        rows = (await session.execute(text(f"PRAGMA table_info({name})"))).all()
     except Exception:
         return set()
-    return {str(r[0]) for r in rows}
+    return {str(r[1]) for r in rows}
+
+
+async def _submit_unique_indexes_ready(
+    session: AsyncSession,
+    required_indexes: set[str],
+) -> bool:
+    if not required_indexes:
+        return True
+    try:
+        dialect_name = session.get_bind().dialect.name
+    except Exception:
+        return False
+    if dialect_name != "postgresql":
+        return True
+    sql = text(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname IN :index_names"
+    ).bindparams(bindparam("index_names", expanding=True))
+    try:
+        rows = (await session.execute(sql, {"index_names": sorted(required_indexes)})).all()
+    except Exception:
+        return False
+    present = {str(row[0]) for row in rows}
+    return required_indexes.issubset(present)
 
 
 async def fetch_analyzer_stats(session: AsyncSession) -> dict[str, Any]:
@@ -150,7 +284,22 @@ async def fetch_response_analyzer_status(
         return None
     has_response_analyses = await _table_exists(session, "response_analyses")
     has_analyzer_runs = await _table_exists(session, "analyzer_runs")
+    analyzer_run_cols = (
+        await _table_columns(session, "analyzer_runs") if has_analyzer_runs else set()
+    )
+    has_run_task_fields = {"task_id", "batch_id"}.issubset(analyzer_run_cols)
     has_analyzer_quality_flags = await _table_exists(session, "analyzer_quality_flags")
+    latest_run_task_select = (
+        """
+            ar.task_id,
+            ar.batch_id,
+        """
+        if has_run_task_fields
+        else """
+            NULL AS task_id,
+            NULL AS batch_id,
+        """
+    )
     analysis_select = (
         "ra.id AS analysis_id, ra.analyzer_model, ra.analyzed_at AS analysis_analyzed_at"
         if has_response_analyses
@@ -160,7 +309,7 @@ async def fetch_response_analyzer_status(
         "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
     )
     latest_run_select = (
-        """
+        f"""
             ar.analyzer_run_id,
             ar.analysis_schema_version,
             ar.analyzer_run_status,
@@ -169,6 +318,7 @@ async def fetch_response_analyzer_status(
             ar.analyzer_run_completed_at,
             ar.analysis_error_code,
             ar.analysis_error_message,
+            {latest_run_task_select}
             ar.validator_summary_json,
         """
         if has_analyzer_runs
@@ -181,11 +331,13 @@ async def fetch_response_analyzer_status(
             NULL AS analyzer_run_completed_at,
             NULL AS analysis_error_code,
             NULL AS analysis_error_message,
+            NULL AS task_id,
+            NULL AS batch_id,
             NULL AS validator_summary_json,
         """
     )
     latest_run_join = (
-        """
+        f"""
                     LEFT JOIN LATERAL (
                         SELECT
                             ar.id AS analyzer_run_id,
@@ -196,6 +348,7 @@ async def fetch_response_analyzer_status(
                             ar.completed_at AS analyzer_run_completed_at,
                             ar.failure_code AS analysis_error_code,
                             ar.failure_message AS analysis_error_message,
+                            {latest_run_task_select}
                             ar.validator_summary_json
                         FROM analyzer_runs ar
                         WHERE ar.response_id = lr.id
@@ -435,6 +588,583 @@ async def preview_batch_analyzer_candidates(
         query_truncated=query_truncated,
         query_limit=BATCH_DRY_RUN_QUERY_LIMIT,
     )
+
+
+def _run_payload(run: AnalyzerRun, *, idempotent: bool) -> dict[str, Any]:
+    return {
+        "run_id": int(run.id),
+        "response_id": int(run.response_id),
+        "status": run.status,
+        "task_id": run.task_id,
+        "idempotent": idempotent,
+        "previous_analysis_status": None,
+        "batch_id": run.batch_id,
+        "batch_item_id": run.batch_item_id,
+        "failure_code": run.failure_code,
+        "failure_message": run.failure_message,
+    }
+
+
+async def _find_existing_analyzer_run(
+    session: AsyncSession,
+    *,
+    response_id: int,
+    idempotency_key: str | None = None,
+) -> tuple[AnalyzerRun | None, bool]:
+    if idempotency_key:
+        existing = (
+            await session.execute(
+                select(AnalyzerRun)
+                .where(
+                    AnalyzerRun.response_id == int(response_id),
+                    AnalyzerRun.idempotency_key == idempotency_key,
+                )
+                .order_by(AnalyzerRun.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing, True
+
+    active = (
+        await session.execute(
+            select(AnalyzerRun)
+            .where(
+                AnalyzerRun.response_id == int(response_id),
+                AnalyzerRun.status.in_(ACTIVE_ANALYZER_RUN_STATUSES),
+            )
+            .order_by(AnalyzerRun.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return active, active is not None
+
+
+async def _set_response_analysis_status(
+    session: AsyncSession,
+    response_id: int,
+    status: str,
+) -> None:
+    columns = await _table_columns(session, "llm_responses")
+    if "analysis_status" not in columns:
+        return
+    await session.execute(
+        text("UPDATE llm_responses SET analysis_status = :status WHERE id = :response_id"),
+        {"status": status, "response_id": int(response_id)},
+    )
+
+
+async def create_or_get_queued_analyzer_run(
+    session: AsyncSession,
+    *,
+    response_id: int,
+    mode: str,
+    trigger_source: str,
+    previous_analysis_status: str | None,
+    idempotency_key: str | None = None,
+    batch_id: str | None = None,
+    batch_item_id: int | None = None,
+) -> dict[str, Any]:
+    for attempt in range(2):
+        existing, is_idempotent = await _find_existing_analyzer_run(
+            session,
+            response_id=response_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            payload = _run_payload(existing, idempotent=is_idempotent)
+            payload["previous_analysis_status"] = previous_analysis_status
+            return payload
+
+        run = AnalyzerRun(
+            response_id=int(response_id),
+            schema_version="analyzer_v4",
+            status="queued",
+            trigger_source=trigger_source,
+            idempotency_key=idempotency_key,
+            batch_id=batch_id,
+            batch_item_id=batch_item_id,
+            started_at=_utcnow_naive(),
+            validator_summary_json={"mode": mode, "queued_by": trigger_source},
+        )
+        session.add(run)
+        try:
+            await session.flush()
+            if str(previous_analysis_status or "").lower() != "done":
+                await _set_response_analysis_status(session, response_id, "queued")
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 0:
+                continue
+            raise
+        await session.refresh(run)
+        payload = _run_payload(run, idempotent=False)
+        payload["previous_analysis_status"] = previous_analysis_status
+        return payload
+
+    raise RuntimeError("failed to create or retrieve analyzer run")
+
+
+async def claim_analyzer_run_for_dispatch(
+    session: AsyncSession,
+    *,
+    run_id: int,
+) -> dict[str, Any]:
+    now = _utcnow_naive()
+    cutoff = now - timedelta(seconds=ANALYZER_RUN_DISPATCH_CLAIM_TIMEOUT_SECONDS)
+    claim_token = f"claim_{uuid.uuid4().hex[:24]}"
+    result = await session.execute(
+        update(AnalyzerRun)
+        .where(
+            AnalyzerRun.id == int(run_id),
+            AnalyzerRun.status == "queued",
+            AnalyzerRun.task_id.is_(None),
+            or_(
+                AnalyzerRun.dispatch_claim_token.is_(None),
+                AnalyzerRun.dispatch_claimed_at.is_(None),
+                AnalyzerRun.dispatch_claimed_at < cutoff,
+            ),
+        )
+        .values(dispatch_claim_token=claim_token, dispatch_claimed_at=now)
+    )
+    await session.commit()
+    if int(getattr(result, "rowcount", 0) or 0) == 1:
+        return {"claimed": True, "claim_token": claim_token, "reason": "claimed"}
+
+    run = await session.get(AnalyzerRun, int(run_id))
+    if run is None:
+        return {"claimed": False, "reason": "missing_run"}
+    if run.status == "queued" and run.task_id is None and run.dispatch_claim_token:
+        return {
+            "claimed": False,
+            "reason": "already_claimed",
+            "status": run.status,
+            "task_id": None,
+        }
+    return {
+        "claimed": False,
+        "reason": "not_claimable",
+        "status": run.status,
+        "task_id": run.task_id,
+    }
+
+
+async def mark_analyzer_run_enqueued(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    task_id: str,
+) -> None:
+    await session.execute(
+        update(AnalyzerRun)
+        .where(AnalyzerRun.id == int(run_id))
+        .values(
+            task_id=task_id,
+            status="queued",
+            dispatch_claim_token=None,
+            dispatch_claimed_at=None,
+        )
+    )
+    await session.commit()
+
+
+async def mark_analyzer_run_enqueue_failed(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    previous_analysis_status: str | None,
+    failure_message: str = "Analyzer task enqueue failed.",
+) -> None:
+    run = await session.get(AnalyzerRun, int(run_id))
+    if run is None:
+        return
+    run.status = "failed"
+    run.completed_at = _utcnow_naive()
+    run.failure_code = "enqueue_failed"
+    run.failure_message = failure_message
+    run.dispatch_claim_token = None
+    run.dispatch_claimed_at = None
+    restore_status = "done" if str(previous_analysis_status or "").lower() == "done" else "failed"
+    await _set_response_analysis_status(session, int(run.response_id), restore_status)
+    await session.commit()
+
+
+def _sum_skipped_counts(preview: dict[str, Any]) -> int:
+    return sum(int(v or 0) for v in (preview.get("skipped_counts") or {}).values())
+
+
+def _batch_payload(batch: AnalyzerBatch, items: list[AnalyzerBatchItem]) -> dict[str, Any]:
+    item_payloads = [_batch_item_payload(item) for item in items]
+    submitted_response_ids = [
+        int(item.response_id)
+        for item in items
+        if item.response_id is not None and item.status != "skipped"
+    ]
+    accepted_response_ids = [
+        int(item.response_id)
+        for item in items
+        if item.response_id is not None and item.status != "skipped" and item.task_id is not None
+    ]
+    failed_response_ids = [
+        int(item.response_id)
+        for item in items
+        if item.response_id is not None and str(item.status or "").lower() == "failed"
+    ]
+    return {
+        "success": True,
+        "batch_id": batch.batch_id,
+        "dry_run_id": batch.dry_run_id,
+        "status": batch.status,
+        "mode": batch.mode,
+        "submitted_count": int(batch.submitted_count or 0),
+        "accepted_count": len(accepted_response_ids),
+        "skipped_count": int(batch.skipped_count or 0),
+        "submitted_response_ids": submitted_response_ids,
+        "accepted_response_ids": accepted_response_ids,
+        "failed_response_ids": failed_response_ids,
+        "items": item_payloads,
+        "preview": batch.preview_json,
+        "idempotent": False,
+    }
+
+
+def _batch_item_payload(item: AnalyzerBatchItem) -> dict[str, Any]:
+    detail = item.detail_json if isinstance(item.detail_json, dict) else {}
+    return {
+        "item_id": int(item.id),
+        "batch_id": item.batch_id,
+        "response_id": item.response_id,
+        "query_id": item.query_id,
+        "run_id": item.run_id,
+        "task_id": item.task_id,
+        "status": item.status,
+        "skipped_reason": item.skipped_reason,
+        "previous_analysis_status": detail.get("previous_analysis_status"),
+        "dispatch_required": bool(detail.get("dispatch_required", False)),
+        "reused_active_run": bool(detail.get("reused_active_run", False)),
+    }
+
+
+async def _find_existing_batch(
+    session: AsyncSession,
+    *,
+    idempotency_key: str | None,
+    dry_run_id: str,
+) -> AnalyzerBatch | None:
+    if idempotency_key:
+        conditions: list[Any] = [AnalyzerBatch.idempotency_key == idempotency_key]
+    else:
+        conditions = [
+            AnalyzerBatch.status.in_(ACTIVE_ANALYZER_BATCH_STATUSES),
+            AnalyzerBatch.dry_run_id == dry_run_id,
+        ]
+    return (
+        await session.execute(
+            select(AnalyzerBatch)
+            .where(*conditions)
+            .order_by(AnalyzerBatch.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def create_analyzer_batch_submission(
+    session: AsyncSession,
+    *,
+    normalized: dict[str, Any],
+    preview: dict[str, Any],
+    operator_id: str | None,
+) -> dict[str, Any]:
+    dry_run_id = str(preview["dry_run_id"])
+    for attempt in range(2):
+        existing = await _find_existing_batch(
+            session,
+            idempotency_key=normalized.get("idempotency_key"),
+            dry_run_id=dry_run_id,
+        )
+        if existing is not None:
+            status = await fetch_analyzer_batch_status(session, existing.batch_id)
+            if status is not None:
+                status["idempotent"] = True
+                return status
+        try:
+            return await _insert_analyzer_batch_submission(
+                session,
+                normalized=normalized,
+                preview=preview,
+                operator_id=operator_id,
+                dry_run_id=dry_run_id,
+            )
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 0:
+                continue
+            raise
+
+    raise RuntimeError("failed to create or retrieve analyzer batch")
+
+
+async def _insert_analyzer_batch_submission(
+    session: AsyncSession,
+    *,
+    normalized: dict[str, Any],
+    preview: dict[str, Any],
+    operator_id: str | None,
+    dry_run_id: str,
+) -> dict[str, Any]:
+
+    submitted_response_ids = [int(v) for v in preview.get("eligible_response_ids") or []]
+    candidate_rows = list(preview.get("_candidate_rows") or [])
+    stored_preview = {k: v for k, v in preview.items() if k != "_candidate_rows"}
+    now = _utcnow_naive()
+    batch = AnalyzerBatch(
+        batch_id=f"anb_{uuid.uuid4().hex[:24]}",
+        mode=str(normalized["mode"]),
+        status="queued" if submitted_response_ids else "complete",
+        trigger_source="admin_batch",
+        idempotency_key=normalized.get("idempotency_key"),
+        dry_run_id=dry_run_id,
+        request_json=normalized,
+        preview_json=stored_preview,
+        submitted_response_ids_json=submitted_response_ids,
+        skipped_counts_json=preview.get("skipped_counts") or {},
+        skipped_reasons_json=preview.get("skipped_samples") or {},
+        submitted_count=len(submitted_response_ids),
+        skipped_count=_sum_skipped_counts(preview),
+        created_by=operator_id,
+        reason=normalized.get("reason"),
+        created_at=now,
+        updated_at=now,
+        completed_at=None if submitted_response_ids else now,
+    )
+    session.add(batch)
+    await session.flush()
+
+    items: list[AnalyzerBatchItem] = []
+    row_by_response_id = {
+        int(row["response_id"]): row for row in candidate_rows if row.get("response_id") is not None
+    }
+    for response_id in submitted_response_ids:
+        row = row_by_response_id.get(response_id, {})
+        run, _ = await _find_existing_analyzer_run(session, response_id=response_id)
+        created_run = False
+        previous_analysis_status = row.get("analysis_status")
+        if run is None:
+            created_run = True
+            run = AnalyzerRun(
+                response_id=response_id,
+                schema_version="analyzer_v4",
+                status="queued",
+                trigger_source="admin_batch",
+                idempotency_key=f"{batch.batch_id}:{response_id}",
+                batch_id=batch.batch_id,
+                started_at=now,
+                validator_summary_json={"mode": batch.mode, "queued_by": "admin_batch"},
+            )
+            session.add(run)
+            await session.flush()
+        reused_active_run = not created_run
+        dispatch_required = created_run or (
+            str(run.status or "").lower() == "queued" and not run.task_id
+        )
+        item = AnalyzerBatchItem(
+            batch_id=batch.batch_id,
+            response_id=response_id,
+            query_id=row.get("query_id"),
+            run_id=int(run.id),
+            task_id=run.task_id,
+            status=run.status or "queued",
+            detail_json={
+                "mode": batch.mode,
+                "previous_analysis_status": previous_analysis_status,
+                "dispatch_required": dispatch_required,
+                "reused_active_run": reused_active_run,
+            },
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(item)
+        await session.flush()
+        if created_run:
+            run.batch_id = batch.batch_id
+            run.batch_item_id = int(item.id)
+        items.append(item)
+
+    skipped_seen: set[tuple[str, int | None]] = set()
+    for reason, samples in (preview.get("skipped_samples") or {}).items():
+        for sample in samples:
+            raw_response_id = sample.get("response_id")
+            skipped_response_id = (
+                int(raw_response_id)
+                if raw_response_id is not None and reason != "invalid_response_id"
+                else None
+            )
+            key = (str(reason), skipped_response_id)
+            if key in skipped_seen:
+                continue
+            skipped_seen.add(key)
+            item = AnalyzerBatchItem(
+                batch_id=batch.batch_id,
+                response_id=skipped_response_id,
+                query_id=sample.get("query_id"),
+                status="skipped",
+                skipped_reason=str(reason),
+                detail_json=sample,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(item)
+            items.append(item)
+
+    await session.commit()
+    for item in items:
+        await session.refresh(item)
+    await session.refresh(batch)
+    return _batch_payload(batch, items)
+
+
+async def mark_analyzer_batch_item_enqueued(
+    session: AsyncSession,
+    *,
+    item_id: int,
+    run_id: int,
+    task_id: str,
+) -> None:
+    now = _utcnow_naive()
+    await session.execute(
+        update(AnalyzerBatchItem)
+        .where(AnalyzerBatchItem.id == int(item_id))
+        .values(task_id=task_id, status="queued", updated_at=now)
+    )
+    await session.execute(
+        update(AnalyzerRun)
+        .where(AnalyzerRun.id == int(run_id))
+        .values(
+            task_id=task_id,
+            status="queued",
+            dispatch_claim_token=None,
+            dispatch_claimed_at=None,
+        )
+    )
+    await session.commit()
+
+
+async def mark_analyzer_batch_item_enqueue_failed(
+    session: AsyncSession,
+    *,
+    item_id: int,
+    run_id: int,
+    previous_analysis_status: str | None = None,
+    failure_message: str = "Analyzer task enqueue failed.",
+) -> None:
+    now = _utcnow_naive()
+    await session.execute(
+        update(AnalyzerBatchItem)
+        .where(AnalyzerBatchItem.id == int(item_id))
+        .values(status="failed", skipped_reason="enqueue_failed", updated_at=now)
+    )
+    await mark_analyzer_run_enqueue_failed(
+        session,
+        run_id=run_id,
+        previous_analysis_status=previous_analysis_status,
+        failure_message=failure_message,
+    )
+
+
+async def refresh_analyzer_batch_status(
+    session: AsyncSession,
+    batch_id: str,
+) -> dict[str, Any] | None:
+    batch = await session.get(AnalyzerBatch, batch_id)
+    if batch is None:
+        return None
+    items = (
+        (
+            await session.execute(
+                select(AnalyzerBatchItem)
+                .where(AnalyzerBatchItem.batch_id == batch_id)
+                .order_by(AnalyzerBatchItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    run_ids = [int(item.run_id) for item in items if item.run_id is not None]
+    runs: dict[int, AnalyzerRun] = {}
+    if run_ids:
+        run_rows = (
+            (await session.execute(select(AnalyzerRun).where(AnalyzerRun.id.in_(run_ids))))
+            .scalars()
+            .all()
+        )
+        runs = {int(run.id): run for run in run_rows}
+
+    submitted_items = [item for item in items if item.status != "skipped"]
+    now = _utcnow_naive()
+    running_count = 0
+    queued_count = 0
+    completed_count = 0
+    failed_count = 0
+    for item in submitted_items:
+        run = runs.get(int(item.run_id or 0))
+        status = str((run.status if run is not None else item.status) or "").lower()
+        if run is not None:
+            next_item_status = status or item.status
+            if item.status != next_item_status or item.task_id != run.task_id:
+                item.status = next_item_status
+                item.task_id = run.task_id
+                item.updated_at = now
+        if status == "running":
+            running_count += 1
+        elif status == "queued":
+            queued_count += 1
+        elif status in {"done", "partial"}:
+            completed_count += 1
+        elif status == "failed":
+            failed_count += 1
+
+    if running_count:
+        next_status = "running"
+    elif queued_count:
+        next_status = "queued"
+    elif submitted_items and failed_count == len(submitted_items):
+        next_status = "failed"
+    elif submitted_items and failed_count:
+        next_status = "partial"
+    else:
+        next_status = "complete"
+
+    batch.status = next_status
+    batch.updated_at = now
+    if next_status in {"complete", "partial", "failed"} and batch.completed_at is None:
+        batch.completed_at = now
+    await session.commit()
+    await session.refresh(batch)
+
+    payload = _batch_payload(batch, list(items))
+    payload.update(
+        {
+            "running_count": running_count,
+            "queued_count": queued_count,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+        }
+    )
+    return payload
+
+
+async def fetch_analyzer_batch_status(
+    session: AsyncSession,
+    batch_id: str,
+) -> dict[str, Any] | None:
+    if not await analyzer_batch_submit_ready(session):
+        return {
+            "success": False,
+            "error": "analyzer_batch_persistence_required",
+            "batch_id": batch_id,
+        }
+    return await refresh_analyzer_batch_status(session, batch_id)
 
 
 async def list_brands(session: AsyncSession) -> list[dict[str, Any]]:
@@ -739,6 +1469,12 @@ async def reset_response_for_rerun(session: AsyncSession, response_id: int) -> b
 
 
 __all__ = [
+    "analyzer_batch_submit_ready",
+    "analyzer_single_submit_ready",
+    "claim_analyzer_run_for_dispatch",
+    "create_analyzer_batch_submission",
+    "create_or_get_queued_analyzer_run",
+    "fetch_analyzer_batch_status",
     "fetch_analyzer_stats",
     "fetch_daily_scores",
     "fetch_response_analyzer_status",
@@ -746,7 +1482,12 @@ __all__ = [
     "list_brands",
     "list_distinct_llms",
     "list_responses",
+    "mark_analyzer_batch_item_enqueue_failed",
+    "mark_analyzer_batch_item_enqueued",
+    "mark_analyzer_run_enqueue_failed",
+    "mark_analyzer_run_enqueued",
     "preview_batch_analyzer_candidates",
+    "refresh_analyzer_batch_status",
     "reset_response_for_rerun",
     "reset_responses_for_date",
 ]

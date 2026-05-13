@@ -524,6 +524,8 @@ async def test_admin_response_status_returns_run_and_quality_fields(
                 "analyzer_model": "gpt-test",
                 "analyzer_run_id": 701,
                 "analyzer_run_status": "partial",
+                "task_id": "task-701",
+                "batch_id": "batch-701",
                 "analysis_schema_version": "analyzer_v4",
                 "analysis_error_code": None,
                 "analysis_error_message": None,
@@ -549,6 +551,8 @@ async def test_admin_response_status_returns_run_and_quality_fields(
     assert body["response_id"] == 101
     assert body["analyzer_run_id"] == 701
     assert body["analysis_task"]["latest_run_id"] == 701
+    assert body["analysis_task"]["latest_task_id"] == "task-701"
+    assert body["analysis_task"]["latest_batch_id"] == "batch-701"
     assert body["analysis_task"]["queue_state"] == "complete"
     assert body["metric_readiness_status"] == "warning"
     assert body["metric_readiness_reasons"][0]["code"] == "citation_unlinked"
@@ -601,7 +605,7 @@ async def test_legacy_response_status_compat_returns_admin_status_shape(
 
 
 @pytest.mark.asyncio
-async def test_single_analyze_is_dependency_blocked_without_run_persistence(
+async def test_single_analyze_records_enqueue_failure_when_celery_unavailable(
     client, admin_operator, monkeypatch
 ) -> None:
     module = _admin_analyzer_router_module()
@@ -624,22 +628,31 @@ async def test_single_analyze_is_dependency_blocked_without_run_persistence(
         json={"mode": "missing_or_failed_only", "reason": "operator retry"},
     )
 
-    assert resp.status_code == 409
+    assert resp.status_code == 503
     body = resp.json()
     assert body["success"] is False
-    assert body["error"] == "analyzer_run_persistence_required"
-    assert body["blocked_by_issue"] == 781
+    assert body["error"] == "analyzer_enqueue_failed"
+    assert body["run_id"]
 
 
 @pytest.mark.asyncio
-async def test_batch_submit_and_status_are_dependency_blocked(client, admin_operator) -> None:
+async def test_batch_submit_with_no_candidates_completes_and_unknown_status_404(
+    client, admin_operator
+) -> None:
     submit = await client.post(
         "/admin/api/analyzer/responses/batch",
-        json={"scope": {"response_ids": [101]}, "confirm": True},
+        json={
+            "scope": {"response_ids": [101]},
+            "confirm": True,
+            "idempotency_key": "batch-no-candidates-101",
+        },
     )
     status = await client.get("/admin/api/analyzer/batches/batch-123")
 
-    assert submit.status_code == 409
-    assert submit.json()["blocked_by_issue"] == 781
-    assert status.status_code == 409
-    assert status.json()["blocked_by_issue"] == 781
+    assert submit.status_code == 200
+    submit_body = submit.json()
+    assert submit_body["success"] is True
+    assert submit_body["accepted_count"] == 0
+    assert submit_body["status"] == "complete"
+    assert status.status_code == 404
+    assert status.json()["error"] == "batch_not_found"

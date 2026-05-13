@@ -520,6 +520,8 @@ async def analyze_single_response(
     brand: Brand,
     competitors: list[Competitor],
     intent: str,
+    analyzer_run_id: int | None = None,
+    trigger_source: str = "pipeline",
 ) -> dict:
     """Run the 3-stage analysis pipeline on a single LLMResponse."""
     response_id = int(response.id)
@@ -531,17 +533,46 @@ async def analyze_single_response(
         str(previous_analysis_status).lower() == AnalysisStatus.DONE.value
     )
 
-    analyzer_run = AnalyzerRun(
-        response_id=response_id,
-        schema_version="analyzer_v4",
-        prompt_version=getattr(llm_analyzer, "prompt_version", None),
-        provider=getattr(llm_analyzer, "provider", None),
-        model=getattr(llm_analyzer, "model", None),
-        status="running",
-        trigger_source="pipeline",
-        started_at=_utcnow_naive(),
-    )
-    session.add(analyzer_run)
+    analyzer_run: AnalyzerRun | None = None
+    if analyzer_run_id is not None:
+        analyzer_run = await session.get(AnalyzerRun, int(analyzer_run_id))
+        if analyzer_run is None:
+            return {
+                "response_id": response_id,
+                "status": "failed",
+                "error": "analyzer_run_not_found",
+                "analyzer_run_id": analyzer_run_id,
+            }
+        if int(analyzer_run.response_id) != response_id:
+            analyzer_run.status = "failed"
+            analyzer_run.completed_at = _utcnow_naive()
+            analyzer_run.failure_code = "run_response_mismatch"
+            analyzer_run.failure_message = (
+                f"Run response_id={analyzer_run.response_id} does not match task "
+                f"response_id={response_id}"
+            )
+            await session.commit()
+            return {
+                "response_id": response_id,
+                "status": "failed",
+                "error": "analyzer_run_response_mismatch",
+                "analyzer_run_id": analyzer_run_id,
+            }
+        analyzer_run.status = "running"
+        analyzer_run.started_at = analyzer_run.started_at or _utcnow_naive()
+    else:
+        analyzer_run = AnalyzerRun(
+            response_id=response_id,
+            schema_version="analyzer_v4",
+            status="running",
+            trigger_source=trigger_source,
+            started_at=_utcnow_naive(),
+        )
+        session.add(analyzer_run)
+    analyzer_run.prompt_version = getattr(llm_analyzer, "prompt_version", None)
+    analyzer_run.provider = getattr(llm_analyzer, "provider", None)
+    analyzer_run.model = getattr(llm_analyzer, "model", None)
+    analyzer_run.trigger_source = analyzer_run.trigger_source or trigger_source
     if not preserve_current_success:
         response.analysis_status = AnalysisStatus.RUNNING.value
     await session.commit()

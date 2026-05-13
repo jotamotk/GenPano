@@ -229,6 +229,7 @@ def parse_batch_dry_run_payload(payload: dict[str, Any] | None) -> dict[str, Any
             payload.get("sample_limit"), "sample_limit", default=50, max_value=200
         ),
         "reason": _string_or_none(payload.get("reason")),
+        "idempotency_key": _string_or_none(payload.get("idempotency_key")),
         "confirm": bool(payload.get("confirm") is True),
     }
 
@@ -461,6 +462,7 @@ def build_batch_dry_run_result(
             "cap_exceeded": False,
             "cap_truncated": False,
             "will_enqueue_count": 0,
+            "eligible_response_ids": [],
             "eligible_response_ids_preview": [],
             "eligible_response_ids_sample": [],
             "skipped_counts": {},
@@ -507,6 +509,7 @@ def build_batch_dry_run_result(
         "cap_exceeded": cap_truncated,
         "cap_truncated": cap_truncated,
         "will_enqueue_count": len(capped_ids),
+        "eligible_response_ids": capped_ids,
         "eligible_response_ids_preview": capped_ids[:sample_limit],
         "eligible_response_ids_sample": capped_ids[:sample_limit],
         "skipped_counts": skipped_counts,

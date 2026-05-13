@@ -18,11 +18,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -172,6 +174,20 @@ class ProductFeatureMention(Base):
 
 class AnalyzerRun(Base):
     __tablename__ = "analyzer_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "response_id",
+            "idempotency_key",
+            name="uq_analyzer_runs_response_idempotency",
+        ),
+        Index(
+            "uq_analyzer_runs_active_response",
+            "response_id",
+            unique=True,
+            sqlite_where=text("status IN ('queued','running')"),
+            postgresql_where=text("status IN ('queued','running')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     response_id: Mapped[int] = mapped_column(
@@ -186,6 +202,9 @@ class AnalyzerRun(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="running")
     trigger_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    batch_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     raw_output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     validator_summary_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(
@@ -194,6 +213,65 @@ class AnalyzerRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dispatch_claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+
+
+class AnalyzerBatch(Base):
+    __tablename__ = "analyzer_batches"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_analyzer_batches_idempotency"),)
+
+    batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    trigger_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dry_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    preview_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    submitted_response_ids_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    skipped_counts_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    skipped_reasons_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    submitted_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class AnalyzerBatchItem(Base):
+    __tablename__ = "analyzer_batch_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "response_id", name="uq_analyzer_batch_item_response"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(String(64), ForeignKey("analyzer_batches.batch_id"))
+    response_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=True
+    )
+    query_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("analyzer_runs.id"), nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    skipped_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
 
 
 class ResponseEntity(Base):
