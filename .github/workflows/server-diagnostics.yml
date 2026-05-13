@@ -1425,6 +1425,9 @@ jobs:
           exec > >(tee "${summary_file}") 2>&1
           finish() {
             status=$?
+            if [ "${BASH_SUBSHELL:-0}" != "0" ]; then
+              exit "${status}"
+            fi
             echo "=== Artifact manifest ==="
             find "${artifact_dir}" -maxdepth 2 -type f | sort || true
             tar -czf "/tmp/genpano_doubao_sms_forensics_${GH_RUN_ID}.tar.gz" -C "${artifact_dir}" . || true
