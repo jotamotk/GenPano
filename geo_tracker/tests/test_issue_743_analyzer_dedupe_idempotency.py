@@ -308,3 +308,44 @@ async def test_analyzer_retry_is_idempotent_after_partial_duplicate_artifacts(
     assert await session.scalar(select(func.count(CitationSource.id))) == 0
     await session.refresh(response)
     assert response.analysis_status == AnalysisStatus.DONE.value
+
+
+@pytest.mark.asyncio
+async def test_analyzer_transaction_error_marks_failed_without_pending_rollback_mask(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_pipeline(monkeypatch)
+    target, response = await _seed_response(session)
+    response_id = response.id
+
+    def _bypass_dedupe(llm_brands, _brand_index):
+        rows = {}
+        duplicate_counts = {}
+        display_keys = {}
+        raw_names = {}
+        for llm_brand in llm_brands:
+            key = (llm_brand.brand_name.lower(), (llm_brand.product_name or "").lower())
+            rows[key] = llm_brand
+            duplicate_counts[key] = 1
+            display_keys[key] = f"{llm_brand.brand_name}|{llm_brand.product_name or ''}"
+            raw_names[key] = [llm_brand.brand_name]
+        return rows, duplicate_counts, display_keys, raw_names
+
+    monkeypatch.setattr(analyzer_cli, "_dedupe_llm_brand_products", _bypass_dedupe)
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "failed"
+    assert "UNIQUE constraint failed" in result["error"]
+    assert "PendingRollbackError" not in result["error"]
+    status = await session.scalar(
+        select(LLMResponse.analysis_status).where(LLMResponse.id == response_id)
+    )
+    assert status == AnalysisStatus.FAILED.value
