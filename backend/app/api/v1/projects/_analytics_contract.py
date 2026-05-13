@@ -1102,11 +1102,11 @@ async def _first_class_analyzer_fact_rollup(
         fact_link_count = len(fact_link_rows)
         relation_link_count = sum(1 for row in fact_link_rows if row[0] == "relation")
 
-    entity_rows = []
-    relation_rows = []
+    entity_rows: list[ResponseEntity] = []
+    relation_rows: list[ResponseRelationFact] = []
     blocking_flags: list[AnalyzerQualityFlag] = []
     if latest_run_ids:
-        entity_rows = (
+        entity_rows = list(
             (
                 await session.execute(
                     select(ResponseEntity).where(ResponseEntity.run_id.in_(latest_run_ids))
@@ -1115,7 +1115,7 @@ async def _first_class_analyzer_fact_rollup(
             .scalars()
             .all()
         )
-        relation_rows = (
+        relation_rows = list(
             (
                 await session.execute(
                     select(ResponseRelationFact).where(
@@ -1129,7 +1129,7 @@ async def _first_class_analyzer_fact_rollup(
             .scalars()
             .all()
         )
-        blocking_flags = (
+        blocking_flags = list(
             (
                 await session.execute(
                     select(AnalyzerQualityFlag).where(
