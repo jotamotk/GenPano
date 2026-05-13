@@ -53,14 +53,20 @@ def dispatch_aggregate_daily_scores(date_str: str, brand_id: int | None) -> str 
     return getattr(result, "id", None)
 
 
-def dispatch_analyze_response(response_id: int) -> str | None:
+def dispatch_analyze_response(
+    response_id: int,
+    *,
+    analyzer_run_id: int | None = None,
+) -> str | None:
     celery_app = _load_celery_app()
     if celery_app is None:
         return None
     try:
+        kwargs = {"analyzer_run_id": int(analyzer_run_id)} if analyzer_run_id else {}
         result = celery_app.send_task(
             "geo_tracker.tasks.celery_tasks.analyze_response",
             args=[int(response_id)],
+            kwargs=kwargs,
             queue="analysis",
         )
     except Exception:

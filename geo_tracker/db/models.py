@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, JSON, Text,
-    ForeignKey, Enum as SAEnum, UniqueConstraint,
+    ForeignKey, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
@@ -557,6 +557,9 @@ class AnalyzerRun(Base):
     status                 = Column(String(16), nullable=False, default="running")
     trigger_source         = Column(String(64), nullable=True)
     idempotency_key        = Column(String(128), nullable=True)
+    task_id                = Column(String(128), nullable=True)
+    batch_id               = Column(String(64), nullable=True)
+    batch_item_id          = Column(Integer, nullable=True)
     raw_output_sha256      = Column(String(64), nullable=True)
     validator_summary_json = Column(JSON, nullable=True)
     started_at             = Column(DateTime, server_default=func.now())
@@ -565,6 +568,53 @@ class AnalyzerRun(Base):
     failure_message        = Column(Text, nullable=True)
 
     response               = relationship("LLMResponse")
+
+
+class AnalyzerBatch(Base):
+    __tablename__ = "analyzer_batches"
+
+    batch_id                    = Column(String(64), primary_key=True)
+    mode                        = Column(String(32), nullable=False)
+    status                      = Column(String(16), nullable=False, default="queued")
+    trigger_source              = Column(String(64), nullable=True)
+    idempotency_key             = Column(String(128), nullable=True)
+    dry_run_id                  = Column(String(64), nullable=False)
+    request_json                = Column(JSON, nullable=True)
+    preview_json                = Column(JSON, nullable=True)
+    submitted_response_ids_json = Column(JSON, nullable=True)
+    skipped_counts_json         = Column(JSON, nullable=True)
+    skipped_reasons_json        = Column(JSON, nullable=True)
+    submitted_count             = Column(Integer, nullable=False, default=0)
+    skipped_count               = Column(Integer, nullable=False, default=0)
+    created_by                  = Column(String(64), nullable=True)
+    reason                      = Column(Text, nullable=True)
+    created_at                  = Column(DateTime, server_default=func.now())
+    updated_at                  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    completed_at                = Column(DateTime, nullable=True)
+
+
+class AnalyzerBatchItem(Base):
+    __tablename__ = "analyzer_batch_items"
+
+    id              = Column(Integer, primary_key=True)
+    batch_id        = Column(String(64), ForeignKey("analyzer_batches.batch_id"), nullable=False)
+    response_id     = Column(Integer, ForeignKey("llm_responses.id"), nullable=True)
+    query_id        = Column(Integer, nullable=True)
+    run_id          = Column(Integer, ForeignKey("analyzer_runs.id"), nullable=True)
+    task_id         = Column(String(128), nullable=True)
+    status          = Column(String(32), nullable=False)
+    skipped_reason  = Column(String(64), nullable=True)
+    detail_json     = Column(JSON, nullable=True)
+    created_at      = Column(DateTime, server_default=func.now())
+    updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    batch           = relationship("AnalyzerBatch")
+    run             = relationship("AnalyzerRun")
+    response        = relationship("LLMResponse")
+
+    __table_args__ = (
+        UniqueConstraint("batch_id", "response_id", name="uq_analyzer_batch_item_response"),
+    )
 
 
 class ResponseEntity(Base):

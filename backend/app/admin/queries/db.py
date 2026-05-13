@@ -173,7 +173,7 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
     item["analysis_task"] = {
         "latest_task_id": item.get("task_id"),
         "latest_run_id": item.get("analyzer_run_id"),
-        "latest_batch_id": None,
+        "latest_batch_id": item.get("batch_id"),
         "queue_state": _queue_state_from_run(latest_run_status),
     }
     return item
@@ -317,7 +317,22 @@ async def list_queries(
     has_citation_sources = await _table_exists(session, "citation_sources")
     has_product_feature_mentions = await _table_exists(session, "product_feature_mentions")
     has_analyzer_runs = await _table_exists(session, "analyzer_runs")
+    analyzer_run_cols = (
+        await _table_columns(session, "analyzer_runs") if has_analyzer_runs else set()
+    )
+    has_run_task_fields = {"task_id", "batch_id"}.issubset(analyzer_run_cols)
     has_analyzer_quality_flags = await _table_exists(session, "analyzer_quality_flags")
+    latest_run_task_select = (
+        """
+            ar.task_id,
+            ar.batch_id,
+        """
+        if has_run_task_fields
+        else """
+            NULL AS task_id,
+            NULL AS batch_id,
+        """
+    )
 
     analysis_select = (
         """
@@ -369,7 +384,7 @@ async def list_queries(
         else "NULL as features_count,"
     )
     latest_run_select = (
-        """
+        f"""
             ar.analyzer_run_id,
             ar.analysis_schema_version,
             ar.analyzer_run_status,
@@ -378,6 +393,7 @@ async def list_queries(
             ar.analyzer_run_completed_at,
             ar.analysis_error_code,
             ar.analysis_error_message,
+            {latest_run_task_select}
             ar.validator_summary_json,
         """
         if has_analyzer_runs
@@ -390,11 +406,13 @@ async def list_queries(
             NULL as analyzer_run_completed_at,
             NULL as analysis_error_code,
             NULL as analysis_error_message,
+            NULL as task_id,
+            NULL as batch_id,
             NULL as validator_summary_json,
         """
     )
     latest_run_join = (
-        """
+        f"""
         LEFT JOIN LATERAL (
             SELECT
                 ar.id AS analyzer_run_id,
@@ -405,6 +423,7 @@ async def list_queries(
                 ar.completed_at AS analyzer_run_completed_at,
                 ar.failure_code AS analysis_error_code,
                 ar.failure_message AS analysis_error_message,
+                {latest_run_task_select}
                 ar.validator_summary_json
             FROM analyzer_runs ar
             WHERE ar.response_id = r.id

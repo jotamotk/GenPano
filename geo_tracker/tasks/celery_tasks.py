@@ -1515,7 +1515,7 @@ def auto_login(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.task(bind=True, max_retries=2, queue="analysis")
-def analyze_response(self, response_id: int) -> dict:
+def analyze_response(self, response_id: int, analyzer_run_id: int | None = None) -> dict:
     """Run the 3-stage analysis pipeline on a single LLMResponse."""
     logger.info(f"analyze_response started for response_id={response_id}")
     loop = asyncio.new_event_loop()
@@ -1530,7 +1530,7 @@ def analyze_response(self, response_id: int) -> dict:
             if not resp:
                 return {"skipped": True, "reason": "response_not_found"}
 
-            if resp.analysis_status == AnalysisStatus.DONE.value:
+            if resp.analysis_status == AnalysisStatus.DONE.value and analyzer_run_id is None:
                 return {"skipped": True, "reason": "already_analyzed"}
 
             query = await db.get(Query, resp.query_id)
@@ -1548,7 +1548,13 @@ def analyze_response(self, response_id: int) -> dict:
                     intent = prompt.intent
 
             return await analyze_single_response(
-                db, resp, brand, competitors, intent,
+                db,
+                resp,
+                brand,
+                competitors,
+                intent,
+                analyzer_run_id=analyzer_run_id,
+                trigger_source="admin_submit" if analyzer_run_id is not None else "pipeline",
             )
 
     try:
