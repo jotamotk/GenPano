@@ -123,6 +123,18 @@ function compactText(value: unknown) {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
 
+function expectedBrandLabels(brandId: number, configuredBrandName?: string) {
+  const labels = [configuredBrandName]
+  if (brandId === 12) labels.push('Estée Lauder', 'Estee Lauder', '雅诗兰黛')
+  if (brandId === 24) labels.push('bestCoffer', 'BestCoffer')
+  return Array.from(new Set(labels.map(compactText).filter(Boolean)))
+}
+
+function renderedPageHasExpectedBrandContext(text: string, labels: string[]) {
+  const normalized = compactText(text).toLowerCase()
+  return labels.some(label => normalized.includes(compactText(label).toLowerCase()))
+}
+
 function round1(value: number) {
   return Math.round((value + Number.EPSILON) * 10) / 10
 }
@@ -544,9 +556,22 @@ async function api(
   return payload
 }
 
-async function seedLiveAuth(page: Page, token: string, projectId: string, brandId: number) {
+async function seedLiveAuth(
+  page: Page,
+  token: string,
+  projectId: string,
+  brandId: number,
+  brandName: string,
+  competitorId: number,
+) {
   await page.addInitScript(
-    ({ token: seededToken, projectId: seededProjectId, brandId: seededBrandId }) => {
+    ({
+      token: seededToken,
+      projectId: seededProjectId,
+      brandId: seededBrandId,
+      brandName: seededBrandName,
+      competitorId: seededCompetitorId,
+    }) => {
       window.localStorage.setItem('genpano_token', seededToken)
       window.sessionStorage.setItem('genpano_onboarding_skipped', '1')
       window.localStorage.setItem('genpano_lang', 'zh')
@@ -556,12 +581,12 @@ async function seedLiveAuth(page: Page, token: string, projectId: string, brandI
           id: seededProjectId,
           primaryBrandId: Number(seededBrandId),
           industryId: null,
-          name: 'Estee Lauder / App Analytics',
-          competitorBrandIds: [2],
+          name: `${seededBrandName || `Brand ${seededBrandId}`} / App Analytics`,
+          competitorBrandIds: [Number(seededCompetitorId)],
         }),
       )
     },
-    { token, projectId, brandId },
+    { token, projectId, brandId, brandName, competitorId },
   )
 }
 
@@ -721,6 +746,21 @@ test.describe('App analytics business completeness assertion', () => {
       ),
     ).not.toThrow()
   })
+
+  test('accepts configured BestCoffer brand context for live rendered routes', () => {
+    expect(
+      renderedPageHasExpectedBrandContext(
+        'bestCoffer Analyzer facts Topics Visibility',
+        ['bestCoffer'],
+      ),
+    ).toBe(true)
+    expect(
+      renderedPageHasExpectedBrandContext(
+        'bestCoffer Analyzer facts Topics Visibility',
+        ['Estée Lauder', '雅诗兰黛'],
+      ),
+    ).toBe(false)
+  })
 })
 
 test.describe('Live App analytics business completeness gate', () => {
@@ -735,8 +775,11 @@ test.describe('Live App analytics business completeness gate', () => {
     const toDate = process.env.TO_DATE || DEFAULT_TO_DATE
     const userId = process.env.OWNER_USER_ID || DEFAULT_OWNER_USER_ID
     const secret = process.env.USER_JWT_SECRET || process.env.JWT_SECRET || ''
+    const brandLabels = expectedBrandLabels(brandId, process.env.BRAND_NAME || process.env.BRAND_QUERY)
+    const primaryBrandName = brandLabels[0] || `Brand ${brandId}`
 
     assertCondition(Buffer.byteLength(secret, 'utf8') >= 32, 'USER_JWT_SECRET/JWT_SECRET is missing or too short')
+    assertCondition(brandLabels.length > 0, 'live App E2E has no configured brand labels to assert')
     const token = signJwt(userId, secret)
     console.log('::add-mask::' + token)
 
@@ -751,7 +794,7 @@ test.describe('Live App analytics business completeness gate', () => {
     const projectItems = Array.isArray(projects?.items) ? projects.items : []
     assertCondition(
       projectItems.some((project: ContractPayload) => project.id === projectId && Number(project.primary_brand_id) === brandId),
-      'approved Estee Lauder project is not visible to owner user',
+      'approved live analytics project is not visible to owner user',
     )
 
     const overview = await api(baseUrl, token, 'overview', `/api/v1/projects/${projectId}/overview?brand_id=${brandId}`)
@@ -996,7 +1039,7 @@ test.describe('Live App analytics business completeness gate', () => {
     page.on('console', message => {
       if (message.type() === 'error') runtimeErrors.push(`console: ${message.text()}`)
     })
-    await seedLiveAuth(page, token, projectId, brandId)
+    await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, competitorId)
     const visibleExpectations = deriveVisibleOverviewExpectations({ overview, metrics, competitors })
     const visibleOverviewSummaries: Array<RenderedOverviewSummary & {
       expected: VisibleExpectation[]
@@ -1019,9 +1062,10 @@ test.describe('Live App analytics business completeness gate', () => {
       const path = new URL(page.url()).pathname
       assertCondition(!['/register', '/login', '/onboarding'].includes(path), `${route} redirected to ${page.url()}`)
       const text = await page.locator('body').innerText({ timeout: 15_000 })
-      const body = text.toLowerCase()
-      const hasBrandContext = body.includes('estee') || body.includes('est\u00e9e') || text.includes('\u96c5\u8bd7\u5170\u9edb')
-      assertCondition(hasBrandContext, `${route} did not render Estee/Est\u00e9e/\u96c5\u8bd7\u5170\u9edb context`)
+      assertCondition(
+        renderedPageHasExpectedBrandContext(text, brandLabels),
+        `${route} did not render expected brand context from ${JSON.stringify(brandLabels)}`,
+      )
       const surfaceCount = await page.locator('.recharts-wrapper, svg, table, [role="table"], [data-testid*="chart"], [class*="chart"]').count()
       assertCondition(surfaceCount > 0, `${route} rendered no chart/table/svg surface`)
       const screenshotName = route.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'route'
