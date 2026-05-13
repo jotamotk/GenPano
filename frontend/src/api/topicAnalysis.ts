@@ -264,7 +264,7 @@ export interface ResponseAttemptDetail {
   analyzer_facts: AnalyzerFacts
 }
 
-export interface QueryResponseDetailOut extends AnalyticsContractMetadata {
+export interface QueryResponseDetailOut {
   project_id: string
   query: QueryDetail
   response: ResponseDetail | null
