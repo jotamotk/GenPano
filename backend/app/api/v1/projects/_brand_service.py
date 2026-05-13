@@ -19,6 +19,7 @@ from genpano_models import (
     ProductScoreDaily,
     Project,
     ProjectCompetitor,
+    ResponseAnalysis,
 )
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -382,6 +383,7 @@ async def get_products(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> ProductsOut:
     """Return SKU-level product list with feature + scenario rollups.
 
@@ -390,7 +392,8 @@ async def get_products(
     """
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    if project.primary_brand_id is None:
+    primary_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if primary_id is None:
         return ProductsOut(
             project_id=project.id,
             items=[],
@@ -399,9 +402,17 @@ async def get_products(
             state_reason="no_primary_brand",
         )
 
-    primary_id = project.primary_brand_id
     from_dt = datetime.combine(from_d, datetime.min.time())
     to_dt = datetime.combine(to_d, datetime.max.time())
+    fact_rows = await _fact_rows(
+        session,
+        project,
+        filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        brand_id_override=primary_id,
+    )
+    scoped_response_ids = sorted(
+        {rid for row in fact_rows if (rid := _as_int(row.get("response_id"))) is not None}
+    )
 
     # Aggregate by product_name over the window from product_score_daily.
     stmt = (
@@ -439,13 +450,17 @@ async def get_products(
     # ProductFeatureMention can expose product names and counts as partial
     # evidence. Rate/trend/sov/sentiment remain null without product_score_daily.
     if not product_rows:
+        legacy_stmt = select(
+            ProductFeatureMention.product_name,
+            func.count().label("mentions"),
+        ).where(ProductFeatureMention.product_name.isnot(None))
+        if scoped_response_ids:
+            legacy_stmt = legacy_stmt.join(
+                ResponseAnalysis,
+                ResponseAnalysis.id == ProductFeatureMention.analysis_id,
+            ).where(ResponseAnalysis.response_id.in_(scoped_response_ids))
         legacy_stmt = (
-            select(
-                ProductFeatureMention.product_name,
-                func.count().label("mentions"),
-            )
-            .where(ProductFeatureMention.product_name.isnot(None))
-            .group_by(ProductFeatureMention.product_name)
+            legacy_stmt.group_by(ProductFeatureMention.product_name)
             .order_by(desc("mentions"))
             .limit(50)
         )
@@ -458,6 +473,14 @@ async def get_products(
             for r in legacy_rows
         ]
 
+    def _product_feature_scope(statement: Any) -> Any:
+        if not scoped_response_ids:
+            return statement
+        return statement.join(
+            ResponseAnalysis,
+            ResponseAnalysis.id == ProductFeatureMention.analysis_id,
+        ).where(ResponseAnalysis.response_id.in_(scoped_response_ids))
+
     items: list[ProductRow] = []
     for row in product_rows:
         product_name = row[0]
@@ -469,7 +492,10 @@ async def get_products(
 
         # 30d sparkline and trend (last7 vs first7).
         spark_stmt = (
-            select(ProductScoreDaily.date, func.avg(ProductScoreDaily.mention_rate))
+            select(
+                ProductScoreDaily.date,
+                func.avg(ProductScoreDaily.mention_rate),
+            )
             .where(
                 and_(
                     ProductScoreDaily.brand_id == primary_id,
@@ -490,14 +516,15 @@ async def get_products(
             trend_30d = round((last - first) / first, 4) if first > 0 else None
 
         # Top features (from product_feature_mentions).
-        feat_stmt = (
+        feat_stmt = _product_feature_scope(
             select(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
                 func.count().label("cnt"),
-            )
-            .where(ProductFeatureMention.product_name == product_name)
-            .group_by(
+            ).where(ProductFeatureMention.product_name == product_name)
+        )
+        feat_stmt = (
+            feat_stmt.group_by(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
             )
@@ -517,18 +544,15 @@ async def get_products(
             for fr in feat_rows
         ]
 
-        sc_stmt = (
-            select(ProductFeatureMention.scenario, func.count().label("cnt"))
-            .where(
+        sc_stmt = _product_feature_scope(
+            select(ProductFeatureMention.scenario, func.count().label("cnt")).where(
                 and_(
                     ProductFeatureMention.product_name == product_name,
                     ProductFeatureMention.scenario.isnot(None),
                 )
             )
-            .group_by(ProductFeatureMention.scenario)
-            .order_by(desc("cnt"))
-            .limit(5)
         )
+        sc_stmt = sc_stmt.group_by(ProductFeatureMention.scenario).order_by(desc("cnt")).limit(5)
         try:
             sc_rows = (await session.execute(sc_stmt)).all()
         except Exception:
@@ -559,14 +583,7 @@ async def get_products(
         )
 
     if not items:
-        fact_rows = await _fact_rows(
-            session,
-            project,
-            filters=AnalysisFilters(from_date=from_d, to_date=to_d),
-        )
-        evidence_count = len(
-            {rid for row in fact_rows if (rid := _as_int(row.get("response_id"))) is not None}
-        )
+        evidence_count = len(scoped_response_ids)
         return ProductsOut(
             project_id=project.id,
             items=[],

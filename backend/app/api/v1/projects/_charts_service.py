@@ -219,14 +219,18 @@ async def _chart_contract_update(
     *,
     metric_keys: list[str],
     source_provenance: list[str],
+    brand_id: int | None = None,
+    require_analyzer_package: bool = False,
+    allow_geo_score_daily_without_analyzer: bool = False,
 ) -> dict[str, Any]:
-    if project.primary_brand_id is None:
+    scoped_brand_id = brand_id if brand_id is not None else project.primary_brand_id
+    if scoped_brand_id is None:
         return {}
     has_data = _chart_has_data(out)
     context = await build_contract_context(
         session,
         project,
-        brand_id=project.primary_brand_id,
+        brand_id=scoped_brand_id,
         from_date=from_d,
         to_date=to_d,
         has_data=has_data,
@@ -234,8 +238,18 @@ async def _chart_contract_update(
         source_provenance=source_provenance,
     )
     evidence = context.metric_formula_evidence
-    missing_inputs: list[str] = []
-    missing_reasons: list[str] = []
+    has_aggregate_metric_rows = context.evidence_counts.get("geo_score_daily_rows", 0) > 0
+    use_aggregate_contract = (
+        allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows and not evidence
+    )
+    missing_inputs: list[str] = [] if use_aggregate_contract else list(context.missing_inputs)
+    missing_reasons: list[str] = [] if use_aggregate_contract else list(context.missing_reasons)
+    coverage_status = metric_formula_status(context, "mention_rate")
+    if coverage_status and coverage_status != FORMULA_OK_STATUS:
+        missing_inputs.extend(metric_missing_inputs(context, "mention_rate"))
+        coverage_evidence = context.metric_formula_evidence.get("coverage")
+        if isinstance(coverage_evidence, dict):
+            missing_reasons.extend(coverage_evidence.get("reason_codes") or [])
     for metric_key in metric_keys:
         status = metric_formula_status(context, metric_key)
         if status and status != FORMULA_OK_STATUS:
@@ -244,7 +258,12 @@ async def _chart_contract_update(
             if isinstance(metric_evidence, dict):
                 missing_reasons.extend(metric_evidence.get("reason_codes") or [])
 
-    if not evidence and has_data:
+    if (
+        require_analyzer_package
+        and not evidence
+        and has_data
+        and not (allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows)
+    ):
         evidence = _missing_analyzer_metric_evidence(metric_keys)
         missing_inputs.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
         missing_reasons.append("missing_analyzer_fact_packages")
@@ -304,6 +323,8 @@ async def _with_chart_contract[ChartOutT: BaseModel](
     *,
     metric_keys: list[str],
     source_provenance: list[str],
+    brand_id: int | None = None,
+    require_analyzer_package: bool = False,
 ) -> ChartOutT:
     update = await _chart_contract_update(
         session,
@@ -313,6 +334,8 @@ async def _with_chart_contract[ChartOutT: BaseModel](
         out,
         metric_keys=metric_keys,
         source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=require_analyzer_package,
     )
     return out.model_copy(update=update) if update else out
 
@@ -338,6 +361,7 @@ async def _with_sentiment_by_engine_contract(
     to_d: date,
     *,
     source_provenance: list[str],
+    brand_id: int | None = None,
 ) -> SentimentByEngineOut:
     update = await _chart_contract_update(
         session,
@@ -347,6 +371,8 @@ async def _with_sentiment_by_engine_contract(
         out,
         metric_keys=["sentiment"],
         source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -363,6 +389,7 @@ async def _with_authority_trend_contract(
     to_d: date,
     *,
     source_provenance: list[str],
+    brand_id: int | None = None,
 ) -> AuthorityTrendOut:
     update = await _chart_contract_update(
         session,
@@ -372,6 +399,8 @@ async def _with_authority_trend_contract(
         out,
         metric_keys=["citation"],
         source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -388,6 +417,7 @@ async def _with_citation_composition_contract(
     to_d: date,
     *,
     source_provenance: list[str],
+    brand_id: int | None = None,
 ) -> CitationCompositionOut:
     update = await _chart_contract_update(
         session,
@@ -397,6 +427,8 @@ async def _with_citation_composition_contract(
         out,
         metric_keys=["citation"],
         source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -445,6 +477,7 @@ async def _with_engine_metric_contract(
     to_d: date,
     *,
     source_provenance: list[str],
+    brand_id: int | None = None,
 ) -> EngineMetricsOut:
     update = await _chart_contract_update(
         session,
@@ -454,10 +487,41 @@ async def _with_engine_metric_contract(
         out,
         metric_keys=["mention_rate", "sov", "citation", "sentiment"],
         source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
     update["items"] = _apply_engine_metric_contract(out.items, update)
+    return out.model_copy(update=update)
+
+
+async def _with_sentiment_trend_contract(
+    out: SentimentTrendByEngineOut,
+    session: AsyncSession,
+    project: Project,
+    from_d: date,
+    to_d: date,
+    *,
+    source_provenance: list[str],
+    brand_id: int | None = None,
+) -> SentimentTrendByEngineOut:
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["sentiment"],
+        source_provenance=source_provenance,
+        brand_id=brand_id,
+        require_analyzer_package=True,
+        allow_geo_score_daily_without_analyzer=True,
+    )
+    if not update:
+        return out
+    if _contract_metric_non_ok(update, "sentiment"):
+        update["items"] = []
     return out.model_copy(update=update)
 
 
@@ -648,13 +712,15 @@ async def _sentiment_window_evidence_count(
     to_d: date,
     *,
     fact_rows: list[dict[str, Any]] | None = None,
+    brand_id: int | None = None,
 ) -> int:
     """Count target sentiment evidence using the response window before repair time."""
-    if project.primary_brand_id is None:
+    scoped_brand_id = brand_id if brand_id is not None else project.primary_brand_id
+    if scoped_brand_id is None:
         return 0
     direct_count = await _sentiment_contract_evidence_count(
         session,
-        project.primary_brand_id,
+        scoped_brand_id,
         from_d,
         to_d,
     )
@@ -665,7 +731,7 @@ async def _sentiment_window_evidence_count(
         rows = await _admin_fact_rows(session, project, from_d, to_d)
     return await _sentiment_contract_evidence_count(
         session,
-        project.primary_brand_id,
+        scoped_brand_id,
         from_d,
         to_d,
         response_ids=_fact_response_ids(rows),
@@ -741,6 +807,7 @@ async def _admin_fact_rows(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> list[dict[str, Any]]:
     return await _fact_rows(
         session,
@@ -752,6 +819,7 @@ async def _admin_fact_rows(
             segment_id=segment_id,
             profile_id=profile_id,
         ),
+        brand_id_override=brand_id_override,
     )
 
 
@@ -1209,9 +1277,11 @@ async def get_engine_metrics(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> EngineMetricsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return EngineMetricsOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1229,6 +1299,7 @@ async def get_engine_metrics(
             engines=engines,
             segment_id=segment_id,
             profile_id=profile_id,
+            brand_id_override=brand_id,
         )
         items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
         state = "ok" if items else "empty"
@@ -1248,6 +1319,7 @@ async def get_engine_metrics(
             from_d,
             to_d,
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
+            brand_id=brand_id,
         )
     stmt = (
         select(
@@ -1259,7 +1331,7 @@ async def get_engine_metrics(
         )
         .where(
             and_(
-                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.brand_id == brand_id,
                 GeoScoreDaily.date >= f,
                 GeoScoreDaily.date <= t,
                 GeoScoreDaily.target_llm.isnot(None),
@@ -1280,7 +1352,13 @@ async def get_engine_metrics(
         for r in score_rows
     ]
     if not items:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            brand_id_override=brand_id,
+        )
         items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
         state = "ok" if items else "empty"
         out = EngineMetricsOut(
@@ -1299,6 +1377,7 @@ async def get_engine_metrics(
             from_d,
             to_d,
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
+            brand_id=brand_id,
         )
     evidence_count = len(score_rows)
     out = EngineMetricsOut(
@@ -1317,6 +1396,7 @@ async def get_engine_metrics(
         from_d,
         to_d,
         source_provenance=["geo_score_daily"],
+        brand_id=brand_id,
     )
 
 
@@ -1330,9 +1410,11 @@ async def get_position_distribution(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> PositionDistributionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return PositionDistributionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1351,10 +1433,11 @@ async def get_position_distribution(
             engines=engines,
             segment_id=segment_id,
             profile_id=profile_id,
+            brand_id_override=brand_id,
         )
         items, total, evidence_count = _position_distribution_from_facts(fact_rows)
         state = "ok" if total else "empty"
-        return PositionDistributionOut(
+        out = PositionDistributionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             items=items,
@@ -1364,11 +1447,21 @@ async def get_position_distribution(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
+        return await _with_chart_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            metric_keys=["mention_rate"],
+            source_provenance=["admin_facts"],
+            brand_id=brand_id,
+        )
     stmt = (
         select(BrandMention.position_rank, func.count())
         .where(
             and_(
-                BrandMention.brand_id == project.primary_brand_id,
+                BrandMention.brand_id == brand_id,
                 BrandMention.created_at >= f,
                 BrandMention.created_at <= t,
             )
@@ -1401,10 +1494,16 @@ async def get_position_distribution(
         for k, v in position_buckets.items()
     ]
     if total == 0:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            brand_id_override=brand_id,
+        )
         items, total, evidence_count = _position_distribution_from_facts(fact_rows)
         state = "ok" if total else "empty"
-        return PositionDistributionOut(
+        out = PositionDistributionOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             items=items,
@@ -1414,7 +1513,17 @@ async def get_position_distribution(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-    return PositionDistributionOut(
+        return await _with_chart_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            metric_keys=["mention_rate"],
+            source_provenance=["admin_facts"],
+            brand_id=brand_id,
+        )
+    out = PositionDistributionOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         items=items,
@@ -1423,6 +1532,16 @@ async def get_position_distribution(
         state_reason="data_available",
         evidence_count=total,
         evidence_counts=_chart_counts(brand_mention_count=total),
+    )
+    return await _with_chart_contract(
+        out,
+        session,
+        project,
+        from_d,
+        to_d,
+        metric_keys=["mention_rate"],
+        source_provenance=["brand_mentions"],
+        brand_id=brand_id,
     )
 
 
@@ -1436,9 +1555,10 @@ async def get_topic_heatmap(
     top_n: int = 8,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> TopicHeatmapOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    primary = project.primary_brand_id
+    primary = brand_id_override if brand_id_override is not None else project.primary_brand_id
     if primary is None:
         return TopicHeatmapOut(
             project_id=project.id,
@@ -1455,7 +1575,7 @@ async def get_topic_heatmap(
         )
         compare_with = [r[0] for r in (await session.execute(comp_stmt)).all()][:4]
 
-    brand_ids = [primary, *compare_with]
+    brand_ids = list(dict.fromkeys([primary, *compare_with]))
     f, t = _dt_range(from_d, to_d)
 
     # Pick top N topics by total mention count for this brand set.
@@ -1474,7 +1594,13 @@ async def get_topic_heatmap(
     )
     top_topics = [int(r[0]) for r in (await session.execute(top_topic_stmt)).all()]
     if not top_topics:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            brand_id_override=primary,
+        )
         fact_rows_out, evidence_count = await _topic_heatmap_from_facts(
             session,
             project,
@@ -1488,7 +1614,7 @@ async def get_topic_heatmap(
             if any(any(cell.value is not None for cell in row.values) for row in fact_rows_out)
             else "empty"
         )
-        return TopicHeatmapOut(
+        out = TopicHeatmapOut(
             project_id=project.id,
             metric=metric,
             rows=fact_rows_out,
@@ -1496,6 +1622,16 @@ async def get_topic_heatmap(
             state_reason=_state_reason(state, "no_topic_metric_data"),
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
+        return await _with_chart_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            metric_keys=["sentiment" if metric == "sentiment" else "mention_rate"],
+            source_provenance=["admin_facts"],
+            brand_id=primary,
         )
 
     metric_col = (
@@ -1551,7 +1687,7 @@ async def get_topic_heatmap(
         else "empty"
     )
     evidence_count = sum(cell.sample for row in heatmap_rows for cell in row.values)
-    return TopicHeatmapOut(
+    out = TopicHeatmapOut(
         project_id=project.id,
         metric=metric,
         rows=heatmap_rows,
@@ -1560,6 +1696,25 @@ async def get_topic_heatmap(
         evidence_count=evidence_count,
         evidence_counts=_chart_counts(topic_score_daily_sample_count=evidence_count),
     )
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["sentiment" if metric == "sentiment" else "mention_rate"],
+        source_provenance=["topic_score_daily"],
+        brand_id=primary,
+    )
+    contract_metric = "sentiment" if metric == "sentiment" else "mention_rate"
+    if update and _contract_metric_non_ok(update, contract_metric):
+        update["rows"] = [
+            row.model_copy(
+                update={"values": [cell.model_copy(update={"value": None}) for cell in row.values]}
+            )
+            for row in out.rows
+        ]
+    return out.model_copy(update=update) if update else out
 
 
 # ── /sentiment/by-engine ────────────────────────────────────────────
@@ -1572,9 +1727,11 @@ async def get_sentiment_by_engine(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> SentimentByEngineOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return SentimentByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1592,6 +1749,7 @@ async def get_sentiment_by_engine(
             engines=engines,
             segment_id=segment_id,
             profile_id=profile_id,
+            brand_id_override=brand_id,
         )
         items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
         score_evidence_count = _fact_sentiment_score_response_count(fact_rows)
@@ -1609,6 +1767,7 @@ async def get_sentiment_by_engine(
                 from_d,
                 to_d,
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+                brand_id=brand_id,
             )
         state = "ok" if items else "empty"
         out = SentimentByEngineOut(
@@ -1627,6 +1786,7 @@ async def get_sentiment_by_engine(
             from_d,
             to_d,
             source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+            brand_id=brand_id,
         )
     # JOIN brand_mentions → llm_responses to get target_llm. SQLite tests fall
     # back to "all" engine bucket if join unavailable.
@@ -1660,6 +1820,7 @@ async def get_sentiment_by_engine(
             from_d,
             to_d,
             source_provenance=["brand_mentions", "llm_responses"],
+            brand_id=brand_id,
         )
     if response_missing and response_evidence:
         out = _sentiment_by_engine_missing_out(
@@ -1676,6 +1837,7 @@ async def get_sentiment_by_engine(
             from_d,
             to_d,
             source_provenance=["brand_mentions", "llm_responses"],
+            brand_id=brand_id,
         )
     try:
         result = await session.execute(
@@ -1690,7 +1852,7 @@ async def get_sentiment_by_engine(
                 GROUP BY r.target_llm, bm.sentiment
                 """
             ),
-            {"bid": project.primary_brand_id, "f": f, "t": t},
+            {"bid": brand_id, "f": f, "t": t},
         )
         sentiment_rows = result.all()
     except Exception:
@@ -1717,7 +1879,13 @@ async def get_sentiment_by_engine(
         for engine, v in sorted(sentiment_bucket.items())
     ]
     if not items:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            brand_id_override=brand_id,
+        )
         items, evidence_count = _sentiment_by_engine_from_facts(fact_rows)
         score_evidence_count = _fact_sentiment_score_response_count(fact_rows)
         if not items and score_evidence_count:
@@ -1734,6 +1902,7 @@ async def get_sentiment_by_engine(
                 from_d,
                 to_d,
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+                brand_id=brand_id,
             )
         state = "ok" if items else "empty"
         out = SentimentByEngineOut(
@@ -1752,6 +1921,7 @@ async def get_sentiment_by_engine(
             from_d,
             to_d,
             source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+            brand_id=brand_id,
         )
     evidence_count = sum(
         v["positive"] + v["neutral"] + v["negative"] for v in sentiment_bucket.values()
@@ -1772,6 +1942,7 @@ async def get_sentiment_by_engine(
         from_d,
         to_d,
         source_provenance=["brand_mentions", "llm_responses"],
+        brand_id=brand_id,
     )
 
 
@@ -1785,9 +1956,11 @@ async def get_sentiment_trend_by_engine(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> SentimentTrendByEngineOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -1806,25 +1979,34 @@ async def get_sentiment_trend_by_engine(
             engines=engines,
             segment_id=segment_id,
             profile_id=profile_id,
+            brand_id_override=brand_id,
         )
         engine_list, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
         state = "ok" if items else "empty"
         evidence_counts = _chart_counts(admin_fact_response_count=evidence_count)
         if items and not await _sentiment_contract_evidence_count(
             session,
-            project.primary_brand_id,
+            brand_id,
             from_d,
             to_d,
             response_ids=_fact_response_ids(fact_rows),
         ):
-            return _sentiment_missing_out(
-                project_id=project.id,
-                period=_period(from_d, to_d),
-                engines=engine_list,
-                evidence_count=evidence_count,
-                evidence_counts=evidence_counts,
+            return await _with_sentiment_trend_contract(
+                _sentiment_missing_out(
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    engines=engine_list,
+                    evidence_count=evidence_count,
+                    evidence_counts=evidence_counts,
+                ),
+                session,
+                project,
+                from_d,
+                to_d,
+                source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+                brand_id=brand_id,
             )
-        return SentimentTrendByEngineOut(
+        out = SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             engines=engine_list,
@@ -1834,6 +2016,15 @@ async def get_sentiment_trend_by_engine(
             evidence_count=evidence_count,
             evidence_counts=evidence_counts,
         )
+        return await _with_sentiment_trend_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+            brand_id=brand_id,
+        )
     stmt = (
         select(
             GeoScoreDaily.date,
@@ -1842,7 +2033,7 @@ async def get_sentiment_trend_by_engine(
         )
         .where(
             and_(
-                GeoScoreDaily.brand_id == project.primary_brand_id,
+                GeoScoreDaily.brand_id == brand_id,
                 GeoScoreDaily.date >= f,
                 GeoScoreDaily.date <= t,
                 GeoScoreDaily.target_llm.isnot(None),
@@ -1866,25 +2057,39 @@ async def get_sentiment_trend_by_engine(
         for d_iso in by_date
     ]
     if not items:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            brand_id_override=brand_id,
+        )
         engines, items, evidence_count = _sentiment_trend_by_engine_from_facts(fact_rows)
         state = "ok" if items else "empty"
         evidence_counts = _chart_counts(admin_fact_response_count=evidence_count)
         if items and not await _sentiment_contract_evidence_count(
             session,
-            project.primary_brand_id,
+            brand_id,
             from_d,
             to_d,
             response_ids=_fact_response_ids(fact_rows),
         ):
-            return _sentiment_missing_out(
-                project_id=project.id,
-                period=_period(from_d, to_d),
-                engines=engines,
-                evidence_count=evidence_count,
-                evidence_counts=evidence_counts,
+            return await _with_sentiment_trend_contract(
+                _sentiment_missing_out(
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    engines=engines,
+                    evidence_count=evidence_count,
+                    evidence_counts=evidence_counts,
+                ),
+                session,
+                project,
+                from_d,
+                to_d,
+                source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+                brand_id=brand_id,
             )
-        return SentimentTrendByEngineOut(
+        out = SentimentTrendByEngineOut(
             project_id=project.id,
             period=_period(from_d, to_d),
             engines=engines,
@@ -1894,6 +2099,15 @@ async def get_sentiment_trend_by_engine(
             evidence_count=evidence_count,
             evidence_counts=evidence_counts,
         )
+        return await _with_sentiment_trend_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
+            brand_id=brand_id,
+        )
     evidence_count = len(sentiment_rows)
     evidence_counts = _chart_counts(geo_score_daily_rows=evidence_count)
     if not await _sentiment_window_evidence_count(
@@ -1901,15 +2115,24 @@ async def get_sentiment_trend_by_engine(
         project,
         from_d,
         to_d,
+        brand_id=brand_id,
     ):
-        return _sentiment_missing_out(
-            project_id=project.id,
-            period=_period(from_d, to_d),
-            engines=engines,
-            evidence_count=evidence_count,
-            evidence_counts=evidence_counts,
+        return await _with_sentiment_trend_contract(
+            _sentiment_missing_out(
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                engines=engines,
+                evidence_count=evidence_count,
+                evidence_counts=evidence_counts,
+            ),
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["geo_score_daily", "brand_mentions"],
+            brand_id=brand_id,
         )
-    return SentimentTrendByEngineOut(
+    out = SentimentTrendByEngineOut(
         project_id=project.id,
         period=_period(from_d, to_d),
         engines=engines,
@@ -1918,6 +2141,15 @@ async def get_sentiment_trend_by_engine(
         state_reason="data_available",
         evidence_count=evidence_count,
         evidence_counts=evidence_counts,
+    )
+    return await _with_sentiment_trend_contract(
+        out,
+        session,
+        project,
+        from_d,
+        to_d,
+        source_provenance=["geo_score_daily", "brand_mentions"],
+        brand_id=brand_id,
     )
 
 
@@ -1932,9 +2164,10 @@ async def get_topic_attribution(
     segment_id: str | None = None,
     profile_id: str | None = None,
     limit: int = 10,
+    brand_id_override: int | None = None,
 ) -> TopicAttributionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    primary = project.primary_brand_id
+    primary = brand_id_override if brand_id_override is not None else project.primary_brand_id
     if primary is None:
         return TopicAttributionOut(
             project_id=project.id,
@@ -1951,7 +2184,12 @@ async def get_topic_attribution(
         segment_id=segment_id,
         profile_id=profile_id,
     )
-    admin_rows = await _fact_rows(session, project, filters=admin_filters)
+    admin_rows = await _fact_rows(
+        session,
+        project,
+        filters=admin_filters,
+        brand_id_override=primary,
+    )
     by_topic: OrderedDict[int, dict[str, Any]] = OrderedDict()
     seen_responses: set[int] = set()
     for row in admin_rows:
@@ -1999,7 +2237,7 @@ async def get_topic_attribution(
     if admin_items or admin_rows:
         state = "ok" if admin_items else "empty"
         evidence_count = _response_evidence_count(admin_rows)
-        return TopicAttributionOut(
+        out = TopicAttributionOut(
             project_id=project.id,
             items=admin_items[:limit],
             state=state,
@@ -2007,6 +2245,19 @@ async def get_topic_attribution(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
+        update = await _chart_contract_update(
+            session,
+            project,
+            from_d,
+            to_d,
+            out,
+            metric_keys=["sentiment"],
+            source_provenance=["admin_facts"],
+            brand_id=primary,
+        )
+        if update and _contract_metric_non_ok(update, "sentiment"):
+            update["items"] = []
+        return out.model_copy(update=update) if update else out
 
     stmt = (
         select(
@@ -2048,13 +2299,26 @@ async def get_topic_attribution(
             )
         )
     state = "ok" if items else "empty"
-    return TopicAttributionOut(
+    out = TopicAttributionOut(
         project_id=project.id,
         items=items,
         state=state,
         state_reason=_state_reason(state, "no_negative_topic_data"),
         evidence_count=sum(item.negative_count for item in items),
     )
+    update = await _chart_contract_update(
+        session,
+        project,
+        from_d,
+        to_d,
+        out,
+        metric_keys=["sentiment"],
+        source_provenance=["topic_score_daily"],
+        brand_id=primary,
+    )
+    if update and _contract_metric_non_ok(update, "sentiment"):
+        update["items"] = []
+    return out.model_copy(update=update) if update else out
 
 
 # ── /mention-samples ────────────────────────────────────────────────

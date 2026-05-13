@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_OK_STATUS,
+    FORMULA_PARTIAL_STATUS,
+    FORMULA_PENDING_STATUS,
     AnalyticsContractContext,
     build_contract_context,
     context_update,
@@ -184,6 +186,30 @@ def _unique(values: list[str]) -> list[str]:
             out.append(value)
             seen.add(value)
     return out
+
+
+def _missing_analyzer_evidence(metric_keys: list[str]) -> dict[str, dict[str, Any]]:
+    evidence_key_by_metric = {
+        "mention_rate": "coverage",
+        "avg_mention_rate": "coverage",
+        "citation_rate": "citation",
+        "avg_citation_rate": "citation",
+        "avg_sentiment": "sentiment",
+        "avg_sov": "sov",
+    }
+    return {
+        evidence_key: {
+            "metric_key": evidence_key,
+            "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+            "reason_codes": ["missing_analyzer_fact_packages"],
+            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "fact_classes": [evidence_key],
+            "sample_response_ids": [],
+        }
+        for evidence_key in _unique(
+            [evidence_key_by_metric.get(metric_key, metric_key) for metric_key in metric_keys]
+        )
+    }
 
 
 def _series_missing_inputs(
@@ -415,7 +441,43 @@ async def _metrics_from_admin_facts(
         to_date=to_d,
         has_data=has_data,
         base_state="ok" if has_data else "empty",
+        source_provenance=["admin_facts"],
     )
+    explicit_primary_brand = (
+        brand_id_override is not None and brand_id_override == project.primary_brand_id
+    )
+    if (
+        explicit_primary_brand
+        and context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+        and not context.metric_formula_evidence
+    ):
+        context = context.model_copy(
+            update={
+                "state": "partial",
+                "state_reason": "partial_analyzer_data",
+                "formula_status": FORMULA_PARTIAL_STATUS,
+                "formula_diagnostics": formula_diagnostics_for(
+                    FORMULA_PARTIAL_STATUS,
+                    missing_inputs=["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+                ),
+                "missing_inputs": _unique(
+                    [
+                        *context.missing_inputs,
+                        "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                    ]
+                ),
+                "missing_sources": _unique(
+                    [
+                        *context.missing_sources,
+                        "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                    ]
+                ),
+                "missing_reasons": _unique(
+                    [*context.missing_reasons, "missing_analyzer_fact_packages"]
+                ),
+                "metric_formula_evidence": _missing_analyzer_evidence(requested),
+            }
+        )
     series_missing_inputs = _series_contract_missing_inputs(
         out_series,
         context,
@@ -434,6 +496,22 @@ async def _metrics_from_admin_facts(
             base_missing_inputs=series_missing_inputs,
             base_missing_sources=series_missing_inputs,
             formula_status=FORMULA_MISSING_INPUTS_STATUS,
+        )
+    elif (
+        context.formula_status == FORMULA_OK_STATUS
+        and context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+    ):
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state="partial",
+            base_state_reason="formula_pending_upstream",
+            formula_status=FORMULA_PENDING_STATUS,
+            source_provenance=["admin_facts"],
         )
     out_series = _apply_metric_series_contract(
         out_series,
@@ -770,6 +848,7 @@ async def _sentiment_from_admin_facts(
         session,
         project,
         filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        brand_id_override=brand_id,
     )
     response_days = _fact_response_day_map(rows)
     if not response_days:
@@ -925,10 +1004,12 @@ async def get_sentiment(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> SentimentOut:
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return SentimentOut(
             project_id=project.id,
             brand_id=None,
@@ -950,7 +1031,6 @@ async def get_sentiment(
             evidence_count=0,
         )
 
-    brand_id = project.primary_brand_id
     if await _has_admin_chain(session):
         admin_sentiment = await _sentiment_from_admin_facts(
             session,
@@ -960,7 +1040,35 @@ async def get_sentiment(
             to_d=to_d,
         )
         if admin_sentiment is not None:
-            return admin_sentiment
+            context = await build_contract_context(
+                session,
+                project,
+                brand_id=brand_id,
+                from_date=from_d,
+                to_date=to_d,
+                has_data=admin_sentiment.evidence_count > 0,
+                base_state=admin_sentiment.state,
+                base_missing_inputs=admin_sentiment.missing_inputs,
+                source_provenance=admin_sentiment.source_provenance
+                or ["brand_mentions", "response_analyses", "admin_facts"],
+            )
+            update = context_update(context)
+            missing_reasons = list(admin_sentiment.missing_reasons)
+            if (
+                context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+                and not context.metric_formula_evidence
+                and context.evidence_counts.get("response_analysis_count", 0) > 0
+            ):
+                missing_reasons.append("missing_analyzer_fact_packages")
+                update["formula_status"] = FORMULA_PARTIAL_STATUS
+                update["formula_diagnostics"] = formula_diagnostics_for(
+                    FORMULA_PARTIAL_STATUS,
+                    missing_inputs=admin_sentiment.missing_inputs,
+                )
+            update["missing_inputs"] = list(admin_sentiment.missing_inputs)
+            update["missing_sources"] = list(admin_sentiment.missing_sources)
+            update["missing_reasons"] = _unique(missing_reasons)
+            return admin_sentiment.model_copy(update=update)
 
     # ── distribution: aggregate brand_mentions.sentiment for this brand ─
     stmt_dist = (
@@ -1146,11 +1254,13 @@ async def get_citations(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
     page_size: int = 50,
 ) -> CitationsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return CitationsOut(
             project_id=project.id,
             brand_id=None,
@@ -1164,12 +1274,12 @@ async def get_citations(
             evidence_count=0,
         )
 
-    brand_id = project.primary_brand_id
     if await _has_admin_chain(session):
         fact_rows = await _fact_rows(
             session,
             project,
             filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+            brand_id_override=brand_id,
         )
         response_days = _fact_response_day_map(fact_rows)
         if response_days:
@@ -1277,7 +1387,53 @@ async def get_citations(
                 },
                 source_provenance=["citation_sources", "brand_mentions", "admin_facts"],
             )
-            return out
+            context = await build_contract_context(
+                session,
+                project,
+                brand_id=brand_id,
+                from_date=from_d,
+                to_date=to_d,
+                has_data=total > 0,
+                base_state=out.state,
+                base_missing_inputs=out.missing_inputs,
+                source_provenance=out.source_provenance,
+            )
+            if (
+                context.formula_status == FORMULA_OK_STATUS
+                and context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+                and not context.metric_formula_evidence
+                and context.evidence_counts.get("response_analysis_count", 0) > 0
+            ):
+                context = context.model_copy(
+                    update={
+                        "state": "partial",
+                        "state_reason": "partial_analyzer_data",
+                        "formula_status": FORMULA_PARTIAL_STATUS,
+                        "formula_diagnostics": formula_diagnostics_for(
+                            FORMULA_PARTIAL_STATUS,
+                            missing_inputs=[
+                                "response_analyses.raw_analysis_json.analyzer_fact_packages"
+                            ],
+                        ),
+                        "missing_inputs": _unique(
+                            [
+                                *context.missing_inputs,
+                                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                            ]
+                        ),
+                        "missing_sources": _unique(
+                            [
+                                *context.missing_sources,
+                                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                            ]
+                        ),
+                        "missing_reasons": _unique(
+                            [*context.missing_reasons, "missing_analyzer_fact_packages"]
+                        ),
+                        "metric_formula_evidence": _missing_analyzer_evidence(["citation"]),
+                    }
+                )
+            return out.model_copy(update=context_update(context))
 
     # JOIN citation_sources via brand_mentions.id (mention_id FK)
     stmt = (

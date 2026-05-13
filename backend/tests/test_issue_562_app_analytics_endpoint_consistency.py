@@ -283,22 +283,26 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
     assert composition.status_code == 200, composition.text
     assert authority.status_code == 200, authority.text
 
-    sov_card = next(card for card in overview.json()["kpi_cards"] if card["metric_key"] == "sov")
-    assert sov_card["value"] == pytest.approx(97.3)
-    assert sov_card["formula_status"] == "ok"
+    overview_body = overview.json()
+    assert overview_body["formula_status"] == "partial"
+    assert "missing_analyzer_fact_packages" in overview_body["missing_reasons"]
+    sov_card = next(card for card in overview_body["kpi_cards"] if card["metric_key"] == "sov")
+    assert sov_card["value"] is None
+    assert sov_card["formula_status"] == "missing_required_inputs"
 
     series = {row["metric"]: row for row in metrics.json()["series"]}
-    assert series["sov"]["points"][0]["value"] == pytest.approx(36 / 37, rel=0.001)
-    assert series["sov"]["formula_status"] == "ok"
-    assert "brand_mentions.competitive_set" not in series["sov"]["missing_inputs"]
-    assert series["citation"]["points"][0]["value"] == pytest.approx(1 / 2, rel=0.001)
-    assert series["citation"]["formula_status"] == "ok"
-    assert "citation_sources" not in series["citation"]["missing_inputs"]
+    assert series["sov"]["points"] == []
+    assert series["sov"]["formula_status"] == "missing_required_inputs"
+    assert "missing_analyzer_fact_packages" in series["sov"]["missing_inputs"]
+    assert series["citation"]["points"] == []
+    assert series["citation"]["formula_status"] == "missing_required_inputs"
+    assert "missing_analyzer_fact_packages" in series["citation"]["missing_inputs"]
 
     citation_body = citations.json()
     assert citation_body["total"] == 1
     assert citation_body["items"][0]["domain"] == "example.com"
-    assert citation_body["formula_status"] != "no_evidence"
+    assert citation_body["formula_status"] == "partial"
+    assert "missing_analyzer_fact_packages" in citation_body["missing_reasons"]
     composition_body = composition.json()
     assert composition_body["total"] == 0
     assert composition_body["segments"] == []
@@ -352,13 +356,14 @@ async def test_sentiment_routes_share_partial_state_when_scores_exist_without_la
     metric_body = metric.json()
     by_engine_body = by_engine.json()
     assert sentiment_body["state"] == "partial"
-    assert sentiment_body["formula_status"] == "missing_required_inputs"
+    assert sentiment_body["formula_status"] == "partial"
     assert sentiment_body["evidence_count"] == 1
     assert "brand_mentions.sentiment" in sentiment_body["missing_inputs"]
+    assert "missing_analyzer_fact_packages" in sentiment_body["missing_reasons"]
     assert trend_body["state"] == "partial"
     assert trend_body["formula_status"] == "missing_required_inputs"
     assert trend_body["evidence_count"] == 1
-    assert trend_body["missing_inputs"] == sentiment_body["missing_inputs"]
+    assert "brand_mentions.sentiment" in trend_body["missing_inputs"]
     assert by_engine_body["state"] == "partial"
     assert by_engine_body["formula_status"] == "missing_required_inputs"
     assert by_engine_body["evidence_count"] == 1
@@ -420,12 +425,14 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
     assert sentiment_body["distribution"]["positive_count"] == 1
     assert sentiment_body["trend_30d"][0]["avg_score"] == pytest.approx(0.42)
     assert sentiment_body["state"] == "partial"
-    assert sentiment_body["formula_status"] == "missing_required_inputs"
-    assert sentiment_body["missing_inputs"] == ["sentiment_drivers.source_quote"]
+    assert sentiment_body["formula_status"] == "partial"
+    assert "sentiment_drivers.source_quote" in sentiment_body["missing_inputs"]
+    assert "missing_analyzer_fact_packages" in sentiment_body["missing_reasons"]
     assert sentiment_body["top_drivers"] == []
-    assert trend_body["state"] == "ok"
-    assert trend_body["formula_status"] == "ok"
-    assert trend_body["items"][0]["by_engine"]["chatgpt"] == pytest.approx(0.42)
+    assert trend_body["state"] == "partial"
+    assert trend_body["formula_status"] == "partial"
+    assert trend_body["items"] == []
+    assert "missing_analyzer_fact_packages" in trend_body["missing_reasons"]
     assert by_engine_body["state"] == "partial"
     assert by_engine_body["formula_status"] == "partial"
     assert (
@@ -433,5 +440,5 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
         in by_engine_body["missing_inputs"]
     )
     assert by_engine_body["items"] == []
-    assert metric_series["formula_status"] == "ok"
-    assert metric_series["points"][0]["value"] == pytest.approx(0.42)
+    assert metric_series["formula_status"] == "missing_required_inputs"
+    assert metric_series["points"] == []
