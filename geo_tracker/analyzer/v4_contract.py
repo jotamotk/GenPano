@@ -38,7 +38,16 @@ ENTITY_TYPES = {
     "price_tier",
     "other",
 }
-MENTION_TYPES = {"brand", "product", "attribute", "need", "scenario", "citation", "other"}
+MENTION_TYPES = {
+    "brand",
+    "product",
+    "attribute",
+    "need",
+    "scenario",
+    "category",
+    "citation",
+    "other",
+}
 POSITIONS = {"top", "middle", "tail", "unknown"}
 SENTIMENT_LABELS = {"positive", "negative", "neutral", "mixed", "unknown"}
 DRIVER_TYPES = {
@@ -184,7 +193,7 @@ def validate_analyzer_v4_package(
         _validate_confidence(entity, errors, f"entities[{index}]")
         _flag_missing_evidence(flags, entity, "entity", key, response_text=response_text)
         if entity.get("canonicalization_status") == "unresolved":
-            code = "brand_unresolved" if entity.get("entity_type") == "brand" else "product_unresolved"
+            code = _unresolved_entity_code(entity.get("entity_type"))
             _append_flag(
                 flags,
                 code=code,
@@ -206,6 +215,16 @@ def validate_analyzer_v4_package(
                 code="entity_unresolved",
                 severity="warning",
                 message="Mention entity_key does not resolve to a response entity.",
+                target_type="mention",
+                target_key=key,
+                blocks_metric_readiness=True,
+            )
+        if mention.get("mention_type") not in MENTION_TYPES:
+            _append_flag(
+                flags,
+                code="invalid_mention_type",
+                severity="error",
+                message=f"Mention type {mention.get('mention_type')!r} is not supported.",
                 target_type="mention",
                 target_key=key,
                 blocks_metric_readiness=True,
@@ -730,6 +749,17 @@ def _quality_codes(item: dict[str, Any]) -> set[str]:
         else:
             codes.add(str(flag))
     return codes
+
+
+def _unresolved_entity_code(entity_type: Any) -> str:
+    value = str(entity_type or "entity")
+    if value == "brand":
+        return "brand_unresolved"
+    if value == "product":
+        return "product_unresolved"
+    if value == "category":
+        return "category_unresolved"
+    return "entity_unresolved"
 
 
 def _append_flag(
