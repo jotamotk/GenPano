@@ -6484,7 +6484,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                    x-show="attemptAnalyzerLastRun"
                    class="rounded-card border border-accent/15 bg-accent/5 px-3 py-2 text-[12px] text-ink-body flex items-center gap-3">
                 <span class="font-semibold text-accent">最近分析批次</span>
-                <span x-text="'提交 ' + (attemptAnalyzerLastRun?.submittedCount || 0) + ' 条'"></span>
+                <span x-text="attemptAnalyzerLastRunText(attemptAnalyzerLastRun)"></span>
                 <span class="font-mono text-[11px] text-ink-muted" x-text="attemptAnalyzerLastRun?.runId || ''"></span>
                 <span class="text-ink-muted" x-text="attemptAnalyzerLastRun?.createdAt ? fmtTs(attemptAnalyzerLastRun.createdAt) : ''"></span>
               </div>
@@ -8650,6 +8650,11 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <div class="rounded-btn border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-ink-body"
                    x-text="attemptDrawer.analyzer?.error || attemptAnalyzerBlockedReason(attemptDrawer)"></div>
             </template>
+            <template x-if="attemptDrawer.analyzer?.gateMessage">
+              <div data-testid="attempt-analyzer-gate-message"
+                   class="rounded-btn border border-warning/25 bg-warning/5 px-3 py-2 text-[11px] text-warning"
+                   x-text="attemptDrawer.analyzer.gateMessage"></div>
+            </template>
           </div>
         </div>
 
@@ -9089,6 +9094,20 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
       <div data-testid="attempt-analyzer-batch-scope-note"
            class="rounded-card border border-accent/15 bg-accent/5 px-3 py-2 text-[12px] text-ink-body"
            x-text="attemptAnalyzerBatchScopeText(attemptAnalyzerBatchPreview)"></div>
+      <div data-testid="attempt-analyzer-batch-loading"
+           x-show="attemptAnalyzerBatchLoading"
+           class="rounded-card border border-info/20 bg-info/5 px-3 py-2 text-[12px] text-info">
+        正在读取真实预览计数…
+      </div>
+      <div data-testid="attempt-analyzer-batch-error"
+           x-show="attemptAnalyzerBatchError"
+           class="rounded-card border border-danger/20 bg-danger/5 px-3 py-2 text-[12px] text-danger"
+           x-text="attemptAnalyzerBatchError"></div>
+      <div data-testid="attempt-analyzer-batch-incomplete"
+           x-show="attemptAnalyzerBatchPreview && attemptAnalyzerBatchPreview.countsComplete === false"
+           class="rounded-card border border-warning/30 bg-warning/5 px-3 py-2 text-[12px] text-warning">
+        当前筛选范围过大，仅展示已评估样本计数；请缩小筛选后再提交。
+      </div>
       <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 text-[12px]">
         <div class="rounded-card bg-surface-page border border-b-card p-3">
           <div class="text-ink-muted">请求范围</div>
@@ -9415,6 +9434,10 @@ const API_BASE = (() => {
   return APP_BASE_PATH + '/api';
 })();
 
+function adminAnalyzerApiPath(path = '') {
+  return ADMIN_BASE_PATH + '/api/analyzer' + path;
+}
+
 function formatAdminErrorDetail(value) {
   if (value === null || value === undefined || value === '') return '';
   if (typeof value === 'string') return value;
@@ -9507,6 +9530,8 @@ function normalizeAttemptAnalyzerStatus(value) {
     skipped: 'skipped',
     skip: 'skipped',
     missing: 'missing',
+    stale: 'failed',
+    not_eligible: 'unavailable',
     none: 'missing',
     unavailable: 'unavailable',
     disabled: 'unavailable',
@@ -9531,14 +9556,67 @@ function firstFiniteNumber(...values) {
   return null;
 }
 
+function finitePositiveId(...values) {
+  for (const value of values) {
+    const next = Number(value);
+    if (Number.isFinite(next) && next > 0) return Math.floor(next);
+  }
+  return null;
+}
+
+function formatAttemptAnalyzerMetric(value, digits = 2) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return '';
+  return next.toFixed(digits).replace(/\.?0+$/, '');
+}
+
+function formatAttemptAnalyzerSummaryValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return firstNonEmptyText(value);
+  }
+  const parts = [];
+  const geoScore = formatAttemptAnalyzerMetric(value.geo_score);
+  const visibilityScore = formatAttemptAnalyzerMetric(value.visibility_score);
+  const sentimentScore = formatAttemptAnalyzerMetric(value.sentiment_score);
+  if (geoScore) parts.push('GEO ' + geoScore);
+  if (visibilityScore) parts.push('可见度 ' + visibilityScore);
+  if (sentimentScore) parts.push('情感 ' + sentimentScore);
+  if (value.total_brands_mentioned != null) parts.push('品牌 ' + value.total_brands_mentioned);
+  if (value.mentions_count != null) parts.push('命中 ' + value.mentions_count);
+  if (value.citations_count != null) parts.push('引用 ' + value.citations_count);
+  if (value.target_brand_sentiment) parts.push('目标情绪 ' + value.target_brand_sentiment);
+  return parts.join(' · ');
+}
+
+function firstAnalyzerReadinessReason(row) {
+  const reasons = row && Array.isArray(row.metric_readiness_reasons)
+    ? row.metric_readiness_reasons
+    : [];
+  const first = reasons.find(item => item && typeof item === 'object');
+  return firstNonEmptyText(first && (first.message || first.title || first.code));
+}
+
+function attemptAnalyzerMutationGateMessage() {
+  return '分析提交暂未开放；当前可查看真实状态和批量预览，提交会在批次持久化发布后启用。';
+}
+
+function isAttemptAnalyzerGateError(error) {
+  const body = error && error.body;
+  return Number(error && error.status) === 409
+    && body
+    && body.error === 'analyzer_run_persistence_required';
+}
+
 function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
   const nested = row && typeof row.analysis === 'object' && row.analysis ? row.analysis : {};
+  const task = row && typeof row.analysis_task === 'object' && row.analysis_task ? row.analysis_task : {};
   const rawStatus = firstNonEmptyText(
     row.analysis_status,
     row.analyzer_status,
     row.analysisStatus,
     row.analyzerStatus,
     nested.status,
+    task.queue_state,
     row.analyzed_at ? 'done' : ''
   );
   const hasResponse = !!firstNonEmptyText(responseText);
@@ -9546,7 +9624,7 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
   const status = hasResponse ? (normalized || 'missing') : 'unavailable';
   const reason = !hasResponse
     ? (attemptStatus === 'failed' ? 'failed_attempt' : 'no_response')
-    : firstNonEmptyText(row.analysis_reason, row.analyzer_reason, nested.reason);
+    : firstNonEmptyText(row.analysis_reason, row.analyzer_reason, row.analysis_error_code, nested.reason);
   const evidenceCount = firstFiniteNumber(
     row.analysis_evidence_count,
     row.analyzer_evidence_count,
@@ -9554,6 +9632,9 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
     nested.evidenceCount
   );
   const runId = firstNonEmptyText(
+    task.latest_run_id,
+    task.latest_task_id,
+    task.latest_batch_id,
     row.analysis_run_id,
     row.analyzer_run_id,
     row.analyzer_task_id,
@@ -9561,9 +9642,16 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
     nested.task_id
   );
   const updatedAt = firstNonEmptyText(row.analyzed_at, row.analysis_updated_at, nested.updated_at);
-  const error = firstNonEmptyText(row.analysis_error, row.analyzer_error, nested.error);
+  const error = firstNonEmptyText(
+    row.analysis_error,
+    row.analysis_error_message,
+    row.analyzer_error,
+    nested.error,
+    firstAnalyzerReadinessReason(row)
+  );
+  const summaryValue = formatAttemptAnalyzerSummaryValue(row.analysis_summary);
   const summary = firstNonEmptyText(
-    row.analysis_summary,
+    summaryValue,
     row.analyzer_summary,
     nested.summary,
     status === 'done' || status === 'already_analyzed' ? '分析完成，可查看摘要' : '',
@@ -9574,7 +9662,18 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
     status === 'missing' ? '尚未分析，可手动触发' : '',
     status === 'unavailable' ? (reason === 'failed_attempt' ? '执行失败，未获得可分析回答' : '没有可分析回答') : ''
   );
-  return { status, reason, summary, evidenceCount, runId, updatedAt, error };
+  return {
+    status,
+    reason,
+    summary,
+    evidenceCount,
+    runId,
+    updatedAt,
+    error,
+    responseId: finitePositiveId(row.response_id, row.responseId, nested.response_id),
+    metricReadinessStatus: firstNonEmptyText(row.metric_readiness_status),
+    qualityFlagCount: firstFiniteNumber(row.quality_flag_count, row.blocking_quality_flag_count),
+  };
 }
 
 // Map a row from /api/queries into the shape the prototype's Alpine template
@@ -9598,6 +9697,7 @@ function mapQueryRowToAttempt(r) {
   };
   const mappedStatus = statusMap[rawStatus] || rawStatus;
   const responseText = firstNonEmptyText(r.response, r.response_text, r.raw_text, r.response_preview);
+  const responseId = finitePositiveId(r.response_id, r.responseId, r.llm_response_id);
   const rt = (r.latency_ms != null)
     ? Number(r.latency_ms)
     : (r.finished_at && r.started_at)
@@ -9637,6 +9737,7 @@ function mapQueryRowToAttempt(r) {
     retryReason: r.retry_reason || null,
     createdAt: r.created_at || null,
     responseText: responseText || null,
+    responseId,
     citations: r.citations || null,
     analyzer: deriveAttemptAnalyzerState(r, responseText, mappedStatus),
     topicId: r.topic_id != null ? r.topic_id : null,
@@ -13035,10 +13136,13 @@ function adminApp() {
     attemptAnalyzerBatchOpen: false,
     attemptAnalyzerBatchScope: 'selected',
     attemptAnalyzerBatchPreview: null,
+    attemptAnalyzerBatchLoading: false,
+    attemptAnalyzerBatchError: '',
     attemptAnalyzerBatchSubmitting: false,
     attemptAnalyzerBatchCap: 25,
     attemptAnalyzerRunSeq: 0,
     attemptAnalyzerLastRun: null,
+    attemptAnalyzerStatusRefreshSeq: 0,
     retryingAttemptIds: {},
     retryPollTimers: {},
     retryPollTokens: {},
@@ -13100,6 +13204,7 @@ function adminApp() {
         const byStatus = (body && body.by_status) ? body.by_status : null;
         this.attemptsSummary = summarizeAttempts(this.executionAttempts, total, byStatus);
         this.attemptsLastLoaded = new Date();
+        await this.refreshVisibleAttemptAnalyzerStatuses();
       } catch (e) {
         this.attemptsError = String(e.message || e);
         this.toast('加载执行追踪失败: ' + this.attemptsError);
@@ -13354,6 +13459,8 @@ function adminApp() {
 
     attemptAnalyzerBlockedReason(att) {
       const reason = att && att.analyzer && att.analyzer.reason;
+      if (reason === 'mutation_gate') return attemptAnalyzerMutationGateMessage();
+      if (reason === 'response_id_missing') return '缺少 Response ID，暂不可提交分析';
       if (reason === 'failed_attempt') return '执行失败，未获得可分析回答';
       if (reason === 'no_response') return '没有可分析回答';
       if (att && !att.responseText) return '没有可分析回答';
@@ -13364,6 +13471,8 @@ function adminApp() {
 
     canAnalyzeAttempt(att) {
       if (!att || !String(att.responseText || '').trim()) return false;
+      if (!finitePositiveId(att.responseId)) return false;
+      if (att.analyzer && att.analyzer.reason === 'mutation_gate') return false;
       const status = normalizeAttemptAnalyzerStatus(att.analyzer && att.analyzer.status);
       return !['unavailable', 'skipped'].includes(status);
     },
@@ -13374,6 +13483,7 @@ function adminApp() {
     },
 
     attemptAnalyzerActionLabel(att) {
+      if (att && att.analyzer && att.analyzer.reason === 'mutation_gate') return '暂未开放';
       if (!this.canAnalyzeAttempt(att)) return '不可分析';
       if (this.isAttemptAnalysisBusy(att)) return '处理中';
       const status = normalizeAttemptAnalyzerStatus(att && att.analyzer && att.analyzer.status);
@@ -13400,7 +13510,73 @@ function adminApp() {
       if (this.attemptDrawer && Number(this.attemptDrawer.queryDbId) === id) this.attemptDrawer = patchOne(this.attemptDrawer);
     },
 
-    queueAttemptAnalysis(att) {
+    async attemptAnalyzerApiJson(path, options = {}) {
+      const fetchOptions = Object.assign({}, options);
+      delete fetchOptions.bodyObject;
+      const body = options.bodyObject !== undefined ? JSON.stringify(options.bodyObject) : options.body;
+      const res = await fetch(adminAnalyzerApiPath(path), {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...fetchOptions,
+        body,
+        silentError: options.silentError !== false,
+      });
+      const parsed = await res.json().catch(() => ({}));
+      if (!res.ok || parsed.success === false) {
+        const error = new Error(parsed.message || parsed.error || parsed.title || ('HTTP ' + res.status));
+        error.body = parsed;
+        error.status = res.status;
+        error.path = adminAnalyzerApiPath(path);
+        throw error;
+      }
+      return parsed;
+    },
+
+    attemptAnalyzerPatchFromStatus(att, body) {
+      const responseText = firstNonEmptyText(body && body.raw_text, body && body.response, att && att.responseText);
+      const analyzer = deriveAttemptAnalyzerState(body || {}, responseText, att && att.status);
+      return Object.assign({}, analyzer, {
+        responseId: finitePositiveId(analyzer.responseId, body && body.response_id, att && att.responseId),
+      });
+    },
+
+    async refreshAttemptAnalyzerStatus(att) {
+      if (!att) return null;
+      const responseId = finitePositiveId(att.responseId, att.response_id);
+      if (!responseId) return null;
+      const body = await this.attemptAnalyzerApiJson('/responses/' + encodeURIComponent(responseId) + '/status', {
+        method: 'GET',
+      });
+      const queryDbId = finitePositiveId(body.query_id, att.queryDbId);
+      if (queryDbId) this.patchAttemptAnalyzer(queryDbId, this.attemptAnalyzerPatchFromStatus(att, body));
+      return body;
+    },
+
+    async refreshVisibleAttemptAnalyzerStatuses() {
+      const token = ++this.attemptAnalyzerStatusRefreshSeq;
+      const rows = (this.executionAttempts || []).filter(att => finitePositiveId(att && att.responseId));
+      await Promise.allSettled(rows.map(async (att) => {
+        if (token !== this.attemptAnalyzerStatusRefreshSeq) return;
+        try { await this.refreshAttemptAnalyzerStatus(att); }
+        catch (_) { /* Status hydration is best-effort; list data remains visible. */ }
+      }));
+    },
+
+    async pollAttemptAnalyzerStatus(att, options = {}) {
+      const maxAttempts = Number(options.maxAttempts || 6);
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        await this.delay(attempt === 0 ? 800 : 1800);
+        const body = await this.refreshAttemptAnalyzerStatus(att).catch(() => null);
+        const status = normalizeAttemptAnalyzerStatus(body && body.analysis_status);
+        const queueState = normalizeAttemptAnalyzerStatus(body && body.analysis_task && body.analysis_task.queue_state);
+        if (['done', 'failed', 'partial', 'unavailable'].includes(status) || queueState === 'done' || queueState === 'failed') {
+          return body;
+        }
+      }
+      return null;
+    },
+
+    queueAttemptAnalysisPrototype(att) {
       if (!this.canAnalyzeAttempt(att)) {
         this.toast(this.attemptAnalyzerBlockedReason(att) || '此 Attempt 暂不可分析');
         return;
@@ -13417,6 +13593,61 @@ function adminApp() {
         updatedAt,
       });
       this.toast('已加入分析队列 · ' + att.queryId);
+    },
+
+    queueAttemptAnalysis(att) {
+      if (!this.canAnalyzeAttempt(att)) {
+        this.toast(this.attemptAnalyzerBlockedReason(att) || '此 Attempt 暂不可分析');
+        return;
+      }
+      if (this.isAttemptAnalysisBusy(att)) return;
+      const responseId = finitePositiveId(att.responseId);
+      if (!responseId) {
+        this.patchAttemptAnalyzer(att.queryDbId, {
+          status: 'unavailable',
+          reason: 'response_id_missing',
+          summary: '缺少 Response ID，暂不可提交分析',
+        });
+        return;
+      }
+      this.attemptAnalyzerApiJson('/responses/' + encodeURIComponent(responseId) + '/analyze', {
+        method: 'POST',
+        bodyObject: {
+          mode: 'missing_or_failed_only',
+          reason: 'admin_attempts_single',
+        },
+      }).then((body) => {
+        const updatedAt = new Date().toISOString();
+        const runId = firstNonEmptyText(body && body.run_id, body && body.task_id, body && body.batch_job_id);
+        this.patchAttemptAnalyzer(att.queryDbId, {
+          status: 'pending',
+          reason: null,
+          error: null,
+          gateMessage: null,
+          summary: '等待分析任务处理',
+          runId,
+          updatedAt,
+        });
+        this.toast('已提交分析 · ' + att.queryId);
+        this.pollAttemptAnalyzerStatus(att);
+      }).catch((error) => {
+        if (isAttemptAnalyzerGateError(error)) {
+          const message = attemptAnalyzerMutationGateMessage();
+          this.patchAttemptAnalyzer(att.queryDbId, {
+            reason: 'mutation_gate',
+            gateMessage: message,
+            summary: message,
+            error: null,
+          });
+          this.toast(message);
+          return;
+        }
+        this.patchAttemptAnalyzer(att.queryDbId, {
+          status: 'failed',
+          error: error.message || '分析提交失败',
+          summary: error.message || '分析提交失败',
+        });
+      });
     },
 
     attemptAnalyzerNormalizeBatchScope(scope) {
@@ -13469,7 +13700,7 @@ function adminApp() {
       return rows.filter(att => att && selected[att.queryDbId]);
     },
 
-    buildAttemptAnalyzerBatchPreview(scope) {
+    buildAttemptAnalyzerBatchPreviewPrototype(scope) {
       const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       const rows = this.attemptAnalyzerRowsForScope(scope);
       const requestedCount = normalizedScope === 'selected'
@@ -13516,26 +13747,26 @@ function adminApp() {
       return preview;
     },
 
-    openAttemptAnalyzerBatch(scope = 'selected') {
+    openAttemptAnalyzerBatchPrototype(scope = 'selected') {
       const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       this.attemptAnalyzerBatchScope = nextScope;
       this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
       this.attemptAnalyzerBatchOpen = true;
     },
 
-    setAttemptAnalyzerBatchScope(scope) {
+    setAttemptAnalyzerBatchScopePrototype(scope) {
       const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       this.attemptAnalyzerBatchScope = nextScope;
       this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
     },
 
-    closeAttemptAnalyzerBatch() {
+    closeAttemptAnalyzerBatchPrototype() {
       this.attemptAnalyzerBatchOpen = false;
       this.attemptAnalyzerBatchPreview = null;
       this.attemptAnalyzerBatchSubmitting = false;
     },
 
-    confirmAttemptAnalyzerBatch() {
+    confirmAttemptAnalyzerBatchPrototype() {
       const preview = this.attemptAnalyzerBatchPreview;
       if (!preview || preview.submittedCount <= 0) {
         this.toast('没有可提交的 Attempt');
@@ -13558,6 +13789,198 @@ function adminApp() {
       this.attemptAnalyzerBatchSubmitting = false;
       this.closeAttemptAnalyzerBatch();
       this.toast('已提交分析批次 · ' + preview.submittedCount + ' 条');
+    },
+
+    attemptAnalyzerFilterPayload() {
+      const filter = this.attemptFilter || {};
+      const filters = {};
+      if (filter.brandId) filters.brand_id = Number(filter.brandId);
+      if (filter.topicId) filters.topic_id = Number(filter.topicId);
+      if (filter.promptId) filters.prompt_id = Number(filter.promptId);
+      if (filter.engine) filters.llm = filter.engine;
+      if (filter.status) filters.attempt_status = filter.status;
+      if (filter.date) filters.date = filter.date;
+      const queryId = finitePositiveId(filter.queryId);
+      return { filters, queryId };
+    },
+
+    attemptAnalyzerDryRunPayload(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      const rows = this.attemptAnalyzerRowsForScope(normalizedScope);
+      const apiScope = {};
+      if (normalizedScope === 'selected') {
+        const responseIds = rows.map(att => finitePositiveId(att && att.responseId)).filter(Boolean);
+        const queryIds = rows
+          .filter(att => !finitePositiveId(att && att.responseId))
+          .map(att => finitePositiveId(att && att.queryDbId))
+          .filter(Boolean);
+        if (responseIds.length) apiScope.response_ids = responseIds;
+        if (queryIds.length) apiScope.query_ids = queryIds;
+      } else {
+        const filterPayload = this.attemptAnalyzerFilterPayload();
+        if (filterPayload.queryId) {
+          apiScope.query_ids = [filterPayload.queryId];
+        } else if (Object.keys(filterPayload.filters).length > 0) {
+          apiScope.filters = filterPayload.filters;
+        } else {
+          apiScope.query_ids = rows.map(att => finitePositiveId(att && att.queryDbId)).filter(Boolean);
+        }
+      }
+      return {
+        scope: apiScope,
+        mode: 'missing_or_failed_only',
+        max_count: this.attemptAnalyzerBatchCap,
+        sample_limit: this.attemptAnalyzerBatchCap,
+        reason: 'admin_attempts_batch_preview',
+      };
+    },
+
+    attemptAnalyzerPreviewFromDryRun(scope, body) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      const rows = this.attemptAnalyzerRowsForScope(normalizedScope);
+      const skippedCounts = (body && (body.skipped_counts || body.skipped_counts_evaluated)) || {};
+      const countsComplete = !(body && body.counts_complete === false);
+      const cap = Number((body && (body.cap_limit || body.cap)) || this.attemptAnalyzerBatchCap);
+      const eligible = Number((body && (body.eligible_count ?? body.eligible_count_evaluated)) || 0);
+      const requestedCount = Number((body && (body.requested_count ?? body.matched_attempts ?? body.matched_attempts_evaluated)) || rows.length);
+      const visibleCount = Number((body && (body.matched_attempts ?? body.matched_attempts_evaluated)) || rows.length);
+      const alreadyDone = Number((body && (body.already_done_count ?? body.already_done_count_evaluated)) || skippedCounts.already_done || 0);
+      const noResponse = Number((body && (body.skipped_no_response_count ?? body.skipped_no_response_count_evaluated)) || 0);
+      const failedAttempt = Number((body && (body.skipped_failed_attempt_without_response_count ?? body.skipped_failed_attempt_without_response_count_evaluated)) || 0);
+      const unavailable = Number(skippedCounts.already_queued_or_running || 0)
+        + Number(skippedCounts.not_eligible || 0)
+        + Number(skippedCounts.skipped || 0);
+      const willEnqueue = Number((body && body.will_enqueue_count) || 0);
+      return {
+        scope: normalizedScope,
+        countsComplete,
+        scopeTooLarge: !!(body && body.scope_too_large),
+        total: rows.length,
+        requestedCount,
+        visibleCount,
+        filterSample: normalizedScope === 'filter' && requestedCount > rows.length,
+        cap,
+        eligible,
+        skippedNoResponse: noResponse,
+        skippedAlreadyAnalyzed: alreadyDone,
+        skippedFailedAttempt: failedAttempt,
+        skippedUnavailable: unavailable,
+        submittedCount: willEnqueue,
+        capExceeded: !!(body && (body.cap_exceeded || body.cap_truncated)),
+        eligibleIds: [],
+        eligibleResponseIds: (body && (body.eligible_response_ids_preview || body.eligible_response_ids_sample)) || [],
+        dryRunId: body && body.dry_run_id,
+        error: body && body.error,
+        queryLimit: body && body.query_limit,
+      };
+    },
+
+    async loadAttemptAnalyzerBatchPreview(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      this.attemptAnalyzerBatchLoading = true;
+      this.attemptAnalyzerBatchError = '';
+      const payload = this.attemptAnalyzerDryRunPayload(normalizedScope);
+      try {
+        const body = await this.attemptAnalyzerApiJson('/responses/batch/dry-run', {
+          method: 'POST',
+          bodyObject: payload,
+        });
+        this.attemptAnalyzerBatchPreview = this.attemptAnalyzerPreviewFromDryRun(normalizedScope, body);
+      } catch (error) {
+        const body = error && error.body;
+        if (body && body.error === 'dry_run_scope_too_large') {
+          this.attemptAnalyzerBatchPreview = this.attemptAnalyzerPreviewFromDryRun(normalizedScope, body);
+          this.attemptAnalyzerBatchError = '';
+        } else {
+          this.attemptAnalyzerBatchError = error.message || '批量预览失败';
+        }
+      } finally {
+        this.attemptAnalyzerBatchLoading = false;
+      }
+    },
+
+    openAttemptAnalyzerBatch(scope = 'selected') {
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      this.attemptAnalyzerBatchScope = nextScope;
+      this.attemptAnalyzerBatchPreview = {
+        scope: nextScope,
+        requestedCount: 0,
+        visibleCount: (this.attemptAnalyzerRowsForScope(nextScope) || []).length,
+        cap: this.attemptAnalyzerBatchCap,
+        eligible: 0,
+        skippedNoResponse: 0,
+        skippedAlreadyAnalyzed: 0,
+        skippedFailedAttempt: 0,
+        skippedUnavailable: 0,
+        submittedCount: 0,
+        countsComplete: true,
+      };
+      this.attemptAnalyzerBatchOpen = true;
+      this.loadAttemptAnalyzerBatchPreview(nextScope);
+    },
+
+    setAttemptAnalyzerBatchScope(scope) {
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      this.attemptAnalyzerBatchScope = nextScope;
+      this.loadAttemptAnalyzerBatchPreview(nextScope);
+    },
+
+    closeAttemptAnalyzerBatch() {
+      this.attemptAnalyzerBatchOpen = false;
+      this.attemptAnalyzerBatchPreview = null;
+      this.attemptAnalyzerBatchLoading = false;
+      this.attemptAnalyzerBatchError = '';
+      this.attemptAnalyzerBatchSubmitting = false;
+    },
+
+    attemptAnalyzerLastRunText(run) {
+      if (!run) return '';
+      if (run.mutationBlocked) return '暂未开放 · 预览可提交 ' + (run.previewCount || 0) + ' 条';
+      return '提交 ' + (run.submittedCount || 0) + ' 条';
+    },
+
+    confirmAttemptAnalyzerBatch() {
+      const preview = this.attemptAnalyzerBatchPreview;
+      if (!preview || preview.submittedCount <= 0) {
+        this.toast(preview && preview.scopeTooLarge ? '筛选范围过大，请先缩小范围' : '没有可提交的 Attempt');
+        return;
+      }
+      this.attemptAnalyzerBatchSubmitting = true;
+      const payload = this.attemptAnalyzerDryRunPayload(preview.scope);
+      payload.confirm = true;
+      if (preview.dryRunId) payload.dry_run_id = preview.dryRunId;
+      this.attemptAnalyzerApiJson('/responses/batch', {
+        method: 'POST',
+        bodyObject: payload,
+      }).then((body) => {
+        const updatedAt = new Date().toISOString();
+        const runId = firstNonEmptyText(body && body.batch_job_id, body && body.run_id, body && body.task_id, preview.dryRunId);
+        this.attemptAnalyzerLastRun = Object.assign({}, preview, {
+          runId,
+          createdAt: updatedAt,
+          submittedCount: Number((body && (body.accepted_count || body.submitted_count)) || preview.submittedCount),
+        });
+        this.closeAttemptAnalyzerBatch();
+        this.toast('已提交分析批次 · ' + this.attemptAnalyzerLastRun.submittedCount + ' 条');
+      }).catch((error) => {
+        if (isAttemptAnalyzerGateError(error)) {
+          const message = attemptAnalyzerMutationGateMessage();
+          this.attemptAnalyzerLastRun = Object.assign({}, preview, {
+            runId: preview.dryRunId || '',
+            createdAt: new Date().toISOString(),
+            mutationBlocked: true,
+            previewCount: preview.submittedCount,
+            submittedCount: 0,
+            gateMessage: message,
+          });
+          this.closeAttemptAnalyzerBatch();
+          this.toast(message);
+          return;
+        }
+        this.attemptAnalyzerBatchError = error.message || '批量提交失败';
+      }).finally(() => {
+        this.attemptAnalyzerBatchSubmitting = false;
+      });
     },
 
     isAttemptRetrying(queryDbId) {
