@@ -1205,9 +1205,6 @@ async def get_topic_monitoring(
         to_date=to_date,
         has_data=bool(summary.response_count or topics),
         base_state=state,
-        base_missing_inputs=["response_analyses.raw_analysis_json.analyzer_fact_packages"]
-        if not summary.response_count
-        else None,
         selected_filters={
             "engine": list(filters.engines) if filters.engines else None,
             "segment_id": filters.segment_id,
@@ -1218,9 +1215,35 @@ async def get_topic_monitoring(
         },
         source_provenance=["admin_facts", "response_analyses.raw_analysis_json"],
     )
-    if context.evidence_counts.get("analyzer_package_count", 0) <= 0:
-        return out
-    return out.model_copy(update=context_update(context))
+    update = context_update(context)
+    coverage_evidence = context.metric_formula_evidence.get("coverage")
+    coverage_status = (
+        str(coverage_evidence.get("formula_status") or "")
+        if isinstance(coverage_evidence, dict)
+        else "ok"
+    )
+    coverage_sources = (
+        [str(source) for source in coverage_evidence.get("source_tables", [])]
+        if isinstance(coverage_evidence, dict)
+        else []
+    )
+    analyzer_package_sources = {
+        "response_analyses.raw_analysis_json.analyzer_fact_package_v3",
+        "response_analyses.raw_analysis_json.analyzer_fact_packages",
+    }
+    if coverage_status in {"", "ok"} or not analyzer_package_sources.intersection(coverage_sources):
+        update.update(
+            {
+                "state": out.state,
+                "state_reason": out.state_reason,
+                "missing_inputs": out.missing_inputs,
+                "missing_sources": out.missing_sources,
+                "missing_reasons": out.missing_reasons,
+                "formula_status": out.formula_status,
+                "formula_diagnostics": out.formula_diagnostics,
+            }
+        )
+    return out.model_copy(update=update)
 
 
 async def get_topic_prompts(
@@ -2162,6 +2185,44 @@ async def get_query_response_detail(
         finished_at=_iso(q.get("finished_at")),
         latency_ms=_as_int(q.get("latency_ms")),
     )
+    from app.api.v1.projects._analytics_contract import build_contract_context
+
+    selected_day_raw = _date_key(
+        selected_scope_row.get("response_created_at")
+        or selected_scope_row.get("query_finished_at")
+        or selected_scope_row.get("query_created_at")
+    )
+    selected_day = (
+        date.fromisoformat(selected_day_raw)
+        if selected_day_raw is not None
+        else datetime.now().date()
+    )
+    contract = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=selected_day,
+        to_date=selected_day,
+        has_data=response is not None,
+        base_state="ok" if response is not None else "partial",
+        base_state_reason="data_available" if response is not None else "missing_response",
+        selected_filters={"query_id": int(query_id), "response_id": response_id},
+        target_response_ids={response_id} if response_id is not None else None,
+        source_provenance=[
+            "admin_facts",
+            "response_analyses",
+            "brand_mentions",
+            "citation_sources",
+        ],
+    )
+    coverage = dict(contract.metric_formula_evidence.get("coverage") or {})
+    coverage.update(
+        {
+            key: value
+            for key, value in contract.evidence_counts.items()
+            if key.startswith("analyzer_")
+        }
+    )
     return QueryResponseDetailOut(
         project_id=project.id,
         query=query,
@@ -2172,6 +2233,11 @@ async def get_query_response_detail(
         analyzer_facts=analyzer_facts,
         attempts=attempts,
         state="ok" if response is not None else "partial",
+        formula_status=contract.formula_status,
+        metric_formula_evidence=contract.metric_formula_evidence,
+        selected_filters=contract.selected_filters,
+        missing_reasons=contract.missing_reasons,
+        analyzer_coverage=coverage,
     )
 
 

@@ -874,6 +874,7 @@ async def project_citation_composition(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> CitationCompositionOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_citation_composition(
@@ -884,6 +885,7 @@ async def project_citation_composition(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
     )
 
 
