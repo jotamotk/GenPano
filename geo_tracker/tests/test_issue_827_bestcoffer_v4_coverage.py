@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -23,6 +25,7 @@ from geo_tracker.db.models import (
     ResponseRelationFact,
     Topic,
 )
+from geo_tracker.tasks import bestcoffer_v4_coverage_repair as v4_repair
 from geo_tracker.tasks.bestcoffer_v4_coverage_repair import (
     APPROVAL_REF_HELP,
     BestCofferV4CoverageScope,
@@ -82,6 +85,64 @@ def _approval_fetcher(comment_id: int) -> dict:
         },
     }
     return comments[comment_id]
+
+
+@pytest.mark.asyncio
+async def test_run_cli_opens_task_session_context_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeEngine:
+        disposed = False
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    engine = FakeEngine()
+    session_seen = object()
+
+    monkeypatch.setattr(v4_repair, "create_task_engine", lambda: engine)
+
+    @asynccontextmanager
+    async def fake_task_session(passed_engine: object):
+        assert passed_engine is engine
+        yield session_seen
+
+    async def fake_build_report(
+        session: object,
+        scope: BestCofferV4CoverageScope,
+        *,
+        mode: str,
+        approval_ref: str | None = None,
+    ) -> dict:
+        assert session is session_seen
+        assert scope.project_id == PROJECT_ID
+        assert scope.brand_id == 24
+        assert scope.competitor_brand_ids == (2,)
+        assert scope.response_ids == tuple()
+        assert scope.query_ids == tuple()
+        assert scope.limit == 500
+        assert mode == "export"
+        assert approval_ref is None
+        return {"ok": True, "mode": mode}
+
+    monkeypatch.setattr(v4_repair, "get_task_async_session", fake_task_session)
+    monkeypatch.setattr(v4_repair, "build_bestcoffer_v4_coverage_report", fake_build_report)
+
+    report = await v4_repair._run_cli(
+        SimpleNamespace(
+            mode="export",
+            project_id=PROJECT_ID,
+            brand_id="24",
+            competitor_brand_ids="2",
+            date_from="2026-05-06",
+            date_to="2026-05-13",
+            response_ids="",
+            query_ids="",
+            limit="500",
+            approval_ref="",
+        )
+    )
+
+    assert report == {"ok": True, "mode": "export"}
+    assert engine.disposed is True
 
 
 async def _seed_scope(session: AsyncSession, *, pin_topic: bool = True) -> None:
