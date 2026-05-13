@@ -1312,6 +1312,15 @@ async def build_contract_context(
         to_date=to_date,
         target_response_ids=target_response_ids,
     )
+    if has_admin_chain and not metric_formula_evidence and admin_fact_response_count > 0:
+        missing_inputs.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
+        missing_sources.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
+        missing_reasons.append("missing_analyzer_fact_packages")
+        metric_formula_evidence = _blocking_metric_evidence(
+            ["missing_analyzer_fact_packages"],
+            source_tables=["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            sample_response_ids=sorted(target_response_ids),
+        )
     if metric_formula_evidence:
         evidence_counts.update(analyzer_counts)
         missing_reasons.extend(analyzer_reason_codes)

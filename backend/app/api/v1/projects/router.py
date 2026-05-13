@@ -496,6 +496,7 @@ async def project_sentiment(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> SentimentOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment(
@@ -503,6 +504,7 @@ async def project_sentiment(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 
@@ -513,6 +515,7 @@ async def project_citations(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
     page_size: int = Query(50, ge=1, le=500),
 ) -> CitationsOut:
     project = await service.get_project_for_user(session, user, project_id)
@@ -521,6 +524,7 @@ async def project_citations(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
         page_size=page_size,
     )
 
@@ -535,6 +539,7 @@ async def project_products(
     session: AsyncSession = _DependsDb,
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> ProductsOut:
     """SKU-level rollup with top features + scenarios (PRD §4.6.1f)."""
     project = await service.get_project_for_user(session, user, project_id)
@@ -543,6 +548,7 @@ async def project_products(
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 
@@ -651,6 +657,7 @@ async def project_engine_metrics(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> EngineMetricsOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_engine_metrics(
@@ -661,6 +668,7 @@ async def project_engine_metrics(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
     )
 
 
@@ -677,6 +685,7 @@ async def project_position_distribution(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> PositionDistributionOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_position_distribution(
@@ -687,6 +696,7 @@ async def project_position_distribution(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
     )
 
 
@@ -700,6 +710,7 @@ async def project_topic_heatmap(
     top_n: int = Query(8, ge=1, le=30),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> TopicHeatmapOut:
     project = await service.get_project_for_user(session, user, project_id)
     cw = None
@@ -716,6 +727,7 @@ async def project_topic_heatmap(
         top_n=top_n,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        brand_id_override=brand_id,
     )
 
 
@@ -729,6 +741,7 @@ async def project_sentiment_by_engine(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> SentimentByEngineOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment_by_engine(
@@ -739,6 +752,7 @@ async def project_sentiment_by_engine(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
     )
 
 
@@ -755,6 +769,7 @@ async def project_sentiment_trend_by_engine(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
 ) -> SentimentTrendByEngineOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_sentiment_trend_by_engine(
@@ -765,6 +780,7 @@ async def project_sentiment_trend_by_engine(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
     )
 
 
@@ -781,6 +797,7 @@ async def project_topic_attribution(
     engine: str | None = Query(None),
     segment_id: str | None = Query(None),
     profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
     limit: int = Query(10, ge=1, le=50),
 ) -> TopicAttributionOut:
     project = await service.get_project_for_user(session, user, project_id)
@@ -792,6 +809,7 @@ async def project_topic_attribution(
         engines=_parse_csv(engine),
         segment_id=segment_id,
         profile_id=profile_id,
+        brand_id_override=brand_id,
         limit=limit,
     )
 

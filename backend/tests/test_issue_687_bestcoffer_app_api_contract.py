@@ -13,8 +13,11 @@ from genpano_models import (
     BrandMention,
     CitationSource,
     GeoScoreDaily,
+    ProductScoreDaily,
     Project,
     ProjectTopicPin,
+    ResponseAnalysis,
+    TopicScoreDaily,
     User,
 )
 from sqlalchemy import text
@@ -178,6 +181,34 @@ async def _seed_bestcoffer_response(db_session: AsyncSession) -> None:
     await db_session.commit()
 
 
+async def _seed_bestcoffer_response_two(db_session: AsyncSession) -> None:
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES (68705, 'deepseek', 'done', 'BestCoffer second comparison',
+                    :brand_id, 'PROF-687', 68702, :day, :day, :day, 100)
+            """
+        ),
+        {"brand_id": BESTCOFFER_BRAND_ID, "day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES (68706, 68705, 68702, 'BestCoffer second collected response.',
+                    'deepseek', 'commercial', 'deepseek-v3', '[]', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    await db_session.commit()
+
+
 async def _seed_unrelated_bestcoffer_facts(db_session: AsyncSession) -> None:
     await db_session.execute(
         text(
@@ -247,6 +278,80 @@ async def _seed_unrelated_bestcoffer_facts(db_session: AsyncSession) -> None:
         )
     )
     await db_session.commit()
+
+
+def _bestcoffer_package(*, response_id: int, status: str = "ok") -> dict[str, Any]:
+    analyzed_ids = [response_id] if status == "ok" else []
+    return {
+        "version": "issue_602_v1",
+        "entities": {"target_brand_id": BESTCOFFER_BRAND_ID},
+        "coverage": {
+            "status": status,
+            "formula_status": status,
+            "eligible_response_ids": [response_id],
+            "analyzed_response_ids": analyzed_ids,
+            "failed_response_ids": [],
+            "missing_analyzer_response_ids": [],
+            "eligible_count": 1,
+            "analyzed_count": len(analyzed_ids),
+            "failed_count": 0,
+            "missing_analyzer_count": 0,
+            "reason_codes": [] if status == "ok" else ["partial_analyzer_coverage"],
+            "chains": [{"response_id": response_id, "collected_at": DAY.isoformat()}],
+        },
+        "sov": {
+            "status": "ok",
+            "formula_status": "ok",
+            "numerator_target_mentions": 3,
+            "denominator_competitive_mentions": 5,
+            "competitors": [{"brand_id": 12, "brand_name": "Estee Lauder"}],
+            "reason_codes": [],
+            "sample_response_ids": [response_id],
+        },
+        "sentiment": {
+            "status": "partial",
+            "formula_status": "partial",
+            "score_count": 1,
+            "label_count": 1,
+            "driver_count": 0,
+            "quote_count": 0,
+            "reason_codes": ["missing_sentiment_driver_quote"],
+            "sample_response_ids": [response_id],
+        },
+        "citations": {
+            "status": "partial",
+            "formula_status": "partial",
+            "citation_count": 1,
+            "attributed_count": 0,
+            "unresolved_count": 1,
+            "reason_codes": ["unresolved_citation_attribution"],
+            "sample_response_ids": [response_id],
+        },
+        "pano_geo": {
+            "status": "partial",
+            "formula_status": "partial",
+            "component_readiness": {
+                "coverage": status,
+                "sov": "ok",
+                "sentiment": "partial",
+                "citation": "partial",
+            },
+            "reason_codes": ["sentiment_partial", "citation_partial"],
+        },
+    }
+
+
+def _analysis(response_id: int, package: dict[str, Any]) -> ResponseAnalysis:
+    return ResponseAnalysis(
+        response_id=response_id,
+        target_brand_mentioned=True,
+        target_brand_rank=1,
+        target_brand_sentiment="positive",
+        sentiment_score=0.8,
+        geo_score=0.8,
+        raw_analysis_json={"analyzer_fact_packages": package},
+        created_at=DAY,
+    )
 
 
 def _card_values(body: dict[str, Any]) -> list[float | None]:
@@ -398,3 +503,259 @@ async def test_unrelated_brand_facts_do_not_hide_selected_project_missing_state(
     assert overview.status_code == 200, overview.text
     _assert_selected_project_missing_contract(metrics.json())
     _assert_selected_project_missing_contract(overview.json())
+
+
+@pytest.mark.asyncio
+async def test_sentiment_and_citations_honor_requested_brand_override(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user, primary_brand_id=12)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_bestcoffer_response(db_session)
+    db_session.add(ProjectTopicPin(project_id=project.id, topic_id=68701, state="tracked"))
+    mention = BrandMention(
+        response_id=68704,
+        brand_id=BESTCOFFER_BRAND_ID,
+        brand_name="BestCoffer",
+        mention_count=3,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            CitationSource(
+                response_id=68704,
+                mention_id=mention.id,
+                url="https://example.com/bestcoffer-selected",
+                domain="example.com",
+                title="BestCoffer selected project evidence",
+                source_type="article",
+                created_at=DAY,
+            ),
+            _analysis(68704, _bestcoffer_package(response_id=68704)),
+        ]
+    )
+    await db_session.commit()
+
+    params = {
+        "brand_id": BESTCOFFER_BRAND_ID,
+        "from": DAY.date().isoformat(),
+        "to": DAY.date().isoformat(),
+    }
+    sentiment = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment",
+        headers=_bearer(user),
+        params=params,
+    )
+    citations = await client.get(
+        f"/api/v1/projects/{project.id}/citations",
+        headers=_bearer(user),
+        params=params,
+    )
+
+    assert sentiment.status_code == 200, sentiment.text
+    assert citations.status_code == 200, citations.text
+    sentiment_body = sentiment.json()
+    citations_body = citations.json()
+    assert sentiment_body["brand_id"] == BESTCOFFER_BRAND_ID
+    assert sentiment_body["selected_filters"]["brand_id"] == BESTCOFFER_BRAND_ID
+    assert citations_body["brand_id"] == BESTCOFFER_BRAND_ID
+    assert citations_body["selected_filters"]["brand_id"] == BESTCOFFER_BRAND_ID
+    assert citations_body["total"] == 1
+    assert citations_body["items"][0]["response_id"] == 68704
+
+
+@pytest.mark.asyncio
+async def test_topic_and_position_endpoints_apply_requested_brand_scope_and_analyzer_gate(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user, primary_brand_id=12)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_bestcoffer_response(db_session)
+    await _seed_bestcoffer_response_two(db_session)
+    db_session.add(ProjectTopicPin(project_id=project.id, topic_id=68701, state="tracked"))
+    partial_package = _bestcoffer_package(response_id=68704)
+    partial_package["coverage"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "eligible_response_ids": [68704, 68706],
+            "analyzed_response_ids": [68704],
+            "missing_analyzer_response_ids": [68706],
+            "eligible_count": 2,
+            "analyzed_count": 1,
+            "missing_analyzer_count": 1,
+            "reason_codes": ["missing_analyzer_rows"],
+        }
+    )
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=68704,
+                brand_id=BESTCOFFER_BRAND_ID,
+                brand_name="BestCoffer",
+                mention_count=3,
+                sentiment="negative",
+                sentiment_score=0.2,
+                position_rank=1,
+                created_at=DAY,
+            ),
+            BrandMention(
+                response_id=68706,
+                brand_id=BESTCOFFER_BRAND_ID,
+                brand_name="BestCoffer",
+                mention_count=1,
+                sentiment="positive",
+                sentiment_score=0.7,
+                position_rank=2,
+                created_at=DAY,
+            ),
+            BrandMention(
+                response_id=68704,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=99,
+                sentiment="positive",
+                sentiment_score=0.9,
+                position_rank=8,
+                created_at=DAY,
+            ),
+            TopicScoreDaily(
+                brand_id=BESTCOFFER_BRAND_ID,
+                topic_id=68701,
+                date=DAY,
+                mention_count=4,
+                total_responses=2,
+                mention_rate=1.0,
+                avg_sentiment_score=0.45,
+            ),
+            TopicScoreDaily(
+                brand_id=12,
+                topic_id=68701,
+                date=DAY,
+                mention_count=99,
+                total_responses=1,
+                mention_rate=1.0,
+                avg_sentiment_score=0.9,
+            ),
+            ProductScoreDaily(
+                brand_id=BESTCOFFER_BRAND_ID,
+                product_name="BestCoffer Pro",
+                category="espresso",
+                date=DAY,
+                target_llm="deepseek",
+                total_queries=2,
+                mention_count=4,
+                mention_rate=1.0,
+                avg_position_rank=1.5,
+                avg_geo_score=0.7,
+                avg_sentiment_score=0.45,
+                category_sov_pct=42.0,
+                category_rank=1,
+                win_rate=0.6,
+            ),
+            ProductScoreDaily(
+                brand_id=12,
+                product_name="Estee Serum",
+                category="skincare",
+                date=DAY,
+                target_llm="deepseek",
+                total_queries=1,
+                mention_count=99,
+                mention_rate=1.0,
+                avg_position_rank=1.0,
+                avg_geo_score=0.9,
+                avg_sentiment_score=0.9,
+                category_sov_pct=90.0,
+                category_rank=1,
+                win_rate=1.0,
+            ),
+            _analysis(68704, partial_package),
+        ]
+    )
+    await db_session.commit()
+
+    params = {
+        "brand_id": BESTCOFFER_BRAND_ID,
+        "from": DAY.date().isoformat(),
+        "to": DAY.date().isoformat(),
+    }
+    monitoring = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+        params=params,
+    )
+    position = await client.get(
+        f"/api/v1/projects/{project.id}/position-distribution",
+        headers=_bearer(user),
+        params=params,
+    )
+    heatmap = await client.get(
+        f"/api/v1/projects/{project.id}/topic-heatmap",
+        headers=_bearer(user),
+        params={**params, "metric": "sentiment"},
+    )
+    attribution = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/topic-attribution",
+        headers=_bearer(user),
+        params=params,
+    )
+    products = await client.get(
+        f"/api/v1/projects/{project.id}/products",
+        headers=_bearer(user),
+        params=params,
+    )
+    engine_metrics = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params=params,
+    )
+    sentiment_by_engine = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/by-engine",
+        headers=_bearer(user),
+        params=params,
+    )
+    sentiment_trend = await client.get(
+        f"/api/v1/projects/{project.id}/sentiment/trend-by-engine",
+        headers=_bearer(user),
+        params=params,
+    )
+
+    for resp in (
+        monitoring,
+        position,
+        heatmap,
+        attribution,
+        products,
+        engine_metrics,
+        sentiment_by_engine,
+        sentiment_trend,
+    ):
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["state"] == "partial"
+        assert body["formula_status"] == "partial"
+        assert body["selected_filters"]["brand_id"] == BESTCOFFER_BRAND_ID
+        assert "missing_analyzer_rows" in body["missing_reasons"]
+
+    heatmap_body = heatmap.json()
+    assert heatmap_body["rows"][0]["brand_id"] == BESTCOFFER_BRAND_ID
+    assert all(row["brand_id"] != 12 for row in heatmap_body["rows"])
+    assert heatmap_body["metric_formula_evidence"]["sentiment"]["formula_status"] == "partial"
+    products_body = products.json()
+    assert [item["brand_id"] for item in products_body["items"]] == [BESTCOFFER_BRAND_ID]
+    assert products_body["items"][0]["product_name"] == "BestCoffer Pro"
+    assert all(item["brand_id"] != 12 for item in products_body["items"])
+    assert all(item["mention_rate"] is None for item in engine_metrics.json()["items"])
+    assert all(item["sentiment"] is None for item in engine_metrics.json()["items"])
+    assert sentiment_by_engine.json()["items"] == []
+    assert sentiment_trend.json()["items"] == []
+    assert position.json()["total_mentions"] == 2
+    assert attribution.json()["metric_formula_evidence"]["sentiment"]["formula_status"] == "partial"

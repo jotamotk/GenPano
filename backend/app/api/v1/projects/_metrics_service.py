@@ -770,6 +770,7 @@ async def _sentiment_from_admin_facts(
         session,
         project,
         filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+        brand_id_override=brand_id,
     )
     response_days = _fact_response_day_map(rows)
     if not response_days:
@@ -925,10 +926,12 @@ async def get_sentiment(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
 ) -> SentimentOut:
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return SentimentOut(
             project_id=project.id,
             brand_id=None,
@@ -950,7 +953,6 @@ async def get_sentiment(
             evidence_count=0,
         )
 
-    brand_id = project.primary_brand_id
     if await _has_admin_chain(session):
         admin_sentiment = await _sentiment_from_admin_facts(
             session,
@@ -960,7 +962,19 @@ async def get_sentiment(
             to_d=to_d,
         )
         if admin_sentiment is not None:
-            return admin_sentiment
+            context = await build_contract_context(
+                session,
+                project,
+                brand_id=brand_id,
+                from_date=from_d,
+                to_date=to_d,
+                has_data=admin_sentiment.evidence_count > 0,
+                base_state=admin_sentiment.state,
+                base_missing_inputs=admin_sentiment.missing_inputs,
+                source_provenance=admin_sentiment.source_provenance
+                or ["brand_mentions", "response_analyses", "admin_facts"],
+            )
+            return admin_sentiment.model_copy(update=context_update(context))
 
     # ── distribution: aggregate brand_mentions.sentiment for this brand ─
     stmt_dist = (
@@ -1146,11 +1160,13 @@ async def get_citations(
     *,
     from_date: date | None = None,
     to_date: date | None = None,
+    brand_id_override: int | None = None,
     page_size: int = 50,
 ) -> CitationsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
 
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return CitationsOut(
             project_id=project.id,
             brand_id=None,
@@ -1164,12 +1180,12 @@ async def get_citations(
             evidence_count=0,
         )
 
-    brand_id = project.primary_brand_id
     if await _has_admin_chain(session):
         fact_rows = await _fact_rows(
             session,
             project,
             filters=AnalysisFilters(from_date=from_d, to_date=to_d),
+            brand_id_override=brand_id,
         )
         response_days = _fact_response_day_map(fact_rows)
         if response_days:
@@ -1277,7 +1293,18 @@ async def get_citations(
                 },
                 source_provenance=["citation_sources", "brand_mentions", "admin_facts"],
             )
-            return out
+            context = await build_contract_context(
+                session,
+                project,
+                brand_id=brand_id,
+                from_date=from_d,
+                to_date=to_d,
+                has_data=total > 0,
+                base_state=out.state,
+                base_missing_inputs=out.missing_inputs,
+                source_provenance=out.source_provenance,
+            )
+            return out.model_copy(update=context_update(context))
 
     # JOIN citation_sources via brand_mentions.id (mention_id FK)
     stmt = (
