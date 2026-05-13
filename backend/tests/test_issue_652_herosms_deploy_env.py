@@ -69,6 +69,7 @@ def _inline_sanitizer_sources() -> list[str]:
     steps = workflow["jobs"]["diagnostics"]["steps"]
     scripts = [
         steps[0]["run"],
+        next(step for step in steps if step.get("name") == "Run Doubao SMS forensics")["run"],
         next(step for step in steps if step.get("name") == "Run read-only diagnostics")["with"][
             "script"
         ],
@@ -152,6 +153,8 @@ def test_server_diagnostics_has_readonly_doubao_sms_forensics_mode() -> None:
     assert "cookies_json IS NOT NULL" in run_script
     assert "phone_suffix" in run_script
     assert "sanitize_herosms_stream" in run_script
+    assert "cat > \"${sanitizer_py}\" <<'PY'" in run_script
+    assert "scripts/sanitize_herosms_logs.py" not in run_script
     assert "docker compose logs --since" in run_script
 
     forbidden_write_or_sms_triggers = [
