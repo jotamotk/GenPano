@@ -66,4 +66,28 @@ describe('KpiCard', () => {
     expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
     expect(screen.getByText('—')).toBeInTheDocument()
   })
+
+  it('shows the trust badge instead of a delta when a KPI value is withheld', () => {
+    render(
+      <KpiCard
+        label="SoV"
+        value="0.0%"
+        delta={2.4}
+        deltaLabel="vs 7d"
+        trustState={{
+          tone: 'partial',
+          label: 'Needs review',
+          summary: 'Coverage incomplete: metric is waiting for more analyzed answers.',
+          details: ['34 of 56 analyzed'],
+          reasonLabels: ['Coverage incomplete'],
+          canShowValue: false,
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Needs review')).toBeInTheDocument()
+    expect(screen.queryByText('+2.4 vs 7d')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
 })

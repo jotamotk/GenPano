@@ -147,4 +147,20 @@ describe('analytics formula-status guards', () => {
     expect(state.summary).toBe('Zero is supported by complete evidence.')
     expect(state.reasonLabels).toContain('Valid zero')
   })
+
+  it('withholds an ok zero when numerator or denominator proof is missing', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'visibility',
+      value: 0,
+      formula_status: 'ok',
+      numerator: 0,
+      reason_codes: ['valid_zero'],
+    })
+
+    expect(state.tone).toBe('partial')
+    expect(state.canShowValue).toBe(false)
+    expect(state.label).toBe('Needs review')
+    expect(state.summary).toBe('Metric evidence is partial.')
+    expect(state.reasonLabels).toContain('Valid zero')
+  })
 })

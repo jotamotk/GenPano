@@ -615,7 +615,6 @@ function TopicsView({
   const visibilityTrust = topicMetricTrustState(contractSource, 'visibility')
   const sentimentTrust = topicMetricTrustState(contractSource, 'sentiment')
   const citationTrust = topicMetricTrustState(contractSource, 'citation')
-  const panoGeoTrust = topicMetricTrustState(contractSource, 'pano_geo')
 
   return (
     <div className="space-y-5">
@@ -698,7 +697,6 @@ function TopicsView({
           label="Analyzed answers"
           value={formatEvidenceCount(summary?.analyzed_count)}
           detail={`Last success ${summary?.last_collected || '-'}`}
-          trustState={panoGeoTrust}
         />
       </div>
 

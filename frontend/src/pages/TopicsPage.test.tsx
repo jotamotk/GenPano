@@ -375,6 +375,11 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getAllByText('Citation attribution unresolved').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Sentiment quote missing').length).toBeGreaterThan(0)
 
+    const analyzedCard = screen.getByText('Analyzed answers').parentElement as HTMLElement
+    expect(within(analyzedCard).getByText('34')).toBeInTheDocument()
+    expect(within(analyzedCard).getByText('Last success 2026-05-13')).toBeInTheDocument()
+    expect(within(analyzedCard).queryByText('--')).not.toBeInTheDocument()
+
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
     expect(within(row).getAllByText('Needs review').length).toBeGreaterThan(0)
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
