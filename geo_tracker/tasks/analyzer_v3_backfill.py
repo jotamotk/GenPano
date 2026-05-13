@@ -72,7 +72,9 @@ class AnalyzerV3BackfillScope:
     resume_cursor: int | None = None
 
     def normalized_response_ids(self) -> tuple[int, ...]:
-        return tuple(sorted({int(value) for value in self.response_ids if int(value) > 0}))
+        return tuple(
+            sorted({int(value) for value in self.response_ids if int(value) > 0})
+        )
 
     def normalized_query_ids(self) -> tuple[int, ...]:
         return tuple(sorted({int(value) for value in self.query_ids if int(value) > 0}))
@@ -157,13 +159,23 @@ def _scope_dict(scope: AnalyzerV3BackfillScope) -> dict:
     return data
 
 
+def _project_scope_has_explicit_boundary(scope: AnalyzerV3BackfillScope) -> bool:
+    return bool(scope.normalized_response_ids() or scope.normalized_query_ids())
+
+
+def _project_scope_is_broad_apply(scope: AnalyzerV3BackfillScope) -> bool:
+    return bool(scope.project_id and not _project_scope_has_explicit_boundary(scope))
+
+
 def _has_v3_package(raw: object) -> tuple[bool, str | None]:
     if not isinstance(raw, dict):
         return False, None
     package = raw.get("analyzer_fact_package_v3")
     if not isinstance(package, dict):
         return False, None
-    return package.get("analyzer_version") == ANALYZER_VERSION, package.get("idempotency_key")
+    return package.get("analyzer_version") == ANALYZER_VERSION, package.get(
+        "idempotency_key"
+    )
 
 
 def _candidate_state(candidate: BackfillCandidate) -> str:
@@ -237,10 +249,14 @@ async def collect_candidates(
     rows = (await session.execute(stmt)).all()
     candidates: list[BackfillCandidate] = []
     for response, query, prompt, topic, analysis in rows:
-        invalid_reason = invalid_response_reason(query.target_llm or "", response.raw_text)
+        invalid_reason = invalid_response_reason(
+            query.target_llm or "", response.raw_text
+        )
         if scope.brand_id is not None and int(query.brand_id) != int(scope.brand_id):
             invalid_reason = invalid_reason or "outside_brand_scope"
-        if scope.topic_id is not None and (topic is None or int(topic.id) != int(scope.topic_id)):
+        if scope.topic_id is not None and (
+            topic is None or int(topic.id) != int(scope.topic_id)
+        ):
             invalid_reason = invalid_reason or "outside_topic_scope"
         has_v3, idempotency_key = _has_v3_package(
             analysis.raw_analysis_json if analysis is not None else None
@@ -253,7 +269,9 @@ async def collect_candidates(
                 topic_id=int(topic.id) if topic and topic.id is not None else None,
                 prompt_id=int(prompt.id) if prompt and prompt.id is not None else None,
                 engine=query.target_llm,
-                collected_at=response.collected_at.isoformat() if response.collected_at else None,
+                collected_at=response.collected_at.isoformat()
+                if response.collected_at
+                else None,
                 analysis_status=response.analysis_status,
                 has_response_analysis=analysis is not None,
                 has_v3_package=has_v3,
@@ -286,32 +304,50 @@ async def _artifact_counts(
             },
         }
     analyses = (
-        await session.execute(
-            select(ResponseAnalysis).where(ResponseAnalysis.response_id.in_(response_ids))
+        (
+            await session.execute(
+                select(ResponseAnalysis).where(
+                    ResponseAnalysis.response_id.in_(response_ids)
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     analysis_ids = [analysis.id for analysis in analyses if analysis.id is not None]
     mentions = (
-        await session.execute(
-            select(BrandMention).where(BrandMention.response_id.in_(response_ids))
+        (
+            await session.execute(
+                select(BrandMention).where(BrandMention.response_id.in_(response_ids))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     mention_ids = [mention.id for mention in mentions if mention.id is not None]
     citation_count = len(
         (
             await session.execute(
-                select(CitationSource).where(CitationSource.response_id.in_(response_ids))
+                select(CitationSource).where(
+                    CitationSource.response_id.in_(response_ids)
+                )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     driver_count = 0
     if mention_ids:
         driver_count = len(
             (
                 await session.execute(
-                    select(SentimentDriver).where(SentimentDriver.mention_id.in_(mention_ids))
+                    select(SentimentDriver).where(
+                        SentimentDriver.mention_id.in_(mention_ids)
+                    )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     product_count = 0
     if analysis_ids:
@@ -322,7 +358,9 @@ async def _artifact_counts(
                         ProductFeatureMention.analysis_id.in_(analysis_ids)
                     )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     analyzer_packages = sum(
         1 for analysis in analyses if _has_v3_package(analysis.raw_analysis_json)[0]
@@ -344,7 +382,11 @@ async def _scoped_aggregate_counts(
     candidates: list[BackfillCandidate],
 ) -> dict:
     brand_ids = sorted(
-        {int(candidate.brand_id) for candidate in candidates if candidate.brand_id is not None}
+        {
+            int(candidate.brand_id)
+            for candidate in candidates
+            if candidate.brand_id is not None
+        }
     )
     dates = sorted(
         {
@@ -354,7 +396,11 @@ async def _scoped_aggregate_counts(
         }
     )
     topic_ids = sorted(
-        {int(candidate.topic_id) for candidate in candidates if candidate.topic_id is not None}
+        {
+            int(candidate.topic_id)
+            for candidate in candidates
+            if candidate.topic_id is not None
+        }
     )
     if not brand_ids or not dates:
         return {
@@ -443,13 +489,21 @@ async def _load_analyzer_inputs(
     response = await session.get(LLMResponse, candidate.response_id)
     query = await session.get(Query, candidate.query_id)
     if response is None or query is None:
-        raise ValueError(f"response/query not found for response_id={candidate.response_id}")
+        raise ValueError(
+            f"response/query not found for response_id={candidate.response_id}"
+        )
     brand = await session.get(Brand, candidate.brand_id)
     if brand is None:
         raise ValueError(f"brand not found for response_id={candidate.response_id}")
     competitors = (
-        await session.execute(select(Competitor).where(Competitor.brand_id == brand.id))
-    ).scalars().all()
+        (
+            await session.execute(
+                select(Competitor).where(Competitor.brand_id == brand.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     intent = "non_brand"
     if query.prompt_id:
         prompt = await session.get(Prompt, query.prompt_id)
@@ -472,10 +526,25 @@ async def build_analyzer_v3_backfill_report(
 
     candidates = await collect_candidates(session, scope)
     before = await summarize_candidates(session, candidates)
-    pending = [candidate for candidate in candidates if _candidate_state(candidate) == "PENDING"]
+    pending = [
+        candidate
+        for candidate in candidates
+        if _candidate_state(candidate) == "PENDING"
+    ]
     selected = pending[: int(scope.batch_size)]
     skipped = [candidate for candidate in candidates if candidate not in selected]
     next_cursor = selected[-1].response_id if selected else scope.resume_cursor
+    project_scope_enforced = False
+    project_scope_note = (
+        "No queries.project_id column exists in this pipeline schema; project_id "
+        "is operator traceability only for dry-run reports and is not an apply "
+        "boundary unless explicit response_ids or query_ids are supplied."
+    )
+    broad_project_apply = apply and _project_scope_is_broad_apply(scope)
+    if broad_project_apply:
+        skipped = list(candidates)
+        selected = []
+        next_cursor = scope.resume_cursor
     report = {
         "issue": 711,
         "mode": "apply" if apply else "dry_run",
@@ -487,12 +556,10 @@ async def build_analyzer_v3_backfill_report(
             "versioned_analyzer_artifacts_only": True,
             "production_apply_requires_approval_ref": True,
             "project_scope": scope.project_id,
-            "project_filter_note": (
-                "No queries.project_id column exists in this pipeline schema; "
-                "project_id is reported for operator traceability only."
-            )
-            if scope.project_id
-            else None,
+            "project_scope_enforced": project_scope_enforced,
+            "project_filter_note": project_scope_note if scope.project_id else None,
+            "selected_by_response_ids": bool(scope.normalized_response_ids()),
+            "selected_by_query_ids": bool(scope.normalized_query_ids()),
         },
         "selected_response_ids": [candidate.response_id for candidate in selected],
         "skipped_response_ids": [candidate.response_id for candidate in skipped],
@@ -513,6 +580,21 @@ async def build_analyzer_v3_backfill_report(
             "from the pre-apply database backup or rerun the same response_ids."
         ),
     }
+    if broad_project_apply:
+        report.update(
+            {
+                "apply_blocked": True,
+                "block_reason": "project_scope_requires_explicit_response_or_query_ids",
+                "write_performed": False,
+                "apply_plan": (
+                    "Apply blocked before analyzer writes because project_id cannot "
+                    "be enforced by this schema without explicit response_ids or "
+                    "query_ids. Rerun dry-run, attach evidence, then apply with "
+                    "explicit ids."
+                ),
+            }
+        )
+        return report
     if not apply:
         return report
 
@@ -523,11 +605,15 @@ async def build_analyzer_v3_backfill_report(
 
     apply_results: list[dict] = []
     for candidate in selected:
-        response, brand, competitors, intent = await _load_analyzer_inputs(session, candidate)
+        response, brand, competitors, intent = await _load_analyzer_inputs(
+            session, candidate
+        )
         result = await analyze_func(session, response, brand, competitors, intent)
         apply_results.append(result)
         if result.get("status") != "done":
-            after = await summarize_candidates(session, await collect_candidates(session, scope))
+            after = await summarize_candidates(
+                session, await collect_candidates(session, scope)
+            )
             report.update(
                 {
                     "write_performed": True,
@@ -549,7 +635,9 @@ async def build_analyzer_v3_backfill_report(
             raise AnalyzerV3BackfillApplyError(report)
     report["write_performed"] = bool(selected)
     report["apply_results"] = apply_results
-    report["after"] = await summarize_candidates(session, await collect_candidates(session, scope))
+    report["after"] = await summarize_candidates(
+        session, await collect_candidates(session, scope)
+    )
     report["apply_plan"] = "Applied only selected pending response_ids."
     return report
 
@@ -587,7 +675,9 @@ async def run_from_args(args: argparse.Namespace) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyzer v3 backfill for issue #711")
-    parser.add_argument("--response-ids", default="", help="Comma-separated response ids")
+    parser.add_argument(
+        "--response-ids", default="", help="Comma-separated response ids"
+    )
     parser.add_argument("--query-ids", default="", help="Comma-separated query ids")
     parser.add_argument("--project-id")
     parser.add_argument("--brand-id", type=int)

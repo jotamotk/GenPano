@@ -150,13 +150,17 @@ def test_approval_ref_accepts_issue_711_ai_lead_apply_evidence() -> None:
         "https://github.com/jotamotk/trash_test/issues/711#issuecomment-4436999999 dry-run only",
     ],
 )
-def test_approval_ref_rejects_missing_issue_711_write_approval(approval_ref: str) -> None:
+def test_approval_ref_rejects_missing_issue_711_write_approval(
+    approval_ref: str,
+) -> None:
     with pytest.raises(ValueError, match="approval_ref"):
         validate_approval_ref(approval_ref)
 
 
 @pytest.mark.asyncio
-async def test_dry_run_reports_missing_existing_and_resume_cursor(session: AsyncSession) -> None:
+async def test_dry_run_reports_missing_existing_and_resume_cursor(
+    session: AsyncSession,
+) -> None:
     await _seed_scope(session)
 
     report = await build_analyzer_v3_backfill_report(
@@ -184,7 +188,34 @@ async def test_dry_run_reports_missing_existing_and_resume_cursor(session: Async
 
 
 @pytest.mark.asyncio
-async def test_apply_is_idempotent_and_resumable_after_interruption(session: AsyncSession) -> None:
+async def test_dry_run_reports_project_scope_is_not_apply_boundary(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+
+    report = await build_analyzer_v3_backfill_report(
+        session,
+        AnalyzerV3BackfillScope(
+            project_id="95d43022-a5c8-5944-b6d6-34b29faa18b5",
+            brand_id=24,
+            topic_id=7111,
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            batch_size=10,
+        ),
+    )
+
+    assert report["mode"] == "dry_run"
+    assert report["selected_response_ids"] == [7120]
+    assert report.get("apply_blocked") is None
+    assert report["safe_selection"]["project_scope_enforced"] is False
+    assert "not an apply boundary" in report["safe_selection"]["project_filter_note"]
+
+
+@pytest.mark.asyncio
+async def test_apply_is_idempotent_and_resumable_after_interruption(
+    session: AsyncSession,
+) -> None:
     await _seed_scope(session)
     calls: list[int] = []
 
@@ -233,7 +264,95 @@ async def test_apply_is_idempotent_and_resumable_after_interruption(session: Asy
 
 
 @pytest.mark.asyncio
-async def test_apply_failure_reports_partial_state_before_retry(session: AsyncSession) -> None:
+async def test_apply_rejects_project_scope_without_explicit_response_or_query_ids(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    calls: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        calls.append(response.id)
+        return {"response_id": response.id, "status": "done"}
+
+    report = await build_analyzer_v3_backfill_report(
+        session,
+        AnalyzerV3BackfillScope(
+            project_id="95d43022-a5c8-5944-b6d6-34b29faa18b5",
+            brand_id=24,
+            topic_id=7111,
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            batch_size=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        analyze_func=fake_analyze,
+    )
+
+    assert calls == []
+    assert report["write_performed"] is False
+    assert report["apply_blocked"] is True
+    assert (
+        report["block_reason"]
+        == "project_scope_requires_explicit_response_or_query_ids"
+    )
+    assert report["selected_response_ids"] == []
+    assert report["safe_selection"]["project_scope_enforced"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope_kwargs", [{"response_ids": (7120,)}, {"query_ids": (7113,)}]
+)
+async def test_apply_allows_project_scope_with_explicit_response_or_query_ids(
+    session: AsyncSession,
+    scope_kwargs: dict,
+) -> None:
+    await _seed_scope(session)
+    calls: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        calls.append(response.id)
+        response.analysis_status = AnalysisStatus.DONE.value
+        session.add(
+            ResponseAnalysis(
+                response_id=response.id,
+                dimension_industry="coffee",
+                analyzer_model="fake",
+                raw_analysis_json={
+                    "analyzer_fact_package_v3": {
+                        "analyzer_version": "v3",
+                        "idempotency_key": f"{response.id}:v3:fresh",
+                    }
+                },
+            )
+        )
+        await session.commit()
+        return {"response_id": response.id, "status": "done"}
+
+    report = await build_analyzer_v3_backfill_report(
+        session,
+        AnalyzerV3BackfillScope(
+            project_id="95d43022-a5c8-5944-b6d6-34b29faa18b5",
+            brand_id=24,
+            batch_size=10,
+            **scope_kwargs,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        analyze_func=fake_analyze,
+    )
+
+    assert calls == [7120]
+    assert report["write_performed"] is True
+    assert report.get("apply_blocked") is None
+    assert report["safe_selection"]["project_scope_enforced"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_failure_reports_partial_state_before_retry(
+    session: AsyncSession,
+) -> None:
     await _seed_scope(session)
 
     async def fake_analyze(session, response, brand, competitors, intent):
@@ -242,7 +361,9 @@ async def test_apply_failure_reports_partial_state_before_retry(session: AsyncSe
     with pytest.raises(AnalyzerV3BackfillApplyError) as exc:
         await build_analyzer_v3_backfill_report(
             session,
-            AnalyzerV3BackfillScope(response_ids=(7120, 7121), brand_id=24, batch_size=10),
+            AnalyzerV3BackfillScope(
+                response_ids=(7120, 7121), brand_id=24, batch_size=10
+            ),
             apply=True,
             approval_ref=APPROVAL_REF,
             analyze_func=fake_analyze,
