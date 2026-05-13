@@ -312,6 +312,27 @@ class BaseSMSLoginHandler(ABC):
 
             # ── 手机号 + 短信验证码循环 ─────────────────────────────────
             # 重新登录时不换号（号码绑定账号），新注册时收不到短信则换号重试
+            if existing_cookies:
+                pre_verified = await self.verify_success(page)
+                if pre_verified is True:
+                    logger.info(
+                        "[%s] existing cookies already satisfy post-login auth; "
+                        "skipping SMS form entry",
+                        self.platform,
+                    )
+                    return await self._collect_login_success_payload(
+                        page,
+                        context,
+                        phone=phone,
+                        sms_provider=sms_provider,
+                        current_lease=current_lease,
+                    )
+                if (
+                    isinstance(pre_verified, str)
+                    and not await self._login_form_is_available(page)
+                ):
+                    return _fail(pre_verified)
+
             max_attempts = 1 if is_relogin else self.MAX_PHONE_RETRIES
             last_fail_reason = ""
 
@@ -579,6 +600,76 @@ class BaseSMSLoginHandler(ABC):
                 await sms_provider.close()
 
     # ── 内部方法 ────────────────────────────────────────────────────────
+
+    async def _collect_login_success_payload(
+        self,
+        page: Page,
+        context,
+        *,
+        phone: str | None,
+        sms_provider,
+        current_lease,
+    ) -> dict:
+        new_cookies = await context.cookies()
+        cookies_list = self._format_cookies(new_cookies)
+
+        local_storage = {}
+        try:
+            local_storage = await page.evaluate("""
+                () => {
+                    const keys = ['userToken'];
+                    const result = {};
+                    for (const k of keys) {
+                        const v = localStorage.getItem(k);
+                        if (v) result[k] = v;
+                    }
+                    return result;
+                }
+            """)
+        except Exception as e:
+            logger.debug(
+                "[%s] extract localStorage failed: %s",
+                self.platform,
+                redact_sensitive_text(e),
+            )
+
+        logger.info(
+            "[%s] login success: phone=%s, cookies=%s%s",
+            self.platform,
+            mask_phone(phone),
+            len(cookies_list),
+            f", localStorage={len(local_storage)}" if local_storage else "",
+        )
+        if self.local_storage_keys is None:
+            local_storage = await self._extract_all_local_storage(page)
+        storage_state = await self._extract_storage_state(context)
+
+        mark_success = getattr(sms_provider, "mark_success", None)
+        if mark_success and current_lease is not None:
+            await mark_success(current_lease)
+        result = {"phone": phone, "cookies": cookies_list}
+        if local_storage:
+            result["localStorage"] = local_storage
+        if storage_state:
+            result["storageState"] = storage_state
+        return result
+
+    async def _login_form_is_available(self, page: Page) -> bool:
+        try:
+            phone_input = await page.query_selector(
+                "[data-testid='login_phone_number_input'], "
+                "input[placeholder*='鎵嬫満'], "
+                "input[inputmode='decimal'][maxlength='11'], "
+                "input[maxlength='11'][type='text']"
+            )
+            if not phone_input:
+                return False
+            try:
+                return bool(await phone_input.is_visible())
+            except Exception:
+                return True
+        except Exception:
+            return False
 
     async def _launch_browser(self) -> tuple:
         """

@@ -210,6 +210,78 @@ def test_cookie_keep_alive_success_preserves_local_storage_and_storage_state(
     assert payload["storageState"] == storage_state
 
 
+def test_doubao_cookie_keep_alive_uses_proxy_and_reauths_auth_loss_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'keepalive-doubao.db'}"
+    account_id = 61803
+    asyncio.run(
+        _seed_account(
+            db_url,
+            LLMAccount(
+                id=account_id,
+                llm_name="doubao",
+                status=AccountStatus.ACTIVE.value,
+                cookies_json=json.dumps(
+                    {"cookies": [{"name": "session", "value": "<redacted>"}]}
+                ),
+                cookies_updated_at=datetime.utcnow(),
+                daily_limit=20,
+            ),
+        )
+    )
+    _patch_task_db(monkeypatch, celery_tasks, db_url)
+
+    seen_proxy_urls: list[str | None] = []
+
+    class FakeGuestQueryExecutor:
+        def __init__(self, *, proxy_url=None, account_cookies=None):
+            self.proxy_url = proxy_url
+            self.account_cookies = account_cookies
+            self.last_error_reason = None
+            self.keep_alive_evidence = None
+            seen_proxy_urls.append(proxy_url)
+
+    async def fake_visit_and_refresh(executor, _config, llm_name):
+        assert llm_name == "doubao"
+        executor.last_error_reason = "doubao_not_logged_in"
+        executor.keep_alive_evidence = "url_host=www.doubao.com body_marker=login_chrome"
+        return None
+
+    relogin_calls: list[dict] = []
+
+    async def fake_should_enqueue_relogin(enqueued_account_id):
+        assert enqueued_account_id == account_id
+        return True
+
+    class FakeAutoLogin:
+        @staticmethod
+        def apply_async(*, kwargs, queue):
+            relogin_calls.append({"kwargs": kwargs, "queue": queue})
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
+    monkeypatch.delenv("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", raising=False)
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+    monkeypatch.setattr(celery_tasks, "_visit_and_refresh", fake_visit_and_refresh)
+    monkeypatch.setattr(celery_tasks, "should_enqueue_relogin", fake_should_enqueue_relogin)
+    monkeypatch.setattr(celery_tasks, "auto_login", FakeAutoLogin)
+
+    result = celery_tasks.cookie_keep_alive.run()
+
+    account = asyncio.run(_load_account(db_url, account_id))
+    assert result["failed"] == 1
+    assert account.status == AccountStatus.EXPIRED.value
+    assert seen_proxy_urls == ["http://proxy.internal:6789"]
+    assert relogin_calls == [
+        {"kwargs": {"account_id": account_id}, "queue": "account_login"}
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("llm_name", "config", "page", "expected_reason"),

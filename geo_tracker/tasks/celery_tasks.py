@@ -78,6 +78,38 @@ def _keep_alive_auto_relogin_enabled() -> bool:
     return _env_flag("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", False)
 
 
+def _doubao_uses_proxy_route() -> bool:
+    return _env_flag("DOUBAO_USE_PROXY", True)
+
+
+def _keep_alive_proxy_url(llm_name: str) -> str | None:
+    proxy_url = (
+        os.getenv("CLASH_PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+    )
+    if not proxy_url:
+        return None
+    llm = (llm_name or "").lower()
+    if llm == "doubao" and _doubao_uses_proxy_route():
+        return proxy_url
+    if llm not in DOMESTIC_LLMS:
+        return proxy_url
+    return None
+
+
+def _keep_alive_should_enqueue_relogin(
+    llm_name: str | None,
+    failure_reason: str | None,
+) -> bool:
+    if _keep_alive_auto_relogin_enabled():
+        return True
+    return (
+        (llm_name or "").lower() == "doubao"
+        and failure_reason in DOUBAO_REAUTH_FAILURE_REASONS
+    )
+
+
 def _safe_url_host(url: str | None) -> str:
     if not url:
         return "unknown"
@@ -1158,10 +1190,7 @@ def cookie_keep_alive() -> dict:
                     continue
 
                 try:
-                    proxy_url = (
-                        os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY")
-                        if llm_name not in DOMESTIC_LLMS else None
-                    )
+                    proxy_url = _keep_alive_proxy_url(llm_name)
                     executor = GuestQueryExecutor(
                         proxy_url=proxy_url,
                         account_cookies=account.cookies_json,
@@ -1240,7 +1269,10 @@ def cookie_keep_alive() -> dict:
                         # 触发自动重新登录 (生产事故 2026-04-27: 加去重锁,
                         # 防止 keep-alive 周期性反复触发同账号登录)
                         if (
-                            _keep_alive_auto_relogin_enabled()
+                            _keep_alive_should_enqueue_relogin(
+                                llm_name,
+                                failure_reason,
+                            )
                             and await should_enqueue_relogin(account.id)
                         ):
                             auto_login.apply_async(
@@ -1609,7 +1641,10 @@ async def _visit_and_refresh(
     except ImportError:
         has_camoufox = False
 
-    use_proxy = executor.proxy_url and llm_name not in DOMESTIC_LLMS
+    use_proxy = bool(
+        executor.proxy_url
+        and (llm_name not in DOMESTIC_LLMS or llm_name == "doubao")
+    )
     needs_stealth = bool(executor.account_cookies)
     use_camoufox = has_camoufox and (use_proxy or needs_stealth)
 

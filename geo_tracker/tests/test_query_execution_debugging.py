@@ -542,6 +542,22 @@ def test_doubao_authenticated_completed_answer_is_allowed():
     assert doubao_auth_state_reason(text, html) is None
 
 
+def test_doubao_runtime_logged_out_state_rejects_false_success():
+    text = "bestCoffer generated-looking answer"
+    html = """
+    <script>
+    window.__doubao_state__ = {
+      accountInfo: {data: {description: "会话过期，请重新登录", error_code: 13, user_id: 0}},
+      userSetting: {data: {is_login: false}}
+    };
+    </script>
+    <button id="login-btn-header">登录</button>
+    <main><div class="flow-markdown-body">answer text</div></main>
+    """
+
+    assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
+
+
 def test_doubao_persistence_gate_rejects_answer_html_with_login_chrome():
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
 
@@ -630,8 +646,8 @@ async def test_doubao_no_response_login_dialog_missing_state_overrides_generic_r
 
     reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
 
-    assert reason == "doubao_auth_state_missing"
-    assert executor.last_error_reason == "doubao_auth_state_missing"
+    assert reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
 
 
 @pytest.mark.asyncio

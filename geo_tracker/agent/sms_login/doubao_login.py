@@ -310,10 +310,19 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         """
         判断当前页面是否已经处于登录态。
         特征：
+        - 全页严格鉴权状态没有登录/过期/登出运行时信号
         - 聊天输入区的 textarea（placeholder='发消息...'）可见
         - 且页面上没有可见的 '登录' 按钮 / 链接
         这样可以避免在 cookies 仍有效时把账号误当做需要重新登录。
         """
+        auth_reason = await self._post_login_auth_failure_reason(page)
+        if auth_reason:
+            logger.warning(
+                "[doubao] existing-cookie auth proof failed: %s",
+                auth_reason,
+            )
+            return False
+
         try:
             res = await page.evaluate(
                 """

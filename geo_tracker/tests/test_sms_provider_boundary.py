@@ -94,6 +94,39 @@ class _FakeDoubaoVerifyPage(_FakePage):
         return self._html
 
 
+class _FakeDoubaoLoggedOutRuntimePage(_FakePage):
+    def __init__(self) -> None:
+        super().__init__(
+            url="https://www.doubao.com/chat/?from_logout=1",
+            body_text="bestCoffer answer text",
+        )
+        self._html = """
+        <script>
+        window.__doubao_state__ = {
+          accountInfo: {data: {description: "会话过期，请重新登录", error_code: 13, user_id: 0}},
+          userSetting: {data: {is_login: false}}
+        };
+        </script>
+        <textarea placeholder="发消息"></textarea>
+        <main><div class="flow-markdown-body">answer text</div></main>
+        """
+
+    async def evaluate(self, script: str):
+        if "outerHTML" in script:
+            return self._html
+        if "innerText" in script:
+            return self._body_text
+        if "document.querySelectorAll('textarea')" in script:
+            return {"chat": True, "loginBtn": False}
+        return {}
+
+    async def content(self) -> str:
+        return self._html
+
+    async def wait_for_selector(self, *_args, **_kwargs):
+        raise TimeoutError("not found")
+
+
 class _FakeContext:
     def __init__(self, page: _FakePage | None = None) -> None:
         self._page = page or _FakePage()
@@ -224,6 +257,106 @@ async def test_existing_handlers_use_shared_sms_provider_flow(
     assert result["cookies"][0]["name"] == "session"
     assert provider.reserved == [FAKE_CN_PHONE]
     assert provider.polled == [(FAKE_CN_PHONE, keyword, 120)]
+    assert provider.released == [FAKE_CN_PHONE]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_existing_cookie_relogin_success_skips_sms_phone_form(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    from geo_tracker.agent.sms_login import base
+
+    provider = _FakeProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(_FakePage())
+
+    async def _navigate(_page):
+        return True
+
+    async def _verify(_page):
+        return True
+
+    async def _input_phone(_page, _phone):
+        raise AssertionError("phone input should be skipped for valid cookies")
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+    monkeypatch.setattr(handler, "_add_stealth_script", _none)
+    monkeypatch.setattr(handler, "navigate_to_login", _navigate)
+    monkeypatch.setattr(handler, "verify_success", _verify)
+    monkeypatch.setattr(handler, "input_phone", _input_phone)
+
+    result = await handler.login_or_register(
+        existing_cookies=f'[{{"name":"session","value":"{FAKE_COOKIE_VALUE}"}}]',
+        phone=FAKE_CN_PHONE,
+    )
+
+    assert result["phone"] == FAKE_CN_PHONE
+    assert result["cookies"][0]["name"] == "session"
+    assert provider.reserved == [FAKE_CN_PHONE]
+    assert provider.polled == []
+    assert provider.released == [FAKE_CN_PHONE]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_doubao_already_logged_in_rejects_runtime_logged_out_markers(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    page = _FakeDoubaoLoggedOutRuntimePage()
+
+    assert await handler._already_logged_in(page) is False
+
+
+@pytest.mark.asyncio
+async def test_doubao_existing_cookie_relogin_does_not_succeed_on_logged_out_runtime(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    provider = _FakeProvider()
+    page = _FakeDoubaoLoggedOutRuntimePage()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    async def _empty_candidates(_page):
+        return []
+
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(handler, "_add_stealth_script", _none)
+    monkeypatch.setattr(handler, "_save_debug", _none)
+    monkeypatch.setattr(handler, "_collect_login_candidates", _empty_candidates)
+
+    result = await handler.login_or_register(
+        existing_cookies=f'[{{"name":"session","value":"{FAKE_COOKIE_VALUE}"}}]',
+        phone=FAKE_CN_PHONE,
+    )
+
+    assert result["status"] == "failed"
+    assert "cookies" not in result
+    assert provider.polled == []
     assert provider.released == [FAKE_CN_PHONE]
     assert provider.closed is True
 

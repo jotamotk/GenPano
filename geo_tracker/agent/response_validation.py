@@ -46,6 +46,14 @@ _CHATGPT_LOGGED_OUT_SHELL_MARKERS = (
 _DOUBAO_UNAUTH_TEXT_MARKERS = (
     "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
     "\u514d\u767b\u5f55",  # 免登录
+    "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd",
+    "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55",
+    "from_logout=1",
+    "login-btn-header",
+    "error_code=13",
+    '"error_code":13',
+    '"is_login":false',
+    '"user_id":0',
 )
 
 _DOUBAO_LOGIN_BUTTON_RE = re.compile(
