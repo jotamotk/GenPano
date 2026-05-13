@@ -27,7 +27,11 @@ except ImportError:
 from geo_tracker.analyzer.brand_detector import DetectedBrand
 from geo_tracker.analyzer.position_type import normalize_position_type
 from geo_tracker.analyzer.prompts import ANALYSIS_SYSTEM, ANALYSIS_USER
-from geo_tracker.analyzer.v4_contract import CATEGORY_PRODUCT_FEATURE_TYPES
+from geo_tracker.analyzer.v4_contract import (
+    CATEGORY_PRODUCT_FEATURE_TYPES,
+    DRIVER_TYPES,
+    SENTIMENT_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,14 @@ class LLMAnalysisResult:
     parse_error: str | None = None
     raw_output: str | None = None
     json_repaired: bool = False
+
+
+def _is_numeric(value: object) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 class LLMAnalyzer:
@@ -366,7 +378,12 @@ class LLMAnalyzer:
 
         drivers_by_mention: dict[str, list[dict]] = {}
         for driver in data.get("sentiment_drivers", []):
-            if isinstance(driver, dict):
+            if (
+                isinstance(driver, dict)
+                and driver.get("sentiment_label") in SENTIMENT_LABELS
+                and driver.get("driver_type") in DRIVER_TYPES
+                and _is_numeric(driver.get("confidence"))
+            ):
                 drivers_by_mention.setdefault(str(driver.get("mention_key")), []).append(driver)
         features_by_product: dict[str, list[dict]] = {}
         for feature in data.get("product_features", []):

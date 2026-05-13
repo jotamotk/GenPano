@@ -652,6 +652,58 @@ async def test_analyzer_v4_category_product_features_are_not_persisted_as_featur
     assert "unsupported_product_feature_type_dropped" in flag_codes
 
 
+@pytest.mark.asyncio
+async def test_analyzer_v4_malformed_sentiment_drivers_are_not_persisted(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["sentiment_drivers"].append(
+        {
+            "driver_key": "driver_malformed_null_fields",
+            "mention_key": "mention_acme_calm",
+            "target_entity_key": "ent_product_calm",
+            "sentiment_label": None,
+            "driver_type": None,
+            "driver_summary": "Malformed null sentiment driver",
+            "evidence_quote": "uses gentle ceramides",
+            "confidence": None,
+            "quality_flags": [],
+        }
+    )
+    parsed = object.__new__(LLMAnalyzer)._parse_result(package)
+    _patch_pipeline(monkeypatch, parsed)
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    driver_texts = (
+        await session.execute(
+            select(SentimentDriver.driver_text).where(
+                SentimentDriver.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "Malformed null sentiment driver" not in driver_texts
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "malformed_sentiment_driver_dropped" in flag_codes
+
+
 def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
     package = _valid_v4_package()
     package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
@@ -829,6 +881,69 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
         "unsupported_product_feature_type_dropped",
         "feature",
         "feature_category_ceramide_serum",
+    ) in flags
+
+
+def test_analyzer_v4_drops_malformed_sentiment_drivers_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["sentiment_drivers"].extend(
+        [
+            {
+                "driver_key": "driver_malformed_null_fields",
+                "mention_key": "mention_acme_calm",
+                "target_entity_key": "ent_product_calm",
+                "sentiment_label": None,
+                "driver_type": None,
+                "driver_summary": "Malformed null sentiment driver",
+                "evidence_quote": "uses gentle ceramides",
+                "confidence": None,
+                "quality_flags": [],
+            },
+            {
+                "driver_key": "driver_malformed_confidence",
+                "mention_key": "mention_acme_calm",
+                "target_entity_key": "ent_product_calm",
+                "sentiment_label": "positive",
+                "driver_type": "benefit",
+                "driver_summary": "Malformed nonnumeric confidence",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": "high",
+                "quality_flags": [],
+            },
+        ]
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    driver_keys = {
+        driver["driver_key"] for driver in result.package["sentiment_drivers"]
+    }
+    assert "driver_malformed_null_fields" not in driver_keys
+    assert "driver_malformed_confidence" not in driver_keys
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "malformed_sentiment_driver_dropped",
+        "driver",
+        "driver_malformed_null_fields",
+    ) in flags
+    assert (
+        "malformed_sentiment_driver_dropped",
+        "driver",
+        "driver_malformed_confidence",
     ) in flags
 
 

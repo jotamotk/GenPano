@@ -198,6 +198,7 @@ def validate_analyzer_v4_package(
             errors.append(f"schema_validation_failed: {key} must be a list")
             raw_package[key] = []
     _drop_malformed_mentions(raw_package, flags)
+    _drop_malformed_sentiment_drivers(raw_package, flags)
     _drop_category_product_features(raw_package, flags)
 
     entity_keys: set[str] = set()
@@ -767,38 +768,86 @@ def _objects(value: Any) -> list[dict[str, Any]]:
 
 
 def _drop_malformed_mentions(package: dict[str, Any], flags: list[dict[str, Any]]) -> None:
-    mentions = package.get("mentions")
-    if not isinstance(mentions, list):
+    _drop_malformed_required_fact_rows(
+        package,
+        flags,
+        collection_key="mentions",
+        key_field="mention_key",
+        fallback_prefix="mention",
+        target_type="mention",
+        flag_code="malformed_mention_dropped",
+        label="Mention",
+        required_fields=("mention_type", "position", "sentiment_label", "confidence"),
+        numeric_fields=("confidence",),
+    )
+
+
+def _drop_malformed_sentiment_drivers(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    _drop_malformed_required_fact_rows(
+        package,
+        flags,
+        collection_key="sentiment_drivers",
+        key_field="driver_key",
+        fallback_prefix="driver",
+        target_type="driver",
+        flag_code="malformed_sentiment_driver_dropped",
+        label="Sentiment driver",
+        required_fields=("sentiment_label", "driver_type", "confidence"),
+        numeric_fields=("confidence",),
+    )
+
+
+def _drop_malformed_required_fact_rows(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+    *,
+    collection_key: str,
+    key_field: str,
+    fallback_prefix: str,
+    target_type: str,
+    flag_code: str,
+    label: str,
+    required_fields: tuple[str, ...],
+    numeric_fields: tuple[str, ...] = (),
+) -> None:
+    rows = package.get(collection_key)
+    if not isinstance(rows, list):
         return
 
     kept: list[dict[str, Any]] = []
-    for index, mention in enumerate(mentions):
-        if not isinstance(mention, dict):
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
             continue
-        missing_fields = [
-            field
-            for field in ("mention_type", "position", "sentiment_label", "confidence")
-            if mention.get(field) is None
+        invalid_fields = [
+            field for field in required_fields if row.get(field) is None
         ]
-        if not missing_fields:
-            kept.append(mention)
+        invalid_fields.extend(
+            field
+            for field in numeric_fields
+            if row.get(field) is not None and not _is_numeric(row.get(field))
+        )
+        if not invalid_fields:
+            kept.append(row)
             continue
 
-        key = str(mention.get("mention_key") or f"mention_{index}")
-        mention["mention_key"] = key
+        key = str(row.get(key_field) or f"{fallback_prefix}_{index}")
+        row[key_field] = key
         _append_flag(
             flags,
-            code="malformed_mention_dropped",
+            code=flag_code,
             severity="error",
             message=(
-                "Mention was dropped because required fields were null: "
-                f"{', '.join(missing_fields)}."
+                f"{label} was dropped because required fields were null "
+                f"or invalid: {', '.join(dict.fromkeys(invalid_fields))}."
             ),
-            target_type="mention",
+            target_type=target_type,
             target_key=key,
             blocks_metric_readiness=True,
         )
-    package["mentions"] = kept
+    package[collection_key] = kept
 
 
 def _drop_category_product_features(
@@ -990,6 +1039,14 @@ def _validate_confidence(item: dict[str, Any], errors: list[str], path: str) -> 
         return
     if not 0 <= value <= 1:
         errors.append(f"schema_validation_failed: {path}.confidence must be between 0 and 1")
+
+
+def _is_numeric(value: Any) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _require_string(item: dict[str, Any], field_name: str, errors: list[str], path: str) -> None:

@@ -103,6 +103,9 @@ Every fact must include evidence_quote, or include a matching quality_flags code
 such as missing_evidence_quote, relation_unresolved, citation_unlinked,
 sentiment_unknown, mixed_sentiment, brand_unresolved, product_unresolved,
 category_unresolved, or invalid_mention_type.
+Do not emit sentiment_drivers with null sentiment_label, null driver_type, or
+null/non-numeric confidence; omit the driver if those required fields cannot be
+determined from response evidence.
 Do not use category as product_features.feature_type; represent categories as
 category entities, category mentions, or has_attribute relations. Use
 belongs_to_brand only for response-evidenced product-to-brand ownership.
