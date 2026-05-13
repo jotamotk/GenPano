@@ -11,6 +11,8 @@ import os
 
 import redis.asyncio as aioredis
 
+from geo_tracker.agent.sms_redaction import mask_phone, redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 86400  # 24 小时（默认）
@@ -36,11 +38,13 @@ async def add_to_blacklist(
         await client.set(_key(platform, phone), value, ex=ttl)
         ttl_desc = "永久" if permanent else "24h"
         logger.info(
-            f"[{platform}] 手机号 {phone} 已加入黑名单 (TTL={ttl_desc})"
-            + (f", 原因: {reason}" if reason else "")
+            f"[{platform}] 手机号 {mask_phone(phone)} 已加入黑名单 (TTL={ttl_desc})"
+            + (f", 原因: {redact_sensitive_text(reason)}" if reason else "")
         )
     except Exception as e:
-        logger.warning(f"[{platform}] 写入黑名单失败: {e}")
+        logger.warning(
+            f"[{platform}] 写入黑名单失败: {redact_sensitive_text(e)}"
+        )
     finally:
         await client.aclose()
 
@@ -52,7 +56,9 @@ async def is_blacklisted(platform: str, phone: str) -> bool:
     try:
         return bool(await client.exists(_key(platform, phone)))
     except Exception as e:
-        logger.warning(f"[{platform}] 查询黑名单失败: {e}")
+        logger.warning(
+            f"[{platform}] 查询黑名单失败: {redact_sensitive_text(e)}"
+        )
         return False
     finally:
         await client.aclose()

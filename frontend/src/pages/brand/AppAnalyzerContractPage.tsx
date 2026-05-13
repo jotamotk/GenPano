@@ -14,6 +14,70 @@ const STATUS_STYLES = {
   empty: 'default',
 } as const
 
+const TRUST_STATES = [
+  {
+    code: 'missing_analyzer_rows',
+    label: 'Analyzer rows missing',
+    behavior: 'Show Needs review and withhold values that depend on missing analyzed answers.',
+  },
+  {
+    code: 'insufficient_coverage',
+    label: 'Coverage incomplete',
+    behavior: 'Show analyzed / eligible / missing counts beside the metric.',
+  },
+  {
+    code: 'missing_competitive_extraction',
+    label: 'Competitor evidence incomplete',
+    behavior: 'Do not render SoV or competitor charts as valid business values.',
+  },
+  {
+    code: 'target_only_sov',
+    label: 'Target-only SoV',
+    behavior: 'Show partial SoV; never turn target-only evidence into 100%.',
+  },
+  {
+    code: 'unresolved_citation_attribution',
+    label: 'Citation attribution unresolved',
+    behavior: 'Separate unresolved citations from target-attributed citation metrics.',
+  },
+  {
+    code: 'missing_sentiment_quote',
+    label: 'Sentiment quote missing',
+    behavior: 'Keep sentiment explanatory modules partial until quotes are present.',
+  },
+  {
+    code: 'valid_zero',
+    label: 'Valid zero',
+    behavior: 'Render 0 only when formula_status is ok and the numerator/denominator are present.',
+  },
+]
+
+const PAYLOAD_EXAMPLE = `{
+  "formula_status": "partial",
+  "metric_formula_evidence": {
+    "sov": {
+      "formula_status": "partial",
+      "numerator": 30,
+      "denominator": 138,
+      "reason_codes": ["missing_analyzer_rows", "insufficient_coverage"]
+    },
+    "citation": {
+      "formula_status": "partial",
+      "numerator": 0,
+      "denominator": 183,
+      "reason_codes": ["unresolved_citation_attribution"]
+    }
+  },
+  "missing_inputs": ["geo_score_daily"],
+  "analyzer_coverage": {
+    "eligible_response_count": 56,
+    "analyzed_response_count": 34,
+    "missing_response_count": 22,
+    "failed_response_count": 0,
+    "analyzer_version": "v3"
+  }
+}`
+
 function TextList({ items }: { items: string[] }) {
   return (
     <ul className="space-y-1">
@@ -154,6 +218,38 @@ export default function AppAnalyzerContractPage() {
             modules to be ok. Score-only evidence stays partial where the UI explains why
             sentiment moved.
           </p>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.8fr)] gap-3">
+        <Card className="p-0 overflow-hidden">
+          <div className="px-4 py-3 border-b border-themed-card">
+            <h3 className="text-sm font-semibold text-themed-primary">Analyzer trust states</h3>
+            <p className="mt-1 text-xs text-themed-muted">
+              These states keep partial evidence visible without presenting it as a final metric.
+            </p>
+          </div>
+          <div className="divide-y divide-themed-card">
+            {TRUST_STATES.map((state) => (
+              <div key={state.code} className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] gap-2 px-4 py-3">
+                <div>
+                  <code className="text-[11px] text-themed-accent">{state.code}</code>
+                  <div className="mt-1 text-sm font-semibold text-themed-primary">{state.label}</div>
+                </div>
+                <div className="text-xs leading-relaxed text-themed-muted">{state.behavior}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-themed-primary">Payload example</h3>
+          <p className="mt-1 text-xs text-themed-muted">
+            Screenshot-class coverage: 34 analyzed / 56 eligible / 22 missing.
+          </p>
+          <pre className="mt-3 max-h-[420px] overflow-auto rounded-btn bg-themed-subtle p-3 text-[11px] leading-relaxed text-themed-primary">
+            <code>{PAYLOAD_EXAMPLE}</code>
+          </pre>
         </Card>
       </div>
 

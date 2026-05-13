@@ -41,4 +41,53 @@ describe('KpiCard', () => {
 
     expect(onClick).not.toHaveBeenCalled()
   })
+
+  it('shows metric trust state and withholds a partial KPI value', () => {
+    render(
+      <KpiCard
+        label="SoV"
+        value="0.0%"
+        trustState={{
+          tone: 'partial',
+          label: 'Needs review',
+          summary: 'Coverage incomplete: metric is waiting for more analyzed answers.',
+          details: ['34 of 56 analyzed', '22 missing', 'Analyzer v3'],
+          reasonLabels: ['Analysis coverage missing', 'Competitor evidence incomplete'],
+          canShowValue: false,
+        }}
+      />,
+    )
+
+    expect(screen.getByText('SoV')).toBeInTheDocument()
+    expect(screen.getByText('Needs review')).toBeInTheDocument()
+    expect(screen.getByText('Coverage incomplete: metric is waiting for more analyzed answers.')).toBeInTheDocument()
+    expect(screen.getByText('34 of 56 analyzed')).toBeInTheDocument()
+    expect(screen.getByText('Analysis coverage missing')).toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
+  it('shows the trust badge instead of a delta when a KPI value is withheld', () => {
+    render(
+      <KpiCard
+        label="SoV"
+        value="0.0%"
+        delta={2.4}
+        deltaLabel="vs 7d"
+        trustState={{
+          tone: 'partial',
+          label: 'Needs review',
+          summary: 'Coverage incomplete: metric is waiting for more analyzed answers.',
+          details: ['34 of 56 analyzed'],
+          reasonLabels: ['Coverage incomplete'],
+          canShowValue: false,
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Needs review')).toBeInTheDocument()
+    expect(screen.queryByText('+2.4 vs 7d')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
 })
