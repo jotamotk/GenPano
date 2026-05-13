@@ -1195,8 +1195,8 @@ async def get_topic_monitoring(
         state_reason="data_available" if state == "ok" else "no_topic_monitoring_data",
         evidence_count=summary.response_count,
     )
-    from_date = filters.from_date or date.today()
-    to_date = filters.to_date or from_date
+    to_date = filters.to_date or date.today()
+    from_date = filters.from_date or (to_date - timedelta(days=29))
     context = await build_contract_context(
         session,
         project,
@@ -1218,6 +1218,8 @@ async def get_topic_monitoring(
         },
         source_provenance=["admin_facts", "response_analyses.raw_analysis_json"],
     )
+    if context.evidence_counts.get("analyzer_package_count", 0) <= 0:
+        return out
     return out.model_copy(update=context_update(context))
 
 

@@ -220,6 +220,8 @@ async def _chart_contract_update(
     metric_keys: list[str],
     source_provenance: list[str],
     brand_id: int | None = None,
+    require_analyzer_package: bool = False,
+    allow_geo_score_daily_without_analyzer: bool = False,
 ) -> dict[str, Any]:
     scoped_brand_id = brand_id if brand_id is not None else project.primary_brand_id
     if scoped_brand_id is None:
@@ -236,8 +238,12 @@ async def _chart_contract_update(
         source_provenance=source_provenance,
     )
     evidence = context.metric_formula_evidence
-    missing_inputs: list[str] = list(context.missing_inputs)
-    missing_reasons: list[str] = list(context.missing_reasons)
+    has_aggregate_metric_rows = context.evidence_counts.get("geo_score_daily_rows", 0) > 0
+    use_aggregate_contract = (
+        allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows and not evidence
+    )
+    missing_inputs: list[str] = [] if use_aggregate_contract else list(context.missing_inputs)
+    missing_reasons: list[str] = [] if use_aggregate_contract else list(context.missing_reasons)
     coverage_status = metric_formula_status(context, "mention_rate")
     if coverage_status and coverage_status != FORMULA_OK_STATUS:
         missing_inputs.extend(metric_missing_inputs(context, "mention_rate"))
@@ -252,7 +258,12 @@ async def _chart_contract_update(
             if isinstance(metric_evidence, dict):
                 missing_reasons.extend(metric_evidence.get("reason_codes") or [])
 
-    if not evidence and has_data:
+    if (
+        require_analyzer_package
+        and not evidence
+        and has_data
+        and not (allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows)
+    ):
         evidence = _missing_analyzer_metric_evidence(metric_keys)
         missing_inputs.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
         missing_reasons.append("missing_analyzer_fact_packages")
@@ -313,6 +324,7 @@ async def _with_chart_contract[ChartOutT: BaseModel](
     metric_keys: list[str],
     source_provenance: list[str],
     brand_id: int | None = None,
+    require_analyzer_package: bool = False,
 ) -> ChartOutT:
     update = await _chart_contract_update(
         session,
@@ -323,6 +335,7 @@ async def _with_chart_contract[ChartOutT: BaseModel](
         metric_keys=metric_keys,
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=require_analyzer_package,
     )
     return out.model_copy(update=update) if update else out
 
@@ -359,6 +372,7 @@ async def _with_sentiment_by_engine_contract(
         metric_keys=["sentiment"],
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -386,6 +400,7 @@ async def _with_authority_trend_contract(
         metric_keys=["citation"],
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -413,6 +428,7 @@ async def _with_citation_composition_contract(
         metric_keys=["citation"],
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -472,6 +488,7 @@ async def _with_engine_metric_contract(
         metric_keys=["mention_rate", "sov", "citation", "sentiment"],
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=True,
     )
     if not update:
         return out
@@ -498,6 +515,8 @@ async def _with_sentiment_trend_contract(
         metric_keys=["sentiment"],
         source_provenance=source_provenance,
         brand_id=brand_id,
+        require_analyzer_package=True,
+        allow_geo_score_daily_without_analyzer=True,
     )
     if not update:
         return out
