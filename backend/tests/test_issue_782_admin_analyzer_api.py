@@ -785,3 +785,26 @@ async def test_batch_submit_with_no_candidates_completes_and_unknown_status_404(
     assert submit_body["status"] == "complete"
     assert status.status_code == 404
     assert status.json()["error"] == "batch_not_found"
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_submit_with_no_candidates_uses_admin_contract(
+    client, admin_operator
+) -> None:
+    submit = await client.post(
+        "/api/analyzer/responses/batch",
+        json={
+            "scope": {"response_ids": [101]},
+            "confirm": True,
+            "idempotency_key": "legacy-batch-no-candidates-101",
+        },
+    )
+    status = await client.get("/api/analyzer/batches/batch-123")
+
+    assert submit.status_code == 200
+    submit_body = submit.json()
+    assert submit_body["success"] is True
+    assert submit_body["accepted_count"] == 0
+    assert submit_body["status"] == "complete"
+    assert status.status_code == 404
+    assert status.json()["error"] == "batch_not_found"

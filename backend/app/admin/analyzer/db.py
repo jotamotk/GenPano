@@ -21,8 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.analyzer.lib import BatchPreviewRows
 from app.admin.queries.lib import split_pending_status
+from app.db import _upstream_stubs
 
 logger = logging.getLogger(__name__)
+# Keep analyzer ORM ForeignKey metadata resolvable in production imports, matching tests.
+_UPSTREAM_STUBS_REGISTERED = _upstream_stubs.UPSTREAM_STUB_NAMES
 BATCH_DRY_RUN_QUERY_LIMIT = 5000
 ACTIVE_ANALYZER_RUN_STATUSES = {"queued", "running"}
 ACTIVE_ANALYZER_BATCH_STATUSES = {"queued", "running"}

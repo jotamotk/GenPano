@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import os
+import subprocess
 import sys
 import uuid
 from collections.abc import AsyncGenerator
@@ -11,8 +13,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
-from genpano_models import AdminUser, AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun
-from sqlalchemy import func, select, text
+from genpano_models import AdminUser, AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun, Base
+from sqlalchemy import Column, Integer, Table, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +68,31 @@ def _status_row(**overrides: Any) -> dict[str, Any]:
     }
     row.update(overrides)
     return row
+
+
+def test_analyzer_db_import_registers_batch_response_fk_metadata_without_conftest() -> None:
+    script = """
+import os
+os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
+import app.admin.analyzer.db  # noqa: F401
+from genpano_models import AnalyzerBatchItem
+
+for fk in AnalyzerBatchItem.__table__.foreign_keys:
+    if fk.parent.name == "response_id":
+        assert fk.column.table.name == "llm_responses"
+        break
+else:
+    raise AssertionError("AnalyzerBatchItem.response_id FK missing")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio
@@ -1164,6 +1191,55 @@ async def test_db_batch_submission_persists_items_and_refreshes_status(
     }
     assert by_response_id[79710]["status"] == "done"
     assert by_response_id[79711]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_db_batch_submission_registers_upstream_response_metadata_without_conftest(
+    db_session: AsyncSession,
+) -> None:
+    table = Base.metadata.tables["llm_responses"]
+    Base.metadata.remove(table)
+    sys.modules.pop("app.admin.analyzer.db", None)
+    try:
+        analyzer_db = importlib.import_module("app.admin.analyzer.db")
+        normalized = {
+            "scope": {"response_ids": [79713], "query_ids": [], "filters": {}},
+            "mode": "missing_or_failed_only",
+            "max_count": 10,
+            "sample_limit": 10,
+            "reason": "operator batch",
+            "idempotency_key": "batch-metadata-797",
+            "confirm": True,
+        }
+        preview = {
+            "success": True,
+            "dry_run": True,
+            "dry_run_id": "dry-metadata-797",
+            "mode": "missing_or_failed_only",
+            "eligible_response_ids": [],
+            "will_enqueue_count": 0,
+            "skipped_counts": {"already_done": 1},
+            "skipped_samples": {
+                "already_done": [
+                    {"response_id": 79713, "query_id": 99713, "reason": "already_done"}
+                ]
+            },
+            "_candidate_rows": [{"response_id": 79713, "query_id": 99713}],
+        }
+
+        batch = await analyzer_db.create_analyzer_batch_submission(
+            db_session,
+            normalized=normalized,
+            preview=preview,
+            operator_id="admin-797",
+        )
+
+        assert batch["status"] == "complete"
+        assert batch["submitted_count"] == 0
+        assert batch["skipped_count"] == 1
+    finally:
+        if "llm_responses" not in Base.metadata.tables:
+            Table("llm_responses", Base.metadata, Column("id", Integer, primary_key=True))
 
 
 @pytest.mark.asyncio
