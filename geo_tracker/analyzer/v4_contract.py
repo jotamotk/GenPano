@@ -79,6 +79,7 @@ FEATURE_TYPES = {
     "audience",
     "packaging",
     "availability",
+    "quality",
     "other",
 }
 CATEGORY_PRODUCT_FEATURE_TYPES = {"category"}

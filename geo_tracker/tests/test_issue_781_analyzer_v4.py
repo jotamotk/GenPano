@@ -1141,6 +1141,55 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
     ) in flags
 
 
+def test_analyzer_v4_accepts_quality_product_feature_type_for_issue_833() -> None:
+    package = _valid_v4_package()
+    package["product_features"].append(
+        {
+            "feature_key": "feature_quality_smooth_crema",
+            "product_entity_key": "ent_product_calm",
+            "brand_entity_key": "ent_brand_acme",
+            "feature_type": "quality",
+            "feature_name": "smooth crema",
+            "feature_value": "high-quality mouthfeel",
+            "evidence_quote": "smooth crema and high-quality extraction",
+            "confidence": 0.81,
+            "quality_flags": [],
+        }
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum uses gentle ceramides. "
+            "The coffee response mentions smooth crema and high-quality extraction."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.errors == []
+    assert result.package["product_features"][-1]["feature_type"] == "quality"
+
+
+def test_analyzer_v4_still_rejects_unknown_product_feature_type() -> None:
+    package = _valid_v4_package()
+    package["product_features"][0]["feature_type"] = "flavor_profile"
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text="AcmeBeauty Calm Serum uses gentle ceramides.",
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is False
+    assert (
+        "schema_validation_failed: product_features[0].feature_type='flavor_profile' is invalid"
+        in result.errors
+    )
+
+
 def test_analyzer_v4_drops_malformed_product_feature_confidence_with_quality_flags() -> None:
     package = _valid_v4_package()
     package["product_features"].extend(
