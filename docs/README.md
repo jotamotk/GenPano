@@ -16,6 +16,7 @@ Canonical product and implementation references:
 - `openapi.yaml`
 - `AI_LEAD_WORKFLOW.md`
 - `AI_LEAD_CLAUDE_COLLABORATION.md`
+- `CODEX_ACCOUNT_HANDOFF.md`
 
 Historical agent planning artifacts were removed in the cleanup branch. Do not
 recreate root `CLAUDE.md`, session prompt files, decision logs, or auto-memory
