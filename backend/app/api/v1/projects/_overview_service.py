@@ -218,7 +218,12 @@ def _apply_kpi_contract(
             evidence_source=evidence_source,
         )
         if not missing_inputs:
-            out.append(card)
+            formula_status = metric_formula_status(
+                context,
+                card.metric_key,
+                card.formula_status,
+            )
+            out.append(card.model_copy(update={"formula_status": formula_status}))
             continue
         formula_status = metric_formula_status(
             context,
@@ -960,15 +965,11 @@ async def get_brand_overview(
         await _score_components(session, brand_id, from_d, to_d),
         context,
     )
-    if (geo_status := metric_formula_status(context, "pano_score")) and (
-        geo_status != FORMULA_OK_STATUS
-    ):
+    if metric_missing_inputs(context, "pano_score"):
         geo_30d = []
-    if (sov_status := metric_formula_status(context, "sov")) and (sov_status != FORMULA_OK_STATUS):
+    if metric_missing_inputs(context, "sov"):
         sov_30d = []
-    if (sentiment_status := metric_formula_status(context, "sentiment")) and (
-        sentiment_status != FORMULA_OK_STATUS
-    ):
+    if metric_missing_inputs(context, "sentiment"):
         sentiment_30d = []
 
     out = BrandOverviewOut(

@@ -655,6 +655,107 @@ async def test_analyzer_rollup_ignores_same_brand_packages_outside_project_respo
 
 
 @pytest.mark.asyncio
+async def test_analyzer_rollup_keeps_sov_visible_when_mixed_packages_have_competitor_denominator(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    db_session.add(ProjectTopicPin(project_id=project.id, topic_id=74401, state="tracked"))
+    db_session.add(ProjectTopicPin(project_id=project.id, topic_id=74402, state="tracked"))
+    await _seed_chain_response(
+        db_session,
+        topic_id=74401,
+        prompt_id=74411,
+        query_id=74421,
+        response_id=74431,
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=74402,
+        prompt_id=74412,
+        query_id=74422,
+        response_id=74432,
+    )
+    target_only = _base_packages(response_id=74431)
+    target_only["coverage"].update(
+        {
+            "status": "partial",
+            "formula_status": "partial",
+            "reason_codes": ["partial_analyzer_coverage", "missing_analyzer_rows"],
+        }
+    )
+    target_only["sov"].update(
+        {
+            "status": "missing_required_inputs",
+            "formula_status": "missing_required_inputs",
+            "reason_codes": ["target_only_sov"],
+            "numerator_target_mentions": 35,
+            "denominator_competitive_mentions": 35,
+            "sov": None,
+            "competitors": [],
+        }
+    )
+    with_competitor = _base_packages(response_id=74432)
+    with_competitor["sov"].update(
+        {
+            "numerator_target_mentions": 0,
+            "denominator_competitive_mentions": 211,
+            "sov": 0.0,
+            "competitors": [{"brand_id": 2, "brand_name": "Competitor", "mention_count": 211}],
+            "sample_response_ids": [74432],
+        }
+    )
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=74431,
+                brand_id=12,
+                brand_name="Estee Lauder",
+                mention_count=35,
+                sentiment="positive",
+                sentiment_score=0.8,
+                created_at=DAY,
+            ),
+            BrandMention(
+                response_id=74432,
+                brand_id=2,
+                brand_name="Competitor",
+                mention_count=211,
+                sentiment="neutral",
+                sentiment_score=0.0,
+                created_at=DAY,
+            ),
+            _analysis(74431, target_only),
+            _analysis(74432, with_competitor),
+        ]
+    )
+    await db_session.commit()
+
+    metrics = await client.get(
+        f"/api/v1/projects/{project.id}/metrics",
+        headers=_bearer(user),
+        params={
+            "brand_id": 12,
+            "from": DAY.date().isoformat(),
+            "to": DAY.date().isoformat(),
+            "series": "sov",
+        },
+    )
+
+    assert metrics.status_code == 200, metrics.text
+    body = metrics.json()
+    sov_series = body["series"][0]
+    assert sov_series["points"][0]["value"] == pytest.approx(35 / 246, abs=0.0001)
+    assert body["formula_status"] == "partial"
+    assert sov_series["formula_status"] == "ok"
+    assert "target_only_sov" not in sov_series["missing_inputs"]
+    assert body["metric_formula_evidence"]["sov"]["numerator_count"] == 35
+    assert body["metric_formula_evidence"]["sov"]["denominator_count"] == 246
+
+
+@pytest.mark.asyncio
 async def test_analyzer_rollup_ignores_same_brand_packages_from_another_project_chain(
     client,
     user: User,

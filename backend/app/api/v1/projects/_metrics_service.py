@@ -85,6 +85,8 @@ class _FactMetricBucket(TypedDict):
     response_ids: set[int]
     mention_denominator_response_ids: set[int]
     target_mention_response_ids: set[int]
+    citation_target_response_ids: set[int]
+    has_citation_input: bool
     has_target_mention_input: bool
     has_all_mention_input: bool
     target_mentions: int
@@ -92,7 +94,7 @@ class _FactMetricBucket(TypedDict):
     ranks: list[float]
     sentiment_scores: list[float]
     sentiment_label_count: int
-    citation_count: int
+    cited_target_response_ids: set[int]
 
 
 def _period(from_d: date, to_d: date) -> dict[str, str]:
@@ -262,7 +264,12 @@ def _apply_metric_series_contract(
             evidence_source=evidence_source,
         )
         if not missing_inputs:
-            out.append(item)
+            formula_status = metric_formula_status(
+                context,
+                item.metric,
+                item.formula_status,
+            )
+            out.append(item.model_copy(update={"formula_status": formula_status}))
             continue
         formula_status = metric_formula_status(
             context,
@@ -338,10 +345,13 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
             return None
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
-        response_count = len(bucket["response_ids"])
-        if response_count <= 0 or bucket["citation_count"] <= 0:
+        target_response_count = len(bucket["citation_target_response_ids"])
+        if target_response_count <= 0 or not bucket["has_citation_input"]:
             return None
-        return round(float(bucket["citation_count"]) / response_count, 4)
+        return round(
+            len(bucket["cited_target_response_ids"]) / target_response_count,
+            4,
+        )
     return None
 
 
@@ -383,6 +393,8 @@ async def _metrics_from_admin_facts(
                 "response_ids": set[int](),
                 "mention_denominator_response_ids": set[int](),
                 "target_mention_response_ids": set[int](),
+                "citation_target_response_ids": set[int](),
+                "has_citation_input": False,
                 "has_target_mention_input": False,
                 "has_all_mention_input": False,
                 "target_mentions": 0,
@@ -390,7 +402,7 @@ async def _metrics_from_admin_facts(
                 "ranks": [],
                 "sentiment_scores": [],
                 "sentiment_label_count": 0,
-                "citation_count": 0,
+                "cited_target_response_ids": set[int](),
             },
         )
         bucket["response_ids"].add(response_id)
@@ -400,8 +412,12 @@ async def _metrics_from_admin_facts(
             bucket["has_target_mention_input"] = True
         if row.get("all_mention_count") is not None:
             bucket["has_all_mention_input"] = True
+        if row.get("citation_count") is not None:
+            bucket["has_citation_input"] = True
         bucket["target_mentions"] += target_mentions
         bucket["all_mentions"] += all_mentions
+        if target_mentions > 0:
+            bucket["citation_target_response_ids"].add(response_id)
         if _is_non_branded_row(row):
             bucket["mention_denominator_response_ids"].add(response_id)
             if target_mentions > 0:
@@ -421,7 +437,8 @@ async def _metrics_from_admin_facts(
             + int(row.get("neutral_mentions") or 0)
             + int(row.get("negative_mentions") or 0)
         )
-        bucket["citation_count"] += int(row.get("citation_count") or 0)
+        if target_mentions > 0 and int(row.get("citation_count") or 0) > 0:
+            bucket["cited_target_response_ids"].add(response_id)
 
     out_series: list[MetricSeries] = []
     for metric in requested:

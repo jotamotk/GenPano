@@ -44,6 +44,56 @@ _BLOCKING_REASON_CODES = {
     ANALYSIS_MISSING_REASON,
     NO_AGGREGATE_ROWS_REASON,
 }
+_COMMON_METRIC_BLOCKING_REASONS = {
+    PROJECT_UNBOUND_REASON,
+    MISSING_PROJECT_BRAND_BINDING_REASON,
+    ANALYSIS_MISSING_REASON,
+    NO_AGGREGATE_ROWS_REASON,
+    "missing_analyzer_fact_packages",
+}
+_METRIC_BLOCKING_REASONS = {
+    "coverage": {
+        "missing_analyzer_rows",
+        "partial_analyzer_coverage",
+        "eligible_response_denominator",
+    },
+    "sov": {
+        "missing_competitive_extraction",
+        "target_only_sov",
+        "sov_empty",
+        "sov_missing_required_inputs",
+        "brand_mentions.competitive_set",
+    },
+    "sentiment": {
+        "missing_sentiment_score_or_label",
+        "missing_sentiment_label",
+        "missing_sentiment_driver_quote",
+        "missing_competitor_sentiment_evidence",
+        "sentiment_empty",
+        "sentiment_component_empty",
+        "brand_mentions.sentiment_score",
+    },
+    "citation": {
+        "unresolved_citation_attribution",
+        "citation_empty",
+        "citation_partial",
+        "citation_sources",
+        "citation_sources.mention_id",
+        "citation_component_partial",
+        "citation_component_empty",
+    },
+    "pano_geo": {
+        "missing_analyzer_rows",
+        "pano_component_empty",
+        "visibility_component_empty",
+        "sentiment_component_empty",
+        "sov_component_empty",
+        "citation_component_empty",
+        "sov_missing_required_inputs",
+        "citation_component_partial",
+        "sentiment_component_partial",
+    },
+}
 
 
 class ValueRange(BaseModel):
@@ -597,6 +647,7 @@ def _rollup_sov(packages: list[dict[str, Any]]) -> dict[str, Any]:
     numerator = 0
     denominator = 0
     competitors: list[dict[str, Any]] = []
+    reason_codes: list[str] = []
     for package in packages:
         sov = package.get("sov")
         if not isinstance(sov, dict):
@@ -609,30 +660,57 @@ def _rollup_sov(packages: list[dict[str, Any]]) -> dict[str, Any]:
         denominator += int(sov.get("denominator_competitive_mentions") or 0)
         if isinstance(sov.get("competitors"), list):
             competitors.extend(item for item in sov["competitors"] if isinstance(item, dict))
-        evidence["reason_codes"].extend(_package_reason_codes(package, "sov"))
+        reason_codes.extend(_package_reason_codes(package, "sov"))
         evidence["sample_response_ids"].extend(sov.get("sample_response_ids") or [])
     if packages and evidence["formula_status"] == FORMULA_NO_EVIDENCE_STATUS:
         evidence["formula_status"] = FORMULA_MISSING_INPUTS_STATUS
+    competitor_count = len(
+        {
+            (
+                item.get("brand_id"),
+                str(item.get("brand_name") or item.get("raw_name") or ""),
+            )
+            for item in competitors
+        }
+    )
+    has_competitive_denominator = denominator > 0 and denominator > numerator
+    if has_competitive_denominator:
+        reason_codes = [
+            reason
+            for reason in reason_codes
+            if reason
+            not in {
+                "missing_competitive_extraction",
+                "target_only_sov",
+                "sov_empty",
+                "sov_missing_required_inputs",
+            }
+        ]
+        blocking_reasons = [
+            reason
+            for reason in reason_codes
+            if reason in _METRIC_BLOCKING_REASONS["sov"]
+            or reason in _COMMON_METRIC_BLOCKING_REASONS
+        ]
+        if not blocking_reasons:
+            evidence["formula_status"] = (
+                FORMULA_PARTIAL_STATUS
+                if "partial_analyzer_coverage" in reason_codes
+                or "missing_analyzer_rows" in reason_codes
+                else FORMULA_OK_STATUS
+            )
     evidence.update(
         {
             "numerator_name": "target_competitive_mentions",
             "denominator_name": "all_competitive_mentions",
             "numerator_count": numerator,
             "denominator_count": denominator,
-            "competitor_count": len(
-                {
-                    (
-                        item.get("brand_id"),
-                        str(item.get("brand_name") or item.get("raw_name") or ""),
-                    )
-                    for item in competitors
-                }
-            ),
+            "competitor_count": competitor_count,
             "source_tables": _package_source_tables(packages),
             "fact_classes": ["sov", "entities"],
         }
     )
-    evidence["reason_codes"] = _unique(evidence["reason_codes"])
+    evidence["reason_codes"] = _unique(reason_codes)
     evidence["sample_response_ids"] = sorted(
         {int(value) for value in evidence["sample_response_ids"]}
     )
@@ -1119,17 +1197,57 @@ def metric_formula_status(
     return str(evidence.get("formula_status") or default or FORMULA_NO_EVIDENCE_STATUS)
 
 
+def metric_blocking_inputs_from_evidence(
+    metric_key: str | None,
+    evidence: dict[str, Any] | None,
+) -> list[str]:
+    if not metric_key or not evidence:
+        return []
+    status = str(evidence.get("formula_status") or FORMULA_NO_EVIDENCE_STATUS)
+    if status == FORMULA_OK_STATUS:
+        return []
+    evidence_key = (
+        "sov"
+        if metric_key in {"sov", "avg_sov"}
+        else "sentiment"
+        if metric_key in {"sentiment", "avg_sentiment"}
+        else "citation"
+        if metric_key in {"citation", "citation_rate", "avg_citation_rate"}
+        else "pano_geo"
+        if metric_key in {"geo_score", "avg_geo_score", "pano_score", "final_geo_score"}
+        else "coverage"
+        if metric_key in {"mention_rate", "avg_mention_rate"}
+        else metric_key
+    )
+    blocking_reasons = {
+        *_COMMON_METRIC_BLOCKING_REASONS,
+        *_METRIC_BLOCKING_REASONS.get(evidence_key, set()),
+    }
+    reasons = [str(reason) for reason in evidence.get("reason_codes", []) if reason]
+    if evidence_key == "sov":
+        denominator = int(evidence.get("denominator_count") or 0)
+        numerator = int(evidence.get("numerator_count") or 0)
+        if denominator > numerator:
+            blocking_reasons = {
+                reason
+                for reason in blocking_reasons
+                if reason
+                not in {
+                    "missing_competitive_extraction",
+                    "target_only_sov",
+                    "sov_empty",
+                    "sov_missing_required_inputs",
+                }
+            }
+    return _unique([reason for reason in reasons if reason in blocking_reasons])
+
+
 def metric_missing_inputs(
     context: AnalyticsContractContext,
     metric_key: str | None,
 ) -> list[str]:
     evidence = metric_evidence_for(context, metric_key)
-    if not evidence:
-        return []
-    status = str(evidence.get("formula_status") or FORMULA_NO_EVIDENCE_STATUS)
-    if status == FORMULA_OK_STATUS:
-        return []
-    return _unique([str(reason) for reason in evidence.get("reason_codes", []) if reason])
+    return metric_blocking_inputs_from_evidence(metric_key, evidence)
 
 
 async def _competitor_ids(session: AsyncSession, project: Project) -> list[int]:
