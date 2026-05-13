@@ -1692,12 +1692,7 @@ async def get_topic_heatmap(
     if update and _contract_metric_non_ok(update, contract_metric):
         update["rows"] = [
             row.model_copy(
-                update={
-                    "values": [
-                        cell.model_copy(update={"value": None})
-                        for cell in row.values
-                    ]
-                }
+                update={"values": [cell.model_copy(update={"value": None}) for cell in row.values]}
             )
             for row in out.rows
         ]
@@ -1980,11 +1975,11 @@ async def get_sentiment_trend_by_engine(
         ):
             return await _with_sentiment_trend_contract(
                 _sentiment_missing_out(
-                project_id=project.id,
-                period=_period(from_d, to_d),
-                engines=engine_list,
-                evidence_count=evidence_count,
-                evidence_counts=evidence_counts,
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    engines=engine_list,
+                    evidence_count=evidence_count,
+                    evidence_counts=evidence_counts,
                 ),
                 session,
                 project,
@@ -2063,11 +2058,11 @@ async def get_sentiment_trend_by_engine(
         ):
             return await _with_sentiment_trend_contract(
                 _sentiment_missing_out(
-                project_id=project.id,
-                period=_period(from_d, to_d),
-                engines=engines,
-                evidence_count=evidence_count,
-                evidence_counts=evidence_counts,
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    engines=engines,
+                    evidence_count=evidence_count,
+                    evidence_counts=evidence_counts,
                 ),
                 session,
                 project,
@@ -2106,11 +2101,11 @@ async def get_sentiment_trend_by_engine(
     ):
         return await _with_sentiment_trend_contract(
             _sentiment_missing_out(
-            project_id=project.id,
-            period=_period(from_d, to_d),
-            engines=engines,
-            evidence_count=evidence_count,
-            evidence_counts=evidence_counts,
+                project_id=project.id,
+                period=_period(from_d, to_d),
+                engines=engines,
+                evidence_count=evidence_count,
+                evidence_counts=evidence_counts,
             ),
             session,
             project,

@@ -460,8 +460,7 @@ async def get_products(
                 ResponseAnalysis.id == ProductFeatureMention.analysis_id,
             ).where(ResponseAnalysis.response_id.in_(scoped_response_ids))
         legacy_stmt = (
-            legacy_stmt
-            .group_by(ProductFeatureMention.product_name)
+            legacy_stmt.group_by(ProductFeatureMention.product_name)
             .order_by(desc("mentions"))
             .limit(50)
         )
@@ -522,12 +521,10 @@ async def get_products(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
                 func.count().label("cnt"),
-            )
-            .where(ProductFeatureMention.product_name == product_name)
+            ).where(ProductFeatureMention.product_name == product_name)
         )
         feat_stmt = (
-            feat_stmt
-            .group_by(
+            feat_stmt.group_by(
                 ProductFeatureMention.feature_name,
                 ProductFeatureMention.feature_sentiment,
             )
@@ -548,20 +545,14 @@ async def get_products(
         ]
 
         sc_stmt = _product_feature_scope(
-            select(ProductFeatureMention.scenario, func.count().label("cnt"))
-            .where(
+            select(ProductFeatureMention.scenario, func.count().label("cnt")).where(
                 and_(
                     ProductFeatureMention.product_name == product_name,
                     ProductFeatureMention.scenario.isnot(None),
                 )
             )
         )
-        sc_stmt = (
-            sc_stmt
-            .group_by(ProductFeatureMention.scenario)
-            .order_by(desc("cnt"))
-            .limit(5)
-        )
+        sc_stmt = sc_stmt.group_by(ProductFeatureMention.scenario).order_by(desc("cnt")).limit(5)
         try:
             sc_rows = (await session.execute(sc_stmt)).all()
         except Exception:
