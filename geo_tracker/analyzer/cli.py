@@ -43,6 +43,7 @@ from geo_tracker.analyzer.aggregator import Aggregator
 from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
 from geo_tracker.analyzer.position_type import normalize_position_type
 from geo_tracker.analyzer.v4_contract import stage_analyzer_v4_result
+from geo_tracker.tasks.analyzer_run_recovery import recover_stale_active_analyzer_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -561,6 +562,17 @@ async def analyze_single_response(
         analyzer_run.status = "running"
         analyzer_run.started_at = analyzer_run.started_at or _utcnow_naive()
     else:
+        recovery = await recover_stale_active_analyzer_run(
+            session,
+            response_id=response_id,
+        )
+        if recovery.blocked:
+            return {
+                "response_id": response_id,
+                "status": "failed",
+                "error": recovery.reason,
+                "analyzer_run_recovery": recovery.to_dict(),
+            }
         analyzer_run = AnalyzerRun(
             response_id=response_id,
             schema_version="analyzer_v4",
