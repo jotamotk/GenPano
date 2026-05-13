@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from geo_tracker.db.models import (
     AnalysisStatus,
+    AnalyzerQualityFlag,
+    AnalyzerRun,
     Base,
     Brand,
     BrandMention,
@@ -36,6 +38,10 @@ EXPLICIT_PROD_APPROVAL_REF = (
 DISPATCH_ONLY_REF = (
     "https://github.com/jotamotk/trash_test/issues/686#issuecomment-4433719761"
 )
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 @pytest_asyncio.fixture
@@ -410,3 +416,153 @@ async def test_apply_failure_preserves_report_and_stops_before_aggregate(
         {"response_id": 2410, "status": "failed", "error": "llm_timeout"}
     ]
     assert "aggregate_results" not in report
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_recoverable_stale_active_analyzer_run(
+    session: AsyncSession,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    response = await session.get(LLMResponse, 2410)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.RUNNING.value
+    session.add(
+        AnalyzerRun(
+            id=6861,
+            response_id=2410,
+            schema_version="analyzer_v4",
+            status="running",
+            trigger_source="pipeline",
+            started_at=_utcnow_naive() - timedelta(hours=2),
+        )
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_analyzer_backfill_report(
+        session,
+        BestCofferAnalyzerBackfillScope(
+            brand_id=24,
+            response_ids=(2410,),
+        ),
+        apply=False,
+    )
+
+    active_run = report["before"]["rows"][0]["active_analyzer_run"]
+    assert active_run["active_run_id"] == 6861
+    assert active_run["blocked"] is False
+    assert active_run["reason"] == "stale_active_analyzer_run_recoverable"
+    assert active_run["has_analysis"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_recovers_stale_active_analyzer_run_before_selected_response(
+    session: AsyncSession,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    response = await session.get(LLMResponse, 2410)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.RUNNING.value
+    stale_run = AnalyzerRun(
+        id=6862,
+        response_id=2410,
+        schema_version="analyzer_v4",
+        status="running",
+        trigger_source="pipeline",
+        started_at=_utcnow_naive() - timedelta(hours=2),
+    )
+    session.add(stale_run)
+    await session.commit()
+    analyzed: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        analyzed.append(response.id)
+        response.analysis_status = AnalysisStatus.DONE.value
+        session.add(
+            ResponseAnalysis(
+                response_id=response.id,
+                dimension_industry="coffee",
+                dimension_category="category",
+                target_brand_mentioned=True,
+                raw_analysis_json={"source": "issue-816-test"},
+            )
+        )
+        await session.commit()
+        return {"response_id": response.id, "status": "done"}
+
+    report = await build_bestcoffer_analyzer_backfill_report(
+        session,
+        BestCofferAnalyzerBackfillScope(
+            brand_id=24,
+            response_ids=(2410,),
+        ),
+        apply=True,
+        approval_ref=EXPLICIT_PROD_APPROVAL_REF,
+        analyze_func=fake_analyze,
+    )
+
+    assert analyzed == [2410]
+    recovery = report["analyzer_run_recoveries"][0]
+    assert recovery["active_run_id"] == 6862
+    assert recovery["recovered"] is True
+    assert recovery["reason"] == "stale_active_analyzer_run_recovered"
+    await session.refresh(stale_run)
+    assert stale_run.status == "failed"
+    assert stale_run.failure_code == "stale_active_analyzer_run_recovered"
+    flag = await session.scalar(
+        select(AnalyzerQualityFlag).where(AnalyzerQualityFlag.run_id == 6862)
+    )
+    assert flag is not None
+    assert flag.code == "stale_active_analyzer_run_recovered"
+
+
+@pytest.mark.asyncio
+async def test_apply_blocks_fresh_active_analyzer_run_without_calling_analyzer(
+    session: AsyncSession,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    response = await session.get(LLMResponse, 2410)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.RUNNING.value
+    active_run = AnalyzerRun(
+        id=6863,
+        response_id=2410,
+        schema_version="analyzer_v4",
+        status="running",
+        trigger_source="pipeline",
+        started_at=_utcnow_naive(),
+    )
+    session.add(active_run)
+    await session.commit()
+    analyzed: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        analyzed.append(response.id)
+        return {"response_id": response.id, "status": "done"}
+
+    with pytest.raises(AnalyzerBackfillApplyError) as exc:
+        await build_bestcoffer_analyzer_backfill_report(
+            session,
+            BestCofferAnalyzerBackfillScope(
+                brand_id=24,
+                response_ids=(2410,),
+            ),
+            apply=True,
+            approval_ref=EXPLICIT_PROD_APPROVAL_REF,
+            analyze_func=fake_analyze,
+        )
+
+    assert analyzed == []
+    report = exc.value.report
+    assert report["write_attempted"] is True
+    assert report["write_performed"] is False
+    assert report["failure_reason"] == "active_analyzer_run_in_progress"
+    assert report["apply_results"] == [
+        {
+            "response_id": 2410,
+            "status": "failed",
+            "error": "active_analyzer_run_in_progress",
+            "analyzer_run_recovery": report["analyzer_run_recoveries"][0],
+        }
+    ]
+    await session.refresh(active_run)
+    assert active_run.status == "running"

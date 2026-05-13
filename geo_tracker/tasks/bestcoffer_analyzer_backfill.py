@@ -36,6 +36,11 @@ from geo_tracker.db.models import (
     ResponseAnalysis,
     Topic,
 )
+from geo_tracker.tasks.analyzer_run_recovery import (
+    DEFAULT_STALE_ACTIVE_ANALYZER_RUN_SECONDS,
+    recover_stale_active_analyzer_run,
+    summarize_active_analyzer_run,
+)
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GITHUB_ISSUE_COMMENT_RE = re.compile(
@@ -95,6 +100,7 @@ class CandidateResponse:
     collected_at: str | None
     analysis_status: str | None
     has_analysis: bool
+    active_analyzer_run: dict | None
     invalid_reason: str | None
 
 
@@ -250,6 +256,7 @@ async def collect_candidate_responses(
     rows = await _load_candidates(session, scope)
     response_ids = [int(response.id) for response, _query, _prompt, _topic in rows]
     analysis_response_ids: set[int] = set()
+    active_run_summaries: dict[int, dict] = {}
     if response_ids:
         analyses = (
             await session.execute(
@@ -259,6 +266,13 @@ async def collect_candidate_responses(
             )
         ).all()
         analysis_response_ids = {int(row[0]) for row in analyses}
+        for response_id in response_ids:
+            summary = await summarize_active_analyzer_run(
+                session,
+                response_id=int(response_id),
+            )
+            if summary.active_run_id is not None:
+                active_run_summaries[int(response_id)] = summary.to_dict()
 
     out: list[CandidateResponse] = []
     for response, query, prompt, topic in rows:
@@ -277,6 +291,7 @@ async def collect_candidate_responses(
                 collected_at=response.collected_at.isoformat() if response.collected_at else None,
                 analysis_status=response.analysis_status,
                 has_analysis=int(response.id) in analysis_response_ids,
+                active_analyzer_run=active_run_summaries.get(int(response.id)),
                 invalid_reason=invalid_reason,
             )
         )
@@ -295,6 +310,7 @@ def _candidate_to_dict(candidate: CandidateResponse) -> dict:
         "collected_at": candidate.collected_at,
         "analysis_status": candidate.analysis_status,
         "has_analysis": candidate.has_analysis,
+        "active_analyzer_run": candidate.active_analyzer_run,
         "invalid_reason": candidate.invalid_reason,
     }
 
@@ -443,6 +459,7 @@ async def build_bestcoffer_analyzer_backfill_report(
         analyze_func = analyze_single_response
 
     apply_results: list[dict] = []
+    analyzer_run_recoveries: list[dict] = []
     if not selected:
         report["apply_results"] = apply_results
         report["after"] = before
@@ -452,6 +469,37 @@ async def build_bestcoffer_analyzer_backfill_report(
         return report
 
     for candidate in selected:
+        recovery = await recover_stale_active_analyzer_run(
+            session,
+            response_id=candidate.response_id,
+            stale_after_seconds=DEFAULT_STALE_ACTIVE_ANALYZER_RUN_SECONDS,
+        )
+        if recovery.active_run_id is not None:
+            recovery_row = recovery.to_dict()
+            analyzer_run_recoveries.append(recovery_row)
+            if recovery.blocked:
+                result = {
+                    "response_id": candidate.response_id,
+                    "status": "failed",
+                    "error": recovery.reason,
+                    "analyzer_run_recovery": recovery_row,
+                }
+                apply_results.append(result)
+                after = summarize_candidates(await collect_candidate_responses(session, scope))
+                report["write_attempted"] = True
+                report["apply_failed"] = True
+                report["failed_response_id"] = candidate.response_id
+                report["failure_reason"] = recovery.reason
+                report["partial_writes_possible"] = True
+                report["analyzer_run_recoveries"] = analyzer_run_recoveries
+                report["apply_plan"] = (
+                    "Apply found an active analyzer run that was not recoverable. "
+                    "Review analyzer_run_recoveries before retrying this exact scope."
+                )
+                report["apply_results"] = apply_results
+                report["after"] = after
+                raise AnalyzerBackfillApplyError(report)
+
         response, brand, competitors, intent = await _load_analyzer_inputs(
             session,
             candidate,
@@ -469,6 +517,7 @@ async def build_bestcoffer_analyzer_backfill_report(
                 result.get("error") or result.get("reason") or "non_done_status"
             )
             report["partial_writes_possible"] = True
+            report["analyzer_run_recoveries"] = analyzer_run_recoveries
             report["apply_plan"] = (
                 "Apply failed before all selected responses completed with status=done. "
                 "Review apply_results and after evidence before retrying the exact scope."
@@ -480,6 +529,7 @@ async def build_bestcoffer_analyzer_backfill_report(
     report["write_performed"] = True
     report["apply_plan"] = "Applied only selected response_ids."
     report["apply_results"] = apply_results
+    report["analyzer_run_recoveries"] = analyzer_run_recoveries
     report["after"] = summarize_candidates(await collect_candidate_responses(session, scope))
     if aggregate:
         report["aggregate_results"] = await _aggregate_selected_days(
