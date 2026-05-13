@@ -703,9 +703,7 @@ async def test_analyzer_rollup_keeps_sov_visible_when_mixed_packages_have_compet
             "numerator_target_mentions": 0,
             "denominator_competitive_mentions": 211,
             "sov": 0.0,
-            "competitors": [
-                {"brand_id": 2, "brand_name": "Competitor", "mention_count": 211}
-            ],
+            "competitors": [{"brand_id": 2, "brand_name": "Competitor", "mention_count": 211}],
             "sample_response_ids": [74432],
         }
     )
