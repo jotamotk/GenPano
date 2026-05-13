@@ -9,6 +9,8 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "browser_exception",
         "browser_launch_timeout",
         "browser_timeout",
+        "doubao_image_challenge_load_failed",
+        "doubao_visual_challenge",
         "exception",
         "no_input",
         "no_response",
