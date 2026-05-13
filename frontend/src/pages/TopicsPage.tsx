@@ -333,6 +333,7 @@ const TOPIC_METRIC_ALIASES: Record<string, string[]> = {
   sentiment: ['sentiment'],
   citation: ['citation', 'citations', 'citation_rate'],
   pano_geo: ['pano_geo', 'geo_score', 'pano_score'],
+  analyzer_facts: ['analyzer_facts', 'analyzer', 'facts'],
 }
 
 function topicMetricEvidence(
@@ -363,13 +364,39 @@ function topicMetricTrustState(
     reason_codes: [
       ...(evidence?.reason_codes ?? []),
       ...((source?.missing_inputs as string[] | undefined) ?? []),
+      ...((source?.missing_reasons as string[] | undefined) ?? []),
       ...((fallback?.missing_inputs as string[] | undefined) ?? []),
+      ...((fallback?.missing_reasons as string[] | undefined) ?? []),
     ],
     missing_inputs: evidence?.missing_inputs,
     numerator: evidence?.numerator ?? null,
     denominator: evidence?.denominator ?? null,
     analyzer_coverage: coverage,
   })
+}
+
+function hasAnalyzerFactsContent(facts: LooseRecord | null | undefined) {
+  if (!facts) return false
+  return [
+    facts.citations,
+    facts.brands_mentioned,
+    facts.products_features_attributes,
+    facts.relations,
+    facts.sentiment_drivers,
+  ].some((items) => Array.isArray(items) && items.length > 0)
+}
+
+function selectedScopeLabel(source: (AnalyticsContractMetadata & LooseRecord) | null | undefined) {
+  const filters = source?.selected_filters
+  if (!filters) return ''
+  const parts: string[] = []
+  if (filters.brand_id != null && filters.brand_id !== '') {
+    parts.push(`Brand #${filters.brand_id}`)
+  }
+  if (filters.from || filters.to) {
+    parts.push(`${filters.from || '-'} to ${filters.to || '-'}`)
+  }
+  return parts.join(' / ')
 }
 
 function trustValue(value: ReactNode, trustState: MetricTrustState | null) {
@@ -1421,7 +1448,7 @@ function ResponseAttemptsModal({
     | null
     | undefined
   const scopedFacts = analyzerFacts(factsSource)
-  const hasScopedFacts = Boolean(factsSource)
+  const hasScopedFacts = hasAnalyzerFactsContent(factsSource)
   const mentions = hasScopedFacts ? scopedFacts.brands_mentioned : detail?.brand_mentions || []
   const citations = hasScopedFacts
     ? scopedFacts.citations
@@ -1441,12 +1468,20 @@ function ResponseAttemptsModal({
     : analysisList(analysis, ['sentiment_drivers', 'drivers'])
   const summaryFacts = analysisSummaryFacts(analysis)
   const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
+  const detailContract = detail as (AnalyticsContractMetadata & LooseRecord) | null | undefined
   const analyzerFactsTrust = hasScopedFacts
     ? null
-    : buildMetricTrustState({
-        formula_status: 'missing',
-        reason_codes: ['missing_analyzer_rows'],
+    : topicMetricTrustState(detailContract, 'analyzer_facts') ||
+      buildMetricTrustState({
+        formula_status: detailContract?.formula_status || 'missing',
+        reason_codes: [
+          'missing_analyzer_rows',
+          ...((detailContract?.missing_reasons as string[] | undefined) ?? []),
+          ...((detailContract?.missing_inputs as string[] | undefined) ?? []),
+        ],
+        analyzer_coverage: detailContract?.analyzer_coverage ?? null,
       })
+  const scopeLabel = selectedScopeLabel(detailContract)
 
   return (
     <div
@@ -1547,6 +1582,9 @@ function ResponseAttemptsModal({
               <BarChart3 size={16} className="text-themed-accent" aria-hidden />
               <h4 className="text-sm font-semibold text-themed-primary">Analyzer facts</h4>
             </div>
+            {scopeLabel && (
+              <div className="text-[11px] leading-snug text-themed-muted">{scopeLabel}</div>
+            )}
             <TrustStateBadge trustState={analyzerFactsTrust} />
 
             <FactSection title="Analyzer summary">

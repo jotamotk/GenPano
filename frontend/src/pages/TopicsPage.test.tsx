@@ -1592,6 +1592,150 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText('earlier.example')).toBeInTheDocument()
   })
 
+  it('uses response contract state for analyzer facts without falling back to empty facts as ok', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'BestCoffer',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which coffee maker has trustworthy citations?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_text: 'Which coffee maker has trustworthy citations?',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                date: '2026-05-13',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'Which coffee maker has trustworthy citations?',
+                target_llm: 'chatgpt',
+                profile_name: 'Coffee buyer',
+                finished_at: '2026-05-13T10:02:00Z',
+                citation_count: 0,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useQueryResponse.mockReturnValue({
+      data: {
+        query: {
+          query_id: 301,
+          query_text: 'Which coffee maker has trustworthy citations?',
+          profile_name: 'Coffee buyer',
+        },
+        response: {
+          response_id: 401,
+          query_id: 301,
+          raw_text: 'BestCoffer is discussed but attribution is incomplete.',
+          target_llm: 'chatgpt',
+          created_at: '2026-05-13T10:02:00Z',
+        },
+        analysis: null,
+        analyzer_facts: {
+          citations: [],
+          brands_mentioned: [],
+          products_features_attributes: [],
+          relations: [],
+          sentiment_drivers: [],
+        },
+        attempts: [],
+        state: 'partial',
+        formula_status: 'partial',
+        selected_filters: {
+          project: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+          brand_id: 24,
+          from: '2026-05-06',
+          to: '2026-05-13',
+        },
+        analyzer_coverage: {
+          eligible_response_count: 56,
+          analyzed_response_count: 34,
+          missing_response_count: 22,
+          analyzer_version: 'v3',
+        },
+        metric_formula_evidence: {
+          analyzer_facts: {
+            formula_status: 'partial',
+            reason_codes: ['missing_analyzer_rows', 'unresolved_citation_attribution'],
+            missing_inputs: ['missing_sentiment_driver_quote'],
+            numerator: 34,
+            denominator: 56,
+          },
+        },
+        missing_reasons: ['unresolved_citation_attribution'],
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24')
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
+    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+
+    expect(topicHooks.useQueryResponse).toHaveBeenCalledWith(
+      liveProjectId,
+      301,
+      expect.objectContaining({ brand_id: 24 }),
+    )
+
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText('Needs review')).toBeInTheDocument()
+    expect(within(modal).getByText('34 of 56 analyzed')).toBeInTheDocument()
+    expect(within(modal).getByText('22 missing')).toBeInTheDocument()
+    expect(within(modal).getByText('Citation attribution unresolved')).toBeInTheDocument()
+    expect(within(modal).getByText('Sentiment quote missing')).toBeInTheDocument()
+    expect(within(modal).getByText(/Brand #24/)).toBeInTheDocument()
+    expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
+  })
+
   it('exports the active prompt layer with current filters and visible successful rows', async () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
