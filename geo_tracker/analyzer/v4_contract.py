@@ -93,6 +93,7 @@ RELATION_TYPES = {
     "complements",
     "other",
 }
+RELATION_TYPE_ALIASES = {"belongs_to"}
 DIRECTIONS = {"directed", "undirected", "unknown"}
 CITATION_SOURCE_TYPES = {
     "official",
@@ -343,6 +344,7 @@ def validate_analyzer_v4_package(
         key = str(relation.get("relation_key") or f"relation_{index}")
         relation["relation_key"] = key
         fact_keys[key] = "relation"
+        _normalize_relation_type_alias(relation, flags, raw_package["entities"])
         unresolved = False
         if relation.get("subject_entity_key") not in entity_keys:
             unresolved = True
@@ -830,6 +832,37 @@ def _drop_category_product_features(
             blocks_metric_readiness=True,
         )
     package["product_features"] = kept
+
+
+def _normalize_relation_type_alias(
+    relation: dict[str, Any],
+    flags: list[dict[str, Any]],
+    entities: list[Any],
+) -> None:
+    if relation.get("relation_type") not in RELATION_TYPE_ALIASES:
+        return
+
+    entity_types = {
+        str(entity.get("entity_key") or ""): str(entity.get("entity_type") or "")
+        for entity in _objects(entities)
+    }
+    object_type = entity_types.get(str(relation.get("object_entity_key") or ""))
+    normalized = "belongs_to_brand" if object_type == "brand" else "has_attribute"
+    key = str(relation.get("relation_key") or "")
+    relation["relation_type"] = normalized
+    _append_flag(
+        flags,
+        code="relation_type_normalized",
+        severity="warning",
+        message=(
+            "Relation type 'belongs_to' was normalized to "
+            f"{normalized!r} to match analyzer_v4 relation schema."
+        ),
+        target_type="relation",
+        target_key=key,
+        blocks_metric_readiness=True,
+        flag_key=f"flag_relation_type_normalized_relation_{_slug(key)}",
+    )
 
 
 def _quality_codes(item: dict[str, Any]) -> set[str]:

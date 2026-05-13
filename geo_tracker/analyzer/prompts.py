@@ -104,7 +104,8 @@ such as missing_evidence_quote, relation_unresolved, citation_unlinked,
 sentiment_unknown, mixed_sentiment, brand_unresolved, product_unresolved,
 category_unresolved, or invalid_mention_type.
 Do not use category as product_features.feature_type; represent categories as
-category entities, category mentions, or has_attribute/belongs_to relations.
+category entities, category mentions, or has_attribute relations. Use
+belongs_to_brand only for response-evidenced product-to-brand ownership.
 
 {{
   "analysis_meta": {{

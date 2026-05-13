@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncGenerator
 from copy import deepcopy
 from datetime import datetime
@@ -20,7 +21,8 @@ from geo_tracker.analyzer.llm_analyzer import (
     LLMAnalyzer,
     ProductFeatureResult,
 )
-from geo_tracker.analyzer.v4_contract import validate_analyzer_v4_package
+from geo_tracker.analyzer.prompts import ANALYSIS_USER
+from geo_tracker.analyzer.v4_contract import RELATION_TYPES, validate_analyzer_v4_package
 from geo_tracker.db.models import (
     AnalysisFactLink,
     AnalysisStatus,
@@ -830,6 +832,103 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
     ) in flags
 
 
+def test_analyzer_v4_normalizes_belongs_to_relations_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["entities"].extend(
+        [
+            {
+                "entity_key": "ent_category_sensitive_serum",
+                "entity_type": "category",
+                "raw_name": "sensitive skin serum",
+                "canonical_id": None,
+                "canonical_name": None,
+                "canonicalization_status": "not_applicable",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.84,
+                "quality_flags": [],
+            },
+            {
+                "entity_key": "ent_brand_acme_owned",
+                "entity_type": "brand",
+                "raw_name": "AcmeBeauty",
+                "canonical_id": str(7811),
+                "canonical_name": "AcmeBeauty",
+                "canonicalization_status": "matched",
+                "evidence_quote": "AcmeBeauty Calm Serum",
+                "confidence": 0.9,
+                "quality_flags": [],
+            },
+        ]
+    )
+    package["relations"].extend(
+        [
+            {
+                "relation_key": "relation_product_belongs_category",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "belongs_to",
+                "object_entity_key": "ent_category_sensitive_serum",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": 0.81,
+                "quality_flags": [],
+            },
+            {
+                "relation_key": "relation_product_belongs_brand",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "belongs_to",
+                "object_entity_key": "ent_brand_acme_owned",
+                "direction": "directed",
+                "evidence_quote": "AcmeBeauty Calm Serum",
+                "confidence": 0.86,
+                "quality_flags": [],
+            },
+        ]
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    relation_types = {
+        relation["relation_key"]: relation["relation_type"]
+        for relation in result.package["relations"]
+    }
+    assert relation_types["relation_product_belongs_category"] == "has_attribute"
+    assert relation_types["relation_product_belongs_brand"] == "belongs_to_brand"
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "relation_type_normalized",
+        "relation",
+        "relation_product_belongs_category",
+    ) in flags
+    assert (
+        "relation_type_normalized",
+        "relation",
+        "relation_product_belongs_brand",
+    ) in flags
+
+
+def test_analyzer_v4_prompt_relation_enum_matches_validator_contract() -> None:
+    match = re.search(r'"relation_type": "([^"]+)"', ANALYSIS_USER)
+    assert match is not None
+    prompt_relation_types = set(match.group(1).split("|"))
+
+    assert prompt_relation_types == RELATION_TYPES
+    assert re.search(r"(?<![A-Za-z0-9_])belongs_to(?![A-Za-z0-9_])", ANALYSIS_USER) is None
+
+
 @pytest.mark.asyncio
 async def test_analyzer_v4_persists_category_entity_linked_from_product_package(
     session: AsyncSession,
@@ -1170,6 +1269,54 @@ async def test_analyzer_v4_persists_relation_unresolved_without_kg_writes(
         )
     ).scalars().all()
     assert "relation_unresolved" in flag_codes
+
+
+@pytest.mark.asyncio
+async def test_analyzer_v4_persists_normalized_belongs_to_relation_with_flag(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["entities"].append(
+        {
+            "entity_key": "ent_category_sensitive_serum",
+            "entity_type": "category",
+            "raw_name": "sensitive skin serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "not_applicable",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    )
+    package["relations"][0]["relation_key"] = "relation_product_belongs_category"
+    package["relations"][0]["relation_type"] = "belongs_to"
+    package["relations"][0]["object_entity_key"] = "ent_category_sensitive_serum"
+    package["relations"][0]["quality_flags"] = []
+    _patch_pipeline(monkeypatch, _legacy_projection(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    relation = await session.scalar(
+        select(ResponseRelationFact).where(ResponseRelationFact.response_id == response.id)
+    )
+    assert relation is not None
+    assert relation.relation_type == "has_attribute"
+    flag_codes = (
+        await session.execute(
+            select(AnalyzerQualityFlag.code).where(AnalyzerQualityFlag.response_id == response.id)
+        )
+    ).scalars().all()
+    assert "relation_type_normalized" in flag_codes
 
 
 @pytest.mark.asyncio
