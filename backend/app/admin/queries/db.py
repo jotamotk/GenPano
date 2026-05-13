@@ -176,6 +176,14 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
         "latest_batch_id": item.get("batch_id"),
         "queue_state": _queue_state_from_run(latest_run_status),
     }
+    for ts_field in (
+        "analyzed_at",
+        "analyzer_run_started_at",
+        "analyzer_run_completed_at",
+        "aggregation_refreshed_at",
+    ):
+        if item.get(ts_field) is not None:
+            item[ts_field] = _isoformat(item.get(ts_field))
     return item
 
 

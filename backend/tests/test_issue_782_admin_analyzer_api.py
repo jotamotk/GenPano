@@ -6,6 +6,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -559,6 +560,41 @@ async def test_admin_response_status_returns_run_and_quality_fields(
 
 
 @pytest.mark.asyncio
+async def test_admin_response_status_serializes_run_datetimes(
+    client, admin_operator, monkeypatch
+) -> None:
+    started_at = datetime(2026, 5, 13, 8, 9, 10, tzinfo=UTC)
+    completed_at = datetime(2026, 5, 13, 8, 10, 11, tzinfo=UTC)
+    module = _admin_analyzer_router_module()
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "fetch_response_analyzer_status",
+        AsyncMock(
+            return_value={
+                "response_id": 101,
+                "query_id": 9001,
+                "raw_text": "eligible",
+                "analysis_status": "done",
+                "analysis_id": 501,
+                "analyzer_run_id": 701,
+                "analyzer_run_status": "done",
+                "analyzer_run_started_at": started_at,
+                "analyzer_run_completed_at": completed_at,
+            }
+        ),
+    )
+
+    resp = await client.get("/admin/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["analyzer_run_started_at"] == started_at.isoformat()
+    assert body["analyzer_run_completed_at"] == completed_at.isoformat()
+    assert body["analyzed_at"] == completed_at.isoformat()
+
+
+@pytest.mark.asyncio
 async def test_legacy_response_status_compat_returns_admin_status_shape(
     client, admin_operator, monkeypatch
 ) -> None:
@@ -601,6 +637,39 @@ async def test_legacy_response_status_compat_returns_admin_status_shape(
     assert body["analysis_task"]["queue_state"] == "complete"
     assert body["metric_readiness_status"] == "warning"
     assert body["metric_readiness_reasons"][0]["code"] == "citation_unlinked"
+    fetch_status.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_response_status_compat_serializes_run_datetimes(
+    client, admin_operator, monkeypatch
+) -> None:
+    started_at = datetime(2026, 5, 13, 8, 9, 10, tzinfo=UTC)
+    completed_at = datetime(2026, 5, 13, 8, 10, 11, tzinfo=UTC)
+    module = _legacy_analyzer_router_module()
+    fetch_status = AsyncMock(
+        return_value={
+            "response_id": 101,
+            "query_id": 9001,
+            "raw_text": "eligible",
+            "analysis_status": "done",
+            "analysis_id": 501,
+            "analyzer_run_id": 701,
+            "analyzer_run_status": "done",
+            "analyzer_run_started_at": started_at,
+            "analyzer_run_completed_at": completed_at,
+        }
+    )
+    monkeypatch.setattr(module.analyzer_db, "fetch_response_analyzer_status", fetch_status)
+
+    resp = await client.get("/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["analyzer_run_started_at"] == started_at.isoformat()
+    assert body["analyzer_run_completed_at"] == completed_at.isoformat()
+    assert body["analyzed_at"] == completed_at.isoformat()
     fetch_status.assert_awaited_once()
 
 
