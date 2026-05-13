@@ -536,6 +536,65 @@ async def test_analyzer_v4_flags_missing_evidence_and_unlinked_citation(
     assert analysis.raw_analysis_json["analysis_meta"]["validator_status"] == "passed_with_flags"
 
 
+@pytest.mark.asyncio
+async def test_analyzer_v4_partial_output_persists_safe_facts_and_quality_flags(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    for key in ("sentiment_drivers", "product_features", "relations", "citations"):
+        package.pop(key)
+    package["mentions"].append(
+        {
+            "mention_key": "mention_partial_null",
+            "entity_key": "ent_product_calm",
+            "response_id": response.id,
+            "raw_text": "partial malformed mention",
+            "normalized_text": "partial malformed mention",
+            "mention_type": None,
+            "position": None,
+            "sentiment_label": None,
+            "sentiment_score": None,
+            "evidence_quote": "AcmeBeauty Calm Serum",
+            "confidence": None,
+            "quality_flags": [],
+        }
+    )
+    _patch_pipeline(monkeypatch, _legacy_projection(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    run = await session.scalar(select(AnalyzerRun).where(AnalyzerRun.response_id == response.id))
+    assert run is not None
+    assert run.status == "partial"
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert {"missing_optional_collection", "malformed_mention_dropped"} <= flag_codes
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
+    )
+    assert analysis is not None
+    assert analysis.raw_analysis_json["mentions"] == [package["mentions"][0]]
+    assert "mention_partial_null" not in {
+        mention.get("mention_key") for mention in analysis.raw_analysis_json["mentions"]
+    }
+
+
 def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
     package = _valid_v4_package()
     package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
@@ -604,6 +663,57 @@ def test_analyzer_v4_validator_accepts_category_mention_type() -> None:
 
     assert result.is_valid is True
     assert not any("mention_type='category'" in error for error in result.errors)
+
+
+def test_analyzer_v4_normalizes_missing_optional_collections_and_drops_null_mention() -> None:
+    package = _valid_v4_package()
+    for key in ("sentiment_drivers", "product_features", "relations", "citations"):
+        package.pop(key)
+    package["mentions"].append(
+        {
+            "mention_key": "mention_partial_null",
+            "entity_key": "ent_product_calm",
+            "response_id": 7815,
+            "raw_text": "partial malformed mention",
+            "normalized_text": "partial malformed mention",
+            "mention_type": None,
+            "position": None,
+            "sentiment_label": None,
+            "sentiment_score": None,
+            "evidence_quote": "AcmeBeauty Calm Serum",
+            "confidence": None,
+            "quality_flags": [],
+        }
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    assert result.package["mentions"] == [package["mentions"][0]]
+    for key in ("sentiment_drivers", "product_features", "relations", "citations"):
+        assert result.package[key] == []
+
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "malformed_mention_dropped",
+        "mention",
+        "mention_partial_null",
+    ) in flags
+    for key in ("sentiment_drivers", "product_features", "relations", "citations"):
+        assert ("missing_optional_collection", "collection", key) in flags
 
 
 @pytest.mark.asyncio
