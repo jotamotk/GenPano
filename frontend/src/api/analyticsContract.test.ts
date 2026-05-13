@@ -147,4 +147,22 @@ describe('analytics formula-status guards', () => {
     expect(state.summary).toBe('Zero is supported by complete evidence.')
     expect(state.reasonLabels).toContain('Valid zero')
   })
+
+  it('withholds zero values when the metric lacks valid-zero proof', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'citation',
+      value: 0,
+      formula_status: 'ok',
+      analyzer_coverage: {
+        eligible_response_count: 56,
+        analyzed_response_count: 56,
+        missing_response_count: 0,
+        analyzer_version: 'v3',
+      },
+    })
+
+    expect(state.canShowValue).toBe(false)
+    expect(state.tone).toBe('partial')
+    expect(state.reasonLabels).toContain('Valid zero proof missing')
+  })
 })

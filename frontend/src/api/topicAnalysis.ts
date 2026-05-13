@@ -1,5 +1,6 @@
 import { apiClient } from '../lib/apiClient'
 import { ProjectAnalysisParams, buildQuery } from '../lib/projectAnalysisFilters'
+import type { AnalyticsContractMetadata } from './analyticsContract'
 
 export interface TopicMonitoringSummary {
   topic_count: number
@@ -43,7 +44,7 @@ export interface TopicIntentMatrixRow {
   response_count: number
 }
 
-export interface TopicMonitoringOut {
+export interface TopicMonitoringOut extends AnalyticsContractMetadata {
   project_id: string
   brand_id: number | null
   summary: TopicMonitoringSummary
@@ -73,7 +74,7 @@ export interface TopicPromptRow {
   last_collected: string | null
 }
 
-export interface TopicPromptsOut {
+export interface TopicPromptsOut extends AnalyticsContractMetadata {
   project_id: string
   topic_id: number
   items: TopicPromptRow[]
@@ -124,7 +125,7 @@ export interface PromptQueryDailyRow {
   sentiment_score: number | null
 }
 
-export interface PromptQueriesOut {
+export interface PromptQueriesOut extends AnalyticsContractMetadata {
   project_id: string
   prompt_id: number
   items: PromptQueryRow[]
@@ -263,7 +264,7 @@ export interface ResponseAttemptDetail {
   analyzer_facts: AnalyzerFacts
 }
 
-export interface QueryResponseDetailOut {
+export interface QueryResponseDetailOut extends AnalyticsContractMetadata {
   project_id: string
   query: QueryDetail
   response: ResponseDetail | null
