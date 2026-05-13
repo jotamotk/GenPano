@@ -1,6 +1,9 @@
 """Backward-compat shim — see `genpano_models.analyzer` (ADR-004)."""
 
 from genpano_models.analyzer import (
+    AnalysisFactLink,
+    AnalyzerQualityFlag,
+    AnalyzerRun,
     BrandMention,
     CitationSource,
     GeoScoreDaily,
@@ -8,10 +11,15 @@ from genpano_models.analyzer import (
     ProductFeatureMention,
     ProductScoreDaily,
     ResponseAnalysis,
+    ResponseEntity,
+    ResponseRelationFact,
     SentimentDriver,
 )
 
 __all__ = [
+    "AnalysisFactLink",
+    "AnalyzerQualityFlag",
+    "AnalyzerRun",
     "BrandMention",
     "CitationSource",
     "GeoScoreDaily",
@@ -19,5 +27,7 @@ __all__ = [
     "ProductFeatureMention",
     "ProductScoreDaily",
     "ResponseAnalysis",
+    "ResponseEntity",
+    "ResponseRelationFact",
     "SentimentDriver",
 ]

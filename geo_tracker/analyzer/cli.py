@@ -16,15 +16,17 @@ import logging
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime
+from copy import deepcopy
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, or_, select, update
 
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
-    AnalysisStatus, Brand, BrandMention, CitationSource,
-    Competitor, LLMResponse, ProductFeatureMention, Prompt,
-    Query, ResponseAnalysis, SentimentDriver,
+    AnalysisFactLink, AnalysisStatus, AnalyzerQualityFlag, AnalyzerRun,
+    Brand, BrandMention, CitationSource, Competitor, LLMResponse,
+    ProductFeatureMention, Prompt, Query, ResponseAnalysis, ResponseEntity,
+    ResponseRelationFact, SentimentDriver,
 )
 from geo_tracker.analyzer.brand_detector import BrandDetector
 from geo_tracker.analyzer.llm_analyzer import LLMAnalyzer
@@ -40,12 +42,17 @@ from geo_tracker.analyzer.geo_scorer import GEOScorer
 from geo_tracker.analyzer.aggregator import Aggregator
 from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
 from geo_tracker.analyzer.position_type import normalize_position_type
+from geo_tracker.analyzer.v4_contract import stage_analyzer_v4_result
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _normalize_brand_key(value: str | None) -> str:
@@ -336,6 +343,177 @@ def _scope_raw_relation_evidence(
     return scoped
 
 
+async def _delete_current_analysis_facts(session, response_id: int) -> None:
+    old_analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == response_id)
+        )
+    ).scalar_one_or_none()
+    if old_analysis:
+        await session.execute(
+            delete(ProductFeatureMention).where(
+                ProductFeatureMention.analysis_id == old_analysis.id
+            )
+        )
+        await session.execute(
+            delete(ResponseAnalysis).where(ResponseAnalysis.response_id == response_id)
+        )
+
+    old_mention_ids = select(BrandMention.id).where(BrandMention.response_id == response_id)
+    await session.execute(
+        delete(SentimentDriver).where(
+            or_(
+                SentimentDriver.response_id == response_id,
+                SentimentDriver.mention_id.in_(old_mention_ids),
+            )
+        )
+    )
+    await session.execute(delete(CitationSource).where(CitationSource.response_id == response_id))
+    await session.execute(delete(BrandMention).where(BrandMention.response_id == response_id))
+
+    await session.execute(delete(AnalysisFactLink).where(AnalysisFactLink.response_id == response_id))
+    await session.execute(
+        delete(AnalyzerQualityFlag).where(AnalyzerQualityFlag.response_id == response_id)
+    )
+    await session.execute(
+        delete(ResponseRelationFact).where(ResponseRelationFact.response_id == response_id)
+    )
+    await session.execute(delete(ResponseEntity).where(ResponseEntity.response_id == response_id))
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _quality_codes_from_item(item: dict) -> set[str]:
+    codes: set[str] = set()
+    for flag in item.get("quality_flags") or []:
+        if isinstance(flag, dict):
+            codes.add(str(flag.get("code") or ""))
+        else:
+            codes.add(str(flag))
+    return codes
+
+
+def _fact_type_index(package: dict) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for key, fact_type, field in (
+        ("mentions", "mention", "mention_key"),
+        ("sentiment_drivers", "driver", "driver_key"),
+        ("product_features", "feature", "feature_key"),
+        ("relations", "relation", "relation_key"),
+    ):
+        for item in package.get(key) or []:
+            if isinstance(item, dict) and item.get(field):
+                index[str(item[field])] = fact_type
+    return index
+
+
+async def _persist_analyzer_v4_facts(
+    session,
+    *,
+    analyzer_run: AnalyzerRun,
+    response_id: int,
+    package: dict,
+    include_current_facts: bool,
+) -> None:
+    if include_current_facts:
+        for entity in package.get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            session.add(
+                ResponseEntity(
+                    run_id=analyzer_run.id,
+                    response_id=response_id,
+                    entity_key=str(entity.get("entity_key") or ""),
+                    entity_type=str(entity.get("entity_type") or "other"),
+                    raw_name=str(entity.get("raw_name") or "unknown"),
+                    canonical_id=(
+                        None
+                        if entity.get("canonical_id") is None
+                        else str(entity.get("canonical_id"))
+                    ),
+                    canonical_name=entity.get("canonical_name"),
+                    canonicalization_status=str(
+                        entity.get("canonicalization_status") or "unresolved"
+                    ),
+                    evidence_quote=entity.get("evidence_quote"),
+                    confidence=_float_or_none(entity.get("confidence")),
+                    quality_flags_json=entity.get("quality_flags") or [],
+                )
+            )
+
+        for relation in package.get("relations") or []:
+            if not isinstance(relation, dict):
+                continue
+            relation_status = (
+                "unresolved"
+                if "relation_unresolved" in _quality_codes_from_item(relation)
+                else "current"
+            )
+            session.add(
+                ResponseRelationFact(
+                    run_id=analyzer_run.id,
+                    response_id=response_id,
+                    relation_key=str(relation.get("relation_key") or ""),
+                    subject_entity_key=str(relation.get("subject_entity_key") or ""),
+                    relation_type=str(relation.get("relation_type") or "other"),
+                    object_entity_key=str(relation.get("object_entity_key") or ""),
+                    direction=relation.get("direction"),
+                    evidence_quote=relation.get("evidence_quote"),
+                    confidence=_float_or_none(relation.get("confidence")),
+                    quality_flags_json=relation.get("quality_flags") or [],
+                    status=relation_status,
+                    kg_candidate_id=None,
+                )
+            )
+
+        fact_types = _fact_type_index(package)
+        for citation in package.get("citations") or []:
+            if not isinstance(citation, dict):
+                continue
+            citation_key = str(citation.get("citation_key") or "")
+            for linked_key in citation.get("linked_fact_keys") or []:
+                linked_key = str(linked_key)
+                session.add(
+                    AnalysisFactLink(
+                        run_id=analyzer_run.id,
+                        response_id=response_id,
+                        fact_type="citation",
+                        fact_key=citation_key,
+                        linked_fact_type=fact_types.get(linked_key, "unknown"),
+                        linked_fact_key=linked_key,
+                        link_type="supports",
+                        evidence_quote=citation.get("evidence_quote"),
+                        source_path=f"citations.{citation_key}.linked_fact_keys",
+                        status="current",
+                    )
+                )
+
+    for flag in package.get("quality_flags") or []:
+        if not isinstance(flag, dict):
+            continue
+        session.add(
+            AnalyzerQualityFlag(
+                run_id=analyzer_run.id,
+                response_id=response_id,
+                flag_key=str(flag.get("flag_key") or f"flag_{flag.get('code') or 'quality'}"),
+                severity=str(flag.get("severity") or "warning"),
+                code=str(flag.get("code") or "partial_output"),
+                message=str(flag.get("message") or flag.get("code") or "Analyzer quality flag."),
+                target_type=str(flag.get("target_type") or "analysis"),
+                target_key=(
+                    None if flag.get("target_key") is None else str(flag.get("target_key"))
+                ),
+                blocks_metric_readiness=bool(flag.get("blocks_metric_readiness", False)),
+                evidence_json=flag.get("evidence_json"),
+            )
+        )
+
+
 async def analyze_single_response(
     session,
     response: LLMResponse,
@@ -349,44 +527,21 @@ async def analyze_single_response(
     llm_analyzer = LLMAnalyzer()
     citation_mapper = CitationMapper()
 
-    # Clean up any old analysis data for this response (supports re-analysis)
-    old_analysis = (await session.execute(
-        select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
-    )).scalar_one_or_none()
-    if old_analysis:
-        await session.execute(
-            delete(ProductFeatureMention).where(
-                ProductFeatureMention.analysis_id == old_analysis.id
-            )
-        )
-        await session.execute(
-            delete(ResponseAnalysis).where(
-                ResponseAnalysis.response_id == response.id
-            )
-        )
-    old_mention_ids = select(BrandMention.id).where(
-        BrandMention.response_id == response.id
+    analyzer_run = AnalyzerRun(
+        response_id=response_id,
+        schema_version="analyzer_v4",
+        prompt_version=getattr(llm_analyzer, "prompt_version", None),
+        provider=getattr(llm_analyzer, "provider", None),
+        model=getattr(llm_analyzer, "model", None),
+        status="running",
+        trigger_source="pipeline",
+        started_at=_utcnow_naive(),
     )
-    await session.execute(
-        delete(SentimentDriver).where(
-            or_(
-                SentimentDriver.response_id == response.id,
-                SentimentDriver.mention_id.in_(old_mention_ids),
-            )
-        )
-    )
-    # Delete old mention dependents before old mentions; production FKs do not
-    # cascade for this bulk delete path.
-    await session.execute(
-        delete(CitationSource).where(CitationSource.response_id == response.id)
-    )
-    await session.execute(
-        delete(BrandMention).where(BrandMention.response_id == response.id)
-    )
-
-    # Mark as running
+    session.add(analyzer_run)
     response.analysis_status = AnalysisStatus.RUNNING.value
     await session.commit()
+    await session.refresh(analyzer_run)
+    analyzer_run_id = int(analyzer_run.id)
 
     try:
         # Stage 1: Brand pre-detection
@@ -419,6 +574,38 @@ async def analyze_single_response(
         )
         logger.info(f"  Stage 3: mapped {len(citation_mappings)} citations")
 
+        v4_stage = stage_analyzer_v4_result(
+            llm_result=llm_result,
+            response_text=response.raw_text or "",
+            response_id=response_id,
+            query_id=response.query_id,
+            model=getattr(llm_analyzer, "model", None),
+            prompt_version=getattr(llm_analyzer, "prompt_version", None),
+            citation_mappings=citation_mappings,
+            created_at=_utcnow_naive().isoformat(),
+        )
+        analyzer_run.raw_output_sha256 = v4_stage.raw_output_sha256
+        analyzer_run.validator_summary_json = v4_stage.validator_summary
+        if not v4_stage.is_valid:
+            analyzer_run.status = "failed"
+            analyzer_run.completed_at = _utcnow_naive()
+            analyzer_run.failure_code = v4_stage.failure_code
+            analyzer_run.failure_message = v4_stage.failure_message
+            await _persist_analyzer_v4_facts(
+                session,
+                analyzer_run=analyzer_run,
+                response_id=response_id,
+                package=v4_stage.package,
+                include_current_facts=False,
+            )
+            response.analysis_status = AnalysisStatus.FAILED.value
+            await session.commit()
+            return {
+                "response_id": response_id,
+                "status": "failed",
+                "error": v4_stage.failure_message or "analyzer_v4 validation failed",
+            }
+
         # ── Write results to DB ──
         brand_index = await _load_brand_identity_index(session)
         query = await session.get(Query, response.query_id)
@@ -427,6 +614,8 @@ async def analyze_single_response(
         if prompt_id is not None:
             prompt = await session.get(Prompt, prompt_id)
             topic_id = prompt.topic_id if prompt else None
+
+        await _delete_current_analysis_facts(session, response_id)
 
         # Build brand analysis lookup from LLM result
         # Key: (brand_name_lower, product_name) to support multiple products per brand
@@ -900,15 +1089,30 @@ async def analyze_single_response(
             prompt_version=getattr(llm_analyzer, "prompt_version", None),
             raw_output=llm_result.raw_json or {},
             parse_status="ok",
-            analysis_completed_at=datetime.utcnow().isoformat(),
+            analysis_completed_at=_utcnow_naive().isoformat(),
         )
-        raw_analysis_json = _scope_raw_relation_evidence(
-            dict(llm_result.raw_json or {}),
-            response_id=response.id,
-            query_id=response.query_id,
-            prompt_id=prompt_id,
-            topic_id=topic_id,
-        )
+        raw_analysis_json = deepcopy(v4_stage.package)
+        raw_llm_json = dict(llm_result.raw_json or {})
+        if raw_llm_json and "analysis_meta" not in raw_llm_json:
+            legacy_raw_analysis_json = _scope_raw_relation_evidence(
+                raw_llm_json,
+                response_id=response.id,
+                query_id=response.query_id,
+                prompt_id=prompt_id,
+                topic_id=topic_id,
+            )
+            raw_analysis_json["legacy_raw_analysis_json"] = legacy_raw_analysis_json
+            for legacy_relation_key in (
+                "relations",
+                "response_relations",
+                "brand_relations",
+                "product_relations",
+                "relation_facts",
+            ):
+                if legacy_relation_key in legacy_raw_analysis_json:
+                    raw_analysis_json[legacy_relation_key] = legacy_raw_analysis_json[
+                        legacy_relation_key
+                    ]
         raw_analysis_json["brand_mention_facts"] = mention_facts
         raw_analysis_json["citation_facts"] = citation_facts
         raw_analysis_json["dedupe_facts"] = {
@@ -978,9 +1182,22 @@ async def analyze_single_response(
                         price_positioning=feat.price_positioning,
                     ))
 
+        await _persist_analyzer_v4_facts(
+            session,
+            analyzer_run=analyzer_run,
+            response_id=response_id,
+            package=v4_stage.package,
+            include_current_facts=True,
+        )
+        analyzer_run.status = v4_stage.run_status
+        analyzer_run.completed_at = _utcnow_naive()
+        analyzer_run.failure_code = v4_stage.failure_code
+        analyzer_run.failure_message = v4_stage.failure_message
+        analyzer_run.validator_summary_json = v4_stage.validator_summary
+
         # Mark as done
         response.analysis_status = AnalysisStatus.DONE.value
-        response.analyzed_at = datetime.utcnow()
+        response.analyzed_at = _utcnow_naive()
         await session.commit()
 
         return {
@@ -999,6 +1216,16 @@ async def analyze_single_response(
                 update(LLMResponse)
                 .where(LLMResponse.id == response_id)
                 .values(analysis_status=AnalysisStatus.FAILED.value)
+            )
+            await session.execute(
+                update(AnalyzerRun)
+                .where(AnalyzerRun.id == analyzer_run_id)
+                .values(
+                    status="failed",
+                    completed_at=_utcnow_naive(),
+                    failure_code="persistence_failed",
+                    failure_message=str(e),
+                )
             )
             await session.commit()
         except Exception:

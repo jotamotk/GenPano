@@ -40,7 +40,12 @@ def _jsonb() -> Any:
 class BrandMention(Base):
     __tablename__ = "brand_mentions"
     __table_args__ = (
-        UniqueConstraint("response_id", "brand_name", name="uq_mention_response_brand"),
+        UniqueConstraint(
+            "response_id",
+            "brand_name",
+            "product_name",
+            name="uq_mention_response_brand_product",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -160,6 +165,139 @@ class ProductFeatureMention(Base):
     context_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     scenario: Mapped[str | None] = mapped_column(String(128), nullable=True)
     price_positioning: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+
+
+class AnalyzerRun(Base):
+    __tablename__ = "analyzer_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    response_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="analyzer_v4"
+    )
+    prompt_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="running")
+    trigger_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    raw_output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    validator_summary_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ResponseEntity(Base):
+    __tablename__ = "response_entities"
+    __table_args__ = (
+        UniqueConstraint("run_id", "entity_key", name="uq_response_entities_run_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=False
+    )
+    entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    canonical_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    canonicalization_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_flags_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+
+
+class ResponseRelationFact(Base):
+    __tablename__ = "response_relation_facts"
+    __table_args__ = (UniqueConstraint("run_id", "relation_key", name="uq_relation_facts_run_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=False
+    )
+    relation_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    subject_entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_flags_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="current")
+    kg_candidate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+
+
+class AnalysisFactLink(Base):
+    __tablename__ = "analysis_fact_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "fact_type",
+            "fact_key",
+            "linked_fact_type",
+            "linked_fact_key",
+            "link_type",
+            name="uq_analysis_fact_links_run_fact_link",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=False
+    )
+    fact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    fact_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    linked_fact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    linked_fact_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    link_type: Mapped[str] = mapped_column(String(32), nullable=False, server_default="supports")
+    evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_path: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="current")
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True, server_default=func.now()
+    )
+
+
+class AnalyzerQualityFlag(Base):
+    __tablename__ = "analyzer_quality_flags"
+    __table_args__ = (
+        UniqueConstraint("run_id", "flag_key", name="uq_analyzer_quality_flags_run_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("llm_responses.id"), nullable=False
+    )
+    flag_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    blocks_metric_readiness: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default=expression.false()
+    )
+    evidence_json: Mapped[Any | None] = mapped_column(_jsonb(), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )

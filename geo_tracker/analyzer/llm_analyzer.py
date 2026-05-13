@@ -75,6 +75,10 @@ class LLMAnalysisResult:
     brands: list[BrandAnalysis] = field(default_factory=list)
     dimension: DimensionResult = field(default_factory=DimensionResult)
     raw_json: dict | None = None
+    parse_status: str = "ok"
+    parse_error: str | None = None
+    raw_output: str | None = None
+    json_repaired: bool = False
 
 
 class LLMAnalyzer:
@@ -118,7 +122,10 @@ class LLMAnalyzer:
         """
         if not self.client.api_key:
             logger.warning("ARK_API_KEY not set, returning empty analysis")
-            return LLMAnalysisResult()
+            return LLMAnalysisResult(
+                parse_status="failed",
+                parse_error="ARK_API_KEY not set",
+            )
 
         pre_detected = ", ".join(
             f"{d.brand_name}({d.mention_count}次)"
@@ -162,6 +169,7 @@ class LLMAnalyzer:
 
             try:
                 raw_json = json.loads(stripped)
+                json_repaired = False
             except json.JSONDecodeError as e:
                 # Fall back to json_repair for malformed LLM output
                 # (unescaped quotes, trailing commas, truncated JSON, etc.)
@@ -171,21 +179,47 @@ class LLMAnalyzer:
                     )
                     repaired = repair_json(stripped)
                     raw_json = json.loads(repaired)
+                    json_repaired = True
                     logger.info("json_repair recovered the JSON successfully")
                 else:
                     raise
-            return self._parse_result(raw_json)
+            return self._parse_result(
+                raw_json,
+                parse_status="json_repaired" if json_repaired else "ok",
+                raw_output=raw_text,
+                json_repaired=json_repaired,
+            )
 
         except json.JSONDecodeError as e:
             logger.warning(f"LLM returned invalid JSON: {e}\nRaw: {raw_text[:500]}")
-            return LLMAnalysisResult()
+            return LLMAnalysisResult(
+                parse_status="invalid_json",
+                parse_error=str(e),
+                raw_output=raw_text,
+            )
         except Exception as e:
             logger.exception(f"LLM analysis failed: {e}")
-            return LLMAnalysisResult()
+            return LLMAnalysisResult(parse_status="failed", parse_error=str(e))
 
-    def _parse_result(self, data: dict) -> LLMAnalysisResult:
+    def _parse_result(
+        self,
+        data: dict,
+        *,
+        parse_status: str = "ok",
+        raw_output: str | None = None,
+        json_repaired: bool = False,
+    ) -> LLMAnalysisResult:
         """Parse LLM JSON output into structured result."""
-        result = LLMAnalysisResult(raw_json=data)
+        result = LLMAnalysisResult(
+            raw_json=data,
+            parse_status=parse_status,
+            raw_output=raw_output,
+            json_repaired=json_repaired,
+        )
+
+        if "analysis_meta" in data and "mentions" in data:
+            self._parse_v4_projection(data, result)
+            return result
 
         # Parse brands
         for b in data.get("brands", []):
@@ -231,3 +265,78 @@ class LLMAnalyzer:
         )
 
         return result
+
+    def _parse_v4_projection(self, data: dict, result: LLMAnalysisResult) -> None:
+        """Project analyzer_v4 packages back into legacy pipeline structs."""
+        entities = {
+            str(entity.get("entity_key")): entity
+            for entity in data.get("entities", [])
+            if isinstance(entity, dict) and entity.get("entity_key")
+        }
+        first_brand = next(
+            (
+                entity
+                for entity in entities.values()
+                if entity.get("entity_type") == "brand"
+            ),
+            None,
+        )
+        drivers_by_mention: dict[str, list[dict]] = {}
+        for driver in data.get("sentiment_drivers", []):
+            if isinstance(driver, dict):
+                drivers_by_mention.setdefault(str(driver.get("mention_key")), []).append(driver)
+        features_by_product: dict[str, list[dict]] = {}
+        for feature in data.get("product_features", []):
+            if isinstance(feature, dict):
+                features_by_product.setdefault(str(feature.get("product_entity_key")), []).append(feature)
+
+        for mention in data.get("mentions", []):
+            if not isinstance(mention, dict):
+                continue
+            entity_key = str(mention.get("entity_key"))
+            entity = entities.get(entity_key, {})
+            entity_type = str(entity.get("entity_type") or mention.get("mention_type") or "brand")
+            raw_name = str(entity.get("raw_name") or mention.get("raw_text") or "")
+            brand_name = raw_name
+            product_name = None
+            if entity_type == "product":
+                product_name = raw_name
+                brand_name = str(
+                    (first_brand or {}).get("canonical_name")
+                    or (first_brand or {}).get("raw_name")
+                    or mention.get("normalized_text")
+                    or raw_name
+                )
+            drivers = [
+                DriverResult(
+                    driver_text=str(driver.get("driver_summary") or ""),
+                    polarity=str(driver.get("sentiment_label") or "unknown"),
+                    category=str(driver.get("driver_type") or "other"),
+                    strength=float(driver.get("confidence") or 0.5),
+                    source_quote=str(driver.get("evidence_quote") or ""),
+                )
+                for driver in drivers_by_mention.get(str(mention.get("mention_key")), [])
+            ]
+            features = [
+                ProductFeatureResult(
+                    feature_name=str(feature.get("feature_name") or ""),
+                    feature_sentiment="neutral",
+                    scenario=str(feature.get("feature_type") or "") or None,
+                    price_positioning=None,
+                    context_snippet=str(feature.get("evidence_quote") or ""),
+                )
+                for feature in features_by_product.get(entity_key, [])
+            ]
+            result.brands.append(
+                BrandAnalysis(
+                    brand_name=brand_name,
+                    product_name=product_name,
+                    position_type=normalize_position_type(mention.get("position")),
+                    position_rank=None,
+                    detail_level="brief",
+                    sentiment=str(mention.get("sentiment_label") or "unknown"),
+                    sentiment_score=float(mention.get("sentiment_score") or 0.0),
+                    sentiment_drivers=drivers,
+                    product_features=features,
+                )
+            )
