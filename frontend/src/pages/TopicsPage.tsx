@@ -28,6 +28,12 @@ import {
 } from '../hooks/useTopicAnalysis'
 import { resolveLiveProjectId } from '../lib/liveProject'
 import {
+  buildMetricTrustState,
+  type MetricFormulaEvidence,
+  type MetricTrustState,
+  type AnalyticsContractMetadata,
+} from '../api/analyticsContract'
+import {
   ProjectAnalysisParams,
   toProjectAnalysisParams,
 } from '../lib/projectAnalysisFilters'
@@ -131,16 +137,52 @@ function StateBadge({ state }: { state?: string }) {
   )
 }
 
+function TrustStateBadge({ trustState }: { trustState?: MetricTrustState | null }) {
+  if (!trustState || trustState.tone === 'ok') return null
+  const variant = trustState.tone === 'missing' ? 'secondary' : 'orange'
+  return (
+    <div className="mt-2 space-y-1">
+      <Badge variant={variant} size="sm">
+        {trustState.label}
+      </Badge>
+      <div className="text-[11px] leading-snug text-themed-muted">{trustState.summary}</div>
+      {trustState.details.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {trustState.details.map((detail) => (
+            <span key={detail} className="text-[11px] text-themed-muted">
+              {detail}
+            </span>
+          ))}
+        </div>
+      )}
+      {trustState.reasonLabels.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {trustState.reasonLabels.map((reason) => (
+            <span
+              key={reason}
+              className="rounded-pill bg-themed-card px-2 py-0.5 text-[11px] text-themed-muted"
+            >
+              {reason}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MetricCard({
   label,
   value,
   detail,
   tone = 'primary',
+  trustState,
 }: {
   label: string
   value: ReactNode
   detail?: ReactNode
   tone?: 'primary' | 'accent' | 'success' | 'warning'
+  trustState?: MetricTrustState | null
 }) {
   const valueClass =
     tone === 'accent'
@@ -154,8 +196,13 @@ function MetricCard({
   return (
     <Card className="p-4 min-h-[108px]">
       <div className="text-xs text-themed-muted mb-1">{label}</div>
-      <div className={`text-2xl font-brand font-bold tabular-nums ${valueClass}`}>{value}</div>
-      {detail && <div className="text-[11px] text-themed-muted mt-2">{detail}</div>}
+      <div className={`text-2xl font-brand font-bold tabular-nums ${valueClass}`}>
+        {trustState?.canShowValue === false ? '--' : value}
+      </div>
+      {detail && trustState?.canShowValue !== false && (
+        <div className="text-[11px] text-themed-muted mt-2">{detail}</div>
+      )}
+      <TrustStateBadge trustState={trustState} />
     </Card>
   )
 }
@@ -279,6 +326,54 @@ function profileLabel(row: LooseRecord | null | undefined) {
 
 function visibilityValue(row: LooseRecord | null | undefined) {
   return row?.visibility_rate ?? row?.sov ?? row?.mention_rate
+}
+
+const TOPIC_METRIC_ALIASES: Record<string, string[]> = {
+  visibility: ['visibility', 'mention_rate', 'coverage'],
+  sentiment: ['sentiment'],
+  citation: ['citation', 'citations', 'citation_rate'],
+  pano_geo: ['pano_geo', 'geo_score', 'pano_score'],
+}
+
+function topicMetricEvidence(
+  source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  metric: keyof typeof TOPIC_METRIC_ALIASES,
+): MetricFormulaEvidence | null {
+  const evidence = source?.metric_formula_evidence
+  if (!evidence) return null
+  const wanted = new Set(TOPIC_METRIC_ALIASES[metric].map((key) => key.toLowerCase()))
+  for (const [key, item] of Object.entries(evidence)) {
+    if (wanted.has(key.toLowerCase())) return item
+  }
+  return null
+}
+
+function topicMetricTrustState(
+  source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  metric: keyof typeof TOPIC_METRIC_ALIASES,
+  fallback?: (AnalyticsContractMetadata & LooseRecord) | null,
+): MetricTrustState | null {
+  const evidence = topicMetricEvidence(source, metric) || topicMetricEvidence(fallback, metric)
+  const coverage = evidence?.analyzer_coverage || source?.analyzer_coverage || fallback?.analyzer_coverage
+  if (!evidence && !coverage && !source?.formula_status && !fallback?.formula_status) return null
+  return buildMetricTrustState({
+    metricKey: metric,
+    formula_status: evidence?.formula_status || source?.formula_status || fallback?.formula_status,
+    status: evidence?.status,
+    reason_codes: [
+      ...(evidence?.reason_codes ?? []),
+      ...((source?.missing_inputs as string[] | undefined) ?? []),
+      ...((fallback?.missing_inputs as string[] | undefined) ?? []),
+    ],
+    missing_inputs: evidence?.missing_inputs,
+    numerator: evidence?.numerator ?? null,
+    denominator: evidence?.denominator ?? null,
+    analyzer_coverage: coverage,
+  })
+}
+
+function trustValue(value: ReactNode, trustState: MetricTrustState | null) {
+  return trustState?.canShowValue === false ? '--' : value
 }
 
 function parseIdParam(value: string | null) {
@@ -516,6 +611,11 @@ function TopicsView({
   const sentiment = sentimentTotals(rows)
   const isEmpty = !monitoringQ.isLoading && rows.length === 0
   const sevenDayEmpty = isEmpty && isSevenDayWindow(filters)
+  const contractSource = monitoringQ.data as (AnalyticsContractMetadata & LooseRecord) | null | undefined
+  const visibilityTrust = topicMetricTrustState(contractSource, 'visibility')
+  const sentimentTrust = topicMetricTrustState(contractSource, 'sentiment')
+  const citationTrust = topicMetricTrustState(contractSource, 'citation')
+  const panoGeoTrust = topicMetricTrustState(contractSource, 'pano_geo')
 
   return (
     <div className="space-y-5">
@@ -574,23 +674,31 @@ function TopicsView({
           detail="Only successful answers are included."
           tone="success"
         />
-        <MetricCard label="Avg Visibility" value={formatPercent(avgVisibility)} tone="accent" />
+        <MetricCard
+          label="Avg Visibility"
+          value={formatPercent(avgVisibility)}
+          tone="accent"
+          trustState={visibilityTrust}
+        />
         <MetricCard
           label="Sentiment Mix"
           value={`${formatEvidenceCount(sentiment.positive)} / ${formatEvidenceCount(
             sentiment.neutral,
           )} / ${formatEvidenceCount(sentiment.negative)}`}
           detail="Positive / neutral / negative"
+          trustState={sentimentTrust}
         />
         <MetricCard
           label="Citation Coverage"
           value={formatPercent(avgCitationCoverage)}
           detail={`${formatEvidenceCount(summary?.citation_count)} citations`}
+          trustState={citationTrust}
         />
         <MetricCard
           label="Analyzed answers"
           value={formatEvidenceCount(summary?.analyzed_count)}
           detail={`Last success ${summary?.last_collected || '-'}`}
+          trustState={panoGeoTrust}
         />
       </div>
 
@@ -601,6 +709,7 @@ function TopicsView({
             <div className="text-xs text-themed-muted mt-1">
               Visibility, sentiment, and citations are shown from eligible answers.
             </div>
+            <TrustStateBadge trustState={visibilityTrust || citationTrust || sentimentTrust} />
           </div>
           <StateBadge state={monitoringQ.data?.state} />
         </div>
@@ -621,40 +730,52 @@ function TopicsView({
               </tr>
             </thead>
             <tbody>
-              {filtered.map((topic) => (
-                <tr
-                  key={topic.topic_id}
-                  className="cursor-pointer"
-                  onClick={() => onSelectTopic(topic)}
-                >
-                  <td className="font-medium text-themed-primary">{topic.topic_name}</td>
-                  <td>
-                    <Badge variant={DIMENSION_VARIANTS[topic.dimension || ''] || 'blue'} size="sm">
-                      {topic.dimension || '-'}
-                    </Badge>
-                  </td>
-                  <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
-                  <td className="text-right tabular-nums font-semibold text-themed-primary">
-                    {formatPercent(visibilityValue(topic))}
-                  </td>
-                  <td>
-                    <SentimentMix value={topic.sentiment_distribution} />
-                  </td>
-                  <td className="text-right tabular-nums text-themed-primary">
-                    {formatPercent(topic.citation_rate)}
-                  </td>
-                  <td className="text-right tabular-nums text-themed-muted">
-                    {formatEvidenceCount((topic as LooseRecord).citation_count)}
-                  </td>
-                  <td className="text-right tabular-nums font-semibold text-themed-primary">
-                    {formatEvidenceCount(topic.prompt_count)}
-                  </td>
-                  <td className="text-right tabular-nums text-themed-primary">
-                    {formatEvidenceCount(topic.query_count)}
-                  </td>
-                  <td className="text-themed-muted text-xs">{topic.last_collected || '-'}</td>
-                </tr>
-              ))}
+              {filtered.map((topic) => {
+                const topicSource = topic as AnalyticsContractMetadata & LooseRecord
+                const rowVisibilityTrust = topicMetricTrustState(topicSource, 'visibility', contractSource)
+                const rowSentimentTrust = topicMetricTrustState(topicSource, 'sentiment', contractSource)
+                const rowCitationTrust = topicMetricTrustState(topicSource, 'citation', contractSource)
+                return (
+                  <tr
+                    key={topic.topic_id}
+                    className="cursor-pointer"
+                    onClick={() => onSelectTopic(topic)}
+                  >
+                    <td className="font-medium text-themed-primary">{topic.topic_name}</td>
+                    <td>
+                      <Badge variant={DIMENSION_VARIANTS[topic.dimension || ''] || 'blue'} size="sm">
+                        {topic.dimension || '-'}
+                      </Badge>
+                    </td>
+                    <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
+                    <td className="text-right tabular-nums font-semibold text-themed-primary">
+                      {trustValue(formatPercent(visibilityValue(topic)), rowVisibilityTrust)}
+                      <TrustStateBadge trustState={rowVisibilityTrust} />
+                    </td>
+                    <td>
+                      {rowSentimentTrust?.canShowValue === false ? (
+                        <TrustStateBadge trustState={rowSentimentTrust} />
+                      ) : (
+                        <SentimentMix value={topic.sentiment_distribution} />
+                      )}
+                    </td>
+                    <td className="text-right tabular-nums text-themed-primary">
+                      {trustValue(formatPercent(topic.citation_rate), rowCitationTrust)}
+                      <TrustStateBadge trustState={rowCitationTrust} />
+                    </td>
+                    <td className="text-right tabular-nums text-themed-muted">
+                      {formatEvidenceCount((topic as LooseRecord).citation_count)}
+                    </td>
+                    <td className="text-right tabular-nums font-semibold text-themed-primary">
+                      {formatEvidenceCount(topic.prompt_count)}
+                    </td>
+                    <td className="text-right tabular-nums text-themed-primary">
+                      {formatEvidenceCount(topic.query_count)}
+                    </td>
+                    <td className="text-themed-muted text-xs">{topic.last_collected || '-'}</td>
+                  </tr>
+                )
+              })}
               {!monitoringQ.isLoading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={10}>
@@ -1322,6 +1443,12 @@ function ResponseAttemptsModal({
     : analysisList(analysis, ['sentiment_drivers', 'drivers'])
   const summaryFacts = analysisSummaryFacts(analysis)
   const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
+  const analyzerFactsTrust = hasScopedFacts
+    ? null
+    : buildMetricTrustState({
+        formula_status: 'missing',
+        reason_codes: ['missing_analyzer_rows'],
+      })
 
   return (
     <div
@@ -1422,6 +1549,7 @@ function ResponseAttemptsModal({
               <BarChart3 size={16} className="text-themed-accent" aria-hidden />
               <h4 className="text-sm font-semibold text-themed-primary">Analyzer facts</h4>
             </div>
+            <TrustStateBadge trustState={analyzerFactsTrust} />
 
             <FactSection title="Analyzer summary">
               <AnalysisSummaryGrid facts={summaryFacts} />
@@ -1473,14 +1601,12 @@ function ResponseAttemptsModal({
               </div>
             </FactSection>
 
-            {productFacts.length > 0 && (
-              <FactSection title="Products and features">
-                <FactList
-                  items={productFacts}
-                  emptyText="No products, features, or attributes for this response."
-                />
-              </FactSection>
-            )}
+            <FactSection title="Products and features">
+              <FactList
+                items={productFacts}
+                emptyText="Product evidence is not available for this response yet."
+              />
+            </FactSection>
 
             {relations.length > 0 && (
               <FactSection title="Response relations">
@@ -1488,11 +1614,9 @@ function ResponseAttemptsModal({
               </FactSection>
             )}
 
-            {drivers.length > 0 && (
-              <FactSection title="Sentiment drivers">
-                <FactList items={drivers} emptyText="No sentiment drivers for this response." />
-              </FactSection>
-            )}
+            <FactSection title="Sentiment drivers">
+              <FactList items={drivers} emptyText="Sentiment quote evidence is not available yet." />
+            </FactSection>
 
             {analysis && !hasFutureAnalyzerFacts && (
               <FactSection title="Additional analyzer fields">

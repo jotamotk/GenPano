@@ -26,6 +26,7 @@ export default function KpiCard({
   subMetrics = [],
   onClick,
   className = '',
+  trustState,
 }) {
   // Determine delta badge variant based on sign
   const getDeltaVariant = () => {
@@ -36,6 +37,14 @@ export default function KpiCard({
 
   const deltaVariant = getDeltaVariant();
   const deltaText = delta > 0 ? `+${delta}` : String(delta);
+  const showTrustState = Boolean(trustState && trustState.tone !== 'ok');
+  const displayValue = trustState && trustState.canShowValue === false ? '—' : value;
+  const trustVariant =
+    trustState?.tone === 'missing'
+      ? 'secondary'
+      : trustState?.tone === 'partial'
+        ? 'orange'
+        : 'green';
 
   return (
     <Card
@@ -53,17 +62,49 @@ export default function KpiCard({
             {deltaText} {deltaLabel}
           </Badge>
         )}
+        {delta === undefined && showTrustState && (
+          <Badge variant={trustVariant} size="sm">
+            {trustState.label}
+          </Badge>
+        )}
       </div>
 
       {/* Middle: large value */}
       <div className="mb-3">
         <span className="text-2xl font-bold text-themed-primary tabular-nums">
-          {value}
+          {displayValue}
         </span>
       </div>
 
+      {showTrustState && (
+        <div className="mb-3 rounded-btn border border-themed-subtle bg-themed-subtle px-3 py-2">
+          <div className="text-xs font-medium text-themed-primary">{trustState.summary}</div>
+          {trustState.details?.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {trustState.details.map((detail) => (
+                <span key={detail} className="text-[11px] text-themed-muted">
+                  {detail}
+                </span>
+              ))}
+            </div>
+          )}
+          {trustState.reasonLabels?.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {trustState.reasonLabels.map((reason) => (
+                <span
+                  key={reason}
+                  className="rounded-pill bg-themed-card px-2 py-0.5 text-[11px] text-themed-muted"
+                >
+                  {reason}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Sparkline */}
-      {sparkData && sparkData.length > 0 && (
+      {trustState?.canShowValue !== false && sparkData && sparkData.length > 0 && (
         <div className="mb-3 h-8 w-full">
           <MiniSparkline data={sparkData} color={sparkColor} />
         </div>

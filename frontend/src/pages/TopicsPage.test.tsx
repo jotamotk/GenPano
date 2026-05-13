@@ -278,6 +278,108 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getAllByText('42.0%').length).toBeGreaterThan(0)
   })
 
+  it('shows analyzer trust states instead of fake zero topic metrics when coverage is partial', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 75,
+          query_count: 464,
+          response_count: 56,
+          analyzed_count: 34,
+          target_mention_count: 30,
+          citation_count: 183,
+          last_collected: '2026-05-13',
+        },
+        analyzer_coverage: {
+          eligible_response_count: 56,
+          analyzed_response_count: 34,
+          missing_response_count: 22,
+          analyzer_version: 'v3',
+        },
+        formula_status: 'partial',
+        metric_formula_evidence: {
+          visibility: {
+            formula_status: 'partial',
+            numerator: 0,
+            denominator: 56,
+            reason_codes: ['missing_analyzer_rows', 'insufficient_coverage'],
+          },
+          sentiment: {
+            formula_status: 'partial',
+            reason_codes: ['missing_sentiment_quote'],
+          },
+          citation: {
+            formula_status: 'partial',
+            numerator: 0,
+            denominator: 183,
+            reason_codes: ['unresolved_citation_attribution'],
+          },
+          pano_geo: {
+            formula_status: 'missing',
+            reason_codes: ['missing_analyzer_rows'],
+            missing_inputs: ['geo_score_daily'],
+          },
+        },
+        missing_inputs: ['missing_analyzer_rows'],
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'Acme',
+            prompt_count: 75,
+            query_count: 464,
+            response_count: 56,
+            visibility_rate: 0,
+            mention_rate: 0,
+            sov: 0,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+            citation_rate: 0,
+            citation_count: 183,
+            last_collected: '2026-05-13',
+            formula_status: 'partial',
+            metric_formula_evidence: {
+              visibility: {
+                formula_status: 'partial',
+                numerator: 0,
+                denominator: 56,
+                reason_codes: ['missing_analyzer_rows', 'insufficient_coverage'],
+              },
+              sentiment: {
+                formula_status: 'partial',
+                reason_codes: ['missing_sentiment_quote'],
+              },
+              citation: {
+                formula_status: 'partial',
+                numerator: 0,
+                denominator: 183,
+                reason_codes: ['unresolved_citation_attribution'],
+              },
+            },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage()
+
+    expect(screen.getAllByText('Coverage incomplete').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('34 of 56 analyzed').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('22 missing').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Analyzer v3').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Analysis coverage missing').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Citation attribution unresolved').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Sentiment quote missing').length).toBeGreaterThan(0)
+
+    const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
+    expect(within(row).getAllByText('Needs review').length).toBeGreaterThan(0)
+    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
+  })
+
   it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {

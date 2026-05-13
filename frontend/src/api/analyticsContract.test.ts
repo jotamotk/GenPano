@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  buildMetricTrustState,
   canUseContractMetricValue,
   canUseMetricEvidence,
   contractEvidenceReasons,
@@ -84,5 +85,66 @@ describe('analytics formula-status guards', () => {
     expect(canUseContractMetricValue('ok', undefined)).toBe(false)
     expect(canUseContractMetricValue('ok', { state: 'ok' })).toBe(true)
     expect(canUseContractMetricValue('ok', { formula_status: 'ok' })).toBe(true)
+  })
+
+  it('classifies analyzer coverage and reason codes without turning partial evidence into zero', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'sov',
+      formula_status: 'partial',
+      numerator: 30,
+      denominator: 138,
+      analyzer_coverage: {
+        eligible_response_count: 56,
+        analyzed_response_count: 34,
+        missing_response_count: 22,
+        analyzer_version: 'v3',
+      },
+      reason_codes: [
+        'missing_analyzer_rows',
+        'insufficient_coverage',
+        'missing_competitive_extraction',
+        'target_only_sov',
+      ],
+    })
+
+    expect(state.tone).toBe('partial')
+    expect(state.canShowValue).toBe(false)
+    expect(state.label).toBe('Needs review')
+    expect(state.summary).toContain('Coverage incomplete')
+    expect(state.details).toContain('34 of 56 analyzed')
+    expect(state.details).toContain('22 missing')
+    expect(state.details).toContain('Analyzer v3')
+    expect(state.details).toContain('30 / 138 evidence')
+    expect(state.reasonLabels).toEqual(
+      expect.arrayContaining([
+        'Analysis coverage missing',
+        'Coverage incomplete',
+        'Competitor evidence incomplete',
+        'Target-only SoV',
+      ]),
+    )
+  })
+
+  it('allows a real zero only when formula proof says the metric is ok', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'visibility',
+      value: 0,
+      formula_status: 'ok',
+      numerator: 0,
+      denominator: 56,
+      analyzer_coverage: {
+        eligible_response_count: 56,
+        analyzed_response_count: 56,
+        missing_response_count: 0,
+        analyzer_version: 'v3',
+      },
+      reason_codes: ['valid_zero'],
+    })
+
+    expect(state.tone).toBe('ok')
+    expect(state.canShowValue).toBe(true)
+    expect(state.label).toBe('Valid zero')
+    expect(state.summary).toBe('Zero is supported by complete evidence.')
+    expect(state.reasonLabels).toContain('Valid zero')
   })
 })
