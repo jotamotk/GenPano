@@ -1657,7 +1657,7 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText('earlier.example')).toBeInTheDocument()
   })
 
-  it('uses response contract state for analyzer facts without falling back to empty facts as ok', () => {
+  it('shows analyzer facts contract review state alongside non-empty fact content', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
         summary: {
@@ -1744,8 +1744,23 @@ describe('TopicsPage live brand override', () => {
         },
         analysis: null,
         analyzer_facts: {
-          citations: [],
-          brands_mentioned: [],
+          citations: [
+            {
+              citation_id: 1,
+              response_id: 401,
+              url: 'https://reviews.example/bestcoffer',
+              domain: 'reviews.example',
+            },
+          ],
+          brands_mentioned: [
+            {
+              mention_id: 1,
+              response_id: 401,
+              brand_name: 'BestCoffer',
+              position_rank: 1,
+              sentiment: 'mixed',
+            },
+          ],
           products_features_attributes: [],
           relations: [],
           sentiment_drivers: [],
@@ -1797,6 +1812,9 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText('22 missing')).toBeInTheDocument()
     expect(within(modal).getByText('Citation attribution unresolved')).toBeInTheDocument()
     expect(within(modal).getByText('Sentiment quote missing')).toBeInTheDocument()
+    expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
+    expect(within(modal).getByText('reviews.example')).toBeInTheDocument()
+    expect(within(modal).getByText('BestCoffer')).toBeInTheDocument()
     expect(within(modal).getByText(/Brand #24/)).toBeInTheDocument()
     expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
   })
