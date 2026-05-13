@@ -82,6 +82,19 @@ class _RecordingGotoPage(_FakePage):
         self.url = url
 
 
+class _TransientGotoPage(_RecordingGotoPage):
+    def __init__(self, *, failures: int = 1, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.failures = failures
+
+    async def goto(self, url: str, **kwargs) -> None:
+        self.goto_calls.append({"url": url, **kwargs})
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("Page.goto: NS_ERROR_NET_INTERRUPT")
+        self.url = url
+
+
 class _VisibleElement:
     async def is_visible(self) -> bool:
         return True
@@ -158,6 +171,11 @@ class _FakeContext:
         ]
 
 
+class _EmptyCookieContext(_FakeContext):
+    async def cookies(self):
+        return []
+
+
 class _FakeProvider:
     provider_name = "fake-sms"
 
@@ -208,6 +226,24 @@ class _FakeHeroSMSProvider(_FakeProvider):
     async def mark_success(self, lease) -> None:
         self.completed = getattr(self, "completed", [])
         self.completed.append(lease.provider_name)
+
+
+class _TimeoutHeroSMSProvider(_FakeHeroSMSProvider):
+    async def reserve_number(self, *, phone=None):
+        from geo_tracker.agent.sms_login.providers import SMSNumberLease
+
+        number = "+1" + "202" + "555" + f"{198 + len(self.reserved):04d}"
+        self.reserved.append(number)
+        return SMSNumberLease(
+            phone=number,
+            provider_name=self.provider_name,
+            price_bucket="usd<=0.60",
+            provider_ref=f"{FAKE_PROVIDER_REF}-{len(self.reserved)}",
+        )
+
+    async def poll_sms_code(self, lease, *, keyword: str, timeout: int):
+        self.polled.append((lease.phone, keyword, timeout))
+        raise TimeoutError("HeroSMS SMS polling timed out")
 
 
 async def _patch_successful_flow(monkeypatch, handler, *, verify_result):
@@ -393,6 +429,21 @@ async def test_chatgpt_handler_uses_herosms_shared_provider(monkeypatch) -> None
     assert provider.closed is True
 
 
+def test_chatgpt_herosms_attempt_budget_is_bounded_without_changing_others() -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    chatgpt = get_handler("chatgpt")
+    doubao = get_handler("doubao")
+    deepseek = get_handler("deepseek")
+
+    assert chatgpt is not None
+    assert doubao is not None
+    assert deepseek is not None
+    assert chatgpt.MAX_PHONE_RETRIES == 2
+    assert doubao.MAX_PHONE_RETRIES == 5
+    assert deepseek.MAX_PHONE_RETRIES == 5
+
+
 @pytest.mark.asyncio
 async def test_chatgpt_manual_challenge_does_not_return_cookies(monkeypatch) -> None:
     from geo_tracker.agent.sms_login import get_handler
@@ -410,6 +461,34 @@ async def test_chatgpt_manual_challenge_does_not_return_cookies(monkeypatch) -> 
     result = await handler.login_or_register()
 
     assert result == {"status": "failed", "reason": "requires_manual_challenge"}
+    assert provider.released == [provider.reserved[0]]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_success_requires_persistable_cookies(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _RecordingGotoPage()
+    provider = _FakeHeroSMSProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _launch_browser():
+        return object(), None, object(), _EmptyCookieContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+
+    result = await handler.login_or_register()
+
+    assert result == {"status": "failed", "reason": "cookies_missing_after_success"}
     assert provider.released == [provider.reserved[0]]
     assert provider.closed is True
 
@@ -700,6 +779,36 @@ async def test_chatgpt_initial_navigation_waits_for_domcontentloaded(
 
 
 @pytest.mark.asyncio
+async def test_chatgpt_initial_navigation_recovers_from_transient_interrupt(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _TransientGotoPage(failures=1)
+    provider = _FakeHeroSMSProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+
+    result = await handler.login_or_register()
+
+    assert "cookies" in result
+    assert len(page.goto_calls) == 2
+    assert all(call["wait_until"] == "domcontentloaded" for call in page.goto_calls)
+
+
+@pytest.mark.asyncio
 async def test_doubao_initial_navigation_still_waits_for_load(monkeypatch) -> None:
     from geo_tracker.agent.sms_login import base, get_handler
 
@@ -724,6 +833,68 @@ async def test_doubao_initial_navigation_still_waits_for_load(monkeypatch) -> No
 
     assert "cookies" in result
     assert page.goto_calls[0]["wait_until"] == "load"
+
+
+@pytest.mark.asyncio
+async def test_doubao_initial_navigation_does_not_retry_chatgpt_interrupts(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    page = _TransientGotoPage(failures=1)
+    provider = _FakeProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+
+    result = await handler.login_or_register()
+
+    assert result["status"] == "failed"
+    assert "cookies" not in result
+    assert len(page.goto_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_sms_poll_timeout_returns_sms_timeout_without_cookies(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    provider = _TimeoutHeroSMSProvider()
+    blacklist_reasons = []
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    monkeypatch.setattr(handler, "MAX_PHONE_RETRIES", 2)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _blacklist(platform, phone, *, reason, permanent=False):
+        blacklist_reasons.append((platform, phone, reason, permanent))
+
+    monkeypatch.setattr(base, "add_to_blacklist", _blacklist)
+
+    result = await handler.login_or_register()
+
+    assert result == {"status": "failed", "reason": "sms_timeout"}
+    assert "cookies" not in result
+    assert len(provider.reserved) == 2
+    assert provider.polled == [
+        (provider.reserved[0], "OpenAI", 120),
+        (provider.reserved[1], "OpenAI", 120),
+    ]
+    assert provider.released == provider.reserved
+    assert [item[2] for item in blacklist_reasons] == ["sms_timeout", "sms_timeout"]
 
 
 @pytest.mark.parametrize("platform", ["doubao", "deepseek"])
