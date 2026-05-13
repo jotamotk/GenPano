@@ -339,3 +339,49 @@ def test_apply_requires_exact_ids_and_approval() -> None:
     assert "exact response_ids" in APPROVAL_REF_HELP
     with pytest.raises(ValueError, match="apply mode requires explicit response_ids"):
         scope.validate(mode="apply")
+
+
+def test_approval_ref_matches_exact_numeric_response_id_tokens() -> None:
+    def fetcher(comment_id: int) -> dict:
+        bodies = {
+            4449000001: (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply. Approved exact response_ids: 82710."
+            ),
+            4449000002: (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply. Approved exact response_ids: 827101."
+            ),
+            4449000003: (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply. Approved exact response_ids:\n82710, 82711\n82712"
+            ),
+        }
+        ref = f"https://github.com/jotamotk/trash_test/issues/827#issuecomment-{comment_id}"
+        return {
+            "html_url": ref,
+            "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/827",
+            "author_association": "OWNER",
+            "user": {"login": "jotamotk"},
+            "body": bodies[comment_id],
+        }
+
+    with pytest.raises(ValueError, match="missing=\\[8271\\]"):
+        validate_approval_ref(
+            "https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000001",
+            approval_comment_fetcher=fetcher,
+            response_ids=(8271,),
+        )
+    with pytest.raises(ValueError, match="missing=\\[82710\\]"):
+        validate_approval_ref(
+            "https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000002",
+            approval_comment_fetcher=fetcher,
+            response_ids=(82710,),
+        )
+
+    approved = validate_approval_ref(
+        "https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000003",
+        approval_comment_fetcher=fetcher,
+        response_ids=(82710, 82711, 82712),
+    )
+    assert approved.endswith("4449000003")

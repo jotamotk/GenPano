@@ -59,6 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
 
     steps:
       - name: Validate workflow inputs before SSH

@@ -264,7 +264,8 @@ def _validate_comment_covers_response_ids(
     response_ids: tuple[int, ...],
 ) -> None:
     body = str(comment.get("body") or "")
-    missing = [response_id for response_id in response_ids if str(response_id) not in body]
+    approved_ids = {int(token) for token in re.findall(r"(?<!\d)\d+(?!\d)", body)}
+    missing = [response_id for response_id in response_ids if response_id not in approved_ids]
     if missing:
         raise ValueError(
             "approval_ref comment must list every exact response_id approved for apply; "
