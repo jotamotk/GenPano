@@ -916,15 +916,80 @@ async def test_batch_submit_unauth_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_legacy_api_analyzer_paths_do_not_gain_admin_batch_mutations(client) -> None:
+async def test_legacy_api_analyzer_batch_paths_keep_admin_auth_guard(client) -> None:
     submit = await client.post(
         "/api/analyzer/responses/batch",
         json={"scope": {"response_ids": [101]}, "confirm": True},
     )
     status = await client.get("/api/analyzer/batches/batch-797")
 
-    assert submit.status_code == 404
-    assert status.status_code == 404
+    assert submit.status_code == 401
+    assert status.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_submit_compat_preserves_admin_validation(
+    client,
+    admin_operator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _admin_analyzer_router_module()
+    readiness = AsyncMock(return_value=True)
+    preview = AsyncMock(return_value=[_status_row(response_id=101)])
+    create_batch = AsyncMock(return_value={"batch_id": "batch-without-key"})
+    monkeypatch.setattr(module.analyzer_db, "analyzer_batch_submit_ready", readiness, raising=False)
+    monkeypatch.setattr(module.analyzer_db, "preview_batch_analyzer_candidates", preview)
+    monkeypatch.setattr(module.analyzer_db, "create_analyzer_batch_submission", create_batch)
+
+    resp = await client.post(
+        "/api/analyzer/responses/batch",
+        json={
+            "scope": {"response_ids": [101]},
+            "mode": "missing_or_failed_only",
+            "max_count": 10,
+            "confirm": True,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "idempotency_key_required"
+    readiness.assert_not_awaited()
+    preview.assert_not_awaited()
+    create_batch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_status_compat_returns_admin_status_shape(
+    client,
+    admin_operator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _admin_analyzer_router_module()
+    fetch_status = AsyncMock(
+        return_value={
+            "success": True,
+            "batch_id": "batch-797",
+            "status": "partial",
+            "submitted_count": 2,
+            "completed_count": 1,
+            "failed_count": 1,
+            "skipped_count": 0,
+            "items": [
+                {"response_id": 101, "run_id": 801, "status": "done"},
+                {"response_id": 102, "run_id": 802, "status": "failed"},
+            ],
+        }
+    )
+    monkeypatch.setattr(module.analyzer_db, "fetch_analyzer_batch_status", fetch_status)
+
+    resp = await client.get("/api/analyzer/batches/batch-797")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["batch_id"] == "batch-797"
+    assert body["status"] == "partial"
+    assert body["completed_count"] == 1
+    fetch_status.assert_awaited_once()
 
 
 @pytest.mark.asyncio

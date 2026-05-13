@@ -10,6 +10,10 @@ Routes:
 - GET    /api/analyzer/llms                    (read)
 - GET    /api/analyzer/responses               (read, filtered + paginated)
 - GET    /api/analyzer/responses/{id}/status   (read, Admin Attempts compat)
+- POST   /api/analyzer/responses/batch/dry-run (Admin Attempts rewrite compat)
+- POST   /api/analyzer/responses/{id}/analyze  (Admin Attempts rewrite compat)
+- POST   /api/analyzer/responses/batch         (Admin Attempts rewrite compat)
+- GET    /api/analyzer/batches/{id}            (Admin Attempts rewrite compat)
 - GET    /api/analyzer/response/{id}           (read, detail with mentions)
 - GET    /api/analyzer/daily                   (read, geo_score_daily)
 - POST   /api/analyzer/trigger                 dispatch + emit_audit (high
@@ -38,6 +42,18 @@ from app.admin.analyzer.lib import (
 )
 from app.admin.audit import emit_audit
 from app.admin.queries.db import format_attempt_analysis_fields
+from app.api.admin.analyzer.router import (
+    analyze_response as _admin_analyze_response,
+)
+from app.api.admin.analyzer.router import (
+    analyzer_batch_dry_run as _admin_analyzer_batch_dry_run,
+)
+from app.api.admin.analyzer.router import (
+    analyzer_batch_status as _admin_analyzer_batch_status,
+)
+from app.api.admin.analyzer.router import (
+    analyzer_batch_submit as _admin_analyzer_batch_submit,
+)
 from app.api.admin.auth.router import current_admin
 from app.core.security import _DependsDb
 
@@ -118,6 +134,43 @@ async def analyzer_response_status(
     item = format_attempt_analysis_fields(status)
     item["success"] = True
     return JSONResponse(status_code=200, content=item)
+
+
+@router.post("/analyzer/responses/batch/dry-run", response_model=None)
+async def analyzer_batch_dry_run_compat(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    return await _admin_analyzer_batch_dry_run(request, operator, session)
+
+
+@router.post("/analyzer/responses/{response_id}/analyze", response_model=None)
+async def analyze_response_compat(
+    response_id: int,
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    return await _admin_analyze_response(response_id, request, operator, session)
+
+
+@router.post("/analyzer/responses/batch", response_model=None)
+async def analyzer_batch_submit_compat(
+    request: Request,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    return await _admin_analyzer_batch_submit(request, operator, session)
+
+
+@router.get("/analyzer/batches/{batch_id}", response_model=None)
+async def analyzer_batch_status_compat(
+    batch_id: str,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    return await _admin_analyzer_batch_status(batch_id, operator, session)
 
 
 @router.get("/analyzer/response/{response_id}", response_model=None)
