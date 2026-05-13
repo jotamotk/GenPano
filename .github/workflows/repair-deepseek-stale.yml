@@ -1,0 +1,209 @@
+name: Repair DeepSeek Stale Running
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "Brand id to scope the repair"
+        required: false
+        default: "12"
+      target_llm:
+        description: "Engine filter; deepseek by default. Use 'all' to scope every engine."
+        required: false
+        default: "deepseek"
+      stale_running_ttl_seconds:
+        description: "Mark running queries with no response older than this (seconds) as failed. 600 matches Celery task_time_limit."
+        required: false
+        default: "600"
+      apply:
+        description: "true UPDATEs candidates to failed; false runs a dry-run preview only"
+        required: false
+        default: "false"
+
+jobs:
+  repair:
+    name: Repair stale running queries
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and repair stale running rows
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          TARGET_LLM: ${{ inputs.target_llm }}
+          STALE_RUNNING_TTL_SECONDS: ${{ inputs.stale_running_ttl_seconds }}
+          APPLY: ${{ inputs.apply }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh repair-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_cmd="$(printf 'BRAND_ID=%q TARGET_LLM=%q STALE_RUNNING_TTL_SECONDS=%q APPLY=%q GH_RUN_ID=%q bash -s' \
+            "${BRAND_ID}" "${TARGET_LLM}" "${STALE_RUNNING_TTL_SECONDS}" "${APPLY}" "${GH_RUN_ID}")"
+
+          set +e
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' | tee repair-artifacts/repair.log
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          fail() { echo "ERROR: $*" >&2; exit 1; }
+
+          [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || fail "BRAND_ID must be an integer"
+          [[ "${STALE_RUNNING_TTL_SECONDS}" =~ ^[0-9]+$ ]] || fail "STALE_RUNNING_TTL_SECONDS must be an integer"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -ge 60 ] || fail "STALE_RUNNING_TTL_SECONDS must be >= 60"
+          [ "${STALE_RUNNING_TTL_SECONDS}" -le 604800 ] || fail "STALE_RUNNING_TTL_SECONDS must be <= 604800"
+          if [ -n "${TARGET_LLM}" ] && [ "${TARGET_LLM}" != "all" ] && ! [[ "${TARGET_LLM}" =~ ^[a-z0-9_-]+$ ]]; then
+            fail "TARGET_LLM must be empty, all, or a lowercase engine key"
+          fi
+          case "${APPLY}" in
+            true|false) ;;
+            *) fail "APPLY must be true or false" ;;
+          esac
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano "$@" </dev/null
+          }
+
+          echo "=== Repair audit ==="
+          echo "run=https://github.com/${GITHUB_REPOSITORY:-jotamotk/trash_test}/actions/runs/${GH_RUN_ID}"
+          echo "brand_id=${BRAND_ID}"
+          echo "target_llm=${TARGET_LLM}"
+          echo "stale_running_ttl_seconds=${STALE_RUNNING_TTL_SECONDS}"
+          echo "apply=${APPLY}"
+          echo "utc_started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+          echo "=== Pre-repair counter ==="
+          psql_cmd -c "
+            WITH scoped AS (
+              SELECT q.id, q.target_llm, q.status,
+                COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at) AS effective_start
+              FROM queries q
+              WHERE q.brand_id = ${BRAND_ID}
+                AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+            ),
+            response_counts AS (
+              SELECT query_id, COUNT(*) AS responses
+              FROM llm_responses
+              GROUP BY query_id
+            )
+            SELECT
+              s.target_llm,
+              s.status,
+              COUNT(*) AS queries,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses,0)=0) AS without_response,
+              COUNT(*) FILTER (
+                WHERE LOWER(s.status)='running'
+                  AND COALESCE(r.responses,0)=0
+                  AND s.effective_start < NOW() - (CAST('${STALE_RUNNING_TTL_SECONDS}' AS text) || ' seconds')::interval
+              ) AS stale_running_candidates
+            FROM scoped s
+            LEFT JOIN response_counts r ON r.query_id = s.id
+            GROUP BY s.target_llm, s.status
+            ORDER BY s.target_llm, s.status;
+          "
+
+          echo "=== Stale running candidate detail ==="
+          psql_cmd -c "
+            SELECT q.id, q.target_llm, q.status,
+              q.started_at, q.queued_at, q.created_at,
+              EXTRACT(EPOCH FROM (NOW() - COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at)))::int AS age_seconds,
+              q.retry_reason
+            FROM queries q
+            WHERE q.brand_id = ${BRAND_ID}
+              AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+              AND LOWER(q.status) = 'running'
+              AND COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at)
+                  < NOW() - (CAST('${STALE_RUNNING_TTL_SECONDS}' AS text) || ' seconds')::interval
+              AND NOT EXISTS (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id)
+            ORDER BY q.target_llm, q.id;
+          "
+
+          if [ "${APPLY}" != "true" ]; then
+            echo "Dry-run only (apply=false). Re-run with apply=true to UPDATE these to failed."
+            exit 0
+          fi
+
+          echo "=== Apply repair ==="
+          repair_tsv="/tmp/genpano_repair_${GH_RUN_ID}.tsv"
+          psql_cmd -At -F $'\t' -c "
+            WITH candidates AS (
+              SELECT q.id, q.target_llm, q.status AS previous_status
+              FROM queries q
+              WHERE q.brand_id = ${BRAND_ID}
+                AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+                AND LOWER(q.status) = 'running'
+                AND COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at)
+                    < NOW() - (CAST('${STALE_RUNNING_TTL_SECONDS}' AS text) || ' seconds')::interval
+                AND NOT EXISTS (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id)
+            ),
+            updated AS (
+              UPDATE queries q
+                 SET status = 'failed',
+                     finished_at = NOW(),
+                     retry_reason = 'stale_running_timeout:${GH_RUN_ID}',
+                     latency_ms = CASE
+                       WHEN q.started_at IS NULL THEN q.latency_ms
+                       ELSE GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (NOW() - q.started_at)) * 1000)::int)
+                     END
+                FROM candidates c
+               WHERE q.id = c.id
+              RETURNING q.id, q.target_llm, c.previous_status, q.status, q.retry_reason
+            )
+            SELECT id, target_llm, previous_status, status, retry_reason
+            FROM updated
+            ORDER BY target_llm, id;
+          " > "${repair_tsv}"
+
+          if [ -s "${repair_tsv}" ]; then
+            echo "Repaired rows:"
+            cat "${repair_tsv}"
+            ids_csv="$(awk -F'\t' 'NF {print $1}' "${repair_tsv}" | paste -sd, -)"
+            echo
+            echo "Rollback SQL (paste on server psql if needed):"
+            echo "UPDATE queries SET status='running', finished_at=NULL, retry_reason='rollback_stale_running_timeout:${GH_RUN_ID}' WHERE id IN (${ids_csv}) AND retry_reason='stale_running_timeout:${GH_RUN_ID}';"
+          else
+            echo "No rows matched. Nothing to roll back."
+          fi
+
+          echo "=== Post-repair counter ==="
+          psql_cmd -c "
+            WITH scoped AS (
+              SELECT q.id, q.target_llm, q.status
+              FROM queries q
+              WHERE q.brand_id = ${BRAND_ID}
+                AND ('${TARGET_LLM}' IN ('', 'all') OR q.target_llm = '${TARGET_LLM}')
+            ),
+            response_counts AS (
+              SELECT query_id, COUNT(*) AS responses
+              FROM llm_responses
+              GROUP BY query_id
+            )
+            SELECT
+              s.target_llm,
+              s.status,
+              COUNT(*) AS queries,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses,0)>0) AS with_response,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses,0)=0) AS without_response
+            FROM scoped s
+            LEFT JOIN response_counts r ON r.query_id = s.id
+            GROUP BY s.target_llm, s.status
+            ORDER BY s.target_llm, s.status;
+          "
+          REMOTE
+          ssh_status=$?
+          set -e
+          exit "${ssh_status}"
+
+      - name: Upload repair artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-deepseek-stale-${{ github.run_id }}
+          path: repair-artifacts
+          if-no-files-found: ignore
