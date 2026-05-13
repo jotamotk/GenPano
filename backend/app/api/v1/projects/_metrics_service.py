@@ -262,7 +262,12 @@ def _apply_metric_series_contract(
             evidence_source=evidence_source,
         )
         if not missing_inputs:
-            out.append(item)
+            formula_status = metric_formula_status(
+                context,
+                item.metric,
+                item.formula_status,
+            )
+            out.append(item.model_copy(update={"formula_status": formula_status}))
             continue
         formula_status = metric_formula_status(
             context,
@@ -341,7 +346,7 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
         response_count = len(bucket["response_ids"])
         if response_count <= 0 or bucket["citation_count"] <= 0:
             return None
-        return round(float(bucket["citation_count"]) / response_count, 4)
+        return round(min(float(bucket["citation_count"]) / response_count, 1.0), 4)
     return None
 
 

@@ -42,6 +42,7 @@ from app.api.v1.projects._analytics_contract import (
     FORMULA_PARTIAL_STATUS,
     build_contract_context,
     formula_diagnostics_for,
+    metric_blocking_inputs_from_evidence,
     metric_formula_status,
     metric_missing_inputs,
 )
@@ -354,17 +355,21 @@ async def _with_chart_contract[ChartOutT: BaseModel](
     return out.model_copy(update=update) if update else out
 
 
-def _contract_metric_status(update: dict[str, Any], metric_key: str) -> str | None:
+def _contract_metric_blocked(update: dict[str, Any], metric_key: str) -> bool:
     evidence = update.get("metric_formula_evidence") or {}
-    metric_evidence = evidence.get(_metric_evidence_key(metric_key))
-    if not isinstance(metric_evidence, dict):
-        return None
-    return str(metric_evidence.get("formula_status") or FORMULA_MISSING_INPUTS_STATUS)
+    evidence_key = _metric_evidence_key(metric_key)
+    value = evidence.get(evidence_key)
+    return bool(
+        metric_blocking_inputs_from_evidence(
+            metric_key,
+            value if isinstance(value, dict) else None,
+        )
+    )
 
 
-def _contract_metric_non_ok(update: dict[str, Any], metric_key: str) -> bool:
-    status = _contract_metric_status(update, metric_key)
-    return status is not None and status != FORMULA_OK_STATUS
+def _metric_evidence_dict(evidence: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = evidence.get(key)
+    return value if isinstance(value, dict) else None
 
 
 async def _with_sentiment_by_engine_contract(
@@ -390,7 +395,7 @@ async def _with_sentiment_by_engine_contract(
     )
     if not update:
         return out
-    if update.get("formula_status") != FORMULA_OK_STATUS:
+    if _contract_metric_blocked(update, "sentiment"):
         update["items"] = []
     return out.model_copy(update=update)
 
@@ -418,7 +423,7 @@ async def _with_authority_trend_contract(
     )
     if not update:
         return out
-    if _contract_metric_non_ok(update, "citation"):
+    if _contract_metric_blocked(update, "citation"):
         update["points"] = []
     return out.model_copy(update=update)
 
@@ -446,7 +451,7 @@ async def _with_citation_composition_contract(
     )
     if not update:
         return out
-    if _contract_metric_non_ok(update, "citation"):
+    if _contract_metric_blocked(update, "citation"):
         update["segments"] = []
         update["total"] = 0
     return out.model_copy(update=update)
@@ -458,24 +463,28 @@ def _apply_engine_metric_contract(
 ) -> list[EngineMetricRow]:
     evidence = update.get("metric_formula_evidence") or {}
 
-    def _status(key: str) -> str | None:
-        value = evidence.get(key)
-        if not isinstance(value, dict):
-            return FORMULA_MISSING_INPUTS_STATUS
-        return str(value.get("formula_status") or FORMULA_MISSING_INPUTS_STATUS)
-
     return [
         item.model_copy(
             update={
                 "mention_rate": None
-                if _status("coverage") not in {None, FORMULA_OK_STATUS}
+                if metric_blocking_inputs_from_evidence(
+                    "mention_rate", _metric_evidence_dict(evidence, "coverage")
+                )
                 else item.mention_rate,
-                "sov": None if _status("sov") not in {None, FORMULA_OK_STATUS} else item.sov,
+                "sov": None
+                if metric_blocking_inputs_from_evidence(
+                    "sov", _metric_evidence_dict(evidence, "sov")
+                )
+                else item.sov,
                 "citation_rate": None
-                if _status("citation") not in {None, FORMULA_OK_STATUS}
+                if metric_blocking_inputs_from_evidence(
+                    "citation", _metric_evidence_dict(evidence, "citation")
+                )
                 else item.citation_rate,
                 "sentiment": None
-                if _status("sentiment") not in {None, FORMULA_OK_STATUS}
+                if metric_blocking_inputs_from_evidence(
+                    "sentiment", _metric_evidence_dict(evidence, "sentiment")
+                )
                 else item.sentiment,
             }
         )
@@ -534,7 +543,7 @@ async def _with_sentiment_trend_contract(
     )
     if not update:
         return out
-    if _contract_metric_non_ok(update, "sentiment"):
+    if _contract_metric_blocked(update, "sentiment"):
         update["items"] = []
     else:
         update.update(
@@ -1733,7 +1742,7 @@ async def get_topic_heatmap(
         brand_id=primary,
     )
     contract_metric = "sentiment" if metric == "sentiment" else "mention_rate"
-    if update and _contract_metric_non_ok(update, contract_metric):
+    if update and _contract_metric_blocked(update, contract_metric):
         update["rows"] = [
             row.model_copy(
                 update={"values": [cell.model_copy(update={"value": None}) for cell in row.values]}
@@ -2281,7 +2290,7 @@ async def get_topic_attribution(
             source_provenance=["admin_facts"],
             brand_id=primary,
         )
-        if update and _contract_metric_non_ok(update, "sentiment"):
+        if update and _contract_metric_blocked(update, "sentiment"):
             update["items"] = []
         return out.model_copy(update=update) if update else out
 
@@ -2342,7 +2351,7 @@ async def get_topic_attribution(
         source_provenance=["topic_score_daily"],
         brand_id=primary,
     )
-    if update and _contract_metric_non_ok(update, "sentiment"):
+    if update and _contract_metric_blocked(update, "sentiment"):
         update["items"] = []
     return out.model_copy(update=update) if update else out
 
