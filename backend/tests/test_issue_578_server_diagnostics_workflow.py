@@ -2,6 +2,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,65 @@ def test_bestcoffer_batch_failure_path_still_fetches_manifest(tmp_path: Path) ->
         "scp",
         "manifest",
     ]
+
+
+def test_bestcoffer_batch_audit_failures_make_remote_batch_nonzero() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+
+    assert "=== Enforce selected batch status semantics ===" in run_script
+    assert "batch_status_semantics_failed.txt" in run_script
+    assert "terminal_failed_status" in run_script
+    assert "failing_qa_auto_verdict" in run_script
+    assert "missing_response_id" in run_script
+    assert "missing_response_text" in run_script
+    assert "sys.exit(3)" in run_script
+
+    redaction_marker = "=== Redact payload-bearing bestCoffer artifacts ==="
+    semantics_marker = "=== Enforce selected batch status semantics ==="
+    remote_end = "\nREMOTE\n"
+    assert run_script.index(redaction_marker) < run_script.index(semantics_marker)
+    assert run_script.index(semantics_marker) < run_script.index(remote_end)
+
+
+def test_bestcoffer_batch_audit_gate_flags_failed_rows_and_missing_response(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+    marker = 'python3 - "${artifact_dir}/audit.csv"'
+    block_start = run_script.index(marker)
+    code_start = run_script.index("<<'PY'\n", block_start) + len("<<'PY'\n")
+    code_end = run_script.index("\nPY", code_start)
+    gate_code = run_script[code_start:code_end]
+
+    audit = tmp_path / "audit.csv"
+    failure_note = tmp_path / "batch_status_semantics_failed.txt"
+    audit.write_text(
+        "\n".join(
+            [
+                "query_id,target_llm,status,retry_reason,response_id,response_len,qa_auto_verdict",
+                "184406,doubao,failed,doubao_not_logged_in,,0,FAIL_NO_RESPONSE",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", gate_code, str(audit), str(failure_note)],
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    failure_text = failure_note.read_text(encoding="utf-8")
+    assert "query_id=184406" in failure_text
+    assert "terminal_failed_status" in failure_text
+    assert "failing_qa_auto_verdict" in failure_text
+    assert "missing_response_id" in failure_text
+    assert "missing_response_text" in failure_text
 
 
 def test_doubao_auth_false_success_repair_mode_is_guarded_and_artifacted() -> None:
