@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_cooldown_diagnostics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -1292,6 +1292,78 @@ jobs:
           name: hero-sms-env-${{ github.run_id }}
           path: hero-sms-env-artifacts/runtime-env.json
           if-no-files-found: error
+
+      - name: Run Doubao cooldown diagnostics
+        if: ${{ inputs.scraper_mode == 'doubao_cooldown_diagnostics' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/genpano
+
+            sanitize() {
+              sed -E \
+                -e 's#https?://[^[:space:]"'"'"'<>]*handler_api\.php[^[:space:]"'"'"'<>]*#[HeroSMS URL redacted]#Ig' \
+                -e 's/(HERO_SMS_API_KEY|api[_-]?key|token|secret|authorization|auth|cookie|set-cookie)[[:space:]]*[:=][^[:space:];]+/\1=[secret redacted]/Ig' \
+                -e 's/(phone(_number)?|mobile|msisdn|number)[[:space:]]*[:=][+]?[0-9][0-9 .()_-]{7,}[0-9]/\1=[phone redacted]/Ig' \
+                -e 's/[+]?[0-9]{10,15}/[phone redacted]/g' \
+                -e 's/(sms(_?(text|body|message|code))?|message|code|activation(_?(id|ref|secret|code))?)[[:space:]]*[:=][^[:space:];]+/\1=[field redacted]/Ig'
+            }
+
+            ttl_line() {
+              key="$1"
+              ttl="$(docker compose exec -T redis redis-cli TTL "${key}" 2>/dev/null || true)"
+              case "${ttl}" in
+                -2) echo "${key}=absent ttl=-2" ;;
+                -1) echo "${key}=present ttl=-1" ;;
+                ''|*[!0-9-]*) echo "${key}=unknown ttl=${ttl}" ;;
+                *) echo "${key}=present ttl_seconds=${ttl}" ;;
+              esac
+            }
+
+            echo "=== Run context ==="
+            echo "run=https://github.com/jotamotk/trash_test/actions/runs/${{ github.run_id }}"
+            echo "utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            echo "=== Redis TTLs (read-only) ==="
+            ttl_line "genpano:autologin:cooldown:doubao"
+            ttl_line "genpano:autologin:newaccount:doubao"
+
+            echo "=== Redis queue depth (read-only) ==="
+            account_login_depth="$(docker compose exec -T redis redis-cli LLEN account_login 2>/dev/null || true)"
+            echo "account_login_depth=${account_login_depth:-unknown}"
+
+            echo "=== Recent sms_register audit rows (safe fields only) ==="
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano -c "
+              SELECT
+                occurred_at,
+                after->>'platform' AS platform,
+                COALESCE(NULLIF(after->>'task_id', '') IS NOT NULL, false) AS task_id_present,
+                COALESCE(after->>'celery_unavailable', '') AS celery_unavailable,
+                COALESCE(after->>'error', '') AS error
+              FROM admin_audit_log
+              WHERE action = 'trigger_sms_register'
+              ORDER BY occurred_at DESC
+              LIMIT 8;
+            " | sanitize
+
+            echo "=== Recent backend/nginx sms_register logs (redacted) ==="
+            docker compose logs --since '2026-05-13T04:05:00' backend nginx 2>&1 \
+              | grep -Ei 'sms_register|Celery not available|Celery dispatch failed|task id missing|cooldown_active|account_login' \
+              | tail -n 80 \
+              | sanitize || true
+
+            echo "=== Recent Doubao auto_login worker logs (redacted) ==="
+            docker compose logs --since '2026-05-13T04:05:00' worker worker-analysis beat 2>&1 \
+              | grep -Ei 'auto_login|doubao|cooldown|new-account|registration|account_login' \
+              | tail -n 120 \
+              | sanitize || true
 
       - name: Run read-only diagnostics
         if: ${{ inputs.scraper_mode == 'diagnostics' }}
