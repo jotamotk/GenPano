@@ -162,5 +162,6 @@ describe('analytics formula-status guards', () => {
     expect(state.label).toBe('Needs review')
     expect(state.summary).toBe('Metric evidence is partial.')
     expect(state.reasonLabels).toContain('Valid zero')
+    expect(state.reasonLabels).toContain('Valid zero proof missing')
   })
 })

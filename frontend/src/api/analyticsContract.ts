@@ -54,6 +54,18 @@ export interface DataFreshness {
   generated_at?: string | null
 }
 
+export interface SelectedAnalyticsFilters {
+  project?: string | null
+  project_id?: string | null
+  brand_id?: number | string | null
+  from?: string | null
+  to?: string | null
+  engine?: string | null
+  segment_id?: string | null
+  profile_id?: string | null
+  [key: string]: unknown
+}
+
 export type ContractListItem =
   | string
   | {
@@ -80,6 +92,7 @@ export interface AnalyticsContractMetadata {
   formula_status?: string | null
   metric_formula_evidence?: Record<string, MetricFormulaEvidence>
   analyzer_coverage?: AnalyzerCoverage | null
+  selected_filters?: SelectedAnalyticsFilters | null
   request_id?: string | null
   data_freshness?: DataFreshness | null
 }
@@ -167,6 +180,7 @@ const REASON_LABELS: Record<string, string> = {
   unresolved_citation_attribution: 'Citation attribution unresolved',
   missing_sentiment_quote: 'Sentiment quote missing',
   missing_sentiment_driver_quote: 'Sentiment quote missing',
+  valid_zero_proof_missing: 'Valid zero proof missing',
   valid_zero: 'Valid zero',
   geo_score_daily: 'PANO/GEO rows missing',
   no_aggregate_rows: 'PANO/GEO rows missing',
@@ -256,6 +270,9 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
     asFiniteNumber(input?.denominator) != null
   const needsZeroProof = validZero || asFiniteNumber(input?.value) === 0
   const okWithRequiredProof = ok && (!needsZeroProof || hasFormulaProof)
+  if (ok && needsZeroProof && !hasFormulaProof) {
+    reasonLabels.push('Valid zero proof missing')
+  }
   const missing =
     !ok &&
     (status === 'missing' ||
