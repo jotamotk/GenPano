@@ -914,7 +914,7 @@ async def _fact_rows(
             "ORDER BY bm.id LIMIT 1) AS negative_sample_snippet",
         ]
 
-    citation_select = "0 AS citation_count"
+    citation_select = "NULL AS citation_count"
     if has_citations and response_join:
         citation_select = (
             "(SELECT COUNT(*) FROM citation_sources cs WHERE cs.response_id = r.id) "

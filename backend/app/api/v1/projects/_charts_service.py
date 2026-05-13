@@ -890,9 +890,10 @@ def _engine_metric_rows_from_facts(
             "responses": set(),
             "denominator_response_ids": set(),
             "target_response_ids": set(),
+            "cited_target_response_ids": set(),
+            "has_citation_input": False,
             "target_mentions": 0,
             "all_mentions": 0,
-            "citations": 0,
             "sentiment": [],
         }
     )
@@ -907,11 +908,14 @@ def _engine_metric_rows_from_facts(
         all_mentions = _fact_all_mention_count(row, target_mentions)
         engine_bucket[engine]["responses"].add(rid)
         engine_bucket[engine]["denominator_response_ids"].add(rid)
+        if row.get("citation_count") is not None:
+            engine_bucket[engine]["has_citation_input"] = True
         if target_mentions > 0:
             engine_bucket[engine]["target_response_ids"].add(rid)
+            if int(row.get("citation_count") or 0) > 0:
+                engine_bucket[engine]["cited_target_response_ids"].add(rid)
         engine_bucket[engine]["target_mentions"] += target_mentions
         engine_bucket[engine]["all_mentions"] += all_mentions
-        engine_bucket[engine]["citations"] += int(row.get("citation_count") or 0)
         target_mentions = _fact_target_mention_count(row)
         sentiment = (
             _as_float(row.get("target_sentiment_score"))
@@ -932,8 +936,11 @@ def _engine_metric_rows_from_facts(
             sov=round(values["target_mentions"] / values["all_mentions"], 4)
             if values["all_mentions"]
             else None,
-            citation_rate=round(values["citations"] / len(values["responses"]), 4)
-            if values["responses"]
+            citation_rate=round(
+                len(values["cited_target_response_ids"]) / len(values["target_response_ids"]),
+                4,
+            )
+            if values["target_response_ids"] and values["has_citation_input"]
             else None,
             sentiment=round(sum(values["sentiment"]) / len(values["sentiment"]), 3)
             if values["sentiment"]

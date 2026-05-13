@@ -385,7 +385,7 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
     series = {row["metric"]: row for row in metrics.json()["series"]}
     assert series["sov"]["points"][0]["value"] == pytest.approx(0.973)
     assert series["sov"]["formula_status"] == "ok"
-    assert series["citation"]["points"][0]["value"] == pytest.approx(0.5)
+    assert series["citation"]["points"][0]["value"] == pytest.approx(1.0)
     assert series["citation"]["formula_status"] == "ok"
 
     citation_body = citations.json()
