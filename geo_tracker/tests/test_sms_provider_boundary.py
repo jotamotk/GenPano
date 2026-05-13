@@ -72,6 +72,16 @@ class _FakePage:
         return None
 
 
+class _RecordingGotoPage(_FakePage):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.goto_calls = []
+
+    async def goto(self, url: str, **kwargs) -> None:
+        self.goto_calls.append({"url": url, **kwargs})
+        self.url = url
+
+
 class _VisibleElement:
     async def is_visible(self) -> bool:
         return True
@@ -572,6 +582,81 @@ def test_doubao_sms_login_uses_configured_proxy(monkeypatch) -> None:
     assert _should_use_proxy_for_sms_login("doubao", proxy_url) is True
 
 
+def test_doubao_sms_login_proxy_flag_still_disables_proxy(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "false")
+
+    proxy_url = _sms_login_proxy_url()
+
+    assert _should_use_proxy_for_sms_login("doubao", proxy_url) is False
+
+
+def test_chatgpt_sms_login_uses_configured_proxy_by_default(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://user:secret@proxy.internal:6789")
+    monkeypatch.delenv("CHATGPT_SMS_USE_PROXY", raising=False)
+
+    proxy_url = _sms_login_proxy_url()
+
+    assert proxy_url == "http://user:secret@proxy.internal:6789"
+    assert _should_use_proxy_for_sms_login("chatgpt", proxy_url) is True
+
+
+def test_chatgpt_sms_login_proxy_flag_can_disable_proxy(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
+    monkeypatch.setenv("CHATGPT_SMS_USE_PROXY", "false")
+
+    proxy_url = _sms_login_proxy_url()
+
+    assert _should_use_proxy_for_sms_login("chatgpt", proxy_url) is False
+
+
+def test_sms_redaction_masks_proxy_credentials() -> None:
+    from geo_tracker.agent.sms_redaction import redact_sensitive_text
+
+    text = redact_sensitive_text(
+        "proxy=http://proxy-user:proxy-secret@proxy.internal:6789"
+    )
+
+    assert "proxy-user" not in text
+    assert "proxy-secret" not in text
+    assert "proxy.internal" in text
+
+
+@pytest.mark.asyncio
+async def test_phone_blacklist_log_masks_phone(monkeypatch, caplog) -> None:
+    from geo_tracker.agent.sms_login import phone_blacklist
+    from geo_tracker.agent.sms_redaction import mask_phone
+
+    class _FakeRedisClient:
+        async def set(self, *_args, **_kwargs) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        phone_blacklist.aioredis,
+        "from_url",
+        lambda *_args, **_kwargs: _FakeRedisClient(),
+    )
+
+    caplog.set_level(logging.INFO, logger="geo_tracker.agent.sms_login.phone_blacklist")
+    await phone_blacklist.add_to_blacklist("chatgpt", FAKE_US_PHONE, reason="sms_timeout")
+
+    logs = caplog.text
+    assert FAKE_US_PHONE not in logs
+    assert mask_phone(FAKE_US_PHONE) in logs
+
+
 def test_sms_login_keeps_deepseek_direct_when_doubao_proxy_enabled(monkeypatch) -> None:
     from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
     from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
@@ -582,6 +667,63 @@ def test_sms_login_keeps_deepseek_direct_when_doubao_proxy_enabled(monkeypatch) 
     proxy_url = _sms_login_proxy_url()
 
     assert _should_use_proxy_for_sms_login("deepseek", proxy_url) is False
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_initial_navigation_waits_for_domcontentloaded(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("chatgpt")
+    assert handler is not None
+    page = _RecordingGotoPage()
+    provider = _FakeHeroSMSProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+
+    result = await handler.login_or_register()
+
+    assert "cookies" in result
+    assert page.goto_calls[0]["url"] == "https://chatgpt.com/"
+    assert page.goto_calls[0]["wait_until"] == "domcontentloaded"
+
+
+@pytest.mark.asyncio
+async def test_doubao_initial_navigation_still_waits_for_load(monkeypatch) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    page = _RecordingGotoPage()
+    provider = _FakeProvider()
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+    await _patch_successful_flow(monkeypatch, handler, verify_result=True)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+
+    result = await handler.login_or_register()
+
+    assert "cookies" in result
+    assert page.goto_calls[0]["wait_until"] == "load"
 
 
 @pytest.mark.parametrize("platform", ["doubao", "deepseek"])

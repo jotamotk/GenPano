@@ -66,7 +66,16 @@ def _sms_login_proxy_url() -> str | None:
 def _should_use_proxy_for_sms_login(platform: str, proxy_url: str | None) -> bool:
     if not proxy_url:
         return False
-    return platform == "doubao" and _env_flag("DOUBAO_USE_PROXY", True)
+    normalized_platform = (platform or "").lower()
+    if normalized_platform == "doubao":
+        return _env_flag("DOUBAO_USE_PROXY", True)
+    if normalized_platform == "chatgpt":
+        return _env_flag("CHATGPT_SMS_USE_PROXY", True)
+    return False
+
+
+def _initial_navigation_wait_until(platform: str) -> str:
+    return "domcontentloaded" if (platform or "").lower() == "chatgpt" else "load"
 
 
 # CAPTCHA 检测选择器（数美/字节跳动/通用）
@@ -298,7 +307,9 @@ class BaseSMSLoginHandler(ABC):
             # 访问登录页
             logger.info(f"[{self.platform}] 打开: {self.login_url}")
             await page.goto(
-                self.login_url, wait_until="load", timeout=60000
+                self.login_url,
+                wait_until=_initial_navigation_wait_until(self.platform),
+                timeout=60000,
             )
             await page.wait_for_timeout(random.randint(5000, 8000))
 
