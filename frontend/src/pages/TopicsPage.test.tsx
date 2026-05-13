@@ -367,13 +367,12 @@ describe('TopicsPage live brand override', () => {
 
     renderTopicsPage()
 
-    expect(screen.getAllByText('Coverage incomplete').length).toBeGreaterThan(0)
     expect(screen.getAllByText('34 of 56 analyzed').length).toBeGreaterThan(0)
     expect(screen.getAllByText('22 missing').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Analyzer v3').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Analysis coverage missing').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Citation attribution unresolved').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Sentiment quote missing').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Analysis coverage missing')).not.toBeInTheDocument()
+    expect(screen.queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sentiment quote missing')).not.toBeInTheDocument()
 
     const analyzedCard = screen.getByText('Analyzed answers').parentElement as HTMLElement
     expect(within(analyzedCard).getByText('34')).toBeInTheDocument()
@@ -381,8 +380,10 @@ describe('TopicsPage live brand override', () => {
     expect(within(analyzedCard).queryByText('--')).not.toBeInTheDocument()
 
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Needs review').length).toBeGreaterThan(0)
+    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
+    expect(within(row).queryByText('Needs review')).not.toBeInTheDocument()
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
+    expect(within(row).getByText('183')).toBeInTheDocument()
   })
 
   it('withholds ok zero topic metrics when numerator denominator proof is absent', () => {
@@ -440,12 +441,13 @@ describe('TopicsPage live brand override', () => {
 
     renderTopicsPage('/brand/topics?brandId=24')
 
-    expect(screen.getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Limited proof').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Valid zero proof missing')).not.toBeInTheDocument()
     expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
     expect(screen.queryByText('0 / 0 / 0')).not.toBeInTheDocument()
 
     const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
     expect(within(row).queryByText('Positive 0')).not.toBeInTheDocument()
   })
@@ -979,7 +981,8 @@ describe('TopicsPage live brand override', () => {
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
     expect(within(modal).getByText(/Analyzer summary/i)).toBeInTheDocument()
-    expect(within(modal).getByText('Target brand')).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand')).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand mention')).toBeInTheDocument()
     expect(within(modal).getByText('Mentioned')).toBeInTheDocument()
     expect(within(modal).getByText('Target rank')).toBeInTheDocument()
     expect(within(modal).getByText('#2')).toBeInTheDocument()
@@ -1742,7 +1745,15 @@ describe('TopicsPage live brand override', () => {
           target_llm: 'chatgpt',
           created_at: '2026-05-13T10:02:00Z',
         },
-        analysis: null,
+        analysis: {
+          target_brand_mentioned: false,
+          visibility_score: 0,
+          sentiment_score: 0,
+          sov_score: 0,
+          citation_score: 80,
+          geo_score: 0,
+          analyzed_at: '2026-05-13T06:21:00Z',
+        },
         analyzer_facts: {
           citations: [
             {
@@ -1783,7 +1794,7 @@ describe('TopicsPage live brand override', () => {
         metric_formula_evidence: {
           analyzer_facts: {
             formula_status: 'partial',
-            reason_codes: ['missing_analyzer_rows', 'unresolved_citation_attribution'],
+            reason_codes: ['missing_analyzer_rows', 'citation_component_partial'],
             missing_inputs: ['missing_sentiment_driver_quote'],
             numerator: 34,
             denominator: 56,
@@ -1807,15 +1818,27 @@ describe('TopicsPage live brand override', () => {
     )
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
-    expect(within(modal).getByText('Needs review')).toBeInTheDocument()
+    expect(within(modal).getByText('Limited evidence')).toBeInTheDocument()
+    expect(within(modal).queryByText('Needs review')).not.toBeInTheDocument()
     expect(within(modal).getByText('34 of 56 analyzed')).toBeInTheDocument()
     expect(within(modal).getByText('22 missing')).toBeInTheDocument()
-    expect(within(modal).getByText('Citation attribution unresolved')).toBeInTheDocument()
-    expect(within(modal).getByText('Sentiment quote missing')).toBeInTheDocument()
+    expect(within(modal).queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
+    expect(within(modal).queryByText('Sentiment quote missing')).not.toBeInTheDocument()
+    expect(within(modal).queryByText('Citation Component Partial')).not.toBeInTheDocument()
+    expect(
+      within(modal).getByText(/Citation domains extracted; attribution is still being verified/i),
+    ).toBeInTheDocument()
     expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
     expect(within(modal).getByText('reviews.example')).toBeInTheDocument()
-    expect(within(modal).getByText('BestCoffer')).toBeInTheDocument()
-    expect(within(modal).getByText(/Brand #24/)).toBeInTheDocument()
+    expect(within(modal).getByText('Selected brand')).toBeInTheDocument()
+    expect(within(modal).getAllByText('BestCoffer').length).toBeGreaterThan(0)
+    expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
+    expect(within(modal).queryByText(/Selected brand ID 24/)).not.toBeInTheDocument()
+    const analyzerSummary = within(modal)
+      .getByText('Analyzer summary')
+      .closest('section') as HTMLElement
+    expect(within(analyzerSummary).queryByText('0.0')).not.toBeInTheDocument()
+    expect(within(analyzerSummary).getByText('80.0')).toBeInTheDocument()
     expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
   })
 
@@ -1929,6 +1952,140 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).queryByText('Analysis coverage missing')).not.toBeInTheDocument()
     expect(within(modal).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
     expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
+  })
+
+  it('uses neutral brand context copy when the response payload only has a numeric selected brand', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: null,
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which coffee maker has trustworthy citations?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_text: 'Which coffee maker has trustworthy citations?',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                date: '2026-05-13',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'Which coffee maker has trustworthy citations?',
+                target_llm: 'chatgpt',
+                profile_name: 'Coffee buyer',
+                finished_at: '2026-05-13T10:02:00Z',
+                citation_count: 1,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useQueryResponse.mockReturnValue({
+      data: {
+        query: {
+          query_id: 301,
+          query_text: 'Which coffee maker has trustworthy citations?',
+          profile_name: 'Coffee buyer',
+        },
+        response: {
+          response_id: 401,
+          query_id: 301,
+          raw_text: 'The response has a citation, but no readable selected brand label.',
+          target_llm: 'chatgpt',
+          created_at: '2026-05-13T10:02:00Z',
+        },
+        analysis: null,
+        analyzer_facts: {
+          citations: [
+            {
+              citation_id: 1,
+              response_id: 401,
+              url: 'https://reviews.example/bestcoffer',
+              domain: 'reviews.example',
+            },
+          ],
+          brands_mentioned: [],
+          products_features_attributes: [],
+          relations: [],
+          sentiment_drivers: [],
+        },
+        attempts: [],
+        state: 'partial',
+        formula_status: 'partial',
+        selected_filters: {
+          brand_id: 24,
+          from: '2026-05-06',
+          to: '2026-05-13',
+        },
+        metric_formula_evidence: {
+          analyzer_facts: {
+            formula_status: 'partial',
+            reason_codes: ['citation_component_partial'],
+          },
+        },
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24')
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
+    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText(/Brand context pending/i)).toBeInTheDocument()
+    expect(within(modal).queryByText(/Selected brand ID 24/)).not.toBeInTheDocument()
+    expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
+    expect(
+      within(modal).getByText(/Citation domains extracted; attribution is still being verified/i),
+    ).toBeInTheDocument()
+    expect(within(modal).queryByText('Citation Component Partial')).not.toBeInTheDocument()
   })
 
   it('exports the active prompt layer with current filters and visible successful rows', async () => {

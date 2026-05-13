@@ -137,32 +137,80 @@ function StateBadge({ state }: { state?: string }) {
   )
 }
 
-function TrustStateBadge({ trustState }: { trustState?: MetricTrustState | null }) {
+function trustHasReason(trustState: MetricTrustState | null | undefined, reasonLabel: string) {
+  return Boolean(trustState?.reasonLabels.includes(reasonLabel))
+}
+
+function trustDisplayLabel(trustState: MetricTrustState, compact = false) {
+  if (trustState.tone === 'missing') return compact ? 'Pending proof' : 'Evidence pending'
+  return compact ? 'Limited proof' : 'Limited evidence'
+}
+
+function hasCitationProofLimitation(trustState: MetricTrustState | null | undefined) {
+  return Boolean(
+    trustState?.reasonLabels.some((label) => {
+      const normalized = label.toLowerCase()
+      return (
+        normalized.includes('citation') &&
+        (normalized.includes('partial') ||
+          normalized.includes('unresolved') ||
+          normalized.includes('attribution'))
+      )
+    }),
+  )
+}
+
+function trustBusinessSummary(trustState: MetricTrustState) {
+  if (
+    trustHasReason(trustState, 'Coverage incomplete') ||
+    trustHasReason(trustState, 'Analysis coverage missing')
+  ) {
+    return 'Some eligible answers are still pending analysis; available proof is shown below.'
+  }
+  if (hasCitationProofLimitation(trustState)) {
+    return 'Citation domains are available while brand attribution is still being verified.'
+  }
+  if (trustHasReason(trustState, 'Sentiment quote missing')) {
+    return 'Sentiment proof is still pending source quotes.'
+  }
+  if (trustHasReason(trustState, 'PANO/GEO rows missing')) {
+    return 'PANO/GEO proof is still pending aggregate rows.'
+  }
+  return trustState.summary
+}
+
+function LimitedMetricValue({ trustState }: { trustState: MetricTrustState }) {
+  return (
+    <span className="text-xs font-semibold text-themed-muted">
+      {trustDisplayLabel(trustState, true)}
+    </span>
+  )
+}
+
+function TrustStateBadge({
+  trustState,
+  compact = false,
+}: {
+  trustState?: MetricTrustState | null
+  compact?: boolean
+}) {
   if (!trustState || trustState.tone === 'ok') return null
   const variant = trustState.tone === 'missing' ? 'secondary' : 'orange'
   return (
     <div className="mt-2 space-y-1">
       <Badge variant={variant} size="sm">
-        {trustState.label}
+        {trustDisplayLabel(trustState, compact)}
       </Badge>
-      <div className="text-[11px] leading-snug text-themed-muted">{trustState.summary}</div>
-      {trustState.details.length > 0 && (
+      {!compact && (
+        <div className="text-[11px] leading-snug text-themed-muted">
+          {trustBusinessSummary(trustState)}
+        </div>
+      )}
+      {trustState.details.length > 0 && !compact && (
         <div className="flex flex-wrap gap-1.5">
           {trustState.details.map((detail) => (
             <span key={detail} className="text-[11px] text-themed-muted">
               {detail}
-            </span>
-          ))}
-        </div>
-      )}
-      {trustState.reasonLabels.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {trustState.reasonLabels.map((reason) => (
-            <span
-              key={reason}
-              className="rounded-pill bg-themed-card px-2 py-0.5 text-[11px] text-themed-muted"
-            >
-              {reason}
             </span>
           ))}
         </div>
@@ -197,7 +245,11 @@ function MetricCard({
     <Card className="p-4 min-h-[108px]">
       <div className="text-xs text-themed-muted mb-1">{label}</div>
       <div className={`text-2xl font-brand font-bold tabular-nums ${valueClass}`}>
-        {trustState?.canShowValue === false ? '--' : value}
+        {trustState?.canShowValue === false ? (
+          <LimitedMetricValue trustState={trustState} />
+        ) : (
+          value
+        )}
       </div>
       {detail && trustState?.canShowValue !== false && (
         <div className="text-[11px] text-themed-muted mt-2">{detail}</div>
@@ -405,12 +457,49 @@ function hasAnalyzerFactsContent(facts: LooseRecord | null | undefined) {
   ].some((items) => Array.isArray(items) && items.length > 0)
 }
 
-function selectedScopeLabel(source: (AnalyticsContractMetadata & LooseRecord) | null | undefined) {
+function textCandidate(value: unknown) {
+  const text = value == null ? '' : String(value).trim()
+  return text || ''
+}
+
+function matchingMentionBrandName(
+  mentions: LooseRecord[],
+  brandId: number | string | null | undefined,
+) {
+  if (brandId == null || brandId === '') return ''
+  const idText = String(brandId)
+  const match = mentions.find((mention) => String(mention.brand_id ?? mention.id ?? '') === idText)
+  return textCandidate(match?.brand_name)
+}
+
+function readableBrandLabel(
+  source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  fallback: unknown,
+  mentions: LooseRecord[] = [],
+  brandId?: number | string | null,
+) {
+  const filters = source?.selected_filters
+  const candidates = [
+    (filters as LooseRecord | null | undefined)?.brand_name,
+    source?.selected_brand_name,
+    source?.brand_name,
+    fallback,
+    matchingMentionBrandName(mentions, brandId ?? filters?.brand_id),
+  ]
+  return candidates.map(textCandidate).find((item) => item && !/^brand\s*#?\d+$/i.test(item)) || ''
+}
+
+function selectedScopeLabel(
+  source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  brandLabel?: string,
+) {
   const filters = source?.selected_filters
   if (!filters) return ''
   const parts: string[] = []
-  if (filters.brand_id != null && filters.brand_id !== '') {
-    parts.push(`Brand #${filters.brand_id}`)
+  const readableBrand = textCandidate(brandLabel)
+  if (readableBrand) parts.push(readableBrand)
+  else if (filters.brand_id != null && filters.brand_id !== '') {
+    parts.push('Brand context pending')
   }
   if (filters.from || filters.to) {
     parts.push(`${filters.from || '-'} to ${filters.to || '-'}`)
@@ -419,7 +508,7 @@ function selectedScopeLabel(source: (AnalyticsContractMetadata & LooseRecord) | 
 }
 
 function trustValue(value: ReactNode, trustState: MetricTrustState | null) {
-  return trustState?.canShowValue === false ? '--' : value
+  return trustState?.canShowValue === false ? <LimitedMetricValue trustState={trustState} /> : value
 }
 
 function parseIdParam(value: string | null) {
@@ -810,18 +899,16 @@ function TopicsView({
                     <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
                     <td className="text-right tabular-nums font-semibold text-themed-primary">
                       {trustValue(formatPercent(visibilityValue(topic)), rowVisibilityTrust)}
-                      <TrustStateBadge trustState={rowVisibilityTrust} />
                     </td>
                     <td>
                       {rowSentimentTrust?.canShowValue === false ? (
-                        <TrustStateBadge trustState={rowSentimentTrust} />
+                        <LimitedMetricValue trustState={rowSentimentTrust} />
                       ) : (
                         <SentimentMix value={topic.sentiment_distribution} />
                       )}
                     </td>
                     <td className="text-right tabular-nums text-themed-primary">
                       {trustValue(formatPercent(topic.citation_rate), rowCitationTrust)}
-                      <TrustStateBadge trustState={rowCitationTrust} />
                     </td>
                     <td className="text-right tabular-nums text-themed-muted">
                       {formatEvidenceCount((topic as LooseRecord).citation_count)}
@@ -1371,18 +1458,49 @@ function titleCase(value: unknown) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
-function analysisSummaryFacts(analysis: LooseRecord | null | undefined) {
-  if (!analysis) return []
-  const facts: Array<{ label: string; value: string }> = []
-  const targetMentioned = analysis.target_brand_mentioned
-  if (typeof targetMentioned === 'boolean') {
-    facts.push({ label: 'Target brand', value: targetMentioned ? 'Mentioned' : 'Not mentioned' })
+function brandMentionFact(
+  analysis: LooseRecord | null | undefined,
+  mentions: LooseRecord[],
+  selectedBrandLabel: string,
+) {
+  if (!selectedBrandLabel) return ''
+  const normalizedBrand = selectedBrandLabel.toLowerCase()
+  const mentioned = mentions.some((mention) => {
+    const name = textCandidate(mention.brand_name).toLowerCase()
+    return name === normalizedBrand
+  })
+  if (mentioned) return 'Mentioned in extracted brand facts'
+  if (typeof analysis?.target_brand_mentioned === 'boolean') {
+    return analysis.target_brand_mentioned ? 'Mentioned' : 'Not found in extracted brand facts'
   }
+  return 'Mention status pending'
+}
+
+function analysisSummaryFacts(
+  analysis: LooseRecord | null | undefined,
+  options: {
+    selectedBrandLabel?: string
+    mentions?: LooseRecord[]
+    trustState?: MetricTrustState | null
+  } = {},
+) {
+  const facts: Array<{ label: string; value: string }> = []
+  const selectedBrandLabel = textCandidate(options.selectedBrandLabel)
+  const mentions = options.mentions ?? []
+  if (selectedBrandLabel) {
+    facts.push({ label: 'Selected brand', value: selectedBrandLabel })
+    facts.push({
+      label: 'Selected brand mention',
+      value: brandMentionFact(analysis, mentions, selectedBrandLabel),
+    })
+  }
+  if (!analysis) return facts
   const rank = asNumber(analysis.target_brand_rank)
   if (rank != null) facts.push({ label: 'Target rank', value: `#${formatEvidenceCount(rank)}` })
   if (analysis.target_brand_sentiment) {
     facts.push({ label: 'Target sentiment', value: titleCase(analysis.target_brand_sentiment) })
   }
+  const suppressPartialZero = options.trustState?.canShowValue === false
   const scoreFields = [
     ['Visibility score', analysis.visibility_score],
     ['Sentiment score', analysis.sentiment_score],
@@ -1391,9 +1509,14 @@ function analysisSummaryFacts(analysis: LooseRecord | null | undefined) {
     ['GEO score', analysis.geo_score],
   ] as const
   scoreFields.forEach(([label, value]) => {
-    if (asNumber(value) != null) facts.push({ label, value: formatScore(value) })
+    const numericValue = asNumber(value)
+    if (numericValue == null) return
+    if (suppressPartialZero && numericValue === 0) return
+    facts.push({ label, value: formatScore(value) })
   })
-  if (analysis.analyzed_at) facts.push({ label: 'Analyzed', value: formatDateTime(analysis.analyzed_at) })
+  if (analysis.analyzed_at) {
+    facts.push({ label: 'Analyzed', value: formatDateTime(analysis.analyzed_at) })
+  }
   return facts
 }
 
@@ -1447,12 +1570,14 @@ function FactSection({
 function ResponseAttemptsModal({
   projectId,
   brandIdOverride,
+  brandLabel,
   query,
   attempts,
   onClose,
 }: {
   projectId: string | null
   brandIdOverride: number | null
+  brandLabel?: string | null
   query: any
   attempts: any[]
   onClose: () => void
@@ -1501,7 +1626,6 @@ function ResponseAttemptsModal({
   const drivers = hasScopedFacts
     ? driverLabels(scopedFacts.sentiment_drivers)
     : analysisList(analysis, ['sentiment_drivers', 'drivers'])
-  const summaryFacts = analysisSummaryFacts(analysis)
   const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
   const detailContract = detail as (AnalyticsContractMetadata & LooseRecord) | null | undefined
   const analyzerFactsTrust =
@@ -1516,7 +1640,20 @@ function ResponseAttemptsModal({
             analyzer_coverage: detailContract?.analyzer_coverage ?? null,
           })
         : null)
-  const scopeLabel = selectedScopeLabel(detailContract)
+  const selectedBrandLabel = readableBrandLabel(
+    detailContract,
+    brandLabel,
+    mentions,
+    brandIdOverride ?? detailContract?.selected_filters?.brand_id,
+  )
+  const summaryFacts = analysisSummaryFacts(analysis, {
+    selectedBrandLabel,
+    mentions,
+    trustState: analyzerFactsTrust,
+  })
+  const scopeLabel = selectedScopeLabel(detailContract, selectedBrandLabel)
+  const citationAttributionPending =
+    citations.length > 0 && hasCitationProofLimitation(analyzerFactsTrust)
 
   return (
     <div
@@ -1628,6 +1765,11 @@ function ResponseAttemptsModal({
 
             <FactSection title={`Citations (${citations.length})`}>
               <div className="space-y-2">
+                {citationAttributionPending && (
+                  <div className="text-xs leading-snug text-themed-muted">
+                    Citation domains extracted; attribution is still being verified.
+                  </div>
+                )}
                 {citations.slice(0, 6).map((cite: LooseRecord, index: number) => (
                   <a
                     key={cite.citation_id || cite.url || index}
@@ -1954,6 +2096,7 @@ export default function TopicsPage() {
         <ResponseAttemptsModal
           projectId={liveProjectId}
           brandIdOverride={brandIdOverride}
+          brandLabel={selectedTopic?.associated_brand || selectedTopic?.brand_name || null}
           query={responseModal.query}
           attempts={responseModal.attempts}
           onClose={() => setResponseModal(null)}
