@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from geo_tracker.db.models import (
@@ -42,6 +42,17 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE project_topic_pins (
+                    project_id TEXT NOT NULL,
+                    topic_id INTEGER NOT NULL,
+                    state TEXT
+                )
+                """
+            )
+        )
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with maker() as db:
         yield db
@@ -73,7 +84,7 @@ def _approval_fetcher(comment_id: int) -> dict:
     return comments[comment_id]
 
 
-async def _seed_scope(session: AsyncSession) -> None:
+async def _seed_scope(session: AsyncSession, *, pin_topic: bool = True) -> None:
     day = datetime(2026, 5, 12, 10, 0)
     session.add_all(
         [
@@ -83,6 +94,16 @@ async def _seed_scope(session: AsyncSession) -> None:
         ]
     )
     await session.flush()
+    if pin_topic:
+        await session.execute(
+            text(
+                """
+                INSERT INTO project_topic_pins (project_id, topic_id, state)
+                VALUES (:project_id, :topic_id, 'tracked')
+                """
+            ),
+            {"project_id": PROJECT_ID, "topic_id": 82701},
+        )
     session.add_all(
         [
             Query(
@@ -385,3 +406,167 @@ def test_approval_ref_matches_exact_numeric_response_id_tokens() -> None:
         response_ids=(82710, 82711, 82712),
     )
     assert approved.endswith("4449000003")
+
+
+def test_approval_ref_ignores_unrelated_numeric_tokens_outside_response_ids_block() -> None:
+    def fetcher(comment_id: int) -> dict:
+        ref = f"https://github.com/jotamotk/trash_test/issues/827#issuecomment-{comment_id}"
+        return {
+            "html_url": ref,
+            "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/827",
+            "author_association": "OWNER",
+            "user": {"login": "jotamotk"},
+            "body": (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply.\n"
+                "Refs #827 #760 #753 #752 #714.\n"
+                "Dry-run evidence date 2026-05-13, run 25821941549, "
+                "selected_count=82710.\n"
+                "Approved exact response_ids: 82711, 82712"
+            ),
+        }
+
+    with pytest.raises(ValueError, match="missing=\\[82710\\]"):
+        validate_approval_ref(
+            "https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000004",
+            approval_comment_fetcher=fetcher,
+            response_ids=(82710,),
+        )
+
+    approved = validate_approval_ref(
+        "https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000004",
+        approval_comment_fetcher=fetcher,
+        response_ids=(82711, 82712),
+    )
+    assert approved.endswith("4449000004")
+
+
+@pytest.mark.asyncio
+async def test_exact_response_apply_fails_closed_when_project_topic_scope_unavailable() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with maker() as db:
+        await _seed_scope(db, pin_topic=False)
+
+        with pytest.raises(ValueError, match="project topic scope"):
+            await build_bestcoffer_v4_coverage_report(
+                db,
+                BestCofferV4CoverageScope(
+                    project_id=PROJECT_ID,
+                    brand_id=24,
+                    response_ids=(82710,),
+                ),
+                mode="apply",
+                approval_ref=APPROVAL_REF,
+                approval_comment_fetcher=_approval_fetcher,
+            )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_exact_response_apply_blocks_ids_outside_verified_project_topics(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    day = datetime(2026, 5, 12, 11, 0)
+    session.add_all(
+        [
+            Topic(id=82790, brand_id=24, text="Unpinned BestCoffer topic"),
+            Prompt(id=82791, topic_id=82790, text="unpinned prompt", intent="non_brand"),
+            Query(
+                id=82792,
+                prompt_id=82791,
+                brand_id=24,
+                query_text="unpinned response",
+                target_llm="chatgpt",
+                status=QueryStatus.DONE.value,
+                created_at=day,
+            ),
+            LLMResponse(
+                id=82714,
+                query_id=82792,
+                raw_text="BestCoffer appears outside the pinned project topic scope.",
+                citations_json=[],
+                collected_at=day,
+                analysis_status=AnalysisStatus.DONE.value,
+            ),
+            ResponseAnalysis(
+                id=82724,
+                response_id=82714,
+                raw_analysis_json=_valid_v4_package(82714, 82792),
+            ),
+        ]
+    )
+    await session.commit()
+
+    def fetcher(comment_id: int) -> dict:
+        ref = f"https://github.com/jotamotk/trash_test/issues/827#issuecomment-{comment_id}"
+        return {
+            "html_url": ref,
+            "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/827",
+            "author_association": "OWNER",
+            "user": {"login": "jotamotk"},
+            "body": (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply. Approved exact response_ids: 82714."
+            ),
+        }
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82714\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                response_ids=(82714,),
+            ),
+            mode="apply",
+            approval_ref="https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000005",
+            approval_comment_fetcher=fetcher,
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_rebuilds_partial_existing_migration_run_without_duplicate_facts(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+
+    first = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            response_ids=(82710,),
+        ),
+        mode="apply",
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+    run_id = first["repair_plan"]["created_analyzer_run_ids"][0]
+    await session.execute(delete(AnalysisFactLink).where(AnalysisFactLink.run_id == run_id))
+    await session.commit()
+
+    second = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            response_ids=(82710,),
+        ),
+        mode="apply",
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert second["write_performed"] is True
+    assert second["repair_plan"]["rebuilt_existing_run_ids"] == [run_id]
+    assert await session.scalar(select(func.count(AnalyzerRun.id))) == 4
+    assert await session.scalar(
+        select(func.count(AnalysisFactLink.id)).where(AnalysisFactLink.run_id == run_id)
+    ) == 2
+    assert await session.scalar(
+        select(func.count(ResponseEntity.id)).where(ResponseEntity.run_id == run_id)
+    ) == 2

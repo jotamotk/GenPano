@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -264,13 +264,34 @@ def _validate_comment_covers_response_ids(
     response_ids: tuple[int, ...],
 ) -> None:
     body = str(comment.get("body") or "")
-    approved_ids = {int(token) for token in re.findall(r"(?<!\d)\d+(?!\d)", body)}
+    approved_ids = _extract_structured_response_ids(body)
     missing = [response_id for response_id in response_ids if response_id not in approved_ids]
     if missing:
         raise ValueError(
             "approval_ref comment must list every exact response_id approved for apply; "
             f"missing={missing}"
         )
+
+
+def _extract_structured_response_ids(body: str) -> set[int]:
+    lines = str(body or "").splitlines()
+    approved: set[int] = set()
+    label_re = re.compile(r"\bresponse[\s_-]*ids?\s*:", re.IGNORECASE)
+    list_line_re = re.compile(r"^\s*(?:[-*]\s*)?[0-9,\s]+\s*$")
+    for index, line in enumerate(lines):
+        match = label_re.search(line)
+        if not match:
+            continue
+        tail = line[match.end():]
+        first_segment = re.split(r"(?<=[0-9])\.(?:\s|$)", tail, maxsplit=1)[0]
+        approved.update(int(token) for token in re.findall(r"(?<!\d)\d+(?!\d)", first_segment))
+        for follow in lines[index + 1:]:
+            if label_re.search(follow):
+                break
+            if not list_line_re.match(follow):
+                break
+            approved.update(int(token) for token in re.findall(r"(?<!\d)\d+(?!\d)", follow))
+    return approved
 
 
 def validate_approval_ref(
@@ -317,8 +338,11 @@ async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set
             {"project_id": project_id},
         )
     except SQLAlchemyError:
-        return set()
-    return {int(row[0]) for row in result.all() if row[0] is not None}
+        raise ValueError("project topic scope unavailable; refusing to fall back to brand scope")
+    topic_ids = {int(row[0]) for row in result.all() if row[0] is not None}
+    if not topic_ids:
+        raise ValueError("project topic scope has no tracked topics; refusing brand fallback")
+    return topic_ids
 
 
 def _response_invalid_reason(response: LLMResponse, query: Query) -> str | None:
@@ -341,7 +365,7 @@ def _target_scope_invalid_reason(
     project_topic_ids: set[int],
 ) -> str | None:
     topic_id = int(topic.id) if topic and topic.id is not None else None
-    if project_topic_ids and topic_id not in project_topic_ids:
+    if topic_id not in project_topic_ids:
         return "outside_project_topic_scope"
     allowed_brand_ids = set(scope.allowed_brand_ids())
     query_brand_id = int(query.brand_id) if query.brand_id is not None else None
@@ -653,6 +677,17 @@ async def _find_existing_migration_run(
     )
 
 
+async def _delete_existing_v4_facts_for_run(session: AsyncSession, run_id: int) -> None:
+    for model in (
+        AnalysisFactLink,
+        AnalyzerQualityFlag,
+        ResponseRelationFact,
+        ResponseEntity,
+    ):
+        await session.execute(delete(model).where(model.run_id == int(run_id)))
+    await session.flush()
+
+
 async def _migrate_raw_v4_package(
     session: AsyncSession,
     *,
@@ -684,6 +719,10 @@ async def _migrate_raw_v4_package(
         counts = await _fact_counts_by_run(session, [int(existing.id)])
         if _facts_satisfy_package(counts.get(int(existing.id), {}), expected):
             return "already_satisfied", int(existing.id)
+        await _delete_existing_v4_facts_for_run(session, int(existing.id))
+        rebuilt_existing = True
+    else:
+        rebuilt_existing = False
 
     run = existing or AnalyzerRun(
         response_id=row.response_id,
@@ -722,16 +761,16 @@ async def _migrate_raw_v4_package(
         "migrated_from": "response_analyses.raw_analysis_json",
         "approval_ref": approval_ref,
     }
-    return "migrated", int(run.id)
+    return "rebuilt" if rebuilt_existing else "migrated", int(run.id)
 
 
 def _plan_for_row(row: V4CoverageRow) -> str:
     if row.invalid_reason:
         return "skip_invalid"
-    if row.repair_bucket == "latest_v4_analyzed" and any(row.first_class_fact_counts.values()):
-        return "already_satisfied"
     if row.has_raw_analyzer_v4_package and row.raw_v4_package_valid:
         return "migrate_raw_v4_package"
+    if row.repair_bucket == "latest_v4_analyzed" and any(row.first_class_fact_counts.values()):
+        return "already_satisfied"
     return "reanalysis_required"
 
 
@@ -800,6 +839,17 @@ async def build_bestcoffer_v4_coverage_report(
         )
     rows = await collect_v4_coverage_rows(session, scope)
     selected = [row for row in rows if row.invalid_reason is None]
+    if mode == "apply":
+        selected_ids = {row.response_id for row in selected}
+        missing_or_invalid_ids = [
+            response_id for response_id in response_ids if response_id not in selected_ids
+        ]
+        if missing_or_invalid_ids:
+            raise ValueError(
+                "apply response_ids must all be inside the verified project topic scope "
+                "and pass safety filters; blocked response_ids="
+                f"{missing_or_invalid_ids}"
+            )
     bucket_counts = Counter(row.repair_bucket for row in selected)
     for bucket in (
         "missing_v4_run",
@@ -837,6 +887,7 @@ async def build_bestcoffer_v4_coverage_report(
     migrated_ids: list[int] = []
     already_ids: list[int] = []
     created_run_ids: list[int] = []
+    rebuilt_run_ids: list[int] = []
     for row in selected:
         if _plan_for_row(row) != "migrate_raw_v4_package":
             continue
@@ -845,10 +896,12 @@ async def build_bestcoffer_v4_coverage_report(
             row=row,
             approval_ref=approval_ref or "",
         )
-        if action == "migrated":
+        if action in {"migrated", "rebuilt"}:
             migrated_ids.append(row.response_id)
-            if run_id is not None:
+            if action == "migrated" and run_id is not None:
                 created_run_ids.append(run_id)
+            if action == "rebuilt" and run_id is not None:
+                rebuilt_run_ids.append(run_id)
         elif action == "already_satisfied":
             already_ids.append(row.response_id)
 
@@ -857,6 +910,7 @@ async def build_bestcoffer_v4_coverage_report(
     report["write_performed"] = bool(migrated_ids)
     repair_plan["migrated_response_ids"] = migrated_ids
     repair_plan["created_analyzer_run_ids"] = created_run_ids
+    repair_plan["rebuilt_existing_run_ids"] = rebuilt_run_ids
     repair_plan["already_satisfied_response_ids"] = sorted(
         set(repair_plan["already_satisfied_response_ids"]) | set(already_ids)
     )
