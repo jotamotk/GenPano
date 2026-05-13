@@ -29,6 +29,29 @@ on:
         required: false
         default: "180"
         type: string
+      analyzer_attempts:
+        description: "Run analyzer-specific Admin Attempts E2E: status, drawer, batch dry-run, and optional controlled submit inputs."
+        required: false
+        default: false
+        type: boolean
+      analyzer_single_response_id:
+        description: "Optional single response id for controlled analyzer submit. Requires analyzer_mutation_confirm=true."
+        required: false
+        type: string
+      analyzer_batch_response_ids:
+        description: "Optional comma-separated response ids for controlled analyzer batch submit. Requires analyzer_mutation_confirm=true."
+        required: false
+        type: string
+      analyzer_mutation_confirm:
+        description: "Set true only when the analyzer response ids are safe production mutation targets."
+        required: false
+        default: false
+        type: boolean
+      analyzer_poll_seconds:
+        description: "Optional analyzer batch status poll window in seconds, clamped by the spec to 15..180."
+        required: false
+        default: "60"
+        type: string
 
 jobs:
   staging-admin-e2e:
@@ -41,12 +64,18 @@ jobs:
       ADMIN_E2E_BUSINESS_FLOW_SPEC: tests/e2e/admin-real-business-flow.spec.ts
       ADMIN_E2E_TRACKER_SPEC: tests/e2e/admin-tracker-smoke.spec.ts
       ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC: tests/e2e/admin-tracker-controlled-retry.spec.ts
+      ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC: tests/e2e/admin-attempts-analyzer-prod.spec.ts
       ADMIN_E2E_INPUT_REAL_GENERATION: ${{ inputs.real_generation }}
       ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
       ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
       ADMIN_E2E_TRACKER_RETRY_QUERY_ID: ${{ inputs.tracker_retry_query_id }}
       ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE: ${{ inputs.tracker_retry_expected_engine }}
       ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS: ${{ inputs.tracker_retry_poll_seconds }}
+      ADMIN_E2E_ANALYZER_ATTEMPTS: ${{ inputs.analyzer_attempts && '1' || '0' }}
+      ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID: ${{ inputs.analyzer_single_response_id }}
+      ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS: ${{ inputs.analyzer_batch_response_ids }}
+      ADMIN_E2E_ANALYZER_MUTATION_CONFIRM: ${{ inputs.analyzer_mutation_confirm && '1' || '0' }}
+      ADMIN_E2E_ANALYZER_POLL_SECONDS: ${{ inputs.analyzer_poll_seconds }}
       E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
       PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
     defaults:
@@ -83,10 +112,18 @@ jobs:
           tracker_retry_expected_engine="${tracker_retry_expected_engine%"${tracker_retry_expected_engine##*[![:space:]]}"}"
           tracker_retry_poll_seconds="${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS#"${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS%%[![:space:]]*}"}"
           tracker_retry_poll_seconds="${tracker_retry_poll_seconds%"${tracker_retry_poll_seconds##*[![:space:]]}"}"
+          analyzer_single_response_id="${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID#"${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID%%[![:space:]]*}"}"
+          analyzer_single_response_id="${analyzer_single_response_id%"${analyzer_single_response_id##*[![:space:]]}"}"
+          analyzer_batch_response_ids="${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS#"${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS%%[![:space:]]*}"}"
+          analyzer_batch_response_ids="${analyzer_batch_response_ids%"${analyzer_batch_response_ids##*[![:space:]]}"}"
+          analyzer_poll_seconds="${ADMIN_E2E_ANALYZER_POLL_SECONDS#"${ADMIN_E2E_ANALYZER_POLL_SECONDS%%[![:space:]]*}"}"
+          analyzer_poll_seconds="${analyzer_poll_seconds%"${analyzer_poll_seconds##*[![:space:]]}"}"
           tracker_state="not included"
           tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
           controlled_retry_state="skipped by default"
           controlled_retry_note="No \`tracker_retry_query_id\` input was provided; no Tracker retry mutation will run. No batch retry, cleanup, or manual dispatch will run."
+          analyzer_state="skipped by default"
+          analyzer_note="Set \`analyzer_attempts=true\` to run analyzer-specific status, drawer, and batch dry-run coverage. Submit paths require explicit response ids plus \`analyzer_mutation_confirm=true\`."
           business_state="included but expected to skip"
           business_note="\`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation will run."
           mutation_mode="read-only core smoke"
@@ -115,6 +152,37 @@ jobs:
               controlled_retry_note="${input_error}"
             else
               echo "ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED=1" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+          echo "ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED=0" >> "${GITHUB_ENV}"
+          if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS}" == "1" ]]; then
+            analyzer_state="included and expected to execute"
+            analyzer_note="\`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` will run. Default behavior is status/drawer/batch dry-run only; analyzer submit paths run only when explicit response ids and \`analyzer_mutation_confirm=true\` are provided."
+            if [[ ! -f "${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}" ]]; then
+              input_error="\`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` is not present in this checkout."
+              analyzer_state="blocked before Playwright"
+              analyzer_note="${input_error}"
+            else
+              echo "ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED=1" >> "${GITHUB_ENV}"
+            fi
+            if [[ -n "${analyzer_single_response_id}" && ! "${analyzer_single_response_id}" =~ ^[0-9]+$ ]]; then
+              input_error="analyzer_single_response_id must be a positive integer."
+              analyzer_state="blocked before Playwright"
+              analyzer_note="${input_error}"
+            fi
+            if [[ -n "${analyzer_batch_response_ids}" && ! "${analyzer_batch_response_ids}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+              input_error="analyzer_batch_response_ids must be comma-separated positive integers without spaces."
+              analyzer_state="blocked before Playwright"
+              analyzer_note="${input_error}"
+            fi
+            if [[ "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" && -z "${analyzer_single_response_id}${analyzer_batch_response_ids}" ]]; then
+              input_error="analyzer_mutation_confirm=true requires analyzer_single_response_id and/or analyzer_batch_response_ids."
+              analyzer_state="blocked before Playwright"
+              analyzer_note="${input_error}"
+            fi
+            if [[ -n "${analyzer_single_response_id}${analyzer_batch_response_ids}" && "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" != "1" ]]; then
+              analyzer_note="${analyzer_note} Response ids were provided, but submit mutation is disabled because \`analyzer_mutation_confirm\` is false."
             fi
           fi
 
@@ -151,6 +219,11 @@ jobs:
             echo "| Tracker retry query id | \`${tracker_retry_query_id:-none}\` |"
             echo "| Tracker retry expected engine | \`${tracker_retry_expected_engine:-not enforced}\` |"
             echo "| Tracker retry poll seconds | \`${tracker_retry_poll_seconds:-180}\` (spec clamps to 15..180) |"
+            echo "| Analyzer attempts | \`${ADMIN_E2E_ANALYZER_ATTEMPTS}\` |"
+            echo "| Analyzer single response id | \`${analyzer_single_response_id:-none}\` |"
+            echo "| Analyzer batch response ids | \`${analyzer_batch_response_ids:-none}\` |"
+            echo "| Analyzer mutation confirm | \`${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}\` |"
+            echo "| Analyzer poll seconds | \`${analyzer_poll_seconds:-60}\` (spec clamps to 15..180) |"
             echo ""
             echo "| Coverage category | Spec | Gate state | Notes |"
             echo "| --- | --- | --- | --- |"
@@ -158,6 +231,7 @@ jobs:
             echo "| Controlled business flow | \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` | ${business_state} | ${business_note} |"
             echo "| Tracker smoke | \`${ADMIN_E2E_TRACKER_SPEC}\` | ${tracker_state} | ${tracker_note} |"
             echo "| Controlled Tracker retry | \`${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}\` | ${controlled_retry_state} | ${controlled_retry_note} |"
+            echo "| Admin Attempts analyzer | \`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` | ${analyzer_state} | ${analyzer_note} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if [[ -n "${input_error}" ]]; then
@@ -184,6 +258,14 @@ jobs:
           if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
             echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); no batch retry, cleanup, or manual dispatch will run."
             specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
+          fi
+          if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
+            if [[ "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" ]]; then
+              echo "MUTATION ENABLED: Admin analyzer E2E may submit explicit response ids only. single=${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID:-none}; batch=${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS:-none}; poll seconds=${ADMIN_E2E_ANALYZER_POLL_SECONDS:-60}."
+            else
+              echo "Analyzer E2E included in read-only mode plus batch dry-run. No analyzer submit mutation will run."
+            fi
+            specs+=("${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}")
           fi
 
           set +e
@@ -213,6 +295,12 @@ jobs:
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
               invoked_categories="${invoked_categories}; controlled Tracker retry mutation"
             fi
+            if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
+              invoked_categories="${invoked_categories}; Admin Attempts analyzer status/drawer/batch dry-run"
+              if [[ "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" ]]; then
+                invoked_categories="${invoked_categories}; controlled Admin analyzer submit mutation"
+              fi
+            fi
             if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "0" ]]; then
               echo "- Skipped business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` is intentionally skipped by the test annotation."
             else
@@ -222,6 +310,16 @@ jobs:
               echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
+            fi
+            if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
+              echo "- Admin analyzer state: included; \`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` verifies analyzer status, drawer summary, and batch dry-run against production."
+              if [[ "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" ]]; then
+                echo "- Controlled analyzer submit state: enabled for single response id \`${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID:-none}\` and batch response ids \`${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS:-none}\`."
+              else
+                echo "- Controlled analyzer submit state: skipped; \`analyzer_mutation_confirm=false\`."
+              fi
+            else
+              echo "- Admin analyzer state: skipped; \`analyzer_attempts=false\`."
             fi
             if [[ "${status}" -eq 0 ]]; then
               echo "- Coverage categories this result can claim: ${invoked_categories}."
