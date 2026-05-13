@@ -371,7 +371,8 @@ async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set
 
 async def _table_columns(session: AsyncSession, table_name: str) -> set[str]:
     def _inspect(sync_session: Any) -> set[str]:
-        return {column["name"] for column in inspect(sync_session.get_bind()).get_columns(table_name)}
+        connection = sync_session.connection()
+        return {column["name"] for column in inspect(connection).get_columns(table_name)}
 
     return await session.run_sync(_inspect)
 

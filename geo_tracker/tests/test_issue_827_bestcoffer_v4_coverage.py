@@ -145,6 +145,42 @@ async def test_run_cli_opens_task_session_context_manager(monkeypatch: pytest.Mo
     assert engine.disposed is True
 
 
+@pytest.mark.asyncio
+async def test_table_columns_reuses_active_sync_session_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        pass
+
+    active_connection = FakeConnection()
+
+    class FakeSyncSession:
+        def connection(self) -> FakeConnection:
+            return active_connection
+
+        def get_bind(self) -> object:
+            raise AssertionError("schema inspection must not check out a second pool connection")
+
+    class FakeAsyncSession:
+        async def run_sync(self, fn):
+            return fn(FakeSyncSession())
+
+    class FakeInspector:
+        def __init__(self, target: object) -> None:
+            assert target is active_connection
+
+        def get_columns(self, table_name: str) -> list[dict[str, str]]:
+            assert table_name == "llm_responses"
+            return [{"name": "id"}, {"name": "query_id"}]
+
+    monkeypatch.setattr(v4_repair, "inspect", lambda target: FakeInspector(target))
+
+    assert await v4_repair._table_columns(FakeAsyncSession(), "llm_responses") == {
+        "id",
+        "query_id",
+    }
+
+
 async def _seed_scope(session: AsyncSession, *, pin_topic: bool = True) -> None:
     day = datetime(2026, 5, 12, 10, 0)
     session.add_all(
