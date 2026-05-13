@@ -8,6 +8,7 @@ import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from geo_tracker.tasks import analyzer_v3_backfill
 from geo_tracker.db.models import (
     AnalysisStatus,
     Base,
@@ -141,6 +142,72 @@ async def _seed_scope(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def _seed_legacy_evidence(
+    session: AsyncSession,
+    *,
+    response_id: int = 7120,
+    target_mentioned: bool = True,
+) -> None:
+    response = await session.get(LLMResponse, response_id)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.DONE.value
+    old_analysis = ResponseAnalysis(
+        response_id=response_id,
+        dimension_industry="coffee",
+        dimension_category="category",
+        target_brand_mentioned=target_mentioned,
+        raw_analysis_json={"legacy": "evidence"},
+    )
+    brand_name = "BestCoffer" if target_mentioned else "AcmeGrind"
+    brand_id = 24 if target_mentioned else None
+    old_mention = BrandMention(
+        response_id=response_id,
+        brand_id=brand_id,
+        brand_name=brand_name,
+        product_name="Legacy Brew" if target_mentioned else None,
+        is_target=target_mentioned,
+        position_type="ranked" if target_mentioned else None,
+        position_rank=2 if target_mentioned else None,
+        sentiment="positive" if target_mentioned else None,
+        sentiment_score=0.8 if target_mentioned else None,
+        context_snippet=f"{brand_name} legacy evidence",
+        mention_count=1,
+    )
+    session.add_all([old_analysis, old_mention])
+    await session.flush()
+    if target_mentioned:
+        session.add(
+            SentimentDriver(
+                mention_id=old_mention.id,
+                response_id=response_id,
+                brand_name="BestCoffer",
+                driver_text="quiet grinder",
+                polarity="positive",
+                category="quality",
+                strength=0.8,
+                source_quote="BestCoffer is a quiet grinder",
+            )
+        )
+    session.add(
+        CitationSource(
+            response_id=response_id,
+            mention_id=old_mention.id if target_mentioned else None,
+            url="https://legacy.example/review",
+            domain="legacy.example",
+            title="Legacy review",
+        )
+    )
+    session.add(
+        ProductFeatureMention(
+            analysis_id=old_analysis.id,
+            brand_name=brand_name,
+            product_name="Legacy Brew",
+            feature_name="quiet",
+        )
+    )
+    await session.commit()
+
+
 def test_approval_ref_accepts_issue_711_ai_lead_apply_evidence() -> None:
     assert validate_approval_ref(APPROVAL_REF) == APPROVAL_REF
 
@@ -220,48 +287,37 @@ async def test_apply_is_idempotent_and_resumable_after_interruption(
     session: AsyncSession,
 ) -> None:
     await _seed_scope(session)
-    calls: list[int] = []
-
-    async def fake_analyze(session, response, brand, competitors, intent):
-        calls.append(response.id)
-        response.analysis_status = AnalysisStatus.DONE.value
-        session.add(
-            ResponseAnalysis(
-                response_id=response.id,
-                dimension_industry="coffee",
-                analyzer_model="fake",
-                raw_analysis_json={
-                    "analyzer_fact_package_v3": {
-                        "analyzer_version": "v3",
-                        "idempotency_key": f"{response.id}:v3:fresh",
-                    }
-                },
-            )
-        )
-        await session.commit()
-        return {"response_id": response.id, "status": "done"}
+    await _seed_legacy_evidence(session)
 
     report = await build_analyzer_v3_backfill_report(
         session,
         AnalyzerV3BackfillScope(response_ids=(7120, 7121), brand_id=24, batch_size=10),
         apply=True,
         approval_ref=APPROVAL_REF,
-        analyze_func=fake_analyze,
     )
 
-    assert calls == [7120]
     assert report["write_performed"] is True
+    assert report["apply_results"][0]["status"] == "done"
+    assert report["apply_results"][0]["idempotency_key"].startswith("7120:v3:")
     assert report["after"]["state_counts"] == {"DONE": 2}
     assert report["after"]["partial_state"]["completed_response_ids"] == [7120, 7121]
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7120)
+    )
+    assert analysis is not None
+    raw = analysis.raw_analysis_json
+    assert raw["legacy"] == "evidence"
+    package = raw["analyzer_fact_package_v3"]
+    assert package["analyzer_version"] == "v3"
+    assert package["entities"]["target"]["mentioned"] is True
+    assert package["topic_metrics"]["visible"] is True
 
     second = await build_analyzer_v3_backfill_report(
         session,
         AnalyzerV3BackfillScope(response_ids=(7120, 7121), brand_id=24, batch_size=10),
         apply=True,
         approval_ref=APPROVAL_REF,
-        analyze_func=fake_analyze,
     )
-    assert calls == [7120]
     assert second["selected_response_ids"] == []
     assert second["skipped_response_ids"] == [7120, 7121]
 
@@ -271,11 +327,6 @@ async def test_apply_rejects_project_scope_without_explicit_response_or_query_id
     session: AsyncSession,
 ) -> None:
     await _seed_scope(session)
-    calls: list[int] = []
-
-    async def fake_analyze(session, response, brand, competitors, intent):
-        calls.append(response.id)
-        return {"response_id": response.id, "status": "done"}
 
     report = await build_analyzer_v3_backfill_report(
         session,
@@ -289,10 +340,8 @@ async def test_apply_rejects_project_scope_without_explicit_response_or_query_id
         ),
         apply=True,
         approval_ref=APPROVAL_REF,
-        analyze_func=fake_analyze,
     )
 
-    assert calls == []
     assert report["write_performed"] is False
     assert report["apply_blocked"] is True
     assert (
@@ -312,26 +361,7 @@ async def test_apply_allows_project_scope_with_explicit_response_or_query_ids(
     scope_kwargs: dict,
 ) -> None:
     await _seed_scope(session)
-    calls: list[int] = []
-
-    async def fake_analyze(session, response, brand, competitors, intent):
-        calls.append(response.id)
-        response.analysis_status = AnalysisStatus.DONE.value
-        session.add(
-            ResponseAnalysis(
-                response_id=response.id,
-                dimension_industry="coffee",
-                analyzer_model="fake",
-                raw_analysis_json={
-                    "analyzer_fact_package_v3": {
-                        "analyzer_version": "v3",
-                        "idempotency_key": f"{response.id}:v3:fresh",
-                    }
-                },
-            )
-        )
-        await session.commit()
-        return {"response_id": response.id, "status": "done"}
+    await _seed_legacy_evidence(session)
 
     report = await build_analyzer_v3_backfill_report(
         session,
@@ -343,11 +373,10 @@ async def test_apply_allows_project_scope_with_explicit_response_or_query_ids(
         ),
         apply=True,
         approval_ref=APPROVAL_REF,
-        analyze_func=fake_analyze,
     )
 
-    assert calls == [7120]
     assert report["write_performed"] is True
+    assert report["apply_results"][0]["status"] == "done"
     assert report.get("apply_blocked") is None
     assert report["safe_selection"]["project_scope_enforced"] is False
 
@@ -357,27 +386,43 @@ async def test_apply_failure_reports_partial_state_before_retry(
     session: AsyncSession,
 ) -> None:
     await _seed_scope(session)
+    await _seed_legacy_evidence(session)
 
-    async def fake_analyze(session, response, brand, competitors, intent):
-        return {"response_id": response.id, "status": "failed", "error": "llm_timeout"}
+    def broken_builder(*args, **kwargs):
+        raise RuntimeError("package_timeout")
 
-    with pytest.raises(AnalyzerV3BackfillApplyError) as exc:
-        await build_analyzer_v3_backfill_report(
-            session,
-            AnalyzerV3BackfillScope(
-                response_ids=(7120, 7121), brand_id=24, batch_size=10
-            ),
-            apply=True,
-            approval_ref=APPROVAL_REF,
-            analyze_func=fake_analyze,
-        )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        analyzer_v3_backfill,
+        "build_response_fact_package_v3",
+        broken_builder,
+    )
+    try:
+        with pytest.raises(AnalyzerV3BackfillApplyError) as exc:
+            await build_analyzer_v3_backfill_report(
+                session,
+                AnalyzerV3BackfillScope(
+                    response_ids=(7120, 7121), brand_id=24, batch_size=10
+                ),
+                apply=True,
+                approval_ref=APPROVAL_REF,
+            )
+    finally:
+        monkeypatch.undo()
 
     report = exc.value.report
     assert report["apply_failed"] is True
     assert report["failed_response_id"] == 7120
+    assert report["failure_reason"] == "package_timeout"
+    assert report["partial_writes_possible"] is False
     assert report["after"]["state_counts"] == {"DONE": 1, "PENDING": 1}
     assert report["after"]["partial_state"]["completed_response_ids"] == [7121]
     assert report["after"]["partial_state"]["pending_response_ids"] == [7120]
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7120)
+    )
+    assert analysis is not None
+    assert analysis.raw_analysis_json == {"legacy": "evidence"}
 
 
 @pytest.mark.asyncio
@@ -422,81 +467,93 @@ async def test_global_unrelated_aggregate_rows_do_not_satisfy_selected_scope(
 
 
 @pytest.mark.asyncio
-async def test_default_apply_blocks_legacy_destructive_analyzer_and_preserves_evidence(
+async def test_apply_without_existing_analysis_preserves_rows_and_reports_missing_evidence(
     session: AsyncSession,
 ) -> None:
     await _seed_scope(session)
     response = await session.get(LLMResponse, 7120)
     assert response is not None
-    old_analysis = ResponseAnalysis(
-        response_id=7120,
-        dimension_industry="coffee",
-        raw_analysis_json={"legacy": "evidence"},
+
+    with pytest.raises(AnalyzerV3BackfillApplyError) as exc:
+        await build_analyzer_v3_backfill_report(
+            session,
+            AnalyzerV3BackfillScope(
+                response_ids=(7120,),
+                brand_id=24,
+                batch_size=10,
+            ),
+            apply=True,
+            approval_ref=APPROVAL_REF,
+        )
+
+    report = exc.value.report
+    assert report["apply_failed"] is True
+    assert report["failure_reason"] == "missing_response_analysis"
+    assert report["write_performed"] is False
+    assert report["write_attempted"] is True
+    assert report["partial_writes_possible"] is False
+    await session.refresh(response)
+    assert response.analysis_status == AnalysisStatus.PENDING.value
+    assert (
+        await session.scalar(
+            select(func.count(ResponseAnalysis.id)).where(
+                ResponseAnalysis.response_id == 7120
+            )
+        )
+        == 0
     )
-    old_mention = BrandMention(
-        response_id=7120,
-        brand_id=24,
-        brand_name="BestCoffer",
-        is_target=True,
-        mention_count=1,
+    assert (
+        await session.scalar(
+            select(func.count(BrandMention.id)).where(BrandMention.response_id == 7120)
+        )
+        == 0
     )
-    session.add_all([old_analysis, old_mention])
-    await session.flush()
-    old_driver = SentimentDriver(
-        mention_id=old_mention.id,
-        response_id=7120,
-        brand_name="BestCoffer",
-        driver_text="legacy driver",
-        polarity="positive",
-        category="legacy",
-        strength=0.5,
+    assert (
+        await session.scalar(
+            select(func.count(SentimentDriver.id)).where(
+                SentimentDriver.response_id == 7120
+            )
+        )
+        == 0
     )
-    old_citation = CitationSource(
-        response_id=7120,
-        mention_id=old_mention.id,
-        url="https://legacy.example/review",
-        domain="legacy.example",
+    assert (
+        await session.scalar(
+            select(func.count(CitationSource.id)).where(
+                CitationSource.response_id == 7120
+            )
+        )
+        == 0
     )
-    old_product = ProductFeatureMention(
-        analysis_id=old_analysis.id,
-        brand_name="BestCoffer",
-        product_name="Legacy Brew",
-        feature_name="quiet",
-    )
-    session.add_all([old_driver, old_citation, old_product])
+    assert await session.scalar(select(func.count(ProductFeatureMention.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_competitor_only_topic_evidence_does_not_create_target_visibility(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    response = await session.get(LLMResponse, 7120)
+    assert response is not None
+    response.raw_text = "AcmeGrind is mentioned without the target brand."
     await session.commit()
+    await _seed_legacy_evidence(session, target_mentioned=False)
 
     report = await build_analyzer_v3_backfill_report(
         session,
-        AnalyzerV3BackfillScope(
-            response_ids=(7120,),
-            brand_id=24,
-            batch_size=10,
-        ),
+        AnalyzerV3BackfillScope(response_ids=(7120,), brand_id=24, batch_size=10),
         apply=True,
         approval_ref=APPROVAL_REF,
     )
 
-    assert report["apply_blocked"] is True
-    assert report["block_reason"] == "non_destructive_v3_apply_not_implemented"
-    assert report["write_performed"] is False
-    assert report["write_attempted"] is False
-    await session.refresh(response)
-    assert response.analysis_status == AnalysisStatus.PENDING.value
-    assert await session.scalar(
-        select(func.count(ResponseAnalysis.id)).where(
-            ResponseAnalysis.response_id == 7120
-        )
-    ) == 1
-    assert await session.scalar(
-        select(func.count(BrandMention.id)).where(BrandMention.response_id == 7120)
-    ) == 1
-    assert await session.scalar(
-        select(func.count(SentimentDriver.id)).where(
-            SentimentDriver.response_id == 7120
-        )
-    ) == 1
-    assert await session.scalar(
-        select(func.count(CitationSource.id)).where(CitationSource.response_id == 7120)
-    ) == 1
-    assert await session.scalar(select(func.count(ProductFeatureMention.id))) == 1
+    assert report["apply_results"][0]["status"] == "done"
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7120)
+    )
+    assert analysis is not None
+    package = analysis.raw_analysis_json["analyzer_fact_package_v3"]
+    assert package["visibility"]["is_visible"] is False
+    assert package["topic_metrics"]["visible"] is False
+    assert package["topic_metrics"]["rank_basis"] == 0
+    assert (
+        "missing_target_visibility_evidence" in package["topic_metrics"]["reason_codes"]
+    )

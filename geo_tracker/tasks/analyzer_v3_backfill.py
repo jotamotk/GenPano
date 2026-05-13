@@ -9,12 +9,16 @@ import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable
-
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.agent.response_validation import invalid_response_reason
+from geo_tracker.analyzer.fact_contract import (
+    AnalyzerCitationInput,
+    AnalyzerMentionInput,
+    AnalyzerResponseInput,
+    build_response_fact_package_v3,
+)
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
     AnalysisStatus,
@@ -42,11 +46,6 @@ ANALYZER_V3_APPROVAL_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_BATCH_SIZE = 100
-
-AnalyzeFunc = Callable[
-    [AsyncSession, LLMResponse, Brand, list[Competitor], str],
-    Awaitable[dict],
-]
 
 
 class AnalyzerV3BackfillApplyError(RuntimeError):
@@ -512,13 +511,235 @@ async def _load_analyzer_inputs(
     return response, brand, competitors, intent
 
 
+def _competitor_contracts(competitors: list[Competitor]) -> list[dict]:
+    return [
+        {
+            "brand_id": None,
+            "brand_name": competitor.name,
+            "aliases": competitor.aliases or [],
+            "source": "configured_competitor",
+        }
+        for competitor in competitors
+    ]
+
+
+def _iso(value: object) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _raw_without_v3(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = dict(raw)
+    cleaned.pop("analyzer_fact_package_v3", None)
+    return cleaned
+
+
+def _raw_names_by_mention_id(raw: object) -> dict[int, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, str] = {}
+    for fact in raw.get("brand_mention_facts") or []:
+        if not isinstance(fact, dict) or fact.get("mention_id") is None:
+            continue
+        out[int(fact["mention_id"])] = (
+            fact.get("raw_brand_name")
+            or fact.get("raw_name")
+            or fact.get("brand_name")
+            or ""
+        )
+    return out
+
+
+async def _build_existing_evidence_response_input(
+    session: AsyncSession,
+    *,
+    response: LLMResponse,
+    query: Query | None,
+    analysis: ResponseAnalysis,
+) -> AnalyzerResponseInput:
+    prompt_id = query.prompt_id if query is not None else None
+    topic_id = None
+    if prompt_id is not None:
+        prompt = await session.get(Prompt, prompt_id)
+        topic_id = prompt.topic_id if prompt is not None else None
+
+    mentions = (
+        (
+            await session.execute(
+                select(BrandMention).where(BrandMention.response_id == response.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    mention_ids = [mention.id for mention in mentions if mention.id is not None]
+    drivers_by_mention_id: dict[int, list[dict]] = {}
+    if mention_ids:
+        drivers = (
+            (
+                await session.execute(
+                    select(SentimentDriver).where(
+                        SentimentDriver.mention_id.in_(mention_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for driver in drivers:
+            drivers_by_mention_id.setdefault(int(driver.mention_id), []).append(
+                {
+                    "driver_text": driver.driver_text,
+                    "polarity": driver.polarity,
+                    "category": driver.category,
+                    "strength": driver.strength,
+                    "source_quote": driver.source_quote,
+                }
+            )
+    citations = (
+        (
+            await session.execute(
+                select(CitationSource).where(CitationSource.response_id == response.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    raw_names = _raw_names_by_mention_id(analysis.raw_analysis_json)
+    return AnalyzerResponseInput(
+        response_id=int(response.id),
+        query_id=response.query_id,
+        prompt_id=prompt_id,
+        topic_id=topic_id,
+        project_brand_id=query.brand_id if query is not None else None,
+        engine=query.target_llm if query is not None else None,
+        profile_id=query.profile_id if query is not None else None,
+        collected_at=_iso(response.collected_at),
+        analysis_status=response.analysis_status,
+        has_analysis=True,
+        raw_text=response.raw_text,
+        mentions=[
+            AnalyzerMentionInput(
+                mention_id=mention.id,
+                response_id=mention.response_id,
+                brand_id=mention.brand_id,
+                brand_name=mention.brand_name,
+                raw_name=raw_names.get(int(mention.id), mention.brand_name)
+                if mention.id is not None
+                else mention.brand_name,
+                is_target=bool(mention.is_target),
+                mention_count=mention.mention_count,
+                context_snippet=mention.context_snippet,
+                sentiment=mention.sentiment,
+                sentiment_score=mention.sentiment_score,
+                sentiment_drivers=drivers_by_mention_id.get(int(mention.id), [])
+                if mention.id is not None
+                else [],
+                product_name=mention.product_name,
+                position_type=mention.position_type,
+                position_rank=mention.position_rank,
+                provenance="legacy_analyzer_evidence",
+            )
+            for mention in mentions
+        ],
+        citations=[
+            AnalyzerCitationInput(
+                citation_id=citation.id,
+                response_id=citation.response_id,
+                mention_id=citation.mention_id,
+                url=citation.url,
+                domain=citation.domain,
+                source_type=citation.source_type,
+                tier=None,
+                title=citation.title,
+                brand_name=None,
+            )
+            for citation in citations
+        ],
+    )
+
+
+async def apply_v3_package_from_existing_evidence(
+    session: AsyncSession,
+    candidate: BackfillCandidate,
+    *,
+    project_id: str | None,
+) -> dict:
+    response, brand, competitors, _intent = await _load_analyzer_inputs(
+        session, candidate
+    )
+    query = await session.get(Query, candidate.query_id)
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
+        )
+    ).scalar_one_or_none()
+    if analysis is None:
+        raise ValueError("missing_response_analysis")
+
+    response_input = await _build_existing_evidence_response_input(
+        session,
+        response=response,
+        query=query,
+        analysis=analysis,
+    )
+    prompt = (
+        await session.get(Prompt, query.prompt_id)
+        if query and query.prompt_id
+        else None
+    )
+    topic = (
+        await session.get(Topic, prompt.topic_id)
+        if prompt and prompt.topic_id
+        else None
+    )
+    raw_for_hash = _raw_without_v3(analysis.raw_analysis_json)
+    package = build_response_fact_package_v3(
+        response_input,
+        target_brand_id=int(brand.id),
+        target_brand_name=brand.name,
+        target_aliases=brand.aliases or [],
+        configured_competitors=_competitor_contracts(competitors),
+        source_brand_id=query.brand_id if query is not None else None,
+        project_ids=[project_id] if project_id else [],
+        provider=query.target_llm if query is not None else None,
+        model=response.llm_version,
+        prompt_version="legacy-evidence-v3-backfill",
+        raw_output=raw_for_hash,
+        parse_status="ok",
+        analysis_started_at=_iso(analysis.analyzed_at) or _iso(response.analyzed_at),
+        analysis_completed_at=_iso(analysis.analyzed_at) or _iso(response.analyzed_at),
+        topic_name=topic.text if topic is not None else None,
+        topic_dimension=topic.category if topic is not None else None,
+    )
+    validation_errors = package.get("coverage", {}).get("validation_errors") or []
+    blocking_errors = [
+        error for error in validation_errors if not str(error).startswith("missing_")
+    ]
+    if blocking_errors:
+        raise ValueError(
+            "invalid_v3_package:" + ",".join(str(error) for error in blocking_errors)
+        )
+
+    raw = _raw_without_v3(analysis.raw_analysis_json)
+    raw["analyzer_fact_package_v3"] = package
+    analysis.raw_analysis_json = raw
+    session.add(analysis)
+    await session.commit()
+    return {
+        "response_id": int(response.id),
+        "status": "done",
+        "idempotency_key": package["idempotency_key"],
+    }
+
+
 async def build_analyzer_v3_backfill_report(
     session: AsyncSession,
     scope: AnalyzerV3BackfillScope,
     *,
     apply: bool = False,
     approval_ref: str | None = None,
-    analyze_func: AnalyzeFunc | None = None,
 ) -> dict:
     validate_scope(scope)
     if apply:
@@ -599,29 +820,37 @@ async def build_analyzer_v3_backfill_report(
     if not apply:
         return report
 
-    if analyze_func is None:
-        report.update(
-            {
-                "apply_blocked": True,
-                "block_reason": "non_destructive_v3_apply_not_implemented",
-                "write_performed": False,
-                "write_attempted": False,
-                "apply_plan": (
-                    "Production apply is blocked because the legacy analyzer "
-                    "replacement path deletes existing evidence before the LLM "
-                    "pass completes. Implement a v3 staging/commit path before "
-                    "enabling writes."
-                ),
-            }
-        )
-        return report
-
     apply_results: list[dict] = []
     for candidate in selected:
-        response, brand, competitors, intent = await _load_analyzer_inputs(
-            session, candidate
-        )
-        result = await analyze_func(session, response, brand, competitors, intent)
+        try:
+            result = await apply_v3_package_from_existing_evidence(
+                session,
+                candidate,
+                project_id=scope.project_id,
+            )
+        except Exception as exc:
+            await session.rollback()
+            after = await summarize_candidates(
+                session, await collect_candidates(session, scope)
+            )
+            report.update(
+                {
+                    "write_performed": bool(apply_results),
+                    "write_attempted": True,
+                    "apply_failed": True,
+                    "failed_response_id": candidate.response_id,
+                    "failure_reason": str(exc),
+                    "partial_writes_possible": bool(apply_results),
+                    "apply_results": apply_results,
+                    "after": after,
+                    "apply_plan": (
+                        "Apply failed before this response package committed. "
+                        "Existing legacy evidence was left intact; review after "
+                        "partial_state and retry the same scope after fixing inputs."
+                    ),
+                }
+            )
+            raise AnalyzerV3BackfillApplyError(report) from exc
         apply_results.append(result)
         if result.get("status") != "done":
             after = await summarize_candidates(
@@ -629,7 +858,7 @@ async def build_analyzer_v3_backfill_report(
             )
             report.update(
                 {
-                    "write_performed": True,
+                    "write_performed": bool(apply_results),
                     "write_attempted": True,
                     "apply_failed": True,
                     "failed_response_id": candidate.response_id,
