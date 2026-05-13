@@ -35,6 +35,9 @@ APPROVAL_REF = (
 CITATION_ONLY_APPROVAL_REF = (
     "https://github.com/jotamotk/trash_test/issues/760#issuecomment-4439999998"
 )
+UNTRUSTED_APPROVAL_REF = (
+    "https://github.com/jotamotk/trash_test/issues/760#issuecomment-4439999997"
+)
 KICKOFF_REF = (
     "https://github.com/jotamotk/trash_test/issues/760#issuecomment-4439507284"
 )
@@ -63,18 +66,28 @@ def _approval_fetcher(comment_id: int) -> dict:
             "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/760",
             "body": APPROVAL_BODY,
             "user": {"login": "jotamotk"},
+            "author_association": "OWNER",
         },
         4439999998: {
             "html_url": CITATION_ONLY_APPROVAL_REF,
             "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/760",
             "body": CITATION_ONLY_APPROVAL_BODY,
             "user": {"login": "jotamotk"},
+            "author_association": "MEMBER",
+        },
+        4439999997: {
+            "html_url": UNTRUSTED_APPROVAL_REF,
+            "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/760",
+            "body": APPROVAL_BODY,
+            "user": {"login": "outside-contributor"},
+            "author_association": "CONTRIBUTOR",
         },
         4439507284: {
             "html_url": KICKOFF_REF,
             "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/760",
             "body": KICKOFF_BODY,
             "user": {"login": "jotamotk"},
+            "author_association": "COLLABORATOR",
         },
     }
     return comments[comment_id]
@@ -584,11 +597,52 @@ async def test_aggregate_apply_requires_date_scoped_approval(
         )
 
 
-def test_approval_ref_accepts_issue_760_production_write_evidence() -> None:
+@pytest.mark.asyncio
+async def test_aggregate_approval_ref_rejects_untrusted_author(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+
+    with pytest.raises(ValueError, match="trusted author"):
+        await build_bestcoffer_citation_geo_followup_report(
+            session,
+            BestCofferCitationGeoScope(
+                project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+                brand_id=24,
+                competitor_brand_ids=(2,),
+                response_ids=(7610,),
+                date_from="2026-05-12",
+                date_to="2026-05-12",
+            ),
+            apply=True,
+            aggregate=True,
+            approval_ref=APPROVAL_REF,
+            approval_comment_fetcher=_approval_fetcher,
+            aggregate_approval_ref=UNTRUSTED_APPROVAL_REF,
+        )
+
+
+@pytest.mark.parametrize("author_association", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_approval_ref_accepts_trusted_author_association(
+    author_association: str,
+) -> None:
+    def fetcher(comment_id: int) -> dict:
+        comment = dict(_approval_fetcher(comment_id))
+        comment["author_association"] = author_association
+        return comment
+
     assert (
-        validate_approval_ref(APPROVAL_REF, approval_comment_fetcher=_approval_fetcher)
+        validate_approval_ref(APPROVAL_REF, approval_comment_fetcher=fetcher)
         == APPROVAL_REF
     )
+
+
+def test_approval_ref_rejects_untrusted_author_with_write_evidence() -> None:
+    with pytest.raises(ValueError, match="trusted author"):
+        validate_approval_ref(
+            UNTRUSTED_APPROVAL_REF,
+            approval_comment_fetcher=_approval_fetcher,
+        )
 
 
 @pytest.mark.parametrize(

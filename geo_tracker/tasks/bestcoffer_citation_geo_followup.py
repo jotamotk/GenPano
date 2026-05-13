@@ -53,12 +53,16 @@ MAX_LIMIT = 75
 APPROVAL_COMMENT_API = (
     "https://api.github.com/repos/jotamotk/trash_test/issues/comments/{comment_id}"
 )
+TRUSTED_APPROVAL_AUTHOR_ASSOCIATIONS = frozenset(
+    {"OWNER", "MEMBER", "COLLABORATOR"}
+)
 
 APPROVAL_REF_HELP = (
     "Dry-run first, attach exact response/query IDs and write plan evidence to "
     "#760, then use the exact #760 issue comment URL whose fetched GitHub body "
     "contains explicit AI Lead production-write approval for BestCoffer citation "
-    "GEO materialization apply. Do not append approval words to the URL."
+    "GEO materialization apply and whose author_association is OWNER, MEMBER, "
+    "or COLLABORATOR. Do not append approval words to the URL."
 )
 
 ROLLBACK_NOTE = (
@@ -193,6 +197,19 @@ def _validate_comment_belongs_to_issue_760(
         raise ValueError("approval_ref comment URL does not match fetched GitHub comment")
 
 
+def _validate_comment_author_trusted(comment: dict[str, Any]) -> None:
+    association = str(comment.get("author_association") or "").upper()
+    if association in TRUSTED_APPROVAL_AUTHOR_ASSOCIATIONS:
+        return
+    user = comment.get("user") or {}
+    login = user.get("login") if isinstance(user, dict) else None
+    raise ValueError(
+        "approval_ref comment must be from a trusted author with "
+        "author_association OWNER, MEMBER, or COLLABORATOR; "
+        f"got author_association={association or '<empty>'}, login={login or '<unknown>'}"
+    )
+
+
 def _validate_comment_has_write_approval(comment: dict[str, Any]) -> None:
     normalized = _normalized_comment_body(comment)
     has_write_approval = (
@@ -249,6 +266,7 @@ def validate_approval_ref(
     fetcher = approval_comment_fetcher or _fetch_github_issue_comment
     comment = fetcher(comment_id)
     _validate_comment_belongs_to_issue_760(comment, value)
+    _validate_comment_author_trusted(comment)
     _validate_comment_has_write_approval(comment)
     return value
 

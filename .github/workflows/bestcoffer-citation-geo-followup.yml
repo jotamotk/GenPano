@@ -1,0 +1,368 @@
+name: BestCoffer Citation GEO Follow-up
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry_run prints the scoped #760 report; apply performs approved materialization writes"
+        type: choice
+        required: true
+        default: dry_run
+        options:
+          - dry_run
+          - apply
+      project_id:
+        description: "Scoped App project UUID for #760"
+        required: true
+        default: "7380c0e0-8798-4a5f-998f-42010a7d9caa"
+      brand_id:
+        description: "BestCoffer canonical brand id"
+        required: false
+        default: "24"
+      competitor_brand_id:
+        description: "Comma-separated competitor brand ids for GEO aggregate recompute"
+        required: false
+        default: "2"
+      date_from:
+        description: "Inclusive response collection date start (YYYY-MM-DD)"
+        required: false
+        default: "2026-05-06"
+      date_to:
+        description: "Inclusive response collection date end (YYYY-MM-DD)"
+        required: false
+        default: "2026-05-13"
+      response_ids:
+        description: "Optional comma-separated response ids; required for apply if query_ids is empty"
+        required: false
+        default: ""
+      query_ids:
+        description: "Optional comma-separated query ids; required for apply if response_ids is empty"
+        required: false
+        default: ""
+      limit:
+        description: "Maximum selected responses; hard-capped at 75"
+        required: false
+        default: "75"
+      aggregate:
+        description: "In apply mode, recompute selected brand/date GEO aggregates"
+        type: boolean
+        required: false
+        default: false
+      approval_ref:
+        description: "Required for apply: exact #760 issue-comment URL with trusted production-write approval"
+        required: false
+        default: ""
+      aggregate_approval_ref:
+        description: "Optional for apply+aggregate; if empty, approval_ref is reused and must approve aggregate dates"
+        required: false
+        default: ""
+
+concurrency:
+  group: bestcoffer-citation-geo-followup
+  cancel-in-progress: false
+
+jobs:
+  bestcoffer-citation-geo-followup:
+    name: Run scoped BestCoffer citation/GEO follow-up
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate workflow inputs before SSH
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          COMPETITOR_BRAND_ID: ${{ inputs.competitor_brand_id }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          LIMIT: ${{ inputs.limit }}
+          AGGREGATE: ${{ inputs.aggregate }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          AGGREGATE_APPROVAL_REF: ${{ inputs.aggregate_approval_ref }}
+        run: |
+          set -Eeuo pipefail
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          compact() {
+            printf '%s' "$1" | tr -d '[:space:]'
+          }
+
+          require_positive_int() {
+            local name="$1"
+            local value="$2"
+            [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a positive integer, got '$value'"
+            [ "$value" -ge 1 ] || fail "$name must be >= 1"
+          }
+
+          require_optional_int_csv() {
+            local name="$1"
+            local value
+            value="$(compact "$2")"
+            [ -z "$value" ] && return 0
+            [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "$name must be comma-separated positive integers"
+          }
+
+          require_optional_issue_760_ref() {
+            local name="$1"
+            local value="$2"
+            [ -z "$value" ] && return 0
+            [[ "$value" =~ ^https://github\.com/jotamotk/trash_test/issues/760#issuecomment-[0-9]+$ ]] \
+              || fail "$name must be the exact #760 issue comment URL"
+          }
+
+          MODE_VALUE="${MODE:-}"
+          PROJECT_ID_VALUE="$(compact "${PROJECT_ID:-}")"
+          BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+          COMPETITOR_BRAND_ID_CLEAN="$(compact "${COMPETITOR_BRAND_ID:-}")"
+          DATE_FROM_VALUE="${DATE_FROM:-}"
+          DATE_TO_VALUE="${DATE_TO:-}"
+          RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+          QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+          LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+          AGGREGATE_VALUE="${AGGREGATE:-}"
+          APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+          AGGREGATE_APPROVAL_REF_VALUE="${AGGREGATE_APPROVAL_REF:-}"
+
+          case "$MODE_VALUE" in
+            dry_run|apply) ;;
+            *) fail "mode must be dry_run or apply, got '$MODE_VALUE'" ;;
+          esac
+          case "$AGGREGATE_VALUE" in
+            true|false) ;;
+            *) fail "aggregate must be true or false, got '$AGGREGATE_VALUE'" ;;
+          esac
+
+          [[ "$PROJECT_ID_VALUE" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+            || fail "project_id must be UUID-shaped"
+          require_positive_int brand_id "$BRAND_ID_CLEAN"
+          require_positive_int limit "$LIMIT_CLEAN"
+          [ "$LIMIT_CLEAN" -le 75 ] || fail "limit must be <= 75"
+          require_optional_int_csv competitor_brand_id "$COMPETITOR_BRAND_ID_CLEAN"
+          require_optional_int_csv response_ids "$RESPONSE_IDS_CLEAN"
+          require_optional_int_csv query_ids "$QUERY_IDS_CLEAN"
+          require_optional_issue_760_ref approval_ref "$APPROVAL_REF_VALUE"
+          require_optional_issue_760_ref aggregate_approval_ref "$AGGREGATE_APPROVAL_REF_VALUE"
+
+          if [ -z "$RESPONSE_IDS_CLEAN" ] && [ -z "$QUERY_IDS_CLEAN" ]; then
+            [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD when response_ids/query_ids are empty"
+            [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD when response_ids/query_ids are empty"
+          else
+            [ -z "$DATE_FROM_VALUE" ] || [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+            [ -z "$DATE_TO_VALUE" ] || [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+          fi
+          if [ -n "$DATE_FROM_VALUE" ] && [ -n "$DATE_TO_VALUE" ]; then
+            [[ "$DATE_FROM_VALUE" < "$DATE_TO_VALUE" || "$DATE_FROM_VALUE" == "$DATE_TO_VALUE" ]] || fail "date_from must be on or before date_to"
+          fi
+
+          if [ "$MODE_VALUE" = "apply" ]; then
+            [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+            [ -n "$RESPONSE_IDS_CLEAN" ] || [ -n "$QUERY_IDS_CLEAN" ] || fail "apply mode requires explicit response_ids or query_ids"
+          fi
+          if [ "$MODE_VALUE" = "apply" ] && [ "$AGGREGATE_VALUE" = "true" ]; then
+            [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "apply+aggregate requires date_from for explicit aggregate date scope"
+            [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "apply+aggregate requires date_to for explicit aggregate date scope"
+            if [ -z "$AGGREGATE_APPROVAL_REF_VALUE" ]; then
+              echo "aggregate_approval_ref is empty; approval_ref will be reused and must approve aggregate recompute for selected dates."
+            fi
+          fi
+
+      - name: Execute #760 follow-up on deployed worker
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          MODE: ${{ inputs.mode }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          BRAND_ID: ${{ inputs.brand_id }}
+          COMPETITOR_BRAND_ID: ${{ inputs.competitor_brand_id }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          RESPONSE_IDS: ${{ inputs.response_ids }}
+          QUERY_IDS: ${{ inputs.query_ids }}
+          LIMIT: ${{ inputs.limit }}
+          AGGREGATE: ${{ inputs.aggregate }}
+          APPROVAL_REF: ${{ inputs.approval_ref }}
+          AGGREGATE_APPROVAL_REF: ${{ inputs.aggregate_approval_ref }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+          GH_SHA: ${{ github.sha }}
+          GH_ACTOR: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MODE,PROJECT_ID,BRAND_ID,COMPETITOR_BRAND_ID,DATE_FROM,DATE_TO,RESPONSE_IDS,QUERY_IDS,LIMIT,AGGREGATE,APPROVAL_REF,AGGREGATE_APPROVAL_REF,GH_REPOSITORY,GH_RUN_ID,GH_RUN_NUMBER,GH_SHA,GH_ACTOR
+          command_timeout: 45m
+          script: |
+            bash <<'RUNBOOK'
+            set -Eeuo pipefail
+
+            cd /opt/genpano
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            compact() {
+              printf '%s' "$1" | tr -d '[:space:]'
+            }
+
+            require_positive_int() {
+              local name="$1"
+              local value="$2"
+              [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a positive integer, got '$value'"
+              [ "$value" -ge 1 ] || fail "$name must be >= 1"
+            }
+
+            require_optional_int_csv() {
+              local name="$1"
+              local value
+              value="$(compact "$2")"
+              [ -z "$value" ] && return 0
+              [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "$name must be comma-separated positive integers"
+            }
+
+            require_optional_issue_760_ref() {
+              local name="$1"
+              local value="$2"
+              [ -z "$value" ] && return 0
+              [[ "$value" =~ ^https://github\.com/jotamotk/trash_test/issues/760#issuecomment-[0-9]+$ ]] \
+                || fail "$name must be the exact #760 issue comment URL"
+            }
+
+            MODE_VALUE="${MODE:-}"
+            PROJECT_ID_VALUE="$(compact "${PROJECT_ID:-}")"
+            BRAND_ID_CLEAN="$(compact "${BRAND_ID:-}")"
+            COMPETITOR_BRAND_ID_CLEAN="$(compact "${COMPETITOR_BRAND_ID:-}")"
+            DATE_FROM_VALUE="${DATE_FROM:-}"
+            DATE_TO_VALUE="${DATE_TO:-}"
+            RESPONSE_IDS_CLEAN="$(compact "${RESPONSE_IDS:-}")"
+            QUERY_IDS_CLEAN="$(compact "${QUERY_IDS:-}")"
+            LIMIT_CLEAN="$(compact "${LIMIT:-}")"
+            AGGREGATE_VALUE="${AGGREGATE:-}"
+            APPROVAL_REF_VALUE="${APPROVAL_REF:-}"
+            AGGREGATE_APPROVAL_REF_VALUE="${AGGREGATE_APPROVAL_REF:-}"
+
+            case "$MODE_VALUE" in
+              dry_run|apply) ;;
+              *) fail "mode must be dry_run or apply, got '$MODE_VALUE'" ;;
+            esac
+            case "$AGGREGATE_VALUE" in
+              true|false) ;;
+              *) fail "aggregate must be true or false, got '$AGGREGATE_VALUE'" ;;
+            esac
+
+            [[ "$PROJECT_ID_VALUE" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+              || fail "project_id must be UUID-shaped"
+            require_positive_int brand_id "$BRAND_ID_CLEAN"
+            require_positive_int limit "$LIMIT_CLEAN"
+            [ "$LIMIT_CLEAN" -le 75 ] || fail "limit must be <= 75"
+            require_optional_int_csv competitor_brand_id "$COMPETITOR_BRAND_ID_CLEAN"
+            require_optional_int_csv response_ids "$RESPONSE_IDS_CLEAN"
+            require_optional_int_csv query_ids "$QUERY_IDS_CLEAN"
+            require_optional_issue_760_ref approval_ref "$APPROVAL_REF_VALUE"
+            require_optional_issue_760_ref aggregate_approval_ref "$AGGREGATE_APPROVAL_REF_VALUE"
+
+            if [ -z "$RESPONSE_IDS_CLEAN" ] && [ -z "$QUERY_IDS_CLEAN" ]; then
+              [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD when response_ids/query_ids are empty"
+              [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD when response_ids/query_ids are empty"
+            else
+              [ -z "$DATE_FROM_VALUE" ] || [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_from must be YYYY-MM-DD"
+              [ -z "$DATE_TO_VALUE" ] || [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "date_to must be YYYY-MM-DD"
+            fi
+            if [ -n "$DATE_FROM_VALUE" ] && [ -n "$DATE_TO_VALUE" ]; then
+              [[ "$DATE_FROM_VALUE" < "$DATE_TO_VALUE" || "$DATE_FROM_VALUE" == "$DATE_TO_VALUE" ]] || fail "date_from must be on or before date_to"
+            fi
+
+            if [ "$MODE_VALUE" = "apply" ]; then
+              [ -n "$APPROVAL_REF_VALUE" ] || fail "apply mode requires approval_ref"
+              [ -n "$RESPONSE_IDS_CLEAN" ] || [ -n "$QUERY_IDS_CLEAN" ] || fail "apply mode requires explicit response_ids or query_ids"
+            fi
+            if [ "$MODE_VALUE" = "apply" ] && [ "$AGGREGATE_VALUE" = "true" ]; then
+              [[ "$DATE_FROM_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "apply+aggregate requires date_from for explicit aggregate date scope"
+              [[ "$DATE_TO_VALUE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "apply+aggregate requires date_to for explicit aggregate date scope"
+              if [ -z "$AGGREGATE_APPROVAL_REF_VALUE" ]; then
+                echo "aggregate_approval_ref is empty; approval_ref will be reused and must approve aggregate recompute for selected dates."
+              fi
+            fi
+
+            cat <<AUDIT
+            === BestCoffer Citation GEO Follow-up Audit Header ===
+            repository=${GH_REPOSITORY}
+            run=https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}
+            run_number=${GH_RUN_NUMBER}
+            actor=${GH_ACTOR}
+            workflow_sha=${GH_SHA}
+            server_workdir=/opt/genpano
+            module=geo_tracker.tasks.bestcoffer_citation_geo_followup
+            mode=${MODE_VALUE}
+            scope=project_id=${PROJECT_ID_VALUE};brand_id=${BRAND_ID_CLEAN};competitor_brand_id=${COMPETITOR_BRAND_ID_CLEAN:-<empty>};date_from=${DATE_FROM_VALUE:-<empty>};date_to=${DATE_TO_VALUE:-<empty>};response_ids=${RESPONSE_IDS_CLEAN:-<empty>};query_ids=${QUERY_IDS_CLEAN:-<empty>};limit=${LIMIT_CLEAN};aggregate=${AGGREGATE_VALUE}
+            approval_ref=${APPROVAL_REF_VALUE:-<empty>}
+            aggregate_approval_ref=${AGGREGATE_APPROVAL_REF_VALUE:-<reuse approval_ref>}
+            no_broad_scraper_expansion=true
+            no_scraper_enqueue=true
+            note=This workflow invokes only geo_tracker.tasks.bestcoffer_citation_geo_followup inside the deployed worker container. It does not call the #686 backfill module and does not enqueue or expand scraper collection.
+            AUDIT
+
+            echo "=== Docker compose status ==="
+            docker compose ps
+
+            run_in_container() {
+              local service="$1"
+              shift
+              local cid
+              cid="$(docker compose ps -q "$service" | head -n 1 || true)"
+              if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || echo false)" = "true" ]; then
+                docker compose exec -T "$service" "$@" </dev/null
+              else
+                echo "Service '$service' is not running; using deployed image via docker compose run --rm -T." >&2
+                docker compose run --rm -T "$service" "$@" </dev/null
+              fi
+            }
+
+            args=(
+              -m geo_tracker.tasks.bestcoffer_citation_geo_followup
+              --project-id "$PROJECT_ID_VALUE"
+              --brand-id "$BRAND_ID_CLEAN"
+              --limit "$LIMIT_CLEAN"
+            )
+            if [ -n "$COMPETITOR_BRAND_ID_CLEAN" ]; then
+              IFS=',' read -r -a competitor_ids <<< "$COMPETITOR_BRAND_ID_CLEAN"
+              for competitor_id in "${competitor_ids[@]}"; do
+                args+=(--competitor-brand-id "$competitor_id")
+              done
+            fi
+            if [ -n "$DATE_FROM_VALUE" ]; then
+              args+=(--from "$DATE_FROM_VALUE")
+            fi
+            if [ -n "$DATE_TO_VALUE" ]; then
+              args+=(--to "$DATE_TO_VALUE")
+            fi
+            if [ -n "$RESPONSE_IDS_CLEAN" ]; then
+              args+=(--response-ids "$RESPONSE_IDS_CLEAN")
+            fi
+            if [ -n "$QUERY_IDS_CLEAN" ]; then
+              args+=(--query-ids "$QUERY_IDS_CLEAN")
+            fi
+            if [ "$MODE_VALUE" = "apply" ]; then
+              args+=(--apply --approval-ref "$APPROVAL_REF_VALUE")
+              if [ "$AGGREGATE_VALUE" = "true" ]; then
+                args+=(--aggregate)
+                if [ -n "$AGGREGATE_APPROVAL_REF_VALUE" ]; then
+                  args+=(--aggregate-approval-ref "$AGGREGATE_APPROVAL_REF_VALUE")
+                fi
+              fi
+            fi
+
+            echo "=== BestCoffer citation/GEO follow-up report ==="
+            run_in_container worker python "${args[@]}"
+            RUNBOOK
