@@ -146,6 +146,20 @@ function trustDisplayLabel(trustState: MetricTrustState, compact = false) {
   return compact ? 'Limited proof' : 'Limited evidence'
 }
 
+function hasCitationProofLimitation(trustState: MetricTrustState | null | undefined) {
+  return Boolean(
+    trustState?.reasonLabels.some((label) => {
+      const normalized = label.toLowerCase()
+      return (
+        normalized.includes('citation') &&
+        (normalized.includes('partial') ||
+          normalized.includes('unresolved') ||
+          normalized.includes('attribution'))
+      )
+    }),
+  )
+}
+
 function trustBusinessSummary(trustState: MetricTrustState) {
   if (
     trustHasReason(trustState, 'Coverage incomplete') ||
@@ -153,7 +167,7 @@ function trustBusinessSummary(trustState: MetricTrustState) {
   ) {
     return 'Some eligible answers are still pending analysis; available proof is shown below.'
   }
-  if (trustHasReason(trustState, 'Citation attribution unresolved')) {
+  if (hasCitationProofLimitation(trustState)) {
     return 'Citation domains are available while brand attribution is still being verified.'
   }
   if (trustHasReason(trustState, 'Sentiment quote missing')) {
@@ -485,7 +499,7 @@ function selectedScopeLabel(
   const readableBrand = textCandidate(brandLabel)
   if (readableBrand) parts.push(readableBrand)
   else if (filters.brand_id != null && filters.brand_id !== '') {
-    parts.push(`Selected brand ID ${filters.brand_id}`)
+    parts.push('Brand context pending')
   }
   if (filters.from || filters.to) {
     parts.push(`${filters.from || '-'} to ${filters.to || '-'}`)
@@ -1639,7 +1653,7 @@ function ResponseAttemptsModal({
   })
   const scopeLabel = selectedScopeLabel(detailContract, selectedBrandLabel)
   const citationAttributionPending =
-    citations.length > 0 && trustHasReason(analyzerFactsTrust, 'Citation attribution unresolved')
+    citations.length > 0 && hasCitationProofLimitation(analyzerFactsTrust)
 
   return (
     <div
