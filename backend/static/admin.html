@@ -6476,9 +6476,9 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         x-text="batchTriggering ? '重试中…' : ('批量重试 Query ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
                 <button data-testid="attempt-analyzer-batch-button"
                         class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-                        :disabled="filteredAttempts.length === 0"
-                        @click="openAttemptAnalyzerBatch(selectedAttemptCount ? 'selected' : 'current')"
-                        x-text="selectedAttemptCount ? ('批量分析 (' + selectedAttemptCount + ')') : '分析当前页'"></button>
+                        :disabled="(attemptsTotal || filteredAttempts.length) === 0"
+                        @click="openAttemptAnalyzerBatch(selectedAttemptCount ? 'selected' : 'filter')"
+                        x-text="selectedAttemptCount ? ('批量分析已选 (' + selectedAttemptCount + ')') : '分析当前筛选'"></button>
               </div>
               <div data-testid="attempt-analyzer-last-run"
                    x-show="attemptAnalyzerLastRun"
@@ -9076,15 +9076,28 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
     </div>
     <div class="p-5 space-y-4" x-show="attemptAnalyzerBatchPreview">
       <div class="flex items-center gap-2">
-        <button class="seg-tab"
+        <button data-testid="attempt-analyzer-batch-scope-selected"
+                class="seg-tab"
                 :class="{active: attemptAnalyzerBatchScope==='selected'}"
                 :disabled="selectedAttemptCount === 0"
                 @click="setAttemptAnalyzerBatchScope('selected')">已选 Attempt</button>
-        <button class="seg-tab"
-                :class="{active: attemptAnalyzerBatchScope==='current'}"
-                @click="setAttemptAnalyzerBatchScope('current')">当前页</button>
+        <button data-testid="attempt-analyzer-batch-scope-filter"
+                class="seg-tab"
+                :class="{active: attemptAnalyzerBatchScope==='filter'}"
+                @click="setAttemptAnalyzerBatchScope('filter')">当前筛选</button>
       </div>
-      <div class="grid grid-cols-5 gap-2 text-[12px]">
+      <div data-testid="attempt-analyzer-batch-scope-note"
+           class="rounded-card border border-accent/15 bg-accent/5 px-3 py-2 text-[12px] text-ink-body"
+           x-text="attemptAnalyzerBatchScopeText(attemptAnalyzerBatchPreview)"></div>
+      <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 text-[12px]">
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">请求范围</div>
+          <div data-testid="attempt-analyzer-batch-requested" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.requestedCount || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">已加载明细</div>
+          <div data-testid="attempt-analyzer-batch-visible" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.visibleCount || 0"></div>
+        </div>
         <div class="rounded-card bg-surface-page border border-b-card p-3">
           <div class="text-ink-muted">可提交</div>
           <div data-testid="attempt-analyzer-batch-eligible" class="text-[20px] font-bold text-success tabular-nums" x-text="attemptAnalyzerBatchPreview?.eligible || 0"></div>
@@ -9102,13 +9115,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <div data-testid="attempt-analyzer-batch-skipped-failed" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedFailedAttempt || 0"></div>
         </div>
         <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">处理中/跳过</div>
+          <div data-testid="attempt-analyzer-batch-skipped-unavailable" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedUnavailable || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
           <div class="text-ink-muted">提交上限</div>
-          <div class="text-[20px] font-bold text-accent tabular-nums" x-text="attemptAnalyzerBatchPreview?.submittedCount + ' / ' + attemptAnalyzerBatchPreview?.cap"></div>
+          <div data-testid="attempt-analyzer-batch-submit-cap" class="text-[20px] font-bold text-accent tabular-nums" x-text="attemptAnalyzerBatchPreview?.submittedCount + ' / ' + attemptAnalyzerBatchPreview?.cap"></div>
         </div>
       </div>
       <div x-show="attemptAnalyzerBatchPreview?.capExceeded"
            class="rounded-card border border-warning/30 bg-warning/5 px-3 py-2 text-[12px] text-warning">
         本次预览超过单批上限，确认后只提交前 <span x-text="attemptAnalyzerBatchPreview?.cap"></span> 条。
+      </div>
+      <div data-testid="attempt-analyzer-batch-reasons"
+           class="rounded-card border border-b-card bg-surface-page px-3 py-2 text-[12px] text-ink-body">
+        <div class="font-semibold">跳过原因</div>
+        <div class="mt-1 text-ink-muted" x-text="attemptAnalyzerBatchReasonsText(attemptAnalyzerBatchPreview)"></div>
+        <div x-show="attemptAnalyzerBatchPreview?.filterSample"
+             class="mt-1 text-ink-muted">当前筛选覆盖多页；这里展示已加载明细，提交前按筛选范围预检。</div>
       </div>
       <div class="rounded-card border border-b-card bg-surface-page px-3 py-2 text-[12px] text-ink-body">
         <div class="font-semibold">确认后</div>
@@ -13395,18 +13419,68 @@ function adminApp() {
       this.toast('已加入分析队列 · ' + att.queryId);
     },
 
+    attemptAnalyzerNormalizeBatchScope(scope) {
+      return scope === 'selected' && this.selectedAttemptCount > 0 ? 'selected' : 'filter';
+    },
+
+    attemptAnalyzerFilterScopeCount(rows) {
+      const total = Number(this.attemptsTotal);
+      if (!Number.isFinite(total) || total < rows.length) return rows.length;
+      return Math.floor(total);
+    },
+
+    attemptAnalyzerFilterSummary() {
+      const filter = this.attemptFilter || {};
+      const parts = [];
+      if (filter.brandId) parts.push('品牌 ' + filter.brandId);
+      if (filter.topicId) parts.push('Topic ' + filter.topicId);
+      if (filter.promptId) parts.push('Prompt ' + filter.promptId);
+      if (filter.engine) parts.push('引擎 ' + filter.engine);
+      if (filter.status) parts.push('状态 ' + filter.status);
+      if (filter.queryId) parts.push('Query ' + filter.queryId);
+      if (filter.date) parts.push('日期 ' + filter.date);
+      return parts.length ? parts.join(' · ') : '全部 Attempts';
+    },
+
+    attemptAnalyzerBatchScopeText(preview) {
+      if (!preview) return '';
+      if (preview.scope === 'selected') {
+        return '已选 Attempt · 请求 ' + preview.requestedCount + ' 条 · 可提交 ' + preview.eligible + ' 条';
+      }
+      const sample = preview.filterSample ? (' · 已加载明细 ' + preview.visibleCount + ' 条') : '';
+      return '当前筛选 · ' + this.attemptAnalyzerFilterSummary() + ' · 请求 ' + preview.requestedCount + ' 条' + sample;
+    },
+
+    attemptAnalyzerBatchReasonsText(preview) {
+      if (!preview) return '';
+      const parts = [];
+      if (preview.skippedNoResponse) parts.push('无回答 ' + preview.skippedNoResponse + ' 条');
+      if (preview.skippedAlreadyAnalyzed) parts.push('已分析 ' + preview.skippedAlreadyAnalyzed + ' 条');
+      if (preview.skippedFailedAttempt) parts.push('失败 Attempt ' + preview.skippedFailedAttempt + ' 条');
+      if (preview.skippedUnavailable) parts.push('处理中/跳过/暂不可分析 ' + preview.skippedUnavailable + ' 条');
+      return parts.length ? parts.join(' · ') : '暂无跳过项';
+    },
+
     attemptAnalyzerRowsForScope(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       const rows = this.filteredAttempts || [];
-      if (scope !== 'selected') return rows;
+      if (normalizedScope !== 'selected') return rows;
       const selected = this.selectedAttemptIds || {};
       return rows.filter(att => att && selected[att.queryDbId]);
     },
 
     buildAttemptAnalyzerBatchPreview(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       const rows = this.attemptAnalyzerRowsForScope(scope);
+      const requestedCount = normalizedScope === 'selected'
+        ? rows.length
+        : this.attemptAnalyzerFilterScopeCount(rows);
       const preview = {
-        scope,
+        scope: normalizedScope,
         total: rows.length,
+        requestedCount,
+        visibleCount: rows.length,
+        filterSample: normalizedScope === 'filter' && requestedCount > rows.length,
         cap: this.attemptAnalyzerBatchCap,
         eligible: 0,
         skippedNoResponse: 0,
@@ -13436,20 +13510,21 @@ function adminApp() {
         preview.eligible += 1;
         preview.eligibleIds.push(att.queryDbId);
       });
-      preview.submittedCount = Math.min(preview.eligible, preview.cap);
-      preview.capExceeded = preview.eligible > preview.cap;
+      const submitBase = normalizedScope === 'filter' ? preview.requestedCount : preview.eligible;
+      preview.submittedCount = Math.min(submitBase, preview.cap);
+      preview.capExceeded = submitBase > preview.cap;
       return preview;
     },
 
     openAttemptAnalyzerBatch(scope = 'selected') {
-      const nextScope = scope === 'selected' && this.selectedAttemptCount === 0 ? 'current' : scope;
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       this.attemptAnalyzerBatchScope = nextScope;
       this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
       this.attemptAnalyzerBatchOpen = true;
     },
 
     setAttemptAnalyzerBatchScope(scope) {
-      const nextScope = scope === 'selected' && this.selectedAttemptCount === 0 ? 'current' : scope;
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
       this.attemptAnalyzerBatchScope = nextScope;
       this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
     },

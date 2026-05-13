@@ -64,6 +64,8 @@ const attemptRows = [
   },
 ];
 
+const FILTER_SCOPE_TOTAL = 42;
+
 const routeAttemptsApis = async (page: Page) => {
   await page.route(/.*\/(?:api|admin\/api)(?:\/.*)?/, async route => {
     const request = route.request();
@@ -82,7 +84,7 @@ const routeAttemptsApis = async (page: Page) => {
     if (method === 'GET' && path.endsWith('/queries')) {
       await fulfillJson(route, {
         rows: attemptRows,
-        total: attemptRows.length,
+        total: FILTER_SCOPE_TOTAL,
         by_status: { done: 4, failed: 1 },
       });
       return;
@@ -140,11 +142,28 @@ test('Admin Attempts shows analyzer status, drawer action, and batch preview wit
   await page.getByTestId('attempt-select-77901').check();
   await page.getByTestId('attempt-select-77902').check();
   await page.getByTestId('attempt-select-77904').check();
+  await page.getByTestId('attempt-select-77905').check();
   await page.getByTestId('attempt-analyzer-batch-button').click();
   await expect(page.getByTestId('attempt-analyzer-batch-preview')).toBeVisible();
+  await expect(page.getByTestId('attempt-analyzer-batch-scope-selected')).toBeVisible();
+  await expect(page.getByTestId('attempt-analyzer-batch-scope-filter')).toBeVisible();
+  await expect(page.getByTestId('attempt-analyzer-batch-scope-note')).toContainText('已选');
+  await expect(page.getByTestId('attempt-analyzer-batch-requested')).toContainText('4');
   await expect(page.getByTestId('attempt-analyzer-batch-eligible')).toContainText('1');
   await expect(page.getByTestId('attempt-analyzer-batch-skipped-already')).toContainText('1');
   await expect(page.getByTestId('attempt-analyzer-batch-skipped-failed')).toContainText('1');
+  await expect(page.getByTestId('attempt-analyzer-batch-skipped-unavailable')).toContainText('1');
+  await expect(page.getByTestId('attempt-analyzer-batch-reasons')).toContainText('处理中');
+  await expect(page.getByTestId('attempt-analyzer-batch-submit-cap')).toContainText('1 / 25');
+
+  await page.getByTestId('attempt-analyzer-batch-scope-filter').click();
+  await expect(page.getByTestId('attempt-analyzer-batch-scope-note')).toContainText('当前筛选');
+  await expect(page.getByTestId('attempt-analyzer-batch-requested')).toContainText(String(FILTER_SCOPE_TOTAL));
+  await expect(page.getByTestId('attempt-analyzer-batch-visible')).toContainText(String(attemptRows.length));
+  await expect(page.getByTestId('attempt-analyzer-batch-submit-cap')).toContainText('25 / 25');
+
+  await page.getByTestId('attempt-analyzer-batch-scope-selected').click();
+  await expect(page.getByTestId('attempt-analyzer-batch-submit-cap')).toContainText('1 / 25');
 
   await page.getByTestId('attempt-analyzer-batch-confirm').click();
   await expect(page.getByTestId('attempt-analyzer-last-run')).toContainText('提交 1 条');
