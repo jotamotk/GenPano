@@ -52,6 +52,23 @@ def _normalize_brand_key(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().lower())
 
 
+def _clean_mention_text(value: str | None) -> str | None:
+    cleaned = re.sub(r"\s+", " ", (value or "").strip())
+    return cleaned or None
+
+
+def _mention_identity_key(
+    response_id: int,
+    brand_name: str,
+    product_name: str | None,
+) -> tuple[int, str, str]:
+    return (
+        int(response_id),
+        _normalize_brand_key(brand_name),
+        _normalize_brand_key(product_name),
+    )
+
+
 def _brand_terms(name: str | None, aliases: list[str] | None = None) -> list[str]:
     terms = [name] if name else []
     terms.extend(aliases or [])
@@ -327,6 +344,7 @@ async def analyze_single_response(
     intent: str,
 ) -> dict:
     """Run the 3-stage analysis pipeline on a single LLMResponse."""
+    response_id = int(response.id)
     detector = BrandDetector()
     llm_analyzer = LLMAnalyzer()
     citation_mapper = CitationMapper()
@@ -425,6 +443,107 @@ async def analyze_single_response(
         mention_facts: list[dict] = []
         raw_names_by_mention_id: dict[int, str] = {}
         drivers_by_mention_id: dict[int, list[dict]] = defaultdict(list)
+        mentions_by_key: dict[tuple[int, str, str], BrandMention] = {}
+        mention_facts_by_key: dict[tuple[int, str, str], dict] = {}
+
+        async def persist_mention(
+            *,
+            canonical_brand_id: int | None,
+            canonical_brand_name: str,
+            product_name: str | None,
+            is_target: bool,
+            position_type: str | None,
+            position_rank: int | None,
+            detail_level: str | None,
+            sentiment: str | None,
+            sentiment_score: float | None,
+            context_snippet: str | None,
+            mention_count: int | None,
+            raw_brand_name: str,
+            provenance: str,
+            confidence: float,
+            missing_inputs: list[str],
+        ) -> BrandMention:
+            brand_name_clean = (
+                _clean_mention_text(canonical_brand_name) or canonical_brand_name
+            )
+            product_name_clean = _clean_mention_text(product_name)
+            key = _mention_identity_key(response_id, brand_name_clean, product_name_clean)
+            safe_mention_count = max(int(mention_count or 1), 1)
+
+            existing = mentions_by_key.get(key)
+            if existing is not None:
+                existing.mention_count = max(existing.mention_count or 0, safe_mention_count)
+                existing.is_target = bool(existing.is_target or is_target)
+                if existing.position_rank is None or (
+                    position_rank is not None and position_rank < existing.position_rank
+                ):
+                    existing.position_rank = position_rank
+                if existing.position_type in (None, "mentioned_only") and position_type:
+                    existing.position_type = position_type
+                if existing.detail_level in (None, "passing") and detail_level:
+                    existing.detail_level = detail_level
+                if existing.sentiment_score is None and sentiment_score is not None:
+                    existing.sentiment = sentiment
+                    existing.sentiment_score = sentiment_score
+                if not existing.context_snippet and context_snippet:
+                    existing.context_snippet = context_snippet
+                if is_target and existing not in target_mentions:
+                    target_mentions.append(existing)
+                fact = mention_facts_by_key.get(key)
+                if fact is not None:
+                    fact["mention_count"] = existing.mention_count
+                    if not missing_inputs:
+                        fact["missing_inputs"] = []
+                    elif fact.get("missing_inputs"):
+                        fact["missing_inputs"] = sorted(
+                            set(fact["missing_inputs"]) | set(missing_inputs)
+                        )
+                return existing
+
+            mention = BrandMention(
+                response_id=response_id,
+                brand_id=canonical_brand_id,
+                brand_name=brand_name_clean,
+                product_name=product_name_clean,
+                is_target=is_target,
+                position_type=position_type,
+                position_rank=position_rank,
+                detail_level=detail_level,
+                sentiment=sentiment,
+                sentiment_score=sentiment_score,
+                context_snippet=context_snippet,
+                mention_count=safe_mention_count,
+            )
+            session.add(mention)
+            await session.flush()
+            raw_names_by_mention_id[mention.id] = raw_brand_name
+            all_mentions.append(mention)
+            mentions_by_key[key] = mention
+            if is_target:
+                target_mentions.append(mention)
+
+            fact = {
+                "mention_id": mention.id,
+                "response_id": response_id,
+                "query_id": response.query_id,
+                "prompt_id": prompt_id,
+                "topic_id": topic_id,
+                "brand_name": brand_name_clean,
+                "raw_brand_name": raw_brand_name,
+                "canonical_brand_id": canonical_brand_id,
+                "product_name": product_name_clean,
+                "provenance": provenance,
+                "confidence": confidence,
+                "position_type": mention.position_type,
+                "position_rank": mention.position_rank,
+                "mention_count": mention.mention_count,
+                "evidence_snippet": context_snippet,
+                "missing_inputs": missing_inputs,
+            }
+            mention_facts.append(fact)
+            mention_facts_by_key[key] = fact
+            return mention
 
         # First pass: match detected brands with LLM results
         for di, d in enumerate(detected):
@@ -467,10 +586,9 @@ async def analyze_single_response(
                 provenance = "detector_llm" if llm_brand else "rule_detector"
                 raw_brand_name = llm_brand.brand_name if llm_brand else d.brand_name
 
-                mention = BrandMention(
-                    response_id=response.id,
-                    brand_id=canonical_brand_id,
-                    brand_name=canonical_brand_name,
+                mention = await persist_mention(
+                    canonical_brand_id=canonical_brand_id,
+                    canonical_brand_name=canonical_brand_name,
                     product_name=product_name,
                     is_target=is_target,
                     position_type=normalize_position_type(
@@ -486,34 +604,11 @@ async def analyze_single_response(
                     sentiment_score=(llm_brand.sentiment_score if llm_brand else None),
                     context_snippet=context_snippet,
                     mention_count=d.mention_count,
+                    raw_brand_name=raw_brand_name,
+                    provenance=provenance,
+                    confidence=0.95 if llm_brand else 0.6,
+                    missing_inputs=[] if llm_brand else ["llm_brand_analysis"],
                 )
-                session.add(mention)
-                await session.flush()
-                raw_names_by_mention_id[mention.id] = raw_brand_name
-
-                total_mentions += d.mention_count
-                all_mentions.append(mention)
-                mention_facts.append({
-                    "mention_id": mention.id,
-                    "response_id": response.id,
-                    "query_id": response.query_id,
-                    "prompt_id": prompt_id,
-                    "topic_id": topic_id,
-                    "brand_name": canonical_brand_name,
-                    "raw_brand_name": raw_brand_name,
-                    "canonical_brand_id": canonical_brand_id,
-                    "product_name": product_name,
-                    "provenance": provenance,
-                    "confidence": 0.95 if llm_brand else 0.6,
-                    "position_type": mention.position_type,
-                    "position_rank": mention.position_rank,
-                    "mention_count": mention.mention_count,
-                    "evidence_snippet": context_snippet,
-                    "missing_inputs": [] if llm_brand else ["llm_brand_analysis"],
-                })
-
-                if is_target:
-                    target_mentions.append(mention)
 
                 # Create SentimentDriver records for each product entry
                 if llm_brand:
@@ -558,10 +653,9 @@ async def analyze_single_response(
                 _brand_terms(llm_brand.brand_name) + _brand_terms(llm_brand.product_name),
             ) or 1
 
-            mention = BrandMention(
-                response_id=response.id,
-                brand_id=canonical_brand_id,
-                brand_name=canonical_brand_name,
+            mention = await persist_mention(
+                canonical_brand_id=canonical_brand_id,
+                canonical_brand_name=canonical_brand_name,
                 product_name=llm_brand.product_name,
                 is_target=is_target,
                 position_type=normalize_position_type(llm_brand.position_type),
@@ -571,32 +665,11 @@ async def analyze_single_response(
                 sentiment_score=llm_brand.sentiment_score,
                 context_snippet=context_snippet,
                 mention_count=mention_count,
+                raw_brand_name=llm_brand.brand_name,
+                provenance="llm_extraction",
+                confidence=0.8,
+                missing_inputs=[],
             )
-            session.add(mention)
-            await session.flush()
-            raw_names_by_mention_id[mention.id] = llm_brand.brand_name
-            total_mentions += mention_count
-            all_mentions.append(mention)
-            mention_facts.append({
-                "mention_id": mention.id,
-                "response_id": response.id,
-                "query_id": response.query_id,
-                "prompt_id": prompt_id,
-                "topic_id": topic_id,
-                "brand_name": canonical_brand_name,
-                "raw_brand_name": llm_brand.brand_name,
-                "canonical_brand_id": canonical_brand_id,
-                "product_name": llm_brand.product_name,
-                "provenance": "llm_extraction",
-                "confidence": 0.8,
-                "position_type": mention.position_type,
-                "position_rank": mention.position_rank,
-                "mention_count": mention.mention_count,
-                "evidence_snippet": context_snippet,
-                "missing_inputs": [],
-            })
-            if is_target:
-                target_mentions.append(mention)
 
             for driver in llm_brand.sentiment_drivers:
                 driver_fact = {
@@ -617,6 +690,8 @@ async def analyze_single_response(
                     strength=driver.strength,
                     source_quote=driver.source_quote,
                 ))
+
+        total_mentions = sum(m.mention_count or 0 for m in all_mentions)
 
         # Create CitationSource records
         has_official = False
@@ -885,7 +960,7 @@ async def analyze_single_response(
         await session.commit()
 
         return {
-            "response_id": response.id,
+            "response_id": response_id,
             "status": "done",
             "geo_score": geo_score,
             "brands_found": len(all_mentions),
@@ -893,14 +968,18 @@ async def analyze_single_response(
         }
 
     except Exception as e:
-        logger.exception(f"Analysis failed for response {response.id}: {e}")
+        logger.exception(f"Analysis failed for response {response_id}: {e}")
         try:
             await session.rollback()
-            response.analysis_status = AnalysisStatus.FAILED.value
+            await session.execute(
+                update(LLMResponse)
+                .where(LLMResponse.id == response_id)
+                .values(analysis_status=AnalysisStatus.FAILED.value)
+            )
             await session.commit()
         except Exception:
-            logger.warning(f"Could not mark response {response.id} as failed")
-        return {"response_id": response.id, "status": "failed", "error": str(e)}
+            logger.warning(f"Could not mark response {response_id} as failed")
+        return {"response_id": response_id, "status": "failed", "error": str(e)}
 
 
 async def run_daily(date_str: str, brand_id: int | None = None) -> None:

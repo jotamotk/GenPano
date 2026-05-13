@@ -168,6 +168,61 @@ class CitationAliasLLMAnalyzer:
         )
 
 
+class DuplicateCanonicalLLMAnalyzer:
+    model = "fake-duplicate-canonical"
+
+    async def analyze(self, **_kwargs):
+        return SimpleNamespace(
+            brands=[
+                SimpleNamespace(
+                    brand_name="ONLYOFFICE",
+                    product_name="DocSpace",
+                    position_type="listed",
+                    position_rank=4,
+                    detail_level="brief",
+                    sentiment="positive",
+                    sentiment_score=0.6,
+                    sentiment_drivers=[
+                        SimpleNamespace(
+                            driver_text="low-cost collaboration",
+                            polarity="positive",
+                            category="pricing",
+                            strength=0.7,
+                            source_quote="ONLYOFFICE DocSpace is low cost.",
+                        )
+                    ],
+                    product_features=[],
+                ),
+                SimpleNamespace(
+                    brand_name="ONLYOFFICE ",
+                    product_name="DocSpace",
+                    position_type="listed",
+                    position_rank=4,
+                    detail_level="brief",
+                    sentiment="positive",
+                    sentiment_score=0.6,
+                    sentiment_drivers=[
+                        SimpleNamespace(
+                            driver_text="team editing",
+                            polarity="positive",
+                            category="product_feature",
+                            strength=0.6,
+                            source_quote="ONLYOFFICE DocSpace supports team editing.",
+                        )
+                    ],
+                    product_features=[],
+                ),
+            ],
+            dimension=SimpleNamespace(
+                industry="enterprise SaaS",
+                company="",
+                product="collaboration",
+                category="document workspace",
+            ),
+            raw_json={"source": "fake-duplicate-canonical"},
+        )
+
+
 async def _seed_response(
     session: AsyncSession,
     *,
@@ -239,6 +294,64 @@ async def _seed_response(
     session.add_all([query, response])
     await session.commit()
     return day, brand, response
+
+
+@pytest.mark.asyncio
+async def test_analyzer_deduplicates_llm_only_mentions_after_canonicalization(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _day, brand, response = await _seed_response(
+        session,
+        brand_id=24,
+        raw_text=(
+            "ONLYOFFICE DocSpace is low cost. "
+            "ONLYOFFICE DocSpace supports team editing."
+        ),
+        citations_json=[],
+    )
+    brand.name = "bestCoffer"
+    session.add(
+        Brand(
+            id=88,
+            name="ONLYOFFICE",
+            aliases=["ONLYOFFICE "],
+            industry="enterprise SaaS",
+        )
+    )
+    await session.commit()
+    monkeypatch.setattr(analyzer_cli, "LLMAnalyzer", DuplicateCanonicalLLMAnalyzer)
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        brand,
+        competitors=[],
+        intent="non_brand",
+    )
+
+    assert result["status"] == "done"
+    mentions = (
+        await session.execute(
+            select(BrandMention).where(
+                BrandMention.response_id == response.id,
+                BrandMention.brand_name == "ONLYOFFICE",
+                BrandMention.product_name == "DocSpace",
+            )
+        )
+    ).scalars().all()
+    assert len(mentions) == 1
+    assert mentions[0].mention_count == 4
+
+    drivers = (
+        await session.execute(
+            select(SentimentDriver).where(SentimentDriver.mention_id == mentions[0].id)
+        )
+    ).scalars().all()
+    assert {driver.driver_text for driver in drivers} == {
+        "low-cost collaboration",
+        "team editing",
+    }
 
 
 @pytest.mark.asyncio
