@@ -141,6 +141,7 @@ class V4CoverageRow:
     has_raw_analyzer_v3_package: bool
     raw_v4_package_valid: bool
     raw_v4_validation_errors: tuple[str, ...]
+    expected_fact_counts: dict[str, int]
     first_class_fact_counts: dict[str, int]
     invalid_reason: str | None
 
@@ -386,9 +387,13 @@ def _target_scope_invalid_reason(
     project_topic_ids: set[int],
 ) -> str | None:
     topic_id = int(topic.id) if topic and topic.id is not None else None
+    if topic and str(topic.status or "active").lower() == "archived":
+        return "outside_app_contract_target_scope"
     if project_topic_ids and topic_id not in project_topic_ids:
         return "outside_project_topic_scope"
-    allowed_brand_ids = set(scope.allowed_brand_ids())
+    allowed_brand_ids = (
+        set(scope.allowed_brand_ids()) if project_topic_ids else {int(scope.brand_id)}
+    )
     query_brand_id = int(query.brand_id) if query.brand_id is not None else None
     topic_brand_id = int(topic.brand_id) if topic and topic.brand_id is not None else None
     if query_brand_id in allowed_brand_ids or topic_brand_id in allowed_brand_ids:
@@ -523,7 +528,7 @@ async def collect_v4_coverage_rows(
         if project_topic_ids:
             conditions.append(Topic.id.in_(project_topic_ids))
         else:
-            allowed_brand_ids = list(scope.allowed_brand_ids())
+            allowed_brand_ids = [int(scope.brand_id)]
             conditions.append(
                 or_(
                     Query.brand_id.in_(allowed_brand_ids),
@@ -565,6 +570,12 @@ async def collect_v4_coverage_rows(
         raw_v4_package = _extract_raw_v4_package(raw)
         validation_errors: tuple[str, ...] = tuple()
         raw_v4_valid = False
+        expected_fact_counts = {
+            "response_entities": 0,
+            "response_relation_facts": 0,
+            "analysis_fact_links": 0,
+            "analyzer_quality_flags": 0,
+        }
         if raw_v4_package is not None:
             result = validate_analyzer_v4_package(
                 raw_v4_package,
@@ -574,6 +585,8 @@ async def collect_v4_coverage_rows(
             )
             raw_v4_valid = result.is_valid
             validation_errors = tuple(result.errors)
+            if raw_v4_valid:
+                expected_fact_counts = _expected_fact_counts(result.package)
 
         latest = latest_runs.get(int(response.id))
         latest_run_id = int(latest.id) if latest and latest.id is not None else None
@@ -609,6 +622,7 @@ async def collect_v4_coverage_rows(
                 has_raw_analyzer_v3_package=_has_v3_package(raw),
                 raw_v4_package_valid=raw_v4_valid,
                 raw_v4_validation_errors=validation_errors,
+                expected_fact_counts=expected_fact_counts,
                 first_class_fact_counts=fact_counts.get(
                     latest_run_id,
                     {
@@ -652,6 +666,7 @@ def _row_to_dict(row: V4CoverageRow) -> dict[str, Any]:
             "raw_v4_package_valid": row.raw_v4_package_valid,
             "raw_v4_validation_errors": list(row.raw_v4_validation_errors),
         },
+        "expected_fact_counts": dict(row.expected_fact_counts),
         "first_class_fact_counts": dict(row.first_class_fact_counts),
         "invalid_reason": row.invalid_reason,
     }
@@ -792,10 +807,14 @@ async def _migrate_raw_v4_package(
 def _plan_for_row(row: V4CoverageRow) -> str:
     if row.invalid_reason:
         return "skip_invalid"
+    if row.repair_bucket == "latest_v4_analyzed":
+        if row.raw_v4_package_valid:
+            if _facts_satisfy_package(row.first_class_fact_counts, row.expected_fact_counts):
+                return "already_satisfied"
+        elif any(row.first_class_fact_counts.values()):
+            return "already_satisfied"
     if row.has_raw_analyzer_v4_package and row.raw_v4_package_valid:
         return "migrate_raw_v4_package"
-    if row.repair_bucket == "latest_v4_analyzed" and any(row.first_class_fact_counts.values()):
-        return "already_satisfied"
     return "reanalysis_required"
 
 

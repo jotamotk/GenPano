@@ -442,6 +442,7 @@ async def test_apply_migrates_raw_v4_package_idempotently_and_requires_trusted_a
     assert first["write_performed"] is True
     assert first["repair_plan"]["migrated_response_ids"] == [82710]
     assert second["write_performed"] is False
+    assert second["repair_plan"]["actions_by_response"][82710]["action"] == "already_satisfied"
     assert second["repair_plan"]["already_satisfied_response_ids"] == [82710]
     assert await session.scalar(select(func.count(AnalyzerRun.id))) == 4
     assert await session.scalar(select(func.count(ResponseEntity.id))) == 3
@@ -648,6 +649,134 @@ async def test_empty_pins_exact_ids_outside_brand_scope_are_blocked(
             mode="apply",
             approval_ref="https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000006",
             approval_comment_fetcher=fetcher,
+        )
+
+
+@pytest.mark.asyncio
+async def test_empty_pins_competitor_only_ids_are_not_app_contract_targets(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session, pin_topic=False)
+    day = datetime(2026, 5, 12, 11, 0)
+    session.add_all(
+        [
+            Brand(id=2, name="Competitor", aliases=[], industry="coffee"),
+            Topic(id=82780, brand_id=2, text="Competitor-only topic"),
+            Prompt(id=82781, topic_id=82780, text="competitor prompt", intent="non_brand"),
+            Query(
+                id=82782,
+                prompt_id=82781,
+                brand_id=2,
+                query_text="competitor response",
+                target_llm="chatgpt",
+                status=QueryStatus.DONE.value,
+                created_at=day,
+            ),
+            LLMResponse(
+                id=82715,
+                query_id=82782,
+                raw_text="Competitor answer without BestCoffer target scope.",
+                citations_json=[],
+                collected_at=day,
+                analysis_status=AnalysisStatus.DONE.value,
+            ),
+            ResponseAnalysis(
+                id=82725,
+                response_id=82715,
+                raw_analysis_json=_valid_v4_package(82715, 82782),
+            ),
+        ]
+    )
+    await session.commit()
+
+    export = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            date_from="2026-05-06",
+            date_to="2026-05-13",
+        ),
+        mode="export",
+    )
+    assert 82715 not in export["selected_response_ids"]
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82715\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                competitor_brand_ids=(2,),
+                response_ids=(82715,),
+            ),
+            mode="dry_run",
+        )
+
+
+@pytest.mark.asyncio
+async def test_empty_pins_archived_topic_ids_are_not_app_contract_targets(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session, pin_topic=False)
+    day = datetime(2026, 5, 12, 11, 0)
+    session.add_all(
+        [
+            Topic(
+                id=82785,
+                brand_id=24,
+                text="Archived BestCoffer topic",
+                status="archived",
+            ),
+            Prompt(id=82786, topic_id=82785, text="archived prompt", intent="non_brand"),
+            Query(
+                id=82787,
+                prompt_id=82786,
+                brand_id=24,
+                query_text="archived response",
+                target_llm="chatgpt",
+                status=QueryStatus.DONE.value,
+                created_at=day,
+            ),
+            LLMResponse(
+                id=82716,
+                query_id=82787,
+                raw_text="Archived BestCoffer topic answer.",
+                citations_json=[],
+                collected_at=day,
+                analysis_status=AnalysisStatus.DONE.value,
+            ),
+            ResponseAnalysis(
+                id=82726,
+                response_id=82716,
+                raw_analysis_json=_valid_v4_package(82716, 82787),
+            ),
+        ]
+    )
+    await session.commit()
+
+    export = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            date_from="2026-05-06",
+            date_to="2026-05-13",
+        ),
+        mode="export",
+    )
+    assert 82716 not in export["selected_response_ids"]
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82716\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                response_ids=(82716,),
+            ),
+            mode="dry_run",
         )
 
 
