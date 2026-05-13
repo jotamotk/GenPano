@@ -134,6 +134,41 @@ def test_server_diagnostics_has_readonly_hero_sms_runtime_check() -> None:
     assert "HERO_SMS_API_KEY=" not in run_script
 
 
+def test_server_diagnostics_has_readonly_doubao_sms_forensics_mode() -> None:
+    workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    workflow_dispatch = workflow.get("on", workflow.get(True))["workflow_dispatch"]
+    inputs = workflow_dispatch["inputs"]
+    steps = workflow["jobs"]["diagnostics"]["steps"]
+    diagnostic_step = next(step for step in steps if step.get("name") == "Run Doubao SMS forensics")
+    run_script = diagnostic_step["run"]
+
+    assert "doubao_sms_forensics" in workflow_text
+    assert "doubao_sms_since_utc" in inputs
+    assert "doubao_sms_until_utc" in inputs
+    assert "doubao_sms_phone_suffixes" in inputs
+    assert "docker compose exec -T postgres psql" in run_script
+    assert "llm_accounts" in run_script
+    assert "cookies_json IS NOT NULL" in run_script
+    assert "phone_suffix" in run_script
+    assert "sanitize_herosms_stream" in run_script
+    assert "docker compose logs --since" in run_script
+
+    forbidden_write_or_sms_triggers = [
+        "UPDATE ",
+        "DELETE ",
+        "INSERT ",
+        "TRUNCATE ",
+        "trigger_sms_register",
+        "sms_register",
+        "auto_login.delay",
+        "getKeywordSms",
+        "reserve_number(",
+    ]
+    for forbidden in forbidden_write_or_sms_triggers:
+        assert forbidden not in run_script
+
+
 def test_server_diagnostics_sanitizes_captured_worker_logs() -> None:
     workflow_text = SERVER_DIAGNOSTICS_WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
