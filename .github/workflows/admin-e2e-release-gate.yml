@@ -34,19 +34,22 @@ jobs:
   staging-admin-e2e:
     name: Staging Admin E2E
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 90
     env:
       ADMIN_E2E_STAGING: "1"
       ADMIN_E2E_CORE_SPEC: tests/e2e/admin-staging-smoke.spec.ts
       ADMIN_E2E_BUSINESS_FLOW_SPEC: tests/e2e/admin-real-business-flow.spec.ts
       ADMIN_E2E_TRACKER_SPEC: tests/e2e/admin-tracker-smoke.spec.ts
       ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC: tests/e2e/admin-tracker-controlled-retry.spec.ts
+      ADMIN_E2E_CHATGPT_SMS_FULL_SPEC: tests/e2e/admin-chatgpt-sms-full-live-verify.spec.ts
       ADMIN_E2E_INPUT_REAL_GENERATION: ${{ inputs.real_generation }}
       ADMIN_E2E_REAL_BUSINESS_FLOW: ${{ inputs.real_generation && '1' || '0' }}
       ADMIN_E2E_BRAND_ID: ${{ inputs.brand_id }}
       ADMIN_E2E_TRACKER_RETRY_QUERY_ID: ${{ inputs.tracker_retry_query_id }}
       ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE: ${{ inputs.tracker_retry_expected_engine }}
       ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS: ${{ inputs.tracker_retry_poll_seconds }}
+      ADMIN_E2E_CHATGPT_SMS_FULL_VERIFY: ${{ inputs.tracker_retry_expected_engine == 'chatgpt_sms_full_cookie_verify' && '1' || '0' }}
+      ADMIN_E2E_CHATGPT_SMS_POLL_SECONDS: ${{ inputs.tracker_retry_poll_seconds }}
       E2E_RUN_ID: staging-${{ github.run_id }}-${{ github.run_attempt }}
       PLAYWRIGHT_BASE_URL: ${{ inputs.base_url }}
     defaults:
@@ -87,6 +90,8 @@ jobs:
           tracker_note="\`${ADMIN_E2E_TRACKER_SPEC}\` is not present in this checkout; #521 owns that spec."
           controlled_retry_state="skipped by default"
           controlled_retry_note="No \`tracker_retry_query_id\` input was provided; no Tracker retry mutation will run. No batch retry, cleanup, or manual dispatch will run."
+          chatgpt_sms_state="skipped by default"
+          chatgpt_sms_note="Temporary #733 full-cookie verification sentinel was not requested."
           business_state="included but expected to skip"
           business_note="\`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; no Topic -> Prompt Matrix -> Query Pool -> Extraction mutation will run."
           mutation_mode="read-only core smoke"
@@ -115,6 +120,29 @@ jobs:
               controlled_retry_note="${input_error}"
             else
               echo "ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED=1" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+          echo "ADMIN_E2E_CHATGPT_SMS_FULL_INCLUDED=0" >> "${GITHUB_ENV}"
+          if [[ "${ADMIN_E2E_CHATGPT_SMS_FULL_VERIFY}" == "1" ]]; then
+            mutation_mode="controlled ChatGPT SMS registration with cookie persistence check"
+            chatgpt_sms_state="included and expected to execute"
+            chatgpt_sms_note="Sentinel \`tracker_retry_expected_engine=chatgpt_sms_full_cookie_verify\`; workflow first checks Redis cooldown read-only, then runs exactly one authenticated Admin POST \`/api/sms_register\` with \`platform=chatgpt\`, polls task status, and verifies DB cookie persistence without printing secrets."
+            if [[ ! -f "${ADMIN_E2E_CHATGPT_SMS_FULL_SPEC}" ]]; then
+              input_error="\`${ADMIN_E2E_CHATGPT_SMS_FULL_SPEC}\` is not present in this checkout."
+              chatgpt_sms_state="blocked before Playwright"
+              chatgpt_sms_note="${input_error}"
+            else
+              echo "ADMIN_E2E_CHATGPT_SMS_FULL_INCLUDED=1" >> "${GITHUB_ENV}"
+            fi
+            if [[ -n "${tracker_retry_query_id}" || "${real_generation}" == "true" ]]; then
+              input_error="chatgpt_sms_full_cookie_verify cannot be combined with tracker_retry_query_id or real_generation=true."
+              controlled_retry_state="blocked before Playwright"
+              business_state="blocked before Playwright"
+              chatgpt_sms_state="blocked before Playwright"
+              controlled_retry_note="${input_error}"
+              business_note="${input_error}"
+              chatgpt_sms_note="${input_error}"
             fi
           fi
 
@@ -158,12 +186,72 @@ jobs:
             echo "| Controlled business flow | \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` | ${business_state} | ${business_note} |"
             echo "| Tracker smoke | \`${ADMIN_E2E_TRACKER_SPEC}\` | ${tracker_state} | ${tracker_note} |"
             echo "| Controlled Tracker retry | \`${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}\` | ${controlled_retry_state} | ${controlled_retry_note} |"
+            echo "| Controlled ChatGPT SMS full-cookie verification | \`${ADMIN_E2E_CHATGPT_SMS_FULL_SPEC}\` | ${chatgpt_sms_state} | ${chatgpt_sms_note} |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if [[ -n "${input_error}" ]]; then
             echo "${input_error}" >&2
             exit 1
           fi
+
+      - name: Read-only ChatGPT SMS cooldown preflight
+        if: ${{ env.ADMIN_E2E_CHATGPT_SMS_FULL_VERIFY == '1' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          MAX_COOLDOWN_WAIT_SECONDS: "2400"
+          COOLDOWN_BUFFER_SECONDS: "15"
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" \
+            "MAX_COOLDOWN_WAIT_SECONDS='${MAX_COOLDOWN_WAIT_SECONDS}' COOLDOWN_BUFFER_SECONDS='${COOLDOWN_BUFFER_SECONDS}' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          redis_ttl() {
+            docker compose exec -T redis redis-cli -n 0 TTL "$1" | tr -d '\r'
+          }
+
+          cooldown_key="genpano:autologin:cooldown:chatgpt"
+          inflight_key="genpano:autologin:newaccount:chatgpt"
+          ttl="$(redis_ttl "${cooldown_key}")"
+          inflight_ttl="$(redis_ttl "${inflight_key}")"
+          echo "CHATGPT_SMS_COOLDOWN_PREFLIGHT ttl_seconds=${ttl} inflight_ttl_seconds=${inflight_ttl} read_only=true purchase_attempted=false"
+
+          if [[ "${ttl}" =~ ^[0-9]+$ ]] && [ "${ttl}" -gt 0 ]; then
+            if [ "${ttl}" -gt "${MAX_COOLDOWN_WAIT_SECONDS}" ]; then
+              echo "CHATGPT_SMS_COOLDOWN_BLOCKED ttl_seconds=${ttl} max_wait_seconds=${MAX_COOLDOWN_WAIT_SECONDS}"
+              exit 1
+            fi
+            wait_seconds=$((ttl + COOLDOWN_BUFFER_SECONDS))
+            echo "CHATGPT_SMS_COOLDOWN_WAIT seconds=${wait_seconds}"
+            sleep "${wait_seconds}"
+          fi
+
+          ttl_after="$(redis_ttl "${cooldown_key}")"
+          inflight_after="$(redis_ttl "${inflight_key}")"
+          echo "CHATGPT_SMS_COOLDOWN_AFTER_WAIT ttl_seconds=${ttl_after} inflight_ttl_seconds=${inflight_after} read_only=true purchase_attempted=false"
+          if [[ "${ttl_after}" =~ ^[0-9]+$ ]] && [ "${ttl_after}" -gt 0 ]; then
+            echo "CHATGPT_SMS_COOLDOWN_STILL_ACTIVE ttl_seconds=${ttl_after}"
+            exit 1
+          fi
+          if [[ "${inflight_after}" =~ ^[0-9]+$ ]] && [ "${inflight_after}" -gt 0 ]; then
+            echo "CHATGPT_SMS_INFLIGHT_STILL_ACTIVE ttl_seconds=${inflight_after}"
+            exit 1
+          fi
+          REMOTE
+
+          started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "ADMIN_E2E_CHATGPT_SMS_STARTED_AT=${started_at}" >> "${GITHUB_ENV}"
+          echo "CHATGPT_SMS_STARTED_AT=${started_at}"
 
       - name: Staging Admin release gate
         shell: bash
@@ -173,21 +261,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          specs=(
-            "${ADMIN_E2E_CORE_SPEC}"
-            "${ADMIN_E2E_BUSINESS_FLOW_SPEC}"
-          )
+          if [[ "${ADMIN_E2E_CHATGPT_SMS_FULL_INCLUDED:-0}" == "1" ]]; then
+            echo "MUTATION ENABLED: controlled ChatGPT SMS registration will dispatch exactly one authenticated Admin POST /api/sms_register with platform=chatgpt; poll seconds=${ADMIN_E2E_CHATGPT_SMS_POLL_SECONDS:-1800}; no cooldown reset or account-state repair will run."
+            specs=("${ADMIN_E2E_CHATGPT_SMS_FULL_SPEC}")
+            retry_args=(--retries=0)
+          else
+            specs=(
+              "${ADMIN_E2E_CORE_SPEC}"
+              "${ADMIN_E2E_BUSINESS_FLOW_SPEC}"
+            )
 
-          if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
-            specs+=("${ADMIN_E2E_TRACKER_SPEC}")
-          fi
-          if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); no batch retry, cleanup, or manual dispatch will run."
-            specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
+            if [[ "${ADMIN_E2E_TRACKER_INCLUDED:-0}" == "1" ]]; then
+              specs+=("${ADMIN_E2E_TRACKER_SPEC}")
+            fi
+            if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
+              echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); no batch retry, cleanup, or manual dispatch will run."
+              specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
+            fi
+            retry_args=()
           fi
 
           set +e
-          npx playwright test --project=chromium-desktop --workers=1 "${specs[@]}" --reporter=github
+          npx playwright test --project=chromium-desktop --workers=1 "${retry_args[@]}" "${specs[@]}" --reporter=github
           status=$?
           set -e
 
@@ -213,6 +308,9 @@ jobs:
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
               invoked_categories="${invoked_categories}; controlled Tracker retry mutation"
             fi
+            if [[ "${ADMIN_E2E_CHATGPT_SMS_FULL_INCLUDED:-0}" == "1" ]]; then
+              invoked_categories="controlled ChatGPT SMS registration with cookie persistence check"
+            fi
             if [[ "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "0" ]]; then
               echo "- Skipped business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=0\`; \`${ADMIN_E2E_BUSINESS_FLOW_SPEC}\` is intentionally skipped by the test annotation."
             else
@@ -222,6 +320,11 @@ jobs:
               echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
+            fi
+            if [[ "${ADMIN_E2E_CHATGPT_SMS_FULL_INCLUDED:-0}" == "1" ]]; then
+              echo "- Controlled ChatGPT SMS full-cookie state: enabled through temporary QA sentinel \`tracker_retry_expected_engine=chatgpt_sms_full_cookie_verify\`; exactly one authenticated Admin \`POST /api/sms_register\` with \`platform=chatgpt\` is invoked after read-only cooldown preflight, then \`/api/task_status/{task_id}\` is polled. Final pass also requires post-run DB cookie persistence proof."
+            else
+              echo "- Controlled ChatGPT SMS full-cookie state: skipped."
             fi
             if [[ "${status}" -eq 0 ]]; then
               echo "- Coverage categories this result can claim: ${invoked_categories}."
@@ -240,3 +343,127 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
           exit "${status}"
+
+      - name: Read-only ChatGPT account cookie persistence proof
+        if: ${{ always() && env.ADMIN_E2E_CHATGPT_SMS_FULL_VERIFY == '1' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          STARTED_AT: ${{ env.ADMIN_E2E_CHATGPT_SMS_STARTED_AT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh chatgpt-sms-full-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SERVER_USER}@${SERVER_HOST}" \
+            "STARTED_AT='${STARTED_AT}' GH_RUN_URL='https://github.com/jotamotk/trash_test/actions/runs/${GITHUB_RUN_ID}' bash -s" <<'REMOTE' | tee chatgpt-sms-full-artifacts/persistence-proof.log
+          set -Eeuo pipefail
+          cd /opt/genpano
+          if [ -z "${STARTED_AT}" ]; then
+            echo "PERSISTENCE_CHECK status=not_run reason=missing_started_at"
+            exit 1
+          fi
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano "$@" </dev/null
+          }
+
+          echo "PERSISTENCE_CHECK started_at=${STARTED_AT} platform=chatgpt secrets_policy=no_cookie_values_no_full_phone"
+          psql_cmd -c "
+            WITH candidate AS (
+              SELECT
+                id,
+                llm_name,
+                status,
+                created_at,
+                cookies_updated_at,
+                CASE
+                  WHEN COALESCE(cookies_json, '') = '' THEN 0
+                  WHEN cookies_json::text LIKE '[%' THEN json_array_length(cookies_json::json)
+                  WHEN cookies_json::text LIKE '{%' THEN json_array_length((cookies_json::json->'cookies'))
+                  ELSE 0
+                END AS cookie_count,
+                CASE
+                  WHEN COALESCE(phone_number, '') = '' THEN ''
+                  WHEN LENGTH(phone_number) <= 4 THEN REPEAT('*', LENGTH(phone_number))
+                  ELSE CONCAT(REPEAT('*', GREATEST(LENGTH(phone_number) - 4, 0)), RIGHT(phone_number, 4))
+                END AS masked_phone
+              FROM llm_accounts
+              WHERE llm_name = 'chatgpt'
+                AND (
+                  created_at >= ('${STARTED_AT}'::timestamptz AT TIME ZONE 'UTC')
+                  OR cookies_updated_at >= ('${STARTED_AT}'::timestamptz AT TIME ZONE 'UTC')
+                )
+              ORDER BY COALESCE(cookies_updated_at, created_at) DESC, id DESC
+              LIMIT 5
+            )
+            SELECT
+              CONCAT('acct-', RIGHT(id::text, 4)) AS masked_account_id,
+              llm_name AS platform,
+              status,
+              created_at,
+              cookies_updated_at,
+              (cookie_count > 0) AS cookies_present,
+              cookie_count,
+              masked_phone
+            FROM candidate;
+          "
+
+          persisted_count="$(psql_cmd -At -c "
+            WITH candidate AS (
+              SELECT
+                CASE
+                  WHEN COALESCE(cookies_json, '') = '' THEN 0
+                  WHEN cookies_json::text LIKE '[%' THEN json_array_length(cookies_json::json)
+                  WHEN cookies_json::text LIKE '{%' THEN json_array_length((cookies_json::json->'cookies'))
+                  ELSE 0
+                END AS cookie_count
+              FROM llm_accounts
+              WHERE llm_name = 'chatgpt'
+                AND status = 'active'
+                AND (
+                  created_at >= ('${STARTED_AT}'::timestamptz AT TIME ZONE 'UTC')
+                  OR cookies_updated_at >= ('${STARTED_AT}'::timestamptz AT TIME ZONE 'UTC')
+                )
+            )
+            SELECT COUNT(*) FROM candidate WHERE cookie_count > 0;
+          " | tr -d '[:space:]')"
+
+          log_scan="$(docker compose logs --since "${STARTED_AT}" worker worker-analysis beat 2>&1 || true)"
+          reservation_attempted="unknown"
+          if printf '%s' "${log_scan}" | grep -q "HeroSMS reserved guarded number"; then
+            reservation_attempted="yes"
+          elif printf '%s' "${log_scan}" | grep -q "new-account in cooldown"; then
+            reservation_attempted="no"
+          elif printf '%s' "${log_scan}" | grep -q "HeroSMS compliant offer found"; then
+            reservation_attempted="prepurchase_guard_reached"
+          fi
+          echo "SMS_RESERVATION_PURCHASE_ATTEMPTED=${reservation_attempted}"
+
+          if [ "${persisted_count}" -gt 0 ]; then
+            echo "PERSISTENCE_CHECK status=pass platform=chatgpt persisted_accounts=${persisted_count} cookies_present=yes"
+          else
+            echo "PERSISTENCE_CHECK status=fail platform=chatgpt persisted_accounts=0 cookies_present=no"
+            exit 1
+          fi
+          REMOTE
+
+          if [ -f test-results/chatgpt-sms-full-live-result.json ]; then
+            cp test-results/chatgpt-sms-full-live-result.json chatgpt-sms-full-artifacts/
+          fi
+
+      - name: Upload ChatGPT SMS full-cookie evidence
+        if: ${{ always() && env.ADMIN_E2E_CHATGPT_SMS_FULL_VERIFY == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-sms-full-cookie-evidence-${{ github.run_id }}
+          path: |
+            frontend/chatgpt-sms-full-artifacts
+            frontend/test-results/chatgpt-sms-full-live-result.json
+            frontend/playwright-report
+          if-no-files-found: ignore
