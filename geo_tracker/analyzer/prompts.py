@@ -62,7 +62,7 @@ ANALYSIS_USER = """\
         {{
           "driver_text": "简短描述该评价因素（如：零糖配方健康、价格偏高、缓震性能出色）",
           "polarity": "positive|negative",
-          "category": "product_feature|price|ux|brand_image|channel|service|innovation|other",
+          "category": "benefit|drawback|comparison|recommendation|warning|uncertainty|price|availability|quality|other",
           "strength": 0.8,
           "source_quote": "AI原文中支撑此driver的完整句子"
         }}
@@ -106,6 +106,9 @@ category_unresolved, or invalid_mention_type.
 Do not emit sentiment_drivers with null sentiment_label, null driver_type, or
 null/non-numeric confidence; omit the driver if those required fields cannot be
 determined from response evidence.
+Do not emit unsupported sentiment driver, relation, or citation values: use only
+the enums shown in the JSON template, use numeric confidence values from 0 to 1,
+and omit any nested fact row whose enum or confidence cannot be determined.
 Do not use category as product_features.feature_type; represent categories as
 category entities, category mentions, or has_attribute relations. Use
 belongs_to_brand only for response-evidenced product-to-brand ownership.
