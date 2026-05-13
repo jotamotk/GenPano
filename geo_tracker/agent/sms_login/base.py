@@ -78,6 +78,28 @@ def _initial_navigation_wait_until(platform: str) -> str:
     return "domcontentloaded" if (platform or "").lower() == "chatgpt" else "load"
 
 
+_RECOVERABLE_NAVIGATION_ERROR_MARKERS = (
+    "ns_error_net_interrupt",
+    "err_network_changed",
+    "err_connection_reset",
+    "err_tunnel_connection_failed",
+    "navigation failed because page was closed",
+)
+
+
+def _is_recoverable_navigation_error(exc: Exception) -> bool:
+    text = redact_sensitive_text(exc).lower()
+    return any(marker in text for marker in _RECOVERABLE_NAVIGATION_ERROR_MARKERS)
+
+
+def _is_navigation_timeout_error(exc: Exception) -> bool:
+    text = redact_sensitive_text(exc).lower()
+    return (
+        "page.goto" in text
+        and ("timeout" in text or "timed out" in text or "exceeded" in text)
+    )
+
+
 # CAPTCHA 检测选择器（数美/字节跳动/通用）
 CAPTCHA_SELECTORS = [
     ".shumei_captcha_wrapper",
@@ -145,6 +167,9 @@ class BaseSMSLoginHandler(ABC):
 
     # 最大换号重试次数（收不到短信时换新号码重试）
     MAX_PHONE_RETRIES = 5
+    NAVIGATION_RETRIES = 1
+    classify_navigation_failures = False
+    require_cookies_for_success = False
     # 单次取号时最多跳过多少个黑名单号码
     _MAX_BLACKLIST_SKIP = 20
 
@@ -306,11 +331,9 @@ class BaseSMSLoginHandler(ABC):
 
             # 访问登录页
             logger.info(f"[{self.platform}] 打开: {self.login_url}")
-            await page.goto(
-                self.login_url,
-                wait_until=_initial_navigation_wait_until(self.platform),
-                timeout=60000,
-            )
+            nav_failure = await self._goto_login_page(page)
+            if nav_failure:
+                return _fail(nav_failure)
             await page.wait_for_timeout(random.randint(5000, 8000))
 
             # 执行登录流程
@@ -346,6 +369,7 @@ class BaseSMSLoginHandler(ABC):
 
             max_attempts = 1 if is_relogin else self.MAX_PHONE_RETRIES
             last_fail_reason = ""
+            attempt_failure_categories: list[str] = []
 
             for attempt in range(max_attempts):
                 if attempt > 0:
@@ -362,9 +386,9 @@ class BaseSMSLoginHandler(ABC):
                     logger.info(f"[{self.platform}] 新手机号: {mask_phone(phone)}")
 
                     # 重新加载登录页
-                    await page.goto(
-                        self.login_url, wait_until="domcontentloaded", timeout=60000
-                    )
+                    nav_failure = await self._goto_login_page(page)
+                    if nav_failure:
+                        return _fail(nav_failure)
                     await page.wait_for_timeout(random.randint(2000, 4000))
                     step_result = await self.navigate_to_login(page)
                     if isinstance(step_result, str):
@@ -405,6 +429,9 @@ class BaseSMSLoginHandler(ABC):
                         current_lease, keyword=self.sms_keyword, timeout=120
                     )
                 except (TimeoutError, RuntimeError) as e:
+                    attempt_failure_categories.append(
+                        "sms_timeout" if isinstance(e, TimeoutError) else "sms_poll_failed"
+                    )
                     last_fail_reason = (
                         f"手机号 {mask_phone(phone)} 获取验证码失败: "
                         f"{redact_sensitive_text(e)}"
@@ -536,6 +563,8 @@ class BaseSMSLoginHandler(ABC):
                 # 提取 cookies
                 new_cookies = await context.cookies()
                 cookies_list = self._format_cookies(new_cookies)
+                if self.require_cookies_for_success and not cookies_list:
+                    return _fail("cookies_missing_after_success")
 
                 # 提取 localStorage（DeepSeek 需要 userToken）
                 local_storage = {}
@@ -577,6 +606,14 @@ class BaseSMSLoginHandler(ABC):
                 return result
 
             # 所有重试都失败
+            if (
+                attempt_failure_categories
+                and all(
+                    category == "sms_timeout"
+                    for category in attempt_failure_categories
+                )
+            ):
+                return _fail("sms_timeout")
             return _fail(
                 f"{'重新登录' if is_relogin else f'连续 {max_attempts} 次新注册'}均失败，"
                 f"最后失败原因: {last_fail_reason}"
@@ -612,6 +649,41 @@ class BaseSMSLoginHandler(ABC):
 
     # ── 内部方法 ────────────────────────────────────────────────────────
 
+    async def _goto_login_page(self, page: Page) -> str | None:
+        wait_until = _initial_navigation_wait_until(self.platform)
+        if not self.classify_navigation_failures:
+            await page.goto(self.login_url, wait_until=wait_until, timeout=60000)
+            return None
+        attempts = max(1, int(getattr(self, "NAVIGATION_RETRIES", 1) or 1))
+        for attempt in range(attempts):
+            try:
+                await page.goto(self.login_url, wait_until=wait_until, timeout=60000)
+                return None
+            except Exception as exc:
+                safe_error = redact_sensitive_text(exc)
+                recoverable = _is_recoverable_navigation_error(exc)
+                if recoverable and attempt + 1 < attempts:
+                    logger.warning(
+                        "[%s] recoverable login navigation failure; retrying "
+                        "attempt=%s/%s error=%s",
+                        self.platform,
+                        attempt + 1,
+                        attempts,
+                        safe_error,
+                    )
+                    await page.wait_for_timeout(1000 * (attempt + 1))
+                    continue
+                if recoverable or _is_navigation_timeout_error(exc):
+                    logger.error(
+                        "[%s] login navigation failed after %s attempt(s): %s",
+                        self.platform,
+                        attempt + 1,
+                        safe_error,
+                    )
+                    return "browser_timeout"
+                raise
+        return "browser_timeout"
+
     async def _collect_login_success_payload(
         self,
         page: Page,
@@ -623,6 +695,9 @@ class BaseSMSLoginHandler(ABC):
     ) -> dict:
         new_cookies = await context.cookies()
         cookies_list = self._format_cookies(new_cookies)
+        if self.require_cookies_for_success and not cookies_list:
+            logger.error("[%s] cookies_missing_after_success", self.platform)
+            return {"status": "failed", "reason": "cookies_missing_after_success"}
 
         local_storage = {}
         try:
