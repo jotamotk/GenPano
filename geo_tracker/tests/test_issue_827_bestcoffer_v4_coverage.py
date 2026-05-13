@@ -325,6 +325,8 @@ async def test_export_buckets_latest_v4_run_state_and_raw_package_flags(
 
     assert report["mode"] == "export"
     assert report["write_performed"] is False
+    assert report["project_topic_scope_status"] == "tracked_topic_scope"
+    assert report["project_topic_ids_count"] == 1
     assert report["bucket_counts"] == {
         "missing_v4_run": 1,
         "latest_v4_failed": 1,
@@ -342,6 +344,42 @@ async def test_export_buckets_latest_v4_run_state_and_raw_package_flags(
     assert rows[82712]["repair_bucket"] == "latest_v4_other"
     assert rows[82713]["repair_bucket"] == "latest_v4_analyzed"
     assert rows[82713]["first_class_fact_counts"]["response_entities"] == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_project_topic_pins_export_and_dry_run_use_brand_scope_fallback(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session, pin_topic=False)
+
+    report = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            date_from="2026-05-06",
+            date_to="2026-05-13",
+        ),
+        mode="export",
+    )
+
+    assert report["project_topic_scope_status"] == "empty_fallback_to_brand_scope"
+    assert report["project_topic_ids_count"] == 0
+    assert report["selected_response_ids"] == [82710, 82711, 82712, 82713]
+
+    dry_run = await build_bestcoffer_v4_coverage_report(
+        session,
+        BestCofferV4CoverageScope(
+            project_id=PROJECT_ID,
+            brand_id=24,
+            response_ids=(82710,),
+        ),
+        mode="dry_run",
+    )
+
+    assert dry_run["project_topic_scope_status"] == "empty_fallback_to_brand_scope"
+    assert dry_run["project_topic_ids_count"] == 0
+    assert dry_run["repair_plan"]["migrate_raw_v4_response_ids"] == [82710]
 
 
 @pytest.mark.asyncio
@@ -503,13 +541,25 @@ def test_approval_ref_ignores_unrelated_numeric_tokens_outside_response_ids_bloc
 
 
 @pytest.mark.asyncio
-async def test_exact_response_apply_fails_closed_when_project_topic_scope_unavailable() -> None:
+async def test_project_topic_scope_sql_error_fails_closed() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with maker() as db:
         await _seed_scope(db, pin_topic=False)
+
+        with pytest.raises(ValueError, match="project topic scope"):
+            await build_bestcoffer_v4_coverage_report(
+                db,
+                BestCofferV4CoverageScope(
+                    project_id=PROJECT_ID,
+                    brand_id=24,
+                    date_from="2026-05-06",
+                    date_to="2026-05-13",
+                ),
+                mode="export",
+            )
 
         with pytest.raises(ValueError, match="project topic scope"):
             await build_bestcoffer_v4_coverage_report(
@@ -524,6 +574,81 @@ async def test_exact_response_apply_fails_closed_when_project_topic_scope_unavai
                 approval_comment_fetcher=_approval_fetcher,
             )
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_pins_exact_ids_outside_brand_scope_are_blocked(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session, pin_topic=False)
+    day = datetime(2026, 5, 12, 11, 0)
+    session.add_all(
+        [
+            Brand(id=99, name="Outside Brand", aliases=[], industry="coffee"),
+            Topic(id=82790, brand_id=99, text="Outside brand topic"),
+            Prompt(id=82791, topic_id=82790, text="outside prompt", intent="non_brand"),
+            Query(
+                id=82792,
+                prompt_id=82791,
+                brand_id=99,
+                query_text="outside brand response",
+                target_llm="chatgpt",
+                status=QueryStatus.DONE.value,
+                created_at=day,
+            ),
+            LLMResponse(
+                id=82714,
+                query_id=82792,
+                raw_text="Outside brand appears without BestCoffer scope.",
+                citations_json=[],
+                collected_at=day,
+                analysis_status=AnalysisStatus.DONE.value,
+            ),
+            ResponseAnalysis(
+                id=82724,
+                response_id=82714,
+                raw_analysis_json=_valid_v4_package(82714, 82792),
+            ),
+        ]
+    )
+    await session.commit()
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82714\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                response_ids=(82714,),
+            ),
+            mode="dry_run",
+        )
+
+    def fetcher(comment_id: int) -> dict:
+        ref = f"https://github.com/jotamotk/trash_test/issues/827#issuecomment-{comment_id}"
+        return {
+            "html_url": ref,
+            "issue_url": "https://api.github.com/repos/jotamotk/trash_test/issues/827",
+            "author_association": "OWNER",
+            "user": {"login": "jotamotk"},
+            "body": (
+                "AI Lead trusted approval for BestCoffer analyzer v4 run coverage "
+                "repair apply. Approved exact response_ids: 82714."
+            ),
+        }
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82714\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                response_ids=(82714,),
+            ),
+            mode="apply",
+            approval_ref="https://github.com/jotamotk/trash_test/issues/827#issuecomment-4449000006",
+            approval_comment_fetcher=fetcher,
+        )
 
 
 @pytest.mark.asyncio
@@ -561,6 +686,17 @@ async def test_exact_response_apply_blocks_ids_outside_verified_project_topics(
         ]
     )
     await session.commit()
+
+    with pytest.raises(ValueError, match="blocked response_ids=\\[82714\\]"):
+        await build_bestcoffer_v4_coverage_report(
+            session,
+            BestCofferV4CoverageScope(
+                project_id=PROJECT_ID,
+                brand_id=24,
+                response_ids=(82714,),
+            ),
+            mode="dry_run",
+        )
 
     def fetcher(comment_id: int) -> dict:
         ref = f"https://github.com/jotamotk/trash_test/issues/827#issuecomment-{comment_id}"
