@@ -390,6 +390,7 @@ class LLMAnalyzer:
             if (
                 isinstance(feature, dict)
                 and feature.get("feature_type") not in CATEGORY_PRODUCT_FEATURE_TYPES
+                and _is_numeric(feature.get("confidence"))
             ):
                 features_by_product.setdefault(str(feature.get("product_entity_key")), []).append(feature)
 

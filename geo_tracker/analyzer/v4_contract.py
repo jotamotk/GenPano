@@ -200,6 +200,7 @@ def validate_analyzer_v4_package(
     _drop_malformed_mentions(raw_package, flags)
     _drop_malformed_sentiment_drivers(raw_package, flags)
     _drop_unsupported_sentiment_driver_types(raw_package, flags)
+    _drop_malformed_product_features(raw_package, flags)
     _drop_category_product_features(raw_package, flags)
     _drop_malformed_citations(raw_package, flags)
     _drop_malformed_relations(raw_package, flags)
@@ -838,6 +839,24 @@ def _drop_malformed_relations(
         target_type="relation",
         flag_code="malformed_relation_dropped",
         label="Relation",
+        required_fields=("confidence",),
+        numeric_fields=("confidence",),
+    )
+
+
+def _drop_malformed_product_features(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    _drop_malformed_required_fact_rows(
+        package,
+        flags,
+        collection_key="product_features",
+        key_field="feature_key",
+        fallback_prefix="feature",
+        target_type="feature",
+        flag_code="malformed_product_feature_dropped",
+        label="Product feature",
         required_fields=("confidence",),
         numeric_fields=("confidence",),
     )

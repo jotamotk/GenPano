@@ -653,6 +653,66 @@ async def test_analyzer_v4_category_product_features_are_not_persisted_as_featur
 
 
 @pytest.mark.asyncio
+async def test_analyzer_v4_malformed_product_feature_confidence_is_not_persisted(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["product_features"].append(
+        {
+            "feature_key": "feature_bad_confidence",
+            "product_entity_key": "ent_product_calm",
+            "brand_entity_key": "ent_brand_acme",
+            "feature_type": "benefit",
+            "feature_name": "bad confidence benefit",
+            "feature_value": None,
+            "evidence_quote": "uses gentle ceramides",
+            "confidence": None,
+            "quality_flags": [],
+        }
+    )
+    package["citations"][0]["linked_fact_keys"].append("feature_bad_confidence")
+    _patch_pipeline(monkeypatch, object.__new__(LLMAnalyzer)._parse_result(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    feature_names = (
+        await session.execute(
+            select(ProductFeatureMention.feature_name)
+            .join(ResponseAnalysis, ProductFeatureMention.analysis_id == ResponseAnalysis.id)
+            .where(ResponseAnalysis.response_id == response.id)
+        )
+    ).scalars().all()
+    assert "bad confidence benefit" not in feature_names
+    linked_fact_keys = (
+        await session.execute(
+            select(AnalysisFactLink.linked_fact_key).where(
+                AnalysisFactLink.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "feature_bad_confidence" not in linked_fact_keys
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "malformed_product_feature_dropped" in flag_codes
+
+
+@pytest.mark.asyncio
 async def test_analyzer_v4_malformed_sentiment_drivers_are_not_persisted(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -1078,6 +1138,82 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
         "unsupported_product_feature_type_dropped",
         "feature",
         "feature_category_ceramide_serum",
+    ) in flags
+
+
+def test_analyzer_v4_drops_malformed_product_feature_confidence_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["product_features"].extend(
+        [
+            {
+                "feature_key": "feature_numeric_string_confidence",
+                "product_entity_key": "ent_product_calm",
+                "brand_entity_key": "ent_brand_acme",
+                "feature_type": "benefit",
+                "feature_name": "numeric string confidence",
+                "feature_value": None,
+                "evidence_quote": "uses gentle ceramides",
+                "confidence": "0.82",
+                "quality_flags": [],
+            },
+            {
+                "feature_key": "feature_null_confidence",
+                "product_entity_key": "ent_product_calm",
+                "brand_entity_key": "ent_brand_acme",
+                "feature_type": "benefit",
+                "feature_name": "null confidence",
+                "feature_value": None,
+                "evidence_quote": "uses gentle ceramides",
+                "confidence": None,
+                "quality_flags": [],
+            },
+            {
+                "feature_key": "feature_nonnumeric_confidence",
+                "product_entity_key": "ent_product_calm",
+                "brand_entity_key": "ent_brand_acme",
+                "feature_type": "benefit",
+                "feature_name": "nonnumeric confidence",
+                "feature_value": None,
+                "evidence_quote": "uses gentle ceramides",
+                "confidence": "high",
+                "quality_flags": [],
+            },
+        ]
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    feature_confidences = {
+        feature["feature_key"]: feature["confidence"]
+        for feature in result.package["product_features"]
+    }
+    assert feature_confidences["feature_numeric_string_confidence"] == 0.82
+    assert "feature_null_confidence" not in feature_confidences
+    assert "feature_nonnumeric_confidence" not in feature_confidences
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "malformed_product_feature_dropped",
+        "feature",
+        "feature_null_confidence",
+    ) in flags
+    assert (
+        "malformed_product_feature_dropped",
+        "feature",
+        "feature_nonnumeric_confidence",
     ) in flags
 
 

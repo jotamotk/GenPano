@@ -111,6 +111,8 @@ the enums shown in the JSON template, use numeric confidence values from 0 to 1,
 and omit any nested fact row whose enum or confidence cannot be determined.
 Do not emit relations with null or non-numeric confidence; omit the relation if
 relation confidence cannot be represented as a numeric value from 0 to 1.
+Do not emit product_features with null or non-numeric confidence; omit the
+product feature if confidence cannot be represented as a numeric value from 0 to 1.
 Do not use category as product_features.feature_type; represent categories as
 category entities, category mentions, or has_attribute relations. Use
 belongs_to_brand only for response-evidenced product-to-brand ownership.
