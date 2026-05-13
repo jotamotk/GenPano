@@ -6469,10 +6469,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         @click="attemptsPage=1; loadAttempts()">搜索</button>
                 <button class="h-8 px-3 rounded-btn border border-b-default text-[12px] text-ink-muted bg-white hover:bg-surface-page"
                         @click="attemptFilter = { brandId:'', topicId:'', engine:'', status:'', queryId:'', promptId:'', date:'' }; availableTopics=[]; availablePrompts=[]; promptSelectSearch=''; selectedAttemptIds={}; attemptsPage=1; loadAttempts()">重置</button>
-                <button class="h-8 px-3 rounded-btn bg-purple-600 text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
+                <button data-testid="attempt-query-batch-button"
+                        class="h-8 px-3 rounded-btn border border-warning/30 text-warning text-[12px] font-semibold bg-white hover:bg-warning/5 disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
                         :disabled="selectedAttemptCount === 0 || batchTriggering"
                         @click="batchTriggerSelected()"
-                        x-text="batchTriggering ? '触发中…' : ('批量触发 ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
+                        x-text="batchTriggering ? '重试中…' : ('批量重试 Query ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
+                <button data-testid="attempt-analyzer-batch-button"
+                        class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+                        :disabled="(attemptsTotal || filteredAttempts.length) === 0"
+                        @click="openAttemptAnalyzerBatch(selectedAttemptCount ? 'selected' : 'filter')"
+                        x-text="selectedAttemptCount ? ('批量分析已选 (' + selectedAttemptCount + ')') : '分析当前筛选'"></button>
+              </div>
+              <div data-testid="attempt-analyzer-last-run"
+                   x-show="attemptAnalyzerLastRun"
+                   class="rounded-card border border-accent/15 bg-accent/5 px-3 py-2 text-[12px] text-ink-body flex items-center gap-3">
+                <span class="font-semibold text-accent">最近分析批次</span>
+                <span x-text="'提交 ' + (attemptAnalyzerLastRun?.submittedCount || 0) + ' 条'"></span>
+                <span class="font-mono text-[11px] text-ink-muted" x-text="attemptAnalyzerLastRun?.runId || ''"></span>
+                <span class="text-ink-muted" x-text="attemptAnalyzerLastRun?.createdAt ? fmtTs(attemptAnalyzerLastRun.createdAt) : ''"></span>
               </div>
 
               <!-- Attempt table (核心: 每次 Attempt 一行) -->
@@ -6485,7 +6499,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                   <button class="ml-auto text-accent hover:underline" @click="loadAttempts()">刷新</button>
                 </div>
                 <div class="overflow-x-auto">
-                <table class="w-full text-[12px] min-w-[1280px]">
+                <table class="w-full text-[12px] min-w-[1480px]">
                   <thead>
                     <tr class="border-b border-b-card bg-surface-page">
                       <th class="px-3 py-2.5 text-left w-8">
@@ -6501,6 +6515,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">账号 / 代理</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">状态</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted min-w-[260px]" title="retry_reason">错误码 / 重试原因</th>
+                      <th data-testid="attempt-analyzer-column-header" class="px-3 py-2.5 text-left font-semibold text-ink-muted min-w-[210px]">分析状态</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="latency_ms">延迟</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted" title="queued_at → started_at → finished_at">执行时间</th>
                       <th class="px-3 py-2.5 text-left font-semibold text-ink-muted">Debug</th>
@@ -6513,6 +6528,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                           :class="att.status==='failed' ? 'q-failed' : att.status==='success' ? 'q-done' : att.status==='retrying' ? 'q-running' : ''">
                         <td class="px-3 py-2.5">
                           <input type="checkbox" class="rounded cursor-pointer"
+                                 :data-testid="'attempt-select-' + att.queryDbId"
                                  :checked="!!selectedAttemptIds[att.queryDbId]"
                                  @change="toggleAttemptSelect(att)" />
                         </td>
@@ -6543,6 +6559,24 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                             </div>
                           </template>
                         </td>
+                        <td class="px-3 py-2.5">
+                          <div class="space-y-1.5">
+                            <div class="flex items-center gap-1.5">
+                              <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                                    :data-testid="'attempt-analyzer-badge-' + att.queryDbId"
+                                    :class="attemptAnalyzerMeta(att).badgeClass"
+                                    x-text="attemptAnalyzerMeta(att).label"></span>
+                              <span class="text-[10px] text-ink-muted truncate max-w-[110px]"
+                                    :title="attemptAnalyzerSummary(att)"
+                                    x-text="attemptAnalyzerSummary(att)"></span>
+                            </div>
+                            <button class="h-6 px-2 rounded-btn text-[10px] font-medium border border-accent/30 text-accent bg-white hover:bg-accent/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :data-testid="'attempt-analyzer-action-' + att.queryDbId"
+                                    :disabled="!canAnalyzeAttempt(att) || isAttemptAnalysisBusy(att)"
+                                    @click.stop="queueAttemptAnalysis(att)"
+                                    x-text="attemptAnalyzerActionLabel(att)"></button>
+                          </div>
+                        </td>
                         <td class="px-3 py-2.5 tabular-nums text-[11px] text-ink-body">
                           <div x-text="att.latencyMs != null ? att.latencyMs + 'ms' : (att.responseTime ? (att.responseTime / 1000).toFixed(1) + 's' : '—')"></div>
                         </td>
@@ -6571,14 +6605,15 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                                     :disabled="isAttemptRetrying(att.queryDbId)"
                                     @click="retryAttempt(att)"
                                     x-text="isAttemptRetrying(att.queryDbId) ? '等待中' : '重试'"></button>
-                            <button @click="openDebugDrawer(att)"
+                            <button @click="attemptDrawer = att"
+                                    :data-testid="'attempt-details-' + att.queryDbId"
                                     class="h-6 px-2 rounded-btn text-[10px] font-medium border border-b-default text-ink-muted bg-white hover:bg-surface-page">详情</button>
                           </div>
                         </td>
                       </tr>
                     </template>
                     <tr x-show="!attemptsLoading && executionAttempts.length === 0">
-                      <td colspan="12" class="px-3 py-8 text-center text-[12px] text-ink-muted">暂无数据</td>
+                      <td colspan="13" class="px-3 py-8 text-center text-[12px] text-ink-muted">暂无数据</td>
                     </tr>
                   </tbody>
                 </table>
@@ -8523,7 +8558,7 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
 
 <!-- ===== ATTEMPT DETAIL DRAWER (Tracker v2) ===== -->
 <div x-show="attemptDrawer" x-cloak x-transition.opacity class="fixed inset-0 z-40 drawer-overlay" @click="attemptDrawer=null"></div>
-<div x-show="attemptDrawer" x-cloak class="fixed top-0 right-0 z-50 w-[540px] h-full bg-surface border-l border-b-card shadow-elevated drawer-panel overflow-y-auto">
+<div x-show="attemptDrawer" x-cloak data-testid="attempt-drawer" class="fixed top-0 right-0 z-50 w-[640px] h-full bg-surface border-l border-b-card shadow-elevated drawer-panel overflow-y-auto">
   <template x-if="attemptDrawer">
     <div>
       <div class="px-6 py-4 border-b border-b-card flex items-center justify-between sticky top-0 bg-surface z-10">
@@ -8566,51 +8601,57 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <div class="p-3 rounded-card bg-surface-page border border-b-card text-[12px] text-ink leading-relaxed" x-text="attemptDrawer.prompt"></div>
         </div>
 
-        <!-- AI Response text (only for successful attempts) -->
-        <template x-if="attemptDrawer.status==='success' && aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]">
-          <div>
-            <h4 class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider mb-2">AI 回答内容</h4>
-            <div class="p-4 rounded-card bg-surface-page border border-b-card space-y-3 max-h-[300px] overflow-y-auto">
-              <div class="text-[12px] text-ink leading-relaxed whitespace-pre-line"
-                   x-text="aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]?.fullText"></div>
-              <!-- Extracted data summary -->
-              <div class="pt-3 border-t border-b-card grid grid-cols-3 gap-3 text-[11px]" x-data="{resp: aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]}">
-                <div>
-                  <div class="text-ink-muted font-semibold mb-1">品牌命中</div>
-                  <div class="flex flex-wrap gap-1">
-                    <template x-for="b in (aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]?.brandsDetected || [])" :key="b">
-                      <span class="inline-flex items-center px-1.5 h-4 rounded-badge bg-accent/10 text-accent text-[9px] font-medium" x-text="b"></span>
-                    </template>
-                  </div>
-                </div>
-                <div>
-                  <div class="text-ink-muted font-semibold mb-1">整体情感</div>
-                  <span class="text-[14px] font-bold"
-                        :class="(aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]?.sentiment?.overall || 0) >= 70 ? 'text-success' : 'text-warning'"
-                        x-text="(aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]?.sentiment?.overall || '—') + '%'"></span>
-                </div>
-                <div>
-                  <div class="text-ink-muted font-semibold mb-1">引用</div>
-                  <span class="text-[14px] font-bold text-info" x-text="(aiResponses[queryDetailList.find(q => q.id === attemptDrawer.queryId)?.responseId]?.citations?.length || 0) + ' 条'"></span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- Failed attempt: no response -->
-        <template x-if="attemptDrawer.status==='failed'">
-          <div>
-            <h4 class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider mb-2">AI 回答内容</h4>
-            <div class="p-4 rounded-card bg-danger/5 border border-danger/15 flex items-center gap-3">
+        <!-- Response text -->
+        <div>
+          <h4 class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider mb-2">AI 回答内容</h4>
+          <template x-if="attemptDrawer.responseText">
+            <div data-testid="attempt-response-text"
+                 class="p-4 rounded-card bg-surface-page border border-b-card text-[12px] text-ink leading-relaxed whitespace-pre-line max-h-[300px] overflow-y-auto"
+                 x-text="attemptDrawer.responseText"></div>
+          </template>
+          <template x-if="!attemptDrawer.responseText">
+            <div data-testid="attempt-response-text"
+                 class="p-4 rounded-card bg-danger/5 border border-danger/15 flex items-center gap-3">
               <i data-lucide="alert-circle" class="w-5 h-5 text-danger shrink-0"></i>
               <div>
-                <div class="text-[13px] font-semibold text-danger">执行失败，未获得回答</div>
-                <div class="text-[11px] text-ink-muted mt-0.5" x-text="'错误码: ' + (attemptDrawer.errorCode || 'UNKNOWN') + (attemptDrawer.errorSub ? ' (' + attemptDrawer.errorSub + ')' : '')"></div>
+                <div class="text-[13px] font-semibold text-danger">未获得可分析回答</div>
+                <div class="text-[11px] text-ink-muted mt-0.5" x-text="attemptAnalyzerBlockedReason(attemptDrawer)"></div>
               </div>
             </div>
+          </template>
+        </div>
+
+        <!-- Analyzer status -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-[12px] font-semibold text-ink-muted uppercase tracking-wider">分析结果</h4>
+            <span class="inline-flex items-center px-2 h-5 rounded-badge text-[10px] font-semibold"
+                  :class="attemptAnalyzerMeta(attemptDrawer).badgeClass"
+                  x-text="attemptAnalyzerMeta(attemptDrawer).label"></span>
           </div>
-        </template>
+          <div data-testid="attempt-analyzer-drawer-summary"
+               class="rounded-card bg-surface-page border border-b-card p-4 space-y-3 text-[12px]">
+            <div class="text-ink font-semibold" x-text="attemptAnalyzerSummary(attemptDrawer)"></div>
+            <div class="grid grid-cols-3 gap-2 text-[11px]">
+              <div class="p-2 rounded bg-white border border-b-card">
+                <div class="text-ink-muted">依据</div>
+                <div class="font-semibold text-ink tabular-nums" x-text="attemptDrawer.analyzer?.evidenceCount != null ? attemptDrawer.analyzer.evidenceCount + ' 条' : '—'"></div>
+              </div>
+              <div class="p-2 rounded bg-white border border-b-card">
+                <div class="text-ink-muted">批次</div>
+                <div class="font-mono text-ink truncate" :title="attemptDrawer.analyzer?.runId || ''" x-text="attemptDrawer.analyzer?.runId || '—'"></div>
+              </div>
+              <div class="p-2 rounded bg-white border border-b-card">
+                <div class="text-ink-muted">更新时间</div>
+                <div class="font-mono text-ink" x-text="attemptDrawer.analyzer?.updatedAt ? fmtTs(attemptDrawer.analyzer.updatedAt) : '—'"></div>
+              </div>
+            </div>
+            <template x-if="attemptDrawer.analyzer?.error || attemptDrawer.analyzer?.reason">
+              <div class="rounded-btn border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-ink-body"
+                   x-text="attemptDrawer.analyzer?.error || attemptAnalyzerBlockedReason(attemptDrawer)"></div>
+            </template>
+          </div>
+        </div>
 
         <!-- Debug artifacts -->
         <div>
@@ -8672,6 +8713,11 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
           <template x-if="attemptDrawer.status==='failed' || attemptDrawer.status==='waiting_manual'">
             <button class="h-9 px-4 rounded-btn border border-warning/30 text-warning text-[13px] font-medium bg-white hover:bg-warning/5">送 DLQ</button>
           </template>
+          <button data-testid="attempt-analyzer-drawer-trigger"
+                  class="h-9 px-4 rounded-btn border border-accent/30 text-accent text-[13px] font-semibold bg-white hover:bg-accent/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                  :disabled="!canAnalyzeAttempt(attemptDrawer) || isAttemptAnalysisBusy(attemptDrawer)"
+                  @click="queueAttemptAnalysis(attemptDrawer)"
+                  x-text="attemptAnalyzerActionLabel(attemptDrawer)"></button>
           <button class="h-9 px-4 rounded-btn border border-b-default text-ink-body text-[13px] font-medium bg-white hover:bg-surface-page ml-auto">跳到 Trace</button>
         </div>
       </div>
@@ -9015,6 +9061,98 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
 </div>
 
 <!-- ============ DANGER CONFIRM MODAL ============ -->
+<div x-show="attemptAnalyzerBatchOpen" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-4" @click="closeAttemptAnalyzerBatch()">
+  <div data-testid="attempt-analyzer-batch-preview"
+       class="w-full max-w-2xl rounded-card-lg bg-surface shadow-elevated border border-b-card overflow-hidden"
+       @click.stop>
+    <div class="px-5 py-4 border-b border-b-card flex items-start justify-between gap-4">
+      <div>
+        <h3 class="text-[16px] font-bold text-ink">批量分析 Attempt</h3>
+        <div class="text-[12px] text-ink-muted mt-1">只提交已有回答且尚未完成分析的 Attempt；Query 重试不会在这里触发。</div>
+      </div>
+      <button class="w-8 h-8 rounded-btn hover:bg-surface-page text-ink-muted flex items-center justify-center" @click="closeAttemptAnalyzerBatch()">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div class="p-5 space-y-4" x-show="attemptAnalyzerBatchPreview">
+      <div class="flex items-center gap-2">
+        <button data-testid="attempt-analyzer-batch-scope-selected"
+                class="seg-tab"
+                :class="{active: attemptAnalyzerBatchScope==='selected'}"
+                :disabled="selectedAttemptCount === 0"
+                @click="setAttemptAnalyzerBatchScope('selected')">已选 Attempt</button>
+        <button data-testid="attempt-analyzer-batch-scope-filter"
+                class="seg-tab"
+                :class="{active: attemptAnalyzerBatchScope==='filter'}"
+                @click="setAttemptAnalyzerBatchScope('filter')">当前筛选</button>
+      </div>
+      <div data-testid="attempt-analyzer-batch-scope-note"
+           class="rounded-card border border-accent/15 bg-accent/5 px-3 py-2 text-[12px] text-ink-body"
+           x-text="attemptAnalyzerBatchScopeText(attemptAnalyzerBatchPreview)"></div>
+      <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 text-[12px]">
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">请求范围</div>
+          <div data-testid="attempt-analyzer-batch-requested" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.requestedCount || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">已加载明细</div>
+          <div data-testid="attempt-analyzer-batch-visible" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.visibleCount || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">可提交</div>
+          <div data-testid="attempt-analyzer-batch-eligible" class="text-[20px] font-bold text-success tabular-nums" x-text="attemptAnalyzerBatchPreview?.eligible || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">无回答</div>
+          <div data-testid="attempt-analyzer-batch-skipped-no-response" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedNoResponse || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">已分析</div>
+          <div data-testid="attempt-analyzer-batch-skipped-already" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedAlreadyAnalyzed || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">失败 Attempt</div>
+          <div data-testid="attempt-analyzer-batch-skipped-failed" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedFailedAttempt || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">处理中/跳过</div>
+          <div data-testid="attempt-analyzer-batch-skipped-unavailable" class="text-[20px] font-bold text-ink tabular-nums" x-text="attemptAnalyzerBatchPreview?.skippedUnavailable || 0"></div>
+        </div>
+        <div class="rounded-card bg-surface-page border border-b-card p-3">
+          <div class="text-ink-muted">提交上限</div>
+          <div data-testid="attempt-analyzer-batch-submit-cap" class="text-[20px] font-bold text-accent tabular-nums" x-text="attemptAnalyzerBatchPreview?.submittedCount + ' / ' + attemptAnalyzerBatchPreview?.cap"></div>
+        </div>
+      </div>
+      <div x-show="attemptAnalyzerBatchPreview?.capExceeded"
+           class="rounded-card border border-warning/30 bg-warning/5 px-3 py-2 text-[12px] text-warning">
+        本次预览超过单批上限，确认后只提交前 <span x-text="attemptAnalyzerBatchPreview?.cap"></span> 条。
+      </div>
+      <div data-testid="attempt-analyzer-batch-reasons"
+           class="rounded-card border border-b-card bg-surface-page px-3 py-2 text-[12px] text-ink-body">
+        <div class="font-semibold">跳过原因</div>
+        <div class="mt-1 text-ink-muted" x-text="attemptAnalyzerBatchReasonsText(attemptAnalyzerBatchPreview)"></div>
+        <div x-show="attemptAnalyzerBatchPreview?.filterSample"
+             class="mt-1 text-ink-muted">当前筛选覆盖多页；这里展示已加载明细，提交前按筛选范围预检。</div>
+      </div>
+      <div class="rounded-card border border-b-card bg-surface-page px-3 py-2 text-[12px] text-ink-body">
+        <div class="font-semibold">确认后</div>
+        <div class="mt-1 text-ink-muted">
+          系统会生成批次号并把可提交项标记为“等待分析”。任务号可用后会显示在这里。
+        </div>
+      </div>
+    </div>
+    <div class="px-5 py-4 border-t border-b-card bg-surface-page flex items-center justify-end gap-2">
+      <button class="h-9 px-4 rounded-btn border border-b-default bg-white text-[13px] text-ink-body hover:bg-surface-page"
+              @click="closeAttemptAnalyzerBatch()">取消</button>
+      <button data-testid="attempt-analyzer-batch-confirm"
+              class="h-9 px-4 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="attemptAnalyzerBatchSubmitting || !attemptAnalyzerBatchPreview || attemptAnalyzerBatchPreview.submittedCount === 0"
+              @click="confirmAttemptAnalyzerBatch()"
+              x-text="attemptAnalyzerBatchSubmitting ? '提交中…' : ('确认提交 ' + (attemptAnalyzerBatchPreview?.submittedCount || 0) + ' 条')"></button>
+    </div>
+  </div>
+</div>
+
 <div x-show="confirmAction" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-4" @click="confirmAction=null">
   <div x-show="confirmAction" x-cloak class="bg-surface rounded-card-lg shadow-elevated w-full max-w-md p-6" @click.stop>
     <template x-if="confirmAction">
@@ -9328,6 +9466,117 @@ function formatAdminErrorDetail(value) {
   };
 })();
 
+const ATTEMPT_ANALYZER_STATUS_META = {
+  missing: { label: '未分析', badgeClass: 'bg-warning/10 text-warning', tone: 'warning' },
+  pending: { label: '等待分析', badgeClass: 'bg-accent/10 text-accent', tone: 'accent' },
+  queued: { label: '等待分析', badgeClass: 'bg-accent/10 text-accent', tone: 'accent' },
+  running: { label: '分析中', badgeClass: 'bg-info/10 text-info', tone: 'info' },
+  done: { label: '已分析', badgeClass: 'bg-success/10 text-success', tone: 'success' },
+  already_analyzed: { label: '已分析', badgeClass: 'bg-success/10 text-success', tone: 'success' },
+  failed: { label: '分析失败', badgeClass: 'bg-danger/10 text-danger', tone: 'danger' },
+  skipped: { label: '已跳过', badgeClass: 'bg-gray-100 text-gray-600', tone: 'muted' },
+  unavailable: { label: '不可分析', badgeClass: 'bg-gray-100 text-gray-600', tone: 'muted' },
+  partial: { label: '部分完成', badgeClass: 'bg-warning/10 text-warning', tone: 'warning' },
+};
+
+function attemptAnalyzerStatusMeta(status) {
+  const key = normalizeAttemptAnalyzerStatus(status);
+  return ATTEMPT_ANALYZER_STATUS_META[key] || ATTEMPT_ANALYZER_STATUS_META.unavailable;
+}
+
+function normalizeAttemptAnalyzerStatus(value) {
+  const key = String(value || '').trim().toLowerCase();
+  if (!key) return '';
+  const aliases = {
+    queued: 'queued',
+    queueing: 'queued',
+    pending: 'pending',
+    waiting: 'pending',
+    running: 'running',
+    processing: 'running',
+    done: 'done',
+    success: 'done',
+    completed: 'done',
+    analyzed: 'done',
+    already_done: 'already_analyzed',
+    already_analyzed: 'already_analyzed',
+    failed: 'failed',
+    error: 'failed',
+    partial: 'partial',
+    partial_success: 'partial',
+    skipped: 'skipped',
+    skip: 'skipped',
+    missing: 'missing',
+    none: 'missing',
+    unavailable: 'unavailable',
+    disabled: 'unavailable',
+  };
+  return aliases[key] || key;
+}
+
+function firstNonEmptyText(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const next = Number(value);
+    if (Number.isFinite(next)) return next;
+  }
+  return null;
+}
+
+function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
+  const nested = row && typeof row.analysis === 'object' && row.analysis ? row.analysis : {};
+  const rawStatus = firstNonEmptyText(
+    row.analysis_status,
+    row.analyzer_status,
+    row.analysisStatus,
+    row.analyzerStatus,
+    nested.status,
+    row.analyzed_at ? 'done' : ''
+  );
+  const hasResponse = !!firstNonEmptyText(responseText);
+  const normalized = normalizeAttemptAnalyzerStatus(rawStatus);
+  const status = hasResponse ? (normalized || 'missing') : 'unavailable';
+  const reason = !hasResponse
+    ? (attemptStatus === 'failed' ? 'failed_attempt' : 'no_response')
+    : firstNonEmptyText(row.analysis_reason, row.analyzer_reason, nested.reason);
+  const evidenceCount = firstFiniteNumber(
+    row.analysis_evidence_count,
+    row.analyzer_evidence_count,
+    nested.evidence_count,
+    nested.evidenceCount
+  );
+  const runId = firstNonEmptyText(
+    row.analysis_run_id,
+    row.analyzer_run_id,
+    row.analyzer_task_id,
+    nested.run_id,
+    nested.task_id
+  );
+  const updatedAt = firstNonEmptyText(row.analyzed_at, row.analysis_updated_at, nested.updated_at);
+  const error = firstNonEmptyText(row.analysis_error, row.analyzer_error, nested.error);
+  const summary = firstNonEmptyText(
+    row.analysis_summary,
+    row.analyzer_summary,
+    nested.summary,
+    status === 'done' || status === 'already_analyzed' ? '分析完成，可查看摘要' : '',
+    status === 'partial' ? '部分完成，可重新分析补齐' : '',
+    status === 'failed' ? (error || '分析失败，可重新分析') : '',
+    status === 'running' ? '分析任务正在处理' : '',
+    status === 'pending' || status === 'queued' ? '等待分析任务处理' : '',
+    status === 'missing' ? '尚未分析，可手动触发' : '',
+    status === 'unavailable' ? (reason === 'failed_attempt' ? '执行失败，未获得可分析回答' : '没有可分析回答') : ''
+  );
+  return { status, reason, summary, evidenceCount, runId, updatedAt, error };
+}
+
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
 // hasn't been upgraded yet) fall back to null and render as '—' in the UI.
@@ -9347,6 +9596,8 @@ function mapQueryRowToAttempt(r) {
     pending: 'pending', queued: 'pending',
     retrying: 'retrying',
   };
+  const mappedStatus = statusMap[rawStatus] || rawStatus;
+  const responseText = firstNonEmptyText(r.response, r.response_text, r.raw_text, r.response_preview);
   const rt = (r.latency_ms != null)
     ? Number(r.latency_ms)
     : (r.finished_at && r.started_at)
@@ -9365,7 +9616,7 @@ function mapQueryRowToAttempt(r) {
     profileGroup: r.profile_name || '—',
     promptVersion: '',
     adapterMode: 'web',
-    status: statusMap[rawStatus] || rawStatus,
+    status: mappedStatus,
     errorCode: r.retry_reason || null,
     errorSub: null,
     responseTime: rt != null ? rt : 0,
@@ -9385,8 +9636,9 @@ function mapQueryRowToAttempt(r) {
     latencyMs: r.latency_ms != null ? r.latency_ms : null,
     retryReason: r.retry_reason || null,
     createdAt: r.created_at || null,
-    responseText: r.response || null,
+    responseText: responseText || null,
     citations: r.citations || null,
+    analyzer: deriveAttemptAnalyzerState(r, responseText, mappedStatus),
     topicId: r.topic_id != null ? r.topic_id : null,
     topicText: r.topic_text || '',
     promptId: r.prompt_id != null ? r.prompt_id : null,
@@ -12780,6 +13032,13 @@ function adminApp() {
     // Selection map: { [queryDbId]: true }. Only covers current page (cleared on page/filter change).
     selectedAttemptIds: {},
     batchTriggering: false,
+    attemptAnalyzerBatchOpen: false,
+    attemptAnalyzerBatchScope: 'selected',
+    attemptAnalyzerBatchPreview: null,
+    attemptAnalyzerBatchSubmitting: false,
+    attemptAnalyzerBatchCap: 25,
+    attemptAnalyzerRunSeq: 0,
+    attemptAnalyzerLastRun: null,
     retryingAttemptIds: {},
     retryPollTimers: {},
     retryPollTokens: {},
@@ -13079,6 +13338,226 @@ function adminApp() {
       } finally {
         this.batchTriggering = false;
       }
+    },
+
+    attemptAnalyzerMeta(attOrStatus) {
+      const status = typeof attOrStatus === 'string'
+        ? attOrStatus
+        : (attOrStatus && attOrStatus.analyzer && attOrStatus.analyzer.status);
+      return attemptAnalyzerStatusMeta(status || 'unavailable');
+    },
+
+    attemptAnalyzerSummary(att) {
+      if (!att) return '—';
+      return (att.analyzer && att.analyzer.summary) || this.attemptAnalyzerBlockedReason(att) || '—';
+    },
+
+    attemptAnalyzerBlockedReason(att) {
+      const reason = att && att.analyzer && att.analyzer.reason;
+      if (reason === 'failed_attempt') return '执行失败，未获得可分析回答';
+      if (reason === 'no_response') return '没有可分析回答';
+      if (att && !att.responseText) return '没有可分析回答';
+      if (att && att.analyzer && att.analyzer.status === 'skipped') return '本条已跳过分析';
+      if (att && att.analyzer && att.analyzer.status === 'unavailable') return '暂不可分析';
+      return '';
+    },
+
+    canAnalyzeAttempt(att) {
+      if (!att || !String(att.responseText || '').trim()) return false;
+      const status = normalizeAttemptAnalyzerStatus(att.analyzer && att.analyzer.status);
+      return !['unavailable', 'skipped'].includes(status);
+    },
+
+    isAttemptAnalysisBusy(att) {
+      const status = normalizeAttemptAnalyzerStatus(att && att.analyzer && att.analyzer.status);
+      return ['pending', 'queued', 'running'].includes(status);
+    },
+
+    attemptAnalyzerActionLabel(att) {
+      if (!this.canAnalyzeAttempt(att)) return '不可分析';
+      if (this.isAttemptAnalysisBusy(att)) return '处理中';
+      const status = normalizeAttemptAnalyzerStatus(att && att.analyzer && att.analyzer.status);
+      if (['done', 'already_analyzed', 'failed', 'partial'].includes(status)) return '重新分析';
+      return '分析';
+    },
+
+    nextAttemptAnalyzerRunId(prefix = 'analyzer-preview') {
+      this.attemptAnalyzerRunSeq += 1;
+      return prefix + '-' + Date.now().toString(36) + '-' + this.attemptAnalyzerRunSeq;
+    },
+
+    patchAttemptAnalyzer(queryDbId, patch) {
+      const id = Number(queryDbId);
+      if (!Number.isFinite(id) || id <= 0) return;
+      const patchOne = (att) => {
+        if (!att || Number(att.queryDbId) !== id) return att;
+        return Object.assign({}, att, {
+          analyzer: Object.assign({}, att.analyzer || {}, patch),
+        });
+      };
+      this.executionAttempts = (this.executionAttempts || []).map(patchOne);
+      if (this.debugDrawer && Number(this.debugDrawer.queryDbId) === id) this.debugDrawer = patchOne(this.debugDrawer);
+      if (this.attemptDrawer && Number(this.attemptDrawer.queryDbId) === id) this.attemptDrawer = patchOne(this.attemptDrawer);
+    },
+
+    queueAttemptAnalysis(att) {
+      if (!this.canAnalyzeAttempt(att)) {
+        this.toast(this.attemptAnalyzerBlockedReason(att) || '此 Attempt 暂不可分析');
+        return;
+      }
+      if (this.isAttemptAnalysisBusy(att)) return;
+      const runId = this.nextAttemptAnalyzerRunId();
+      const updatedAt = new Date().toISOString();
+      this.patchAttemptAnalyzer(att.queryDbId, {
+        status: 'pending',
+        reason: null,
+        error: null,
+        summary: '等待分析任务处理',
+        runId,
+        updatedAt,
+      });
+      this.toast('已加入分析队列 · ' + att.queryId);
+    },
+
+    attemptAnalyzerNormalizeBatchScope(scope) {
+      return scope === 'selected' && this.selectedAttemptCount > 0 ? 'selected' : 'filter';
+    },
+
+    attemptAnalyzerFilterScopeCount(rows) {
+      const total = Number(this.attemptsTotal);
+      if (!Number.isFinite(total) || total < rows.length) return rows.length;
+      return Math.floor(total);
+    },
+
+    attemptAnalyzerFilterSummary() {
+      const filter = this.attemptFilter || {};
+      const parts = [];
+      if (filter.brandId) parts.push('品牌 ' + filter.brandId);
+      if (filter.topicId) parts.push('Topic ' + filter.topicId);
+      if (filter.promptId) parts.push('Prompt ' + filter.promptId);
+      if (filter.engine) parts.push('引擎 ' + filter.engine);
+      if (filter.status) parts.push('状态 ' + filter.status);
+      if (filter.queryId) parts.push('Query ' + filter.queryId);
+      if (filter.date) parts.push('日期 ' + filter.date);
+      return parts.length ? parts.join(' · ') : '全部 Attempts';
+    },
+
+    attemptAnalyzerBatchScopeText(preview) {
+      if (!preview) return '';
+      if (preview.scope === 'selected') {
+        return '已选 Attempt · 请求 ' + preview.requestedCount + ' 条 · 可提交 ' + preview.eligible + ' 条';
+      }
+      const sample = preview.filterSample ? (' · 已加载明细 ' + preview.visibleCount + ' 条') : '';
+      return '当前筛选 · ' + this.attemptAnalyzerFilterSummary() + ' · 请求 ' + preview.requestedCount + ' 条' + sample;
+    },
+
+    attemptAnalyzerBatchReasonsText(preview) {
+      if (!preview) return '';
+      const parts = [];
+      if (preview.skippedNoResponse) parts.push('无回答 ' + preview.skippedNoResponse + ' 条');
+      if (preview.skippedAlreadyAnalyzed) parts.push('已分析 ' + preview.skippedAlreadyAnalyzed + ' 条');
+      if (preview.skippedFailedAttempt) parts.push('失败 Attempt ' + preview.skippedFailedAttempt + ' 条');
+      if (preview.skippedUnavailable) parts.push('处理中/跳过/暂不可分析 ' + preview.skippedUnavailable + ' 条');
+      return parts.length ? parts.join(' · ') : '暂无跳过项';
+    },
+
+    attemptAnalyzerRowsForScope(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      const rows = this.filteredAttempts || [];
+      if (normalizedScope !== 'selected') return rows;
+      const selected = this.selectedAttemptIds || {};
+      return rows.filter(att => att && selected[att.queryDbId]);
+    },
+
+    buildAttemptAnalyzerBatchPreview(scope) {
+      const normalizedScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      const rows = this.attemptAnalyzerRowsForScope(scope);
+      const requestedCount = normalizedScope === 'selected'
+        ? rows.length
+        : this.attemptAnalyzerFilterScopeCount(rows);
+      const preview = {
+        scope: normalizedScope,
+        total: rows.length,
+        requestedCount,
+        visibleCount: rows.length,
+        filterSample: normalizedScope === 'filter' && requestedCount > rows.length,
+        cap: this.attemptAnalyzerBatchCap,
+        eligible: 0,
+        skippedNoResponse: 0,
+        skippedAlreadyAnalyzed: 0,
+        skippedFailedAttempt: 0,
+        skippedUnavailable: 0,
+        submittedCount: 0,
+        capExceeded: false,
+        eligibleIds: [],
+      };
+      rows.forEach(att => {
+        const status = normalizeAttemptAnalyzerStatus(att && att.analyzer && att.analyzer.status);
+        const hasResponse = !!String((att && att.responseText) || '').trim();
+        if (!hasResponse) {
+          if (att && att.status === 'failed') preview.skippedFailedAttempt += 1;
+          else preview.skippedNoResponse += 1;
+          return;
+        }
+        if (['done', 'already_analyzed'].includes(status)) {
+          preview.skippedAlreadyAnalyzed += 1;
+          return;
+        }
+        if (['pending', 'queued', 'running', 'unavailable', 'skipped'].includes(status)) {
+          preview.skippedUnavailable += 1;
+          return;
+        }
+        preview.eligible += 1;
+        preview.eligibleIds.push(att.queryDbId);
+      });
+      const submitBase = normalizedScope === 'filter' ? preview.requestedCount : preview.eligible;
+      preview.submittedCount = Math.min(submitBase, preview.cap);
+      preview.capExceeded = submitBase > preview.cap;
+      return preview;
+    },
+
+    openAttemptAnalyzerBatch(scope = 'selected') {
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      this.attemptAnalyzerBatchScope = nextScope;
+      this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
+      this.attemptAnalyzerBatchOpen = true;
+    },
+
+    setAttemptAnalyzerBatchScope(scope) {
+      const nextScope = this.attemptAnalyzerNormalizeBatchScope(scope);
+      this.attemptAnalyzerBatchScope = nextScope;
+      this.attemptAnalyzerBatchPreview = this.buildAttemptAnalyzerBatchPreview(nextScope);
+    },
+
+    closeAttemptAnalyzerBatch() {
+      this.attemptAnalyzerBatchOpen = false;
+      this.attemptAnalyzerBatchPreview = null;
+      this.attemptAnalyzerBatchSubmitting = false;
+    },
+
+    confirmAttemptAnalyzerBatch() {
+      const preview = this.attemptAnalyzerBatchPreview;
+      if (!preview || preview.submittedCount <= 0) {
+        this.toast('没有可提交的 Attempt');
+        return;
+      }
+      this.attemptAnalyzerBatchSubmitting = true;
+      const runId = this.nextAttemptAnalyzerRunId('analyzer-batch-preview');
+      const updatedAt = new Date().toISOString();
+      preview.eligibleIds.slice(0, preview.submittedCount).forEach(id => {
+        this.patchAttemptAnalyzer(id, {
+          status: 'pending',
+          reason: null,
+          error: null,
+          summary: '等待分析任务处理',
+          runId,
+          updatedAt,
+        });
+      });
+      this.attemptAnalyzerLastRun = Object.assign({}, preview, { runId, createdAt: updatedAt });
+      this.attemptAnalyzerBatchSubmitting = false;
+      this.closeAttemptAnalyzerBatch();
+      this.toast('已提交分析批次 · ' + preview.submittedCount + ' 条');
     },
 
     isAttemptRetrying(queryDbId) {
