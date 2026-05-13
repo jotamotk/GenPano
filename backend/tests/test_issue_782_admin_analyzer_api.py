@@ -435,17 +435,18 @@ async def test_legacy_response_status_compat_unauth_401(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_dry_run_is_not_added_to_legacy_api_analyzer(client) -> None:
+async def test_legacy_batch_dry_run_compat_unauth_401(client) -> None:
     resp = await client.post(
         "/api/analyzer/responses/batch/dry-run",
         json={"scope": {"response_ids": [1]}},
     )
 
-    assert resp.status_code == 404
+    assert resp.status_code == 401
+    assert "text/html" not in resp.headers.get("content-type", "")
 
 
 @pytest.mark.asyncio
-async def test_attempts_mutation_routes_are_not_added_to_legacy_api_analyzer(client) -> None:
+async def test_legacy_attempts_mutation_routes_keep_admin_auth_guard(client) -> None:
     single = await client.post(
         "/api/analyzer/responses/101/analyze",
         json={"mode": "missing_or_failed_only", "reason": "operator retry"},
@@ -454,9 +455,11 @@ async def test_attempts_mutation_routes_are_not_added_to_legacy_api_analyzer(cli
         "/api/analyzer/responses/batch",
         json={"scope": {"response_ids": [101]}, "confirm": True},
     )
+    status = await client.get("/api/analyzer/batches/batch-123")
 
-    assert single.status_code == 404
-    assert batch.status_code == 404
+    assert single.status_code == 401
+    assert batch.status_code == 401
+    assert status.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -505,6 +508,63 @@ async def test_admin_batch_dry_run_returns_counts(client, admin_operator, monkey
     assert body["skipped_invalid_count"] == 1
     assert body["eligible_response_ids_preview"] == [101]
     assert body["dry_run_id"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_dry_run_compat_returns_admin_counts(
+    client, admin_operator, monkeypatch
+) -> None:
+    module = _admin_analyzer_router_module()
+    preview = AsyncMock(
+        return_value=[
+            {
+                "query_id": 9001,
+                "response_id": 101,
+                "raw_text": "eligible",
+                "attempt_status": "done",
+                "analysis_status": "failed",
+                "analysis_id": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(module.analyzer_db, "preview_batch_analyzer_candidates", preview)
+
+    resp = await client.post(
+        "/api/analyzer/responses/batch/dry-run",
+        json={
+            "scope": {"response_ids": [101]},
+            "mode": "missing_or_failed_only",
+            "max_count": 200,
+            "sample_limit": 20,
+            "reason": "operator preview",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["dry_run"] is True
+    assert body["eligible_count"] == 1
+    assert body["eligible_response_ids_preview"] == [101]
+    preview.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_single_analyze_compat_validates_like_admin(
+    client, admin_operator, monkeypatch
+) -> None:
+    module = _admin_analyzer_router_module()
+    fetch_status = AsyncMock(return_value={"response_id": 101, "raw_text": "eligible"})
+    monkeypatch.setattr(module.analyzer_db, "fetch_response_analyzer_status", fetch_status)
+
+    resp = await client.post(
+        "/api/analyzer/responses/101/analyze",
+        json={"mode": "replace_all", "reason": "operator retry"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_mode"
+    fetch_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
