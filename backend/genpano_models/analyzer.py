@@ -181,17 +181,11 @@ class AnalyzerRun(Base):
             name="uq_analyzer_runs_response_idempotency",
         ),
         Index(
-            "uq_analyzer_runs_admin_active_response",
+            "uq_analyzer_runs_active_response",
             "response_id",
             unique=True,
-            sqlite_where=text(
-                "status IN ('queued','running') "
-                "AND trigger_source IN ('admin_single','admin_batch')"
-            ),
-            postgresql_where=text(
-                "status IN ('queued','running') "
-                "AND trigger_source IN ('admin_single','admin_batch')"
-            ),
+            sqlite_where=text("status IN ('queued','running')"),
+            postgresql_where=text("status IN ('queued','running')"),
         ),
     )
 
@@ -219,6 +213,10 @@ class AnalyzerRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dispatch_claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
 
 
 class AnalyzerBatch(Base):

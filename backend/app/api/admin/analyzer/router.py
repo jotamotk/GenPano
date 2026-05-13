@@ -56,6 +56,51 @@ def _queued_without_task(item: dict[str, Any]) -> bool:
     return str(item.get("status") or "").lower() == "queued" and not item.get("task_id")
 
 
+def _shape_batch_submit_result(
+    batch: dict[str, Any],
+    *,
+    pending_dispatch_response_ids: list[int] | None = None,
+) -> int:
+    pending_ids = list(pending_dispatch_response_ids or [])
+    response_items = list(batch.get("items") or [])
+    accepted_response_ids = [
+        int(item["response_id"])
+        for item in response_items
+        if item.get("response_id") is not None and item.get("task_id")
+    ]
+    if response_items:
+        batch["submitted_response_ids"] = [
+            int(item["response_id"])
+            for item in response_items
+            if item.get("response_id") is not None and item.get("status") != "skipped"
+        ]
+        batch["failed_response_ids"] = [
+            int(item["response_id"])
+            for item in response_items
+            if item.get("response_id") is not None
+            and str(item.get("status") or "").lower() == "failed"
+        ]
+    batch["accepted_response_ids"] = accepted_response_ids
+    batch["accepted_count"] = len(accepted_response_ids)
+    if pending_ids:
+        batch["dispatch_pending_response_ids"] = pending_ids
+
+    submitted_count = int(batch.get("submitted_count") or 0)
+    if submitted_count > 0 and not accepted_response_ids and not pending_ids:
+        batch.update(
+            {
+                "success": False,
+                "accepted": False,
+                "error": "analyzer_batch_enqueue_failed",
+            }
+        )
+        return 503
+
+    batch["success"] = True
+    batch["accepted"] = bool(accepted_response_ids)
+    return 202 if accepted_response_ids or pending_ids else 200
+
+
 @router.post("/analyzer/responses/batch/dry-run", response_model=None)
 async def analyzer_batch_dry_run(
     request: Request,
@@ -200,6 +245,26 @@ async def analyze_response(
             },
         )
 
+    claim = await analyzer_db.claim_analyzer_run_for_dispatch(
+        session,
+        run_id=int(run["run_id"]),
+    )
+    if not claim.get("claimed"):
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "accepted": True,
+                "idempotent": True,
+                "dispatch_pending": claim.get("reason") == "already_claimed",
+                "response_id": response_id,
+                "mode": normalized["mode"],
+                "run_id": run.get("run_id"),
+                "task_id": claim.get("task_id") or run.get("task_id"),
+                "status": claim.get("status") or run.get("status"),
+            },
+        )
+
     task_id = dispatch_analyze_response(response_id, analyzer_run_id=int(run["run_id"]))
     if task_id is None:
         await analyzer_db.mark_analyzer_run_enqueue_failed(
@@ -312,17 +377,22 @@ async def analyzer_batch_submit(
         operator_id=str(operator.id),
     )
     if batch.get("idempotent"):
+        _shape_batch_submit_result(batch)
         return JSONResponse(status_code=200, content=batch)
 
-    accepted_response_ids: list[int] = []
+    pending_dispatch_response_ids: list[int] = []
     for item in batch.get("items") or []:
         if item.get("status") != "queued" or not item.get("run_id") or not item.get("response_id"):
             continue
         if item.get("task_id"):
-            accepted_response_ids.append(int(item["response_id"]))
             continue
         response_id = int(item["response_id"])
         run_id = int(item["run_id"])
+        claim = await analyzer_db.claim_analyzer_run_for_dispatch(session, run_id=run_id)
+        if not claim.get("claimed"):
+            if claim.get("reason") == "already_claimed":
+                pending_dispatch_response_ids.append(response_id)
+            continue
         task_id = dispatch_analyze_response(response_id, analyzer_run_id=run_id)
         if task_id is None:
             await analyzer_db.mark_analyzer_batch_item_enqueue_failed(
@@ -339,47 +409,14 @@ async def analyzer_batch_submit(
             task_id=task_id,
         )
         item["task_id"] = task_id
-        accepted_response_ids.append(response_id)
 
     refreshed = await analyzer_db.refresh_analyzer_batch_status(session, str(batch["batch_id"]))
     if refreshed:
         batch.update(refreshed)
-    batch["success"] = True
-    response_items = list(batch.get("items") or [])
-    if response_items:
-        submitted_response_ids = [
-            int(item["response_id"])
-            for item in response_items
-            if item.get("response_id") is not None and item.get("status") != "skipped"
-        ]
-        accepted_response_ids = [
-            int(item["response_id"])
-            for item in response_items
-            if item.get("response_id") is not None and item.get("task_id")
-        ]
-        failed_response_ids = [
-            int(item["response_id"])
-            for item in response_items
-            if item.get("response_id") is not None
-            and str(item.get("status") or "").lower() == "failed"
-        ]
-        batch["submitted_response_ids"] = submitted_response_ids
-        batch["failed_response_ids"] = failed_response_ids
-    batch["accepted_response_ids"] = accepted_response_ids
-    batch["accepted_count"] = len(accepted_response_ids)
-    submitted_count = int(batch.get("submitted_count") or 0)
-    if submitted_count > 0 and not accepted_response_ids:
-        batch.update(
-            {
-                "success": False,
-                "accepted": False,
-                "error": "analyzer_batch_enqueue_failed",
-            }
-        )
-        status_code = 503
-    else:
-        batch["accepted"] = bool(accepted_response_ids)
-        status_code = 202 if accepted_response_ids else 200
+    status_code = _shape_batch_submit_result(
+        batch,
+        pending_dispatch_response_ids=pending_dispatch_response_ids,
+    )
     await emit_audit(
         session,
         operator=operator,

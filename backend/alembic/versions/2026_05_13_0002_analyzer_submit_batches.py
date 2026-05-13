@@ -34,6 +34,10 @@ def upgrade() -> None:
     op.execute("ALTER TABLE analyzer_runs ADD COLUMN IF NOT EXISTS task_id VARCHAR(128);")
     op.execute("ALTER TABLE analyzer_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(64);")
     op.execute("ALTER TABLE analyzer_runs ADD COLUMN IF NOT EXISTS batch_item_id INTEGER;")
+    op.execute(
+        "ALTER TABLE analyzer_runs ADD COLUMN IF NOT EXISTS dispatch_claim_token VARCHAR(64);"
+    )
+    op.execute("ALTER TABLE analyzer_runs ADD COLUMN IF NOT EXISTS dispatch_claimed_at TIMESTAMP;")
 
     op.execute(
         """
@@ -81,23 +85,61 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_task_id ON analyzer_runs (task_id);")
     op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_batch_id ON analyzer_runs (batch_id);")
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_response_idempotency "
-        "ON analyzer_runs (response_id, idempotency_key) "
-        "WHERE idempotency_key IS NOT NULL;"
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM analyzer_runs
+                WHERE idempotency_key IS NOT NULL
+                GROUP BY response_id, idempotency_key
+                HAVING COUNT(*) > 1
+            ) THEN
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_response_idempotency
+                ON analyzer_runs (response_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL;
+            END IF;
+        END $$;
+        """
     )
+    op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_admin_active_response;")
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_admin_active_response "
-        "ON analyzer_runs (response_id) "
-        "WHERE status IN ('queued','running') "
-        "AND trigger_source IN ('admin_single','admin_batch');"
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM analyzer_runs
+                WHERE status IN ('queued','running')
+                GROUP BY response_id
+                HAVING COUNT(*) > 1
+            ) THEN
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_runs_active_response
+                ON analyzer_runs (response_id) WHERE status IN ('queued','running');
+            END IF;
+        END $$;
+        """
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_analyzer_batches_status "
         "ON analyzer_batches (status, created_at DESC);"
     )
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_batches_idempotency "
-        "ON analyzer_batches (idempotency_key) WHERE idempotency_key IS NOT NULL;"
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM analyzer_batches
+                WHERE idempotency_key IS NOT NULL
+                GROUP BY idempotency_key
+                HAVING COUNT(*) > 1
+            ) THEN
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_analyzer_batches_idempotency
+                ON analyzer_batches (idempotency_key) WHERE idempotency_key IS NOT NULL;
+            END IF;
+        END $$;
+        """
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_analyzer_batch_items_batch "
@@ -109,6 +151,7 @@ def downgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
 
+    op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_active_response;")
     op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_admin_active_response;")
     op.execute("DROP INDEX IF EXISTS uq_analyzer_runs_response_idempotency;")
     op.execute("DROP INDEX IF EXISTS uq_analyzer_batches_idempotency;")
@@ -118,3 +161,5 @@ def downgrade() -> None:
         op.execute("ALTER TABLE analyzer_runs DROP COLUMN IF EXISTS batch_item_id;")
         op.execute("ALTER TABLE analyzer_runs DROP COLUMN IF EXISTS batch_id;")
         op.execute("ALTER TABLE analyzer_runs DROP COLUMN IF EXISTS task_id;")
+        op.execute("ALTER TABLE analyzer_runs DROP COLUMN IF EXISTS dispatch_claimed_at;")
+        op.execute("ALTER TABLE analyzer_runs DROP COLUMN IF EXISTS dispatch_claim_token;")

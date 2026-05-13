@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from genpano_models import AnalyzerBatch, AnalyzerBatchItem, AnalyzerRun
-from sqlalchemy import bindparam, select, text, update
+from sqlalchemy import bindparam, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 BATCH_DRY_RUN_QUERY_LIMIT = 5000
 ACTIVE_ANALYZER_RUN_STATUSES = {"queued", "running"}
 ACTIVE_ANALYZER_BATCH_STATUSES = {"queued", "running"}
+ANALYZER_RUN_DISPATCH_CLAIM_TIMEOUT_SECONDS = 300
+REQUIRED_ANALYZER_RUN_SUBMIT_INDEXES = {
+    "uq_analyzer_runs_response_idempotency",
+    "uq_analyzer_runs_active_response",
+}
+REQUIRED_ANALYZER_BATCH_SUBMIT_INDEXES = {"uq_analyzer_batches_idempotency"}
 REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS = {
     "id",
     "response_id",
@@ -41,6 +47,8 @@ REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS = {
     "completed_at",
     "failure_code",
     "failure_message",
+    "dispatch_claim_token",
+    "dispatch_claimed_at",
 }
 REQUIRED_ANALYZER_BATCH_COLUMNS = {
     "batch_id",
@@ -85,7 +93,9 @@ async def analyzer_single_submit_ready(session: AsyncSession) -> bool:
     if not await _table_exists(session, "analyzer_runs"):
         return False
     columns = await _table_columns(session, "analyzer_runs")
-    return REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS.issubset(columns)
+    if not REQUIRED_ANALYZER_RUN_SUBMIT_COLUMNS.issubset(columns):
+        return False
+    return await _submit_unique_indexes_ready(session, REQUIRED_ANALYZER_RUN_SUBMIT_INDEXES)
 
 
 async def analyzer_batch_submit_ready(session: AsyncSession) -> bool:
@@ -97,9 +107,11 @@ async def analyzer_batch_submit_ready(session: AsyncSession) -> bool:
         return False
     batch_columns = await _table_columns(session, "analyzer_batches")
     item_columns = await _table_columns(session, "analyzer_batch_items")
-    return REQUIRED_ANALYZER_BATCH_COLUMNS.issubset(
+    if not REQUIRED_ANALYZER_BATCH_COLUMNS.issubset(
         batch_columns
-    ) and REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS.issubset(item_columns)
+    ) or not REQUIRED_ANALYZER_BATCH_ITEM_COLUMNS.issubset(item_columns):
+        return False
+    return await _submit_unique_indexes_ready(session, REQUIRED_ANALYZER_BATCH_SUBMIT_INDEXES)
 
 
 def _isoformat(value: Any) -> str | None:
@@ -159,6 +171,29 @@ async def _table_columns(session: AsyncSession, name: str) -> set[str]:
     except Exception:
         return set()
     return {str(r[1]) for r in rows}
+
+
+async def _submit_unique_indexes_ready(
+    session: AsyncSession,
+    required_indexes: set[str],
+) -> bool:
+    if not required_indexes:
+        return True
+    try:
+        dialect_name = session.get_bind().dialect.name
+    except Exception:
+        return False
+    if dialect_name != "postgresql":
+        return True
+    sql = text(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname IN :index_names"
+    ).bindparams(bindparam("index_names", expanding=True))
+    try:
+        rows = (await session.execute(sql, {"index_names": sorted(required_indexes)})).all()
+    except Exception:
+        return False
+    present = {str(row[0]) for row in rows}
+    return required_indexes.issubset(present)
 
 
 async def fetch_analyzer_stats(session: AsyncSession) -> dict[str, Any]:
@@ -671,6 +706,50 @@ async def create_or_get_queued_analyzer_run(
     raise RuntimeError("failed to create or retrieve analyzer run")
 
 
+async def claim_analyzer_run_for_dispatch(
+    session: AsyncSession,
+    *,
+    run_id: int,
+) -> dict[str, Any]:
+    now = _utcnow_naive()
+    cutoff = now - timedelta(seconds=ANALYZER_RUN_DISPATCH_CLAIM_TIMEOUT_SECONDS)
+    claim_token = f"claim_{uuid.uuid4().hex[:24]}"
+    result = await session.execute(
+        update(AnalyzerRun)
+        .where(
+            AnalyzerRun.id == int(run_id),
+            AnalyzerRun.status == "queued",
+            AnalyzerRun.task_id.is_(None),
+            or_(
+                AnalyzerRun.dispatch_claim_token.is_(None),
+                AnalyzerRun.dispatch_claimed_at.is_(None),
+                AnalyzerRun.dispatch_claimed_at < cutoff,
+            ),
+        )
+        .values(dispatch_claim_token=claim_token, dispatch_claimed_at=now)
+    )
+    await session.commit()
+    if int(getattr(result, "rowcount", 0) or 0) == 1:
+        return {"claimed": True, "claim_token": claim_token, "reason": "claimed"}
+
+    run = await session.get(AnalyzerRun, int(run_id))
+    if run is None:
+        return {"claimed": False, "reason": "missing_run"}
+    if run.status == "queued" and run.task_id is None and run.dispatch_claim_token:
+        return {
+            "claimed": False,
+            "reason": "already_claimed",
+            "status": run.status,
+            "task_id": None,
+        }
+    return {
+        "claimed": False,
+        "reason": "not_claimable",
+        "status": run.status,
+        "task_id": run.task_id,
+    }
+
+
 async def mark_analyzer_run_enqueued(
     session: AsyncSession,
     *,
@@ -680,7 +759,12 @@ async def mark_analyzer_run_enqueued(
     await session.execute(
         update(AnalyzerRun)
         .where(AnalyzerRun.id == int(run_id))
-        .values(task_id=task_id, status="queued")
+        .values(
+            task_id=task_id,
+            status="queued",
+            dispatch_claim_token=None,
+            dispatch_claimed_at=None,
+        )
     )
     await session.commit()
 
@@ -699,6 +783,8 @@ async def mark_analyzer_run_enqueue_failed(
     run.completed_at = _utcnow_naive()
     run.failure_code = "enqueue_failed"
     run.failure_message = failure_message
+    run.dispatch_claim_token = None
+    run.dispatch_claimed_at = None
     restore_status = "done" if str(previous_analysis_status or "").lower() == "done" else "failed"
     await _set_response_analysis_status(session, int(run.response_id), restore_status)
     await session.commit()
@@ -954,7 +1040,12 @@ async def mark_analyzer_batch_item_enqueued(
     await session.execute(
         update(AnalyzerRun)
         .where(AnalyzerRun.id == int(run_id))
-        .values(task_id=task_id, status="queued")
+        .values(
+            task_id=task_id,
+            status="queued",
+            dispatch_claim_token=None,
+            dispatch_claimed_at=None,
+        )
     )
     await session.commit()
 
@@ -1380,6 +1471,7 @@ async def reset_response_for_rerun(session: AsyncSession, response_id: int) -> b
 __all__ = [
     "analyzer_batch_submit_ready",
     "analyzer_single_submit_ready",
+    "claim_analyzer_run_for_dispatch",
     "create_analyzer_batch_submission",
     "create_or_get_queued_analyzer_run",
     "fetch_analyzer_batch_status",
