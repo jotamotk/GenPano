@@ -34,6 +34,8 @@ from sqlalchemy import and_, case, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
+    ANALYZER_FACT_PACKAGE_SOURCE,
+    ANALYZER_FACT_PACKAGE_V3_SOURCE,
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_NO_EVIDENCE_STATUS,
     FORMULA_OK_STATUS,
@@ -202,7 +204,7 @@ def _missing_analyzer_metric_evidence(metric_keys: list[str]) -> dict[str, dict[
             "metric_key": evidence_key,
             "formula_status": FORMULA_MISSING_INPUTS_STATUS,
             "reason_codes": ["missing_analyzer_fact_packages"],
-            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "source_tables": [ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE],
             "fact_classes": [evidence_key],
             "sample_response_ids": [],
         }
@@ -265,8 +267,19 @@ async def _chart_contract_update(
         and not (allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows)
     ):
         evidence = _missing_analyzer_metric_evidence(metric_keys)
-        missing_inputs.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
+        missing_inputs.extend([ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE])
         missing_reasons.append("missing_analyzer_fact_packages")
+
+    if not evidence and not require_analyzer_package:
+        return {
+            "metric_formula_evidence": evidence,
+            "evidence_counts": {
+                **getattr(out, "evidence_counts", {}),
+                **context.evidence_counts,
+            },
+            "selected_filters": context.selected_filters,
+            "source_provenance": context.source_provenance,
+        }
 
     if not missing_inputs and not missing_reasons:
         return {
@@ -303,7 +316,8 @@ async def _chart_contract_update(
         "missing_sources": _unique(
             [
                 *getattr(out, "missing_sources", []),
-                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                ANALYZER_FACT_PACKAGE_SOURCE,
             ]
         ),
         "missing_reasons": _unique([*getattr(out, "missing_reasons", []), *missing_reasons]),
@@ -376,7 +390,7 @@ async def _with_sentiment_by_engine_contract(
     )
     if not update:
         return out
-    if _contract_metric_non_ok(update, "sentiment"):
+    if update.get("formula_status") != FORMULA_OK_STATUS:
         update["items"] = []
     return out.model_copy(update=update)
 
@@ -522,6 +536,18 @@ async def _with_sentiment_trend_contract(
         return out
     if _contract_metric_non_ok(update, "sentiment"):
         update["items"] = []
+    else:
+        update.update(
+            {
+                "state": out.state,
+                "state_reason": out.state_reason,
+                "missing_inputs": out.missing_inputs,
+                "missing_sources": out.missing_sources,
+                "missing_reasons": out.missing_reasons,
+                "formula_status": out.formula_status,
+                "formula_diagnostics": out.formula_diagnostics,
+            }
+        )
     return out.model_copy(update=update)
 
 
@@ -957,13 +983,12 @@ async def _topic_heatmap_from_facts(
     project: Project,
     fact_rows: list[dict[str, Any]],
     *,
+    brand_id: int,
     metric: str,
     compare_with: list[int],
     top_n: int,
 ) -> tuple[list[HeatmapRow], int]:
-    primary = project.primary_brand_id
-    if primary is None:
-        return [], 0
+    primary = brand_id
 
     topic_buckets: dict[int, dict[str, Any]] = {}
     seen: set[int] = set()
@@ -1605,6 +1630,7 @@ async def get_topic_heatmap(
             session,
             project,
             fact_rows,
+            brand_id=primary,
             metric=metric,
             compare_with=compare_with,
             top_n=top_n,
@@ -2647,9 +2673,10 @@ async def get_citation_composition(
     engines: list[str] | None = None,
     segment_id: str | None = None,
     profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> CitationCompositionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    primary = project.primary_brand_id
+    primary = brand_id_override if brand_id_override is not None else project.primary_brand_id
     if primary is None:
         return CitationCompositionOut(
             project_id=project.id,
@@ -2669,6 +2696,7 @@ async def get_citation_composition(
             engines=engines,
             segment_id=segment_id,
             profile_id=profile_id,
+            brand_id_override=primary,
         )
         evidence_count = _response_evidence_count(fact_rows)
         response_ids = sorted(
@@ -2710,6 +2738,7 @@ async def get_citation_composition(
             from_d,
             to_d,
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+            brand_id=primary,
         )
     stmt = (
         select(DomainAuthority.tier, func.count())
@@ -2751,7 +2780,9 @@ async def get_citation_composition(
             )
         )
     if total == 0:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+        fact_rows = await _admin_fact_rows(
+            session, project, from_d, to_d, brand_id_override=primary
+        )
         evidence_count = _response_evidence_count(fact_rows)
         fact_segments, fact_total = await _target_citation_composition_rows(
             session,
@@ -2779,6 +2810,7 @@ async def get_citation_composition(
                 from_d,
                 to_d,
                 source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+                brand_id=primary,
             )
         out = CitationCompositionOut(
             project_id=project.id,
@@ -2797,6 +2829,7 @@ async def get_citation_composition(
             from_d,
             to_d,
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+            brand_id=primary,
         )
     out = CitationCompositionOut(
         project_id=project.id,
@@ -2815,6 +2848,7 @@ async def get_citation_composition(
         from_d,
         to_d,
         source_provenance=["citation_sources", "brand_mentions"],
+        brand_id=primary,
     )
 
 

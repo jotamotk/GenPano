@@ -25,6 +25,8 @@ from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
+    ANALYZER_FACT_PACKAGE_SOURCE,
+    ANALYZER_FACT_PACKAGE_V3_SOURCE,
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_OK_STATUS,
     FORMULA_PARTIAL_STATUS,
@@ -202,7 +204,7 @@ def _missing_analyzer_evidence(metric_keys: list[str]) -> dict[str, dict[str, An
             "metric_key": evidence_key,
             "formula_status": FORMULA_MISSING_INPUTS_STATUS,
             "reason_codes": ["missing_analyzer_fact_packages"],
-            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "source_tables": [ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE],
             "fact_classes": [evidence_key],
             "sample_response_ids": [],
         }
@@ -458,18 +460,23 @@ async def _metrics_from_admin_facts(
                 "formula_status": FORMULA_PARTIAL_STATUS,
                 "formula_diagnostics": formula_diagnostics_for(
                     FORMULA_PARTIAL_STATUS,
-                    missing_inputs=["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+                    missing_inputs=[
+                        ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                        ANALYZER_FACT_PACKAGE_SOURCE,
+                    ],
                 ),
                 "missing_inputs": _unique(
                     [
                         *context.missing_inputs,
-                        "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                        ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                        ANALYZER_FACT_PACKAGE_SOURCE,
                     ]
                 ),
                 "missing_sources": _unique(
                     [
                         *context.missing_sources,
-                        "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                        ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                        ANALYZER_FACT_PACKAGE_SOURCE,
                     ]
                 ),
                 "missing_reasons": _unique(
@@ -1053,21 +1060,45 @@ async def get_sentiment(
                 or ["brand_mentions", "response_analyses", "admin_facts"],
             )
             update = context_update(context)
-            missing_reasons = list(admin_sentiment.missing_reasons)
-            if (
-                context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
-                and not context.metric_formula_evidence
-                and context.evidence_counts.get("response_analysis_count", 0) > 0
-            ):
-                missing_reasons.append("missing_analyzer_fact_packages")
-                update["formula_status"] = FORMULA_PARTIAL_STATUS
-                update["formula_diagnostics"] = formula_diagnostics_for(
-                    FORMULA_PARTIAL_STATUS,
-                    missing_inputs=admin_sentiment.missing_inputs,
+            if not context.metric_formula_evidence:
+                missing_inputs = list(admin_sentiment.missing_inputs)
+                missing_sources = list(admin_sentiment.missing_sources)
+                missing_reasons = list(admin_sentiment.missing_reasons)
+                formula_status = admin_sentiment.formula_status
+                formula_diagnostics = admin_sentiment.formula_diagnostics
+                if (
+                    context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+                    and context.evidence_counts.get("response_analysis_count", 0) > 0
+                ):
+                    missing_inputs.extend(
+                        [
+                            ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                            ANALYZER_FACT_PACKAGE_SOURCE,
+                        ]
+                    )
+                    missing_sources.extend(
+                        [
+                            ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                            ANALYZER_FACT_PACKAGE_SOURCE,
+                        ]
+                    )
+                    missing_reasons.append("missing_analyzer_fact_packages")
+                    formula_status = FORMULA_PARTIAL_STATUS
+                    formula_diagnostics = formula_diagnostics_for(
+                        FORMULA_PARTIAL_STATUS,
+                        missing_inputs=missing_inputs,
+                    )
+                update.update(
+                    {
+                        "state": admin_sentiment.state,
+                        "state_reason": admin_sentiment.state_reason,
+                        "missing_inputs": _unique(missing_inputs),
+                        "missing_sources": _unique(missing_sources),
+                        "missing_reasons": _unique(missing_reasons),
+                        "formula_status": formula_status,
+                        "formula_diagnostics": formula_diagnostics,
+                    }
                 )
-            update["missing_inputs"] = list(admin_sentiment.missing_inputs)
-            update["missing_sources"] = list(admin_sentiment.missing_sources)
-            update["missing_reasons"] = _unique(missing_reasons)
             return admin_sentiment.model_copy(update=update)
 
     # ── distribution: aggregate brand_mentions.sentiment for this brand ─
@@ -1412,19 +1443,22 @@ async def get_citations(
                         "formula_diagnostics": formula_diagnostics_for(
                             FORMULA_PARTIAL_STATUS,
                             missing_inputs=[
-                                "response_analyses.raw_analysis_json.analyzer_fact_packages"
+                                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                                ANALYZER_FACT_PACKAGE_SOURCE,
                             ],
                         ),
                         "missing_inputs": _unique(
                             [
                                 *context.missing_inputs,
-                                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                                ANALYZER_FACT_PACKAGE_SOURCE,
                             ]
                         ),
                         "missing_sources": _unique(
                             [
                                 *context.missing_sources,
-                                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                                ANALYZER_FACT_PACKAGE_SOURCE,
                             ]
                         ),
                         "missing_reasons": _unique(
