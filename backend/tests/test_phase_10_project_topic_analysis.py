@@ -622,6 +622,38 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
 
 
 @pytest.mark.asyncio
+async def test_query_response_detail_coverage_is_scoped_to_selected_response(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    await db_session.execute(
+        text("UPDATE response_analyses SET raw_analysis_json = NULL WHERE response_id = 403")
+    )
+    await db_session.commit()
+    headers = _bearer(user)
+
+    analyzed = await client.get(
+        f"/api/v1/projects/{project.id}/queries/301/response",
+        headers=headers,
+    )
+    missing = await client.get(
+        f"/api/v1/projects/{project.id}/queries/304/response",
+        headers=headers,
+    )
+
+    assert analyzed.status_code == 200, analyzed.text
+    assert missing.status_code == 200, missing.text
+    analyzed_coverage = analyzed.json()["metric_formula_evidence"]["coverage"]
+    missing_coverage = missing.json()["metric_formula_evidence"]["coverage"]
+    assert analyzed_coverage["formula_status"] == "ok"
+    assert analyzed_coverage["eligible_response_count"] == 1
+    assert analyzed_coverage["sample_response_ids"] == [401]
+    assert missing_coverage["formula_status"] == "partial"
+    assert missing_coverage["sample_response_ids"] == [403]
+    assert "missing_analyzer_fact_packages" in missing_coverage["reason_codes"]
+
+
+@pytest.mark.asyncio
 async def test_topic_monitoring_uses_project_primary_text_match_when_fact_brand_fk_is_wrong(
     client, db_session, user
 ):

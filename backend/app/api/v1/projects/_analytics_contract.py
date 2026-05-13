@@ -351,9 +351,10 @@ def _as_v3_package(payload: dict[str, Any]) -> dict[str, Any] | None:
     normalized_coverage = dict(coverage)
     normalized_coverage.setdefault("status", coverage_status)
     normalized_coverage.setdefault("formula_status", coverage_status)
+    eligible_basis = _json_int(coverage.get("eligible_response_count_basis"))
     normalized_coverage.setdefault(
         "eligible_count",
-        int(coverage.get("eligible_response_count_basis") or (1 if response_id is not None else 0)),
+        eligible_basis if eligible_basis is not None else (1 if response_id is not None else 0),
     )
     normalized_coverage.setdefault("analyzed_count", 1 if analyzed else 0)
     normalized_coverage.setdefault("failed_count", 1 if parse_status == "failed" else 0)
@@ -961,6 +962,19 @@ async def _project_eligible_response_ids(
         to_date=to_date,
     )
     if pinned_response_ids is not None:
+        if project.primary_brand_id is None or int(project.primary_brand_id) != int(brand_id):
+            rows = await _fact_rows(
+                session,
+                project,
+                filters=AnalysisFilters(from_date=from_date, to_date=to_date),
+                brand_id_override=brand_id,
+            )
+            scoped_response_ids = {
+                int(response_id)
+                for row in rows
+                if (response_id := row.get("response_id")) is not None
+            }
+            return pinned_response_ids & scoped_response_ids
         return pinned_response_ids
     if all(
         [
@@ -1145,6 +1159,7 @@ async def build_contract_context(
     formula_status: str | None = None,
     selected_filters: dict[str, Any] | None = None,
     source_provenance: list[str] | None = None,
+    target_response_ids: set[int] | None = None,
 ) -> AnalyticsContractContext:
     competitor_ids = await _competitor_ids(session, project)
     missing_sources = list(base_missing_sources or [])
@@ -1261,14 +1276,18 @@ async def build_contract_context(
             await legacy_table_exists(session, "queries"),
         ]
     )
-    target_response_ids = await _project_eligible_response_ids(
-        session,
-        project,
-        brand_id,
-        from_date=from_date,
-        to_date=to_date,
-        from_dt=from_dt,
-        to_dt=to_dt,
+    target_response_ids = (
+        set(target_response_ids)
+        if target_response_ids is not None
+        else await _project_eligible_response_ids(
+            session,
+            project,
+            brand_id,
+            from_date=from_date,
+            to_date=to_date,
+            from_dt=from_dt,
+            to_dt=to_dt,
+        )
     )
     analysis_rows = (
         await session.execute(

@@ -2207,6 +2207,7 @@ async def get_query_response_detail(
         base_state="ok" if response is not None else "partial",
         base_state_reason="data_available" if response is not None else "missing_response",
         selected_filters={"query_id": int(query_id), "response_id": response_id},
+        target_response_ids={response_id} if response_id is not None else None,
         source_provenance=[
             "admin_facts",
             "response_analyses",

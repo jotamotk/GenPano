@@ -23,6 +23,7 @@ from genpano_models import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import _as_v3_package
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -520,6 +521,16 @@ def _assert_selected_project_missing_contract(body: dict[str, Any]) -> None:
     assert body["metric_formula_evidence"]["coverage"]["sample_response_ids"] == [68704]
 
 
+def test_v3_package_preserves_zero_eligible_response_count_basis() -> None:
+    package = _bestcoffer_package_v3(response_id=68704)
+    package["coverage"]["eligible_response_count_basis"] = 0
+
+    normalized = _as_v3_package({"analyzer_fact_package_v3": package})
+
+    assert normalized is not None
+    assert normalized["coverage"]["eligible_count"] == 0
+
+
 @pytest.mark.asyncio
 async def test_brand_override_on_unbound_project_returns_project_binding_state(
     client,
@@ -737,6 +748,85 @@ async def test_sentiment_and_citations_honor_requested_brand_override(
     assert detail_body["formula_status"] in {"ok", "missing_required_inputs"}
     assert detail_body["metric_formula_evidence"]["pano_geo"]["formula_status"] == "ok"
     assert detail_body["analyzer_coverage"]["analyzer_package_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pinned_topic_eligibility_honors_requested_brand_override(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user, primary_brand_id=12)
+    await _seed_admin_chain_tables(db_session)
+    db_session.add(ProjectTopicPin(project_id=project.id, topic_id=71201, state="tracked"))
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (71201, 12, 'Estee Lauder serum routine', 'brand', 'active', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES (71202, 71201, 'Estee Lauder serum recommendations',
+                    'commercial', 'non_branded', 'en', 'active', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES (71203, 'deepseek', 'done', 'Estee Lauder serum recommendations',
+                    12, 'PROF-712', 71202, :day, :day, :day, 100)
+            """
+        ),
+        {"day": DAY},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES (71204, 71203, 71202, 'Estee Lauder has collected response text.',
+                    'deepseek', 'commercial', 'deepseek-v3', '[]', :day)
+            """
+        ),
+        {"day": DAY},
+    )
+    package = _bestcoffer_package_v3(response_id=71204)
+    package["source_brand_id"] = 12
+    package["target_brand_id"] = 12
+    package["entities"]["target"]["brand_id"] = 12
+    package["entities"]["target"]["canonical_name"] = "Estee Lauder"
+    db_session.add(_analysis_v3(71204, package))
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/metrics",
+        headers=_bearer(user),
+        params={
+            "brand_id": BESTCOFFER_BRAND_ID,
+            "from": DAY.date().isoformat(),
+            "to": DAY.date().isoformat(),
+            "series": "mention_rate,sov,sentiment,citation",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["selected_filters"]["brand_id"] == BESTCOFFER_BRAND_ID
+    assert body["evidence_counts"]["admin_fact_response_count"] == 0
+    assert body["evidence_counts"]["response_analysis_count"] == 0
 
 
 @pytest.mark.asyncio
