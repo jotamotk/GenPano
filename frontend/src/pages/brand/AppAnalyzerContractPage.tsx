@@ -16,41 +16,67 @@ const STATUS_STYLES = {
 
 const TRUST_STATES = [
   {
-    label: 'Analysis coverage missing',
+    code: 'missing_analyzer_rows',
+    label: 'Analyzer rows missing',
     behavior: 'Show Needs review and withhold values that depend on missing analyzed answers.',
   },
   {
+    code: 'insufficient_coverage',
     label: 'Coverage incomplete',
     behavior: 'Show analyzed / eligible / missing counts beside the metric.',
   },
   {
+    code: 'missing_competitive_extraction',
     label: 'Competitor evidence incomplete',
     behavior: 'Do not render SoV or competitor charts as valid business values.',
   },
   {
+    code: 'target_only_sov',
     label: 'Target-only SoV',
     behavior: 'Show partial SoV; never turn target-only evidence into 100%.',
   },
   {
+    code: 'unresolved_citation_attribution',
     label: 'Citation attribution unresolved',
     behavior: 'Separate unresolved citations from target-attributed citation metrics.',
   },
   {
+    code: 'missing_sentiment_quote',
     label: 'Sentiment quote missing',
     behavior: 'Keep sentiment explanatory modules partial until quotes are present.',
   },
   {
+    code: 'valid_zero',
     label: 'Valid zero',
-    behavior: 'Render 0 only when the response includes complete numerator and denominator proof.',
+    behavior: 'Render 0 only when formula_status is ok and the numerator/denominator are present.',
   },
 ]
 
-const EVIDENCE_EXAMPLE = [
-  ['Coverage', '34 analyzed / 56 eligible / 22 missing'],
-  ['SoV evidence', '30 target mentions / 138 competitive mentions'],
-  ['Citation readiness', '183 citations still need attribution before target citation KPIs are shown'],
-  ['PANO/GEO readiness', 'Aggregate rows are not ready yet, so score cards stay in review'],
-]
+const PAYLOAD_EXAMPLE = `{
+  "formula_status": "partial",
+  "metric_formula_evidence": {
+    "sov": {
+      "formula_status": "partial",
+      "numerator": 30,
+      "denominator": 138,
+      "reason_codes": ["missing_analyzer_rows", "insufficient_coverage"]
+    },
+    "citation": {
+      "formula_status": "partial",
+      "numerator": 0,
+      "denominator": 183,
+      "reason_codes": ["unresolved_citation_attribution"]
+    }
+  },
+  "missing_inputs": ["geo_score_daily"],
+  "analyzer_coverage": {
+    "eligible_response_count": 56,
+    "analyzed_response_count": 34,
+    "missing_response_count": 22,
+    "failed_response_count": 0,
+    "analyzer_version": "v3"
+  }
+}`
 
 function TextList({ items }: { items: string[] }) {
   return (
@@ -205,9 +231,10 @@ export default function AppAnalyzerContractPage() {
           </div>
           <div className="divide-y divide-themed-card">
             {TRUST_STATES.map((state) => (
-              <div key={state.label} className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] gap-2 px-4 py-3">
+              <div key={state.code} className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] gap-2 px-4 py-3">
                 <div>
-                  <div className="text-sm font-semibold text-themed-primary">{state.label}</div>
+                  <code className="text-[11px] text-themed-accent">{state.code}</code>
+                  <div className="mt-1 text-sm font-semibold text-themed-primary">{state.label}</div>
                 </div>
                 <div className="text-xs leading-relaxed text-themed-muted">{state.behavior}</div>
               </div>
@@ -216,18 +243,13 @@ export default function AppAnalyzerContractPage() {
         </Card>
 
         <Card className="p-4">
-          <h3 className="text-sm font-semibold text-themed-primary">Evidence example</h3>
+          <h3 className="text-sm font-semibold text-themed-primary">Payload example</h3>
           <p className="mt-1 text-xs text-themed-muted">
             Screenshot-class coverage: 34 analyzed / 56 eligible / 22 missing.
           </p>
-          <div className="mt-3 divide-y divide-themed-card rounded-btn border border-themed-subtle bg-themed-subtle">
-            {EVIDENCE_EXAMPLE.map(([label, value]) => (
-              <div key={label} className="grid grid-cols-[150px_minmax(0,1fr)] gap-3 px-3 py-2">
-                <div className="text-[11px] font-medium text-themed-muted">{label}</div>
-                <div className="text-[11px] leading-relaxed text-themed-primary">{value}</div>
-              </div>
-            ))}
-          </div>
+          <pre className="mt-3 max-h-[420px] overflow-auto rounded-btn bg-themed-subtle p-3 text-[11px] leading-relaxed text-themed-primary">
+            <code>{PAYLOAD_EXAMPLE}</code>
+          </pre>
         </Card>
       </div>
 

@@ -39,6 +39,7 @@ export default function KpiCard({
   const deltaText = delta > 0 ? `+${delta}` : String(delta);
   const showTrustState = Boolean(trustState && trustState.tone !== 'ok');
   const displayValue = trustState && trustState.canShowValue === false ? '—' : value;
+  const showDelta = delta !== undefined && !showTrustState;
   const trustVariant =
     trustState?.tone === 'missing'
       ? 'secondary'
@@ -57,12 +58,12 @@ export default function KpiCard({
         <MetricLabel helpText={helpText} className="text-sm text-themed-muted font-medium">
           {label}
         </MetricLabel>
-        {delta !== undefined && (
+        {showDelta && (
           <Badge variant={deltaVariant} size="sm">
             {deltaText} {deltaLabel}
           </Badge>
         )}
-        {delta === undefined && showTrustState && (
+        {showTrustState && (
           <Badge variant={trustVariant} size="sm">
             {trustState.label}
           </Badge>

@@ -8,6 +8,9 @@ from typing import Any
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?86)?(1\d{2})\d{4}(\d{4})(?!\d)")
 E164_PHONE_RE = re.compile(r"(?<!\d)(\+?\d{10,15})(?!\d)")
 SMS_CODE_RE = re.compile(r"(?<!\*)\b\d{4,8}\b")
+URL_CREDENTIALS_RE = re.compile(
+    r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+)(?::([^/\s@]*))?@"
+)
 SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|token|secret|authorization|cookie|set-cookie)"
     r"([\"'\s:=]+)"
@@ -35,6 +38,7 @@ def redact_sensitive_text(value: Any) -> str:
     if value is None:
         return ""
     redacted = str(value)
+    redacted = URL_CREDENTIALS_RE.sub(r"\1[credentials-redacted]@", redacted)
     redacted = PHONE_RE.sub(r"\1****\2", redacted)
     redacted = E164_PHONE_RE.sub(lambda match: mask_phone(match.group(1)), redacted)
     redacted = SECRET_RE.sub(r"\1\2[redacted]", redacted)

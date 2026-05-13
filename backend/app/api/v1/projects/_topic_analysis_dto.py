@@ -63,6 +63,17 @@ class TopicMonitoringOut(BaseModel):
     topics: list[TopicMonitoringRow]
     intent_matrix: list[TopicIntentMatrixRow] = Field(default_factory=list)
     state: str = "ok"
+    state_reason: str = "data_available"
+    evidence_count: int = 0
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    missing_inputs: list[str] = Field(default_factory=list)
+    missing_sources: list[str] = Field(default_factory=list)
+    missing_reasons: list[str] = Field(default_factory=list)
+    formula_status: str = "no_evidence"
+    formula_diagnostics: Any = Field(default_factory=dict)
+    metric_formula_evidence: dict[str, object] = Field(default_factory=dict)
+    selected_filters: dict[str, object] = Field(default_factory=dict)
+    source_provenance: list[str] = Field(default_factory=list)
 
 
 class TopicPromptRow(BaseModel):

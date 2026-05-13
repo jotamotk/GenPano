@@ -1295,7 +1295,8 @@ async def build_contract_context(
         }
     )
 
-    if has_any_evidence and eligible_response_count <= 0:
+    requires_geo_denominator = "geo_score_daily" in provenance
+    if has_any_evidence and requires_geo_denominator and eligible_response_count <= 0:
         missing_inputs.append("eligible_response_denominator")
         missing_sources.append("eligible_response_denominator")
         if geo_rows:

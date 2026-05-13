@@ -35,6 +35,8 @@ from app.api.v1.projects._analytics_contract import (
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_NO_EVIDENCE_STATUS,
     FORMULA_OK_STATUS,
+    FORMULA_PARTIAL_STATUS,
+    FORMULA_PENDING_STATUS,
     AnalyticsContractContext,
     MetricValue,
     ValueRange,
@@ -234,6 +236,30 @@ def _apply_kpi_contract(
             )
         )
     return out
+
+
+def _missing_analyzer_evidence(metric_keys: list[str]) -> dict[str, dict[str, Any]]:
+    evidence_key_by_metric = {
+        "mention_rate": "coverage",
+        "avg_mention_rate": "coverage",
+        "citation_rate": "citation",
+        "avg_citation_rate": "citation",
+        "avg_sentiment": "sentiment",
+        "avg_sov": "sov",
+    }
+    return {
+        evidence_key: {
+            "metric_key": evidence_key,
+            "formula_status": FORMULA_MISSING_INPUTS_STATUS,
+            "reason_codes": ["missing_analyzer_fact_packages"],
+            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "fact_classes": [evidence_key],
+            "sample_response_ids": [],
+        }
+        for evidence_key in _unique(
+            [evidence_key_by_metric.get(metric_key, metric_key) for metric_key in metric_keys]
+        )
+    }
 
 
 async def _score_components(
@@ -874,7 +900,57 @@ async def get_brand_overview(
         to_date=to_d,
         has_data=has_data,
         base_state=state,
+        source_provenance=["admin_facts"] if admin_fact_overview is not None else None,
     )
+    if (
+        admin_fact_overview is not None
+        and context.formula_status == FORMULA_OK_STATUS
+        and context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
+    ):
+        pending_status = (
+            FORMULA_PARTIAL_STATUS
+            if brand_id_override is not None and brand_id_override == project.primary_brand_id
+            else FORMULA_PENDING_STATUS
+        )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state="partial",
+            base_state_reason=(
+                "partial_analyzer_data"
+                if pending_status == FORMULA_PARTIAL_STATUS
+                else "formula_pending_upstream"
+            ),
+            formula_status=pending_status,
+            source_provenance=["admin_facts"],
+        )
+        if pending_status == FORMULA_PARTIAL_STATUS and not context.metric_formula_evidence:
+            context = context.model_copy(
+                update={
+                    "missing_inputs": _unique(
+                        [
+                            *context.missing_inputs,
+                            "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                        ]
+                    ),
+                    "missing_sources": _unique(
+                        [
+                            *context.missing_sources,
+                            "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                        ]
+                    ),
+                    "missing_reasons": _unique(
+                        [*context.missing_reasons, "missing_analyzer_fact_packages"]
+                    ),
+                    "metric_formula_evidence": _missing_analyzer_evidence(
+                        ["geo_score", "sov", "sentiment", "citation"]
+                    ),
+                }
+            )
     kpi_cards = _apply_kpi_contract(
         kpi_cards,
         context,

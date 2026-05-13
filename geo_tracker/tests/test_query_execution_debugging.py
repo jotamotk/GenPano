@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -708,6 +709,295 @@ async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
 
     assert reason == "doubao_not_logged_in"
     assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+def test_doubao_visual_challenge_text_is_classified_as_image_load_failure(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import _doubao_visual_challenge_state_from_text
+
+    body_text = (
+        "bestCoffer \u5728\u4fbf\u643a\u5496\u5561\u673a\u54c1\u7c7b\u6709\u54ea\u4e9b\u4f18\u52bf\uff1f\n"
+        "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+        "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+        "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+        "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+        "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4"
+    )
+
+    state = _doubao_visual_challenge_state_from_text(body_text)
+
+    assert state["reason"] == "doubao_image_challenge_load_failed"
+    assert state["imageLoadFailed"] is True
+    assert "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f" in state["modalText"]
+    assert "5202" in state["modalText"]
+
+
+@pytest.mark.asyncio
+async def test_doubao_runtime_snapshot_preserves_visual_challenge_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor
+
+    challenge_text = (
+        "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+        "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+        "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+        "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+        "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4"
+    )
+
+    class FakePage:
+        async def evaluate(self, script, selector_payload):
+            assert "challengeLikeNodes" in script
+            return {
+                "url": "https://www.doubao.com/chat/",
+                "title": "Doubao",
+                "readyState": "complete",
+                "activeElement": None,
+                "bodyText": challenge_text,
+                "inputSelectors": [],
+                "responseSelectors": [],
+                "loginLikeNodes": [],
+                "challengeLikeNodes": [
+                    {
+                        "selector": "[role='dialog']",
+                        "count": 1,
+                        "visibleCount": 1,
+                        "firstText": challenge_text,
+                        "firstHtml": "<div role='dialog'>challenge</div>",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(guest_executor, "SCREENSHOT_DIR", tmp_path)
+
+    path = await guest_executor._save_runtime_snapshot(
+        FakePage(),
+        184406,
+        "doubao_image_challenge_load_failed",
+        config={"url": "https://www.doubao.com/chat/", "input_selector": "", "response_selector": ""},
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["doubaoVisualChallenge"]["reason"] == "doubao_image_challenge_load_failed"
+    assert payload["doubaoVisualChallenge"]["imageLoadFailed"] is True
+    assert "5202" in payload["doubaoVisualChallenge"]["modalText"]
+
+
+@pytest.mark.asyncio
+async def test_doubao_visual_challenge_overrides_homepage_content_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return (
+                "bestCoffer \u5728\u4fbf\u643a\u5496\u5561\u673a\u54c1\u7c7b\u6709\u54ea\u4e9b\u4f18\u52bf\uff1f\n"
+                "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+                "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+                "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+                "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+                "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4"
+            )
+
+        async def content(self):
+            return """
+            <main>
+              <textarea>bestCoffer</textarea>
+              <div class="send-msg-bubble-bg">bestCoffer query</div>
+            </main>
+            <div role="dialog" class="verify-modal">
+              <h2>\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f</h2>
+              <p>\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9</p>
+              <p>\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]</p>
+              <button>\u5237\u65b0</button><button>\u53cd\u9988</button><button>\u63d0\u4ea4</button>
+            </div>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "doubao_homepage_content"
+
+    reason = await executor._prefer_doubao_visual_challenge_reason("doubao", FakePage())
+
+    assert reason == "doubao_image_challenge_load_failed"
+    assert executor.last_error_reason == "doubao_image_challenge_load_failed"
+
+
+@pytest.mark.asyncio
+async def test_doubao_auth_state_overrides_visual_challenge_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return (
+                "bestCoffer \u5728\u4fbf\u643a\u5496\u5561\u673a\u54c1\u7c7b\u6709\u54ea\u4e9b\u4f18\u52bf\uff1f\n"
+                "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+                "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+                "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+                "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+                "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4\n"
+                "\u767b\u5f55"
+            )
+
+        async def content(self):
+            return """
+            <main>
+              <textarea>bestCoffer</textarea>
+              <div class="send-msg-bubble-bg">bestCoffer query</div>
+            </main>
+            <div role="dialog" class="verify-modal">
+              <h2>\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f</h2>
+              <p>\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9</p>
+              <p>\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]</p>
+              <button>\u5237\u65b0</button><button>\u53cd\u9988</button><button>\u63d0\u4ea4</button>
+            </div>
+            <header><button class="login-button">\u767b\u5f55</button></header>
+            """
+
+    executor = GuestQueryExecutor()
+
+    challenge_reason = await executor._prefer_doubao_visual_challenge_reason(
+        "doubao", FakePage()
+    )
+    auth_reason = await executor._prefer_doubao_auth_failure_reason("doubao", FakePage())
+
+    assert challenge_reason == "doubao_image_challenge_load_failed"
+    assert auth_reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_doubao_no_response_extraction_path_prefers_auth_over_visual_challenge(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop_artifact(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(guest_executor, "_save_html", _noop_artifact)
+    monkeypatch.setattr(guest_executor, "_save_screenshot", _noop_artifact)
+    monkeypatch.setattr(guest_executor, "_save_runtime_snapshot", _noop_artifact)
+
+    query_text = "bestCoffer portable coffee maker advantages"
+    body_text = (
+        f"{query_text}\n"
+        "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+        "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+        "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+        "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+        "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4\n"
+        "\u767b\u5f55"
+    )
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *args, **kwargs):
+            return None
+
+        async def fill(self, *args, **kwargs):
+            return None
+
+        async def evaluate(self, *args, **kwargs):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *args, **kwargs):
+            return None
+
+        async def type(self, *args, **kwargs):
+            return None
+
+    class FakeMouse:
+        async def move(self, *args, **kwargs):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *args, **kwargs):
+            return None
+
+        async def evaluate_handle(self, *args, **kwargs):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, *args, **kwargs):
+            return None
+
+        async def query_selector_all(self, *args, **kwargs):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "document.body?.innerText" in script_text:
+                return body_text
+            if "queryText" in script_text:
+                return True
+            return ""
+
+        async def content(self):
+            return f"""
+            <main>
+              <textarea>{query_text}</textarea>
+              <div class="send-msg-bubble-bg">{query_text}</div>
+            </main>
+            <div role="dialog" class="verify-modal">
+              <h2>\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f</h2>
+              <p>\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9</p>
+              <p>\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]</p>
+              <button>\u5237\u65b0</button><button>\u53cd\u9988</button><button>\u63d0\u4ea4</button>
+            </div>
+            <header><button class="login-button">\u767b\u5f55</button></header>
+            """
+
+    executor = GuestQueryExecutor()
+    response = await executor._browser_query(
+        FakePage(),
+        {
+            "input_selector": "textarea",
+            "response_selector": "[data-testid='receive_message']",
+            "submit_button": "",
+            "wait_after_submit": 0,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184406,
+        runtime_events=[],
+    )
+
+    assert response == ("", "", [])
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+def test_doubao_visual_challenge_does_not_penalize_llm_account():
+    assert _should_report_account_failure("doubao_visual_challenge") is False
+    assert _should_report_account_failure("doubao_image_challenge_load_failed") is False
 
 
 def test_query_execution_debug_fields_are_populated():

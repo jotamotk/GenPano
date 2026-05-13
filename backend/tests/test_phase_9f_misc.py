@@ -3,9 +3,11 @@ html / screenshot / backfill_citations / queries-by-day)."""
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import tempfile
+import types
 import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
@@ -63,6 +65,25 @@ def _misc_router_module():
     import app.api.misc.router  # noqa: F401
 
     return sys.modules["app.api.misc.router"]
+
+
+def _misc_dispatch_module():
+    import app.admin.misc.celery_dispatch  # noqa: F401
+
+    return sys.modules["app.admin.misc.celery_dispatch"]
+
+
+def _patch_backend_celery_fallback(monkeypatch, celery_app):
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "geo_tracker.celery_app":
+            raise ModuleNotFoundError(name)
+        if name == "app.celery_app":
+            return types.SimpleNamespace(celery_app=celery_app)
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
 
 # ── lib.py ──────────────────────────────────────────────────
@@ -214,6 +235,99 @@ async def test_queries_by_day_unauth_401(client):
 # ── sms_register ────────────────────────────────────────────
 
 
+def test_sms_register_uses_backend_celery_app_when_geo_tracker_app_module_is_absent(
+    monkeypatch,
+):
+    dispatch = _misc_dispatch_module()
+    sent: list[tuple[str, dict[str, object], str | None]] = []
+
+    class FakeResult:
+        id = "task-fallback"
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            sent.append((name, kwargs or {}, queue))
+            return FakeResult()
+
+    _patch_backend_celery_fallback(monkeypatch, FakeCelery())
+
+    assert dispatch.trigger_sms_register("chatgpt") == ("task-fallback", None)
+    assert sent == [
+        (
+            "geo_tracker.tasks.celery_tasks.auto_login",
+            {"platform": "chatgpt", "new_account": True},
+            "account_login",
+        )
+    ]
+
+
+@pytest.mark.parametrize("platform", ["doubao", "deepseek"])
+def test_sms_register_fallback_preserves_non_chatgpt_platforms(monkeypatch, platform):
+    dispatch = _misc_dispatch_module()
+    sent: list[tuple[str, dict[str, object], str | None]] = []
+
+    class FakeResult:
+        id = "task-platform"
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            sent.append((name, kwargs or {}, queue))
+            return FakeResult()
+
+    _patch_backend_celery_fallback(monkeypatch, FakeCelery())
+
+    assert dispatch.trigger_sms_register(platform) == ("task-platform", None)
+    assert sent == [
+        (
+            "geo_tracker.tasks.celery_tasks.auto_login",
+            {"platform": platform, "new_account": True},
+            "account_login",
+        )
+    ]
+
+
+def test_sms_register_send_failure_returns_stable_error(monkeypatch):
+    dispatch = _misc_dispatch_module()
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            raise RuntimeError("broker password=secret exploded")
+
+    monkeypatch.setattr(dispatch, "_load_celery_app", lambda: FakeCelery())
+
+    assert dispatch.trigger_sms_register("chatgpt") == (None, "Celery dispatch failed")
+
+
+@pytest.mark.parametrize("task_id", [None, "", "   "])
+def test_sms_register_missing_result_id_returns_stable_error(monkeypatch, task_id):
+    dispatch = _misc_dispatch_module()
+
+    class FakeResult:
+        id = task_id
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            return FakeResult()
+
+    monkeypatch.setattr(dispatch, "_load_celery_app", lambda: FakeCelery())
+
+    assert dispatch.trigger_sms_register("chatgpt") == (None, "Celery task id missing")
+
+
+def test_sms_register_missing_celery_returns_stable_unavailable(monkeypatch):
+    dispatch = _misc_dispatch_module()
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        if name == "celery":
+            raise ModuleNotFoundError(name)
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    assert dispatch.trigger_sms_register("chatgpt") == (None, "Celery not available")
+
+
 @pytest.mark.asyncio
 async def test_sms_register_celery_unavailable_503(
     client, admin_operator, monkeypatch, db_session: AsyncSession
@@ -234,6 +348,102 @@ async def test_sms_register_celery_unavailable_503(
         .all()
     )
     assert audit[0].after.get("celery_unavailable") is True
+
+
+@pytest.mark.asyncio
+async def test_sms_register_route_uses_backend_celery_app_fallback(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    sent: list[tuple[str, dict[str, object], str | None]] = []
+
+    class FakeResult:
+        id = "task-route-fallback"
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            sent.append((name, kwargs or {}, queue))
+            return FakeResult()
+
+    _patch_backend_celery_fallback(monkeypatch, FakeCelery())
+
+    resp = await client.post("/api/sms_register", json={"platform": "chatgpt"})
+
+    assert resp.status_code == 200
+    assert resp.json()["task_id"] == "task-route-fallback"
+    assert sent == [
+        (
+            "geo_tracker.tasks.celery_tasks.auto_login",
+            {"platform": "chatgpt", "new_account": True},
+            "account_login",
+        )
+    ]
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "trigger_sms_register")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit[0].after.get("task_id") == "task-route-fallback"
+
+
+@pytest.mark.asyncio
+async def test_sms_register_route_send_failure_503_without_raw_error(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            raise RuntimeError("broker password=secret exploded")
+
+    _patch_backend_celery_fallback(monkeypatch, FakeCelery())
+
+    resp = await client.post("/api/sms_register", json={"platform": "chatgpt"})
+
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "Celery dispatch failed"
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "trigger_sms_register")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit[0].after.get("error") == "Celery dispatch failed"
+
+
+@pytest.mark.asyncio
+async def test_sms_register_route_missing_task_id_503_without_raw_error(
+    client, admin_operator, monkeypatch, db_session: AsyncSession
+):
+    class FakeResult:
+        id = "   "
+
+    class FakeCelery:
+        def send_task(self, name, *, kwargs=None, queue=None):
+            return FakeResult()
+
+    _patch_backend_celery_fallback(monkeypatch, FakeCelery())
+
+    resp = await client.post("/api/sms_register", json={"platform": "chatgpt"})
+
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "Celery task id missing"
+    assert "secret" not in str(resp.json()).lower()
+    audit = list(
+        (
+            await db_session.execute(
+                select(AdminAuditLog).where(AdminAuditLog.action == "trigger_sms_register")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert audit[0].after.get("error") == "Celery task id missing"
+    assert "secret" not in str(audit[0].after).lower()
 
 
 @pytest.mark.asyncio

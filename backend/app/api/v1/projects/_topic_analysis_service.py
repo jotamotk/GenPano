@@ -1171,6 +1171,8 @@ async def get_topic_monitoring(
     filters: AnalysisFilters,
     brand_id_override: int | None = None,
 ) -> TopicMonitoringOut:
+    from app.api.v1.projects._analytics_contract import build_contract_context, context_update
+
     brand_id = _effective_brand_id(project, brand_id_override)
     if brand_id is None:
         return _empty_monitoring(project, brand_id=brand_id)
@@ -1182,14 +1184,43 @@ async def get_topic_monitoring(
         filters=filters,
         associated_brand=brand_names.get(brand_id),
     )
-    return TopicMonitoringOut(
+    state = "ok" if summary.query_count or (topics and not filters.explicit) else "empty"
+    out = TopicMonitoringOut(
         project_id=project.id,
         brand_id=brand_id,
         summary=summary,
         topics=topics,
         intent_matrix=intent_matrix,
-        state="ok" if summary.query_count or (topics and not filters.explicit) else "empty",
+        state=state,
+        state_reason="data_available" if state == "ok" else "no_topic_monitoring_data",
+        evidence_count=summary.response_count,
     )
+    to_date = filters.to_date or date.today()
+    from_date = filters.from_date or (to_date - timedelta(days=29))
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_date,
+        to_date=to_date,
+        has_data=bool(summary.response_count or topics),
+        base_state=state,
+        base_missing_inputs=["response_analyses.raw_analysis_json.analyzer_fact_packages"]
+        if not summary.response_count
+        else None,
+        selected_filters={
+            "engine": list(filters.engines) if filters.engines else None,
+            "segment_id": filters.segment_id,
+            "profile_id": filters.profile_id,
+            "dimension": list(filters.dimensions) if filters.dimensions else None,
+            "intent": list(filters.intents) if filters.intents else None,
+            "prompt_scope": filters.prompt_scope,
+        },
+        source_provenance=["admin_facts", "response_analyses.raw_analysis_json"],
+    )
+    if context.evidence_counts.get("analyzer_package_count", 0) <= 0:
+        return out
+    return out.model_copy(update=context_update(context))
 
 
 async def get_topic_prompts(

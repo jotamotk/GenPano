@@ -148,21 +148,20 @@ describe('analytics formula-status guards', () => {
     expect(state.reasonLabels).toContain('Valid zero')
   })
 
-  it('withholds zero values when the metric lacks valid-zero proof', () => {
+  it('withholds an ok zero when numerator or denominator proof is missing', () => {
     const state = buildMetricTrustState({
-      metricKey: 'citation',
+      metricKey: 'visibility',
       value: 0,
       formula_status: 'ok',
-      analyzer_coverage: {
-        eligible_response_count: 56,
-        analyzed_response_count: 56,
-        missing_response_count: 0,
-        analyzer_version: 'v3',
-      },
+      numerator: 0,
+      reason_codes: ['valid_zero'],
     })
 
-    expect(state.canShowValue).toBe(false)
     expect(state.tone).toBe('partial')
+    expect(state.canShowValue).toBe(false)
+    expect(state.label).toBe('Needs review')
+    expect(state.summary).toBe('Metric evidence is partial.')
+    expect(state.reasonLabels).toContain('Valid zero')
     expect(state.reasonLabels).toContain('Valid zero proof missing')
   })
 })
