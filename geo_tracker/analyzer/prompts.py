@@ -101,7 +101,8 @@ Return only one strict JSON object using this analyzer_v4 top-level shape.
 Do not return the legacy brands/dimension schema as the top-level output.
 Every fact must include evidence_quote, or include a matching quality_flags code
 such as missing_evidence_quote, relation_unresolved, citation_unlinked,
-sentiment_unknown, mixed_sentiment, brand_unresolved, or product_unresolved.
+sentiment_unknown, mixed_sentiment, brand_unresolved, product_unresolved,
+category_unresolved, or invalid_mention_type.
 
 {{
   "analysis_meta": {{
@@ -136,7 +137,7 @@ sentiment_unknown, mixed_sentiment, brand_unresolved, or product_unresolved.
       "response_id": null,
       "raw_text": "exact mention",
       "normalized_text": "normalized mention",
-      "mention_type": "brand|product|attribute|need|scenario|citation|other",
+      "mention_type": "brand|product|attribute|need|scenario|category|citation|other",
       "position": "top|middle|tail|unknown",
       "sentiment_label": "positive|negative|neutral|mixed|unknown",
       "sentiment_score": 0.0,

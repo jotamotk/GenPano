@@ -559,6 +559,191 @@ def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> N
     assert ("evidence_quote_mismatch", "mention", "mention_acme_calm") in flags
 
 
+def test_analyzer_v4_validator_accepts_category_mention_type() -> None:
+    package = _valid_v4_package()
+    package["entities"].append(
+        {
+            "entity_key": "ent_category_sensitive_serum",
+            "entity_type": "category",
+            "raw_name": "sensitive skin serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "not_applicable",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    )
+    package["mentions"].append(
+        {
+            "mention_key": "mention_sensitive_serum_category",
+            "entity_key": "ent_category_sensitive_serum",
+            "response_id": 7815,
+            "raw_text": "sensitive skin serum",
+            "normalized_text": "sensitive skin serum",
+            "mention_type": "category",
+            "position": "top",
+            "sentiment_label": "positive",
+            "sentiment_score": 0.35,
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    )
+    package["citations"][0]["linked_fact_keys"].append("mention_sensitive_serum_category")
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert not any("mention_type='category'" in error for error in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_analyzer_v4_persists_category_entity_linked_from_product_package(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["entities"].append(
+        {
+            "entity_key": "ent_category_sensitive_serum",
+            "entity_type": "category",
+            "raw_name": "sensitive skin serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "not_applicable",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    )
+    package["mentions"].append(
+        {
+            "mention_key": "mention_sensitive_serum_category",
+            "entity_key": "ent_category_sensitive_serum",
+            "response_id": response.id,
+            "raw_text": "sensitive skin serum",
+            "normalized_text": "sensitive skin serum",
+            "mention_type": "category",
+            "position": "top",
+            "sentiment_label": "positive",
+            "sentiment_score": 0.35,
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    )
+    package["relations"].append(
+        {
+            "relation_key": "relation_product_category",
+            "subject_entity_key": "ent_product_calm",
+            "relation_type": "has_attribute",
+            "object_entity_key": "ent_category_sensitive_serum",
+            "direction": "directed",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.82,
+            "quality_flags": [],
+        }
+    )
+    package["citations"][0]["linked_fact_keys"].extend(
+        ["mention_sensitive_serum_category", "relation_product_category"]
+    )
+    _patch_pipeline(monkeypatch, _legacy_projection(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    entity_types = set(
+        (
+            await session.execute(
+                select(ResponseEntity.entity_type).where(ResponseEntity.response_id == response.id)
+            )
+        ).scalars().all()
+    )
+    assert "category" in entity_types
+    relation_keys = set(
+        (
+            await session.execute(
+                select(ResponseRelationFact.relation_key).where(
+                    ResponseRelationFact.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "relation_product_category" in relation_keys
+
+
+@pytest.mark.asyncio
+async def test_analyzer_v4_unknown_mention_type_flags_and_preserves_current_facts(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    old_analysis = ResponseAnalysis(
+        response_id=response.id,
+        total_brands_mentioned=1,
+        target_brand_mentioned=True,
+        raw_analysis_json={"legacy": "current"},
+    )
+    old_mention = BrandMention(
+        response_id=response.id,
+        brand_id=target.id,
+        brand_name="AcmeBeauty",
+        product_name="Calm Serum",
+        is_target=True,
+        mention_count=1,
+    )
+    session.add_all([old_analysis, old_mention])
+    await session.commit()
+
+    package = _valid_v4_package(response.id, response.query_id)
+    package["mentions"][0]["mention_type"] = "unexpected_type"
+    _patch_pipeline(monkeypatch, _legacy_projection(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "failed"
+    await session.refresh(response)
+    assert response.analysis_status == AnalysisStatus.DONE.value
+    analysis = await session.scalar(
+        select(ResponseAnalysis).where(ResponseAnalysis.response_id == response.id)
+    )
+    assert analysis is not None
+    assert analysis.raw_analysis_json == {"legacy": "current"}
+    assert await session.scalar(select(func.count(BrandMention.id))) == 1
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "invalid_mention_type" in flag_codes
+
+
 def test_analyzer_v4_projection_resolves_each_product_to_its_explicit_brand() -> None:
     analyzer = object.__new__(LLMAnalyzer)
     package = _valid_v4_package()
@@ -686,6 +871,48 @@ def test_analyzer_v4_projection_flags_unresolved_product_brand_without_fallback(
         and flag.get("target_key") == "ent_product_calm"
         for flag in package["quality_flags"]
     )
+
+
+def test_analyzer_v4_projection_skips_category_mentions_as_legacy_brand_rows() -> None:
+    analyzer = object.__new__(LLMAnalyzer)
+    package = _valid_v4_package()
+    package["entities"] = [
+        {
+            "entity_key": "ent_category_sensitive_serum",
+            "entity_type": "category",
+            "raw_name": "sensitive skin serum",
+            "canonical_id": None,
+            "canonical_name": None,
+            "canonicalization_status": "not_applicable",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    ]
+    package["mentions"] = [
+        {
+            "mention_key": "mention_sensitive_serum_category",
+            "entity_key": "ent_category_sensitive_serum",
+            "response_id": 7815,
+            "raw_text": "sensitive skin serum",
+            "normalized_text": "sensitive skin serum",
+            "mention_type": "category",
+            "position": "top",
+            "sentiment_label": "positive",
+            "sentiment_score": 0.35,
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": 0.84,
+            "quality_flags": [],
+        }
+    ]
+    package["sentiment_drivers"] = []
+    package["product_features"] = []
+    package["relations"] = []
+    package["citations"] = []
+
+    result = analyzer._parse_result(package)
+
+    assert result.brands == []
 
 
 @pytest.mark.asyncio
