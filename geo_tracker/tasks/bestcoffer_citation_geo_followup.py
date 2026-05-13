@@ -11,12 +11,14 @@ import argparse
 import asyncio
 import copy
 import json
+import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -44,15 +46,19 @@ from geo_tracker.db.models import (
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GITHUB_ISSUE_COMMENT_RE = re.compile(
     r"^https://github\.com/jotamotk/trash_test/issues/760"
-    r"#issuecomment-[0-9]+(?P<evidence>.*)$",
+    r"#issuecomment-(?P<comment_id>[0-9]+)$",
     re.IGNORECASE,
 )
 MAX_LIMIT = 75
+APPROVAL_COMMENT_API = (
+    "https://api.github.com/repos/jotamotk/trash_test/issues/comments/{comment_id}"
+)
 
 APPROVAL_REF_HELP = (
     "Dry-run first, attach exact response/query IDs and write plan evidence to "
-    "#760, then use the #760 issue comment URL containing explicit AI Lead "
-    "production-write approval for BestCoffer citation GEO materialization apply."
+    "#760, then use the exact #760 issue comment URL whose fetched GitHub body "
+    "contains explicit AI Lead production-write approval for BestCoffer citation "
+    "GEO materialization apply. Do not append approval words to the URL."
 )
 
 ROLLBACK_NOTE = (
@@ -61,8 +67,12 @@ ROLLBACK_NOTE = (
     "backup/audit snapshot, remove citation_sources inserted by this run or "
     "clear only the mention_id updates listed in the report, then delete and "
     "rerun geo_score_daily/topic/product aggregates for the affected brand/date "
-    "scope. No scraper rerun or broad response reset is required."
+    "scope. Aggregation apply rewrites the full selected brand/date aggregate "
+    "rows via Aggregator.aggregate_daily, not only rows tied to one response. "
+    "No scraper rerun or broad response reset is required."
 )
+
+ApprovalCommentFetcher = Callable[[int], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -151,10 +161,40 @@ def validate_scope(scope: BestCofferCitationGeoScope, *, apply: bool = False) ->
         )
 
 
-def validate_approval_ref(approval_ref: str | None) -> str:
-    value = (approval_ref or "").strip()
-    match = GITHUB_ISSUE_COMMENT_RE.match(value) if value else None
-    normalized = re.sub(r"[-_]+", " ", value.lower())
+def _fetch_github_issue_comment(comment_id: int) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "genpano-issue-760-repair",
+    }
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(
+        APPROVAL_COMMENT_API.format(comment_id=int(comment_id)),
+        headers=headers,
+    )
+    with urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _normalized_comment_body(comment: dict[str, Any]) -> str:
+    return re.sub(r"[-_]+", " ", str(comment.get("body") or "").lower())
+
+
+def _validate_comment_belongs_to_issue_760(
+    comment: dict[str, Any],
+    approval_ref: str,
+) -> None:
+    issue_url = str(comment.get("issue_url") or "")
+    html_url = str(comment.get("html_url") or "")
+    if not issue_url.endswith("/repos/jotamotk/trash_test/issues/760"):
+        raise ValueError("approval_ref comment must belong to jotamotk/trash_test#760")
+    if html_url and html_url.rstrip("/") != approval_ref.rstrip("/"):
+        raise ValueError("approval_ref comment URL does not match fetched GitHub comment")
+
+
+def _validate_comment_has_write_approval(comment: dict[str, Any]) -> None:
+    normalized = _normalized_comment_body(comment)
     has_write_approval = (
         "ai lead" in normalized
         and bool(re.search(r"\bproduction\s+writes?\b", normalized))
@@ -165,12 +205,70 @@ def validate_approval_ref(approval_ref: str | None) -> str:
         and "materialization" in normalized
         and "apply" in normalized
     )
-    if not match or not has_write_approval:
+    if not has_write_approval:
         raise ValueError(
-            "approval_ref must be a #760 issue comment URL with explicit "
-            "AI Lead production-write approval for BestCoffer citation GEO "
+            "approval_ref comment body must contain explicit AI Lead "
+            "production-write approval for BestCoffer citation GEO "
             "materialization apply"
         )
+
+
+def _validate_comment_has_aggregate_approval(
+    comment: dict[str, Any],
+    *,
+    dates: list[str],
+) -> None:
+    normalized = _normalized_comment_body(comment)
+    raw_body = str(comment.get("body") or "").lower()
+    has_aggregate_approval = (
+        "aggregate" in normalized
+        and ("recompute" in normalized or "aggregate_daily" in normalized)
+        and bool(re.search(r"\bapprov\w*\b", normalized))
+    )
+    missing_dates = [date for date in dates if date not in raw_body]
+    if not has_aggregate_approval or missing_dates:
+        raise ValueError(
+            "aggregate_approval_ref comment body must explicitly approve "
+            f"aggregate recompute for selected dates; missing dates={missing_dates}"
+        )
+
+
+def validate_approval_ref(
+    approval_ref: str | None,
+    *,
+    approval_comment_fetcher: ApprovalCommentFetcher | None = None,
+) -> str:
+    value = (approval_ref or "").strip()
+    match = GITHUB_ISSUE_COMMENT_RE.match(value) if value else None
+    if not match:
+        raise ValueError(
+            "approval_ref must be the exact #760 issue comment URL; do not "
+            "append approval words to the URL string"
+        )
+    comment_id = int(match.group("comment_id"))
+    fetcher = approval_comment_fetcher or _fetch_github_issue_comment
+    comment = fetcher(comment_id)
+    _validate_comment_belongs_to_issue_760(comment, value)
+    _validate_comment_has_write_approval(comment)
+    return value
+
+
+def validate_aggregate_approval_ref(
+    aggregate_approval_ref: str | None,
+    *,
+    dates: list[str],
+    approval_comment_fetcher: ApprovalCommentFetcher | None = None,
+) -> str:
+    value = validate_approval_ref(
+        aggregate_approval_ref,
+        approval_comment_fetcher=approval_comment_fetcher,
+    )
+    match = GITHUB_ISSUE_COMMENT_RE.match(value)
+    if not match:
+        raise ValueError("aggregate_approval_ref must be a #760 issue comment URL")
+    fetcher = approval_comment_fetcher or _fetch_github_issue_comment
+    comment = fetcher(int(match.group("comment_id")))
+    _validate_comment_has_aggregate_approval(comment, dates=dates)
     return value
 
 
@@ -523,6 +621,13 @@ def _set_citation_defaults(citation: dict, source: CitationSource) -> dict:
     return out
 
 
+def _force_unresolved_citation(citation: dict) -> dict:
+    out = dict(citation)
+    out["citation_id"] = None
+    out["mention_id"] = None
+    return out
+
+
 def _rebuild_citations_package(package: dict, updated: list[dict]) -> None:
     citations = package.setdefault("citations", {})
     attributed = [item for item in updated if item.get("mention_id") is not None]
@@ -611,6 +716,7 @@ async def _citation_plan_or_apply(
         )
         existing_sources = existing_by_response.setdefault(candidate.response_id, [])
         source_by_key = _existing_by_key(existing_sources)
+        package_source_by_key: dict[tuple[str, int | None], CitationSource] = {}
         updated_citations: list[dict] = []
         package_changed = False
 
@@ -641,6 +747,7 @@ async def _citation_plan_or_apply(
 
             source = source_by_key.get(key) or source_by_key.get((key[0], None))
             planned_action = "noop_existing"
+            conflict = False
             if source is None:
                 stats["insert_citation_source_count"] += 1
                 planned_action = "insert_citation_source"
@@ -674,8 +781,16 @@ async def _citation_plan_or_apply(
                 stats["conflicting_existing_citation_source_count"] += 1
                 unresolved_reasons["conflicting_existing_mention_id"] += 1
                 planned_action = "skip_conflicting_existing_mention_id"
+                conflict = True
 
-            if apply and source is not None:
+            if conflict:
+                updated = _force_unresolved_citation(citation)
+                if updated != citation:
+                    package_changed = True
+                updated_citations.append(updated)
+            elif apply and source is not None:
+                package_source_by_key[key] = source
+                package_source_by_key.setdefault((key[0], None), source)
                 updated = _set_citation_defaults(citation, source)
                 if updated != citation:
                     package_changed = True
@@ -698,9 +813,8 @@ async def _citation_plan_or_apply(
         if apply:
             if package_changed:
                 _rebuild_citations_package(package, updated_citations)
-                source_by_key = _existing_by_key(existing_sources)
-                _patch_citation_facts(package, source_by_key)
-                _patch_citation_facts(raw, source_by_key)
+                _patch_citation_facts(package, package_source_by_key)
+                _patch_citation_facts(raw, package_source_by_key)
                 raw["issue_760_citation_geo_followup"] = {
                     "applied_at": datetime.now(timezone.utc).isoformat(),
                     "approval_ref": approval_ref,
@@ -743,6 +857,7 @@ async def _aggregate_plan(
     selected: list[CandidateResponse],
     *,
     brand_id: int,
+    approved_dates: list[str] | None = None,
 ) -> dict:
     days = sorted(
         {
@@ -764,8 +879,22 @@ async def _aggregate_plan(
         rows_before[day] = int(count or 0)
     return {
         "dates": days,
+        "approved_dates": approved_dates or [],
         "geo_score_daily_rows_before": rows_before,
         "aggregate_from_real_analyzer_facts_only": True,
+        "full_brand_date_side_effects": True,
+        "requires_separate_aggregate_approval": True,
+        "side_effect_summary": (
+            "Aggregator.aggregate_daily deletes and rewrites full "
+            "geo_score_daily/product_score_daily/topic_score_daily rows for "
+            "the selected brand/date scope, then recomputes from all analyzed "
+            "responses on each selected day."
+        ),
+        "rollback": (
+            "Use the pre-apply DB backup or report rows to restore/delete the "
+            "selected brand/date aggregate rows, then rerun aggregation for "
+            "those same dates after reverting citation/analyzer changes."
+        ),
     }
 
 
@@ -804,11 +933,16 @@ async def build_bestcoffer_citation_geo_followup_report(
     *,
     apply: bool = False,
     approval_ref: str | None = None,
+    approval_comment_fetcher: ApprovalCommentFetcher | None = None,
     aggregate: bool = False,
+    aggregate_approval_ref: str | None = None,
 ) -> dict:
     validate_scope(scope, apply=apply)
     if apply:
-        approval_ref = validate_approval_ref(approval_ref)
+        approval_ref = validate_approval_ref(
+            approval_ref,
+            approval_comment_fetcher=approval_comment_fetcher,
+        )
 
     candidates = await collect_candidate_responses(session, scope)
     selected = [row for row in candidates if row.invalid_reason is None]
@@ -828,12 +962,26 @@ async def build_bestcoffer_citation_geo_followup_report(
         approval_ref=approval_ref,
     )
     aggregate_plan = await _aggregate_plan(session, selected, brand_id=int(scope.brand_id))
+    validated_aggregate_approval_ref: str | None = None
+    if apply and aggregate:
+        validated_aggregate_approval_ref = validate_aggregate_approval_ref(
+            aggregate_approval_ref or approval_ref,
+            dates=aggregate_plan["dates"],
+            approval_comment_fetcher=approval_comment_fetcher,
+        )
+        aggregate_plan = await _aggregate_plan(
+            session,
+            selected,
+            brand_id=int(scope.brand_id),
+            approved_dates=aggregate_plan["dates"],
+        )
 
     report = {
         "issue": 760,
         "mode": "apply" if apply else "dry_run",
         "write_performed": False,
         "approval_ref": approval_ref,
+        "aggregate_approval_ref": validated_aggregate_approval_ref,
         "scope": _scope_dict(scope),
         "safe_selection": {
             "successful_responses_only": True,
@@ -915,6 +1063,7 @@ async def run_from_args(args: argparse.Namespace) -> dict:
                 apply=args.apply,
                 approval_ref=args.approval_ref,
                 aggregate=args.aggregate,
+                aggregate_approval_ref=args.aggregate_approval_ref,
             )
     finally:
         await engine.dispose()
@@ -941,6 +1090,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--apply", action="store_true", help="Perform scoped writes")
     parser.add_argument("--aggregate", action="store_true", help="Aggregate selected days")
     parser.add_argument("--approval-ref", default="", help=APPROVAL_REF_HELP)
+    parser.add_argument(
+        "--aggregate-approval-ref",
+        default="",
+        help=(
+            "Required with --apply --aggregate unless --approval-ref itself "
+            "fetches to a #760 comment body that explicitly approves aggregate "
+            "recompute for every selected date."
+        ),
+    )
     return parser
 
 
@@ -963,5 +1121,6 @@ __all__ = [
     "build_bestcoffer_citation_geo_followup_report",
     "collect_candidate_responses",
     "summarize_candidates",
+    "validate_aggregate_approval_ref",
     "validate_approval_ref",
 ]
