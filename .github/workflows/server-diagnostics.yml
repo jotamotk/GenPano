@@ -794,8 +794,9 @@ jobs:
               fi
             fi
 
-            echo "=== Enforce selected batch status semantics ==="
-            python3 - "${artifact_dir}/audit.csv" "${artifact_dir}/batch_status_semantics_failed.txt" <<'PY'
+            if [ "${EXECUTE_BATCH}" = "true" ]; then
+              echo "=== Enforce selected batch status semantics ==="
+              python3 - "${artifact_dir}/audit.csv" "${artifact_dir}/batch_status_semantics_failed.txt" <<'PY'
           from __future__ import annotations
 
           import csv
@@ -857,6 +858,13 @@ jobs:
           )
           print("Selected batch status semantics passed.")
           PY
+            else
+              echo "=== Skip selected batch status semantics for preview ==="
+              {
+                echo "status_semantics_enforced=false"
+                echo "reason=execute_batch=false candidate preview does not dispatch selected rows"
+              } > "${artifact_dir}/batch_status_semantics_skipped.txt"
+            fi
           fi
 
           REMOTE

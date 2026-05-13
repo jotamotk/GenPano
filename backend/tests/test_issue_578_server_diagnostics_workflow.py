@@ -159,9 +159,31 @@ def test_bestcoffer_batch_audit_failures_make_remote_batch_nonzero() -> None:
 
     redaction_marker = "=== Redact payload-bearing bestCoffer artifacts ==="
     semantics_marker = "=== Enforce selected batch status semantics ==="
+    execute_guard = 'if [ "${EXECUTE_BATCH}" = "true" ]; then'
     remote_end = "\nREMOTE\n"
     assert run_script.index(redaction_marker) < run_script.index(semantics_marker)
+    assert run_script.rindex(execute_guard, 0, run_script.index(semantics_marker))
     assert run_script.index(semantics_marker) < run_script.index(remote_end)
+
+
+def test_bestcoffer_batch_preview_skips_status_semantics_gate() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    run_script = workflow["jobs"]["diagnostics"]["steps"][0]["run"]
+
+    semantics_marker = "=== Enforce selected batch status semantics ==="
+    skip_marker = "=== Skip selected batch status semantics for preview ==="
+    gate_start = run_script.rindex(
+        'if [ "${EXECUTE_BATCH}" = "true" ]; then',
+        0,
+        run_script.index(semantics_marker),
+    )
+    gate_end = run_script.index("\nREMOTE", gate_start)
+    gate_block = run_script[gate_start:gate_end]
+
+    assert skip_marker in gate_block
+    assert "batch_status_semantics_skipped.txt" in gate_block
+    assert "execute_batch=false candidate preview does not dispatch selected rows" in gate_block
+    assert gate_block.index(semantics_marker) < gate_block.index(skip_marker)
 
 
 def test_bestcoffer_batch_audit_gate_flags_failed_rows_and_missing_response(
