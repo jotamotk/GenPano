@@ -445,6 +445,7 @@ async def analyze_single_response(
         drivers_by_mention_id: dict[int, list[dict]] = defaultdict(list)
         mentions_by_key: dict[tuple[int, str, str], BrandMention] = {}
         mention_facts_by_key: dict[tuple[int, str, str], dict] = {}
+        duplicate_mention_keys: set[tuple[int, str, str]] = set()
 
         async def persist_mention(
             *,
@@ -493,6 +494,11 @@ async def analyze_single_response(
                 fact = mention_facts_by_key.get(key)
                 if fact is not None:
                     fact["mention_count"] = existing.mention_count
+                    raw_names = fact.setdefault("raw_brand_names", [fact["raw_brand_name"]])
+                    if raw_brand_name not in raw_names:
+                        raw_names.append(raw_brand_name)
+                    fact["merged_duplicate_count"] = len(raw_names)
+                    duplicate_mention_keys.add(key)
                     if not missing_inputs:
                         fact["missing_inputs"] = []
                     elif fact.get("missing_inputs"):
@@ -531,6 +537,7 @@ async def analyze_single_response(
                 "topic_id": topic_id,
                 "brand_name": brand_name_clean,
                 "raw_brand_name": raw_brand_name,
+                "raw_brand_names": [raw_brand_name],
                 "canonical_brand_id": canonical_brand_id,
                 "product_name": product_name_clean,
                 "provenance": provenance,
@@ -538,6 +545,7 @@ async def analyze_single_response(
                 "position_type": mention.position_type,
                 "position_rank": mention.position_rank,
                 "mention_count": mention.mention_count,
+                "merged_duplicate_count": 1,
                 "evidence_snippet": context_snippet,
                 "missing_inputs": missing_inputs,
             }
@@ -903,6 +911,22 @@ async def analyze_single_response(
         )
         raw_analysis_json["brand_mention_facts"] = mention_facts
         raw_analysis_json["citation_facts"] = citation_facts
+        raw_analysis_json["dedupe_facts"] = {
+            "llm_brand_product_duplicates_merged": sum(
+                max(int(fact.get("merged_duplicate_count") or 1) - 1, 0)
+                for fact in mention_facts
+            ),
+            "keys": sorted(
+                f"{fact.get('brand_name')}|{fact.get('product_name') or ''}"
+                for fact in mention_facts
+                if _mention_identity_key(
+                    response_id,
+                    str(fact.get("brand_name") or ""),
+                    fact.get("product_name"),
+                )
+                in duplicate_mention_keys
+            ),
+        }
         raw_analysis_json["metric_input_status"] = metric_input_status
         raw_analysis_json["analyzer_fact_packages"] = analyzer_fact_packages
         raw_analysis_json["analyzer_fact_package_v3"] = analyzer_fact_package_v3
