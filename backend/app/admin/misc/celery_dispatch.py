@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
+
+SMS_REGISTER_TASK_NAME = "geo_tracker.tasks.celery_tasks.auto_login"
+SMS_REGISTER_QUEUE = "account_login"
 
 
 def _load_celery_app() -> Any | None:
     try:
-        import importlib
-
         importlib.import_module("celery")
-        return importlib.import_module("geo_tracker.celery_app").celery_app
     except Exception:
         return None
+    for module_name in ("geo_tracker.celery_app", "app.celery_app"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        celery_app = getattr(module, "celery_app", None)
+        if celery_app is not None:
+            return celery_app
+    return None
 
 
 def trigger_sms_register(platform: str) -> tuple[str | None, str | None]:
@@ -24,13 +34,16 @@ def trigger_sms_register(platform: str) -> tuple[str | None, str | None]:
         return None, "Celery not available"
     try:
         result = celery_app.send_task(
-            "geo_tracker.tasks.celery_tasks.auto_login",
+            SMS_REGISTER_TASK_NAME,
             kwargs={"platform": platform, "new_account": True},
-            queue="account_login",
+            queue=SMS_REGISTER_QUEUE,
         )
-        return getattr(result, "id", None), None
-    except Exception as error:
-        return None, str(error)
+        task_id = getattr(result, "id", None)
+        if not str(task_id or "").strip():
+            return None, "Celery task id missing"
+        return str(task_id), None
+    except Exception:
+        return None, "Celery dispatch failed"
 
 
 def fetch_task_status(task_id: str) -> dict[str, Any]:
