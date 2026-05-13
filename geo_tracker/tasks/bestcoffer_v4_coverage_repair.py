@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
-from sqlalchemy import and_, delete, func, or_, select, text
+from sqlalchemy import and_, bindparam, delete, func, inspect, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -125,6 +125,8 @@ class V4CoverageRow:
     topic_brand_id: int | None
     topic_id: int | None
     prompt_id: int | None
+    prompt_status: str | None
+    is_latest_query_response: bool
     engine: str | None
     collected_at: str | None
     created_at: str | None
@@ -141,6 +143,7 @@ class V4CoverageRow:
     has_raw_analyzer_v3_package: bool
     raw_v4_package_valid: bool
     raw_v4_validation_errors: tuple[str, ...]
+    expected_fact_counts: dict[str, int]
     first_class_fact_counts: dict[str, int]
     invalid_reason: str | None
 
@@ -366,6 +369,69 @@ async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set
     return set(project_topic_scope.topic_ids)
 
 
+async def _table_columns(session: AsyncSession, table_name: str) -> set[str]:
+    def _inspect(sync_session: Any) -> set[str]:
+        return {column["name"] for column in inspect(sync_session.get_bind()).get_columns(table_name)}
+
+    return await session.run_sync(_inspect)
+
+
+async def _prompt_statuses_by_id(
+    session: AsyncSession,
+    prompt_ids: list[int],
+) -> dict[int, str | None]:
+    if not prompt_ids:
+        return {}
+    if "status" not in await _table_columns(session, "prompts"):
+        return {}
+    rows = (
+        await session.execute(
+            text("SELECT id, status FROM prompts WHERE id IN :prompt_ids").bindparams(
+                bindparam("prompt_ids", expanding=True)
+            ),
+            {"prompt_ids": sorted(set(prompt_ids))},
+        )
+    ).all()
+    return {int(row[0]): row[1] for row in rows if row[0] is not None}
+
+
+async def _latest_response_ids_by_query(
+    session: AsyncSession,
+    query_ids: list[int],
+) -> dict[int, int]:
+    if not query_ids:
+        return {}
+    response_cols = await _table_columns(session, "llm_responses")
+    if not {"id", "query_id"}.issubset(response_cols):
+        return {}
+    order_sql = "r.id DESC"
+    if "created_at" in response_cols:
+        order_sql = "r.created_at IS NULL ASC, r.created_at DESC, r.id DESC"
+    rows = (
+        await session.execute(
+            text(
+                f"""
+                SELECT query_id, id
+                FROM (
+                    SELECT
+                        r.query_id AS query_id,
+                        r.id AS id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.query_id
+                            ORDER BY {order_sql}
+                        ) AS rn
+                    FROM llm_responses r
+                    WHERE r.query_id IN :query_ids
+                ) ranked
+                WHERE rn = 1
+                """
+            ).bindparams(bindparam("query_ids", expanding=True)),
+            {"query_ids": sorted(set(query_ids))},
+        )
+    ).all()
+    return {int(row[0]): int(row[1]) for row in rows if row[0] is not None and row[1] is not None}
+
+
 def _response_invalid_reason(response: LLMResponse, query: Query) -> str | None:
     llm_name = query.target_llm or ""
     if llm_name.lower() == "doubao" and response.response_html:
@@ -382,13 +448,25 @@ def _response_invalid_reason(response: LLMResponse, query: Query) -> str | None:
 def _target_scope_invalid_reason(
     scope: BestCofferV4CoverageScope,
     query: Query,
+    prompt: Prompt | None,
     topic: Topic | None,
+    prompt_status: str | None,
     project_topic_ids: set[int],
 ) -> str | None:
+    if prompt is None:
+        return "missing_prompt"
+    if topic is None:
+        return "missing_topic"
+    if str(prompt_status or "active").lower() == "archived":
+        return "outside_app_contract_target_scope"
     topic_id = int(topic.id) if topic and topic.id is not None else None
+    if topic and str(topic.status or "active").lower() == "archived":
+        return "outside_app_contract_target_scope"
     if project_topic_ids and topic_id not in project_topic_ids:
         return "outside_project_topic_scope"
-    allowed_brand_ids = set(scope.allowed_brand_ids())
+    allowed_brand_ids = (
+        set(scope.allowed_brand_ids()) if project_topic_ids else {int(scope.brand_id)}
+    )
     query_brand_id = int(query.brand_id) if query.brand_id is not None else None
     topic_brand_id = int(topic.brand_id) if topic and topic.brand_id is not None else None
     if query_brand_id in allowed_brand_ids or topic_brand_id in allowed_brand_ids:
@@ -523,7 +601,7 @@ async def collect_v4_coverage_rows(
         if project_topic_ids:
             conditions.append(Topic.id.in_(project_topic_ids))
         else:
-            allowed_brand_ids = list(scope.allowed_brand_ids())
+            allowed_brand_ids = [int(scope.brand_id)]
             conditions.append(
                 or_(
                     Query.brand_id.in_(allowed_brand_ids),
@@ -552,19 +630,49 @@ async def collect_v4_coverage_rows(
         )
 
     loaded_response_ids = [int(response.id) for response, *_rest in rows]
+    loaded_query_ids = [int(query.id) for _response, query, *_rest in rows]
+    loaded_prompt_ids = [
+        int(prompt.id)
+        for _response, _query, prompt, *_rest in rows
+        if prompt is not None and prompt.id is not None
+    ]
+    latest_response_ids = await _latest_response_ids_by_query(session, loaded_query_ids)
+    prompt_statuses = await _prompt_statuses_by_id(session, loaded_prompt_ids)
     latest_runs = await _latest_runs_by_response(session, loaded_response_ids)
     run_ids = [int(run.id) for run in latest_runs.values() if run.id is not None]
     fact_counts = await _fact_counts_by_run(session, run_ids)
 
     out: list[V4CoverageRow] = []
     for response, query, prompt, topic, analysis in rows:
-        invalid_reason = _target_scope_invalid_reason(scope, query, topic, project_topic_ids)
+        prompt_status = (
+            prompt_statuses.get(int(prompt.id))
+            if prompt is not None and prompt.id is not None
+            else None
+        )
+        latest_response_id = latest_response_ids.get(int(query.id))
+        is_latest_query_response = latest_response_id is None or latest_response_id == int(response.id)
+        invalid_reason = _target_scope_invalid_reason(
+            scope,
+            query,
+            prompt,
+            topic,
+            prompt_status,
+            project_topic_ids,
+        )
+        if invalid_reason is None and not is_latest_query_response:
+            invalid_reason = "not_latest_query_response"
         if invalid_reason is None:
             invalid_reason = _response_invalid_reason(response, query)
         raw = analysis.raw_analysis_json if analysis is not None else None
         raw_v4_package = _extract_raw_v4_package(raw)
         validation_errors: tuple[str, ...] = tuple()
         raw_v4_valid = False
+        expected_fact_counts = {
+            "response_entities": 0,
+            "response_relation_facts": 0,
+            "analysis_fact_links": 0,
+            "analyzer_quality_flags": 0,
+        }
         if raw_v4_package is not None:
             result = validate_analyzer_v4_package(
                 raw_v4_package,
@@ -574,6 +682,8 @@ async def collect_v4_coverage_rows(
             )
             raw_v4_valid = result.is_valid
             validation_errors = tuple(result.errors)
+            if raw_v4_valid:
+                expected_fact_counts = _expected_fact_counts(result.package)
 
         latest = latest_runs.get(int(response.id))
         latest_run_id = int(latest.id) if latest and latest.id is not None else None
@@ -587,6 +697,8 @@ async def collect_v4_coverage_rows(
                 ),
                 topic_id=int(topic.id) if topic and topic.id is not None else None,
                 prompt_id=int(prompt.id) if prompt and prompt.id is not None else None,
+                prompt_status=prompt_status,
+                is_latest_query_response=is_latest_query_response,
                 engine=query.target_llm,
                 collected_at=response.collected_at.isoformat() if response.collected_at else None,
                 created_at=query.created_at.isoformat() if query.created_at else None,
@@ -609,6 +721,7 @@ async def collect_v4_coverage_rows(
                 has_raw_analyzer_v3_package=_has_v3_package(raw),
                 raw_v4_package_valid=raw_v4_valid,
                 raw_v4_validation_errors=validation_errors,
+                expected_fact_counts=expected_fact_counts,
                 first_class_fact_counts=fact_counts.get(
                     latest_run_id,
                     {
@@ -632,6 +745,8 @@ def _row_to_dict(row: V4CoverageRow) -> dict[str, Any]:
         "topic_brand_id": row.topic_brand_id,
         "topic_id": row.topic_id,
         "prompt_id": row.prompt_id,
+        "prompt_status": row.prompt_status,
+        "is_latest_query_response": row.is_latest_query_response,
         "engine": row.engine,
         "collected_at": row.collected_at,
         "created_at": row.created_at,
@@ -652,6 +767,7 @@ def _row_to_dict(row: V4CoverageRow) -> dict[str, Any]:
             "raw_v4_package_valid": row.raw_v4_package_valid,
             "raw_v4_validation_errors": list(row.raw_v4_validation_errors),
         },
+        "expected_fact_counts": dict(row.expected_fact_counts),
         "first_class_fact_counts": dict(row.first_class_fact_counts),
         "invalid_reason": row.invalid_reason,
     }
@@ -792,10 +908,14 @@ async def _migrate_raw_v4_package(
 def _plan_for_row(row: V4CoverageRow) -> str:
     if row.invalid_reason:
         return "skip_invalid"
+    if row.repair_bucket == "latest_v4_analyzed":
+        if row.raw_v4_package_valid:
+            if _facts_satisfy_package(row.first_class_fact_counts, row.expected_fact_counts):
+                return "already_satisfied"
+        elif any(row.first_class_fact_counts.values()):
+            return "already_satisfied"
     if row.has_raw_analyzer_v4_package and row.raw_v4_package_valid:
         return "migrate_raw_v4_package"
-    if row.repair_bucket == "latest_v4_analyzed" and any(row.first_class_fact_counts.values()):
-        return "already_satisfied"
     return "reanalysis_required"
 
 
@@ -910,6 +1030,18 @@ async def build_bestcoffer_v4_coverage_report(
             "no_broad_scraper_rerun": True,
             "no_fake_citation_or_geo_rows": True,
             "no_silent_failed_run_done": True,
+        },
+        "app_contract_scope_alignment": {
+            "latest_response_per_query_only": True,
+            "prompt_topic_chain_required": True,
+            "archived_prompt_topic_blocked": True,
+            "primary_brand_repair_scope": "query_or_topic_brand_subset",
+            "text_or_mention_only_targets_included": False,
+            "warning": (
+                "#827 primary-brand repair covers the query/topic brand scope subset. "
+                "App _fact_rows may also include mention/text-only target rows; "
+                "those require read-only Backend API/data diagnostic follow-up."
+            ),
         },
         "rollback": ROLLBACK_NOTE,
         "apply_plan": APPROVAL_REF_HELP if mode != "apply" else None,
