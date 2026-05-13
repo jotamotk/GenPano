@@ -155,7 +155,12 @@ def test_server_diagnostics_has_readonly_doubao_sms_forensics_mode() -> None:
     assert "sanitize_herosms_stream" in run_script
     assert "cat > \"${sanitizer_py}\" <<'PY'" in run_script
     assert "scripts/sanitize_herosms_logs.py" not in run_script
+    assert 'if [ "${BASH_SUBSHELL:-0}" != "0" ]; then' in run_script
     assert "docker compose logs --since" in run_script
+    assert "queue-lengths.txt" in run_script
+    assert "journal-docker-window.txt" in run_script
+    assert "compose-window.log" in run_script
+    assert "compose-current-tail.log" in run_script
 
     forbidden_write_or_sms_triggers = [
         "UPDATE ",
