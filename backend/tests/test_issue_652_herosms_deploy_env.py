@@ -162,6 +162,10 @@ def test_server_diagnostics_has_readonly_doubao_sms_forensics_mode() -> None:
     assert "journal-docker-window.txt" in run_script
     assert "compose-window.log" in run_script
     assert "compose-current-tail.log" in run_script
+    assert 'if [ "${#digits}" -lt 4 ]; then' in run_script
+    assert 'blacklist_file="${artifact_dir}/doubao-blacklist-snapshot.txt"' in run_script
+    assert 'done | tee "${artifact_dir}/doubao-blacklist-snapshot.txt"' not in run_script
+    assert 'queue_file="${artifact_dir}/queue-lengths.txt"' in run_script
 
     forbidden_write_or_sms_triggers = [
         "UPDATE ",
