@@ -52,6 +52,12 @@ def _admin_analyzer_router_module():
     return sys.modules["app.api.admin.analyzer.router"]
 
 
+def _legacy_analyzer_router_module():
+    import app.api.analyzer.router  # noqa: F401
+
+    return sys.modules["app.api.analyzer.router"]
+
+
 class _FakeMappingResult:
     def __init__(self, rows: list[dict[str, Any]]):
         self._rows = rows
@@ -420,6 +426,14 @@ async def test_admin_response_status_unauth_401(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_response_status_compat_unauth_401(client) -> None:
+    resp = await client.get("/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 401
+    assert "text/html" not in resp.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
 async def test_batch_dry_run_is_not_added_to_legacy_api_analyzer(client) -> None:
     resp = await client.post(
         "/api/analyzer/responses/batch/dry-run",
@@ -427,6 +441,21 @@ async def test_batch_dry_run_is_not_added_to_legacy_api_analyzer(client) -> None
     )
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_attempts_mutation_routes_are_not_added_to_legacy_api_analyzer(client) -> None:
+    single = await client.post(
+        "/api/analyzer/responses/101/analyze",
+        json={"mode": "missing_or_failed_only", "reason": "operator retry"},
+    )
+    batch = await client.post(
+        "/api/analyzer/responses/batch",
+        json={"scope": {"response_ids": [101]}, "confirm": True},
+    )
+
+    assert single.status_code == 404
+    assert batch.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -523,6 +552,52 @@ async def test_admin_response_status_returns_run_and_quality_fields(
     assert body["analysis_task"]["queue_state"] == "complete"
     assert body["metric_readiness_status"] == "warning"
     assert body["metric_readiness_reasons"][0]["code"] == "citation_unlinked"
+
+
+@pytest.mark.asyncio
+async def test_legacy_response_status_compat_returns_admin_status_shape(
+    client, admin_operator, monkeypatch
+) -> None:
+    module = _legacy_analyzer_router_module()
+    fetch_status = AsyncMock(
+        return_value={
+            "response_id": 101,
+            "query_id": 9001,
+            "raw_text": "eligible",
+            "analysis_status": "done",
+            "analysis_id": 501,
+            "analyzer_model": "gpt-test",
+            "analyzer_run_id": 701,
+            "analyzer_run_status": "partial",
+            "analysis_schema_version": "analyzer_v4",
+            "analysis_error_code": None,
+            "analysis_error_message": None,
+            "quality_flag_count": 1,
+            "blocking_quality_flag_count": 0,
+            "quality_flags": [
+                {
+                    "code": "citation_unlinked",
+                    "severity": "warning",
+                    "message": "citation was not linked to a fact",
+                    "blocks_metric_readiness": False,
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(module.analyzer_db, "fetch_response_analyzer_status", fetch_status)
+
+    resp = await client.get("/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["response_id"] == 101
+    assert body["analyzer_run_id"] == 701
+    assert body["analysis_task"]["latest_run_id"] == 701
+    assert body["analysis_task"]["queue_state"] == "complete"
+    assert body["metric_readiness_status"] == "warning"
+    assert body["metric_readiness_reasons"][0]["code"] == "citation_unlinked"
+    fetch_status.assert_awaited_once()
 
 
 @pytest.mark.asyncio
