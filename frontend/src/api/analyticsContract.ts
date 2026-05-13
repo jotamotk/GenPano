@@ -265,12 +265,13 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
   const reasonLabels = uniqueText(reasons.map(metricReasonLabel))
   const ok = isOkFormulaStatus(status)
   const validZero = reasonLabels.includes('Valid zero')
+  const numericValue = asFiniteNumber(input?.value)
   const hasFormulaProof =
     asFiniteNumber(input?.numerator) != null &&
     asFiniteNumber(input?.denominator) != null
-  const needsZeroProof = validZero || asFiniteNumber(input?.value) === 0
-  const okWithRequiredProof = ok && (!needsZeroProof || hasFormulaProof)
-  if (ok && needsZeroProof && !hasFormulaProof) {
+  const needsZeroProof = validZero || numericValue === 0
+  const zeroWithoutProof = ok && needsZeroProof && !hasFormulaProof
+  if (zeroWithoutProof) {
     reasonLabels.push('Valid zero proof missing')
   }
   const missing =
@@ -279,7 +280,7 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
       status === 'empty' ||
       status === 'no_evidence' ||
       status === 'missing_required_inputs')
-  const tone: MetricTrustTone = okWithRequiredProof && !coverageIsPartial(coverage)
+  const tone: MetricTrustTone = ok && !coverageIsPartial(coverage) && !zeroWithoutProof
     ? 'ok'
     : missing && reasonLabels.length === 0
       ? 'missing'

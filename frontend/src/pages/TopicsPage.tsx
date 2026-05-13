@@ -1504,9 +1504,8 @@ function ResponseAttemptsModal({
   const summaryFacts = analysisSummaryFacts(analysis)
   const hasFutureAnalyzerFacts = productFacts.length > 0 || relations.length > 0 || drivers.length > 0
   const detailContract = detail as (AnalyticsContractMetadata & LooseRecord) | null | undefined
-  const analyzerFactsTrust = hasScopedFacts
-    ? null
-    : topicMetricTrustState(detailContract, 'analyzer_facts') ||
+  const analyzerFactsTrust =
+    topicMetricTrustState(detailContract, 'analyzer_facts') ||
       (hasResponseContractMetadata(detailContract)
         ? buildMetricTrustState({
             formula_status: detailContract?.formula_status || detailContract?.state,
