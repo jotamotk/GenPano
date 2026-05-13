@@ -196,7 +196,13 @@ async def _seed_first_class_v4_facts(
     response_id: int,
     linked_citation: bool,
     create_citation_source: bool = True,
+    create_analysis_fact_links: bool | None = None,
+    create_quality_flag: bool | None = None,
 ) -> None:
+    has_fact_links = (
+        linked_citation if create_analysis_fact_links is None else create_analysis_fact_links
+    )
+    has_quality_flag = not linked_citation if create_quality_flag is None else create_quality_flag
     db_session.add(
         ResponseAnalysis(
             response_id=response_id,
@@ -271,7 +277,7 @@ async def _seed_first_class_v4_facts(
             "schema_version": "analyzer_v4",
             "validator_status": "passed",
             "errors": [],
-            "quality_flag_count": 0 if linked_citation else 1,
+            "quality_flag_count": 1 if has_quality_flag else 0,
         },
         started_at=DAY,
         completed_at=DAY,
@@ -318,7 +324,7 @@ async def _seed_first_class_v4_facts(
             ),
         ]
     )
-    if linked_citation:
+    if has_fact_links:
         db_session.add_all(
             [
                 AnalysisFactLink(
@@ -347,7 +353,7 @@ async def _seed_first_class_v4_facts(
                 ),
             ]
         )
-    else:
+    if has_quality_flag:
         db_session.add(
             AnalyzerQualityFlag(
                 run_id=run.id,
@@ -505,6 +511,65 @@ async def test_engine_metrics_keep_unlinked_v4_citations_partial_and_null(
         "missing_required_inputs"
     )
     assert body["evidence_counts"]["analyzer_unresolved_citation_count"] == 1
+    assert body["items"] == [
+        {
+            "engine": "chatgpt",
+            "mention_rate": 1.0,
+            "sov": 0.5,
+            "citation_rate": None,
+            "sentiment": 0.7,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_keep_fact_linked_null_mention_citations_partial_and_null(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=78331,
+        prompt_id=78332,
+        query_id=78333,
+        response_id=78334,
+    )
+    await _seed_first_class_v4_facts(
+        db_session,
+        response_id=78334,
+        linked_citation=False,
+        create_analysis_fact_links=True,
+        create_quality_flag=False,
+    )
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "partial"
+    assert body["formula_status"] == "partial"
+    assert "citation_sources.mention_id" in body["missing_inputs"]
+    assert "unresolved_citation_attribution" in body["missing_inputs"]
+    assert "analysis_fact_links" in body["source_provenance"]
+    assert body["metric_formula_evidence"]["coverage"]["formula_status"] == "ok"
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == "ok"
+    assert body["metric_formula_evidence"]["sentiment"]["formula_status"] == "ok"
+    citation_evidence = body["metric_formula_evidence"]["citation"]
+    assert citation_evidence["formula_status"] == "missing_required_inputs"
+    assert citation_evidence["citation_count"] == 1
+    assert citation_evidence["attributed_count"] == 0
+    assert citation_evidence["fact_link_count"] == 2
+    assert "citation_sources.mention_id" in citation_evidence["reason_codes"]
+    assert body["evidence_counts"]["analyzer_citation_count"] == 1
+    assert body["evidence_counts"]["analyzer_attributed_citation_count"] == 0
+    assert body["evidence_counts"]["analyzer_fact_link_count"] == 2
     assert body["items"] == [
         {
             "engine": "chatgpt",
