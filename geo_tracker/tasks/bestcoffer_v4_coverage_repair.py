@@ -145,6 +145,16 @@ class V4CoverageRow:
     invalid_reason: str | None
 
 
+@dataclass(frozen=True)
+class ProjectTopicScope:
+    topic_ids: frozenset[int]
+    status: str
+
+    @property
+    def ids_count(self) -> int:
+        return len(self.topic_ids)
+
+
 def _parse_day(value: str | None, name: str) -> datetime | None:
     if not value:
         return None
@@ -324,7 +334,7 @@ def _scope_dict(scope: BestCofferV4CoverageScope) -> dict[str, Any]:
     return data
 
 
-async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set[int]:
+async def _load_project_topic_scope(session: AsyncSession, project_id: str) -> ProjectTopicScope:
     try:
         result = await session.execute(
             text(
@@ -341,8 +351,19 @@ async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set
         raise ValueError("project topic scope unavailable; refusing to fall back to brand scope")
     topic_ids = {int(row[0]) for row in result.all() if row[0] is not None}
     if not topic_ids:
-        raise ValueError("project topic scope has no tracked topics; refusing brand fallback")
-    return topic_ids
+        return ProjectTopicScope(
+            topic_ids=frozenset(),
+            status="empty_fallback_to_brand_scope",
+        )
+    return ProjectTopicScope(
+        topic_ids=frozenset(topic_ids),
+        status="tracked_topic_scope",
+    )
+
+
+async def _load_project_topic_ids(session: AsyncSession, project_id: str) -> set[int]:
+    project_topic_scope = await _load_project_topic_scope(session, project_id)
+    return set(project_topic_scope.topic_ids)
 
 
 def _response_invalid_reason(response: LLMResponse, query: Query) -> str | None:
@@ -365,7 +386,7 @@ def _target_scope_invalid_reason(
     project_topic_ids: set[int],
 ) -> str | None:
     topic_id = int(topic.id) if topic and topic.id is not None else None
-    if topic_id not in project_topic_ids:
+    if project_topic_ids and topic_id not in project_topic_ids:
         return "outside_project_topic_scope"
     allowed_brand_ids = set(scope.allowed_brand_ids())
     query_brand_id = int(query.brand_id) if query.brand_id is not None else None
@@ -478,9 +499,13 @@ async def _fact_counts_by_run(
 async def collect_v4_coverage_rows(
     session: AsyncSession,
     scope: BestCofferV4CoverageScope,
+    *,
+    project_topic_scope: ProjectTopicScope | None = None,
 ) -> list[V4CoverageRow]:
     validate_scope(scope, mode="export")
-    project_topic_ids = await _load_project_topic_ids(session, scope.project_id)
+    if project_topic_scope is None:
+        project_topic_scope = await _load_project_topic_scope(session, scope.project_id)
+    project_topic_ids = set(project_topic_scope.topic_ids)
     start_at = _parse_day(scope.date_from, "date_from")
     end_at = _end_of_day(_parse_day(scope.date_to, "date_to"))
     response_ids = scope.normalized_response_ids()
@@ -837,16 +862,21 @@ async def build_bestcoffer_v4_coverage_report(
             approval_comment_fetcher=approval_comment_fetcher,
             response_ids=response_ids,
         )
-    rows = await collect_v4_coverage_rows(session, scope)
+    project_topic_scope = await _load_project_topic_scope(session, scope.project_id)
+    rows = await collect_v4_coverage_rows(
+        session,
+        scope,
+        project_topic_scope=project_topic_scope,
+    )
     selected = [row for row in rows if row.invalid_reason is None]
-    if mode == "apply":
+    if mode in {"dry_run", "apply"}:
         selected_ids = {row.response_id for row in selected}
         missing_or_invalid_ids = [
             response_id for response_id in response_ids if response_id not in selected_ids
         ]
         if missing_or_invalid_ids:
             raise ValueError(
-                "apply response_ids must all be inside the verified project topic scope "
+                f"{mode} response_ids must all be inside the verified project/brand scope "
                 "and pass safety filters; blocked response_ids="
                 f"{missing_or_invalid_ids}"
             )
@@ -866,6 +896,9 @@ async def build_bestcoffer_v4_coverage_report(
         "write_performed": False,
         "approval_ref": approval_ref,
         "scope": _scope_dict(scope),
+        "project_topic_scope_status": project_topic_scope.status,
+        "project_topic_ids_count": project_topic_scope.ids_count,
+        "project_topic_ids": sorted(project_topic_scope.topic_ids),
         "selected_response_ids": [row.response_id for row in selected],
         "bucket_counts": dict(bucket_counts),
         "rows": [_row_to_dict(row) for row in rows],
