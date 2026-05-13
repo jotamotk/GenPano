@@ -78,12 +78,8 @@ def upgrade() -> None:
         );
         """
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_analyzer_runs_task_id ON analyzer_runs (task_id);"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_analyzer_runs_batch_id ON analyzer_runs (batch_id);"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_task_id ON analyzer_runs (task_id);")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_analyzer_runs_batch_id ON analyzer_runs (batch_id);")
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_analyzer_batches_status "
         "ON analyzer_batches (status, created_at DESC);"

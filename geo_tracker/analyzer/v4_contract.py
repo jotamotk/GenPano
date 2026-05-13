@@ -21,6 +21,13 @@ TOP_LEVEL_KEYS = (
     "citations",
     "quality_flags",
 )
+REQUIRED_TOP_LEVEL_KEYS = ("analysis_meta", "entities", "mentions")
+OPTIONAL_TOP_LEVEL_COLLECTIONS = (
+    "sentiment_drivers",
+    "product_features",
+    "relations",
+    "citations",
+)
 
 
 def _utcnow_iso() -> str:
@@ -158,9 +165,22 @@ def validate_analyzer_v4_package(
             message="Analyzer output was not a JSON object.",
         )
     else:
-        missing = [key for key in TOP_LEVEL_KEYS if key not in raw_package]
-        if missing:
-            errors.append(f"schema_validation_failed: missing top-level keys {missing}")
+        missing_required = [key for key in REQUIRED_TOP_LEVEL_KEYS if key not in raw_package]
+        if missing_required:
+            errors.append(
+                f"schema_validation_failed: missing top-level keys {missing_required}"
+            )
+        for key in OPTIONAL_TOP_LEVEL_COLLECTIONS:
+            if key not in raw_package:
+                _append_flag(
+                    flags,
+                    code="missing_optional_collection",
+                    severity="warning",
+                    message=f"Optional analyzer collection {key} was absent and normalized to [].",
+                    target_type="collection",
+                    target_key=key,
+                    blocks_metric_readiness=True,
+                )
 
     _ensure_v4_shape(raw_package, response_id=response_id, query_id=query_id)
     meta = raw_package["analysis_meta"]
@@ -175,6 +195,7 @@ def validate_analyzer_v4_package(
         if not isinstance(raw_package.get(key), list):
             errors.append(f"schema_validation_failed: {key} must be a list")
             raw_package[key] = []
+    _drop_malformed_mentions(raw_package, flags)
 
     entity_keys: set[str] = set()
     for index, entity in enumerate(_objects(raw_package["entities"])):
@@ -739,6 +760,41 @@ def _looks_like_v4(raw_json: dict[str, Any]) -> bool:
 
 def _objects(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _drop_malformed_mentions(package: dict[str, Any], flags: list[dict[str, Any]]) -> None:
+    mentions = package.get("mentions")
+    if not isinstance(mentions, list):
+        return
+
+    kept: list[dict[str, Any]] = []
+    for index, mention in enumerate(mentions):
+        if not isinstance(mention, dict):
+            continue
+        missing_fields = [
+            field
+            for field in ("mention_type", "position", "sentiment_label", "confidence")
+            if mention.get(field) is None
+        ]
+        if not missing_fields:
+            kept.append(mention)
+            continue
+
+        key = str(mention.get("mention_key") or f"mention_{index}")
+        mention["mention_key"] = key
+        _append_flag(
+            flags,
+            code="malformed_mention_dropped",
+            severity="error",
+            message=(
+                "Mention was dropped because required fields were null: "
+                f"{', '.join(missing_fields)}."
+            ),
+            target_type="mention",
+            target_key=key,
+            blocks_metric_readiness=True,
+        )
+    package["mentions"] = kept
 
 
 def _quality_codes(item: dict[str, Any]) -> set[str]:

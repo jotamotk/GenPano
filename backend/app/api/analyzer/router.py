@@ -9,6 +9,7 @@ Routes:
 - GET    /api/analyzer/brands                  (read)
 - GET    /api/analyzer/llms                    (read)
 - GET    /api/analyzer/responses               (read, filtered + paginated)
+- GET    /api/analyzer/responses/{id}/status   (read, Admin Attempts compat)
 - GET    /api/analyzer/response/{id}           (read, detail with mentions)
 - GET    /api/analyzer/daily                   (read, geo_score_daily)
 - POST   /api/analyzer/trigger                 dispatch + emit_audit (high
@@ -36,6 +37,7 @@ from app.admin.analyzer.lib import (
     parse_trigger_payload,
 )
 from app.admin.audit import emit_audit
+from app.admin.queries.db import format_attempt_analysis_fields
 from app.api.admin.auth.router import current_admin
 from app.core.security import _DependsDb
 
@@ -98,6 +100,24 @@ async def analyzer_responses(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/analyzer/responses/{response_id}/status", response_model=None)
+async def analyzer_response_status(
+    response_id: int,
+    operator: Annotated[AdminUser, Depends(current_admin)],
+    session: AsyncSession = _DependsDb,
+) -> JSONResponse:
+    status = await analyzer_db.fetch_response_analyzer_status(session, response_id)
+    if status is None:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "response_not_found"},
+        )
+
+    item = format_attempt_analysis_fields(status)
+    item["success"] = True
+    return JSONResponse(status_code=200, content=item)
 
 
 @router.get("/analyzer/response/{response_id}", response_model=None)
