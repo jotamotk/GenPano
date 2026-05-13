@@ -149,6 +149,8 @@ async def fetch_response_analyzer_status(
     if not await _table_exists(session, "llm_responses"):
         return None
     has_response_analyses = await _table_exists(session, "response_analyses")
+    has_analyzer_runs = await _table_exists(session, "analyzer_runs")
+    has_analyzer_quality_flags = await _table_exists(session, "analyzer_quality_flags")
     analysis_select = (
         "ra.id AS analysis_id, ra.analyzer_model, ra.analyzed_at AS analysis_analyzed_at"
         if has_response_analyses
@@ -156,6 +158,96 @@ async def fetch_response_analyzer_status(
     )
     analysis_join = (
         "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
+    )
+    latest_run_select = (
+        """
+            ar.analyzer_run_id,
+            ar.analysis_schema_version,
+            ar.analyzer_run_status,
+            ar.run_model,
+            ar.analyzer_run_started_at,
+            ar.analyzer_run_completed_at,
+            ar.analysis_error_code,
+            ar.analysis_error_message,
+            ar.validator_summary_json,
+        """
+        if has_analyzer_runs
+        else """
+            NULL AS analyzer_run_id,
+            NULL AS analysis_schema_version,
+            NULL AS analyzer_run_status,
+            NULL AS run_model,
+            NULL AS analyzer_run_started_at,
+            NULL AS analyzer_run_completed_at,
+            NULL AS analysis_error_code,
+            NULL AS analysis_error_message,
+            NULL AS validator_summary_json,
+        """
+    )
+    latest_run_join = (
+        """
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            ar.id AS analyzer_run_id,
+                            ar.schema_version AS analysis_schema_version,
+                            ar.status AS analyzer_run_status,
+                            ar.model AS run_model,
+                            ar.started_at AS analyzer_run_started_at,
+                            ar.completed_at AS analyzer_run_completed_at,
+                            ar.failure_code AS analysis_error_code,
+                            ar.failure_message AS analysis_error_message,
+                            ar.validator_summary_json
+                        FROM analyzer_runs ar
+                        WHERE ar.response_id = lr.id
+                        ORDER BY ar.started_at DESC NULLS LAST, ar.id DESC
+                        LIMIT 1
+                    ) ar ON TRUE
+        """
+        if has_analyzer_runs
+        else ""
+    )
+    quality_flags_select = (
+        """
+            aqf.quality_flag_count,
+            aqf.blocking_quality_flag_count,
+            aqf.quality_flags
+        """
+        if has_analyzer_runs and has_analyzer_quality_flags
+        else """
+            0 AS quality_flag_count,
+            0 AS blocking_quality_flag_count,
+            NULL AS quality_flags
+        """
+    )
+    quality_flags_join = (
+        """
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            COUNT(*)::int AS quality_flag_count,
+                            COUNT(*) FILTER (
+                                WHERE COALESCE(aqf.blocks_metric_readiness, FALSE)
+                            )::int AS blocking_quality_flag_count,
+                            COALESCE(
+                                jsonb_agg(
+                                    jsonb_build_object(
+                                        'code', aqf.code,
+                                        'severity', aqf.severity,
+                                        'message', aqf.message,
+                                        'target_type', aqf.target_type,
+                                        'target_key', aqf.target_key,
+                                        'blocks_metric_readiness',
+                                            aqf.blocks_metric_readiness
+                                    )
+                                    ORDER BY aqf.id
+                                ) FILTER (WHERE aqf.id IS NOT NULL),
+                                '[]'::jsonb
+                            ) AS quality_flags
+                        FROM analyzer_quality_flags aqf
+                        WHERE aqf.run_id = ar.analyzer_run_id
+                    ) aqf ON TRUE
+        """
+        if has_analyzer_runs and has_analyzer_quality_flags
+        else ""
     )
     row = (
         (
@@ -169,10 +261,14 @@ async def fetch_response_analyzer_status(
                         lr.analysis_status,
                         lr.analyzed_at,
                         q.status AS attempt_status,
-                        {analysis_select}
+                        {analysis_select},
+                        {latest_run_select}
+                        {quality_flags_select}
                     FROM llm_responses lr
                     LEFT JOIN queries q ON q.id = lr.query_id
                     {analysis_join}
+                    {latest_run_join}
+                    {quality_flags_join}
                     WHERE lr.id = :response_id
                     """
                 ),
@@ -204,6 +300,7 @@ async def preview_batch_analyzer_candidates(
 
     response_cols = await _table_columns(session, "llm_responses")
     has_response_analyses = await _table_exists(session, "response_analyses")
+    has_analyzer_runs = await _table_exists(session, "analyzer_runs")
 
     scope_conditions: list[str] = []
     filter_conditions: list[str] = []
@@ -282,6 +379,22 @@ async def preview_batch_analyzer_candidates(
     analysis_join = (
         "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
     )
+    latest_run_select = (
+        "ar.analyzer_run_status," if has_analyzer_runs else "NULL AS analyzer_run_status,"
+    )
+    latest_run_join = (
+        """
+        LEFT JOIN LATERAL (
+            SELECT ar.status AS analyzer_run_status
+            FROM analyzer_runs ar
+            WHERE ar.response_id = lr.id
+            ORDER BY ar.started_at DESC NULLS LAST, ar.id DESC
+            LIMIT 1
+        ) ar ON TRUE
+        """
+        if has_analyzer_runs
+        else ""
+    )
     sentinel_limit = BATCH_DRY_RUN_QUERY_LIMIT + 1
     sql = text(
         f"""
@@ -294,10 +407,12 @@ async def preview_batch_analyzer_candidates(
             lr.raw_text,
             lr.analysis_status,
             {analyzed_at_select} AS analyzed_at,
+            {latest_run_select}
             {analysis_select}
         FROM queries q
         LEFT JOIN llm_responses lr ON lr.query_id = q.id
         {analysis_join}
+        {latest_run_join}
         WHERE {where_clause}
         ORDER BY q.id DESC, lr.id DESC
         LIMIT {sentinel_limit}

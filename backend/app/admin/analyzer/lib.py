@@ -291,7 +291,11 @@ def _is_done(row: dict[str, Any]) -> bool:
 
 
 def _is_running_or_queued(row: dict[str, Any]) -> bool:
-    return str(row.get("analysis_status") or "").strip().lower() in {"queued", "running"}
+    statuses = {
+        str(row.get("analysis_status") or "").strip().lower(),
+        str(row.get("analyzer_run_status") or "").strip().lower(),
+    }
+    return bool(statuses & {"queued", "running"})
 
 
 def _eligible_for_mode(row: dict[str, Any], mode: str) -> tuple[bool, str | None]:

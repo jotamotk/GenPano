@@ -7,6 +7,7 @@ empty / zero values when the tables aren't on the DB (sqlite tests).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -64,13 +65,60 @@ def _analysis_summary(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _normalized_quality_flags(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    flags: list[dict[str, Any]] = []
+    for raw in value:
+        if isinstance(raw, dict):
+            flags.append(raw)
+    return flags
+
+
+def _queue_state_from_run(status: Any) -> str | None:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"queued", "running"}:
+        return normalized
+    if normalized in {"done", "partial"}:
+        return "complete"
+    if normalized == "failed":
+        return "failed"
+    return None
+
+
+def _metric_readiness_status(
+    *,
+    quality_flag_count: Any,
+    blocking_quality_flag_count: Any,
+    analysis_id: Any,
+) -> str | None:
+    blocking_count = int(blocking_quality_flag_count or 0)
+    flag_count = int(quality_flag_count or 0)
+    if blocking_count > 0:
+        return "blocked"
+    if flag_count > 0:
+        return "warning"
+    if analysis_id is not None:
+        return "ready"
+    return None
+
+
 def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize Attempts analyzer fields from currently available tables."""
     item = dict(row)
-    raw_text = str(item.get("response") or "").strip()
+    raw_text = str(item.get("response") or item.get("raw_text") or "").strip()
     response_id = item.get("response_id")
     analysis_id = item.get("analysis_id")
     persisted_status = str(item.get("analysis_status") or "").strip().lower()
+    latest_run_status = str(item.get("analyzer_run_status") or "").strip().lower()
+    quality_flags = _normalized_quality_flags(item.get("quality_flags"))
 
     item.setdefault("analysis_id", None)
     item.setdefault("analyzer_model", None)
@@ -86,6 +134,14 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
     item.setdefault("aggregation_refreshed_at", None)
     item.setdefault("metric_readiness_status", None)
     item.setdefault("metric_readiness_reasons", None)
+    item.setdefault("analyzer_run_status", None)
+    item.setdefault("quality_flag_count", 0)
+    item.setdefault("blocking_quality_flag_count", 0)
+    item["quality_flags"] = quality_flags
+    if item.get("analyzer_model") is None and item.get("run_model") is not None:
+        item["analyzer_model"] = item.get("run_model")
+    if item.get("analyzed_at") is None and item.get("analyzer_run_completed_at") is not None:
+        item["analyzed_at"] = _isoformat(item.get("analyzer_run_completed_at"))
 
     if response_id is None or not raw_text:
         item["analysis_status"] = "not_eligible"
@@ -93,6 +149,8 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
         item["analysis_error_message"] = (
             item.get("analysis_error_message") or "No response text available for analyzer."
         )
+    elif latest_run_status in {"queued", "running"}:
+        item["analysis_status"] = latest_run_status
     elif persisted_status == "pending" and analysis_id is None:
         item["analysis_status"] = "missing"
     elif persisted_status:
@@ -100,11 +158,23 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
     else:
         item["analysis_status"] = "missing"
 
+    if item.get("analysis_error") is None and item.get("analysis_error_message"):
+        item["analysis_error"] = item.get("analysis_error_message")
+    if item.get("metric_readiness_status") is None:
+        item["metric_readiness_status"] = _metric_readiness_status(
+            quality_flag_count=item.get("quality_flag_count"),
+            blocking_quality_flag_count=item.get("blocking_quality_flag_count"),
+            analysis_id=analysis_id,
+        )
+    if item.get("metric_readiness_reasons") is None:
+        item["metric_readiness_reasons"] = quality_flags or None
+
     item["analysis_summary"] = _analysis_summary(item)
     item["analysis_task"] = {
         "latest_task_id": item.get("task_id"),
+        "latest_run_id": item.get("analyzer_run_id"),
         "latest_batch_id": None,
-        "queue_state": None,
+        "queue_state": _queue_state_from_run(latest_run_status),
     }
     return item
 
@@ -246,6 +316,8 @@ async def list_queries(
     has_brand_mentions = await _table_exists(session, "brand_mentions")
     has_citation_sources = await _table_exists(session, "citation_sources")
     has_product_feature_mentions = await _table_exists(session, "product_feature_mentions")
+    has_analyzer_runs = await _table_exists(session, "analyzer_runs")
+    has_analyzer_quality_flags = await _table_exists(session, "analyzer_quality_flags")
 
     analysis_select = (
         """
@@ -296,6 +368,95 @@ async def list_queries(
         if has_product_feature_mentions and has_response_analyses
         else "NULL as features_count,"
     )
+    latest_run_select = (
+        """
+            ar.analyzer_run_id,
+            ar.analysis_schema_version,
+            ar.analyzer_run_status,
+            ar.run_model,
+            ar.analyzer_run_started_at,
+            ar.analyzer_run_completed_at,
+            ar.analysis_error_code,
+            ar.analysis_error_message,
+            ar.validator_summary_json,
+        """
+        if has_analyzer_runs
+        else """
+            NULL as analyzer_run_id,
+            NULL as analysis_schema_version,
+            NULL as analyzer_run_status,
+            NULL as run_model,
+            NULL as analyzer_run_started_at,
+            NULL as analyzer_run_completed_at,
+            NULL as analysis_error_code,
+            NULL as analysis_error_message,
+            NULL as validator_summary_json,
+        """
+    )
+    latest_run_join = (
+        """
+        LEFT JOIN LATERAL (
+            SELECT
+                ar.id AS analyzer_run_id,
+                ar.schema_version AS analysis_schema_version,
+                ar.status AS analyzer_run_status,
+                ar.model AS run_model,
+                ar.started_at AS analyzer_run_started_at,
+                ar.completed_at AS analyzer_run_completed_at,
+                ar.failure_code AS analysis_error_code,
+                ar.failure_message AS analysis_error_message,
+                ar.validator_summary_json
+            FROM analyzer_runs ar
+            WHERE ar.response_id = r.id
+            ORDER BY ar.started_at DESC NULLS LAST, ar.id DESC
+            LIMIT 1
+        ) ar ON TRUE
+        """
+        if has_analyzer_runs
+        else ""
+    )
+    quality_flags_select = (
+        """
+            aqf.quality_flag_count,
+            aqf.blocking_quality_flag_count,
+            aqf.quality_flags,
+        """
+        if has_analyzer_runs and has_analyzer_quality_flags
+        else """
+            0 as quality_flag_count,
+            0 as blocking_quality_flag_count,
+            NULL as quality_flags,
+        """
+    )
+    quality_flags_join = (
+        """
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*)::int AS quality_flag_count,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(aqf.blocks_metric_readiness, FALSE)
+                )::int AS blocking_quality_flag_count,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'code', aqf.code,
+                            'severity', aqf.severity,
+                            'message', aqf.message,
+                            'target_type', aqf.target_type,
+                            'target_key', aqf.target_key,
+                            'blocks_metric_readiness', aqf.blocks_metric_readiness
+                        )
+                        ORDER BY aqf.id
+                    ) FILTER (WHERE aqf.id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS quality_flags
+            FROM analyzer_quality_flags aqf
+            WHERE aqf.run_id = ar.analyzer_run_id
+        ) aqf ON TRUE
+        """
+        if has_analyzer_runs and has_analyzer_quality_flags
+        else ""
+    )
 
     sql = text(
         f"""
@@ -329,6 +490,8 @@ async def list_queries(
             {mentions_count_select}
             {citations_count_select}
             {features_count_select}
+            {latest_run_select}
+            {quality_flags_select}
             p.name as profile_name,
             p.location as profile_location,
             p.country_code as profile_country,
@@ -337,6 +500,8 @@ async def list_queries(
         FROM queries q
         LEFT JOIN llm_responses r ON q.id = r.query_id
         {analysis_join}
+        {latest_run_join}
+        {quality_flags_join}
         LEFT JOIN profiles p ON q.profile_id::text = p.id::text
         LEFT JOIN llm_accounts a ON q.account_id = a.id
         LEFT JOIN prompts pr ON q.prompt_id = pr.id

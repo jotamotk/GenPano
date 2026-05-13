@@ -94,6 +94,7 @@ def test_attempts_analysis_fields_format_no_response_as_not_eligible() -> None:
     assert item["analysis_summary"] is None
     assert item["analysis_task"] == {
         "latest_task_id": None,
+        "latest_run_id": None,
         "latest_batch_id": None,
         "queue_state": None,
     }
@@ -132,6 +133,45 @@ def test_attempts_analysis_fields_format_done_summary_without_fake_counts() -> N
     assert item["analysis_summary"]["total_brands_mentioned"] == 3
     assert item["analysis_summary"]["mentions_count"] is None
     assert item["analysis_task"]["latest_task_id"] is None
+
+
+def test_attempts_analysis_fields_format_latest_run_error_and_quality_flags() -> None:
+    from app.admin.queries.db import format_attempt_analysis_fields
+
+    item = format_attempt_analysis_fields(
+        {
+            "id": 9003,
+            "response_id": 124,
+            "response": "previous good answer",
+            "analysis_status": "done",
+            "analysis_id": 457,
+            "analyzer_model": "gpt-test",
+            "analyzer_run_id": 812,
+            "analyzer_run_status": "failed",
+            "analysis_schema_version": "analyzer_v4",
+            "analysis_error_code": "persistence_failed",
+            "analysis_error_message": "simulated fact write failure",
+            "quality_flag_count": 2,
+            "blocking_quality_flag_count": 1,
+            "quality_flags": [
+                {
+                    "code": "persistence_failed",
+                    "severity": "error",
+                    "message": "simulated fact write failure",
+                    "blocks_metric_readiness": True,
+                }
+            ],
+        }
+    )
+
+    assert item["analysis_status"] == "done"
+    assert item["analyzer_run_id"] == 812
+    assert item["analyzer_run_status"] == "failed"
+    assert item["analysis_error"] == "simulated fact write failure"
+    assert item["analysis_task"]["latest_run_id"] == 812
+    assert item["analysis_task"]["queue_state"] == "failed"
+    assert item["metric_readiness_status"] == "blocked"
+    assert item["metric_readiness_reasons"][0]["code"] == "persistence_failed"
 
 
 def test_batch_dry_run_payload_requires_scope() -> None:
@@ -234,6 +274,37 @@ def test_build_batch_dry_run_result_counts_skips_and_caps() -> None:
     assert result["skipped_invalid_count"] == 1
     assert result["skipped_counts"]["duplicate_response_id"] == 1
     assert result["skipped_counts"]["empty_response"] == 1
+    assert result["skipped_counts"]["already_queued_or_running"] == 1
+
+
+def test_build_batch_dry_run_skips_current_running_analyzer_run() -> None:
+    from app.admin.analyzer.lib import build_batch_dry_run_result, parse_batch_dry_run_payload
+
+    payload = parse_batch_dry_run_payload(
+        {
+            "scope": {"response_ids": [201]},
+            "mode": "reanalyze_all",
+            "max_count": 10,
+            "sample_limit": 10,
+        }
+    )
+    result = build_batch_dry_run_result(
+        payload,
+        [
+            {
+                "query_id": 9201,
+                "response_id": 201,
+                "raw_text": "current answer",
+                "attempt_status": "done",
+                "analysis_status": "done",
+                "analysis_id": 601,
+                "analyzer_run_status": "running",
+            }
+        ],
+    )
+
+    assert result["eligible_count"] == 0
+    assert result["will_enqueue_count"] == 0
     assert result["skipped_counts"]["already_queued_or_running"] == 1
 
 
@@ -341,6 +412,14 @@ async def test_admin_batch_dry_run_unauth_401(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_response_status_unauth_401(client) -> None:
+    resp = await client.get("/admin/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 401
+    assert "text/html" not in resp.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
 async def test_batch_dry_run_is_not_added_to_legacy_api_analyzer(client) -> None:
     resp = await client.post(
         "/api/analyzer/responses/batch/dry-run",
@@ -396,6 +475,54 @@ async def test_admin_batch_dry_run_returns_counts(client, admin_operator, monkey
     assert body["skipped_invalid_count"] == 1
     assert body["eligible_response_ids_preview"] == [101]
     assert body["dry_run_id"]
+
+
+@pytest.mark.asyncio
+async def test_admin_response_status_returns_run_and_quality_fields(
+    client, admin_operator, monkeypatch
+) -> None:
+    module = _admin_analyzer_router_module()
+    monkeypatch.setattr(
+        module.analyzer_db,
+        "fetch_response_analyzer_status",
+        AsyncMock(
+            return_value={
+                "response_id": 101,
+                "query_id": 9001,
+                "raw_text": "eligible",
+                "analysis_status": "done",
+                "analysis_id": 501,
+                "analyzer_model": "gpt-test",
+                "analyzer_run_id": 701,
+                "analyzer_run_status": "partial",
+                "analysis_schema_version": "analyzer_v4",
+                "analysis_error_code": None,
+                "analysis_error_message": None,
+                "quality_flag_count": 1,
+                "blocking_quality_flag_count": 0,
+                "quality_flags": [
+                    {
+                        "code": "citation_unlinked",
+                        "severity": "warning",
+                        "message": "citation was not linked to a fact",
+                        "blocks_metric_readiness": False,
+                    }
+                ],
+            }
+        ),
+    )
+
+    resp = await client.get("/admin/api/analyzer/responses/101/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["response_id"] == 101
+    assert body["analyzer_run_id"] == 701
+    assert body["analysis_task"]["latest_run_id"] == 701
+    assert body["analysis_task"]["queue_state"] == "complete"
+    assert body["metric_readiness_status"] == "warning"
+    assert body["metric_readiness_reasons"][0]["code"] == "citation_unlinked"
 
 
 @pytest.mark.asyncio
