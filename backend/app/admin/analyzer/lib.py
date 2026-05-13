@@ -42,6 +42,21 @@ class AnalyzerValidationError(Exception):
         self.message = message
 
 
+class BatchPreviewRows(list[dict[str, Any]]):
+    """Candidate rows plus DB-scope truncation metadata."""
+
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        query_truncated: bool = False,
+        query_limit: int | None = None,
+    ):
+        super().__init__(rows)
+        self.query_truncated = query_truncated
+        self.query_limit = query_limit
+
+
 def parse_trigger_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     """Validate POST /api/analyzer/trigger body. Required: ``date``
     (YYYY-MM-DD); ``action`` defaults to ``analyze``.
@@ -314,6 +329,9 @@ def build_batch_dry_run_result(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     sample_limit = int(payload["sample_limit"])
+    query_truncated = bool(getattr(rows, "query_truncated", False))
+    raw_query_limit = getattr(rows, "query_limit", None)
+    query_limit = int(raw_query_limit) if raw_query_limit is not None else None
     skipped_counts = _blank_skipped_counts()
     skipped_samples: dict[str, list[dict[str, Any]]] = {}
     response_ids = list(payload["scope"].get("response_ids") or [])
@@ -397,21 +415,81 @@ def build_batch_dry_run_result(
     eligible_ids = [int(row["response_id"]) for row in eligible_rows]
     capped_ids = eligible_ids[:cap_limit]
     cap_truncated = len(eligible_ids) > cap_limit
+    candidate_responses = sum(1 for row in rows if row.get("response_id") is not None)
     requested_count = (
         len(response_ids) + len(payload["scope"].get("query_ids") or [])
         if response_ids or payload["scope"].get("query_ids")
         else len(rows)
     )
-    dry_run_id = _selection_token(payload, capped_ids, skipped_counts)
+    dry_run_id = _selection_token(payload, [] if query_truncated else capped_ids, skipped_counts)
+
+    if query_truncated:
+        return {
+            "success": False,
+            "dry_run": True,
+            "dry_run_id": dry_run_id,
+            "mode": payload["mode"],
+            "error": "dry_run_scope_too_large",
+            "scope_too_large": True,
+            "counts_complete": False,
+            "query_truncated": True,
+            "query_limit": query_limit,
+            "requested_count": None,
+            "matched_attempts": None,
+            "matched_attempts_evaluated": len(rows),
+            "candidate_responses": None,
+            "candidate_responses_evaluated": candidate_responses,
+            "eligible_count": None,
+            "eligible_count_evaluated": len(eligible_ids),
+            "already_done_count": None,
+            "already_done_count_evaluated": skipped_counts["already_done"],
+            "skipped_no_response_count": None,
+            "skipped_no_response_count_evaluated": skipped_counts["no_response"]
+            + skipped_counts["empty_response"],
+            "skipped_invalid_count": None,
+            "skipped_invalid_count_evaluated": skipped_counts["invalid_response_id"],
+            "skipped_failed_attempt_without_response_count": None,
+            "skipped_failed_attempt_without_response_count_evaluated": skipped_counts[
+                "failed_attempt_without_response"
+            ],
+            "cap": cap_limit,
+            "cap_limit": cap_limit,
+            "cap_exceeded": False,
+            "cap_truncated": False,
+            "will_enqueue_count": 0,
+            "eligible_response_ids_preview": [],
+            "eligible_response_ids_sample": [],
+            "skipped_counts": {},
+            "skipped_counts_evaluated": skipped_counts,
+            "skipped_reasons": {},
+            "skipped_samples": {},
+            "skipped_reasons_evaluated": skipped_samples,
+            "skipped_samples_evaluated": skipped_samples,
+            "requires_confirmation": False,
+            "warnings": [
+                {
+                    "code": "dry_run_scope_too_large",
+                    "message": (
+                        "Dry-run scope exceeded the safe preview row limit; "
+                        "narrow the filters before submitting analyzer work."
+                    ),
+                    "query_limit": query_limit,
+                }
+            ],
+        }
 
     return {
         "success": True,
         "dry_run": True,
         "dry_run_id": dry_run_id,
         "mode": payload["mode"],
+        "scope_too_large": False,
+        "counts_complete": True,
+        "query_truncated": False,
+        "query_limit": query_limit,
         "requested_count": requested_count,
         "matched_attempts": len(rows),
-        "candidate_responses": sum(1 for row in rows if row.get("response_id") is not None),
+        "candidate_responses": candidate_responses,
         "eligible_count": len(eligible_ids),
         "already_done_count": skipped_counts["already_done"],
         "skipped_no_response_count": skipped_counts["no_response"]
@@ -440,6 +518,7 @@ __all__ = [
     "BATCH_ANALYZE_MODES",
     "SINGLE_ANALYZE_MODES",
     "AnalyzerValidationError",
+    "BatchPreviewRows",
     "build_batch_dry_run_result",
     "parse_batch_dry_run_payload",
     "parse_single_analyze_payload",

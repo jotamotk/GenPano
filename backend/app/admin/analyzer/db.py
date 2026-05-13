@@ -15,7 +15,11 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.analyzer.lib import BatchPreviewRows
+from app.admin.queries.lib import split_pending_status
+
 logger = logging.getLogger(__name__)
+BATCH_DRY_RUN_QUERY_LIMIT = 5000
 
 
 def _isoformat(value: Any) -> str | None:
@@ -190,13 +194,13 @@ async def preview_batch_analyzer_candidates(
     session: AsyncSession,
     *,
     scope: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> BatchPreviewRows:
     if not await _table_exists(session, "queries"):
-        return []
+        return BatchPreviewRows([])
 
     has_responses = await _table_exists(session, "llm_responses")
     if not has_responses:
-        return []
+        return BatchPreviewRows([])
 
     response_cols = await _table_columns(session, "llm_responses")
     has_response_analyses = await _table_exists(session, "response_analyses")
@@ -234,8 +238,14 @@ async def preview_batch_analyzer_candidates(
         filter_conditions.append("q.target_llm = :llm")
         params["llm"] = filters["llm"]
     if filters.get("attempt_status"):
-        filter_conditions.append("LOWER(q.status) = :attempt_status")
-        params["attempt_status"] = filters["attempt_status"]
+        special = split_pending_status(filters["attempt_status"])
+        if special == "unqueued":
+            filter_conditions.append("LOWER(q.status) = 'pending' AND q.queued_at IS NULL")
+        elif special == "queued":
+            filter_conditions.append("LOWER(q.status) = 'pending' AND q.queued_at IS NOT NULL")
+        else:
+            filter_conditions.append("LOWER(q.status) = :attempt_status")
+            params["attempt_status"] = filters["attempt_status"]
     if filters.get("analysis_status"):
         if filters["analysis_status"] == "missing":
             if has_response_analyses:
@@ -272,6 +282,7 @@ async def preview_batch_analyzer_candidates(
     analysis_join = (
         "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
     )
+    sentinel_limit = BATCH_DRY_RUN_QUERY_LIMIT + 1
     sql = text(
         f"""
         SELECT
@@ -289,21 +300,26 @@ async def preview_batch_analyzer_candidates(
         {analysis_join}
         WHERE {where_clause}
         ORDER BY q.id DESC, lr.id DESC
-        LIMIT 5000
+        LIMIT {sentinel_limit}
         """
     )
     if bindparams:
         sql = sql.bindparams(*bindparams)
     rows = (await session.execute(sql, params)).mappings().all()
+    query_truncated = len(rows) > BATCH_DRY_RUN_QUERY_LIMIT
     out: list[dict[str, Any]] = []
-    for row in rows:
+    for row in rows[:BATCH_DRY_RUN_QUERY_LIMIT]:
         item = dict(row)
         item["analyzed_at"] = _isoformat(
             item.get("analysis_analyzed_at") or item.get("analyzed_at")
         )
         item.pop("analysis_analyzed_at", None)
         out.append(item)
-    return out
+    return BatchPreviewRows(
+        out,
+        query_truncated=query_truncated,
+        query_limit=BATCH_DRY_RUN_QUERY_LIMIT,
+    )
 
 
 async def list_brands(session: AsyncSession) -> list[dict[str, Any]]:

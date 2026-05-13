@@ -6,6 +6,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -49,6 +50,37 @@ def _admin_analyzer_router_module():
     import app.api.admin.analyzer.router  # noqa: F401
 
     return sys.modules["app.api.admin.analyzer.router"]
+
+
+class _FakeMappingResult:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def mappings(self) -> _FakeMappingResult:
+        return self
+
+    def all(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _CapturingSession:
+    def __init__(self, rows: list[dict[str, Any]] | None = None):
+        self.rows = rows or []
+        self.statements: list[str] = []
+        self.params: list[dict[str, Any]] = []
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None):
+        self.statements.append(str(statement))
+        self.params.append(dict(params or {}))
+        return _FakeMappingResult(self.rows)
+
+
+async def _analyzer_table_exists(_session: Any, name: str) -> bool:
+    return name in {"queries", "llm_responses"}
+
+
+async def _analyzer_response_columns(_session: Any, _name: str) -> set[str]:
+    return {"analyzed_at"}
 
 
 def test_attempts_analysis_fields_format_no_response_as_not_eligible() -> None:
@@ -203,6 +235,99 @@ def test_build_batch_dry_run_result_counts_skips_and_caps() -> None:
     assert result["skipped_counts"]["duplicate_response_id"] == 1
     assert result["skipped_counts"]["empty_response"] == 1
     assert result["skipped_counts"]["already_queued_or_running"] == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_batch_dry_run_maps_virtual_pending_attempt_statuses(
+    monkeypatch,
+) -> None:
+    from app.admin.analyzer import db as analyzer_db
+
+    monkeypatch.setattr(analyzer_db, "_table_exists", _analyzer_table_exists)
+    monkeypatch.setattr(analyzer_db, "_table_columns", _analyzer_response_columns)
+
+    queued_session = _CapturingSession()
+    await analyzer_db.preview_batch_analyzer_candidates(
+        queued_session,
+        scope={"filters": {"attempt_status": "queued"}},
+    )
+
+    assert (
+        "LOWER(q.status) = 'pending' AND q.queued_at IS NOT NULL" in (queued_session.statements[-1])
+    )
+    assert "attempt_status" not in queued_session.params[-1]
+
+    unqueued_session = _CapturingSession()
+    await analyzer_db.preview_batch_analyzer_candidates(
+        unqueued_session,
+        scope={"filters": {"attempt_status": "unqueued"}},
+    )
+
+    assert (
+        "LOWER(q.status) = 'pending' AND q.queued_at IS NULL" in (unqueued_session.statements[-1])
+    )
+    assert "attempt_status" not in unqueued_session.params[-1]
+
+
+@pytest.mark.asyncio
+async def test_batch_dry_run_large_scope_returns_too_large_state(monkeypatch) -> None:
+    from app.admin.analyzer import db as analyzer_db
+    from app.admin.analyzer.lib import build_batch_dry_run_result, parse_batch_dry_run_payload
+
+    monkeypatch.setattr(analyzer_db, "_table_exists", _analyzer_table_exists)
+    monkeypatch.setattr(analyzer_db, "_table_columns", _analyzer_response_columns)
+
+    rows = [
+        {
+            "query_id": index,
+            "attempt_status": "done",
+            "target_llm": "deepseek",
+            "brand_id": 12,
+            "response_id": index,
+            "raw_text": f"answer {index}",
+            "analysis_status": None,
+            "analyzed_at": None,
+            "analysis_id": None,
+            "analyzer_model": None,
+            "analysis_analyzed_at": None,
+        }
+        for index in range(1, 5002)
+    ]
+    session = _CapturingSession(rows)
+
+    preview_rows = await analyzer_db.preview_batch_analyzer_candidates(
+        session,
+        scope={"filters": {"attempt_status": "done"}},
+    )
+
+    assert "LIMIT 5001" in session.statements[-1]
+    assert len(preview_rows) == 5000
+    assert preview_rows.query_truncated is True
+    assert preview_rows.query_limit == 5000
+
+    payload = parse_batch_dry_run_payload(
+        {
+            "scope": {"filters": {"attempt_status": "done"}},
+            "mode": "missing_or_failed_only",
+            "max_count": 200,
+            "sample_limit": 20,
+        }
+    )
+    result = build_batch_dry_run_result(payload, preview_rows)
+
+    assert result["success"] is False
+    assert result["error"] == "dry_run_scope_too_large"
+    assert result["scope_too_large"] is True
+    assert result["query_truncated"] is True
+    assert result["query_limit"] == 5000
+    assert result["counts_complete"] is False
+    assert result["matched_attempts"] is None
+    assert result["matched_attempts_evaluated"] == 5000
+    assert result["eligible_count"] is None
+    assert result["eligible_count_evaluated"] == 5000
+    assert result["cap_truncated"] is False
+    assert result["will_enqueue_count"] == 0
+    assert result["requires_confirmation"] is False
 
 
 @pytest.mark.asyncio
