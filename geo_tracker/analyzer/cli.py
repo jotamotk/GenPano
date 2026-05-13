@@ -33,6 +33,7 @@ from geo_tracker.analyzer.fact_contract import (
     AnalyzerCitationInput,
     AnalyzerMentionInput,
     AnalyzerResponseInput,
+    build_response_fact_package_v3,
     build_response_fact_packages,
 )
 from geo_tracker.analyzer.geo_scorer import GEOScorer
@@ -794,6 +795,30 @@ async def analyze_single_response(
             target_aliases=brand.aliases or [],
             configured_competitors=_competitor_contracts_from_competitors(competitors),
         )
+        analyzer_fact_package_v3 = build_response_fact_package_v3(
+            _response_input_from_pipeline(
+                response=response,
+                query=query,
+                prompt_id=prompt_id,
+                topic_id=topic_id,
+                has_analysis=True,
+                mentions=all_mentions,
+                raw_names_by_mention_id=raw_names_by_mention_id,
+                drivers_by_mention_id=drivers_by_mention_id,
+                citation_facts=citation_facts,
+            ),
+            target_brand_id=brand.id,
+            target_brand_name=brand.name,
+            target_aliases=brand.aliases or [],
+            configured_competitors=_competitor_contracts_from_competitors(competitors),
+            source_brand_id=query.brand_id if query else None,
+            provider=getattr(llm_analyzer, "provider", None),
+            model=llm_analyzer.model,
+            prompt_version=getattr(llm_analyzer, "prompt_version", None),
+            raw_output=llm_result.raw_json or {},
+            parse_status="ok",
+            analysis_completed_at=datetime.utcnow().isoformat(),
+        )
         raw_analysis_json = _scope_raw_relation_evidence(
             dict(llm_result.raw_json or {}),
             response_id=response.id,
@@ -805,6 +830,7 @@ async def analyze_single_response(
         raw_analysis_json["citation_facts"] = citation_facts
         raw_analysis_json["metric_input_status"] = metric_input_status
         raw_analysis_json["analyzer_fact_packages"] = analyzer_fact_packages
+        raw_analysis_json["analyzer_fact_package_v3"] = analyzer_fact_package_v3
 
         # Create ResponseAnalysis
         analysis = ResponseAnalysis(
