@@ -6,6 +6,9 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from genpano_models import (
+    AnalysisFactLink,
+    AnalyzerQualityFlag,
+    AnalyzerRun,
     BrandMention,
     CitationSource,
     GeoScoreDaily,
@@ -13,6 +16,9 @@ from genpano_models import (
     ProjectCompetitor,
     ProjectTopicPin,
     ResponseAnalysis,
+    ResponseEntity,
+    ResponseRelationFact,
+    SentimentDriver,
 )
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, bindparam, func, or_, select, text
@@ -621,6 +627,17 @@ def _package_source_tables(packages: list[dict[str, Any]] | None = None) -> list
     return _unique(sources) or [ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE]
 
 
+def _evidence_source_tables(metric_evidence: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    for evidence in metric_evidence.values():
+        if not isinstance(evidence, dict):
+            continue
+        tables = evidence.get("source_tables")
+        if isinstance(tables, list):
+            sources.extend(str(table) for table in tables if table)
+    return _unique(sources) or _package_source_tables()
+
+
 def _blocking_metric_evidence(
     reason_codes: list[str],
     *,
@@ -909,6 +926,387 @@ def _rollup_pano_geo(packages: list[dict[str, Any]]) -> dict[str, Any]:
     return evidence
 
 
+def _latest_runs_by_response(
+    runs: list[AnalyzerRun],
+    target_response_ids: set[int],
+) -> dict[int, AnalyzerRun]:
+    latest: dict[int, AnalyzerRun] = {}
+    for run in runs:
+        response_id = int(run.response_id)
+        if response_id not in target_response_ids:
+            continue
+        current = latest.get(response_id)
+        if current is None:
+            latest[response_id] = run
+            continue
+        current_ts = current.completed_at or current.started_at or datetime.min
+        run_ts = run.completed_at or run.started_at or datetime.min
+        if (run_ts, int(run.id or 0)) >= (current_ts, int(current.id or 0)):
+            latest[response_id] = run
+    return latest
+
+
+def _quality_flag_reasons_by_metric(
+    flags: list[AnalyzerQualityFlag],
+) -> dict[str, list[str]]:
+    reasons: dict[str, list[str]] = {
+        "coverage": [],
+        "sov": [],
+        "sentiment": [],
+        "citation": [],
+        "pano_geo": [],
+    }
+    for flag in flags:
+        code = str(flag.code or "partial_output")
+        target_type = str(flag.target_type or "analysis")
+        if target_type in {"citation"} or "citation" in code:
+            reasons["citation"].append(code)
+        elif target_type in {"driver", "sentiment", "mention"} and "sentiment" in code:
+            reasons["sentiment"].append(code)
+        elif target_type in {"entity", "mention", "brand"} and (
+            "brand" in code or "entity" in code
+        ):
+            reasons["sov"].append(code)
+        elif target_type in {"relation", "product", "feature"}:
+            reasons["pano_geo"].append(code)
+        else:
+            reasons["coverage"].append(code)
+    return {key: _unique(values) for key, values in reasons.items()}
+
+
+async def _first_class_analyzer_fact_rollup(
+    session: AsyncSession,
+    *,
+    brand_id: int,
+    from_date: date,
+    to_date: date,
+    target_response_ids: set[int],
+) -> tuple[dict[str, Any], dict[str, int], list[str]]:
+    if not target_response_ids:
+        return {}, {}, []
+
+    run_rows = (
+        (
+            await session.execute(
+                select(AnalyzerRun).where(
+                    and_(
+                        AnalyzerRun.response_id.in_(target_response_ids),
+                        AnalyzerRun.schema_version == "analyzer_v4",
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    latest_runs = _latest_runs_by_response(list(run_rows), target_response_ids)
+    if not latest_runs:
+        return {}, {}, []
+
+    latest_run_ids = {int(run.id) for run in latest_runs.values() if run.id is not None}
+    analyzed_response_ids = {
+        response_id
+        for response_id, run in latest_runs.items()
+        if str(run.status or "").lower() in {"done", "partial"}
+    }
+    failed_response_ids = {
+        response_id
+        for response_id, run in latest_runs.items()
+        if str(run.status or "").lower() == "failed"
+    }
+    missing_response_ids = sorted(target_response_ids - set(latest_runs))
+
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    target_mentions = int(
+        (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(func.coalesce(BrandMention.mention_count, 1)), 0)
+                ).where(
+                    and_(
+                        brand_filter,
+                        BrandMention.response_id.in_(target_response_ids),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    all_mentions = int(
+        (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(func.coalesce(BrandMention.mention_count, 1)), 0)
+                ).where(BrandMention.response_id.in_(target_response_ids))
+            )
+        ).scalar_one()
+        or 0
+    )
+    sentiment_row = (
+        await session.execute(
+            select(
+                func.count(BrandMention.sentiment_score),
+                func.count(BrandMention.sentiment),
+                func.count(SentimentDriver.id),
+                func.count(SentimentDriver.source_quote),
+            )
+            .select_from(BrandMention)
+            .join(SentimentDriver, SentimentDriver.mention_id == BrandMention.id, isouter=True)
+            .where(
+                and_(
+                    brand_filter,
+                    BrandMention.response_id.in_(target_response_ids),
+                )
+            )
+        )
+    ).one()
+    citation_total = int(
+        (
+            await session.execute(
+                select(func.count(CitationSource.id)).where(
+                    CitationSource.response_id.in_(target_response_ids)
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    attributed_citations = int(
+        (
+            await session.execute(
+                select(func.count(CitationSource.id))
+                .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+                .where(
+                    and_(
+                        brand_filter,
+                        BrandMention.response_id.in_(target_response_ids),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    fact_link_count = 0
+    relation_link_count = 0
+    if latest_run_ids:
+        fact_link_rows = (
+            await session.execute(
+                select(AnalysisFactLink.linked_fact_type).where(
+                    and_(
+                        AnalysisFactLink.run_id.in_(latest_run_ids),
+                        AnalysisFactLink.fact_type == "citation",
+                        AnalysisFactLink.status == "current",
+                    )
+                )
+            )
+        ).all()
+        fact_link_count = len(fact_link_rows)
+        relation_link_count = sum(1 for row in fact_link_rows if row[0] == "relation")
+
+    entity_rows = []
+    relation_rows = []
+    blocking_flags: list[AnalyzerQualityFlag] = []
+    if latest_run_ids:
+        entity_rows = (
+            (
+                await session.execute(
+                    select(ResponseEntity).where(ResponseEntity.run_id.in_(latest_run_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        relation_rows = (
+            (
+                await session.execute(
+                    select(ResponseRelationFact).where(
+                        and_(
+                            ResponseRelationFact.run_id.in_(latest_run_ids),
+                            ResponseRelationFact.status == "current",
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        blocking_flags = (
+            (
+                await session.execute(
+                    select(AnalyzerQualityFlag).where(
+                        and_(
+                            AnalyzerQualityFlag.run_id.in_(latest_run_ids),
+                            AnalyzerQualityFlag.blocks_metric_readiness.is_(True),
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    flag_reasons = _quality_flag_reasons_by_metric(blocking_flags)
+
+    coverage_reasons = list(flag_reasons["coverage"])
+    if missing_response_ids:
+        coverage_reasons.append("missing_analyzer_rows")
+    if failed_response_ids:
+        coverage_reasons.append("partial_analyzer_coverage")
+    coverage_status = FORMULA_OK_STATUS if not coverage_reasons else FORMULA_PARTIAL_STATUS
+
+    competitor_entities = {
+        (
+            entity.canonical_id,
+            (entity.canonical_name or entity.raw_name or "").strip().lower(),
+        )
+        for entity in entity_rows
+        if entity.entity_type == "brand"
+        and entity.canonicalization_status == "matched"
+        and str(entity.canonical_id or "") != str(brand_id)
+    }
+    sov_reasons = list(flag_reasons["sov"])
+    if all_mentions <= 0:
+        sov_reasons.append("sov_empty")
+    elif all_mentions <= target_mentions:
+        sov_reasons.append("target_only_sov")
+    sov_status = FORMULA_OK_STATUS if not sov_reasons else FORMULA_MISSING_INPUTS_STATUS
+
+    score_count = int(sentiment_row[0] or 0)
+    label_count = int(sentiment_row[1] or 0)
+    driver_count = int(sentiment_row[2] or 0)
+    quote_count = int(sentiment_row[3] or 0)
+    sentiment_reasons = list(flag_reasons["sentiment"])
+    if target_mentions > 0 and score_count <= 0:
+        sentiment_reasons.append("missing_sentiment_score_or_label")
+    if target_mentions > 0 and label_count <= 0:
+        sentiment_reasons.append("missing_sentiment_label")
+    if driver_count > 0 and quote_count <= 0:
+        sentiment_reasons.append("missing_sentiment_driver_quote")
+    sentiment_status = FORMULA_OK_STATUS if not sentiment_reasons else FORMULA_MISSING_INPUTS_STATUS
+
+    citation_reasons = list(flag_reasons["citation"])
+    if citation_total <= 0:
+        citation_reasons.append("citation_sources")
+        citation_reasons.append("citation_empty")
+    elif attributed_citations <= 0:
+        citation_reasons.append("citation_sources.mention_id")
+        citation_reasons.append("unresolved_citation_attribution")
+    if citation_total > 0 and fact_link_count <= 0:
+        citation_reasons.append("unresolved_citation_attribution")
+    citation_status = FORMULA_OK_STATUS if not citation_reasons else FORMULA_MISSING_INPUTS_STATUS
+
+    pano_reasons = list(flag_reasons["pano_geo"])
+    if coverage_status != FORMULA_OK_STATUS:
+        pano_reasons.extend(coverage_reasons)
+    if sov_status != FORMULA_OK_STATUS:
+        pano_reasons.extend(sov_reasons)
+    if sentiment_status != FORMULA_OK_STATUS:
+        pano_reasons.extend(sentiment_reasons)
+    if citation_status != FORMULA_OK_STATUS:
+        pano_reasons.extend(citation_reasons)
+    pano_status = FORMULA_OK_STATUS if not pano_reasons else FORMULA_PARTIAL_STATUS
+
+    metric_evidence = {
+        "coverage": {
+            **_metric_evidence_template("coverage", coverage_status),
+            "eligible_response_count": len(target_response_ids),
+            "analyzed_response_count": len(analyzed_response_ids),
+            "failed_response_count": len(failed_response_ids),
+            "missing_response_count": len(missing_response_ids),
+            "missing_response_ids": missing_response_ids[:20],
+            "reason_codes": _unique(coverage_reasons),
+            "sample_response_ids": sorted(analyzed_response_ids)[:20],
+            "source_tables": ["analyzer_runs"],
+            "fact_classes": ["coverage"],
+        },
+        "sov": {
+            **_metric_evidence_template("sov", sov_status),
+            "numerator_name": "target_competitive_mentions",
+            "denominator_name": "all_competitive_mentions",
+            "numerator_count": target_mentions,
+            "denominator_count": all_mentions,
+            "competitor_count": len(competitor_entities),
+            "reason_codes": _unique(sov_reasons),
+            "sample_response_ids": sorted(analyzed_response_ids)[:20],
+            "source_tables": ["brand_mentions", "response_entities"],
+            "fact_classes": ["sov", "entities"],
+        },
+        "sentiment": {
+            **_metric_evidence_template("sentiment", sentiment_status),
+            "numerator_name": "brand_scoped_sentiment_score_sum",
+            "denominator_name": "target_mentions_with_sentiment_score_and_label",
+            "score_count": score_count,
+            "label_count": label_count,
+            "driver_count": driver_count,
+            "quote_count": quote_count,
+            "reason_codes": _unique(sentiment_reasons),
+            "sample_response_ids": sorted(analyzed_response_ids)[:20],
+            "source_tables": ["brand_mentions", "sentiment_drivers"],
+            "fact_classes": ["sentiment"],
+        },
+        "citation": {
+            **_metric_evidence_template("citation", citation_status),
+            "numerator_name": "target_attributed_citations",
+            "denominator_name": "eligible_project_citations",
+            "citation_count": citation_total,
+            "attributed_count": attributed_citations,
+            "unresolved_count": max(citation_total - attributed_citations, 0),
+            "fact_link_count": fact_link_count,
+            "relation_link_count": relation_link_count,
+            "reason_codes": _unique(citation_reasons),
+            "sample_response_ids": sorted(analyzed_response_ids)[:20],
+            "source_tables": ["citation_sources", "analysis_fact_links"],
+            "fact_classes": ["citations"],
+        },
+        "pano_geo": {
+            **_metric_evidence_template("pano_geo", pano_status),
+            "component_readiness": {
+                "coverage": coverage_status,
+                "sov": sov_status,
+                "sentiment": sentiment_status,
+                "citation": citation_status,
+            },
+            "relation_fact_count": len(relation_rows),
+            "reason_codes": _unique(pano_reasons),
+            "sample_response_ids": sorted(analyzed_response_ids)[:20],
+            "source_tables": [
+                "analyzer_runs",
+                "response_relation_facts",
+                "analyzer_quality_flags",
+            ],
+            "fact_classes": ["pano_geo", "relations", "quality_flags"],
+        },
+    }
+    reason_codes = _unique(
+        [
+            reason
+            for evidence in metric_evidence.values()
+            for reason in evidence.get("reason_codes", [])
+        ]
+    )
+    counts = {
+        "analyzer_run_count": len(latest_runs),
+        "analyzer_entity_count": len(entity_rows),
+        "analyzer_relation_fact_count": len(relation_rows),
+        "analyzer_fact_link_count": fact_link_count,
+        "analyzer_quality_flag_count": len(blocking_flags),
+        "analyzer_blocking_quality_flag_count": len(blocking_flags),
+        "analyzer_eligible_response_count": len(target_response_ids),
+        "analyzer_analyzed_response_count": len(analyzed_response_ids),
+        "analyzer_missing_response_count": len(missing_response_ids),
+        "analyzer_failed_response_count": len(failed_response_ids),
+        "analyzer_sov_numerator_target_mentions": target_mentions,
+        "analyzer_sov_denominator_competitive_mentions": all_mentions,
+        "analyzer_sov_competitor_count": len(competitor_entities),
+        "analyzer_sentiment_score_count": score_count,
+        "analyzer_sentiment_label_count": label_count,
+        "analyzer_sentiment_driver_count": driver_count,
+        "analyzer_sentiment_quote_count": quote_count,
+        "analyzer_citation_count": citation_total,
+        "analyzer_attributed_citation_count": attributed_citations,
+        "analyzer_unresolved_citation_count": max(citation_total - attributed_citations, 0),
+    }
+    return metric_evidence, counts, reason_codes
+
+
 async def _target_response_ids(
     session: AsyncSession,
     brand_id: int,
@@ -1088,6 +1486,15 @@ async def _analyzer_fact_rollup(
 ) -> tuple[dict[str, Any], dict[str, int], list[str]]:
     if not target_response_ids:
         return {}, {}, []
+    first_class = await _first_class_analyzer_fact_rollup(
+        session,
+        brand_id=brand_id,
+        from_date=from_date,
+        to_date=to_date,
+        target_response_ids=target_response_ids,
+    )
+    if first_class[0]:
+        return first_class
     rows = (
         await session.execute(
             select(ResponseAnalysis.raw_analysis_json).where(
@@ -1620,11 +2027,12 @@ async def build_contract_context(
         for evidence in metric_formula_evidence.values():
             evidence["formula_status"] = FORMULA_PARTIAL_STATUS
     if metric_formula_evidence:
+        analyzer_source_tables = _evidence_source_tables(metric_formula_evidence)
         evidence_counts.update(analyzer_counts)
         missing_reasons.extend(analyzer_reason_codes)
         missing_inputs.extend(analyzer_reason_codes)
-        missing_sources.extend(_package_source_tables())
-        provenance.extend(_package_source_tables())
+        missing_sources.extend(analyzer_source_tables)
+        provenance.extend(analyzer_source_tables)
     blocking_reasons = [
         reason
         for reason in [
