@@ -378,6 +378,8 @@ class LLMAnalyzer:
             entity_key = str(mention.get("entity_key"))
             entity = entities.get(entity_key, {})
             entity_type = str(entity.get("entity_type") or mention.get("mention_type") or "brand")
+            if entity_type not in {"brand", "product"}:
+                continue
             raw_name = str(entity.get("raw_name") or mention.get("raw_text") or "")
             brand_name = raw_name
             product_name = None
