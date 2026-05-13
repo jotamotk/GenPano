@@ -835,13 +835,14 @@ async def test_doubao_initial_navigation_still_waits_for_load(monkeypatch) -> No
     assert page.goto_calls[0]["wait_until"] == "load"
 
 
+@pytest.mark.parametrize("platform", ["doubao", "deepseek"])
 @pytest.mark.asyncio
-async def test_doubao_initial_navigation_does_not_retry_chatgpt_interrupts(
-    monkeypatch,
+async def test_existing_handlers_preserve_navigation_exception_reason(
+    monkeypatch, platform: str
 ) -> None:
     from geo_tracker.agent.sms_login import base, get_handler
 
-    handler = get_handler("doubao")
+    handler = get_handler(platform)
     assert handler is not None
     page = _TransientGotoPage(failures=1)
     provider = _FakeProvider()
@@ -861,6 +862,8 @@ async def test_doubao_initial_navigation_does_not_retry_chatgpt_interrupts(
     result = await handler.login_or_register()
 
     assert result["status"] == "failed"
+    assert result["reason"] != "browser_timeout"
+    assert "NS_ERROR_NET_INTERRUPT" in result["reason"]
     assert "cookies" not in result
     assert len(page.goto_calls) == 1
 

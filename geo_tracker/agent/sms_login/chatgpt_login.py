@@ -27,6 +27,7 @@ class ChatGPTLoginHandler(BaseSMSLoginHandler):
     fallback_to_new_number_on_relogin_unavailable = True
     MAX_PHONE_RETRIES = 2
     NAVIGATION_RETRIES = 3
+    classify_navigation_failures = True
     require_cookies_for_success = True
 
     async def navigate_to_login(self, page: Page) -> bool | str:

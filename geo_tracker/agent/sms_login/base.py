@@ -168,6 +168,7 @@ class BaseSMSLoginHandler(ABC):
     # 最大换号重试次数（收不到短信时换新号码重试）
     MAX_PHONE_RETRIES = 5
     NAVIGATION_RETRIES = 1
+    classify_navigation_failures = False
     require_cookies_for_success = False
     # 单次取号时最多跳过多少个黑名单号码
     _MAX_BLACKLIST_SKIP = 20
@@ -650,6 +651,9 @@ class BaseSMSLoginHandler(ABC):
 
     async def _goto_login_page(self, page: Page) -> str | None:
         wait_until = _initial_navigation_wait_until(self.platform)
+        if not self.classify_navigation_failures:
+            await page.goto(self.login_url, wait_until=wait_until, timeout=60000)
+            return None
         attempts = max(1, int(getattr(self, "NAVIGATION_RETRIES", 1) or 1))
         for attempt in range(attempts):
             try:
