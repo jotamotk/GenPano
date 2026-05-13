@@ -31,6 +31,38 @@ type RenderedOverviewSummary = {
   genericEmptyTexts: string[]
 }
 
+type TopicReadabilityExpectation = {
+  topicId: unknown
+  topicName: string
+  brandLabel: string
+  metricTexts: string[]
+  proofTexts: string[]
+  reason: string
+}
+
+type RenderedTopicsSummary = {
+  route: string
+  url: string
+  bodyText: string
+  primaryTableText: string
+  primaryRowTexts: string[]
+}
+
+type RenderedAnalyzerFactsSummary = {
+  route: string
+  url: string
+  modalText: string
+  analyzerFactsText: string
+  citationDomainTexts: string[]
+}
+
+type TopicDrilldownProbe = {
+  topicId: unknown
+  promptId: unknown
+  queryText?: string
+  citationCount?: number
+}
+
 const DEFAULT_PROJECT_ID = '95d43022-a5c8-5944-b6d6-34b29faa18b5'
 const DEFAULT_BRAND_ID = 12
 const DEFAULT_COMPETITOR_ID = 2
@@ -38,6 +70,20 @@ const DEFAULT_FROM_DATE = '2026-04-24'
 const DEFAULT_TO_DATE = '2026-05-07'
 const DEFAULT_OWNER_USER_ID = 'fe25eff1-8462-43eb-a027-bc8eb2c3db81'
 const SCREENSHOT_DIR = 'test-results/live-app-analytics-business-completeness'
+const TOPICS_REASON_WALL_TEXTS = [
+  'Analysis coverage missing',
+  'Citation attribution unresolved',
+  'Citation attribution is not ready for this metric',
+  'Sov Empty',
+  'Sov Partial',
+  'Sentiment Empty',
+  'Sentiment Component Empty',
+  'Citation Partial',
+  'Citation Component Partial',
+  'Needs review',
+]
+const TOPICS_RAW_REASON_CODE_RE =
+  /\b(?:missing_analyzer_rows|target_only_sov|sov_component_missing_required_inputs|sentiment_component_empty|citation_component_partial|unresolved_citation_attribution|missing_required_inputs|no_evidence)\b/i
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -368,6 +414,252 @@ function assertVisibleOverviewRendering(
       reasons.some(reason => body.toLowerCase().includes(reason.toLowerCase())),
       `${rendered.route} did not render an explicit competitor partial reason; expected one of ${JSON.stringify(reasons)}`,
     )
+  }
+}
+
+function readableBrandLabel(labels: string[]) {
+  return labels.find(label => !/^brand\s*#?\s*\d+$/i.test(compactText(label))) || ''
+}
+
+function compactIncludes(text: string, needle: string) {
+  return compactText(text).toLowerCase().includes(compactText(needle).toLowerCase())
+}
+
+function fixedPercentText(value: unknown, fields: ContractPayload = {}) {
+  const ratio = normalizeRatio(value, fields)
+  return ratio === null ? null : `${(ratio * 100).toFixed(1)}%`
+}
+
+function countText(value: unknown) {
+  const next = numberOrNull(value)
+  if (next === null || next <= 0) return null
+  return Math.round(next).toLocaleString()
+}
+
+function topicsRows(payload: ContractPayload) {
+  if (Array.isArray(payload?.topics)) return payload.topics
+  if (Array.isArray(payload?.rows)) return payload.rows
+  if (Array.isArray(payload?.items)) return payload.items
+  return []
+}
+
+function deriveTopicReadabilityExpectations(payload: ContractPayload, brandLabels: string[]) {
+  const fallbackBrand = readableBrandLabel(brandLabels)
+  return topicsRows(payload)
+    .map((topic: ContractPayload): TopicReadabilityExpectation | null => {
+      const topicName = compactText(topic.topic_name || topic.name || topic.topic || `Topic ${topic.topic_id ?? ''}`)
+      const brandLabel = compactText(topic.associated_brand || topic.brand_name || topic.brand || fallbackBrand)
+      const visibility = topic.visibility_rate ?? topic.sov ?? topic.mention_rate
+      const visibilityText = fixedPercentText(visibility)
+      const metricTexts = [visibilityText].filter(Boolean) as string[]
+      const proofTexts = [
+        topic.prompt_count,
+        topic.query_count,
+        topic.response_count,
+        topic.analyzed_count,
+        topic.target_mention_count,
+        topic.citation_count,
+      ]
+        .map(countText)
+        .filter(Boolean) as string[]
+      if (!topicName || (!metricTexts.length && !proofTexts.length)) return null
+      return {
+        topicId: topic.topic_id,
+        topicName,
+        brandLabel,
+        metricTexts,
+        proofTexts: Array.from(new Set(proofTexts)),
+        reason: `topic_id=${topic.topic_id ?? '<unknown>'}`,
+      }
+    })
+    .filter((item): item is TopicReadabilityExpectation => Boolean(item))
+}
+
+function repeatedTopicsReasonWallHits(text: string) {
+  const body = compactText(text)
+  const labelHits = TOPICS_REASON_WALL_TEXTS.filter(label => compactIncludes(body, label))
+  const rawHits = body.match(TOPICS_RAW_REASON_CODE_RE)
+  return [...labelHits, ...(rawHits ? [rawHits[0]] : [])]
+}
+
+function assertVisibleTopicsReadability(
+  rendered: RenderedTopicsSummary,
+  expectations: TopicReadabilityExpectation[],
+  options: { brandId: number; brandLabels: string[] },
+) {
+  assertCondition(expectations.length > 0, 'Topics API returned no concrete topic rows to assert')
+  const tableText = compactText(rendered.primaryTableText)
+  assertCondition(tableText, `${rendered.route} did not expose a primary Topics table`)
+
+  const reasonHits = repeatedTopicsReasonWallHits(tableText)
+  assertCondition(
+    reasonHits.length === 0,
+    `${rendered.route} primary Topics table still renders reason-wall text as primary content: ${JSON.stringify(reasonHits)}`,
+  )
+
+  const readableBrand = readableBrandLabel(options.brandLabels)
+  if (readableBrand) {
+    assertCondition(
+      !compactIncludes(tableText, `Brand #${options.brandId}`),
+      `${rendered.route} primary Topics table uses Brand #${options.brandId} instead of readable brand label ${readableBrand}`,
+    )
+  }
+
+  const checkedRows = expectations.slice(0, Math.min(3, expectations.length))
+  for (const expectation of checkedRows) {
+    const rowText = rendered.primaryRowTexts.find(row =>
+      compactIncludes(row, expectation.topicName) ||
+        (expectation.topicId !== null && expectation.topicId !== undefined && compactIncludes(row, String(expectation.topicId))),
+    )
+    assertCondition(
+      rowText,
+      `${rendered.route} could not find primary row for API topic ${expectation.topicName} (${expectation.reason})`,
+    )
+
+    if (expectation.brandLabel && readableBrand) {
+      assertCondition(
+        compactIncludes(rowText, expectation.brandLabel) || compactIncludes(rowText, readableBrand),
+        `${rendered.route} row ${expectation.topicName} does not render a readable brand label; row=${rowText}`,
+      )
+    }
+
+    const metricMatches = expectation.metricTexts.filter(text => compactIncludes(rowText, text))
+    const proofMatches = expectation.proofTexts.filter(text => compactIncludes(rowText, text))
+    if (expectation.metricTexts.length > 0) {
+      assertCondition(
+        metricMatches.length > 0,
+        `${rendered.route} row ${expectation.topicName} hides concrete API topic metric values ${JSON.stringify(expectation.metricTexts)}; row=${rowText}`,
+      )
+    }
+    assertCondition(
+      metricMatches.length > 0 || proofMatches.length >= Math.min(2, expectation.proofTexts.length),
+      `${rendered.route} row ${expectation.topicName} does not surface enough API-derived topic proof; expected proof=${JSON.stringify(expectation.proofTexts)} row=${rowText}`,
+    )
+    assertCondition(
+      !(expectation.metricTexts.length > 0 && /(?:^|\s)--(?:\s|$)/.test(rowText) && metricMatches.length === 0),
+      `${rendered.route} row ${expectation.topicName} renders -- while API has concrete topic metric values ${JSON.stringify(expectation.metricTexts)}`,
+    )
+  }
+}
+
+function assertAnalyzerFactsReadability(
+  rendered: RenderedAnalyzerFactsSummary,
+  options: { brandId: number; brandLabels: string[] },
+) {
+  const factsText = compactText(rendered.analyzerFactsText)
+  assertCondition(factsText, `${rendered.route} did not expose Analyzer facts panel text`)
+
+  const reasonHits = repeatedTopicsReasonWallHits(factsText)
+  assertCondition(
+    reasonHits.length === 0,
+    `${rendered.route} Analyzer facts panel still renders reason-wall text as primary content: ${JSON.stringify(reasonHits)}`,
+  )
+
+  const readableBrand = readableBrandLabel(options.brandLabels)
+  if (readableBrand) {
+    assertCondition(
+      !compactIncludes(factsText, `Brand #${options.brandId}`),
+      `${rendered.route} Analyzer facts panel uses Brand #${options.brandId} instead of readable brand label ${readableBrand}`,
+    )
+  }
+
+  const zeroPlaceholders = factsText.match(/\b0\.0\b/g) || []
+  assertCondition(
+    zeroPlaceholders.length < 3,
+    `${rendered.route} Analyzer facts panel shows a misleading 0.0 placeholder wall while proof is partial/missing: ${factsText}`,
+  )
+
+  if (rendered.citationDomainTexts.length > 0) {
+    assertCondition(
+      rendered.citationDomainTexts.some(domain => compactIncludes(factsText, domain)),
+      `${rendered.route} Analyzer facts panel has citation links but does not surface readable citation domains`,
+    )
+    assertCondition(
+      !compactIncludes(factsText, 'No citations for this response'),
+      `${rendered.route} Analyzer facts panel hides available citation proof behind an empty citation state`,
+    )
+  }
+}
+
+async function captureRenderedTopics(page: Page, route: string): Promise<RenderedTopicsSummary> {
+  const captured = await page.evaluate(() => {
+    const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    const tables = Array.from(document.querySelectorAll('table')).map(table => ({
+      text: clean((table as HTMLElement).innerText || table.textContent),
+      rows: Array.from(table.querySelectorAll('tbody tr'))
+        .map(row => clean((row as HTMLElement).innerText || row.textContent))
+        .filter(Boolean),
+    }))
+    const primary =
+      tables.find(table =>
+        /Topic/i.test(table.text) &&
+          /Visibility/i.test(table.text) &&
+          /Prompts/i.test(table.text) &&
+          /Queries/i.test(table.text),
+      ) || tables[0] || { text: '', rows: [] }
+    return {
+      bodyText: clean(document.body.innerText),
+      primaryTableText: primary.text,
+      primaryRowTexts: primary.rows,
+    }
+  })
+  return {
+    route,
+    url: page.url(),
+    ...captured,
+  }
+}
+
+function topicDrilldownProbe(
+  topic: ContractPayload | null | undefined,
+  prompt: ContractPayload | null | undefined,
+  queriesPayload: ContractPayload | null | undefined,
+): TopicDrilldownProbe | null {
+  if (!topic?.topic_id || !prompt?.prompt_id) return null
+  const queryItems = Array.isArray(queriesPayload?.items) ? queriesPayload.items : []
+  const attempts = queryItems.flatMap((query: ContractPayload) =>
+    (Array.isArray(query.daily_latest) ? query.daily_latest : []).map((attempt: ContractPayload) => ({
+      queryText: attempt.query_text || query.query_text,
+      citationCount: numberOrNull(attempt.citation_count) || 0,
+    })),
+  )
+  const citedAttempt = attempts.find((attempt: ContractPayload) => Number(attempt.citationCount || 0) > 0)
+  const firstAttempt = citedAttempt || attempts[0]
+  return {
+    topicId: topic.topic_id,
+    promptId: prompt.prompt_id,
+    queryText: firstAttempt?.queryText,
+    citationCount: firstAttempt?.citationCount,
+  }
+}
+
+async function captureTopicsAnalyzerFactsModal(
+  page: Page,
+  baseUrl: string,
+  brandId: number,
+  probe: TopicDrilldownProbe,
+): Promise<RenderedAnalyzerFactsSummary> {
+  const route = `/brand/topics?brandId=${brandId}&range=30d&profileGroup=all&topicId=${probe.topicId}&promptId=${probe.promptId}`
+  await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
+  const openButton = page.getByRole('button', { name: /Open response attempts/i }).first()
+  await expect(openButton).toBeVisible({ timeout: 25_000 })
+  await openButton.click()
+  const modal = page.getByRole('dialog', { name: /Response attempts/i })
+  await expect(modal).toBeVisible({ timeout: 15_000 })
+  const analyzerPanel = modal.locator('aside').filter({ hasText: 'Analyzer facts' }).last()
+  await expect(analyzerPanel).toBeVisible({ timeout: 15_000 })
+  const citationDomainTexts = await analyzerPanel.locator('a').evaluateAll(elements =>
+    elements
+      .map(element => String((element as HTMLElement).innerText || element.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean),
+  )
+  return {
+    route,
+    url: page.url(),
+    modalText: await modal.innerText(),
+    analyzerFactsText: await analyzerPanel.innerText(),
+    citationDomainTexts,
   }
 }
 
@@ -761,6 +1053,124 @@ test.describe('App analytics business completeness assertion', () => {
       ),
     ).toBe(false)
   })
+
+  test('flags Topics primary table reason-wall rendering when API has concrete topic values', () => {
+    const topicMonitoring = {
+      topics: [
+        {
+          topic_id: 153,
+          topic_name: 'Unstructured data AI masking',
+          associated_brand: 'bestCoffer',
+          sov: 0.4607,
+          prompt_count: 4,
+          query_count: 36,
+          response_count: 36,
+          citation_count: 12,
+        },
+      ],
+    }
+    const expectations = deriveTopicReadabilityExpectations(topicMonitoring, ['bestCoffer'])
+
+    expect(() =>
+      assertVisibleTopicsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all',
+          bodyText: '',
+          primaryTableText:
+            'Topic Visibility Sentiment Citation Coverage Citations Prompts Queries Unstructured data AI masking Brand #24 -- Analysis coverage missing Citation attribution unresolved Sov Empty Citation Partial 12 4 36',
+          primaryRowTexts: [
+            'Unstructured data AI masking Brand #24 -- Analysis coverage missing Citation attribution unresolved Sov Empty Citation Partial 12 4 36',
+          ],
+        },
+        expectations,
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).toThrow(/reason-wall text/)
+  })
+
+  test('accepts Topics primary table when it surfaces API-derived values and proof counts', () => {
+    const topicMonitoring = {
+      topics: [
+        {
+          topic_id: 153,
+          topic_name: 'Unstructured data AI masking',
+          associated_brand: 'bestCoffer',
+          sov: 0.4607,
+          prompt_count: 4,
+          query_count: 36,
+          response_count: 36,
+          citation_count: 12,
+        },
+      ],
+    }
+    const expectations = deriveTopicReadabilityExpectations(topicMonitoring, ['bestCoffer'])
+
+    expect(() =>
+      assertVisibleTopicsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all',
+          bodyText: '',
+          primaryTableText:
+            'Topic Visibility Sentiment Citation Coverage Citations Prompts Queries Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Limited data 12 4 36',
+          primaryRowTexts: [
+            'Unstructured data AI masking bestCoffer 46.1% Positive 3 Neutral 1 Negative 0 Limited data 12 4 36',
+          ],
+        },
+        expectations,
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).not.toThrow()
+  })
+
+  test('flags Analyzer facts modal reason-wall and Brand-number primary label', () => {
+    expect(() =>
+      assertAnalyzerFactsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          modalText: '',
+          analyzerFactsText:
+            'Analyzer facts Brand #24 Needs review Citation attribution is not ready for this metric Citation attribution unresolved Sentiment Component Empty Citation Component Partial Citations (6) pmc.ncbi.nlm.nih.gov',
+          citationDomainTexts: ['pmc.ncbi.nlm.nih.gov'],
+        },
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).toThrow(/reason-wall text|Brand #24/)
+  })
+
+  test('flags Analyzer facts modal misleading 0.0 placeholder wall', () => {
+    expect(() =>
+      assertAnalyzerFactsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          modalText: '',
+          analyzerFactsText:
+            'Analyzer facts bestCoffer Target brand Not mentioned Visibility score 0.0 Sentiment score 0.0 Share of voice 0.0 Citation score 80.0 GEO score 0.0 Citations (6) pmc.ncbi.nlm.nih.gov',
+          citationDomainTexts: ['pmc.ncbi.nlm.nih.gov'],
+        },
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).toThrow(/0\.0 placeholder wall/)
+  })
+
+  test('accepts Analyzer facts modal with readable partial state and citation domains', () => {
+    expect(() =>
+      assertAnalyzerFactsReadability(
+        {
+          route: '/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          url: 'http://example.test/brand/topics?brandId=24&range=30d&profileGroup=all&topicId=153&promptId=201',
+          modalText: '',
+          analyzerFactsText:
+            'Analyzer facts bestCoffer Limited data 72 of 75 analyzed Citation domains available while attribution is pending Citations (6) pmc.ncbi.nlm.nih.gov arxiv.org',
+          citationDomainTexts: ['pmc.ncbi.nlm.nih.gov', 'arxiv.org'],
+        },
+        { brandId: 24, brandLabels: ['bestCoffer'] },
+      ),
+    ).not.toThrow()
+  })
 })
 
 test.describe('Live App analytics business completeness gate', () => {
@@ -952,6 +1362,7 @@ test.describe('Live App analytics business completeness gate', () => {
     assertCondition((queryActivity.totals?.queries || 0) > 0 || !isFullyOk(queryActivity), 'query activity ok but no queries')
     assertCondition((queryActivity.totals?.responses || 0) > 0 || !isFullyOk(queryActivity), 'query activity ok but no responses')
 
+    let topicModalProbe: TopicDrilldownProbe | null = null
     const topicWithPrompts = (topicMonitoring.topics || []).find((topic: ContractPayload) => Number(topic.prompt_count || 0) > 0)
     if (topicWithPrompts) {
       const promptPayload = await api(
@@ -970,6 +1381,7 @@ test.describe('Live App analytics business completeness gate', () => {
         `/api/v1/projects/${projectId}/prompts/${promptWithQueries.prompt_id}/queries?${brandDateParams}`,
       )
       assertCondition(queriesPayload.total > 0, `prompt ${promptWithQueries.prompt_id} has query_count but queries endpoint returned none`)
+      topicModalProbe = topicDrilldownProbe(topicWithPrompts, promptWithQueries, queriesPayload)
     } else if (isFullyOk(topicMonitoring)) {
       throw new Error('topics monitoring is fully ok but no topic exposes prompt/query evidence')
     }
@@ -1045,6 +1457,11 @@ test.describe('Live App analytics business completeness gate', () => {
       expected: VisibleExpectation[]
       competitorSovRows: ReturnType<typeof usableCompetitorSovRows>
     }> = []
+    const topicReadabilityExpectations = deriveTopicReadabilityExpectations(topicMonitoring, brandLabels)
+    const visibleTopicsSummaries: Array<RenderedTopicsSummary & {
+      expected: TopicReadabilityExpectation[]
+      modal?: RenderedAnalyzerFactsSummary
+    }> = []
 
     const routes = [
       `/brand/overview?brandId=${brandId}&range=30d&profileGroup=all`,
@@ -1078,6 +1495,19 @@ test.describe('Live App analytics business completeness gate', () => {
           expected: visibleExpectations,
           competitorSovRows: usableCompetitorSovRows(competitors),
         })
+      } else if (route.startsWith('/brand/topics?')) {
+        const renderedTopics = await captureRenderedTopics(page, route)
+        assertVisibleTopicsReadability(renderedTopics, topicReadabilityExpectations, { brandId, brandLabels })
+        let modalSummary: RenderedAnalyzerFactsSummary | undefined
+        if (topicModalProbe) {
+          modalSummary = await captureTopicsAnalyzerFactsModal(page, baseUrl, brandId, topicModalProbe)
+          assertAnalyzerFactsReadability(modalSummary, { brandId, brandLabels })
+        }
+        visibleTopicsSummaries.push({
+          ...renderedTopics,
+          expected: topicReadabilityExpectations,
+          modal: modalSummary,
+        })
       }
       pageSummaries.push({ route, path, surfaceCount })
     }
@@ -1104,6 +1534,33 @@ test.describe('Live App analytics business completeness gate', () => {
             kpiCardTexts: summary.kpiCardTexts,
             chartTexts: summary.chartTexts,
             genericEmptyTexts: summary.genericEmptyTexts,
+          })),
+        },
+        null,
+        2,
+      ),
+    )
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/visible-topics-readability-summary.json`,
+      JSON.stringify(
+        {
+          projectId,
+          brandId,
+          window: { from: fromDate, to: toDate },
+          apiExpectations: topicReadabilityExpectations,
+          renderedRoutes: visibleTopicsSummaries.map(summary => ({
+            route: summary.route,
+            url: summary.url,
+            primaryTableText: summary.primaryTableText,
+            primaryRowTexts: summary.primaryRowTexts,
+            modal: summary.modal
+              ? {
+                  route: summary.modal.route,
+                  url: summary.modal.url,
+                  analyzerFactsText: summary.modal.analyzerFactsText,
+                  citationDomainTexts: summary.modal.citationDomainTexts,
+                }
+              : null,
           })),
         },
         null,
@@ -1148,6 +1605,11 @@ test.describe('Live App analytics business completeness gate', () => {
         missing_inputs: series.missing_inputs,
       })),
       topics: topicSummary,
+      topicsReadability: visibleTopicsSummaries.map(summary => ({
+        route: summary.route,
+        rowsChecked: summary.expected.length,
+        modalChecked: Boolean(summary.modal),
+      })),
       heatmapMention: {
         state: heatmapMention.state,
         rows: (heatmapMention.rows || []).length,
