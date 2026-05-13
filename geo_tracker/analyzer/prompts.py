@@ -95,4 +95,109 @@ ANALYSIS_USER = """\
     }}
   ]
 }}
+
+ANALYZER_V4_OVERRIDE:
+Return only one strict JSON object using this analyzer_v4 top-level shape.
+Do not return the legacy brands/dimension schema as the top-level output.
+Every fact must include evidence_quote, or include a matching quality_flags code
+such as missing_evidence_quote, relation_unresolved, citation_unlinked,
+sentiment_unknown, mixed_sentiment, brand_unresolved, or product_unresolved.
+
+{{
+  "analysis_meta": {{
+    "schema_version": "analyzer_v4",
+    "language": "zh|en|mixed",
+    "response_quality": "ok|partial|empty|invalid",
+    "model": "model name",
+    "prompt_version": "analyzer_v4",
+    "input_response_id": null,
+    "input_query_id": null,
+    "created_at": "ISO-8601 timestamp",
+    "validator_status": "passed",
+    "validator_errors": []
+  }},
+  "entities": [
+    {{
+      "entity_key": "stable key within this package",
+      "entity_type": "brand|product|attribute|need|scenario|category|ingredient|channel|price_tier|other",
+      "raw_name": "exact response text",
+      "canonical_id": null,
+      "canonical_name": null,
+      "canonicalization_status": "matched|suggested|unresolved|not_applicable",
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "mentions": [
+    {{
+      "mention_key": "stable mention key",
+      "entity_key": "entity key",
+      "response_id": null,
+      "raw_text": "exact mention",
+      "normalized_text": "normalized mention",
+      "mention_type": "brand|product|attribute|need|scenario|citation|other",
+      "position": "top|middle|tail|unknown",
+      "sentiment_label": "positive|negative|neutral|mixed|unknown",
+      "sentiment_score": 0.0,
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "sentiment_drivers": [
+    {{
+      "driver_key": "stable driver key",
+      "mention_key": "mention key",
+      "target_entity_key": "entity key",
+      "sentiment_label": "positive|negative|neutral|mixed|unknown",
+      "driver_type": "benefit|drawback|comparison|recommendation|warning|uncertainty|price|availability|quality|other",
+      "driver_summary": "short summary",
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "product_features": [
+    {{
+      "feature_key": "stable feature key",
+      "product_entity_key": "product entity key",
+      "brand_entity_key": "brand entity key or null",
+      "feature_type": "ingredient|function|benefit|texture|price|scenario|audience|packaging|availability|other",
+      "feature_name": "feature name",
+      "feature_value": null,
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "relations": [
+    {{
+      "relation_key": "stable relation key",
+      "subject_entity_key": "entity key",
+      "relation_type": "recommended_for|compared_with|has_attribute|addresses_need|avoid_for|belongs_to_brand|substitute_for|complements|other",
+      "object_entity_key": "entity key",
+      "direction": "directed|undirected|unknown",
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "citations": [
+    {{
+      "citation_key": "stable citation key",
+      "url": null,
+      "domain": null,
+      "title": null,
+      "source_type": "official|commerce|media|ugc|social|knowledge_base|unknown|other",
+      "attribution_method": "official_domain|co_occurrence|text_match|llm_inferred|unattributed|not_applicable",
+      "mentioned_entity_keys": [],
+      "linked_fact_keys": [],
+      "evidence_quote": "quote from the current response",
+      "confidence": 0.8,
+      "quality_flags": []
+    }}
+  ],
+  "quality_flags": []
+}}
 """

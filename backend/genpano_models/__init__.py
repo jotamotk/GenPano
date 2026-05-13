@@ -57,6 +57,9 @@ from genpano_models.alert import (
     UserNotificationPreferences,
 )
 from genpano_models.analyzer import (
+    AnalysisFactLink,
+    AnalyzerQualityFlag,
+    AnalyzerRun,
     BrandMention,
     CitationSource,
     GeoScoreDaily,
@@ -64,6 +67,8 @@ from genpano_models.analyzer import (
     ProductFeatureMention,
     ProductScoreDaily,
     ResponseAnalysis,
+    ResponseEntity,
+    ResponseRelationFact,
     SentimentDriver,
     TopicScoreDaily,
 )
@@ -106,6 +111,9 @@ __all__ = [
     "AdminUser",
     "Alert",
     "AlertRule",
+    "AnalysisFactLink",
+    "AnalyzerQualityFlag",
+    "AnalyzerRun",
     "Base",
     "BrandContextSnapshot",
     "BrandGenerationLog",
@@ -161,6 +169,8 @@ __all__ = [
     "ReportSchedule",
     "ReportShareToken",
     "ResponseAnalysis",
+    "ResponseEntity",
+    "ResponseRelationFact",
     "Segment",
     "SentimentDriver",
     "TopicCandidate",

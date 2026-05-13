@@ -545,6 +545,131 @@ class ProductFeatureMention(Base):
     analysis          = relationship("ResponseAnalysis", back_populates="feature_mentions")
 
 
+class AnalyzerRun(Base):
+    __tablename__ = "analyzer_runs"
+
+    id                     = Column(Integer, primary_key=True)
+    response_id            = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    schema_version         = Column(String(64), nullable=False, default="analyzer_v4")
+    prompt_version         = Column(String(128), nullable=True)
+    provider               = Column(String(64), nullable=True)
+    model                  = Column(String(128), nullable=True)
+    status                 = Column(String(16), nullable=False, default="running")
+    trigger_source         = Column(String(64), nullable=True)
+    idempotency_key        = Column(String(128), nullable=True)
+    raw_output_sha256      = Column(String(64), nullable=True)
+    validator_summary_json = Column(JSON, nullable=True)
+    started_at             = Column(DateTime, server_default=func.now())
+    completed_at           = Column(DateTime, nullable=True)
+    failure_code           = Column(String(64), nullable=True)
+    failure_message        = Column(Text, nullable=True)
+
+    response               = relationship("LLMResponse")
+
+
+class ResponseEntity(Base):
+    __tablename__ = "response_entities"
+
+    id                        = Column(Integer, primary_key=True)
+    run_id                    = Column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id               = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    entity_key                = Column(String(128), nullable=False)
+    entity_type               = Column(String(32), nullable=False)
+    raw_name                  = Column(String(512), nullable=False)
+    canonical_id              = Column(String(128), nullable=True)
+    canonical_name            = Column(String(512), nullable=True)
+    canonicalization_status   = Column(String(32), nullable=False)
+    evidence_quote            = Column(Text, nullable=True)
+    confidence                = Column(Float, nullable=True)
+    quality_flags_json        = Column(JSON, nullable=True)
+    created_at                = Column(DateTime, server_default=func.now())
+
+    run                       = relationship("AnalyzerRun")
+    response                  = relationship("LLMResponse")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "entity_key", name="uq_response_entities_run_key"),
+    )
+
+
+class ResponseRelationFact(Base):
+    __tablename__ = "response_relation_facts"
+
+    id                   = Column(Integer, primary_key=True)
+    run_id               = Column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id          = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    relation_key         = Column(String(128), nullable=False)
+    subject_entity_key   = Column(String(128), nullable=False)
+    relation_type        = Column(String(64), nullable=False)
+    object_entity_key    = Column(String(128), nullable=False)
+    direction            = Column(String(16), nullable=True)
+    evidence_quote       = Column(Text, nullable=True)
+    confidence           = Column(Float, nullable=True)
+    quality_flags_json   = Column(JSON, nullable=True)
+    status               = Column(String(32), nullable=False, default="current")
+    kg_candidate_id      = Column(Integer, nullable=True)
+    created_at           = Column(DateTime, server_default=func.now())
+
+    run                  = relationship("AnalyzerRun")
+    response             = relationship("LLMResponse")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "relation_key", name="uq_relation_facts_run_key"),
+    )
+
+
+class AnalysisFactLink(Base):
+    __tablename__ = "analysis_fact_links"
+
+    id                    = Column(Integer, primary_key=True)
+    run_id                = Column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id           = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    fact_type             = Column(String(32), nullable=False)
+    fact_key              = Column(String(128), nullable=False)
+    linked_fact_type      = Column(String(32), nullable=False)
+    linked_fact_key       = Column(String(128), nullable=False)
+    link_type             = Column(String(32), nullable=False, default="supports")
+    evidence_quote        = Column(Text, nullable=True)
+    source_path           = Column(String(256), nullable=True)
+    status                = Column(String(32), nullable=False, default="current")
+    created_at            = Column(DateTime, server_default=func.now())
+
+    run                   = relationship("AnalyzerRun")
+    response              = relationship("LLMResponse")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "fact_type", "fact_key", "linked_fact_type",
+            "linked_fact_key", "link_type",
+            name="uq_analysis_fact_links_run_fact_link",
+        ),
+    )
+
+
+class AnalyzerQualityFlag(Base):
+    __tablename__ = "analyzer_quality_flags"
+
+    id                       = Column(Integer, primary_key=True)
+    run_id                   = Column(Integer, ForeignKey("analyzer_runs.id"), nullable=False)
+    response_id              = Column(Integer, ForeignKey("llm_responses.id"), nullable=False)
+    flag_key                 = Column(String(128), nullable=False)
+    severity                 = Column(String(16), nullable=False)
+    code                     = Column(String(64), nullable=False)
+    message                  = Column(Text, nullable=False)
+    target_type              = Column(String(32), nullable=False)
+    target_key               = Column(String(128), nullable=True)
+    blocks_metric_readiness  = Column(Boolean, default=False)
+    evidence_json            = Column(JSON, nullable=True)
+    created_at               = Column(DateTime, server_default=func.now())
+
+    run                      = relationship("AnalyzerRun")
+    response                 = relationship("LLMResponse")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "flag_key", name="uq_analyzer_quality_flags_run_key"),
+    )
+
+
 # ─── GEOScoreDaily ────────────────────────────────────────────────────────────
 
 class GEOScoreDaily(Base):
