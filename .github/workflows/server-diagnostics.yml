@@ -1540,23 +1540,34 @@ jobs:
           " | tee "${artifact_dir}/doubao-account-health.txt" || true
 
           echo "=== Current Doubao SMS blacklist suffix snapshot ==="
-          docker compose exec -T redis redis-cli -n 0 --scan --pattern 'sms_blacklist:doubao:*' | while IFS= read -r key; do
+          blacklist_file="${artifact_dir}/doubao-blacklist-snapshot.txt"
+          : > "${blacklist_file}"
+          while IFS= read -r key; do
             digits="$(printf '%s' "${key}" | tr -cd '0-9')"
-            suffix="${digits: -4}"
+            if [ "${#digits}" -lt 4 ]; then
+              continue
+            fi
+            suffix="${digits:$((${#digits} - 4)):4}"
             case ",${normalized_suffixes}," in
               *",${suffix},"*) ;;
               *) continue ;;
             esac
             ttl="$(docker compose exec -T redis redis-cli -n 0 TTL "${key}" | tr -d '\r' || true)"
             value="$(docker compose exec -T redis redis-cli -n 0 GET "${key}" | tr -d '\r' | sanitize_herosms_stream || true)"
-            echo "key=sms_blacklist:doubao:[phone ending ${suffix}] ttl_seconds=${ttl} reason=${value}"
-          done | tee "${artifact_dir}/doubao-blacklist-snapshot.txt" || true
+            line="key=sms_blacklist:doubao:[phone ending ${suffix}] ttl_seconds=${ttl} reason=${value}"
+            printf '%s\n' "${line}"
+            printf '%s\n' "${line}" >> "${blacklist_file}"
+          done < <(docker compose exec -T redis redis-cli -n 0 --scan --pattern 'sms_blacklist:doubao:*' || true)
 
           echo "=== Current queue lengths ==="
+          queue_file="${artifact_dir}/queue-lengths.txt"
+          : > "${queue_file}"
           for q in celery llm_chatgpt llm_gemini llm_doubao llm_deepseek account_login analysis beat; do
-            printf '%s=' "$q"
-            docker compose exec -T redis redis-cli -n 0 LLEN "$q" || true
-          done | tee "${artifact_dir}/queue-lengths.txt"
+            queue_len="$(docker compose exec -T redis redis-cli -n 0 LLEN "$q" | tr -d '\r' || true)"
+            line="${q}=${queue_len}"
+            printf '%s\n' "${line}"
+            printf '%s\n' "${line}" >> "${queue_file}"
+          done
 
           echo "=== Celery worker inspect snapshot ==="
           timeout 20s docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active || true
