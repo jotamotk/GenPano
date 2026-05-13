@@ -1141,17 +1141,28 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
     ) in flags
 
 
-def test_analyzer_v4_accepts_quality_product_feature_type_for_issue_833() -> None:
+@pytest.mark.parametrize(
+    ("feature_type", "feature_key", "feature_name"),
+    [
+        ("quality", "feature_quality_smooth_crema", "smooth crema"),
+        ("drawback", "feature_drawback_over_extraction", "over-extraction risk"),
+    ],
+)
+def test_analyzer_v4_accepts_product_feature_type_schema_drifts(
+    feature_type: str,
+    feature_key: str,
+    feature_name: str,
+) -> None:
     package = _valid_v4_package()
     package["product_features"].append(
         {
-            "feature_key": "feature_quality_smooth_crema",
+            "feature_key": feature_key,
             "product_entity_key": "ent_product_calm",
             "brand_entity_key": "ent_brand_acme",
-            "feature_type": "quality",
-            "feature_name": "smooth crema",
-            "feature_value": "high-quality mouthfeel",
-            "evidence_quote": "smooth crema and high-quality extraction",
+            "feature_type": feature_type,
+            "feature_name": feature_name,
+            "feature_value": "response-evidenced product characteristic",
+            "evidence_quote": "smooth crema, over-extraction risk, and high-quality extraction",
             "confidence": 0.81,
             "quality_flags": [],
         }
@@ -1161,7 +1172,8 @@ def test_analyzer_v4_accepts_quality_product_feature_type_for_issue_833() -> Non
         package,
         response_text=(
             "AcmeBeauty Calm Serum uses gentle ceramides. "
-            "The coffee response mentions smooth crema and high-quality extraction."
+            "The coffee response mentions smooth crema, over-extraction risk, "
+            "and high-quality extraction."
         ),
         response_id=7815,
         query_id=7814,
@@ -1169,7 +1181,7 @@ def test_analyzer_v4_accepts_quality_product_feature_type_for_issue_833() -> Non
 
     assert result.is_valid is True
     assert result.errors == []
-    assert result.package["product_features"][-1]["feature_type"] == "quality"
+    assert result.package["product_features"][-1]["feature_type"] == feature_type
 
 
 def test_analyzer_v4_still_rejects_unknown_product_feature_type() -> None:

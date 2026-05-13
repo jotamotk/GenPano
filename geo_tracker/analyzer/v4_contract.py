@@ -73,6 +73,7 @@ FEATURE_TYPES = {
     "ingredient",
     "function",
     "benefit",
+    "drawback",
     "texture",
     "price",
     "scenario",
