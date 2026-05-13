@@ -32,6 +32,8 @@ FORMULA_PENDING_STATUS = "formula_pending_upstream"
 FORMULA_MISSING_INPUTS_STATUS = "missing_required_inputs"
 FORMULA_NO_EVIDENCE_STATUS = "no_evidence"
 FORMULA_PENDING_SOURCE = "upstream_formula_provenance"
+ANALYZER_FACT_PACKAGE_SOURCE = "response_analyses.raw_analysis_json.analyzer_fact_packages"
+ANALYZER_FACT_PACKAGE_V3_SOURCE = "response_analyses.raw_analysis_json.analyzer_fact_package_v3"
 PROJECT_UNBOUND_REASON = "project_unbound"
 MISSING_PROJECT_BRAND_BINDING_REASON = "missing_project_brand_binding"
 ANALYSIS_MISSING_REASON = "analysis_missing"
@@ -313,14 +315,142 @@ def _repair_entries(payload: Any) -> list[dict[str, Any]]:
     return [entry for entry in repairs if isinstance(entry, dict)]
 
 
+def _json_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_v3_package(payload: dict[str, Any]) -> dict[str, Any] | None:
+    package = payload.get("analyzer_fact_package_v3")
+    if not isinstance(package, dict) or package.get("analyzer_version") != "v3":
+        return None
+    coverage = package.get("coverage")
+    if not isinstance(coverage, dict):
+        return None
+    response_id = _json_int(package.get("response_id"))
+    normalized = dict(package)
+    normalized["_package_source"] = ANALYZER_FACT_PACKAGE_V3_SOURCE
+    normalized["_package_version"] = "v3"
+    if response_id is not None:
+        normalized["_response_ids"] = [response_id]
+
+    reason_codes = [str(value) for value in coverage.get("validation_errors") or [] if value]
+    parse_status = str(coverage.get("parse_status") or "ok")
+    analyzed = bool(coverage.get("analyzed"))
+    if parse_status != "ok":
+        reason_codes.append(parse_status)
+    if not analyzed:
+        reason_codes.append("missing_analyzer_rows")
+    coverage_status = FORMULA_OK_STATUS
+    if reason_codes:
+        coverage_status = FORMULA_PARTIAL_STATUS
+    normalized_coverage = dict(coverage)
+    normalized_coverage.setdefault("status", coverage_status)
+    normalized_coverage.setdefault("formula_status", coverage_status)
+    eligible_basis = _json_int(coverage.get("eligible_response_count_basis"))
+    normalized_coverage.setdefault(
+        "eligible_count",
+        eligible_basis if eligible_basis is not None else (1 if response_id is not None else 0),
+    )
+    normalized_coverage.setdefault("analyzed_count", 1 if analyzed else 0)
+    normalized_coverage.setdefault("failed_count", 1 if parse_status == "failed" else 0)
+    normalized_coverage.setdefault("missing_analyzer_count", 0 if analyzed else 1)
+    if response_id is not None:
+        normalized_coverage.setdefault("eligible_response_ids", [response_id])
+        normalized_coverage.setdefault("analyzed_response_ids", [response_id] if analyzed else [])
+        normalized_coverage.setdefault(
+            "missing_analyzer_response_ids", [] if analyzed else [response_id]
+        )
+        normalized_coverage.setdefault(
+            "failed_response_ids", [response_id] if parse_status == "failed" else []
+        )
+        normalized_coverage.setdefault(
+            "chains",
+            [
+                {
+                    "response_id": response_id,
+                    "query_id": package.get("query_id"),
+                    "prompt_id": package.get("prompt_id"),
+                    "topic_id": package.get("topic_id"),
+                    "project_brand_id": package.get("target_brand_id"),
+                    "engine": package.get("engine"),
+                    "profile_id": package.get("profile_id"),
+                    "collected_at": package.get("collected_at"),
+                    "analysis_status": "done" if analyzed else None,
+                    "has_analysis": analyzed,
+                }
+            ],
+        )
+    normalized_coverage.setdefault("reason_codes", _unique(reason_codes))
+    normalized["coverage"] = normalized_coverage
+
+    entities = normalized.get("entities")
+    if isinstance(entities, dict) and "target_brand_id" not in entities:
+        target = entities.get("target")
+        if isinstance(target, dict):
+            entities = dict(entities)
+            entities["target_brand_id"] = target.get("brand_id")
+            entities["target_brand_name"] = target.get("canonical_name")
+            normalized["entities"] = entities
+
+    sentiment = normalized.get("sentiment")
+    if isinstance(sentiment, dict):
+        sentiment = dict(sentiment)
+        sentiment.setdefault("status", sentiment.get("formula_status"))
+        sentiment.setdefault("score_count", 1 if sentiment.get("score") is not None else 0)
+        sentiment.setdefault("label_count", 1 if sentiment.get("label") else 0)
+        sentiment.setdefault("driver_count", len(sentiment.get("drivers") or []))
+        sentiment.setdefault("quote_count", len(sentiment.get("source_quotes") or []))
+        if response_id is not None:
+            sentiment.setdefault("sample_response_ids", [response_id])
+        normalized["sentiment"] = sentiment
+
+    citations = normalized.get("citations")
+    if isinstance(citations, dict):
+        citations = dict(citations)
+        attributed = citations.get("attributed_citations") or []
+        unresolved = citations.get("unresolved_citations") or []
+        citations.setdefault("status", citations.get("formula_status"))
+        citations.setdefault("citation_count", citations.get("total_citations") or 0)
+        citations.setdefault(
+            "attributed_count", len(attributed) if isinstance(attributed, list) else 0
+        )
+        citations.setdefault(
+            "unresolved_count", len(unresolved) if isinstance(unresolved, list) else 0
+        )
+        if response_id is not None:
+            citations.setdefault("sample_response_ids", [response_id])
+        normalized["citations"] = citations
+
+    sov = normalized.get("sov")
+    if isinstance(sov, dict):
+        sov = dict(sov)
+        sov.setdefault("status", sov.get("formula_status"))
+        if response_id is not None:
+            sov.setdefault("sample_response_ids", [response_id])
+        normalized["sov"] = sov
+
+    return normalized
+
+
 def _as_package(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
+    v3_package = _as_v3_package(payload)
+    if v3_package is not None:
+        return v3_package
     packages = payload.get("analyzer_fact_packages")
     if not isinstance(packages, dict):
         return None
     if packages.get("version") != "issue_602_v1":
         return None
+    packages = dict(packages)
+    packages["_package_source"] = ANALYZER_FACT_PACKAGE_SOURCE
+    packages["_package_version"] = "issue_602_v1"
     return packages
 
 
@@ -359,6 +489,11 @@ def _package_reason_codes(package: dict[str, Any], key: str) -> list[str]:
 
 def _package_response_ids(package: dict[str, Any]) -> set[int]:
     ids: set[int] = set()
+    if package.get("response_id") is not None:
+        ids.add(int(package["response_id"]))
+    response_ids = package.get("_response_ids")
+    if isinstance(response_ids, list):
+        ids.update(int(value) for value in response_ids if value is not None)
     coverage = package.get("coverage")
     if isinstance(coverage, dict):
         for field in (
@@ -378,6 +513,8 @@ def _package_response_ids(package: dict[str, Any]) -> set[int]:
 
 
 def _package_target_brand_id(package: dict[str, Any]) -> int | None:
+    if package.get("target_brand_id") is not None:
+        return int(package["target_brand_id"])
     entities = package.get("entities")
     if isinstance(entities, dict) and entities.get("target_brand_id") is not None:
         return int(entities["target_brand_id"])
@@ -385,6 +522,14 @@ def _package_target_brand_id(package: dict[str, Any]) -> int | None:
 
 
 def _package_date_in_window(package: dict[str, Any], from_date: date, to_date: date) -> bool:
+    raw_collected = package.get("collected_at")
+    if raw_collected:
+        try:
+            collected = datetime.fromisoformat(str(raw_collected).replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+        else:
+            return from_date <= collected <= to_date
     coverage = package.get("coverage")
     if not isinstance(coverage, dict):
         return True
@@ -415,6 +560,15 @@ def _metric_evidence_template(metric_key: str, status: str) -> dict[str, Any]:
         "reason_codes": [],
         "sample_response_ids": [],
     }
+
+
+def _package_source_tables(packages: list[dict[str, Any]] | None = None) -> list[str]:
+    sources = [
+        str(package.get("_package_source"))
+        for package in packages or []
+        if package.get("_package_source")
+    ]
+    return _unique(sources) or [ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE]
 
 
 def _blocking_metric_evidence(
@@ -474,7 +628,7 @@ def _rollup_sov(packages: list[dict[str, Any]]) -> dict[str, Any]:
                     for item in competitors
                 }
             ),
-            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "source_tables": _package_source_tables(packages),
             "fact_classes": ["sov", "entities"],
         }
     )
@@ -517,7 +671,8 @@ def _rollup_sentiment(packages: list[dict[str, Any]]) -> dict[str, Any]:
             "driver_count": driver_count,
             "quote_count": quote_count,
             "source_tables": [
-                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                ANALYZER_FACT_PACKAGE_SOURCE,
                 "brand_mentions",
                 "sentiment_drivers",
             ],
@@ -580,7 +735,8 @@ def _rollup_citations(packages: list[dict[str, Any]]) -> dict[str, Any]:
             "unresolved_source_type_counts": unresolved_source_type_counts,
             "unresolved_tier_counts": unresolved_tier_counts,
             "source_tables": [
-                "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                ANALYZER_FACT_PACKAGE_V3_SOURCE,
+                ANALYZER_FACT_PACKAGE_SOURCE,
                 "citation_sources",
             ],
             "fact_classes": ["citations"],
@@ -633,7 +789,7 @@ def _rollup_coverage(
             "failed_response_count": failed,
             "missing_response_count": missing,
             "missing_response_ids": missing_ids[:20],
-            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "source_tables": _package_source_tables(packages),
             "fact_classes": ["coverage"],
         }
     )
@@ -646,7 +802,7 @@ def _rollup_pano_geo(packages: list[dict[str, Any]]) -> dict[str, Any]:
     evidence = _metric_evidence_template("pano_geo", FORMULA_NO_EVIDENCE_STATUS)
     readiness: dict[str, str] = {}
     for package in packages:
-        pano = package.get("pano_geo")
+        pano = package.get("geo_pano") or package.get("pano_geo")
         if not isinstance(pano, dict):
             continue
         evidence["formula_status"] = _merge_status(
@@ -659,13 +815,15 @@ def _rollup_pano_geo(packages: list[dict[str, Any]]) -> dict[str, Any]:
                 readiness[str(key)] = _merge_status(
                     readiness.get(str(key), FORMULA_OK_STATUS), str(status)
                 )
-        evidence["reason_codes"].extend(_package_reason_codes(package, "pano_geo"))
+        evidence["reason_codes"].extend(
+            _package_reason_codes(package, "geo_pano") or _package_reason_codes(package, "pano_geo")
+        )
     if packages and evidence["formula_status"] == FORMULA_NO_EVIDENCE_STATUS:
         evidence["formula_status"] = FORMULA_MISSING_INPUTS_STATUS
     evidence.update(
         {
             "component_readiness": readiness,
-            "source_tables": ["response_analyses.raw_analysis_json.analyzer_fact_packages"],
+            "source_tables": _package_source_tables(packages),
             "fact_classes": ["pano_geo"],
         }
     )
@@ -804,6 +962,19 @@ async def _project_eligible_response_ids(
         to_date=to_date,
     )
     if pinned_response_ids is not None:
+        if project.primary_brand_id is None or int(project.primary_brand_id) != int(brand_id):
+            rows = await _fact_rows(
+                session,
+                project,
+                filters=AnalysisFilters(from_date=from_date, to_date=to_date),
+                brand_id_override=brand_id,
+            )
+            scoped_response_ids = {
+                int(response_id)
+                for row in rows
+                if (response_id := row.get("response_id")) is not None
+            }
+            return pinned_response_ids & scoped_response_ids
         return pinned_response_ids
     if all(
         [
@@ -988,6 +1159,7 @@ async def build_contract_context(
     formula_status: str | None = None,
     selected_filters: dict[str, Any] | None = None,
     source_provenance: list[str] | None = None,
+    target_response_ids: set[int] | None = None,
 ) -> AnalyticsContractContext:
     competitor_ids = await _competitor_ids(session, project)
     missing_sources = list(base_missing_sources or [])
@@ -1104,14 +1276,18 @@ async def build_contract_context(
             await legacy_table_exists(session, "queries"),
         ]
     )
-    target_response_ids = await _project_eligible_response_ids(
-        session,
-        project,
-        brand_id,
-        from_date=from_date,
-        to_date=to_date,
-        from_dt=from_dt,
-        to_dt=to_dt,
+    target_response_ids = (
+        set(target_response_ids)
+        if target_response_ids is not None
+        else await _project_eligible_response_ids(
+            session,
+            project,
+            brand_id,
+            from_date=from_date,
+            to_date=to_date,
+            from_dt=from_dt,
+            to_dt=to_dt,
+        )
     )
     analysis_rows = (
         await session.execute(
@@ -1199,10 +1375,10 @@ async def build_contract_context(
     no_aggregate_rows = raw_response_without_app_facts and geo_rows == 0
     if analysis_missing:
         missing_inputs.extend(
-            ["response_analyses", "response_analyses.raw_analysis_json.analyzer_fact_packages"]
+            ["response_analyses", ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE]
         )
         missing_sources.extend(
-            ["response_analyses", "response_analyses.raw_analysis_json.analyzer_fact_packages"]
+            ["response_analyses", ANALYZER_FACT_PACKAGE_V3_SOURCE, ANALYZER_FACT_PACKAGE_SOURCE]
         )
         missing_reasons.append(ANALYSIS_MISSING_REASON)
     if no_aggregate_rows:
@@ -1313,12 +1489,24 @@ async def build_contract_context(
         to_date=to_date,
         target_response_ids=target_response_ids,
     )
+    if has_admin_chain and not metric_formula_evidence and admin_fact_response_count > 0:
+        package_sources = _package_source_tables()
+        missing_inputs.extend(package_sources)
+        missing_sources.extend(package_sources)
+        missing_reasons.append("missing_analyzer_fact_packages")
+        metric_formula_evidence = _blocking_metric_evidence(
+            ["missing_analyzer_fact_packages"],
+            source_tables=package_sources,
+            sample_response_ids=sorted(target_response_ids),
+        )
+        for evidence in metric_formula_evidence.values():
+            evidence["formula_status"] = FORMULA_PARTIAL_STATUS
     if metric_formula_evidence:
         evidence_counts.update(analyzer_counts)
         missing_reasons.extend(analyzer_reason_codes)
         missing_inputs.extend(analyzer_reason_codes)
-        missing_sources.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
-        provenance.append("response_analyses.raw_analysis_json.analyzer_fact_packages")
+        missing_sources.extend(_package_source_tables())
+        provenance.extend(_package_source_tables())
     blocking_reasons = [
         reason
         for reason in [

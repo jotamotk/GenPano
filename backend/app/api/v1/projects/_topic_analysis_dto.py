@@ -299,6 +299,11 @@ class QueryResponseDetailOut(BaseModel):
     analyzer_facts: AnalyzerFacts = Field(default_factory=AnalyzerFacts)
     attempts: list[ResponseAttemptDetail] = Field(default_factory=list)
     state: str = "ok"
+    formula_status: str = "ok"
+    metric_formula_evidence: dict[str, Any] = Field(default_factory=dict)
+    selected_filters: dict[str, Any] = Field(default_factory=dict)
+    missing_reasons: list[str] = Field(default_factory=list)
+    analyzer_coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryActivityEngineRow(BaseModel):
